@@ -79,6 +79,13 @@ describe('buildAllowedHosts', () => {
     expect(h.has('localhost')).toBe(true)
     expect(h.has('localhost:3420')).toBe(true)
   })
+
+  it('includes [::1] and [::1]:port for an IPv6 origin (Node serialises IPv6 hostname with brackets)', () => {
+    const h = buildAllowedHosts(new Set(['http://[::1]:3420']))
+    expect(h.has('[::1]')).toBe(true)
+    expect(h.has('[::1]:3420')).toBe(true)
+    expect(h.has('::1')).toBe(false) // Node's u.hostname = "[::1]", not "::1"
+  })
 })
 
 describe('isAllowedHost', () => {
@@ -122,5 +129,21 @@ describe('isAllowedHost', () => {
 
   it('returns false for an empty string', () => {
     expect(isAllowedHost('', hosts)).toBe(false)
+  })
+})
+
+describe('isAllowedHost -- IPv6', () => {
+  const ipv6Hosts = buildAllowedHosts(new Set(['http://[::1]:3420']))
+
+  it('allows [::1] with port (the common case on non-standard ports)', () => {
+    expect(isAllowedHost('[::1]:3420', ipv6Hosts)).toBe(true)
+  })
+
+  it('allows bare [::1] without port', () => {
+    expect(isAllowedHost('[::1]', ipv6Hosts)).toBe(true)
+  })
+
+  it('blocks a foreign bracketed host', () => {
+    expect(isAllowedHost('[2001:db8::1]', ipv6Hosts)).toBe(false)
   })
 })

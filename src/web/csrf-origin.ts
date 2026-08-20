@@ -59,8 +59,8 @@ export function buildAllowedHosts(allowedOrigins: ReadonlySet<string>): Set<stri
   for (const origin of allowedOrigins) {
     try {
       const u = new URL(origin)
-      if (u.hostname) hosts.add(u.hostname)   // bare, e.g. "localhost"
-      if (u.host) hosts.add(u.host)           // with port, e.g. "localhost:3420"
+      if (u.hostname) hosts.add(u.hostname)   // bare, e.g. "localhost" or "[::1]" (Node brackets IPv6)
+      if (u.host) hosts.add(u.host)           // with port, e.g. "localhost:3420" or "[::1]:3420"
     } catch { /* skip malformed */ }
   }
   return hosts
@@ -75,7 +75,11 @@ export function isAllowedHost(
 ): boolean {
   if (!host) return false
   if (allowedHosts.has(host)) return true
-  const bare = host.includes(':') ? host.split(':')[0] : undefined
+  // IPv6 Host headers are bracketed: "[::1]:3420" or bare "[::1]".
+  // Splitting on ':' would extract '[' instead of '[::1]', so handle that first.
+  const bare = host.startsWith('[')
+    ? host.replace(/\]:.*$/, ']')                    // "[::1]:3420" -> "[::1]"
+    : host.includes(':') ? host.split(':')[0] : undefined
   return bare !== undefined && allowedHosts.has(bare)
 }
 
