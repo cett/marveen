@@ -4029,3 +4029,52 @@ export function disablePartnerSender(senderId: string, tenantId: string): boolea
   return result.changes > 0
 }
 
+// ---------------------------------------------------------------------------
+// Fleet blackboard history retention
+// ---------------------------------------------------------------------------
+
+/**
+ * Delete fleet_blackboard_history rows older than ttlDays (default 30).
+ * Called from the daily decay sweep so the table stays bounded.
+ * Returns the number of deleted rows.
+ */
+export function pruneBlackboardHistory(ttlDays = 30): number {
+  const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
+  const result = db.prepare(
+    'DELETE FROM fleet_blackboard_history WHERE created_at < ?'
+  ).run(cutoff)
+  return result.changes
+}
+
+export interface BlackboardHistoryRow {
+  id: number
+  agent_id: string
+  task_ref: string | null
+  status: string
+  summary: string
+  created_at: number
+}
+
+/**
+ * Query blackboard history rows. Optional filters: agent_id, since (unix epoch),
+ * limit (default 50, max 200).
+ */
+export function listBlackboardHistory(opts: {
+  agent_id?: string
+  since?: number
+  limit?: number
+} = {}): BlackboardHistoryRow[] {
+  const limit = Math.min(opts.limit ?? 50, 200)
+  const parts: string[] = []
+  const params: (string | number)[] = []
+  if (opts.agent_id) { parts.push('agent_id = ?'); params.push(opts.agent_id) }
+  if (opts.since !== undefined) { parts.push('created_at >= ?'); params.push(opts.since) }
+  const where = parts.length ? 'WHERE ' + parts.join(' AND ') : ''
+  params.push(limit)
+  return db.prepare(
+    `SELECT id, agent_id, task_ref, status, summary, created_at
+     FROM fleet_blackboard_history ${where}
+     ORDER BY created_at DESC LIMIT ?`
+  ).all(...params) as BlackboardHistoryRow[]
+}
+

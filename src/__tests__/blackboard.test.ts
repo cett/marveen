@@ -22,8 +22,10 @@ const ROW_B = {
 
 // ---------- db mock ----------
 const mockPrepare = vi.fn()
+const mockListBlackboardHistory = vi.fn<() => object[]>(() => [])
 vi.mock('../db.js', () => ({
   getDb: vi.fn(() => ({ prepare: mockPrepare })),
+  listBlackboardHistory: (...args: unknown[]) => mockListBlackboardHistory(...args as []),
 }))
 
 function makeStmt(value: unknown) {
@@ -31,6 +33,12 @@ function makeStmt(value: unknown) {
 }
 
 import { tryHandleBlackboard } from '../web/routes/blackboard.js'
+
+// ---------- history db mock helpers ----------
+const HISTORY_ROWS = [
+  { id: 1, agent_id: 'agent-a', task_ref: 'task-001', status: 'active', summary: 'Started', created_at: 1700000000 },
+  { id: 2, agent_id: 'agent-a', task_ref: 'task-001', status: 'done',   summary: 'Finished', created_at: 1700001000 },
+]
 
 // ---------- http helpers ----------
 function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: unknown } } {
@@ -211,5 +219,67 @@ describe('PATCH /api/blackboard/:id', () => {
     const { ctx } = makeCtx('PATCH', '/api/other/bb000001')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(false)
+  })
+})
+
+describe('GET /api/blackboard/history', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListBlackboardHistory.mockReturnValue(HISTORY_ROWS)
+  })
+
+  it('returns history rows from db', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/blackboard/history')
+    const handled = await tryHandleBlackboard(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual(HISTORY_ROWS)
+  })
+
+  it('passes agent_id filter to db function', async () => {
+    const { ctx } = makeCtx('GET', '/api/blackboard/history?agent_id=agent-a')
+    await tryHandleBlackboard(ctx)
+    expect(mockListBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'agent-a' })
+    )
+  })
+
+  it('passes since filter as integer to db function', async () => {
+    const { ctx } = makeCtx('GET', '/api/blackboard/history?since=1700000000')
+    await tryHandleBlackboard(ctx)
+    expect(mockListBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ since: 1700000000 })
+    )
+  })
+
+  it('passes limit filter (clamped to 200) to db function', async () => {
+    const { ctx } = makeCtx('GET', '/api/blackboard/history?limit=5')
+    await tryHandleBlackboard(ctx)
+    expect(mockListBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 5 })
+    )
+  })
+
+  it('clamps limit to 200', async () => {
+    const { ctx } = makeCtx('GET', '/api/blackboard/history?limit=999')
+    await tryHandleBlackboard(ctx)
+    expect(mockListBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 200 })
+    )
+  })
+
+  it('returns empty array when db returns nothing', async () => {
+    mockListBlackboardHistory.mockReturnValue([])
+    const { ctx, out } = makeCtx('GET', '/api/blackboard/history')
+    await tryHandleBlackboard(ctx)
+    expect(out.body).toEqual([])
+  })
+
+  it('does NOT interfere with the existing /api/blackboard GET', async () => {
+    mockPrepare.mockReturnValue({ all: vi.fn(() => [ROW_A]) })
+    const { ctx, out } = makeCtx('GET', '/api/blackboard')
+    const handled = await tryHandleBlackboard(ctx)
+    expect(handled).toBe(true)
+    expect(out.body).toEqual([ROW_A])
   })
 })
