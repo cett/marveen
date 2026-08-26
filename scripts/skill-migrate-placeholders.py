@@ -418,6 +418,21 @@ def migrate_yaml_frontmatter(text: str, agent_id: str, changes: list[str]) -> st
 
 
 # ---------------------------------------------------------------------------
+# Code-fence guard
+# ---------------------------------------------------------------------------
+
+def _is_fence_marker(line: str) -> bool:
+    """Return True if this line opens or closes a Markdown code fence.
+
+    Placeholders belong in prose, not in executable commands. Passes 3-5 must
+    not fire inside code fences so that real agent IDs / owner tokens in shell
+    commands are never silently replaced with placeholder literals that cause
+    silent command failures (e.g. grep finding nothing, tmux finding no session).
+    """
+    return line.strip().startswith("```")
+
+
+# ---------------------------------------------------------------------------
 # Main file migration
 # ---------------------------------------------------------------------------
 
@@ -496,6 +511,7 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
         in_frontmatter = False
         frontmatter_done = False
         frontmatter_line = 0
+        in_fence = False
 
         for i, line in enumerate(lines):
             # Track frontmatter (skip -- already processed above)
@@ -509,6 +525,15 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
                 result_lines.append(line)
                 continue
             if in_frontmatter:
+                result_lines.append(line)
+                continue
+
+            # Track code fences: placeholders belong in prose, not in commands
+            if _is_fence_marker(line):
+                in_fence = not in_fence
+                result_lines.append(line)
+                continue
+            if in_fence:
                 result_lines.append(line)
                 continue
 
@@ -529,6 +554,7 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
         lines = text.split("\n")
         result_lines = []
         in_frontmatter = False
+        in_fence = False
 
         for i, line in enumerate(lines):
             if i == 0 and line.strip() == "---":
@@ -540,6 +566,15 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
                 result_lines.append(line)
                 continue
             if in_frontmatter:
+                result_lines.append(line)
+                continue
+
+            # Track code fences: owner name must not be replaced inside commands
+            if _is_fence_marker(line):
+                in_fence = not in_fence
+                result_lines.append(line)
+                continue
+            if in_fence:
                 result_lines.append(line)
                 continue
 
@@ -566,7 +601,19 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
         def _email_replacer(m: re.Match) -> str:
             changes.append(f'Owner email "{m.group(0)}" -> "<OWNER_EMAIL>"')
             return "<OWNER_EMAIL>"
-        text = OWNER_EMAIL_RX.sub(_email_replacer, text)
+        lines = text.split("\n")
+        result_lines = []
+        in_fence = False
+        for line in lines:
+            if _is_fence_marker(line):
+                in_fence = not in_fence
+                result_lines.append(line)
+                continue
+            if in_fence:
+                result_lines.append(line)
+                continue
+            result_lines.append(OWNER_EMAIL_RX.sub(_email_replacer, line))
+        text = "\n".join(result_lines)
 
     # --- Pass 6: bash path normalisation ($HOME) ---
     home_path = str(Path.home()) + "/"
