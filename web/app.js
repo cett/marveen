@@ -184,7 +184,17 @@ function mainAgentId() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, password }),
         })
-        if (r.ok) { window.location.reload(); return }
+        if (r.ok) {
+          // Clear both the in-memory token and localStorage so the fetch-patch
+          // stops injecting a Bearer on subsequent /api/ calls. Without this,
+          // the bearer lane (auth-gate step 2) beats the session cookie (step 6)
+          // and role=null is returned even after login. sessionToken is the
+          // in-memory copy used first (line 97); localStorage is the persisted
+          // fallback -- both must be cleared.
+          sessionToken = ''
+          try { localStorage.removeItem(TOKEN_KEY) } catch { /* storage blocked */ }
+          window.location.reload(); return
+        }
         if (r.status === 429) {
           let retry = 0
           try { retry = (await r.json()).retry_after_s || 0 } catch { /* ignore */ }
@@ -469,6 +479,20 @@ async function initSidebarBrand() {
   } catch {}
 }
 initSidebarBrand()
+
+// Reveal the B2B admin nav link as soon as auth status is known, without waiting
+// for the user to navigate to #adminB2b first (which required the hidden link).
+;(async function revealAdminNav() {
+  try {
+    const r = await fetch('/api/auth/status')
+    if (!r.ok) return
+    const auth = await r.json()
+    if (auth?.role === 'admin' && auth?.tenant_id === null) {
+      const navLink = document.getElementById('navAdminB2b')
+      if (navLink) navLink.hidden = false
+    }
+  } catch {}
+})()
 
 // In an installed (standalone) PWA, lock the zoom: iOS otherwise auto-zooms when
 // a small-text input is focused and allows stray pinch-zoom, neither of which
