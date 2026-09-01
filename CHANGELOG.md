@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- **[API]** `GET /api/skills/sql` previously returned 404 because the generic `GET /api/skills/:name` route handler shadowed it; a negative-lookahead regex now excludes the `sql` segment so requests reach the correct SQL-skills handler
 - `deleteTenant()` cascade now includes the `schedules` table: tenant-scoped schedules are deleted on hard tenant removal; fleet schedules (`tenant_id IS NULL`) are unaffected
 - **[API]** `PUT /api/memories/:id` returns `400 parse_error` on invalid JSON body and `400 required` when `content` is absent or whitespace-only; previously threw unhandled exception (500)
 
