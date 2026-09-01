@@ -17,6 +17,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- context-guard handoff freshness now reads `workspace_docs` (`doc_key='handoff'`) `updated_at` when present, falling back to the `HANDOFF.md` file mtime otherwise; workspace-docs TTL sweeper (previously dead code with no caller) is now wired into a 5-minute background sweep, threshold configurable via `WORKSPACE_DOCS_TTL_DAYS` (default 14 days)
 - **[API]** SQL-backed skill storage with tenant isolation (migration 0030): `skills` + `skill_tenant_access` tables; `/api/skills/sql/*` CRUD endpoints with grant/revoke access management; fleet skills hidden from B2B tenants by default
 - `scripts/materialize-skills.ts` one-time idempotent script to seed file-based skills (global `~/.claude/skills/` and agent-local `.claude/skills/`) into the SQL `skills` table via INSERT OR IGNORE; supports `--dry-run`
 - SQL-to-file skill regeneration at startup (716-D): `src/web/skill-regen.ts` writes fleet SQL skills back to their canonical file paths (atomic rename, idempotent content check, non-destructive -- files absent from SQL are never touched); controlled by `SKILL_SQL_REGEN=1` kill-switch (fail-safe: disabled by default); `scripts/regen-skills.ts` for manual runs and proof verification
