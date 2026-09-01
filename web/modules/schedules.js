@@ -12,6 +12,7 @@ import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
 import { avatarBust } from './agents.js'
 import { initTenantSelector } from './tenant-selector.js'
+import { can } from './rbac-client.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
 
@@ -31,10 +32,17 @@ let _openModal = null
 let _closeModal = null
 let _tenantGetter = null
 
+// Schedules have no dedicated Permission in src/web/rbac.ts (no /api/schedules
+// row in ENDPOINT_PERMISSION_TABLE), so resolveRequiredPermission() falls
+// through to the table's documented default of admin:all -- mirrored here.
+let _canWriteSchedules = true
+
 export async function initSchedules({ openModal, closeModal } = {}) {
   _openModal = openModal
   _closeModal = closeModal
   _tenantGetter = await initTenantSelector('schedulesTenantSelectorContainer', () => loadSchedules())
+  // The actual gate check lives in loadSchedules(), which app.js always calls
+  // right after this (see the note there) -- no need to duplicate it here.
 }
 
 // === Schedules ===
@@ -164,7 +172,7 @@ function resetScheduleForm() {
   document.getElementById('scheduleType').value = 'task'
   document.getElementById('heartbeatTemplateGroup').hidden = true
   document.getElementById('heartbeatTemplate').value = ''
-  saveScheduleBtn.disabled = false
+  saveScheduleBtn.disabled = !_canWriteSchedules
   saveScheduleBtn.querySelector('.btn-text').hidden = false
   saveScheduleBtn.querySelector('.btn-loading').hidden = true
 }
@@ -292,6 +300,14 @@ export async function loadScheduleAgents() {
 
 export async function loadSchedules() {
   try {
+    // Re-checked here (not just in initSchedules): app.js fires initSchedules()
+    // without awaiting it, so on the very first page-enter this call can race
+    // ahead of that check. can()'s underlying fetch is cached/shared, so this
+    // costs nothing once resolved.
+    _canWriteSchedules = await can('admin:all')
+    document.getElementById('addScheduleBtn').hidden = !_canWriteSchedules
+    saveScheduleBtn.disabled = !_canWriteSchedules
+
     const params = new URLSearchParams()
     const tenant = _tenantGetter?.()
     if (tenant) params.set('tenant', tenant)
@@ -444,6 +460,14 @@ function makeScheduleRow(task) {
       if (e.target.closest('[data-variant="icon"]')) return
       openEditSchedule(task)
     })
+
+    if (!_canWriteSchedules) {
+      for (const action of ['run', 'toggle', 'delete']) {
+        const btn = row.querySelector(`[data-action="${action}"]`)
+        btn.disabled = true
+        btn.setAttribute('data-rbac-disabled', '')
+      }
+    }
 
     // Action buttons
     row.querySelector('[data-action="run"]').addEventListener('click', async (e) => {

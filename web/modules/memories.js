@@ -4,13 +4,18 @@ import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
+import { can } from './rbac-client.js'
 
 let _openModal = null, _closeModal = null
 let _memTenantGetter = null
+let _canWriteMemories = true
 
 export async function initMemories({ openModal, closeModal } = {}) {
   _openModal = openModal; _closeModal = closeModal
   _memTenantGetter = await initTenantSelector('memoriesTenantSelectorContainer', () => loadMemories())
+  // The actual gate check lives in loadMemStats()/loadMemories(), which
+  // app.js always calls right after this (see the notes there) -- no need
+  // to duplicate it here.
 }
 
 // ============================================================
@@ -167,6 +172,11 @@ document.getElementById('saveMemBtn')?.addEventListener('click', async () => {
 
 export async function loadMemStats() {
   try {
+    // Re-checked here (not just in initMemories): app.js fires initMemories()
+    // without awaiting it, so on the very first page-enter this call can race
+    // ahead of that check. can()'s underlying fetch is cached/shared, so this
+    // costs nothing once resolved.
+    _canWriteMemories = await can('memories:write')
     const [statsRes, ovRes] = await Promise.all([
       fetch('/api/memories/stats'),
       fetch('/api/overview'),
@@ -185,7 +195,7 @@ export async function loadMemStats() {
       <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">${t('memories.stat.vectors_pct', { pct: embPct })}</div></div>
       <div class="stat-card"><div class="stat-value">${artifactCount}</div><div class="stat-label">${t('memories.stat.artifacts')}</div></div>
       <div class="stat-card" title="${t('memories.stat.import_title')}"><div class="stat-value" style="color:#39FF14">${importCount}</div><div class="stat-label">${t('memories.stat.import')}</div></div>
-      <button class="btn" data-variant="secondary" data-size="compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
+      <button class="btn" data-variant="secondary" data-size="compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center" ${_canWriteMemories ? '' : 'disabled'}>${t('memories.stat.vectors_btn')}</button>
     `
     document.getElementById('memBackfillBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('memBackfillBtn')
@@ -204,6 +214,11 @@ export async function loadMemStats() {
 
 export async function loadMemories() {
   if (currentMemTier === 'log' || currentMemTier === 'graph') return
+  _canWriteMemories = await can('memories:write')
+  document.getElementById('memAddBtn')?.toggleAttribute('hidden', !_canWriteMemories)
+  document.getElementById('memImportOpenBtn')?.toggleAttribute('hidden', !_canWriteMemories)
+  document.getElementById('saveMemBtn')?.toggleAttribute('disabled', !_canWriteMemories)
+  document.getElementById('memImportSaveBtn')?.toggleAttribute('disabled', !_canWriteMemories)
   const q = memSearchInput.value.trim()
   const agent = document.getElementById('memAgentFilter').value
   const searchMode = document.getElementById('memSearchMode')?.value || 'hybrid'
@@ -289,6 +304,7 @@ function renderMemories(memories, staleIds = new Set()) {
 
     // Delete
     const delBtn = item.querySelector('[data-variant="danger"]')
+    if (!_canWriteMemories) delBtn.disabled = true
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
       if (!confirm('Biztosan torlod ezt az emleket?')) return
@@ -2006,7 +2022,7 @@ document.getElementById('memImportOpenBtn').addEventListener('click', () => {
   memImportResult.hidden = true
   memImportSaveBtn.querySelector('.btn-text').hidden = false
   memImportSaveBtn.querySelector('.btn-loading').hidden = true
-  memImportSaveBtn.disabled = false
+  memImportSaveBtn.disabled = !_canWriteMemories
 
   // Populate agent dropdown from existing agents
   const importAgentSel = document.getElementById('memImportAgent')
