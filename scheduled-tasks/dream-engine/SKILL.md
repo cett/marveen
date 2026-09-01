@@ -1,7 +1,7 @@
 ---
 name: dream-engine
 description: Éjszakai analízis-loop az aznapi memóriákról, naplóról és kanban-állapotról. Generál 4 priorizált akció-javaslatot reggelre.
-last_synced: 2026-08-28
+last_synced: 2026-09-01
 # last_synced konvenció: lásd scheduled-tasks/reggeli-napindito/SKILL.md
 ---
 
@@ -11,7 +11,7 @@ A cél: az aznapi tudást átkonszolidálni és reggelre (07:30 Reggeli Napindí
 
 ## Mit kell csinálnod
 
-Generálj egy `{{INSTALL_DIR}}/DREAM.md` fájlt az alábbi 5 bucket alapján. A formátum a fájl alján van.
+Az öt bucket kimenetét írd a workspace_docs API-ba (`doc_key: "dream/YYYY-MM-DD"`). A formátum és az API-hívás a fájl alján van.
 
 ### Bucket 1 — 💡 Skill-javaslatok (flotta-szintű)
 
@@ -79,7 +79,7 @@ Hetente 1-2 alkalommal (NEM minden éjszaka — kerüljük a zajos napi javaslat
 - Recent activity (utolsó 90 napban commit)
 - README clarity (skill mit csinál, hogyan kell telepíteni)
 
-Limitáció: ha az utolsó 7 napban már volt ajánlás (nézd a DREAM.md utolsó 7 napos archívumát vagy egy `external-ops-last-run` markerfile-t), skip-eld.
+Limitáció: ha az utolsó 7 napban már volt ajánlás (keresd a workspace_docs-ban az elmúlt 7 nap `dream/YYYY-MM-DD` doc_key-jeit), skip-eld.
 
 Output (max 1 ajánlás): repo URL + 1 mondat indok hogy MIÉRT releváns {{OWNER_NAME}}nak (figyelembe véve: AI tartalomgyártás, magyar piac, fejlesztési flotta menedzsment, marketing).
 
@@ -116,10 +116,12 @@ Pinned default (mindig védett): claude-video, frontend-design, docx, skill-crea
 
 Output: 0-3 javaslat: "skill <név> antikvált (utolsó használat >30 nap), törlés vagy frissítés javasolt".
 
-## Output formátum (DREAM.md)
+## Output formátum és workspace_docs írás
+
+Az öt bucket kimenetét állítsd össze az alábbi Markdown struktúra szerint, majd írd workspace_docs-ba:
 
 ```markdown
-# 💭 Dream Engine — 2026-05-12 02:07
+# 💭 Dream Engine — YYYY-MM-DD 02:07
 
 ## 💡 Skill-javaslatok
 - (vagy "Nincs új javaslat")
@@ -128,20 +130,50 @@ Output: 0-3 javaslat: "skill <név> antikvált (utolsó használat >30 nap), tö
 346 / 346 vektorizált, 5 hot→cold mozgatva, 0 duplikátum.
 
 ## 🎯 Top-3 holnapi javaslat
-1. <project>: <akció> — <indok>
+1. <project>: <akció> -- <indok>
 2. ...
 3. ...
 
 ## 🌐 External opportunity
-- (vagy "Skip — heti limit elérte" / "Nincs releváns új repo")
+- (vagy "Skip -- heti limit elérte" / "Nincs releváns új repo")
 
 ## 🛠 Skill-flotta health
 - (vagy "Minden skill aktív vagy pinned")
+
+*{{BOT_NAME}}, 02:XX -- most már alszom én is.*
+```
+
+Workspace_docs írás (upsert -- ugyanaznap újrafuttatva felülírja):
+
+```python
+import json, urllib.request, datetime
+
+TOKEN = open("{{INSTALL_DIR}}/store/.dashboard-token").read().strip()
+DATE = datetime.date.today().strftime("%Y-%m-%d")
+
+# content: a fenti Markdown az öt bucket valódi kimenetével kitöltve
+payload = json.dumps({
+    "agent_id": "jarvis",
+    "doc_key": f"dream/{DATE}",
+    "title": f"Dream Engine {DATE}",
+    "content": content,
+    "type": "notes",
+    "content_type": "text"
+})
+req = urllib.request.Request(
+    "http://localhost:{{WEB_PORT}}/api/workspace",
+    data=payload.encode(),
+    headers={"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"},
+    method="POST"
+)
+with urllib.request.urlopen(req) as r:
+    resp = json.loads(r.read().decode())
+    print(f"dream/{DATE} workspace doc saved: id={resp.get('id')}")
 ```
 
 ## Szabályok
 
-- NE küldj üzenetet a csatornára. A DREAM.md a reggeli napindítóból kerül kiküldésre (07:30).
-- A `Bash` és SQL műveletek mind helyiek — semmilyen external API hívás (kivéve az Ollama embedding ha kell).
-- Ha akadály van (pl. DB lock, missing embedding model), írd be a DREAM.md végére `## ⚠️ Hibák` szekciót — reggel látom.
-- Befejezésként, írd a DREAM.md végére: `*{{BOT_NAME}}, 02:XX -- most már alszom én is.*`
+- NE küldj üzenetet a csatornára. A workspace doc tartalmát a reggeli napindítóból olvassák be (07:30).
+- A `Bash` és SQL műveletek mind helyiek -- semmilyen external API hívás (kivéve az Ollama embedding ha kell).
+- Ha akadály van (pl. DB lock, missing embedding model), a workspace doc tartalma végén adj hozzá `## ⚠️ Hibák` szekciót -- reggel látom.
+- Befejezésként a content utolsó sora legyen: `*{{BOT_NAME}}, 02:XX -- most már alszom én is.*`

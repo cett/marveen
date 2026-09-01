@@ -58,6 +58,8 @@ vi.mock('../db.js', () => ({
   }),
   backfillEmbeddings: () => Promise.resolve(),
   initDatabase: () => {},
+  listAllSkills: vi.fn().mockReturnValue([]),
+  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
 }))
 
 vi.mock('../web/agent-config.js', () => ({
@@ -359,5 +361,94 @@ describe('importFleet: avatarExt traversal rejected', () => {
     expect('dryRun' in result).toBe(true)
     const errors = (result as any).errors as string[]
     expect(errors.some(e => e.includes('avatarExt') && e.includes('testbot'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Skills are read from / written to SQL, not the filesystem.
+// ---------------------------------------------------------------------------
+
+describe('exportFleet: skills come from SQL, not the filesystem', () => {
+  it('global skills field is built from listAllSkills() global/* rows', async () => {
+    const { listAllSkills } = await import('../db.js')
+    ;(listAllSkills as any).mockReturnValue([
+      { id: 'global/my-skill', name: 'my-skill', description: 'desc', content: '# My Skill', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'agent/other/ignored', name: 'ignored', description: '', content: 'x', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'global/b2b-skill', name: 'b2b-skill', description: '', content: 'y', tenant_id: 'acme', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },
+    ])
+
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    const result = exportFleet()
+    const fleet = JSON.parse(result.data)
+
+    // Only the fleet-tenant global/* row is included -- the agent/* row and the
+    // non-fleet tenant row are excluded.
+    expect(fleet.skills).toEqual([{ name: 'my-skill', skillMd: '# My Skill' }])
+  })
+})
+
+describe('importFleet: skill import writes SQL rows (not just files)', () => {
+  it('apply upserts a global skill via seedSkillIfAbsent with a global/<name> id', async () => {
+    const { seedSkillIfAbsent } = await import('../db.js')
+    ;(seedSkillIfAbsent as any).mockClear()
+
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const fleetJson = JSON.stringify({
+      schemaVersion: 1,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      sourceHost: 'source',
+      agents: [],
+      skills: [{ name: 'my-skill', skillMd: '---\ndescription: A test skill\n---\n# My Skill' }],
+      scheduledTasks: [], memories: [], dailyLogs: [],
+      kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+      ideaBox: { ideas: [], comments: [], statusLog: [] },
+      dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+    })
+
+    importFleet(fleetJson, { apply: true })
+
+    const call = (seedSkillIfAbsent as any).mock.calls.find((c: any[]) => c[0]?.id === 'global/my-skill')
+    expect(call).toBeDefined()
+    expect(call[0]).toMatchObject({
+      id: 'global/my-skill',
+      name: 'my-skill',
+      description: 'A test skill',
+      content: '---\ndescription: A test skill\n---\n# My Skill',
+      tenant_id: 'fleet',
+      is_global: true,
+    })
+  })
+
+  it('apply upserts a per-agent skill via seedSkillIfAbsent with an agent/<name>/<skill> id', async () => {
+    const { seedSkillIfAbsent } = await import('../db.js')
+    ;(seedSkillIfAbsent as any).mockClear()
+
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const fleetJson = JSON.stringify({
+      schemaVersion: 1,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      sourceHost: 'source',
+      agents: [{
+        name: 'testbot',
+        config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {},
+        agentSkills: [{ name: 'agent-skill', skillMd: '# Agent Skill' }],
+      }],
+      skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+      kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+      ideaBox: { ideas: [], comments: [], statusLog: [] },
+      dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+    })
+
+    importFleet(fleetJson, { apply: true })
+
+    const call = (seedSkillIfAbsent as any).mock.calls.find((c: any[]) => c[0]?.id === 'agent/testbot/agent-skill')
+    expect(call).toBeDefined()
+    expect(call[0]).toMatchObject({
+      id: 'agent/testbot/agent-skill',
+      name: 'agent-skill',
+      content: '# Agent Skill',
+      tenant_id: 'fleet',
+      is_global: false,
+    })
   })
 })
