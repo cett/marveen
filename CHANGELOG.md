@@ -239,6 +239,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- `sharp` bumped from 0.34.5 to 0.35.4 via npm override, resolving four HIGH-severity libvips CVEs (CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591 / GHSA-f88m-g3jw-g9cj) inherited transitively through `@huggingface/transformers`
 - restore modal visibility on open
 - handoff freshness reads workspace_docs, not just file mtime
 - also clear in-memory sessionToken on login success
