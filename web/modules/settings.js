@@ -452,13 +452,16 @@ async function renderAuthSessions() {
 function renderTokenModePanel(body) {
   body.innerHTML =
     `<p class="auth-muted">${t('auth.card.token_mode')}</p>` +
-    `<button class="btn-secondary auth-signin-btn" id="authTokenModeSignIn">${t('auth.card.switch_to_login')}</button>`
+    `<div class="auth-actions">` +
+      `<button class="btn" data-variant="secondary" data-size="compact" id="authTokenModeSignIn">${t('auth.card.switch_to_login')}</button>` +
+    `</div>`
   const btn = body.querySelector('#authTokenModeSignIn')
   if (btn) {
-    btn.addEventListener('click', () => {
-      try { localStorage.removeItem('marveen-dashboard-token') } catch { /* storage blocked */ }
-      window.showLoginOverlay?.()
-    })
+    // Token cleared only on successful login (handled by the login-success
+    // handler in app.js). Opening the overlay here without pre-clearing means
+    // a cancelled or failed login leaves the token intact and the user is not
+    // accidentally locked out.
+    btn.addEventListener('click', () => { window.showLoginOverlay?.() })
   }
 }
 
