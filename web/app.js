@@ -184,7 +184,14 @@ function mainAgentId() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, password }),
         })
-        if (r.ok) { window.location.reload(); return }
+        if (r.ok) {
+          // Clear the stored bearer token so the session cookie wins on subsequent
+          // requests. Without this the fetch-patch injects the token on every /api/
+          // call and the bearer lane (auth-gate step 2) beats the session cookie
+          // (step 6), causing role=null responses even after login.
+          try { localStorage.removeItem(TOKEN_KEY) } catch { /* storage blocked */ }
+          window.location.reload(); return
+        }
         if (r.status === 429) {
           let retry = 0
           try { retry = (await r.json()).retry_after_s || 0 } catch { /* ignore */ }
