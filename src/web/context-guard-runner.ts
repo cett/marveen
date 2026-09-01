@@ -18,6 +18,7 @@ import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { createAgentMessage } from '../db.js'
+import { getWorkspaceDocUpdatedAtMs } from '../workspace-store.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -98,7 +99,18 @@ function handoffPathFor(name: string): string {
   return join(workingDirFor(name), 'HANDOFF.md')
 }
 
+// doc_key convention the /handoff skill writes under (SKILL.md step 3):
+// one rolling row per agent in workspace_docs, type='notes'.
+const HANDOFF_DOC_KEY = 'handoff'
+
+// Freshness now prefers the SQL write the /handoff skill makes alongside the
+// file (workspace_docs.updated_at survives a session that wrote via a
+// different cwd/config-dir than workingDirFor() assumes); the file mtime is
+// kept as a fallback for a handoff written before an agent's skill picked up
+// the SQL step, so freshness detection does not go blind mid-rollout.
 function handoffMtime(name: string): number | null {
+  const sqlMtime = getWorkspaceDocUpdatedAtMs(name, HANDOFF_DOC_KEY)
+  if (sqlMtime !== null) return sqlMtime
   try { return statSync(handoffPathFor(name)).mtimeMs } catch { return null }
 }
 
