@@ -132,6 +132,21 @@ describe('tryHandleSkills', () => {
     expect(out.body.name).toBe('my-skill')
   })
 
+  it('GET /api/skills/:name derives agents coverage from SQL agent/* rows, not the filesystem', async () => {
+    const { listAllSkills } = await import('../db.js')
+    ;(listAllSkills as any).mockReturnValueOnce([
+      { id: 'agent/known-agent/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'agent/other-agent/other-skill', name: 'other-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'global/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },
+    ])
+    const { ctx, out } = makeCtx('GET', '/api/skills/my-skill')
+    expect(await tryHandleSkills(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    // Only the agent/*/my-skill row matches -- the global/my-skill row itself
+    // and the unrelated other-skill row are excluded.
+    expect(out.body.agents).toEqual(['known-agent'])
+  })
+
   it('GET /api/skills/:name returns 404 for unknown skill', async () => {
     const { ctx, out } = makeCtx('GET', '/api/skills/nonexistent-skill')
     expect(await tryHandleSkills(ctx)).toBe(true)

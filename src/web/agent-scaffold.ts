@@ -1069,10 +1069,11 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 - Egyéni: a te munkakönyvtárad .claude/skills/ mappája
 
 ### Automatikus skill generálás
-Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
+Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre skill-t az API-n:
 
-mkdir -p ~/.claude/skills/SKILL-NEV
-A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
+PUT /api/skills/sql/:id (ahol az id pl. "global/skill-nev" vagy "agent/AGENT_ID/skill-nev")
+Body: { name, description, content } -- a content YAML frontmatter + szekciók (Mikor használd, Eljárás, Buktatók, Ellenőrzés).
+A 716-F hook fallbackként megmarad: ha fájlt írsz, az automatikusan SQL-be kerül.
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:

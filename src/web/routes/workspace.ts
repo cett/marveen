@@ -40,12 +40,17 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
   // ── GET /api/workspace — list ───────────────────────────────────────────────
   if (path === '/api/workspace' && method === 'GET') {
     const tenantId = effectiveTenant(ctx)
+    const limitRaw = url.searchParams.get('limit')
     const filter = {
-      agentId:     url.searchParams.get('agent') ?? undefined,
-      tenantId:    tenantId ?? undefined,
-      type:        (url.searchParams.get('type') as WorkspaceDocType | null) ?? undefined,
-      contentType: (url.searchParams.get('content_type') as WorkspaceContentType | null) ?? undefined,
-      taskRef:     url.searchParams.get('task_ref') ?? undefined,
+      agentId:      url.searchParams.get('agent') ?? undefined,
+      tenantId:     tenantId ?? undefined,
+      type:         (url.searchParams.get('type') as WorkspaceDocType | null) ?? undefined,
+      contentType:  (url.searchParams.get('content_type') as WorkspaceContentType | null) ?? undefined,
+      taskRef:      url.searchParams.get('task_ref') ?? undefined,
+      docKey:       url.searchParams.get('doc_key') ?? undefined,
+      docKeyPrefix: url.searchParams.get('doc_key_prefix') ?? undefined,
+      limit:        limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : undefined,
+      metaOnly:     url.searchParams.get('meta_only') === 'true',
     }
     const docs = listWorkspaceDocs(filter)
     json(res, { items: docs, total: docs.length })

@@ -266,6 +266,32 @@ describe('tryHandleSkills', () => {
     })
   })
 
+  // Regression: GET /api/skills/sql was previously shadowed by the generic
+  // /api/skills/:name handler (globalSkillDetailMatch), causing a 404 instead of
+  // reaching the SQL-skills block. The regex now excludes 'sql' as a segment.
+  describe('GET /api/skills/sql (SQL-skills route, not shadowed)', () => {
+    function makeAdminCtx(method: string, path: string) {
+      const { ctx, out } = makeCtx(method, path)
+      ;(ctx as any).role = 'admin'
+      ;(ctx as any).tenantId = null
+      return { ctx, out }
+    }
+
+    it('GET /api/skills/sql reaches SQL handler and returns 200 with skills array', async () => {
+      const { ctx, out } = makeAdminCtx('GET', '/api/skills/sql')
+      expect(await tryHandleSkills(ctx)).toBe(true)
+      expect(out.status).toBe(200)
+      expect(out.body).toHaveProperty('skills')
+      expect(Array.isArray(out.body.skills)).toBe(true)
+    })
+
+    it('GET /api/skills/sql does NOT return 404 (was shadowed before fix)', async () => {
+      const { ctx, out } = makeAdminCtx('GET', '/api/skills/sql')
+      await tryHandleSkills(ctx)
+      expect(out.status).not.toBe(404)
+    })
+  })
+
   describe('unmatched route', () => {
     it('returns false for unmatched route', async () => {
       const { ctx } = makeCtx('GET', '/api/other')
