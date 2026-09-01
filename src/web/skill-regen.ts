@@ -22,7 +22,7 @@ import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN } from '../config.js'
-import { listAllSkills } from '../db.js'
+import { listAllSkills, getSkill } from '../db.js'
 
 export interface RegenResult {
   enabled: boolean
@@ -112,35 +112,81 @@ export function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): Re
       continue
     }
 
-    // Idempotent: skip if on-disk content already matches SQL.
-    if (existsSync(targetPath)) {
-      let onDisk = ''
-      try { onDisk = readFileSync(targetPath, 'utf-8') } catch { /* treat as missing */ }
-      if (onDisk === row.content) {
-        skipped++
-        continue
-      }
-    }
-
-    if (dryRun) {
-      logger.info({ id: row.id, path: targetPath }, 'skill-regen [dry-run]: would write')
-      written++
-      continue
-    }
-
-    try {
-      const dir = targetPath.replace(/\/SKILL\.md$/, '')
-      mkdirSync(dir, { recursive: true })
-      atomicWriteFileSync(targetPath, row.content)
-      logger.info({ id: row.id, path: targetPath }, 'skill-regen: wrote')
-      written++
-    } catch (err) {
-      logger.error({ err, id: row.id, path: targetPath }, 'skill-regen: write failed')
-      errors++
-    }
+    const outcome = writeSkillFileToDisk(row.id, targetPath, row.content, dryRun)
+    if (outcome === 'written') written++
+    else if (outcome === 'skipped') skipped++
+    else errors++
   }
 
   return { enabled: true, written, skipped, errors }
+}
+
+/**
+ * Shared write for one (id, path, content) triple: skip if the on-disk
+ * content already matches (idempotent), otherwise atomic-write it. Used by
+ * both the bulk startup regen and regenSingleSkillFile() below so the two
+ * never drift apart.
+ */
+function writeSkillFileToDisk(id: string, targetPath: string, content: string, dryRun: boolean): 'written' | 'skipped' | 'error' {
+  if (existsSync(targetPath)) {
+    let onDisk = ''
+    try { onDisk = readFileSync(targetPath, 'utf-8') } catch { /* treat as missing */ }
+    if (onDisk === content) return 'skipped'
+  }
+
+  if (dryRun) {
+    logger.info({ id, path: targetPath }, 'skill-regen [dry-run]: would write')
+    return 'written'
+  }
+
+  try {
+    const dir = targetPath.replace(/\/SKILL\.md$/, '')
+    mkdirSync(dir, { recursive: true })
+    atomicWriteFileSync(targetPath, content)
+    logger.info({ id, path: targetPath }, 'skill-regen: wrote')
+    return 'written'
+  } catch (err) {
+    logger.error({ err, id, path: targetPath }, 'skill-regen: write failed')
+    return 'error'
+  }
+}
+
+export interface SingleRegenResult {
+  written: boolean
+  skipped: boolean
+  reason: 'disabled' | 'not_found' | 'not_file_backed' | 'unrecognized_id' | 'content_equal' | 'write_error' | null
+}
+
+/**
+ * Regenerate a single skill's on-disk SKILL.md from its current SQL row,
+ * immediately after a dashboard write -- Phase 1 of the file->SQL-only
+ * migration (kanban 3f52d485). Callers should invoke this right after every
+ * createSkill()/updateSkill() so an edit reaches disk (and therefore the
+ * Claude Code loader) without waiting for the next startup regen.
+ *
+ * A no-op (skipped, no warning logged) for skills that were never file-backed
+ * to begin with -- tenant-scoped B2B skills (tenant_id !== 'fleet') have no
+ * canonical on-disk location, so every dashboard write reaching this
+ * function for one of those is expected, not an error.
+ *
+ * @param forceEnabled Bypass the SKILL_SQL_REGEN kill-switch (CLI/test use only).
+ */
+export function regenSingleSkillFile(id: string, forceEnabled = false): SingleRegenResult {
+  if (!SKILL_SQL_REGEN && !forceEnabled) {
+    return { written: false, skipped: true, reason: 'disabled' }
+  }
+
+  const row = getSkill(id)
+  if (!row) return { written: false, skipped: false, reason: 'not_found' }
+  if (row.tenant_id !== 'fleet') return { written: false, skipped: true, reason: 'not_file_backed' }
+
+  const targetPath = resolveSkillPath(id)
+  if (!targetPath) return { written: false, skipped: false, reason: 'unrecognized_id' }
+
+  const outcome = writeSkillFileToDisk(id, targetPath, row.content, false)
+  if (outcome === 'written') return { written: true, skipped: false, reason: null }
+  if (outcome === 'skipped') return { written: false, skipped: true, reason: 'content_equal' }
+  return { written: false, skipped: false, reason: 'write_error' }
 }
 
 /**

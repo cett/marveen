@@ -11,6 +11,7 @@ import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
+import { regenSingleSkillFile } from '../skill-regen.js'
 import type { RouteContext } from './types.js'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
@@ -649,6 +650,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const id = `${tenantId}-${slug}`
     if (getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
     const row = createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null })
+    // Phase 1 of the file->SQL-only migration (kanban 3f52d485): push this
+    // write to disk immediately rather than waiting for the next startup
+    // regen. No-op (skipped) for non-fleet skills and while SKILL_SQL_REGEN
+    // is off.
+    regenSingleSkillFile(id)
     json(res, { ok: true, skill: row }, 201)
     return true
   }
@@ -678,6 +684,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     const updated = updateSkill(id, parsed)
+    regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })
     return true
   }
