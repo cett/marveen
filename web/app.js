@@ -185,10 +185,13 @@ function mainAgentId() {
           body: JSON.stringify({ username, password }),
         })
         if (r.ok) {
-          // Clear the stored bearer token so the session cookie wins on subsequent
-          // requests. Without this the fetch-patch injects the token on every /api/
-          // call and the bearer lane (auth-gate step 2) beats the session cookie
-          // (step 6), causing role=null responses even after login.
+          // Clear both the in-memory token and localStorage so the fetch-patch
+          // stops injecting a Bearer on subsequent /api/ calls. Without this,
+          // the bearer lane (auth-gate step 2) beats the session cookie (step 6)
+          // and role=null is returned even after login. sessionToken is the
+          // in-memory copy used first (line 97); localStorage is the persisted
+          // fallback -- both must be cleared.
+          sessionToken = ''
           try { localStorage.removeItem(TOKEN_KEY) } catch { /* storage blocked */ }
           window.location.reload(); return
         }
