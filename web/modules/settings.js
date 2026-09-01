@@ -451,7 +451,15 @@ async function renderAuthSessions() {
 
 function renderTokenModePanel(body) {
   body.innerHTML =
-    `<p class="auth-muted">${t('auth.card.token_mode')}</p>`
+    `<p class="auth-muted">${t('auth.card.token_mode')}</p>` +
+    `<button class="btn-secondary auth-signin-btn" id="authTokenModeSignIn">${t('auth.card.switch_to_login')}</button>`
+  const btn = body.querySelector('#authTokenModeSignIn')
+  if (btn) {
+    btn.addEventListener('click', () => {
+      try { localStorage.removeItem('marveen-dashboard-token') } catch { /* storage blocked */ }
+      window.showLoginOverlay?.()
+    })
+  }
 }
 
 // Dismissible setup banner: shown only when the operator is authed via the token
