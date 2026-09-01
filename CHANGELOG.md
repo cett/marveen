@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- `sharp` bumped from 0.34.5 to 0.35.4 via npm override, resolving four HIGH-severity libvips CVEs (CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591 / GHSA-f88m-g3jw-g9cj) inherited transitively through `@huggingface/transformers`
 - `deleteTenant()` cascade now includes the `schedules` table: tenant-scoped schedules are deleted on hard tenant removal; fleet schedules (`tenant_id IS NULL`) are unaffected
 - **[API]** `PUT /api/memories/:id` returns `400 parse_error` on invalid JSON body and `400 required` when `content` is absent or whitespace-only; previously threw unhandled exception (500)
 
