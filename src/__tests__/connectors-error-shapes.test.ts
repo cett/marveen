@@ -23,7 +23,7 @@ vi.mock('node:fs', async (importOriginal) => {
           { id: 'test-connector', type: 'local', command: 'npx', args: ['test-pkg'], env: {} },
         ])
       }
-      return orig.readFileSync(p, _enc as BufferEncoding | undefined)
+      return _enc != null ? orig.readFileSync(p, _enc as BufferEncoding) : orig.readFileSync(p)
     }),
     readdirSync: vi.fn().mockReturnValue([]),
     statSync: vi.fn().mockReturnValue({ isDirectory: () => false }),
