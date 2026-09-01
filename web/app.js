@@ -211,6 +211,9 @@ function mainAgentId() {
     setTimeout(() => userEl.focus(), 50)
   }
 
+  // Expose so settings.js can trigger the overlay (e.g., from token-mode panel).
+  window.showLoginOverlay = showLoginOverlay
+
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
   // The user pastes the access token (the value after ?token= in the server's
   // startup URL, or from the dashboard Settings / mobile-login QR); it is saved
