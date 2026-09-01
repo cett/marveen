@@ -126,9 +126,13 @@ function statusPayload(ctx: RouteContext) {
   const method = authenticated ? auth!.kind : null
   const user = auth?.kind === 'session' ? auth.user ?? null : null
   const device = auth?.kind === 'device' ? auth.device ?? null : null
-  // role and tenant_id are exposed for session-auth callers so the dashboard can
-  // distinguish a global admin (role=admin, tenant_id=null) from a tenant-scoped user.
-  const role = auth?.kind === 'session' ? (ctx.role ?? null) : null
+  // role and tenant_id are exposed so the dashboard can distinguish a global admin
+  // (role=admin, tenant_id=null) from a tenant-scoped user.
+  // The legacy file-token (kind='token') carries admin+global semantics by design;
+  // exposing that here lets the frontend apply the same role-gating as for session logins.
+  const role = auth?.kind === 'session' ? (ctx.role ?? null)
+    : auth?.kind === 'token' ? 'admin'
+    : null
   const tenant_id = auth?.kind === 'session' ? (ctx.tenantId !== undefined ? ctx.tenantId : null) : null
   return {
     authenticated,

@@ -470,6 +470,20 @@ async function initSidebarBrand() {
 }
 initSidebarBrand()
 
+// Reveal the B2B admin nav link as soon as auth status is known, without waiting
+// for the user to navigate to #adminB2b first (which required the hidden link).
+;(async function revealAdminNav() {
+  try {
+    const r = await fetch('/api/auth/status')
+    if (!r.ok) return
+    const auth = await r.json()
+    if (auth?.role === 'admin' && auth?.tenant_id === null) {
+      const navLink = document.getElementById('navAdminB2b')
+      if (navLink) navLink.hidden = false
+    }
+  } catch {}
+})()
+
 // In an installed (standalone) PWA, lock the zoom: iOS otherwise auto-zooms when
 // a small-text input is focused and allows stray pinch-zoom, neither of which
 // suits an app-like control panel. Left untouched in a normal browser tab so
