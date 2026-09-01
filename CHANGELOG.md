@@ -11,6 +11,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `GET /api/approvals` accepts `?tenant=<id>` for global admin callers to narrow results to a specific tenant (non-admin callers remain scoped to their own tenant)
+- **[API]** `GET /api/messages` and `GET /api/messages/threads` accept `?tenant=<id>` for global admin callers to narrow to a specific tenant's message traffic
+- Tenant selector added to Overview, Messages, and Approvals dashboard pages (visible to global admin only, mirrors the pattern already in Kanban, Memories, Recall, Schedules, and Artifacts)
+- `GET /api/overview`: artifacts and approvals activity feed now respect the `?tenant=` filter when set (previously queried globally regardless of the tenant param)
 - per-skill instant SQL->file regen on dashboard write
 - add RBAC admin UI for tokens, partner-senders, skill access
 - add doc_key/doc_key_prefix/limit/meta_only filters to GET /api/workspace
