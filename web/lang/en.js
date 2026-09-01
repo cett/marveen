@@ -785,6 +785,7 @@ window._i18n.en = {
   'settings.desc.BB_STALE_INTERACTIVE_MIN':     'Blackboard stale threshold (minutes) for interactive-tier agents (multi-step interactive agents). Default: 90 minutes.',
   'settings.desc.BB_STALE_SHORT_RUNNING_MIN':   'Blackboard stale threshold (minutes) for short-running-tier agents (heartbeat/scheduled, done in minutes). Default: 15 minutes.',
   'settings.desc.BB_STALE_DEFAULT_MIN':         'Blackboard stale threshold (minutes) for unknown (default) tier agents. Conservative fallback. Default: 60 minutes.',
+  'settings.desc.WORKSPACE_DOCS_TTL_DAYS':      'Expiry for workspace documents (workspace_docs), in days -- applies only to docs with no task_ref or whose linked kanban card is done; binary content is exempt. Default: 14 days.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
@@ -1750,6 +1751,7 @@ window._i18n.en = {
   'auth.card.logout':             'Log out',
   'auth.card.active_sessions':    'Active sessions',
   'auth.card.token_mode':         'This session signed in with the access token (the Bridge and fleet tools open with their own key, so they never ask for a password). Your password login is still active and works: use it any time on the browser sign-in page.',
+  'auth.card.switch_to_login':    'Sign in with password',
 
   'auth.devices.title':            'Device keys',
   'auth.devices.desc':             'A per-device key for the Bridge or a phone: revocable on its own, the shared token stays unchanged. The key is shown only at creation.',

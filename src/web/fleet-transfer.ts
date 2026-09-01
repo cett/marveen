@@ -22,7 +22,7 @@ import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
-import { getDb, backfillEmbeddings } from '../db.js'
+import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent } from '../db.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -448,16 +448,29 @@ function safeReadBase64(path: string): string | null {
   try { return readFileSync(path).toString('base64') } catch { return null }
 }
 
-function listSkillsInDir(dir: string): SkillExport[] {
-  if (!existsSync(dir)) return []
-  const skills: SkillExport[] = []
-  for (const entry of readdirSync(dir)) {
-    const skillMdPath = join(dir, entry, 'SKILL.md')
-    if (existsSync(skillMdPath)) {
-      skills.push({ name: entry, skillMd: safeReadText(skillMdPath) })
-    }
-  }
-  return skills
+function extractSkillDescription(content: string): string {
+  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
+  if (!fmMatch) return ''
+  const line = fmMatch[1].match(/^description:\s*(.+)/im)
+  if (!line) return ''
+  return line[1].trim().replace(/^["']|["']$/g, '')
+}
+
+// Skills are stored in SQL and mirrored to disk as the generated cache the
+// Claude Code loader reads. Export from SQL so a snapshot reflects the latest
+// content even if the on-disk mirror hasn't been regenerated yet.
+function listGlobalSkillsFromSQL(): SkillExport[] {
+  const prefix = 'global/'
+  return listAllSkills()
+    .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
+    .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
+}
+
+function listAgentSkillsFromSQL(agentId: string): SkillExport[] {
+  const prefix = `agent/${agentId}/`
+  return listAllSkills()
+    .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
+    .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
 }
 
 // ---------------------------------------------------------------------------
@@ -581,7 +594,7 @@ function exportAgent(
     channelsAccess,
     avatar,
     avatarExt,
-    agentSkills: listSkillsInDir(join(claudeDir, 'skills')),
+    agentSkills: listAgentSkillsFromSQL(name),
   }
 }
 
@@ -653,7 +666,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
   const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
-  const skills = listSkillsInDir(join(homedir(), '.claude', 'skills'))
+  const skills = listGlobalSkillsFromSQL()
   const scheduledTasks = exportScheduledTasks()
 
   // Export ALL memories and daily_logs across every agent_id
@@ -962,6 +975,23 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
     const skillDir = safeJoin(claudeDir, 'skills', skill.name)
     trackedMkdir(skillDir, tracker)
     trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
+    // Dual-write into SQL (the source of truth) alongside the file the Claude
+    // Code loader needs -- mirrors the existing zip-import precedent
+    // (routes/skills.ts). Unconditional, not gated by SKILL_SQL_REGEN: a fresh
+    // install may still have the kill-switch off, and the loader needs the
+    // file regardless, so this can't rely on regen to materialize it.
+    try {
+      seedSkillIfAbsent({
+        id: `agent/${agent.name}/${skill.name}`,
+        name: skill.name,
+        description: extractSkillDescription(skill.skillMd),
+        content: skill.skillMd,
+        tenant_id: 'fleet',
+        is_global: false,
+      })
+    } catch (sqlErr) {
+      logger.warn({ agent: agent.name, skill: skill.name, err: sqlErr }, 'Fleet import: failed to upsert agent skill into SQL')
+    }
   }
 }
 
@@ -1058,6 +1088,19 @@ export function importFleet(
       const skillDir = safeJoin(globalSkillsDir, skill.name)
       trackedMkdir(skillDir, tracker)
       trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
+      // Dual-write into SQL -- see the matching comment in writeAgentFiles().
+      try {
+        seedSkillIfAbsent({
+          id: `global/${skill.name}`,
+          name: skill.name,
+          description: extractSkillDescription(skill.skillMd),
+          content: skill.skillMd,
+          tenant_id: 'fleet',
+          is_global: true,
+        })
+      } catch (sqlErr) {
+        logger.warn({ skill: skill.name, err: sqlErr }, 'Fleet import: failed to upsert global skill into SQL')
+      }
     }
 
     // 3. Scheduled tasks (all paused: enabled=false already set at export time)

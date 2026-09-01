@@ -451,7 +451,18 @@ async function renderAuthSessions() {
 
 function renderTokenModePanel(body) {
   body.innerHTML =
-    `<p class="auth-muted">${t('auth.card.token_mode')}</p>`
+    `<p class="auth-muted">${t('auth.card.token_mode')}</p>` +
+    `<div class="auth-actions">` +
+      `<button class="btn" data-variant="secondary" data-size="compact" id="authTokenModeSignIn">${t('auth.card.switch_to_login')}</button>` +
+    `</div>`
+  const btn = body.querySelector('#authTokenModeSignIn')
+  if (btn) {
+    // Token cleared only on successful login (handled by the login-success
+    // handler in app.js). Opening the overlay here without pre-clearing means
+    // a cancelled or failed login leaves the token intact and the user is not
+    // accidentally locked out.
+    btn.addEventListener('click', () => { window.showLoginOverlay?.() })
+  }
 }
 
 // Dismissible setup banner: shown only when the operator is authed via the token

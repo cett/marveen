@@ -233,7 +233,8 @@ export type GuardPhase = 'idle' | 'await-handoff' | 'await-ready' | 'cooldown'
 
 export interface GuardState {
   phase: GuardPhase
-  /** HANDOFF.md mtime (ms) when the handoff was requested; null = file absent. */
+  /** Handoff freshness (ms, see GuardInputs.handoffMtime) when the handoff
+   *  was requested; null = no handoff (SQL row or file) existed yet. */
   handoffMtimeAtRequest: number | null
   /** Phase deadline (ms): await-handoff → force-restart at; await-ready → give-up at. */
   deadlineMs: number
@@ -282,7 +283,9 @@ export interface GuardInputs {
   paneBusy: boolean
   /** Session is ready to receive a prompt (post-restart readiness). */
   sessionReady: boolean
-  /** Current HANDOFF.md mtime (ms), or null when the file does not exist. */
+  /** Freshness of the current handoff (ms): workspace_docs.updated_at for the
+   *  agent's (doc_key='handoff') row when present, else the HANDOFF.md file
+   *  mtime; null when neither exists. */
   handoffMtime: number | null
   /** Pane footer shows context saturation ("100% context used" & co). */
   paneSaturated: boolean

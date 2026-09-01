@@ -2,20 +2,19 @@
 //
 // Extracted from the inline gate that used to live in src/web.ts so the
 // precedence is unit-testable (auth-gate.test.ts is the fleet-regression
-// contract). The BEARER path is checked first and is byte-for-byte unchanged:
-// every fleet curl call, notify.sh, the channels auth probe and the federation
-// wire endpoints keep working with zero change, whether or not any dashboard
-// user exists.
+// contract). Fleet API callers (curl, notify.sh, channel probes, federation
+// wire endpoints) never carry a session cookie, so bearer-only flows are
+// unaffected by the session-priority ordering below.
 //
 // Precedence (first match wins):
 //   1. Authorization: Bearer <api_tokens DB entry, valid>  -> { kind: 'token', role, tenantId }
 //   1b. Authorization: Bearer <api_tokens DB entry, expired/revoked> -> { kind: 'none' } (no fallback)
-//   2. Authorization: Bearer <file-based dashboard token>  -> { kind: 'token' } (admin+default, legacy)
-//   3. Authorization: Bearer <device key>                  -> { kind: 'device', device, deviceId }
-//   4. SSE pane-stream ?token=<dashboard token>            -> { kind: 'token' }  (path-scoped)
-//   5. SSE pane-stream ?token=<device key>                 -> { kind: 'device' } (path-scoped)
-//   6. Federation inbound token, endpoint-scoped           -> { kind: 'federation', peer }
-//   7. mv_session cookie                                   -> { kind: 'session', user }
+//   2. mv_session cookie (valid session)                   -> { kind: 'session', user, role?, tenantId? }
+//   3. Authorization: Bearer <file-based dashboard token>  -> { kind: 'token' } (admin+default, legacy)
+//   4. Authorization: Bearer <device key>                  -> { kind: 'device', device, deviceId }
+//   5. SSE pane-stream ?token=<dashboard token>            -> { kind: 'token' }  (path-scoped)
+//   6. SSE pane-stream ?token=<device key>                 -> { kind: 'device' } (path-scoped)
+//   7. Federation inbound token, endpoint-scoped           -> { kind: 'federation', peer }
 //   8. none of the above                                   -> { kind: 'none' }
 //
 // requiresAuth() is the separate "is this path gated at all" predicate: public
@@ -138,42 +137,12 @@ export function resolveAuth(
     }
   }
 
-  // 2. Legacy file-token fallback: the prod dashboard bearer (store/.dashboard-token).
-  //    This token is intentionally NOT enrolled in api_tokens to avoid prod disruption
-  //    during rollout. It retains its original admin+default-tenant semantics.
-  //    Enrolling the prod token into api_tokens is deferred to a separate task
-  //    after fleet stabilisation, with a dedicated bootstrap+rollback plan.
-  if (checkBearerToken(bearerHeader, dashboardToken)) return { kind: 'token' }
-
-  // 3. Bearer device key. Runs only after the dashboard token failed to match,
-  //    so the token lane stays byte-identical; resolveDeviceKey's prefix check
-  //    makes this a no-op for every non-key bearer (and with zero device_keys
-  //    rows the whole step never resolves -- fresh installs unaffected).
-  if (bearerMatch) {
-    const dk = resolveDeviceKey(bearerValue!)
-    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
-  }
-
-  // 4. SSE pane stream ?token= (EventSource cannot set an Authorization header):
-  //    dashboard token first, then device key -- a device must be able to open
-  //    the pane stream too, or the dashboard would look half-broken on it.
-  if (isSsePaneStream(path, method)) {
-    const qtoken = url.searchParams.get('token') ?? ''
-    if (checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
-    const dk = resolveDeviceKey(qtoken)
-    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
-  }
-
-  // 5. Scoped per-peer federation tokens: valid ONLY on the two wire endpoints,
-  //    and only while federation is enabled (identifyFederationCaller fail-closes).
-  if (isFederationWireEndpoint(path, method)) {
-    const peer = identifyFederationCaller(req.headers.authorization, checkBearerToken)
-    if (peer !== null) return { kind: 'federation', peer }
-  }
-
-  // 6. Browser-login session cookie.
-  //    When the DB is available, look up the user's role and tenant scope so the
-  //    RBAC gate can apply the correct permission set for session-login callers.
+  // 2. Browser-login session cookie -- checked before the legacy file-token so that
+  //    a logged-in session wins when both a dashboard bearer (e.g., in localStorage)
+  //    and a valid session cookie are present in the same browser request.
+  //    Fleet API callers (curl, notify.sh, channels auth probe) never carry a
+  //    session cookie, so the file-token fallback (step 3) is unaffected for them.
+  //    When the DB is available, look up role and tenant scope for RBAC.
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
     const session = resolveSession(cookieValue)
@@ -188,6 +157,40 @@ export function resolveAuth(
       }
       return { kind: 'session', user: session.username }
     }
+  }
+
+  // 3. Legacy file-token fallback: the prod dashboard bearer (store/.dashboard-token).
+  //    Only reached if no valid session cookie was found above.
+  //    This token is intentionally NOT enrolled in api_tokens to avoid prod disruption
+  //    during rollout. It retains its original admin+default-tenant semantics.
+  if (checkBearerToken(bearerHeader, dashboardToken)) return { kind: 'token' }
+
+  // 4. Bearer device key. Runs only after the dashboard token failed to match,
+  //    so the token lane stays byte-identical; resolveDeviceKey's prefix check
+  //    makes this a no-op for every non-key bearer (and with zero device_keys
+  //    rows the whole step never resolves -- fresh installs unaffected).
+  if (bearerMatch) {
+    const dk = resolveDeviceKey(bearerValue!)
+    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
+  }
+
+  // 5. SSE pane stream ?token= (EventSource cannot set an Authorization header):
+  //    dashboard token first, then device key -- a device must be able to open
+  //    the pane stream too, or the dashboard would look half-broken on it.
+  //    A browser EventSource on an authenticated session reaches step 2 above
+  //    and returns the session identity; this step handles token-only clients.
+  if (isSsePaneStream(path, method)) {
+    const qtoken = url.searchParams.get('token') ?? ''
+    if (checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
+    const dk = resolveDeviceKey(qtoken)
+    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
+  }
+
+  // 6. Scoped per-peer federation tokens: valid ONLY on the two wire endpoints,
+  //    and only while federation is enabled (identifyFederationCaller fail-closes).
+  if (isFederationWireEndpoint(path, method)) {
+    const peer = identifyFederationCaller(req.headers.authorization, checkBearerToken)
+    if (peer !== null) return { kind: 'federation', peer }
   }
 
   return { kind: 'none' }
