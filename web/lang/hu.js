@@ -1107,6 +1107,7 @@ window._i18n.hu = {
   'settings.desc.BB_STALE_INTERACTIVE_MIN':     'Blackboard stale-határ (perc) interactive tier ágenseinek (többlépéses interaktív ágensek). Alapértelmezetten 90 perc.',
   'settings.desc.BB_STALE_SHORT_RUNNING_MIN':   'Blackboard stale-határ (perc) short-running tier ágenseinek (heartbeat/ütemezett, percek alatt kész). Alapértelmezetten 15 perc.',
   'settings.desc.BB_STALE_DEFAULT_MIN':         'Blackboard stale-határ (perc) ismeretlen (default) tier ágenseinek. Konzervatív fallback. Alapértelmezetten 60 perc.',
+  'settings.desc.WORKSPACE_DOCS_TTL_DAYS':      'Munkadokumentum (workspace_docs) lejárati ideje napokban -- csak lezárt (vagy task nélküli) dokumentumokra vonatkozik, bináris tartalom kivétel. Alapértelmezetten 14 nap.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

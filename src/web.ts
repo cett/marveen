@@ -21,6 +21,7 @@ import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startBlackboardStaleSweeper } from './web/blackboard-stale-sweeper.js'
+import { startWorkspaceDocsTtlSweeper } from './web/workspace-docs-ttl-sweeper.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
 import { regenSkillFilesFromSQL } from './web/skill-regen.js'
@@ -486,6 +487,9 @@ export function startWebServer(port = 3420): http.Server {
   const blackboardStaleInterval = webOnly ? undefined : startBlackboardStaleSweeper()
   if (!webOnly) logger.info('Blackboard stale sweeper started (5min sweep)')
 
+  const workspaceDocsTtlInterval = webOnly ? undefined : startWorkspaceDocsTtlSweeper()
+  if (!webOnly) logger.info('Workspace-docs TTL sweeper started (5min sweep)')
+
   const federationPollerInterval = webOnly ? undefined : startFederationPoller()
   if (!webOnly) logger.info('Federation manifest poller started (10min poll, 25s offset)')
 
@@ -666,6 +670,7 @@ export function startWebServer(port = 3420): http.Server {
     stopImportCrawler()
     clearInterval(updateCheckerInterval)
     if (blackboardStaleInterval) clearInterval(blackboardStaleInterval)
+    if (workspaceDocsTtlInterval) clearInterval(workspaceDocsTtlInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)
     clearInterval(tokenCollectInterval)
