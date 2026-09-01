@@ -49,6 +49,16 @@ function rowToDoc(r: DbRow): WorkspaceDoc {
   }
 }
 
+function rowToDocMeta(r: DbRow): WorkspaceDoc {
+  return {
+    id: r.id, agent_id: r.agent_id, tenant_id: r.tenant_id,
+    doc_key: r.doc_key, title: r.title, content: null,
+    content_type: r.content_type, type: r.type, task_ref: r.task_ref,
+    size_bytes: r.size_bytes, last_accessed_at: r.last_accessed_at,
+    created_at: r.created_at, updated_at: r.updated_at,
+  }
+}
+
 function nanoid12(): string {
   return randomBytes(9).toString('base64url').slice(0, 12)
 }
@@ -192,10 +202,17 @@ export interface ListWorkspaceDocsFilter {
   type?: WorkspaceDocType
   contentType?: WorkspaceContentType
   taskRef?: string
+  docKey?: string
+  docKeyPrefix?: string
+  limit?: number
+  metaOnly?: boolean
 }
 
 export function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): WorkspaceDoc[] {
-  let sql = 'SELECT * FROM workspace_docs WHERE 1=1'
+  const select = filter.metaOnly
+    ? 'SELECT id, agent_id, tenant_id, doc_key, title, content_type, type, task_ref, size_bytes, created_at, updated_at, last_accessed_at'
+    : 'SELECT *'
+  let sql = `${select} FROM workspace_docs WHERE 1=1`
   const params: unknown[] = []
   if (filter.agentId) { sql += ' AND agent_id = ?'; params.push(filter.agentId) }
   if (filter.tenantId !== null && filter.tenantId !== undefined) {
@@ -204,9 +221,12 @@ export function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): WorkspaceDoc
   if (filter.type) { sql += ' AND type = ?'; params.push(filter.type) }
   if (filter.contentType) { sql += ' AND content_type = ?'; params.push(filter.contentType) }
   if (filter.taskRef) { sql += ' AND task_ref = ?'; params.push(filter.taskRef) }
+  if (filter.docKey) { sql += ' AND doc_key = ?'; params.push(filter.docKey) }
+  else if (filter.docKeyPrefix) { sql += ' AND doc_key LIKE ?'; params.push(`${filter.docKeyPrefix}%`) }
   sql += ' ORDER BY updated_at DESC'
+  if (filter.limit && filter.limit > 0) { sql += ' LIMIT ?'; params.push(filter.limit) }
   const rows = getDb().prepare(sql).all(...params) as DbRow[]
-  return rows.map(rowToDoc)
+  return rows.map(r => filter.metaOnly ? rowToDocMeta(r) : rowToDoc(r))
 }
 
 export interface PatchWorkspaceDocInput {

@@ -233,6 +233,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- add schedules table to deleteTenant cascade
+- close IDOR fail-open on null tenant in GET /api/skills/sql/:id
+- return 400 instead of 500 on invalid PUT body
 - wrap deleteTenant cascade in db.transaction for atomicity
 - inline /me 401/400 responses, remove non-existent sessionCookie security
 - add .sb-user[hidden] override to satisfy hidden-attribute CSS contract
@@ -560,6 +563,13 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- update fork-diff for schedules tenant-delete cascade
+- update fork-diff for 716-E SQL-first skill editor
+- update fork-diff for 716-D SQL->file skill regen
+- update fork-diff for 716-C materialize-skills script
+- update fork-diff and changelog for 716-A/B skills SQL
+- update fork-diff and changelog for #702
+- CHANGELOG [API] entry + README fork-diff for user/tenant hard-delete
 - clarify why JS tenant filter in memories listing is not redundant
 - update fork-diff for overview tenant scoping
 - restore CHANGELOG, update README shadow-mode text, extend OpenAPI descriptions
