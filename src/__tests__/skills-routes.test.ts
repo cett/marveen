@@ -98,6 +98,19 @@ vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
 
+vi.mock('../db.js', () => ({
+  getSkill: vi.fn().mockReturnValue(undefined),
+  createSkill: vi.fn().mockImplementation((opts: any) => ({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  updateSkill: vi.fn().mockReturnValue(undefined),
+  deleteSkill: vi.fn().mockReturnValue(true),
+  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
+  listSkillsForTenant: vi.fn().mockReturnValue([]),
+  listAllSkills: vi.fn().mockReturnValue([]),
+  grantSkillAccess: vi.fn(),
+  revokeSkillAccess: vi.fn().mockReturnValue(true),
+  listSkillAccess: vi.fn().mockReturnValue([]),
+}))
+
 import { tryHandleSkills } from '../web/routes/skills.js'
 
 afterAll(() => {
@@ -250,6 +263,32 @@ describe('tryHandleSkills', () => {
       expect(out.status).toBe(403)
       expect(out.body.error).toBe('forbidden')
       expect(out.body.hint).toMatch(/plugin/i)
+    })
+  })
+
+  // Regression: GET /api/skills/sql was previously shadowed by the generic
+  // /api/skills/:name handler (globalSkillDetailMatch), causing a 404 instead of
+  // reaching the SQL-skills block. The regex now excludes 'sql' as a segment.
+  describe('GET /api/skills/sql (SQL-skills route, not shadowed)', () => {
+    function makeAdminCtx(method: string, path: string) {
+      const { ctx, out } = makeCtx(method, path)
+      ;(ctx as any).role = 'admin'
+      ;(ctx as any).tenantId = null
+      return { ctx, out }
+    }
+
+    it('GET /api/skills/sql reaches SQL handler and returns 200 with skills array', async () => {
+      const { ctx, out } = makeAdminCtx('GET', '/api/skills/sql')
+      expect(await tryHandleSkills(ctx)).toBe(true)
+      expect(out.status).toBe(200)
+      expect(out.body).toHaveProperty('skills')
+      expect(Array.isArray(out.body.skills)).toBe(true)
+    })
+
+    it('GET /api/skills/sql does NOT return 404 (was shadowed before fix)', async () => {
+      const { ctx, out } = makeAdminCtx('GET', '/api/skills/sql')
+      await tryHandleSkills(ctx)
+      expect(out.status).not.toBe(404)
     })
   })
 

@@ -33,8 +33,11 @@ function showToast(msg, variant = '') {
 
 // ── Modal helpers ─────────────────────────────────────────────────────────────
 
-function openModal(id) { const m = $(id); if (m) m.hidden = false }
-function closeModal(id) { const m = $(id); if (m) m.hidden = true }
+// .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
+// only becomes visible via the .active class -- [hidden] alone toggles
+// display:none/block but never restores visibility. Both must be set.
+function openModal(id) { const m = $(id); if (m) { m.hidden = false; m.classList.add('active') } }
+function closeModal(id) { const m = $(id); if (m) { m.classList.remove('active'); m.hidden = true } }
 
 document.addEventListener('click', (e) => {
   const closeId = e.target.closest('[data-close]')?.dataset.close

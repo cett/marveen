@@ -69,6 +69,19 @@ vi.mock('../config.js', async (importOriginal) => {
   return { ...actual, MAIN_AGENT_ID: 'marveen', PROJECT_ROOT: FAKE_HOME }
 })
 
+vi.mock('../db.js', () => ({
+  getSkill: vi.fn().mockReturnValue(undefined),
+  createSkill: vi.fn().mockImplementation((opts: any) => ({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  updateSkill: vi.fn().mockReturnValue(undefined),
+  deleteSkill: vi.fn().mockReturnValue(true),
+  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
+  listSkillsForTenant: vi.fn().mockReturnValue([]),
+  listAllSkills: vi.fn().mockReturnValue([]),
+  grantSkillAccess: vi.fn(),
+  revokeSkillAccess: vi.fn().mockReturnValue(true),
+  listSkillAccess: vi.fn().mockReturnValue([]),
+}))
+
 import { tryHandleSkills } from '../web/routes/skills.js'
 
 function makeCtx(method: string, path: string, body?: object): {
@@ -117,6 +130,21 @@ describe('tryHandleSkills', () => {
     expect(await tryHandleSkills(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(out.body.name).toBe('my-skill')
+  })
+
+  it('GET /api/skills/:name derives agents coverage from SQL agent/* rows, not the filesystem', async () => {
+    const { listAllSkills } = await import('../db.js')
+    ;(listAllSkills as any).mockReturnValueOnce([
+      { id: 'agent/known-agent/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'agent/other-agent/other-skill', name: 'other-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'global/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },
+    ])
+    const { ctx, out } = makeCtx('GET', '/api/skills/my-skill')
+    expect(await tryHandleSkills(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    // Only the agent/*/my-skill row matches -- the global/my-skill row itself
+    // and the unrelated other-skill row are excluded.
+    expect(out.body.agents).toEqual(['known-agent'])
   })
 
   it('GET /api/skills/:name returns 404 for unknown skill', async () => {

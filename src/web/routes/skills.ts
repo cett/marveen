@@ -11,9 +11,10 @@ import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
+import { regenSingleSkillFile } from '../skill-regen.js'
 import type { RouteContext } from './types.js'
 import {
-  createSkill, getSkill, updateSkill, deleteSkill,
+  createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
   listSkillsForTenant, listAllSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
 } from '../../db.js'
@@ -46,11 +47,16 @@ function parseSkillKeywords(content: string): string[] {
   return raw.split(',').map(k => k.trim()).filter(Boolean)
 }
 
+// Skills are stored in SQL and mirrored to disk for the Claude Code loader --
+// derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
+// id scheme instead of statting each agent's on-disk skills directory.
 function getSkillAgents(skillDirName: string): string[] {
   const agents: string[] = []
-  for (const agentName of listAgentNames()) {
-    const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillDirName)
-    if (existsSync(agentSkillDir)) agents.push(agentName)
+  for (const row of listAllSkills()) {
+    const parts = row.id.split('/')
+    if (parts.length === 3 && parts[0] === 'agent' && parts[2] === skillDirName) {
+      agents.push(parts[1])
+    }
   }
   return agents
 }
@@ -250,7 +256,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const globalSkillDetailMatch = path.match(/^\/api\/skills\/([^/]+)$/)
+  // 'sql' is a reserved segment handled by the SQL-skills block below; exclude it
+  // here so GET /api/skills/sql reaches the correct handler instead of 404ing.
+  const globalSkillDetailMatch = path.match(/^\/api\/skills\/(?!sql(?:\/|$))([^/]+)$/)
   if (globalSkillDetailMatch && method === 'GET') {
     const skillName = decodeURIComponent(globalSkillDetailMatch[1])
 
@@ -372,16 +380,33 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (existsSync(skillDir)) { json(res, { error: 'conflict', hint: 'Skill already exists' }, 409); return true }
-    mkdirSync(skillDir, { recursive: true })
 
+    let skillMd: string
     try {
-      const skillMd = await generateSkillMd(skillName, description)
-      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
-    } catch (err) {
-      rmSync(skillDir, { recursive: true, force: true })
+      skillMd = await generateSkillMd(skillName, description)
+    } catch {
       json(res, { error: 'internal_error', hint: 'Failed to generate skill' }, 500)
       return true
     }
+
+    const sqlId = `global/${skillName}`
+    try {
+      createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true })
+    } catch {
+      json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
+      return true
+    }
+
+    try {
+      mkdirSync(skillDir, { recursive: true })
+      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
+    } catch (err) {
+      deleteSkill(sqlId)
+      rmSync(skillDir, { recursive: true, force: true })
+      json(res, { error: 'internal_error', hint: 'Failed to create skill file' }, 500)
+      return true
+    }
+
     json(res, { ok: true, name: skillName })
     return true
   }
@@ -463,6 +488,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         }
         json(res, { error: 'invalid_value', field: 'file', hint: 'No valid skill (SKILL.md) found in archive' }, 400)
         return true
+      }
+
+      for (const dirName of extracted) {
+        const skillMdPath = join(skillsDir, dirName, 'SKILL.md')
+        const content = readFileOr(skillMdPath, '')
+        const desc = parseFrontmatterField(content, 'description')
+        try {
+          seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true })
+        } catch (sqlErr) {
+          logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
+        }
       }
 
       logger.info({ skills: extracted }, 'Global skill(s) imported')
@@ -550,6 +586,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const body = await readBody(req)
       const { content } = JSON.parse(body.toString()) as { content: string }
       if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
+      const agentSqlId = `agent/${agentPutParam}/${skillName}`
+      const agentDesc = parseFrontmatterField(content, 'description')
+      if (getSkill(agentSqlId)) {
+        updateSkill(agentSqlId, { content, description: agentDesc })
+      } else {
+        createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false })
+      }
       atomicWriteFileSync(skillMdPath, content)
       logger.info({ skillName, agentId: agentPutParam }, 'Agent-local skill updated via dashboard')
       json(res, { ok: true })
@@ -567,6 +610,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { content } = JSON.parse(body.toString()) as { content: string }
     if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
+    const globalSqlId = `global/${skillName}`
+    const globalDesc = parseFrontmatterField(content, 'description')
+    if (getSkill(globalSqlId)) {
+      updateSkill(globalSqlId, { content, description: globalDesc })
+    } else {
+      createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true })
+    }
     atomicWriteFileSync(skillMdPath, content)
     logger.info({ skillName }, 'Skill updated via dashboard')
     json(res, { ok: true })
@@ -605,6 +655,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const id = `${tenantId}-${slug}`
     if (getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
     const row = createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null })
+    // Phase 1 of the file->SQL-only migration (kanban 3f52d485): push this
+    // write to disk immediately rather than waiting for the next startup
+    // regen. No-op (skipped) for non-fleet skills and while SKILL_SQL_REGEN
+    // is off.
+    regenSingleSkillFile(id)
     json(res, { ok: true, skill: row }, 201)
     return true
   }
@@ -634,6 +689,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     const updated = updateSkill(id, parsed)
+    regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })
     return true
   }
