@@ -20,6 +20,7 @@ import { openTerminalModal, openConversationModal, initAgentModals } from './mod
 import { wireBranchDriftBanner, initUpdates, loadUpdates } from './modules/updates.js'
 // Static: showSudoModal/dismissOnboarding/initChannelSetup used at boot.
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
+import { can } from './modules/rbac-client.js'
 
 // ── Lazy-load helper ──────────────────────────────────────────────────────────
 // Deduplicates module loads: the Promise is stored on first call, subsequent calls
@@ -497,6 +498,17 @@ initSidebarBrand()
   } catch {}
 })()
 
+// Reveal the RBAC admin nav link (tokens/partner-senders/skill access, kanban
+// 722-B) as soon as the client can() check resolves -- mirrors revealAdminNav
+// above but goes through rbac-client so it also unhides for the legacy
+// store/.dashboard-token bearer caller (null role resolves can() to true).
+;(async function revealAdminRbacNav() {
+  if (await can('admin:all')) {
+    const navLink = document.getElementById('navAdminRbac')
+    if (navLink) navLink.hidden = false
+  }
+})()
+
 // In an installed (standalone) PWA, lock the zoom: iOS otherwise auto-zooms when
 // a small-text input is focused and allows stray pinch-zoom, neither of which
 // suits an app-like control panel. Left untouched in a normal browser tab so
@@ -771,6 +783,18 @@ registerPage('adminB2b', {
       _moduleCache.set('admin-b2b_inited', true)
     }
     await m.loadAdminB2b()
+  }
+})
+
+registerPage('adminRbac', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('admin-rbac', () => import('./modules/admin-rbac.js'))
+    if (!_moduleCache.get('admin-rbac_inited')) {
+      await m.initAdminRbac()
+      _moduleCache.set('admin-rbac_inited', true)
+    }
+    await m.loadAdminRbac()
   }
 })
 

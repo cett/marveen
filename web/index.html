@@ -181,6 +181,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="sb-label" data-i18n="nav.adminB2b">Felhasználók</span>
           </a>
+          <a href="#" class="sb-link" data-page="adminRbac" id="navAdminRbac" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/><path d="M12 7v0"/></svg>
+            <span class="sb-label">RBAC admin</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="connections">
@@ -2355,6 +2359,56 @@
     </div>
     <!-- /B2B Admin Page -->
 
+    <!-- RBAC Admin Page (global admin only): tokens / partner-senders / skill access (722-B) -->
+    <div class="page" id="adminRbacPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>RBAC admin</h1>
+            <p class="subtitle">API tokenek, partner-küldők és skill-hozzáférések kezelése</p>
+          </div>
+        </div>
+      </div>
+      <div class="admin-b2b-tabs" role="tablist" id="adminRbacTabs">
+        <button class="admin-b2b-tab active" role="tab" data-tab="tokens">Tokenek</button>
+        <button class="admin-b2b-tab" role="tab" data-tab="partnerSenders">Partner-küldők</button>
+        <button class="admin-b2b-tab" role="tab" data-tab="skillAccess">Skill-hozzáférés</button>
+      </div>
+
+      <!-- Tokenek fül -->
+      <div class="admin-b2b-panel" id="adminRbacPanelTokens">
+        <div class="admin-b2b-toolbar">
+          <button class="btn" data-variant="primary" data-size="compact" id="tokenAddBtn">+ Token</button>
+        </div>
+        <div id="tokenList" class="admin-b2b-list"></div>
+      </div>
+
+      <!-- Partner-küldők fül -->
+      <div class="admin-b2b-panel" id="adminRbacPanelPartnerSenders" hidden>
+        <div class="admin-b2b-toolbar">
+          <select id="partnerSenderTenantFilter" class="admin-b2b-select">
+            <option value="">Mind a tenantok</option>
+          </select>
+          <button class="btn" data-variant="primary" data-size="compact" id="partnerSenderAddBtn">+ Partner-küldő</button>
+        </div>
+        <div id="partnerSenderList" class="admin-b2b-list"></div>
+      </div>
+
+      <!-- Skill-hozzáférés fül -->
+      <div class="admin-b2b-panel" id="adminRbacPanelSkillAccess" hidden>
+        <div class="admin-b2b-toolbar">
+          <select id="skillAccessSkillSelect" class="admin-b2b-select">
+            <option value="">-- Válassz skillt --</option>
+          </select>
+          <button class="btn" data-variant="primary" data-size="compact" id="skillAccessGrantBtn" disabled>+ Hozzáférés megadása</button>
+        </div>
+        <div id="skillAccessList" class="admin-b2b-list">
+          <p style="color:var(--text-muted);padding:8px 0">Válassz egy skillt a hozzáférések kezeléséhez.</p>
+        </div>
+      </div>
+    </div>
+    <!-- /RBAC Admin Page -->
+
     <!-- Tenant add modal -->
     <div class="modal-overlay" id="tenantAddModal" hidden>
       <div class="modal" style="max-width:440px">
@@ -2447,6 +2501,96 @@
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
           <button class="btn" data-variant="secondary" data-close="userEditModal">Mégse</button>
           <button class="btn" data-variant="primary" id="userEditConfirmBtn">Mentés</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Token add modal -->
+    <div class="modal-overlay" id="tokenAddModal" hidden>
+      <div class="modal" style="max-width:440px">
+        <h2>Új token</h2>
+        <div style="display:grid;gap:12px;margin-top:16px">
+          <div class="form-group">
+            <label class="form-label">Név</label>
+            <input type="text" id="newTokenName" class="input" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Szerepkör</label>
+            <select id="newTokenRole" class="admin-b2b-select">
+              <option value="admin">admin</option>
+              <option value="agent" selected>agent</option>
+              <option value="read_only">read_only</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tenant ID</label>
+            <input type="text" id="newTokenTenant" class="input" value="default" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Lejárat (napokban, opcionális)</label>
+            <input type="number" id="newTokenExpiresDays" class="input" min="1" placeholder="soha nem jár le">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" data-close="tokenAddModal">Mégse</button>
+          <button class="btn" data-variant="primary" id="tokenAddConfirmBtn">Mentés</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Token reveal modal (raw value shown once, at create/rotate time) -->
+    <div class="modal-overlay" id="tokenRevealModal" hidden>
+      <div class="modal" style="max-width:520px">
+        <h2>Token érték</h2>
+        <p style="margin:8px 0 16px;color:var(--danger)">Ez az érték csak most jelenik meg -- mentsd el biztonságos helyre, mégegyszer nem lesz visszakérhető.</p>
+        <div class="form-group">
+          <input type="text" id="tokenRevealInput" class="input" readonly style="font-family:var(--font-mono,monospace)">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" id="tokenRevealCopyBtn">Másolás</button>
+          <button class="btn" data-variant="primary" data-close="tokenRevealModal">Bezár</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Partner sender add modal -->
+    <div class="modal-overlay" id="partnerSenderAddModal" hidden>
+      <div class="modal" style="max-width:440px">
+        <h2>Új partner-küldő</h2>
+        <div style="display:grid;gap:12px;margin-top:16px">
+          <div class="form-group">
+            <label class="form-label">Sender ID</label>
+            <input type="text" id="newPartnerSenderId" class="input" placeholder="pl. acme-support-bot" autocomplete="off">
+            <p class="form-hint">Betű/szám/kötőjel/aláhúzás, max 63 karakter; nem egyezhet fleet agent azonosítóval</p>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tenant</label>
+            <select id="newPartnerSenderTenant" class="admin-b2b-select"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Megjelenített név (opcionális)</label>
+            <input type="text" id="newPartnerSenderDisplayName" class="input">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" data-close="partnerSenderAddModal">Mégse</button>
+          <button class="btn" data-variant="primary" id="partnerSenderAddConfirmBtn">Mentés</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skill grant modal -->
+    <div class="modal-overlay" id="skillGrantModal" hidden>
+      <div class="modal" style="max-width:400px">
+        <h2>Hozzáférés megadása</h2>
+        <div class="form-group" style="margin-top:16px">
+          <label class="form-label">Tenant</label>
+          <select id="skillGrantTenant" class="admin-b2b-select"></select>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" data-close="skillGrantModal">Mégse</button>
+          <button class="btn" data-variant="primary" id="skillGrantConfirmBtn">Megadás</button>
         </div>
       </div>
     </div>
