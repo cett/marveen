@@ -1750,6 +1750,7 @@ window._i18n.en = {
   'auth.card.logout':             'Log out',
   'auth.card.active_sessions':    'Active sessions',
   'auth.card.token_mode':         'This session signed in with the access token (the Bridge and fleet tools open with their own key, so they never ask for a password). Your password login is still active and works: use it any time on the browser sign-in page.',
+  'auth.card.switch_to_login':    'Sign in with password',
 
   'auth.devices.title':            'Device keys',
   'auth.devices.desc':             'A per-device key for the Bridge or a phone: revocable on its own, the shared token stays unchanged. The key is shown only at creation.',
