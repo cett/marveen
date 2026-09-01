@@ -785,6 +785,7 @@ window._i18n.en = {
   'settings.desc.BB_STALE_INTERACTIVE_MIN':     'Blackboard stale threshold (minutes) for interactive-tier agents (multi-step interactive agents). Default: 90 minutes.',
   'settings.desc.BB_STALE_SHORT_RUNNING_MIN':   'Blackboard stale threshold (minutes) for short-running-tier agents (heartbeat/scheduled, done in minutes). Default: 15 minutes.',
   'settings.desc.BB_STALE_DEFAULT_MIN':         'Blackboard stale threshold (minutes) for unknown (default) tier agents. Conservative fallback. Default: 60 minutes.',
+  'settings.desc.WORKSPACE_DOCS_TTL_DAYS':      'Expiry for workspace documents (workspace_docs), in days -- applies only to docs with no task_ref or whose linked kanban card is done; binary content is exempt. Default: 14 days.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
