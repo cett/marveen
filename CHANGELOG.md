@@ -9,18 +9,22 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Fixed
+
+- **[API]** `GET /api/skills/sql` previously returned 404 because the generic `GET /api/skills/:name` route handler shadowed it; a negative-lookahead regex now excludes the `sql` segment so requests reach the correct SQL-skills handler
+- `deleteTenant()` cascade now includes the `schedules` table: tenant-scoped schedules are deleted on hard tenant removal; fleet schedules (`tenant_id IS NULL`) are unaffected
+- **[API]** `PUT /api/memories/:id` returns `400 parse_error` on invalid JSON body and `400 required` when `content` is absent or whitespace-only; previously threw unhandled exception (500)
+
 ### Added
 
-- add doc_key/doc_key_prefix/limit/meta_only filters to GET /api/workspace
-- SQL-first + file-mirror write path for dashboard skill editor
-- SQL->file skill regen at startup with kill-switch
-- materialize file-based skills into SQL (INSERT OR IGNORE)
-- startup auto-seed + INSERT OR IGNORE seed semantics
-- add SQL-backed skill storage with tenant isolation (716-A/B)
-- scheduled tasks SQL-backed store with tenant scoping
-- B2B admin hard-delete for tenants and users, user edit modal
-- workspace-docs agent/tenant filter combobox
-- artifacts tenant isolation -- Phase A
+- context-guard handoff freshness now reads `workspace_docs` (`doc_key='handoff'`) `updated_at` when present, falling back to the `HANDOFF.md` file mtime otherwise; workspace-docs TTL sweeper (previously dead code with no caller) is now wired into a 5-minute background sweep, threshold configurable via `WORKSPACE_DOCS_TTL_DAYS` (default 14 days)
+- Frontend RBAC role-gating: a shared `can(permission)` client helper mirrors the server's role→permission map (read-only mirror, server-side `src/web/rbac.ts` remains the source of enforcement) and hides/disables write controls a session's role cannot use -- new-card buttons, card drag-and-drop, comment/edit/archive/delete on Kanban; add/save/delete/import/backfill on Memories; create/edit/run/pause/delete on scheduled tasks. A legacy bearer-token (no session) caller is treated as unrestricted, matching how the server already resolves that credential
+- **[API]** SQL-backed skill storage with tenant isolation (migration 0030): `skills` + `skill_tenant_access` tables; `/api/skills/sql/*` CRUD endpoints with grant/revoke access management; fleet skills hidden from B2B tenants by default
+- `scripts/materialize-skills.ts` one-time idempotent script to seed file-based skills (global `~/.claude/skills/` and agent-local `.claude/skills/`) into the SQL `skills` table via INSERT OR IGNORE; supports `--dry-run`
+- SQL-to-file skill regeneration at startup (716-D): `src/web/skill-regen.ts` writes fleet SQL skills back to their canonical file paths (atomic rename, idempotent content check, non-destructive -- files absent from SQL are never touched); controlled by `SKILL_SQL_REGEN=1` kill-switch (fail-safe: disabled by default); `scripts/regen-skills.ts` for manual runs and proof verification
+- **[API]** Dashboard skill editor is now SQL-first with synchronous file mirror (716-E): `PUT /api/skills/:name`, `POST /api/skills`, `DELETE /api/agents/:name/skills/:skill`, `POST /api/skills/import`, `POST /api/agents/:name/skills`, and `POST /api/agents/:name/skills/import` all write to SQL first then mirror to the file system atomically; id scheme matches materialization (`global/<name>` / `agent/<agentId>/<name>`); no code path writes only to file or only to SQL
+- **[API]** scheduled tasks SQL-backed store: new `schedules` table (migration 0029) replaces file-based runner source; GET /api/schedules tenant-scoped for non-admin callers, POST auto-stamps tenant_id, DELETE/PUT/toggle/run enforce cross-tenant 404 guard; fleet tasks (tenant_id=null) visible to admin only; `scripts/migrate-schedules-to-db.ts` for one-time seeding; dashboard schedules page gains tenant-selector for global admin
+- **[API]** B2B admin hard-delete tenant+user: DELETE /api/admin/tenants/:id (cascade), DELETE /api/admin/users/:id (self/last-admin guard), user-edit PATCH extended with display_name/email/role; openapi docs for full /admin/users CRUD
 - workspace docs dashboard page (list, view, delete)
 - add DELETE /api/admin/tenants/:id with full cascade
 - self-service profile page for session-authenticated dashboard users

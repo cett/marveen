@@ -19,9 +19,16 @@ import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
+import { can } from './rbac-client.js'
 
 // ── Injected dependencies ────────────────────────────────────────────────────
 let _openModal = null, _closeModal = null, _wireColumn = null, _wireCardTouch = null, _loadIdeasPage = null
+
+// Resolved once per loadKanban() (cheap -- rbac-client caches the underlying
+// fetch); read by createCardEl (draggable) and showCardDetail (edit/archive/
+// delete/comment buttons). Starts true so the very first synchronous render
+// (before the first loadKanban() completes) does not need special-casing.
+let _canWriteKanban = true
 
 // ── Module state ─────────────────────────────────────────────────────────────
 let _kanbanTenantGetter = null
@@ -139,6 +146,11 @@ document.querySelectorAll('.kanban-add-btn').forEach((btn) => {
 
 export async function loadKanban() {
   try {
+    _canWriteKanban = await can('kanban:write')
+    document.querySelectorAll('.kanban-add-btn').forEach((btn) => { btn.hidden = !_canWriteKanban })
+    const saveCardBtnEl = document.getElementById('saveCardBtn')
+    if (saveCardBtnEl) saveCardBtnEl.disabled = !_canWriteKanban
+
     // Always refresh the marveen config so values changed on the Settings page
     // (e.g. WIP limits) show up on the board on the next Kanban open, without a
     // hard reload. The full /api/marveen payload includes kanbanAging, kanbanWip,
@@ -714,7 +726,7 @@ function createCardEl(card, embeddedTrees = []) {
   el.className = 'kanban-card'
   el.dataset.id = card.id
   el.dataset.priority = card.priority
-  el.draggable = true
+  el.draggable = _canWriteKanban
 
   // Assignee chip. Match the card's assignee against the known list
   // case-insensitively (a card stored as "gorcsevivan" must still match the
@@ -934,8 +946,10 @@ function createCardEl(card, embeddedTrees = []) {
 
   // Touch equivalent of the above -- see wireKanbanCardTouchDnD. Wired before
   // the click listener so its capture-phase guard can swallow the tap that
-  // ends a drag.
-  _wireCardTouch?.(el, card)
+  // ends a drag. Touch drag ignores el.draggable entirely (it's a manual
+  // touchstart/move/end handler, not the HTML5 DnD API), so it needs its own
+  // gate -- skip wiring it at all when the role cannot move cards.
+  if (_canWriteKanban) _wireCardTouch?.(el, card)
 
   // Click -> detail
   el.addEventListener('click', () => showCardDetail(card))
@@ -1396,6 +1410,13 @@ async function showCardDetail(card) {
     } catch {
       showToast(t('common.error_delete'))
     }
+  }
+
+  // showCardDetail rebuilds every onclick above on each open, so gating here
+  // (rather than once at render time) can never be undone by a later step in
+  // this same function.
+  for (const id of ['addCommentBtn', 'cardEditBtn', 'cardArchiveBtn', 'cardDeleteBtn']) {
+    document.getElementById(id).disabled = !_canWriteKanban
   }
 
   // Load the full descendant tree (up to 3 levels) for the subtask section.

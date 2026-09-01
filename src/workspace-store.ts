@@ -172,6 +172,16 @@ export function peekWorkspaceDoc(id: string): Pick<WorkspaceDoc, 'id' | 'agent_i
   return row ?? null
 }
 
+// Freshness probe for callers (context-guard) that only need "when was this
+// (agent_id, doc_key) doc last written", polled on a tight interval -- must
+// NOT touch last_accessed_at (that's a read-access signal, not a write one).
+export function getWorkspaceDocUpdatedAtMs(agentId: string, docKey: string): number | null {
+  const row = getDb().prepare(
+    'SELECT updated_at FROM workspace_docs WHERE agent_id = ? AND doc_key = ?'
+  ).get(agentId, docKey) as { updated_at: number } | undefined
+  return row ? row.updated_at * 1000 : null
+}
+
 export function getWorkspaceDoc(id: string): WorkspaceDoc | null {
   const db = getDb()
   const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow | undefined

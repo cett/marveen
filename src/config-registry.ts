@@ -604,6 +604,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'WORKSPACE_DOCS_TTL_DAYS',
+    type: 'int',
+    default: 14,
+    min: 1,
+    max: 180,
+    description: 'Munkadokumentum (workspace_docs) lejárati ideje napokban -- csak lezárt (vagy task nélküli) dokumentumokra vonatkozik, bináris tartalom kivétel.',
+    module: 'memory',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

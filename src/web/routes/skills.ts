@@ -250,7 +250,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const globalSkillDetailMatch = path.match(/^\/api\/skills\/([^/]+)$/)
+  // 'sql' is a reserved segment handled by the SQL-skills block below; exclude it
+  // here so GET /api/skills/sql reaches the correct handler instead of 404ing.
+  const globalSkillDetailMatch = path.match(/^\/api\/skills\/(?!sql(?:\/|$))([^/]+)$/)
   if (globalSkillDetailMatch && method === 'GET') {
     const skillName = decodeURIComponent(globalSkillDetailMatch[1])
 
