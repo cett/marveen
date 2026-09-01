@@ -571,6 +571,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 - consolidate readClaudeCodeOauthJson into claude-credentials.ts
 - remove dead legacy /telegram/ URL routes from agents.ts
 - cacheable avatars + gzip for heavy responses (#698)
+- skill dashboard/API paths (agent-coverage lookup, fleet export/import) read and write skills via SQL instead of the on-disk SKILL.md mirror
 
 ### Documentation
 

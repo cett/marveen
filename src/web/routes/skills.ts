@@ -47,11 +47,16 @@ function parseSkillKeywords(content: string): string[] {
   return raw.split(',').map(k => k.trim()).filter(Boolean)
 }
 
+// Skills are stored in SQL and mirrored to disk for the Claude Code loader --
+// derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
+// id scheme instead of statting each agent's on-disk skills directory.
 function getSkillAgents(skillDirName: string): string[] {
   const agents: string[] = []
-  for (const agentName of listAgentNames()) {
-    const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillDirName)
-    if (existsSync(agentSkillDir)) agents.push(agentName)
+  for (const row of listAllSkills()) {
+    const parts = row.id.split('/')
+    if (parts.length === 3 && parts[0] === 'agent' && parts[2] === skillDirName) {
+      agents.push(parts[1])
+    }
   }
   return agents
 }
