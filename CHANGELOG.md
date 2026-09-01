@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- per-skill instant SQL->file regen on dashboard write
 - add RBAC admin UI for tokens, partner-senders, skill access
 - add doc_key/doc_key_prefix/limit/meta_only filters to GET /api/workspace
 - frontend role-gating for write controls
@@ -573,6 +574,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- document per-skill instant regen (kanban 3f52d485 Phase 1)
+- update for RBAC admin UI and modal fix
 - document RBAC admin UI and modal visibility fix
 - update for workspace doc_key filter
 - changelog + fork-diff for frontend RBAC role-gating
