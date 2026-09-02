@@ -27,11 +27,12 @@ const SCHEMA = `
   );
 
   CREATE TABLE kanban_cards (
-    id         TEXT PRIMARY KEY,
-    title      TEXT NOT NULL,
-    status     TEXT NOT NULL DEFAULT 'planned',
-    tenant_id  TEXT NOT NULL DEFAULT 'default',
-    created_at INTEGER NOT NULL DEFAULT 0
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'planned',
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    created_at  INTEGER NOT NULL DEFAULT 0,
+    archived_at INTEGER
   );
 
   CREATE TABLE agent_messages (
@@ -192,6 +193,18 @@ describe('scopeToTenant -- kanban', () => {
     expect(planned).toHaveLength(0)
     const done = scopeToTenant(db, 'tenant-a').kanban.list('done')
     expect(done).toHaveLength(1)
+  })
+
+  it('list excludes archived cards by default', () => {
+    db.exec(`UPDATE kanban_cards SET archived_at = 1700000000 WHERE id = 'card-a'`)
+    expect(scopeToTenant(db, 'tenant-a').kanban.list()).toHaveLength(0)
+  })
+
+  it('list has no implicit row cap', () => {
+    for (let i = 0; i < 250; i++) {
+      db.prepare(`INSERT INTO kanban_cards (id, title, tenant_id) VALUES (?, ?, 'tenant-a')`).run(`bulk-${i}`, `Bulk ${i}`)
+    }
+    expect(scopeToTenant(db, 'tenant-a').kanban.list()).toHaveLength(251)
   })
 
   it('get returns card only in correct tenant', () => {

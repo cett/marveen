@@ -405,6 +405,11 @@ function renderKanbanQuickFilters() {
       kanbanCardMatchesBaseFilters(c) && (c.labels || []).some((l) => l.id === label.id)
     ).length
     const active = kanbanLabelFilter.has(label.id)
+    // kanbanAllLabels is the global label list (not tenant-scoped); only show
+    // chips for labels actually present on the currently loaded cards, so a
+    // tenant switch narrows the row, not just the counts. An active filter
+    // stays visible even at 0 so it can still be cleared.
+    if (count === 0 && !active) continue
     const chip = document.createElement('span')
     chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
     chip.dataset.labelId = label.id
