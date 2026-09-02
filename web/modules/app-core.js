@@ -331,6 +331,14 @@ export function boot() {
 
   window.addEventListener('hashchange', routeFromHash)
 
+  // SPA fallback: convert /admin or /profile path to hash routing.
+  // If no hash is present and the path is a known admin page, convert to hash.
+  if (!location.hash && (location.pathname === '/admin' || location.pathname === '/profile')) {
+    const pageId = location.pathname.slice(1)  // '/admin' -> 'admin' or '/profile' -> 'profile'
+    location.hash = pageId
+    return  // routeFromHash will be called by hashchange event.
+  }
+
   // i18n: translate on boot and whenever language changes.
   renderNav()
   renderStaticI18n()

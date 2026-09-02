@@ -109,7 +109,7 @@ function escapeAttr(s: string): string {
 export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path } = ctx
 
-  if (path === '/' || path === '/index.html') { serveIndexHtml(ctx, webDir); return true }
+  if (path === '/' || path === '/index.html' || path === '/admin' || path === '/profile') { serveIndexHtml(ctx, webDir); return true }
   // app.js/style.css URLs are versioned (?v=mtime-size, rewritten into
   // index.html above), so a long max-age is safe: any content change produces
   // a new URL. index.html itself stays no-cache.
