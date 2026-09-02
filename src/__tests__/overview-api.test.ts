@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { initDatabase, getDb, createApproval } from '../db.js'
+import { initDatabase, getDb, createApproval, createSkill } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../web/agent-config.js', () => ({
@@ -245,6 +245,25 @@ describe('GET /api/overview — pendingApprovals', () => {
     await tryHandleOverview(ctx)
     expect(out.body.pendingApprovals).toBe(1)
   })
+
+  it('admin with ?tenant filter counts only that tenant\'s pending approvals', async () => {
+    // Fix-revert proof: without tenant scoping this would return 2, not 1.
+    createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
+    createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    expect(out.body.pendingApprovals).toBe(1)
+  })
+
+  it('admin without ?tenant filter counts pending approvals across all tenants', async () => {
+    createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
+    createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
+
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    expect(out.body.pendingApprovals).toBe(2)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -344,6 +363,34 @@ describe('GET /api/overview — agents.list lastActive', () => {
     // Fix-revert proof: removing the lastActive MAX query would leave all lastActive as null.
     const agentA = out.body.agents.list.find((a: any) => a.id === 'agent-a')
     expect(agentA.lastActive).toBe(ts2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// skills — tenant scoping (SQL-backed skills table, not the filesystem scan)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/overview — skills tenant scoping', () => {
+  it('admin with ?tenant filter counts only that tenant\'s own + granted skills', async () => {
+    createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
+    createSkill({ id: 'sk-b', name: 'Skill B', content: 'x', tenant_id: 'tenant-b' })
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: without tenant scoping this would count the filesystem
+    // skills dir instead and ignore the tenant filter entirely.
+    expect(out.body.skills.count).toBe(1)
+  })
+
+  it('admin without ?tenant filter falls back to the fleet-wide filesystem count', async () => {
+    createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
+
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    // The fleet-wide total is sourced from ~/.claude/skills, independent of
+    // the SQL skills table row just inserted -- this just asserts the field
+    // stays present and numeric, not the SQL-table count.
+    expect(typeof out.body.skills.count).toBe('number')
   })
 })
 

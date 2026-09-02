@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, currentBotName } from '../../config.js'
-import { getDb, countTaskRunsBetween } from '../../db.js'
+import { getDb, countTaskRunsBetween, listSkillsForTenant } from '../../db.js'
 import {
   agentDir, listAgentNames, readAgentDisplayName,
 } from '../agent-config.js'
@@ -116,16 +116,28 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
 
     let skillCount = 0
     let skillsToday = 0
-    const skillsDir = join(homedir(), '.claude', 'skills')
-    if (existsSync(skillsDir)) {
-      for (const entry of readdirSync(skillsDir)) {
-        const skillFile = join(skillsDir, entry, 'SKILL.md')
-        if (existsSync(skillFile)) {
-          skillCount++
-          try {
-            const mtime = statSync(skillFile).mtimeMs
-            if (mtime >= startTs) skillsToday++
-          } catch { /* ignore */ }
+    if (effectiveTenantId) {
+      // Filesystem skills (~/.claude/skills) have no tenant concept -- they're
+      // inherently fleet-global. The SQL-backed skills table (skills +
+      // skill_tenant_access, see src/web/routes/skills.ts) is the actual
+      // tenant-aware source, so a narrowed tenant view counts from there
+      // instead of the filesystem scan used for the fleet-wide total below.
+      const startSec = Math.floor(startTs / 1000)
+      const tenantSkills = listSkillsForTenant(effectiveTenantId)
+      skillCount = tenantSkills.length
+      skillsToday = tenantSkills.filter((s) => s.updated_at >= startSec).length
+    } else {
+      const skillsDir = join(homedir(), '.claude', 'skills')
+      if (existsSync(skillsDir)) {
+        for (const entry of readdirSync(skillsDir)) {
+          const skillFile = join(skillsDir, entry, 'SKILL.md')
+          if (existsSync(skillFile)) {
+            skillCount++
+            try {
+              const mtime = statSync(skillFile).mtimeMs
+              if (mtime >= startTs) skillsToday++
+            } catch { /* ignore */ }
+          }
         }
       }
     }
@@ -156,7 +168,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // Pending approvals count
     let pendingApprovals = 0
     try {
-      const pa = db0.prepare("SELECT COUNT(*) as c FROM approvals WHERE status='pending'").get() as { c: number }
+      const pa = db0.prepare(`SELECT COUNT(*) as c FROM approvals WHERE status='pending'${tc}`).get(...tp) as { c: number }
       pendingApprovals = pa.c
     } catch { /* ignore */ }
 
@@ -176,7 +188,14 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       unreadMessages = umRow.c
     } catch { /* ignore */ }
 
-    // Stuck scheduled tasks: active tasks whose next_run was more than 10 minutes ago
+    // Stuck scheduled tasks: active tasks whose next_run was more than 10 minutes ago.
+    // NOTE: this reads the legacy `scheduled_tasks` table (Telegram-era API,
+    // superseded by the `schedules` table -- see src/migrations/0029_schedules.sql),
+    // which nothing writes to anymore and has no tenant_id column at all, so
+    // it cannot be tenant-scoped and is left as a fleet-level figure. Wiring
+    // this up against the live `schedules` table's actual stuck/watchdog state
+    // (tracked in-memory by src/web/schedule-runner.ts, not a static column) is
+    // a separate, larger piece of work than this ticket's tenant-reactivity fix.
     let stuckTasks = 0
     try {
       const tenMinAgo = Math.floor((nowMs - 10 * 60 * 1000) / 1000)
