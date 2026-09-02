@@ -776,6 +776,7 @@ registerPage('backups', {
 
 registerPage('adminB2b', {
   lazy: true,
+  domId: 'page-admin-b2b',
   enter: async () => {
     const m = await lazyLoad('admin-b2b', () => import('./modules/admin-b2b.js'))
     if (!_moduleCache.get('admin-b2b_inited')) {
@@ -788,6 +789,7 @@ registerPage('adminB2b', {
 
 registerPage('adminRbac', {
   lazy: true,
+  domId: 'page-admin-rbac',
   enter: async () => {
     const m = await lazyLoad('admin-rbac', () => import('./modules/admin-rbac.js'))
     if (!_moduleCache.get('admin-rbac_inited')) {
