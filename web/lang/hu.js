@@ -1900,6 +1900,7 @@ window._i18n.hu = {
 
   'tenant.selector.label':           'Tenant:',
   'tenant.selector.all':             'Összes tenant',
+  'tenant.selector.fleet_only':      'Csak flotta-szintű',
 
   'common.working':                  'Feldolgozás...',
 

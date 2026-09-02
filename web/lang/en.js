@@ -1901,6 +1901,7 @@ window._i18n.en = {
 
   'tenant.selector.label':           'Tenant:',
   'tenant.selector.all':             'All tenants',
+  'tenant.selector.fleet_only':      'Fleet-scoped only',
 
   'common.working':                  'Working...',
 

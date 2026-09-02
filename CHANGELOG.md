@@ -239,6 +239,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- fix scheduled-tasks tenant selector unable to show fleet-scoped (tenant_id-less) schedules -- the shared tenant-filter dropdown only ever offered real tenant ids, so selecting the seeded tenant always returned zero rows even though the backend already supported a distinct fleet-only scope; the dropdown now offers that scope explicitly, separate from any real tenant
 - fix tenant-scoped kanban label counts overcounting against the fleet-wide view -- the tenant-scoped card list neither excluded archived cards nor matched the fleet-wide query's unbounded result set, so a tenant switch could show a higher count for a label than the true (fleet-wide) total; also narrow the kanban label quick-filter chip row to labels actually present on the currently loaded cards instead of every label defined fleet-wide
 - add full i18n wiring for the RBAC admin page (tokens, partner senders, skill access tabs and their modals) -- the page previously had no `data-i18n`/`t()` usage at all and stayed Hungarian regardless of language setting; also add missing loading/empty-state keys in the B2B admin module and a pre-existing but never-added `connectors.env_modal.desc` key
 - add ~55 missing translation keys for the B2B admin, RBAC nav label and profile pages (hu.js + en.js) -- these pages rendered raw i18n keys (e.g. `admin.b2b.subtitle`, `profile.field.username`) instead of labels once SPA fallback routing made them directly reachable
