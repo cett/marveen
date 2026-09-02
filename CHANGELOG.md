@@ -239,6 +239,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- add ~55 missing translation keys for the B2B admin, RBAC nav label and profile pages (hu.js + en.js) -- these pages rendered raw i18n keys (e.g. `admin.b2b.subtitle`, `profile.field.username`) instead of labels once SPA fallback routing made them directly reachable
 - fix agent Skills tab always showing empty
 - wire profile nav click + alias /admin to RBAC admin page
 - SPA fallback routing for /admin and /profile URLs
