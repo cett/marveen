@@ -56,6 +56,7 @@ type AgentSkill = {
 function scanSkillDir(dir: string, source: 'agent' | 'global', deletable: boolean): AgentSkill[] {
   if (!existsSync(dir)) return []
   return readdirSync(dir)
+    .filter((f) => !f.startsWith('.'))
     .filter((f) => { try { return statSync(join(dir, f)).isDirectory() } catch { return false } })
     .map((f) => ({
       name: f,
