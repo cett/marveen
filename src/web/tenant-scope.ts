@@ -138,24 +138,35 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
     // ── kanban_cards ─────────────────────────────────────────────────────────
 
     kanban: {
-      /** List kanban cards for this tenant. */
-      list(status?: string, limit = 200): ScopedKanbanCard[] {
+      /**
+       * List kanban cards for this tenant, excluding archived ones -- matches
+       * the unscoped listKanbanCards() so tenant-scoped and fleet-wide counts
+       * agree. `limit` is only applied when explicitly passed; the default
+       * (unbounded) call mirrors the unscoped path instead of silently
+       * truncating at a fixed page size.
+       */
+      list(status?: string, limit?: number): ScopedKanbanCard[] {
+        const limitClause = limit !== undefined ? ' LIMIT ?' : ''
         if (status) {
+          const params: unknown[] = [tenantId, status]
+          if (limit !== undefined) params.push(limit)
           return db
             .prepare(
               `SELECT * FROM kanban_cards
-               WHERE tenant_id = ? AND status = ?
-               ORDER BY created_at DESC LIMIT ?`,
+               WHERE tenant_id = ? AND status = ? AND archived_at IS NULL
+               ORDER BY created_at DESC${limitClause}`,
             )
-            .all(tenantId, status, limit) as ScopedKanbanCard[]
+            .all(...params) as ScopedKanbanCard[]
         }
+        const params: unknown[] = [tenantId]
+        if (limit !== undefined) params.push(limit)
         return db
           .prepare(
             `SELECT * FROM kanban_cards
-             WHERE tenant_id = ?
-             ORDER BY created_at DESC LIMIT ?`,
+             WHERE tenant_id = ? AND archived_at IS NULL
+             ORDER BY created_at DESC${limitClause}`,
           )
-          .all(tenantId, limit) as ScopedKanbanCard[]
+          .all(...params) as ScopedKanbanCard[]
       },
 
       /** Get a single card by id, only if it belongs to this tenant. */

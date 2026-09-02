@@ -49,7 +49,9 @@ function openTestDb(): Database.Database {
       id          TEXT PRIMARY KEY,
       title       TEXT NOT NULL,
       status      TEXT NOT NULL DEFAULT 'planned',
-      tenant_id   TEXT NOT NULL DEFAULT 'default'
+      tenant_id   TEXT NOT NULL DEFAULT 'default',
+      created_at  INTEGER NOT NULL DEFAULT 0,
+      archived_at INTEGER
     );
 
     -- api_tokens: blueprint schema for the token-management step; used for token lifecycle tests.
