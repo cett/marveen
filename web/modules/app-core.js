@@ -39,9 +39,16 @@ export function setPageSwitchHook(fn) { _pageSwitchHook = fn }
  * - lazy: true marks the enter() as a lazy module loader — switchPage wraps it
  *   with a loading overlay and timeout. Do NOT set this on static pages whose
  *   enter() is an async data-fetch (always-async != lazy-import).
+ * - domId: overrides the default `name + 'Page'` DOM id lookup, for pages whose
+ *   markup doesn't follow that convention.
  */
-export function registerPage(name, { enter = null, leave = null, lazy = false } = {}) {
-  _pageRegistry.set(name, { enter, leave, lazy })
+export function registerPage(name, { enter = null, leave = null, lazy = false, domId = null } = {}) {
+  _pageRegistry.set(name, { enter, leave, lazy, domId })
+}
+
+/** Resolve a pageId to its page-container DOM id, honoring a registered domId override. */
+function _domIdFor(pageId) {
+  return _pageRegistry.get(pageId)?.domId || (pageId + 'Page')
 }
 
 /** Register a page-id alias: hash `from` is rewritten to `to`; `before` fires first. */
@@ -83,7 +90,7 @@ function _hidePageLoading() {
 function _showPageError(pageId, err) {
   console.error('[lazy-load] Failed to load page:', pageId, err)
   _hidePageLoading()
-  const pageEl = document.getElementById(pageId + 'Page')
+  const pageEl = document.getElementById(_domIdFor(pageId))
   if (!pageEl) return
   pageEl.querySelector('.page-load-error')?.remove()
   const errDiv = document.createElement('div')
@@ -119,7 +126,7 @@ export function switchPage(pageId) {
   }
 
   // Update page visibility and nav active state.
-  _pages?.forEach(p => { p.hidden = p.id !== pageId + 'Page' })
+  _pages?.forEach(p => { p.hidden = p.id !== _domIdFor(pageId) })
   _navLinks?.forEach(l => l.classList.toggle('active', l.dataset.page === pageId))
   document.querySelector('main')?.classList.toggle('kanban-active', pageId === 'kanban')
 
@@ -324,7 +331,7 @@ export function boot() {
     let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
     if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
     // Can navigate to a registered alias even if there's no corresponding DOM page element.
-    if (pageId && (document.getElementById(pageId + 'Page') || _aliasRegistry.has(pageId))) {
+    if (pageId && (document.getElementById(_domIdFor(pageId)) || _aliasRegistry.has(pageId))) {
       switchPage(pageId)
     }
   }
