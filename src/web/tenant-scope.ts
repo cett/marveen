@@ -139,23 +139,23 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
 
     kanban: {
       /** List kanban cards for this tenant. */
-      list(status?: string, limit = 200): ScopedKanbanCard[] {
+      list(status?: string): ScopedKanbanCard[] {
         if (status) {
           return db
             .prepare(
               `SELECT * FROM kanban_cards
-               WHERE tenant_id = ? AND status = ?
-               ORDER BY created_at DESC LIMIT ?`,
+               WHERE tenant_id = ? AND status = ? AND archived_at IS NULL
+               ORDER BY sort_order ASC`,
             )
-            .all(tenantId, status, limit) as ScopedKanbanCard[]
+            .all(tenantId, status) as ScopedKanbanCard[]
         }
         return db
           .prepare(
             `SELECT * FROM kanban_cards
-             WHERE tenant_id = ?
-             ORDER BY created_at DESC LIMIT ?`,
+             WHERE tenant_id = ? AND archived_at IS NULL
+             ORDER BY sort_order ASC`,
           )
-          .all(tenantId, limit) as ScopedKanbanCard[]
+          .all(tenantId) as ScopedKanbanCard[]
       },
 
       /** Get a single card by id, only if it belongs to this tenant. */

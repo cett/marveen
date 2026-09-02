@@ -27,11 +27,13 @@ const SCHEMA = `
   );
 
   CREATE TABLE kanban_cards (
-    id         TEXT PRIMARY KEY,
-    title      TEXT NOT NULL,
-    status     TEXT NOT NULL DEFAULT 'planned',
-    tenant_id  TEXT NOT NULL DEFAULT 'default',
-    created_at INTEGER NOT NULL DEFAULT 0
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'planned',
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    archived_at INTEGER,
+    created_at  INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE agent_messages (
@@ -219,6 +221,18 @@ describe('scopeToTenant -- kanban', () => {
     expect(db.prepare('SELECT id FROM kanban_cards WHERE id = ?').get('card-b')).toBeDefined()
     expect(scopeToTenant(db, 'tenant-a').kanban.delete('card-a')).toBe(true)
     expect(db.prepare('SELECT id FROM kanban_cards WHERE id = ?').get('card-a')).toBeUndefined()
+  })
+
+  it('list excludes archived cards', () => {
+    db.exec(`UPDATE kanban_cards SET archived_at = 1 WHERE id = 'card-a'`)
+    const cards = scopeToTenant(db, 'tenant-a').kanban.list()
+    expect(cards).toHaveLength(0)
+  })
+
+  it('list with status filter excludes archived cards', () => {
+    db.exec(`UPDATE kanban_cards SET status = 'done', archived_at = 1 WHERE id = 'card-a'`)
+    const done = scopeToTenant(db, 'tenant-a').kanban.list('done')
+    expect(done).toHaveLength(0)
   })
 })
 

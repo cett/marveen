@@ -405,6 +405,7 @@ function renderKanbanQuickFilters() {
       kanbanCardMatchesBaseFilters(c) && (c.labels || []).some((l) => l.id === label.id)
     ).length
     const active = kanbanLabelFilter.has(label.id)
+    if (count === 0 && !active) continue
     const chip = document.createElement('span')
     chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
     chip.dataset.labelId = label.id
