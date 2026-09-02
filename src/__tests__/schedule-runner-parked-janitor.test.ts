@@ -55,7 +55,7 @@ vi.mock('../db.js', () => ({
   markScheduledTaskKanbanWaiting: vi.fn(),
   upsertBlackboard: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),
   findActiveKanbanCardByTitle: vi.fn(() => undefined),
-  findBlackboardRowByAgent: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),
+  findBlackboardRowByAgent: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0, tenant_id: 'default' })),
 }))
 
 // The alert paths resolve a REAL bot token from install-level config and send

@@ -13,6 +13,7 @@ function row(overrides: Partial<BlackboardRow> = {}): BlackboardRow {
     summary: 'test task',
     task_ref: null,
     updated_at: NOW - 5 * 3600, // 5 hours old by default
+    tenant_id: 'default',
     ...overrides,
   }
 }

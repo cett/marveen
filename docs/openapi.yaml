@@ -181,6 +181,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -400,7 +401,7 @@ components:
 
     BlackboardRow:
       type: object
-      required: [id, agent_id, status, summary, updated_at]
+      required: [id, agent_id, status, summary, updated_at, tenant_id]
       properties:
         id:
           type: string
@@ -418,6 +419,13 @@ components:
           maxLength: 500
         updated_at:
           type: integer
+        tenant_id:
+          type: string
+          description: >-
+            Tenant this row is scoped to, derived from the agent's
+            tenant_agent_availability assignment. "default" for fleet agents
+            with no tenant assignment, "_multi_" for agents shared across
+            2+ tenants (visible to admin only).
       example:
         id: "b4cda374"
         agent_id: "agent-b"
@@ -425,6 +433,7 @@ components:
         status: "active"
         summary: "feat/openapi-spec: írja az OpenAPI 3.1 spec-et"
         updated_at: 1787488514
+        tenant_id: "default"
 
     BlackboardRowWithSignal:
       allOf:
@@ -448,10 +457,11 @@ components:
             summary: "Working on task"
             updated_at: 1700000000
             signal: "b"
+            tenant_id: "default"
 
     BlackboardHistoryRow:
       type: object
-      required: [id, agent_id, status, summary, created_at]
+      required: [id, agent_id, status, summary, created_at, tenant_id]
       properties:
         id:
           type: integer
@@ -470,6 +480,10 @@ components:
         created_at:
           type: integer
           description: Unix timestamp of when this transition was recorded
+        tenant_id:
+          type: string
+          description: >-
+            Tenant this row is scoped to (see BlackboardRow.tenant_id).
       example:
         id: 1
         agent_id: "agent-a"
@@ -477,6 +491,7 @@ components:
         status: "active"
         summary: "Started"
         created_at: 1700000000
+        tenant_id: "default"
 
     SkillUsageSummaryRow:
       type: object
@@ -1986,7 +2001,10 @@ paths:
       tags: [blackboard]
       operationId: listBlackboard
       summary: List fleet blackboard (last 10 rows, newest first)
-      description: Each row includes a computed `signal` field indicating staleness. No data is modified.
+      description: >-
+        Each row includes a computed `signal` field indicating staleness. No data is modified.
+        Admin sees every tenant's rows (including agents shared across tenants, `tenant_id: "_multi_"`);
+        every other role only sees rows belonging to its own tenant.
       responses:
         "200":
           description: Blackboard rows with stale-signal annotations
@@ -2010,6 +2028,10 @@ paths:
       tags: [blackboard]
       operationId: upsertBlackboardEntry
       summary: Upsert agent status (one row per agent_id — creates or updates)
+      description: >-
+        `tenant_id` is derived server-side from the agent's tenant_agent_availability
+        assignment and cannot be set by the caller. A non-admin caller may only post
+        on behalf of an agent that resolves to their own tenant (403 otherwise).
       requestBody:
         required: true
         content:
@@ -2053,6 +2075,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: Non-admin caller's tenant does not match the target agent's tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /blackboard/{id}:
     parameters:
@@ -2065,6 +2093,7 @@ paths:
       tags: [blackboard]
       operationId: updateBlackboardEntry
       summary: Partially update a blackboard row by id
+      description: Admin only (no per-role permission entry maps to this path -- the RBAC gate falls back to admin:all).
       requestBody:
         required: true
         content:
@@ -2110,6 +2139,9 @@ paths:
       tags: [blackboard]
       operationId: listBlackboardHistory
       summary: List blackboard state-transition history (append-only audit trail)
+      description: >-
+        Admin sees every tenant's history; every other role only sees entries
+        belonging to its own tenant (same scoping as GET /blackboard).
       parameters:
         - name: agent_id
           in: query

@@ -1,4 +1,4 @@
-import { getDb, insertBlackboardHistory, listBlackboardHistory, upsertBlackboard, type BlackboardRow } from '../../db.js'
+import { getDb, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, type BlackboardRow } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -52,11 +52,13 @@ export function computeBlackboardSignal(
   return null
 }
 
-function listBlackboardWithSignals(limit = 10): BlackboardRowWithSignal[] {
+// tenantId: null means unfiltered (admin, sees every tenant including shared
+// '_multi_' agents); a string narrows to that tenant's own rows only.
+function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): BlackboardRowWithSignal[] {
   const db = getDb()
-  const rows = db
-    .prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?')
-    .all(limit) as BlackboardRow[]
+  const rows = tenantId !== null
+    ? db.prepare('SELECT * FROM fleet_blackboard WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?').all(tenantId, limit) as BlackboardRow[]
+    : db.prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?').all(limit) as BlackboardRow[]
 
   if (!rows.length) return []
 
@@ -142,6 +144,11 @@ const VALID_STATUS = new Set(['active', 'done', 'blocked', 'stale', 'assigned'])
 export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
+  // Tenant scope for reads: admin sees everything (including shared '_multi_'
+  // agents), every other role is narrowed to its own tenant. Routes MUST check
+  // role === 'admin' for the bypass, not tenantId === null -- see RouteContext.
+  const readTenantId: string | null = ctx.role === 'admin' ? null : (ctx.tenantId ?? 'default')
+
   // History endpoint must be matched before the generic /api/blackboard GET.
   if (path === '/api/blackboard/history' && method === 'GET') {
     const { url } = ctx
@@ -155,12 +162,12 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     }
     const limitRaw = url.searchParams.get('limit')
     const limit = limitRaw !== null ? Math.min(Math.max(1, parseInt(limitRaw, 10) || 50), 200) : undefined
-    json(res, listBlackboardHistory({ agent_id, since, limit }))
+    json(res, listBlackboardHistory({ agent_id, since, limit, tenantId: readTenantId }))
     return true
   }
 
   if (path === '/api/blackboard' && method === 'GET') {
-    json(res, listBlackboardWithSignals(10))
+    json(res, listBlackboardWithSignals(10, readTenantId))
     return true
   }
 
@@ -180,6 +187,18 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     const status = body.status ? String(body.status) : 'active'
     if (!VALID_STATUS.has(status)) { json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked|stale|assigned' }, 400); return true }
     const task_ref = body.task_ref ? String(body.task_ref) : null
+    // Cross-tenant write guard: a non-admin caller may only post on behalf of
+    // an agent that resolves to their own tenant. '_multi_' (shared) agents
+    // can never be written by a non-admin caller either, since the sentinel
+    // never equals a real ctx.tenantId.
+    if (ctx.role !== 'admin') {
+      const expectedTenant = resolveAgentTenant(agent_id)
+      const callerTenant = ctx.tenantId ?? 'default'
+      if (expectedTenant !== callerTenant) {
+        json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
+        return true
+      }
+    }
     try {
       const row = upsertBlackboard(agent_id, { task_ref, status, summary })
       json(res, { ok: true, row })
