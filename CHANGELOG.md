@@ -11,22 +11,24 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
-- **[API]** SQL-backed skill storage with tenant isolation (migration 0030): `skills` + `skill_tenant_access` tables; `/api/skills/sql/*` CRUD endpoints with grant/revoke access management; fleet skills hidden from B2B tenants by default
-- `scripts/materialize-skills.ts` one-time idempotent script to seed file-based skills (global `~/.claude/skills/` and agent-local `.claude/skills/`) into the SQL `skills` table via INSERT OR IGNORE; supports `--dry-run`
-- SQL-to-file skill regeneration at startup (716-D): `src/web/skill-regen.ts` writes fleet SQL skills back to their canonical file paths (atomic rename, idempotent content check, non-destructive -- files absent from SQL are never touched); controlled by `SKILL_SQL_REGEN=1` kill-switch (fail-safe: disabled by default); `scripts/regen-skills.ts` for manual runs and proof verification
-- PostToolUse hook `scripts/hooks/skill-sql-sync-hook.py` (716-F): every direct SKILL.md file edit (Edit/Write/MultiEdit tool) now upserts into the SQL skills table in the same operation; resolves path to `global/<name>` / `agent/<agentId>/<name>` id, parses description from frontmatter, uses `INSERT ON CONFLICT DO UPDATE`; exit 0 always (SQL failure never blocks the agent); rejects path traversal and non-SKILL.md targets; hook wired in `.claude/settings.json` PostToolUse
-- **[API]** Dashboard skill editor is now SQL-first with synchronous file mirror (716-E): `PUT /api/skills/:name`, `POST /api/skills`, `DELETE /api/agents/:name/skills/:skill`, `POST /api/skills/import`, `POST /api/agents/:name/skills`, and `POST /api/agents/:name/skills/import` all write to SQL first then mirror to the file system atomically; id scheme matches materialization (`global/<name>` / `agent/<agentId>/<name>`); no code path writes only to file or only to SQL
-- **[API]** scheduled tasks SQL-backed store: new `schedules` table (migration 0029) replaces file-based runner source; GET /api/schedules tenant-scoped for non-admin callers, POST auto-stamps tenant_id, DELETE/PUT/toggle/run enforce cross-tenant 404 guard; fleet tasks (tenant_id=null) visible to admin only; `scripts/migrate-schedules-to-db.ts` for one-time seeding; dashboard schedules page gains tenant-selector for global admin
-- **[API]** B2B admin hard-delete tenant+user: DELETE /api/admin/tenants/:id (cascade), DELETE /api/admin/users/:id (self/last-admin guard), user-edit PATCH extended with display_name/email/role; openapi docs for full /admin/users CRUD
-- **[API]** `GET /api/approvals` accepts `?tenant=<id>` for global admin callers to narrow results to a specific tenant (non-admin callers remain scoped to their own tenant)
-- **[API]** `GET /api/messages` and `GET /api/messages/threads` accept `?tenant=<id>` for global admin callers to narrow to a specific tenant's message traffic
-- Tenant selector added to Overview, Messages, and Approvals dashboard pages (visible to global admin only, mirrors the pattern already in Kanban, Memories, Recall, Schedules, and Artifacts)
-- `GET /api/overview`: artifacts and approvals activity feed now respect the `?tenant=` filter when set (previously queried globally regardless of the tenant param)
+- SQL-first skill creation instruction (Phase 3)
+- read/write skills via SQL instead of the file mirror
+- per-skill instant SQL->file regen on dashboard write
 - add RBAC admin UI for tokens, partner-senders, skill access
 - add doc_key/doc_key_prefix/limit/meta_only filters to GET /api/workspace
 - frontend role-gating for write controls
 - atomikusan átköt napi hármas (DREAM/DIGEST/PETER-REPORT) fájlból workspace_docs SQL-be
+- 716-F PostToolUse skill-sql-sync hook
 - wire up the TTL sweeper (previously dead code)
+- wire tenant-selector into messages, approvals and overview views
+- PostToolUse hook to sync SKILL.md edits to SQL
+- SQL-first + file-mirror write path for dashboard skill editor
+- SQL->file skill regen at startup with kill-switch
+- materialize file-based skills into SQL (INSERT OR IGNORE)
+- startup auto-seed + INSERT OR IGNORE seed semantics
+- add SQL-backed skill storage with tenant isolation (716-A/B)
+- scheduled tasks SQL-backed store with tenant scoping
+- B2B admin hard-delete for tenants and users, user edit modal
 - workspace-docs agent/tenant filter combobox
 - artifacts tenant isolation -- Phase A
 - workspace docs dashboard page (list, view, delete)
@@ -246,7 +248,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 - three P1 gate bugs preventing RBAC/tenant UI from rendering
 - don't clear token on sign-in button click
 - add sign-in button for token-mode dashboard users
+- add skills, skill_tenant_access and workspace_docs to cascade
 - session cookie takes precedence over legacy file-token
+- override sharp to ^0.35.0 to address libvips CVEs
 - add schedules table to deleteTenant cascade
 - close IDOR fail-open on null tenant in GET /api/skills/sql/:id
 - return 400 instead of 500 on invalid PUT body
@@ -575,10 +579,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 - consolidate readClaudeCodeOauthJson into claude-credentials.ts
 - remove dead legacy /telegram/ URL routes from agents.ts
 - cacheable avatars + gzip for heavy responses (#698)
-- skill dashboard/API paths (agent-coverage lookup, fleet export/import) read and write skills via SQL instead of the on-disk SKILL.md mirror
 
 ### Documentation
 
+- update for skill SQL-regen Phase 1
 - document per-skill instant regen (kanban 3f52d485 Phase 1)
 - update for RBAC admin UI and modal fix
 - document RBAC admin UI and modal visibility fix
@@ -589,6 +593,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 - update fork-diff for P1 RBAC gate-unlock fixes
 - update fork-diff for token-mode sign-in button
 - update fork-diff for auth-gate session priority fix
+- add sharp 0.35.4 override security fix entry
+- update fork-diff for 716-F skill-sql-sync hook
 - update fork-diff for schedules tenant-delete cascade
 - update fork-diff for 716-E SQL-first skill editor
 - update fork-diff for 716-D SQL->file skill regen
@@ -695,6 +701,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 ### Infrastructure
 
 - add GET /api/skills/sql route-shadow fix entry
+- add fleet-wide installer for skill-sql-sync hook
+- bump the minor-and-patch group with 3 updates
 - mutation guard for recentMemories SQL-level tenant filter
 - **[API]** regenerate api.ts for dashboard_users profile fields
 - fix config-key integration test to source keys from the sweeper itself
