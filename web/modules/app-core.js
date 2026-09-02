@@ -297,7 +297,7 @@ export function renderStaticI18n() {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 export function boot() {
-  _navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
+  _navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page], .sb-user[data-page]')
   _pages = document.querySelectorAll('.page')
 
   // Mobile off-canvas sidebar toggle.
@@ -339,10 +339,10 @@ export function boot() {
   window.addEventListener('hashchange', routeFromHash)
 
   // SPA fallback: convert /admin or /profile path to hash routing.
-  // If no hash is present and the path is a known admin page, convert to hash.
-  if (!location.hash && (location.pathname === '/admin' || location.pathname === '/profile')) {
-    const pageId = location.pathname.slice(1)  // '/admin' -> 'admin' or '/profile' -> 'profile'
-    location.hash = pageId
+  // 'admin' has no page of its own -- it points at the RBAC admin screen.
+  const PATH_PAGE_MAP = { admin: 'adminRbac', profile: 'profile' }
+  if (!location.hash && PATH_PAGE_MAP[location.pathname.slice(1)]) {
+    location.hash = PATH_PAGE_MAP[location.pathname.slice(1)]
     return  // routeFromHash will be called by hashchange event.
   }
 
