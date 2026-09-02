@@ -70,7 +70,7 @@ let _selectedTenantId = null
 async function loadTenants() {
   const list = $('tenantList')
   if (!list) return
-  list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Betöltés...</p>'
+  list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
   try {
     const r = await fetch('/api/admin/tenants?include_disabled=true')
     if (!r.ok) throw new Error(r.status)
@@ -88,7 +88,7 @@ function renderTenantList() {
   const list = $('tenantList')
   if (!list) return
   if (!_tenants.length) {
-    list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0" data-i18n="admin.b2b.tenant.empty">Nincs tenant.</p>'
+    list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('admin.b2b.tenant.empty', 'Nincs tenant.')}</p>`
     return
   }
   list.innerHTML = _tenants.map(ten => `
@@ -147,7 +147,7 @@ async function showAgentMatrix(tenantId) {
   if (!container) return
   container.hidden = false
   const matrix = $('agentMatrix')
-  matrix.innerHTML = '<p style="color:var(--text-muted)">Betöltés...</p>'
+  matrix.innerHTML = `<p style="color:var(--text-muted)">${t('common.loading', 'Betöltés...')}</p>`
   try {
     const r = await fetch(`/api/admin/agent-availability?tenant_id=${encodeURIComponent(tenantId)}`)
     if (!r.ok) throw new Error(r.status)
@@ -161,7 +161,7 @@ async function showAgentMatrix(tenantId) {
 function renderAgentMatrix(items, tenantId) {
   const matrix = $('agentMatrix')
   if (!items.length) {
-    matrix.innerHTML = '<p style="color:var(--text-muted)">Nincs ismert agent.</p>'
+    matrix.innerHTML = `<p style="color:var(--text-muted)">${t('admin.b2b.agent.empty', 'Nincs ismert agent.')}</p>`
     return
   }
   matrix.innerHTML = items.map(item => `
@@ -220,7 +220,7 @@ let _users = []
 async function loadUsers(tenantFilter) {
   const list = $('userList')
   if (!list) return
-  list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Betöltés...</p>'
+  list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
   const params = new URLSearchParams({ include_disabled: 'true' })
   if (tenantFilter) params.set('tenant_id', tenantFilter)
   try {
@@ -238,7 +238,7 @@ function renderUserList() {
   const list = $('userList')
   if (!list) return
   if (!_users.length) {
-    list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Nincs felhasználó.</p>'
+    list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('admin.b2b.user.empty', 'Nincs felhasználó.')}</p>`
     return
   }
   list.innerHTML = _users.map(u => `
@@ -389,7 +389,7 @@ let _deviceKeys = []
 async function loadDeviceKeys() {
   const list = $('deviceKeyList')
   if (!list) return
-  list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Betöltés...</p>'
+  list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
   try {
     const r = await fetch('/api/admin/device-keys')
     if (!r.ok) throw new Error(r.status)
@@ -405,7 +405,7 @@ function renderDeviceKeyList() {
   const list = $('deviceKeyList')
   if (!list) return
   if (!_deviceKeys.length) {
-    list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Nincs eszközkulcs.</p>'
+    list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('admin.b2b.device_key.empty', 'Nincs eszközkulcs.')}</p>`
     return
   }
   list.innerHTML = _deviceKeys.map(k => {

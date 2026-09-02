@@ -239,6 +239,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- add full i18n wiring for the RBAC admin page (tokens, partner senders, skill access tabs and their modals) -- the page previously had no `data-i18n`/`t()` usage at all and stayed Hungarian regardless of language setting; also add missing loading/empty-state keys in the B2B admin module and a pre-existing but never-added `connectors.env_modal.desc` key
 - add ~55 missing translation keys for the B2B admin, RBAC nav label and profile pages (hu.js + en.js) -- these pages rendered raw i18n keys (e.g. `admin.b2b.subtitle`, `profile.field.username`) instead of labels once SPA fallback routing made them directly reachable
 - fix agent Skills tab always showing empty
 - wire profile nav click + alias /admin to RBAC admin page

@@ -9,6 +9,7 @@ import { showToast } from './toast.js'
 import { can } from './rbac-client.js'
 
 const $ = (id) => document.getElementById(id)
+const t = (k, fb) => (typeof window.t === 'function' ? window.t(k) : null) ?? fb
 
 // .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
 // only becomes visible via the .active class -- [hidden] alone toggles
@@ -74,14 +75,14 @@ let _tokens = []
 async function loadTokens() {
   const list = $('tokenList')
   if (!list) return
-  list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Betöltés...</p>'
+  list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
   try {
     const r = await fetch('/api/admin/tokens')
     if (!r.ok) throw new Error(r.status)
     _tokens = await r.json()
     renderTokenList()
   } catch (err) {
-    list.innerHTML = `<p style="color:var(--danger)">Hiba: ${esc(String(err))}</p>`
+    list.innerHTML = `<p style="color:var(--danger)">${t('common.error', 'Hiba')}: ${esc(String(err))}</p>`
   }
 }
 
@@ -89,7 +90,7 @@ function renderTokenList() {
   const list = $('tokenList')
   if (!list) return
   if (!_tokens.length) {
-    list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Nincs token.</p>'
+    list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('admin.rbac.token.empty', 'Nincs token.')}</p>`
     return
   }
   list.innerHTML = _tokens.map(tok => {
@@ -100,16 +101,16 @@ function renderTokenList() {
         <span class="admin-b2b-row-name">${esc(tok.name)}</span>
         <span class="badge" data-variant="${tok.role === 'admin' ? 'info' : 'neutral'}">${esc(tok.role)}</span>
         <code class="admin-b2b-row-id">${esc(tok.tenant_id)}</code>
-        <span class="admin-b2b-row-meta">Lejár: ${fmtDate(tok.expires_at)}</span>
-        <span class="admin-b2b-row-meta">Utoljára használva: ${fmtDate(tok.last_used_at)}</span>
-        ${revoked ? '<span class="badge" data-variant="neutral">visszavonva</span>' : ''}
+        <span class="admin-b2b-row-meta">${t('admin.rbac.token.expires_label', 'Lejár:')} ${fmtDate(tok.expires_at)}</span>
+        <span class="admin-b2b-row-meta">${t('admin.rbac.token.last_used_label', 'Utoljára használva:')} ${fmtDate(tok.last_used_at)}</span>
+        ${revoked ? `<span class="badge" data-variant="neutral">${t('admin.rbac.token.revoked_badge', 'visszavonva')}</span>` : ''}
       </div>
       <div class="admin-b2b-row-actions">
         <button class="btn" data-variant="secondary" data-size="compact" data-action="rotate-token" data-id="${tok.id}" data-name="${esc(tok.name)}" ${revoked ? 'disabled' : ''}>
-          Rotálás
+          ${t('admin.rbac.token.rotate', 'Rotálás')}
         </button>
         <button class="btn" data-variant="secondary" data-size="compact" data-action="revoke-token" data-id="${tok.id}" data-name="${esc(tok.name)}" ${revoked ? 'disabled' : ''} style="color:var(--danger)">
-          Visszavonás
+          ${t('admin.rbac.action.revoke', 'Visszavonás')}
         </button>
       </div>
     </div>
@@ -128,7 +129,7 @@ function wireTokenReveal() {
     const input = $('tokenRevealInput')
     if (!input) return
     navigator.clipboard?.writeText(input.value).then(
-      () => showToast('Vágólapra másolva'),
+      () => showToast(t('common.toast.copied', 'Vágólapra másolva')),
       () => { input.select() },
     )
   })
@@ -141,7 +142,7 @@ async function createToken() {
   const expiresRaw = $('newTokenExpiresDays')?.value.trim()
   const expiresInDays = expiresRaw ? Number(expiresRaw) : undefined
 
-  if (!name) { showToast('Név szükséges', 'error'); return }
+  if (!name) { showToast(t('admin.rbac.token.name_required', 'Név szükséges'), 'error'); return }
   try {
     const r = await fetch('/api/admin/tokens', {
       method: 'POST',
@@ -153,37 +154,37 @@ async function createToken() {
     closeModal('tokenAddModal')
     if ($('newTokenName')) $('newTokenName').value = ''
     if ($('newTokenExpiresDays')) $('newTokenExpiresDays').value = ''
-    showToast('Token létrehozva')
+    showToast(t('admin.rbac.token.created', 'Token létrehozva'))
     showTokenReveal(data.token)
     await loadTokens()
   } catch (err) {
-    showToast('Hiba: ' + err.message, 'error')
+    showToast(t('common.error', 'Hiba') + ': ' + err.message, 'error')
   }
 }
 
 async function rotateToken(id, name) {
-  if (!confirm(`Biztosan rotálod a(z) "${name}" tokent? A régi azonnal érvénytelen lesz.`)) return
+  if (!confirm(t('admin.rbac.token.rotate_confirm', `Biztosan rotálod a(z) "${name}" tokent? A régi azonnal érvénytelen lesz.`).replace('{name}', name))) return
   try {
     const r = await fetch(`/api/admin/tokens/${id}/rotate`, { method: 'POST' })
     const data = await r.json()
     if (!r.ok) throw new Error(data.hint || data.error)
-    showToast('Token rotálva')
+    showToast(t('admin.rbac.token.rotated', 'Token rotálva'))
     showTokenReveal(data.token)
     await loadTokens()
   } catch (err) {
-    showToast('Hiba: ' + err.message, 'error')
+    showToast(t('common.error', 'Hiba') + ': ' + err.message, 'error')
   }
 }
 
 async function revokeToken(id, name) {
-  if (!confirm(`Biztosan visszavonod a(z) "${name}" tokent?`)) return
+  if (!confirm(t('admin.rbac.token.revoke_confirm', `Biztosan visszavonod a(z) "${name}" tokent?`).replace('{name}', name))) return
   try {
     const r = await fetch(`/api/admin/tokens/${id}/revoke`, { method: 'DELETE' })
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
-    showToast('Token visszavonva')
+    showToast(t('admin.rbac.token.revoked_toast', 'Token visszavonva'))
     await loadTokens()
   } catch (err) {
-    showToast('Hiba: ' + err.message, 'error')
+    showToast(t('common.error', 'Hiba') + ': ' + err.message, 'error')
   }
 }
 
@@ -194,7 +195,7 @@ let _partnerSenders = []
 async function loadPartnerSenders(tenantFilter) {
   const list = $('partnerSenderList')
   if (!list) return
-  list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Betöltés...</p>'
+  list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
   try {
     const params = tenantFilter ? '?tenant_id=' + encodeURIComponent(tenantFilter) : ''
     const r = await fetch('/api/admin/partner-senders' + params)
@@ -203,7 +204,7 @@ async function loadPartnerSenders(tenantFilter) {
     _partnerSenders = data.items ?? []
     renderPartnerSenderList()
   } catch (err) {
-    list.innerHTML = `<p style="color:var(--danger)">Hiba: ${esc(String(err))}</p>`
+    list.innerHTML = `<p style="color:var(--danger)">${t('common.error', 'Hiba')}: ${esc(String(err))}</p>`
   }
 }
 
@@ -211,7 +212,7 @@ function renderPartnerSenderList() {
   const list = $('partnerSenderList')
   if (!list) return
   if (!_partnerSenders.length) {
-    list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Nincs partner-küldő.</p>'
+    list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('admin.rbac.partner_sender.empty', 'Nincs partner-küldő.')}</p>`
     return
   }
   list.innerHTML = _partnerSenders.map(s => `
@@ -220,13 +221,13 @@ function renderPartnerSenderList() {
         <span class="admin-b2b-row-name">${esc(s.display_name || s.sender_id)}</span>
         <code class="admin-b2b-row-id">${esc(s.sender_id)}</code>
         <code class="admin-b2b-row-id">${esc(s.tenant_id)}</code>
-        ${s.disabled_at ? '<span class="badge" data-variant="neutral">letiltva</span>' : ''}
+        ${s.disabled_at ? `<span class="badge" data-variant="neutral">${t('admin.rbac.partner_sender.disabled_badge', 'letiltva')}</span>` : ''}
       </div>
       <div class="admin-b2b-row-actions">
         <button class="btn" data-variant="secondary" data-size="compact" data-action="delete-partner-sender"
           data-sender-id="${esc(s.sender_id)}" data-tenant-id="${esc(s.tenant_id)}"
           ${s.disabled_at ? 'disabled' : ''} style="color:var(--danger)">
-          Törlés
+          ${t('common.delete', 'Törlés')}
         </button>
       </div>
     </div>
@@ -241,14 +242,14 @@ function populateNewPartnerSenderTenantSelect() {
 function populatePartnerSenderTenantFilter() {
   const sel = $('partnerSenderTenantFilter')
   if (!sel) return
-  sel.innerHTML = '<option value="">Mind a tenantok</option>' + tenantOptions()
+  sel.innerHTML = `<option value="">${t('admin.b2b.user.filter.all', 'Mind a tenantok')}</option>` + tenantOptions()
 }
 
 async function addPartnerSender() {
   const senderId = $('newPartnerSenderId')?.value.trim()
   const tenantId = $('newPartnerSenderTenant')?.value
   const displayName = $('newPartnerSenderDisplayName')?.value.trim() || ''
-  if (!senderId || !tenantId) { showToast('Sender ID és tenant szükséges', 'error'); return }
+  if (!senderId || !tenantId) { showToast(t('admin.rbac.partner_sender.id_tenant_required', 'Sender ID és tenant szükséges'), 'error'); return }
   try {
     const r = await fetch('/api/admin/partner-senders', {
       method: 'POST',
@@ -260,22 +261,22 @@ async function addPartnerSender() {
     closeModal('partnerSenderAddModal')
     if ($('newPartnerSenderId')) $('newPartnerSenderId').value = ''
     if ($('newPartnerSenderDisplayName')) $('newPartnerSenderDisplayName').value = ''
-    showToast('Partner-küldő létrehozva')
+    showToast(t('admin.rbac.partner_sender.created', 'Partner-küldő létrehozva'))
     await loadPartnerSenders($('partnerSenderTenantFilter')?.value || undefined)
   } catch (err) {
-    showToast('Hiba: ' + err.message, 'error')
+    showToast(t('common.error', 'Hiba') + ': ' + err.message, 'error')
   }
 }
 
 async function deletePartnerSender(senderId, tenantId) {
-  if (!confirm(`Biztosan törlöd a(z) "${senderId}" partner-küldőt (${tenantId})?`)) return
+  if (!confirm(t('admin.rbac.partner_sender.delete_confirm', `Biztosan törlöd a(z) "${senderId}" partner-küldőt (${tenantId})?`).replace('{senderId}', senderId).replace('{tenantId}', tenantId))) return
   try {
     const r = await fetch(`/api/admin/partner-senders/${encodeURIComponent(senderId)}?tenant_id=${encodeURIComponent(tenantId)}`, { method: 'DELETE' })
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
-    showToast('Partner-küldő törölve')
+    showToast(t('admin.rbac.partner_sender.deleted', 'Partner-küldő törölve'))
     await loadPartnerSenders($('partnerSenderTenantFilter')?.value || undefined)
   } catch (err) {
-    showToast('Hiba: ' + err.message, 'error')
+    showToast(t('common.error', 'Hiba') + ': ' + err.message, 'error')
   }
 }
 
@@ -293,7 +294,7 @@ async function loadSkillList() {
     const data = await r.json()
     _skills = data.skills ?? []
     const current = sel.value
-    sel.innerHTML = '<option value="">-- Válassz skillt --</option>' + _skills.map(s =>
+    sel.innerHTML = `<option value="">${t('admin.rbac.skill.select_placeholder', '-- Válassz skillt --')}</option>` + _skills.map(s =>
       `<option value="${esc(s.id)}" ${s.id === current ? 'selected' : ''}>${esc(s.name)} (${esc(s.tenant_id)}${s.is_global ? ', global' : ''})</option>`
     ).join('')
     if (current && _skills.some(s => s.id === current)) {
@@ -301,7 +302,7 @@ async function loadSkillList() {
       await loadSkillAccess(current)
     }
   } catch (err) {
-    showToast('Hiba a skill-lista betöltésekor: ' + err.message, 'error')
+    showToast(t('admin.rbac.skill.list_load_error', 'Hiba a skill-lista betöltésekor:') + ' ' + err.message, 'error')
   }
 }
 
@@ -311,19 +312,19 @@ async function loadSkillAccess(skillId) {
   const grantBtn = $('skillAccessGrantBtn')
   if (!list) return
   if (!skillId) {
-    list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Válassz egy skillt a hozzáférések kezeléséhez.</p>'
+    list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('admin.rbac.skill.select_hint', 'Válassz egy skillt a hozzáférések kezeléséhez.')}</p>`
     if (grantBtn) grantBtn.disabled = true
     return
   }
   if (grantBtn) grantBtn.disabled = false
-  list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Betöltés...</p>'
+  list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
   try {
     const r = await fetch(`/api/skills/sql/${encodeURIComponent(skillId)}/access`)
     if (!r.ok) throw new Error(r.status)
     const data = await r.json()
     renderSkillAccessList(data.access ?? [])
   } catch (err) {
-    list.innerHTML = `<p style="color:var(--danger)">Hiba: ${esc(String(err))}</p>`
+    list.innerHTML = `<p style="color:var(--danger)">${t('common.error', 'Hiba')}: ${esc(String(err))}</p>`
   }
 }
 
@@ -331,19 +332,19 @@ function renderSkillAccessList(access) {
   const list = $('skillAccessList')
   if (!list) return
   if (!access.length) {
-    list.innerHTML = '<p style="color:var(--text-muted);padding:8px 0">Ez a skill egyetlen tenantnak sincs explicit megosztva.</p>'
+    list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('admin.rbac.skill.no_access', 'Ez a skill egyetlen tenantnak sincs explicit megosztva.')}</p>`
     return
   }
   list.innerHTML = access.map(a => `
     <div class="admin-b2b-row">
       <div class="admin-b2b-row-main" style="flex-wrap:wrap;gap:6px">
         <code class="admin-b2b-row-id">${esc(a.tenant_id)}</code>
-        <span class="admin-b2b-row-meta">Megosztva: ${fmtDate(a.granted_at)}</span>
+        <span class="admin-b2b-row-meta">${t('admin.rbac.skill.granted_label', 'Megosztva:')} ${fmtDate(a.granted_at)}</span>
         ${a.granted_by ? `<span class="admin-b2b-row-meta">${esc(a.granted_by)}</span>` : ''}
       </div>
       <div class="admin-b2b-row-actions">
         <button class="btn" data-variant="secondary" data-size="compact" data-action="revoke-skill-access" data-tenant-id="${esc(a.tenant_id)}" style="color:var(--danger)">
-          Visszavonás
+          ${t('admin.rbac.action.revoke', 'Visszavonás')}
         </button>
       </div>
     </div>
@@ -358,7 +359,7 @@ function populateSkillGrantTenantSelect() {
 async function grantSkillAccess() {
   if (!_selectedSkillId) return
   const tenantId = $('skillGrantTenant')?.value
-  if (!tenantId) { showToast('Tenant szükséges', 'error'); return }
+  if (!tenantId) { showToast(t('admin.rbac.skill.tenant_required', 'Tenant szükséges'), 'error'); return }
   try {
     const r = await fetch(`/api/skills/sql/${encodeURIComponent(_selectedSkillId)}/access`, {
       method: 'POST',
@@ -367,23 +368,23 @@ async function grantSkillAccess() {
     })
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
     closeModal('skillGrantModal')
-    showToast('Hozzáférés megadva')
+    showToast(t('admin.rbac.skill.granted_toast', 'Hozzáférés megadva'))
     await loadSkillAccess(_selectedSkillId)
   } catch (err) {
-    showToast('Hiba: ' + err.message, 'error')
+    showToast(t('common.error', 'Hiba') + ': ' + err.message, 'error')
   }
 }
 
 async function revokeSkillAccessFor(tenantId) {
   if (!_selectedSkillId) return
-  if (!confirm(`Biztosan visszavonod a(z) "${tenantId}" tenant hozzáférését ehhez a skillhez?`)) return
+  if (!confirm(t('admin.rbac.skill.revoke_confirm', `Biztosan visszavonod a(z) "${tenantId}" tenant hozzáférését ehhez a skillhez?`).replace('{tenantId}', tenantId))) return
   try {
     const r = await fetch(`/api/skills/sql/${encodeURIComponent(_selectedSkillId)}/access/${encodeURIComponent(tenantId)}`, { method: 'DELETE' })
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
-    showToast('Hozzáférés visszavonva')
+    showToast(t('admin.rbac.skill.revoked_toast', 'Hozzáférés visszavonva'))
     await loadSkillAccess(_selectedSkillId)
   } catch (err) {
-    showToast('Hiba: ' + err.message, 'error')
+    showToast(t('common.error', 'Hiba') + ': ' + err.message, 'error')
   }
 }
 
