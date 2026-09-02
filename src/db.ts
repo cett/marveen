@@ -4229,6 +4229,7 @@ export interface BlackboardHistoryRow {
   status: string
   summary: string
   created_at: number
+  tenant_id: string
 }
 
 export function insertBlackboardHistory(entry: {
@@ -4238,24 +4239,26 @@ export function insertBlackboardHistory(entry: {
   summary: string
 }): void {
   db.prepare(
-    'INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary) VALUES (?, ?, ?, ?)'
-  ).run(entry.agent_id, entry.task_ref, entry.status, entry.summary)
+    'INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id) VALUES (?, ?, ?, ?, ?)'
+  ).run(entry.agent_id, entry.task_ref, entry.status, entry.summary, resolveAgentTenant(entry.agent_id))
 }
 
 export function listBlackboardHistory(opts: {
   agent_id?: string
   since?: number
   limit?: number
+  tenantId?: string | null
 } = {}): BlackboardHistoryRow[] {
   const limit = Math.min(opts.limit ?? 50, 200)
   const parts: string[] = []
   const params: (string | number)[] = []
   if (opts.agent_id) { parts.push('agent_id = ?'); params.push(opts.agent_id) }
   if (opts.since !== undefined) { parts.push('created_at >= ?'); params.push(opts.since) }
+  if (opts.tenantId) { parts.push('tenant_id = ?'); params.push(opts.tenantId) }
   const where = parts.length ? 'WHERE ' + parts.join(' AND ') : ''
   params.push(limit)
   return db.prepare(
-    `SELECT id, agent_id, task_ref, status, summary, created_at
+    `SELECT id, agent_id, task_ref, status, summary, created_at, tenant_id
      FROM fleet_blackboard_history ${where}
      ORDER BY created_at DESC LIMIT ?`
   ).all(...params) as BlackboardHistoryRow[]
@@ -4312,10 +4315,28 @@ export interface BlackboardRow {
   status: 'active' | 'done' | 'blocked' | 'stale' | 'assigned'
   summary: string
   updated_at: number
+  tenant_id: string
 }
 
 export function findBlackboardRowByAgent(agent_id: string): BlackboardRow | undefined {
   return db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
+}
+
+// Resolve which tenant a blackboard row for agent_id belongs to, derived from
+// tenant_agent_availability (deny-by-default opt-in matrix -- only enabled=1
+// rows count as a real assignment; a disabled row means the agent is NOT
+// available to that tenant, see 0026_tenant_agent_availability.sql).
+//   0 enabled rows -> fleet agent, 'default'
+//   1 enabled row  -> that tenant
+//   2+ enabled rows -> '_multi_' sentinel: never matches a real ctx.tenantId,
+//     so the row is admin-only visible (see tryHandleBlackboard tenant filter).
+export function resolveAgentTenant(agent_id: string): string {
+  const rows = db
+    .prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1')
+    .all(agent_id) as { tenant_id: string }[]
+  if (rows.length === 0) return 'default'
+  if (rows.length === 1) return rows[0]!.tenant_id
+  return '_multi_'
 }
 
 // Upsert a fleet blackboard row for agent_id, writing a history entry only
@@ -4326,15 +4347,17 @@ export function upsertBlackboard(
 ): BlackboardRow {
   const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
   const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
+  const tenant_id = resolveAgentTenant(agent_id)
   db.prepare(`
-    INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at)
-    VALUES (?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, unixepoch(), ?)
     ON CONFLICT(agent_id) DO UPDATE SET
       task_ref   = excluded.task_ref,
       status     = excluded.status,
       summary    = excluded.summary,
-      updated_at = unixepoch()
-  `).run(id, agent_id, data.task_ref ?? null, data.status ?? 'active', data.summary)
+      updated_at = unixepoch(),
+      tenant_id  = excluded.tenant_id
+  `).run(id, agent_id, data.task_ref ?? null, data.status ?? 'active', data.summary, tenant_id)
   const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
   const changed = !existing ||
     existing.status !== row.status ||

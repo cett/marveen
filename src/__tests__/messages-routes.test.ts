@@ -299,7 +299,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
   it('assign:true skipped when recipient already has an active row', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'agent-c', task_ref: null, status: 'active', summary: 'already working', updated_at: 0,
+      id: 'abc', agent_id: 'agent-c', task_ref: null, status: 'active', summary: 'already working', updated_at: 0, tenant_id: 'default',
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 45, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {

@@ -144,6 +144,8 @@ export interface BlackboardRow {
   status: 'active' | 'done' | 'blocked' | 'stale' | 'assigned';
   summary: string;
   updated_at: number;
+  /** Tenant this row is scoped to, derived from the agent's tenant_agent_availability assignment. "default" for fleet agents with no tenant assignment, "_multi_" for agents shared across 2+ tenants (visible to admin only). */
+  tenant_id: string;
 }
 
 export type BlackboardRowWithSignal = BlackboardRow & {
@@ -166,6 +168,8 @@ export interface BlackboardHistoryRow {
   summary: string;
   /** Unix timestamp of when this transition was recorded */
   created_at: number;
+  /** Tenant this row is scoped to (see BlackboardRow.tenant_id). */
+  tenant_id: string;
 }
 
 export interface SkillUsageSummaryRow {

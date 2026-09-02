@@ -25,11 +25,15 @@ const mockPrepare = vi.fn()
 const mockInsertBlackboardHistory = vi.fn()
 const mockListBlackboardHistory = vi.fn<(opts?: unknown) => object[]>(() => [])
 const mockUpsertBlackboard = vi.fn<(agent_id: unknown, data: unknown) => object>(() => ({ ...ROW_A }))
+// Default: every agent resolves to the 'default' tenant (fleet agent, no
+// tenant_agent_availability rows) -- matches the untouched-ctx.tenantId tests below.
+const mockResolveAgentTenant = vi.fn<(agent_id: unknown) => string>(() => 'default')
 vi.mock('../db.js', () => ({
   getDb: vi.fn(() => ({ prepare: mockPrepare })),
   insertBlackboardHistory: (a: unknown) => mockInsertBlackboardHistory(a),
   listBlackboardHistory: (a: unknown) => mockListBlackboardHistory(a),
   upsertBlackboard: (agent_id: unknown, data: unknown) => mockUpsertBlackboard(agent_id, data),
+  resolveAgentTenant: (agent_id: unknown) => mockResolveAgentTenant(agent_id),
 }))
 
 // ---------- settings-store mock (default thresholds) ----------
@@ -55,7 +59,12 @@ const HISTORY_ROWS = [
 ]
 
 // ---------- http helpers ----------
-function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: unknown } } {
+function makeCtx(
+  method: string,
+  path: string,
+  body?: object,
+  ctxOverrides: Partial<RouteContext> = {},
+): { ctx: RouteContext; out: { status: number; body: unknown } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
   const req = new EventEmitter() as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
   req.method = method
@@ -67,7 +76,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
     end(b?: string) { try { out.body = JSON.parse(b?.toString() || '{}') } catch { out.body = b } },
   } as unknown as import('node:http').ServerResponse
   const url = new URL('http://localhost' + path)
-  const ctx: RouteContext = { req: req as unknown as import('node:http').IncomingMessage, res, path: url.pathname, method, url }
+  const ctx: RouteContext = { req: req as unknown as import('node:http').IncomingMessage, res, path: url.pathname, method, url, ...ctxOverrides }
   return { ctx, out }
 }
 
@@ -102,6 +111,39 @@ describe('GET /api/blackboard', () => {
     const { ctx } = makeCtx('GET', '/api/other')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(false)
+  })
+
+  it('admin (role=admin) queries unfiltered -- no tenant WHERE clause', async () => {
+    mockPrepare
+      .mockReturnValueOnce(makeStmt([ROW_A, ROW_B]))
+      .mockReturnValueOnce(makeStmt([]))
+      .mockReturnValueOnce(makeStmt([]))
+    const { ctx } = makeCtx('GET', '/api/blackboard', undefined, { role: 'admin' })
+    await tryHandleBlackboard(ctx)
+    expect(mockPrepare.mock.calls[0][0]).not.toMatch(/tenant_id/)
+  })
+
+  it('non-admin role narrows the query to ctx.tenantId', async () => {
+    const stmt = makeStmt([ROW_A])
+    mockPrepare
+      .mockReturnValueOnce(stmt)
+      .mockReturnValueOnce(makeStmt([]))
+      .mockReturnValueOnce(makeStmt([]))
+    const { ctx } = makeCtx('GET', '/api/blackboard', undefined, { role: 'agent', tenantId: 'tenant-a' })
+    await tryHandleBlackboard(ctx)
+    expect(mockPrepare.mock.calls[0][0]).toMatch(/WHERE tenant_id = \?/)
+    expect(stmt.all).toHaveBeenCalledWith('tenant-a', 10)
+  })
+
+  it('non-admin role with no tenantId falls back to the "default" tenant', async () => {
+    // rows=[] triggers listBlackboardWithSignals' early return, so only this
+    // one db.prepare() call happens -- do not queue further Once values here,
+    // they would leak into (and desync) the next test's mockPrepare queue.
+    const stmt = makeStmt([])
+    mockPrepare.mockReturnValueOnce(stmt)
+    const { ctx } = makeCtx('GET', '/api/blackboard', undefined, { role: 'viewer' })
+    await tryHandleBlackboard(ctx)
+    expect(stmt.all).toHaveBeenCalledWith('default', 10)
   })
 })
 
@@ -204,6 +246,65 @@ describe('POST /api/blackboard', () => {
   })
 })
 
+describe('POST /api/blackboard -- cross-tenant write guard', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('non-admin caller writing for an agent in their own tenant succeeds', async () => {
+    mockResolveAgentTenant.mockReturnValueOnce('tenant-a')
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
+    const { ctx, out } = makeCtx(
+      'POST', '/api/blackboard',
+      { agent_id: 'agent-a', summary: 'ok' },
+      { role: 'agent', tenantId: 'tenant-a' },
+    )
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(200)
+    expect(mockUpsertBlackboard).toHaveBeenCalledOnce()
+  })
+
+  it('non-admin caller writing for an agent in a different tenant is forbidden', async () => {
+    // agent-b resolves to tenant-b, but the caller is authenticated as tenant-a.
+    mockResolveAgentTenant.mockReturnValueOnce('tenant-b')
+    const { ctx, out } = makeCtx(
+      'POST', '/api/blackboard',
+      { agent_id: 'agent-b', summary: 'ok' },
+      { role: 'agent', tenantId: 'tenant-a' },
+    )
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(403)
+    expect((out.body as { error: string }).error).toBe('forbidden')
+    expect(mockUpsertBlackboard).not.toHaveBeenCalled()
+  })
+
+  it('non-admin caller cannot write for a "_multi_" (shared) agent, even from a real tenant', async () => {
+    // shared-agent is assigned to 2+ tenants -> resolveAgentTenant returns the
+    // '_multi_' sentinel, which never equals a real ctx.tenantId, so no tenant
+    // user can write on its behalf -- only admin can (see bypass test below).
+    mockResolveAgentTenant.mockReturnValueOnce('_multi_')
+    const { ctx, out } = makeCtx(
+      'POST', '/api/blackboard',
+      { agent_id: 'shared-agent', summary: 'ok' },
+      { role: 'agent', tenantId: 'tenant-a' },
+    )
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(403)
+    expect(mockUpsertBlackboard).not.toHaveBeenCalled()
+  })
+
+  it('admin caller bypasses the tenant check even for a mismatched tenant', async () => {
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
+    const { ctx, out } = makeCtx(
+      'POST', '/api/blackboard',
+      { agent_id: 'agent-a', summary: 'ok' },
+      { role: 'admin', tenantId: 'some-other-tenant' },
+    )
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(200)
+    expect(mockResolveAgentTenant).not.toHaveBeenCalled()
+    expect(mockUpsertBlackboard).toHaveBeenCalledOnce()
+  })
+})
+
 describe('PATCH /api/blackboard/:id', () => {
   beforeEach(() => vi.clearAllMocks())
 
@@ -287,6 +388,22 @@ describe('GET /api/blackboard/history', () => {
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
     expect(out.body).toEqual(HISTORY_ROWS)
+  })
+
+  it('passes null tenantId (unfiltered) to db function for admin', async () => {
+    const { ctx } = makeCtx('GET', '/api/blackboard/history', undefined, { role: 'admin' })
+    await tryHandleBlackboard(ctx)
+    expect(mockListBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: null })
+    )
+  })
+
+  it('passes ctx.tenantId to db function for non-admin', async () => {
+    const { ctx } = makeCtx('GET', '/api/blackboard/history', undefined, { role: 'read_only', tenantId: 'tenant-a' })
+    await tryHandleBlackboard(ctx)
+    expect(mockListBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: 'tenant-a' })
+    )
   })
 
   it('passes agent_id filter to db function', async () => {
