@@ -20,10 +20,16 @@ function _fetchAuthStatus() {
  * Returns a getter `() => string | null` for the current selection
  * (null = all tenants), or null if the current user is not a global admin.
  *
- * @param {string}   containerId  id of the wrapping <div> element
- * @param {Function} onChange     called with (tenantId: string|null) on change
+ * @param {string}   containerId   id of the wrapping <div> element
+ * @param {Function} onChange      called with (tenantId: string|null) on change
+ * @param {{value: string, label: string}[]} [extraOptions]
+ *   Extra <option>s inserted between "All tenants" and the per-tenant list,
+ *   for callers whose backend route recognizes a scope value that isn't a
+ *   real tenant id (e.g. schedules' 'fleet' = tenant_id IS NULL rows, which
+ *   is NOT the same thing as the seeded 'default' tenant). Most callers
+ *   don't need this and can omit it.
  */
-export async function initTenantSelector(containerId, onChange) {
+export async function initTenantSelector(containerId, onChange, extraOptions = []) {
   const auth = await _fetchAuthStatus()
   if (!(auth?.role === 'admin' && auth?.tenant_id === null)) return null
 
@@ -54,6 +60,13 @@ export async function initTenantSelector(containerId, onChange) {
   allOpt.value = ''
   allOpt.textContent = (typeof window.t === 'function' ? window.t('tenant.selector.all') : '') || 'Összes tenant'
   sel.appendChild(allOpt)
+
+  extraOptions.forEach(({ value, label }) => {
+    const opt = document.createElement('option')
+    opt.value = value
+    opt.textContent = label
+    sel.appendChild(opt)
+  })
 
   tenants.forEach(ten => {
     const opt = document.createElement('option')

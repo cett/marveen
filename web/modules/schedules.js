@@ -40,7 +40,15 @@ let _canWriteSchedules = true
 export async function initSchedules({ openModal, closeModal } = {}) {
   _openModal = openModal
   _closeModal = closeModal
-  _tenantGetter = await initTenantSelector('schedulesTenantSelectorContainer', () => loadSchedules())
+  // 'fleet' is a distinct scope from any real tenant id -- it selects the
+  // tenant_id IS NULL schedules (flotta-szintű, not owned by a B2B tenant),
+  // which effectiveTenant() in src/web/routes/schedules.ts already handles
+  // via the literal 'fleet' string. Without this option the selector could
+  // only ever send a real tenant id (e.g. the seeded 'default' tenant),
+  // which is a different thing and always returned zero fleet schedules.
+  _tenantGetter = await initTenantSelector('schedulesTenantSelectorContainer', () => loadSchedules(), [
+    { value: 'fleet', label: t('tenant.selector.fleet_only') || 'Csak flotta-szintű' },
+  ])
   // The actual gate check lives in loadSchedules(), which app.js always calls
   // right after this (see the note there) -- no need to duplicate it here.
 }
