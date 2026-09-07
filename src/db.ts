@@ -4414,6 +4414,15 @@ export function isTenantAgentEnabled(tenantId: string, agentId: string): boolean
   return row?.enabled === 1
 }
 
+/** List agent_ids explicitly enabled=1 for a tenant (deny-by-default: agents
+ *  with no row, or enabled=0, are not returned). */
+export function getEnabledAgentsForTenant(tenantId: string): string[] {
+  const rows = db
+    .prepare('SELECT agent_id FROM tenant_agent_availability WHERE tenant_id = ? AND enabled = 1')
+    .all(tenantId) as { agent_id: string }[]
+  return rows.map(r => r.agent_id)
+}
+
 // ---------------------------------------------------------------------------
 // Schedules (SQL-backed, replaces file-based scheduled-tasks-io)
 // ---------------------------------------------------------------------------

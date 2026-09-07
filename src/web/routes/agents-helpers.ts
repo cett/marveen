@@ -267,13 +267,16 @@ export function getAgentSummary(name: string): AgentSummary {
   }
 }
 
-export function getAgentDetail(name: string): AgentDetail {
+// redactMcp: true replaces mcpJson with an empty object -- used for non-admin
+// tenant callers, who must not see another agent's MCP server config (can
+// carry credentials/endpoints), only that the agent exists.
+export function getAgentDetail(name: string, redactMcp = false): AgentDetail {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
   const summary = getAgentSummary(name)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
-  const mcpJson = readFileOr(join(dir, '.mcp.json'), '{}')
+  const mcpJson = redactMcp ? '{}' : readFileOr(join(dir, '.mcp.json'), '{}')
 
   const skillsDir = join(dir, '.claude', 'skills')
   let skills: { name: string; hasSkillMd: boolean }[] = []

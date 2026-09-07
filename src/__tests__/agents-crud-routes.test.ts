@@ -22,6 +22,8 @@ vi.mock('../db.js', () => ({
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]) }),
   }),
+  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
+  isTenantAgentEnabled: vi.fn().mockReturnValue(true),
 }))
 vi.mock('../web/telegram.js', () => ({
   sendAvatarChangeMessage: vi.fn().mockResolvedValue(undefined),
@@ -102,8 +104,10 @@ function makeCtx(opts: {
   method: string
   path: string
   body?: string
+  role?: RouteContext['role']
+  tenantId?: RouteContext['tenantId']
 }): { ctx: RouteContext; statusCode: () => number; responseBody: () => unknown } {
-  const { method, path, body = '' } = opts
+  const { method, path, body = '', role, tenantId } = opts
 
   const em = new EventEmitter()
   Object.assign(em, { headers: {}, method, url: path })
@@ -126,6 +130,8 @@ function makeCtx(opts: {
     method,
     url: new URL(`http://localhost${path}`),
     auth: { kind: 'token' },
+    role,
+    tenantId,
   }
   return {
     ctx,
