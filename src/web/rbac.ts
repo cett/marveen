@@ -175,6 +175,15 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Add explicit rows when 625 introduces sub-paths.
   { method: 'GET', pathPattern: '/api/me',          prefix: false, permission: 'memories:read' },
   { method: 'GET', pathPattern: '/api/v1/me',       prefix: false, permission: 'memories:read' },
+  // Profile self-edit (PATCH) -- handler (me.ts) requires session auth itself;
+  // memories:read is the narrowest non-admin permission, matching the GET rows above.
+  { method: 'PATCH', pathPattern: '/api/me',              prefix: false, permission: 'memories:read' },
+  { method: 'PATCH', pathPattern: '/api/v1/me',           prefix: false, permission: 'memories:read' },
+  // Auth self-service (session-callers only; auth.ts handlers enforce session kind themselves,
+  // this table only gates the shadow/enforce RBAC layer).
+  { method: 'POST',  pathPattern: '/api/auth/password',   prefix: false, permission: 'memories:read' },
+  { method: 'POST',  pathPattern: '/api/auth/logout-all', prefix: false, permission: 'memories:read' },
+  { method: 'GET',   pathPattern: '/api/auth/sessions',   prefix: false, permission: 'memories:read' },
 
   // Workspace docs -- fleet-agent produced working documents.
   { method: 'GET',    pathPattern: '/api/workspace',    prefix: true,  permission: 'memories:read' },

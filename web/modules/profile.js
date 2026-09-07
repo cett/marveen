@@ -25,9 +25,8 @@ let _inited = false
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 async function apiFetch(path, opts = {}) {
-  const token = (() => { try { return localStorage.getItem('marveen_token') } catch { return '' } })()
-  const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(opts.headers ?? {}) }
-  return fetch(path, { ...opts, headers })
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers ?? {}) }
+  return fetch(path, { ...opts, headers, credentials: 'include' })
 }
 
 async function fetchMe() {
