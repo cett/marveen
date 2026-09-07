@@ -2330,14 +2330,14 @@
           </div>
         </div>
       </div>
-      <div class="admin-b2b-tabs" role="tablist" id="adminB2bTabs">
-        <button class="admin-b2b-tab active" role="tab" data-tab="tenants" data-i18n="admin.b2b.tab.tenants">Tenantok</button>
-        <button class="admin-b2b-tab" role="tab" data-tab="users" data-i18n="admin.b2b.tab.users">Felhasználók</button>
-        <button class="admin-b2b-tab" role="tab" data-tab="deviceKeys" data-i18n="admin.b2b.tab.device_keys">Eszközkulcsok</button>
+      <div class="admin-b2b-tabs tab-nav" role="tablist" id="adminB2bTabs">
+        <button class="admin-b2b-tab tab-btn active" role="tab" data-tab="tenants" data-i18n="admin.b2b.tab.tenants">Tenantok</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="users" data-i18n="admin.b2b.tab.users">Felhasználók</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="deviceKeys" data-i18n="admin.b2b.tab.device_keys">Eszközkulcsok</button>
       </div>
 
       <!-- Tenantok fül -->
-      <div class="admin-b2b-panel" id="adminPanelTenants">
+      <div class="card" id="adminPanelTenants">
         <div class="admin-b2b-toolbar">
           <button class="btn" data-variant="primary" data-size="compact" id="tenantAddBtn" data-i18n="admin.b2b.tenant.add">+ Tenant</button>
         </div>
@@ -2350,7 +2350,7 @@
       </div>
 
       <!-- Felhasználók fül -->
-      <div class="admin-b2b-panel" id="adminPanelUsers" hidden>
+      <div class="card" id="adminPanelUsers" hidden>
         <div class="admin-b2b-toolbar">
           <select id="userTenantFilter" class="admin-b2b-select">
             <option value="" data-i18n="admin.b2b.user.filter.all">Mind a tenantok</option>
@@ -2361,7 +2361,7 @@
       </div>
 
       <!-- Eszközkulcsok fül -->
-      <div class="admin-b2b-panel" id="adminPanelDeviceKeys" hidden>
+      <div class="card" id="adminPanelDeviceKeys" hidden>
         <div id="deviceKeyList" class="admin-b2b-list"></div>
       </div>
     </div>
@@ -2377,14 +2377,14 @@
           </div>
         </div>
       </div>
-      <div class="admin-b2b-tabs" role="tablist" id="adminRbacTabs">
-        <button class="admin-b2b-tab active" role="tab" data-tab="tokens" data-i18n="admin.rbac.tab.tokens">Tokenek</button>
-        <button class="admin-b2b-tab" role="tab" data-tab="partnerSenders" data-i18n="admin.rbac.tab.partner_senders">Partner-küldők</button>
-        <button class="admin-b2b-tab" role="tab" data-tab="skillAccess" data-i18n="admin.rbac.tab.skill_access">Skill-hozzáférés</button>
+      <div class="admin-b2b-tabs tab-nav" role="tablist" id="adminRbacTabs">
+        <button class="admin-b2b-tab tab-btn active" role="tab" data-tab="tokens" data-i18n="admin.rbac.tab.tokens">Tokenek</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="partnerSenders" data-i18n="admin.rbac.tab.partner_senders">Partner-küldők</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="skillAccess" data-i18n="admin.rbac.tab.skill_access">Skill-hozzáférés</button>
       </div>
 
       <!-- Tokenek fül -->
-      <div class="admin-b2b-panel" id="adminRbacPanelTokens">
+      <div class="card" id="adminRbacPanelTokens">
         <div class="admin-b2b-toolbar">
           <button class="btn" data-variant="primary" data-size="compact" id="tokenAddBtn" data-i18n="admin.rbac.token.add">+ Token</button>
         </div>
@@ -2392,7 +2392,7 @@
       </div>
 
       <!-- Partner-küldők fül -->
-      <div class="admin-b2b-panel" id="adminRbacPanelPartnerSenders" hidden>
+      <div class="card" id="adminRbacPanelPartnerSenders" hidden>
         <div class="admin-b2b-toolbar">
           <select id="partnerSenderTenantFilter" class="admin-b2b-select">
             <option value="" data-i18n="admin.b2b.user.filter.all">Mind a tenantok</option>
@@ -2403,7 +2403,7 @@
       </div>
 
       <!-- Skill-hozzáférés fül -->
-      <div class="admin-b2b-panel" id="adminRbacPanelSkillAccess" hidden>
+      <div class="card" id="adminRbacPanelSkillAccess" hidden>
         <div class="admin-b2b-toolbar">
           <select id="skillAccessSkillSelect" class="admin-b2b-select">
             <option value="" data-i18n="admin.rbac.skill.select_placeholder">-- Válassz skillt --</option>
