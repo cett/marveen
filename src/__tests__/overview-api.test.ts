@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { initDatabase, getDb, createApproval, createSkill } from '../db.js'
+import { initDatabase, getDb, createApproval, createSkill, createTenant, setTenantAgentAvailability } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../web/agent-config.js', () => ({
@@ -220,6 +220,120 @@ describe('GET /api/overview — tokensToday and costTodayUsd', () => {
 
     // Fix-revert proof: without model-based pricing both costs would be equal.
     expect(costOpus).toBeGreaterThan(costSonnet)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// tasksToday tenant scoping (kanban #737/#738)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/overview — tasksToday tenant scoping', () => {
+  it('admin with ?tenant filter counts only that tenant\'s task_runs', async () => {
+    const db = getDb()
+    createTenant('tenant-a', 'Tenant A')
+    setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    const now = Date.now()
+    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t1','agent-a',?,'fired')").run(now)
+    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t2','other-agent',?,'fired')").run(now)
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: without agentsForTenant() scoping this would be 2 (both agents),
+    // and without the countUserTurns(...) guard it could also pick up unrelated real
+    // session turns from this machine's ~/.claude/projects.
+    expect(out.body.tasksToday).toBe(1)
+  })
+
+  it('a tenant with no agents granted at all returns 0 tasksToday, not an error', async () => {
+    const db = getDb()
+    createTenant('tenant-empty', 'Empty Tenant')
+    const now = Date.now()
+    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t1','agent-a',?,'fired')").run(now)
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-empty', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    expect(out.body.tasksToday).toBe(0)
+  })
+
+  it('multi-tenant agent\'s task_runs are excluded from a single tenant\'s scoped view', async () => {
+    const db = getDb()
+    createTenant('tenant-a', 'Tenant A')
+    createTenant('tenant-b', 'Tenant B')
+    setTenantAgentAvailability('tenant-a', 'shared-agent', true)
+    setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
+    setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    const now = Date.now()
+    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t1','agent-a',?,'fired')").run(now)
+    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t2','shared-agent',?,'fired')").run(now)
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: if shared-agent were mistakenly included, this would be 2.
+    expect(out.body.tasksToday).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// tokensToday tenant scoping (kanban #737/#738, Option B: token_usage.tenant_id)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/overview — tokensToday tenant scoping', () => {
+  it('admin with ?tenant filter counts only that tenant\'s token_usage rows', async () => {
+    const db = getDb()
+    createTenant('tenant-a', 'Tenant A')
+    const startOfDay = new Date()
+    startOfDay.setHours(0, 0, 0, 0)
+    const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600
+
+    db.prepare(
+      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tenant_id) VALUES ('agent-a','s1',?,1000,200,'tenant-a')"
+    ).run(todaySec)
+    db.prepare(
+      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tenant_id) VALUES ('agent-b','s2',?,500,100,'tenant-b')"
+    ).run(todaySec)
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: without the tenant_id filter this would be 1800 (both rows).
+    expect(out.body.tokensToday).toBe(1200)
+  })
+
+  it('"_multi_" (shared-agent) token_usage rows are excluded from a tenant\'s scoped view', async () => {
+    const db = getDb()
+    createTenant('tenant-a', 'Tenant A')
+    const startOfDay = new Date()
+    startOfDay.setHours(0, 0, 0, 0)
+    const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600
+
+    db.prepare(
+      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tenant_id) VALUES ('agent-a','s1',?,1000,200,'tenant-a')"
+    ).run(todaySec)
+    db.prepare(
+      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tenant_id) VALUES ('shared-agent','s2',?,9000,900,'_multi_')"
+    ).run(todaySec)
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: if '_multi_' rows leaked into a tenant view, this would be 11100.
+    expect(out.body.tokensToday).toBe(1200)
+  })
+
+  it('admin without ?tenant filter sees "_multi_" rows too (fleet-wide total)', async () => {
+    const db = getDb()
+    const startOfDay = new Date()
+    startOfDay.setHours(0, 0, 0, 0)
+    const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600
+
+    db.prepare(
+      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tenant_id) VALUES ('agent-a','s1',?,1000,200,'tenant-a')"
+    ).run(todaySec)
+    db.prepare(
+      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tenant_id) VALUES ('shared-agent','s2',?,9000,900,'_multi_')"
+    ).run(todaySec)
+
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    expect(out.body.tokensToday).toBe(11100)
   })
 })
 

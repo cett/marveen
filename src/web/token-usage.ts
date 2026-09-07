@@ -3,7 +3,7 @@ import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { getDb } from '../db.js'
+import { getDb, resolveAgentTenant } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 
@@ -214,14 +214,19 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)')
   const insertCall = db.prepare(`
     INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(agent, session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
       model = CASE WHEN token_usage.model IS NULL AND excluded.model IS NOT NULL THEN excluded.model ELSE token_usage.model END,
-      thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END
+      thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END,
+      tenant_id = excluded.tenant_id
   `)
 
   for (const source of sources) {
+    // Resolved once per source (constant for every call parsed from this
+    // agent's transcripts) so a later tenant_agent_availability change is
+    // picked up on the agent's next collection run, not just at first insert.
+    const tenantId = resolveAgentTenant(source.agent)
     const files = findJsonlFiles(source.projectDir)
     for (const file of files) {
       let fileSize: number
@@ -244,6 +249,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
                 c.cacheReadTokens, c.cacheCreationTokens,
                 c.thinkingTokens, c.model,
                 c.contentPreview || null, c.toolName,
+                tenantId,
               )
             }
             setCursor.run(file, linesRead, fileSize)

@@ -2170,12 +2170,20 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
   })
 }
 
-export function countTaskRunsBetween(fromTs: number, toTs?: number): number {
-  if (toTs === undefined) {
-    const row = db.prepare('SELECT COUNT(*) as c FROM task_runs WHERE ts >= ?').get(fromTs) as { c: number }
-    return row.c
+// agentIds, when provided, narrows the count to task_runs whose agent is in
+// that list (tenant scoping -- see agentsForTenant() in overview.ts). An empty
+// array means the tenant has no agents at all, so the count is 0 without
+// even querying. undefined (the default) means unfiltered, fleet-wide.
+export function countTaskRunsBetween(fromTs: number, toTs?: number, agentIds?: string[]): number {
+  if (agentIds !== undefined && agentIds.length === 0) return 0
+  const conditions = ['ts >= ?']
+  const params: (number | string)[] = [fromTs]
+  if (toTs !== undefined) { conditions.push('ts < ?'); params.push(toTs) }
+  if (agentIds !== undefined) {
+    conditions.push(`agent IN (${agentIds.map(() => '?').join(',')})`)
+    params.push(...agentIds)
   }
-  const row = db.prepare('SELECT COUNT(*) as c FROM task_runs WHERE ts >= ? AND ts < ?').get(fromTs, toTs) as { c: number }
+  const row = db.prepare(`SELECT COUNT(*) as c FROM task_runs WHERE ${conditions.join(' AND ')}`).get(...params) as { c: number }
   return row.c
 }
 
