@@ -5,6 +5,7 @@ Hermetic: all git and file operations use temp dirs.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -158,6 +159,130 @@ class TestUnreleasedIdempotency(unittest.TestCase):
             cl = (repo.root / 'CHANGELOG.md').read_text()
             self.assertIn('alpha', cl)
             self.assertIn('beta', cl)
+
+
+class TestIncrementalMarker(unittest.TestCase):
+    """Marker-based incremental append -- hand-written [Unreleased]
+    content must survive repeated runs untouched."""
+
+    def _marker_sha(self, cl: str) -> str:
+        m = re.search(r'<!-- changelog-auto-sha: ([0-9a-f]+) -->', cl)
+        self.assertIsNotNone(m, 'expected a changelog-auto-sha marker in output')
+        return m.group(1)
+
+    def test_first_run_stamps_marker_at_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = GitRepo(Path(tmp))
+            repo.commit('feat(x): first feature')
+            run_node(GEN_SCRIPT, cwd=repo.root)
+            cl = (repo.root / 'CHANGELOG.md').read_text()
+            head = subprocess.run(
+                ['git', 'rev-parse', 'HEAD'], cwd=repo.root,
+                capture_output=True, text=True, check=True
+            ).stdout.strip()
+            self.assertEqual(self._marker_sha(cl), head)
+
+    def test_hand_edit_survives_next_incremental_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = GitRepo(Path(tmp))
+            repo.commit('feat(x): first feature')
+            run_node(GEN_SCRIPT, cwd=repo.root)
+
+            # Simulate a human/agent enriching the auto-generated entry by hand.
+            cl_path = repo.root / 'CHANGELOG.md'
+            cl = cl_path.read_text()
+            enriched = cl.replace(
+                '- first feature',
+                '- first feature -- with hand-written rationale that a subject line could never capture'
+            )
+            self.assertNotEqual(cl, enriched)
+            cl_path.write_text(enriched)
+
+            repo.commit('fix(y): second fix')
+            r = run_node(GEN_SCRIPT, cwd=repo.root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            cl2 = cl_path.read_text()
+            self.assertIn('hand-written rationale that a subject line could never capture', cl2)
+            self.assertIn('second fix', cl2)
+
+    def test_running_incrementally_does_not_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = GitRepo(Path(tmp))
+            repo.commit('feat(x): alpha')
+            run_node(GEN_SCRIPT, cwd=repo.root)
+            run_node(GEN_SCRIPT, cwd=repo.root)  # no new commits -- should be a no-op append
+            cl = (repo.root / 'CHANGELOG.md').read_text()
+            self.assertEqual(cl.count('alpha'), 1)
+            self.assertEqual(cl.count('changelog-auto-sha'), 1)
+
+    def test_bootstrap_leaves_preexisting_content_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = GitRepo(Path(tmp))
+            # Pre-existing [Unreleased] content with NO marker -- simulates the
+            # real CHANGELOG.md the first time this script runs after the fix.
+            seeded = (
+                '# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n'
+                '- hand-curated entry with rich detail that must not be touched\n\n'
+                '## [1.0.0] - 2026-01-01\n\n### Added\n\n- old stuff\n'
+            )
+            (repo.root / 'CHANGELOG.md').write_text(seeded)
+            repo.commit('fix(z): a commit made before the bootstrap run')
+            r = run_node(GEN_SCRIPT, cwd=repo.root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cl = (repo.root / 'CHANGELOG.md').read_text()
+            self.assertIn('hand-curated entry with rich detail that must not be touched', cl)
+            self.assertIn('changelog-auto-sha', cl)
+            # Bootstrap only stamps the marker; it does not also try to guess
+            # which commits are already represented in the hand-written text.
+            self.assertNotIn('a commit made before the bootstrap run', cl)
+
+            # The commit made *after* bootstrapping must still show up normally.
+            repo.commit('fix(z): a commit made after the bootstrap run')
+            run_node(GEN_SCRIPT, cwd=repo.root)
+            cl2 = (repo.root / 'CHANGELOG.md').read_text()
+            self.assertIn('a commit made after the bootstrap run', cl2)
+            self.assertIn('hand-curated entry with rich detail that must not be touched', cl2)
+
+    def test_unresolvable_marker_falls_back_with_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = GitRepo(Path(tmp))
+            repo.commit('feat(x): alpha')
+            run_node(GEN_SCRIPT, cwd=repo.root)
+
+            # Corrupt the marker to a SHA that can never resolve in this repo.
+            cl_path = repo.root / 'CHANGELOG.md'
+            corrupted = re.sub(
+                r'changelog-auto-sha: [0-9a-f]+',
+                'changelog-auto-sha: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+                cl_path.read_text()
+            )
+            cl_path.write_text(corrupted)
+
+            repo.commit('fix(y): beta')
+            r = run_node(GEN_SCRIPT, cwd=repo.root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('falling back', r.stderr.lower())
+            cl = cl_path.read_text()
+            self.assertIn('alpha', cl)
+            self.assertIn('beta', cl)
+
+    def test_release_strips_marker_from_promoted_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = GitRepo(Path(tmp))
+            repo.commit('feat(x): nice feature')
+            run_node(GEN_SCRIPT, cwd=repo.root)
+            run_node(GEN_SCRIPT, '--release', '1.1.0', cwd=repo.root)
+            cl = (repo.root / 'CHANGELOG.md').read_text()
+            self.assertIn('nice feature', cl)
+
+            # [Unreleased] comes first and keeps its own fresh marker; the
+            # promoted [1.1.0] section (after it) must not carry one.
+            idx_unreleased = cl.index('## [Unreleased]')
+            idx_version = cl.index('## [1.1.0]')
+            self.assertLess(idx_unreleased, idx_version)
+            version_section = cl[idx_version:]
+            self.assertNotIn('changelog-auto-sha', version_section)
 
 
 class TestReleaseCut(unittest.TestCase):
