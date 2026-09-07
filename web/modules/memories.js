@@ -12,7 +12,7 @@ let _canWriteMemories = true
 
 export async function initMemories({ openModal, closeModal } = {}) {
   _openModal = openModal; _closeModal = closeModal
-  _memTenantGetter = await initTenantSelector('memoriesTenantSelectorContainer', () => loadMemories())
+  _memTenantGetter = await initTenantSelector('memoriesTenantSelectorContainer', () => { loadMemories(); loadMemStats() })
   // The actual gate check lives in loadMemStats()/loadMemories(), which
   // app.js always calls right after this (see the notes there) -- no need
   // to duplicate it here.
@@ -177,9 +177,11 @@ export async function loadMemStats() {
     // ahead of that check. can()'s underlying fetch is cached/shared, so this
     // costs nothing once resolved.
     _canWriteMemories = await can('memories:write')
+    const tenant = _memTenantGetter?.()
+    const tenantParam = tenant ? `?tenant=${encodeURIComponent(tenant)}` : ''
     const [statsRes, ovRes] = await Promise.all([
-      fetch('/api/memories/stats'),
-      fetch('/api/overview'),
+      fetch('/api/memories/stats' + tenantParam),
+      fetch('/api/overview' + tenantParam),
     ])
     const stats = await statsRes.json()
     const ov = await ovRes.json()

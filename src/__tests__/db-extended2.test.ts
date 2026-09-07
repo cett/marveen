@@ -145,6 +145,25 @@ describe('memory functions', () => {
     expect(stats.total).toBeGreaterThan(0)
   })
 
+  it('getMemoryStats(tenantId) scopes total/byTier/importCount to that tenant only', () => {
+    const globalBefore = getMemoryStats()
+    saveAgentMemory('stat-tenant-a', 'tenant A memory', 'hot', undefined, false, 'stat-tenant-a-id')
+    saveAgentMemory('stat-tenant-b', 'tenant B memory', 'hot', undefined, false, 'stat-tenant-b-id')
+
+    const statsA = getMemoryStats('stat-tenant-a-id')
+    expect(statsA.total).toBe(1)
+    expect(statsA.byAgent['stat-tenant-a']).toBe(1)
+    expect(statsA.byAgent['stat-tenant-b']).toBeUndefined()
+
+    const statsB = getMemoryStats('stat-tenant-b-id')
+    expect(statsB.total).toBe(1)
+    expect(statsB.byAgent['stat-tenant-b']).toBe(1)
+
+    // No tenantId still returns the unfiltered fleet-wide total (backward compat).
+    const globalAfter = getMemoryStats()
+    expect(globalAfter.total).toBe(globalBefore.total + 2)
+  })
+
   it('getMemoryStats.withEmbedding counts embedding_blob, not just the legacy JSON column', () => {
     const db = getDb()
     // Simulate the post-0005-migration state: a memory whose vector lives in the

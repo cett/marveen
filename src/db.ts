@@ -648,24 +648,27 @@ export function searchAgentMemories(agentId: string, query: string, limit: numbe
   }
 }
 
-export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number; importCount: number } {
-  const total = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as {c:number}).c
+export function getMemoryStats(tenantId?: string): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number; importCount: number } {
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
+  const total = (db.prepare(`SELECT COUNT(*) as c FROM memories WHERE 1=1${tc}`).get(...tp) as {c:number}).c
   // Count both the compact binary embedding_blob (the primary store since the
   // 0005 migration) and the legacy JSON `embedding` column. Counting only the
   // legacy column reported 0 vectors after the blob migration emptied it, even
   // though every memory has a blob embedding.
-  const withEmbedding = (db.prepare('SELECT COUNT(*) as c FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL').get() as {c:number}).c
-  const agentRows = db.prepare('SELECT agent_id, COUNT(*) as c FROM memories GROUP BY agent_id').all() as {agent_id:string, c:number}[]
-  const tierRows = db.prepare('SELECT category, COUNT(*) as c FROM memories GROUP BY category').all() as {category:string, c:number}[]
+  const withEmbedding = (db.prepare(`SELECT COUNT(*) as c FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL)${tc}`).get(...tp) as {c:number}).c
+  const agentRows = db.prepare(`SELECT agent_id, COUNT(*) as c FROM memories WHERE 1=1${tc} GROUP BY agent_id`).all(...tp) as {agent_id:string, c:number}[]
+  const tierRows = db.prepare(`SELECT category, COUNT(*) as c FROM memories WHERE 1=1${tc} GROUP BY category`).all(...tp) as {category:string, c:number}[]
   const byAgent: Record<string, number> = {}
   const byTier: Record<string, number> = {}
   for (const r of agentRows) byAgent[r.agent_id] = r.c
   for (const r of tierRows) byTier[r.category] = r.c
-  // Import memories are stored in a separate table; include their count in the
-  // summary so the dashboard can show "Ebből import: N db".
+  // Import memories are stored in a separate table (also tenant_id-scoped
+  // since migration 0017); include their count in the summary so the
+  // dashboard can show "Ebből import: N db".
   let importCount = 0
   try {
-    importCount = (db.prepare('SELECT COUNT(*) as c FROM import_memories').get() as {c:number}).c
+    importCount = (db.prepare(`SELECT COUNT(*) as c FROM import_memories WHERE 1=1${tc}`).get(...tp) as {c:number}).c
   } catch { /* table may not exist yet if migration hasn't run */ }
   return { total, byAgent, byTier, withEmbedding, importCount }
 }

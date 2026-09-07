@@ -293,7 +293,8 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/stats' && method === 'GET') {
-    json(res, getMemoryStats())
+    const statsTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
+    json(res, getMemoryStats(statsTenantId))
     return true
   }
 
