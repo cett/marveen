@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, currentBotName } from '../../config.js'
-import { getDb, countTaskRunsBetween, listSkillsForTenant } from '../../db.js'
+import { getDb, countTaskRunsBetween, listSkillsForTenant, resolveAgentTenant } from '../../db.js'
 import {
   agentDir, listAgentNames, readAgentDisplayName,
 } from '../agent-config.js'
@@ -57,6 +57,16 @@ function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY)
   return total
 }
 
+// The agent ids that belong to a given tenant, derived from
+// resolveAgentTenant() (src/db.ts) -- the inverse of that function, applied
+// over the fleet's full agent universe (main agent + every configured
+// sub-agent). Used to scope task_runs (which only carries a plain agent
+// string, no tenant_id) to the Overview tenant selector.
+function agentsForTenant(tenantId: string): string[] {
+  const allAgentIds = [MAIN_AGENT_ID, ...listAgentNames()]
+  return allAgentIds.filter((id) => resolveAgentTenant(id) === tenantId)
+}
+
 // Estimate AI token cost in USD from token counts and model name.
 // Uses approximate Anthropic public pricing; returns 0 for unknown models.
 function estimateTokenCostUsd(inputTokens: number, outputTokens: number, model: string | null): number {
@@ -107,10 +117,16 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const yesterday = startTs - 24 * 60 * 60 * 1000
     const fourHoursAgo = nowMs - 4 * 60 * 60 * 1000
 
-    const schedToday = countTaskRunsBetween(startTs)
-    const schedYesterday = countTaskRunsBetween(yesterday, startTs)
-    const userTurns = countUserTurns(startTs)
-    const userTurnsPrev = countUserTurns(yesterday, startTs)
+    // Tenant scoping for tasksToday: task_runs.agent has no tenant_id column,
+    // so narrow by agent-id membership instead (agentsForTenant()). Session
+    // JSONL turns (countUserTurns) have no per-agent/tenant attribution at
+    // all -- fleet-global by construction -- so they're meaningless in a
+    // tenant-scoped view and excluded rather than mis-attributed to 'default'.
+    const tenantAgentIds = effectiveTenantId ? agentsForTenant(effectiveTenantId) : undefined
+    const schedToday = countTaskRunsBetween(startTs, undefined, tenantAgentIds)
+    const schedYesterday = countTaskRunsBetween(yesterday, startTs, tenantAgentIds)
+    const userTurns = effectiveTenantId ? 0 : countUserTurns(startTs)
+    const userTurnsPrev = effectiveTenantId ? 0 : countUserTurns(yesterday, startTs)
     const tasksToday = schedToday + userTurns
     const tasksYesterday = schedYesterday + userTurnsPrev
 
@@ -151,14 +167,18 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       for (const r of rows) lastActiveMap.set(r.agent, r.last_active)
     } catch { /* ignore */ }
 
-    // Daily token count and estimated USD cost from token_usage
+    // Daily token count and estimated USD cost from token_usage.
+    // Tenant scoping reuses the tc/tp ("AND tenant_id = ?") pair built above
+    // for the other tenant-scoped tables -- '_multi_' (shared-agent) rows are
+    // intentionally excluded from every real tenant's view (see
+    // resolveAgentTenant() in db.ts), only admin's unfiltered view sees them.
     let tokensToday = 0
     let costTodayUsd = 0
     try {
       const startSec = Math.floor(startTs / 1000)
       const tokenRows = db0.prepare(
-        "SELECT input_tokens, output_tokens, model FROM token_usage WHERE timestamp >= ?"
-      ).all(startSec) as { input_tokens: number; output_tokens: number; model: string | null }[]
+        `SELECT input_tokens, output_tokens, model FROM token_usage WHERE timestamp >= ?${tc}`
+      ).all(startSec, ...tp) as { input_tokens: number; output_tokens: number; model: string | null }[]
       for (const r of tokenRows) {
         tokensToday += r.input_tokens + r.output_tokens
         costTodayUsd += estimateTokenCostUsd(r.input_tokens, r.output_tokens, r.model)
