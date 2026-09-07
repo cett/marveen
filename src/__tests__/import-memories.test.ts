@@ -34,6 +34,7 @@ function makeCtx(
   path: string,
   body?: object,
   query?: Record<string, string>,
+  opts: { role?: string; tenantId?: string | null } = {},
 ): { ctx: RouteContext; out: { status: number; body: unknown } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
   const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
@@ -56,7 +57,7 @@ function makeCtx(
   const qs = query ? '?' + new URLSearchParams(query).toString() : ''
   const url = new URL(`http://localhost:3420${path}${qs}`)
   return {
-    ctx: { req, res, path: url.pathname, method, url } as unknown as RouteContext,
+    ctx: { req, res, path: url.pathname, method, url, role: opts.role ?? 'admin', tenantId: opts.tenantId } as unknown as RouteContext,
     out,
   }
 }
@@ -551,5 +552,183 @@ describe('import_sources ON DELETE CASCADE', () => {
 
     const logCount = (db.prepare("SELECT COUNT(*) AS c FROM import_audit_log WHERE source_id = ?").get(sid) as { c: number }).c
     expect(logCount).toBe(0)
+  })
+})
+
+// ── Tenant isolation ──────────────────────────────────────────────────────────
+describe('tenant scoping: POST/GET /api/import/sources', () => {
+  it('non-admin creates a source scoped to their own tenant, ignoring any tenant_id in the body', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/ta', tenant_id: 'someone-elses-tenant' }, undefined, { role: 'viewer', tenantId: 'tenant-a' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(200)
+    const id = (out.body as { id: string }).id
+
+    const row = getDb().prepare("SELECT tenant_id FROM import_sources WHERE id = ?").get(id) as { tenant_id: string }
+    expect(row.tenant_id).toBe('tenant-a')
+  })
+
+  it('admin creates a source in the tenant given by tenant_id, defaulting to "default"', async () => {
+    const { ctx: c1, out: o1 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/tb', tenant_id: 'tenant-b' })
+    await tryHandleImportMemories(c1)
+    const idB = (o1.body as { id: string }).id
+    expect((getDb().prepare("SELECT tenant_id FROM import_sources WHERE id = ?").get(idB) as { tenant_id: string }).tenant_id).toBe('tenant-b')
+
+    const { ctx: c2, out: o2 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/tc' })
+    await tryHandleImportMemories(c2)
+    const idDefault = (o2.body as { id: string }).id
+    expect((getDb().prepare("SELECT tenant_id FROM import_sources WHERE id = ?").get(idDefault) as { tenant_id: string }).tenant_id).toBe('default')
+  })
+
+  it('GET /api/import/sources -- admin with no ?tenant= sees sources across all tenants', async () => {
+    const { ctx: c1 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/list-a', tenant_id: 'tenant-x' })
+    await tryHandleImportMemories(c1)
+    const { ctx: c2 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/list-b', tenant_id: 'tenant-y' })
+    await tryHandleImportMemories(c2)
+
+    const { ctx, out } = makeCtx('GET', '/api/import/sources')
+    await tryHandleImportMemories(ctx)
+    const paths = (out.body as { path: string }[]).map(s => s.path)
+    expect(paths).toContain('/tmp/list-a')
+    expect(paths).toContain('/tmp/list-b')
+  })
+
+  it('GET /api/import/sources -- admin with ?tenant= narrows to that tenant only', async () => {
+    const { ctx: c1 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/narrow-a', tenant_id: 'tenant-x' })
+    await tryHandleImportMemories(c1)
+    const { ctx: c2 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/narrow-b', tenant_id: 'tenant-y' })
+    await tryHandleImportMemories(c2)
+
+    const { ctx, out } = makeCtx('GET', '/api/import/sources', undefined, { tenant: 'tenant-x' })
+    await tryHandleImportMemories(ctx)
+    const paths = (out.body as { path: string }[]).map(s => s.path)
+    expect(paths).toContain('/tmp/narrow-a')
+    expect(paths).not.toContain('/tmp/narrow-b')
+  })
+
+  it('GET /api/import/sources -- non-admin only ever sees their own tenant, ignoring ?tenant=', async () => {
+    const { ctx: c1 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/own', tenant_id: 'tenant-mine' })
+    await tryHandleImportMemories(c1)
+    const { ctx: c2 } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/other', tenant_id: 'tenant-other' })
+    await tryHandleImportMemories(c2)
+
+    const { ctx, out } = makeCtx('GET', '/api/import/sources', undefined, { tenant: 'tenant-other' }, { role: 'viewer', tenantId: 'tenant-mine' })
+    await tryHandleImportMemories(ctx)
+    const paths = (out.body as { path: string }[]).map(s => s.path)
+    expect(paths).toEqual(['/tmp/own'])
+  })
+})
+
+describe('cross-tenant ownership guard (PUT/DELETE/sync/log/wipe-source)', () => {
+  async function createSourceInTenant(path: string, tenantId: string): Promise<string> {
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', { type: 'local', path, tenant_id: tenantId })
+    await tryHandleImportMemories(ctx)
+    return (out.body as { id: string }).id
+  }
+
+  it('PUT on a different tenant\'s source returns 403 for a non-admin', async () => {
+    const id = await createSourceInTenant('/tmp/guard-put', 'tenant-owner')
+    const { ctx, out } = makeCtx('PUT', `/api/import/sources/${id}`, { label: 'hijack' }, undefined, { role: 'viewer', tenantId: 'tenant-intruder' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(403)
+  })
+
+  it('DELETE on a different tenant\'s source returns 403 for a non-admin', async () => {
+    const id = await createSourceInTenant('/tmp/guard-delete', 'tenant-owner')
+    const { ctx, out } = makeCtx('DELETE', `/api/import/sources/${id}`, undefined, undefined, { role: 'viewer', tenantId: 'tenant-intruder' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(403)
+
+    // Source must still exist
+    const row = getDb().prepare("SELECT id FROM import_sources WHERE id = ?").get(id)
+    expect(row).toBeDefined()
+  })
+
+  it('POST sync on a different tenant\'s source returns 403 for a non-admin', async () => {
+    const id = await createSourceInTenant('/tmp/guard-sync', 'tenant-owner')
+    const { ctx, out } = makeCtx('POST', `/api/import/sources/${id}/sync`, undefined, undefined, { role: 'viewer', tenantId: 'tenant-intruder' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(403)
+  })
+
+  it('GET log on a different tenant\'s source returns 403 for a non-admin', async () => {
+    const id = await createSourceInTenant('/tmp/guard-log', 'tenant-owner')
+    const { ctx, out } = makeCtx('GET', `/api/import/sources/${id}/log`, undefined, undefined, { role: 'viewer', tenantId: 'tenant-intruder' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(403)
+  })
+
+  it('DELETE memories (wipe-source) on a different tenant\'s source returns 403 for a non-admin', async () => {
+    const id = await createSourceInTenant('/tmp/guard-wipe', 'tenant-owner')
+    const { ctx, out } = makeCtx('DELETE', `/api/import/sources/${id}/memories`, undefined, undefined, { role: 'viewer', tenantId: 'tenant-intruder' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(403)
+  })
+
+  it('a non-admin CAN act on their own tenant\'s source', async () => {
+    const id = await createSourceInTenant('/tmp/guard-own', 'tenant-owner')
+    const { ctx, out } = makeCtx('PUT', `/api/import/sources/${id}`, { label: 'mine' }, undefined, { role: 'viewer', tenantId: 'tenant-owner' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(200)
+  })
+
+  it('returns 404, not 403, for a source id that does not exist at all', async () => {
+    const { ctx, out } = makeCtx('PUT', '/api/import/sources/00000000', { label: 'x' }, undefined, { role: 'viewer', tenantId: 'tenant-intruder' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(404)
+  })
+})
+
+describe('DELETE /api/import/memories (global wipe) is admin-only', () => {
+  it('returns 403 for a non-admin', async () => {
+    const { ctx, out } = makeCtx('DELETE', '/api/import/memories', undefined, undefined, { role: 'viewer', tenantId: 'tenant-a' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(403)
+  })
+
+  it('succeeds for an admin', async () => {
+    const { ctx, out } = makeCtx('DELETE', '/api/import/memories')
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(200)
+  })
+})
+
+describe('tenant scoping: GET /api/import/stats and /api/import/search', () => {
+  async function seedMemoryFor(sourceId: string, id: string, path: string, content: string): Promise<void> {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`
+      INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'hash', ?, 'kw', ?, ?, ?)
+    `).run(id, sourceId, path, path, content, now, now, now)
+  }
+
+  it('stats and search only count/return the caller\'s own tenant for a non-admin', async () => {
+    const { ctx: pa } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/stat-a', tenant_id: 'tenant-stat-a' })
+    await tryHandleImportMemories(pa)
+    const sidA = (getDb().prepare("SELECT id FROM import_sources WHERE path = '/tmp/stat-a'").get() as { id: string }).id
+
+    const { ctx: pb } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/stat-b', tenant_id: 'tenant-stat-b' })
+    await tryHandleImportMemories(pb)
+    const sidB = (getDb().prepare("SELECT id FROM import_sources WHERE path = '/tmp/stat-b'").get() as { id: string }).id
+
+    await seedMemoryFor(sidA, 'stat-mem-a-id0001', '/tmp/stat-a/budget-report.md', 'quarterly budget notes')
+    await seedMemoryFor(sidB, 'stat-mem-b-id0002', '/tmp/stat-b/budget-report.md', 'quarterly budget notes')
+
+    const { ctx: statsCtx, out: statsOut } = makeCtx('GET', '/api/import/stats', undefined, undefined, { role: 'viewer', tenantId: 'tenant-stat-a' })
+    await tryHandleImportMemories(statsCtx)
+    const stats = statsOut.body as { total: number; bySource: { source_id: string }[] }
+    expect(stats.total).toBe(1)
+    expect(stats.bySource.map(b => b.source_id)).toEqual([sidA])
+
+    const { ctx: searchCtx, out: searchOut } = makeCtx('GET', '/api/import/search', undefined, { q: 'budget' }, { role: 'viewer', tenantId: 'tenant-stat-a' })
+    await tryHandleImportMemories(searchCtx)
+    const results = searchOut.body as { file_name: string }[]
+    expect(results).toHaveLength(1)
+    expect(results[0].file_name).toBe('/tmp/stat-a/budget-report.md')
+
+    // Admin without ?tenant= sees both
+    const { ctx: adminStatsCtx, out: adminStatsOut } = makeCtx('GET', '/api/import/stats')
+    await tryHandleImportMemories(adminStatsCtx)
+    expect((adminStatsOut.body as { total: number }).total).toBe(2)
   })
 })

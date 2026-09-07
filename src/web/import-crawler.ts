@@ -148,14 +148,14 @@ function getTotalImportSize(): number {
 // ── DB helpers ────────────────────────────────────────────────────────────────
 type ImportSource = {
   id: string; type: string; path: string; label: string | null
-  interval_hours: number; enabled: number; last_run_at: number | null
+  interval_hours: number; enabled: number; last_run_at: number | null; tenant_id: string
 }
 
 function getEnabledSources(): ImportSource[] {
   return getDb().prepare("SELECT * FROM import_sources WHERE enabled = 1").all() as ImportSource[]
 }
 
-function upsertImportMemory(
+export function upsertImportMemory(
   sourceId: string,
   filePath: string,
   fileName: string,
@@ -163,6 +163,7 @@ function upsertImportMemory(
   content: string,
   keywords: string,
   now: number,
+  tenantId: string,
 ): 'added' | 'updated' | 'hash_match' {
   const db = getDb()
   const existing = db.prepare(
@@ -187,9 +188,9 @@ function upsertImportMemory(
       // agent_id='import' is the discriminator; category='warm' satisfies the CHECK
       // constraint; chat_id and sector are sentinel values for NOT NULL columns.
       const sr = db.prepare(
-        `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
-         VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?) RETURNING id`
-      ).get(content, keywords, now, now, now) as { id: number }
+        `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
+         VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?, ?) RETURNING id`
+      ).get(content, keywords, now, now, now, tenantId) as { id: number }
       db.prepare('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?').run(sr.id, existing.id)
     }
     return 'updated'
@@ -197,15 +198,15 @@ function upsertImportMemory(
 
   const id = createHash('sha256').update(`${sourceId}:${filePath}`).digest('hex').slice(0, 16)
   db.prepare(`
-    INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, sourceId, filePath, fileName, hash, content, keywords, now, now, now)
+    INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, sourceId, filePath, fileName, hash, content, keywords, now, now, now, tenantId)
   // Create shadow row so the main embedding and link pipelines pick this up.
   // agent_id='import' is the discriminator; category='warm' satisfies the CHECK constraint.
   const sr = db.prepare(
-    `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
-     VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?) RETURNING id`
-  ).get(content, keywords, now, now, now) as { id: number }
+    `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
+     VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?, ?) RETURNING id`
+  ).get(content, keywords, now, now, now, tenantId) as { id: number }
   db.prepare('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?').run(sr.id, id)
   return 'added'
 }
@@ -342,7 +343,7 @@ async function crawlLocalSource(
       const hash = createHash('sha256').update(raw).digest('hex')
       const keywords = extractKeywords(content, basename(filePath))
 
-      const result = upsertImportMemory(source.id, filePath, basename(filePath), hash, content, keywords, now)
+      const result = upsertImportMemory(source.id, filePath, basename(filePath), hash, content, keywords, now, source.tenant_id)
       if (result === 'added') { counts.added++; totalSize += content.length }
       else if (result === 'updated') { counts.updated++ }
       else { counts.skippedHash++ }

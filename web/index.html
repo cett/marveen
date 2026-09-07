@@ -1143,6 +1143,8 @@
 
     <!-- === Import Memories Page === -->
     <div class="page" id="importPage" hidden>
+      <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
+      <div id="importTenantSelectorContainer" hidden></div>
       <div class="page-header">
         <h1 data-i18n="import.page.title">Import emlékek</h1>
         <p class="subtitle" data-i18n="import.page.desc">Fájlrendszer, Google Drive és SharePoint tartalmak automatikus beolvasása a memória rendszerbe.</p>
@@ -1183,6 +1185,15 @@
                   <option value="4" selected>4 h</option>
                   <option value="24">24 h</option>
                 </select>
+              </div>
+            </div>
+            <!-- Admin-only: assign the new source to a tenant. Hidden for non-admins. -->
+            <div id="importSourceTenantGroup" hidden>
+              <div class="form-row">
+                <div class="form-group" style="flex:1">
+                  <label for="importSourceTenant" data-i18n="import.form.tenant">Tenant</label>
+                  <select id="importSourceTenant"></select>
+                </div>
               </div>
             </div>
             <!-- SharePoint disclaimer (shown only when type=sharepoint) -->
