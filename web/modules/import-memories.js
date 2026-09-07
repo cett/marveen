@@ -2,12 +2,15 @@ import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 // ============================================================
 // === Import Memories -- external file sources ===
 // ============================================================
 
 let sourcesCache = []
+// null for non-admin (tenant selector hidden); set to a getter for global admins.
+let _importTenantGetter = null
 
 function formatTs(unix) {
   if (!unix) return '-'
@@ -44,6 +47,14 @@ function renderSources(sources) {
     ? `<span class="import-status-badge active">${escapeHtml(t('import.status.active'))}</span>`
     : `<span class="import-status-badge inactive">${escapeHtml(t('import.status.inactive'))}</span>`
 
+  // Tenant column only makes sense for a global admin, who can see sources
+  // across tenants; scoped users only ever see their own tenant's rows.
+  const isAdmin = !!_importTenantGetter
+  const tenantHeader = isAdmin ? `<th>${escapeHtml(t('import.col.tenant'))}</th>` : ''
+  const tenantCell = (s) => isAdmin
+    ? `<td><span class="badge" data-variant="neutral" data-size="sm">${escapeHtml(s.tenant_id)}</span></td>`
+    : ''
+
   el.innerHTML = `
     <div class="table-wrap import-sources-table-wrap">
       <table class="table import-sources-table">
@@ -51,6 +62,7 @@ function renderSources(sources) {
           <tr>
             <th>${escapeHtml(t('import.col.type'))}</th>
             <th>${escapeHtml(t('import.col.name'))}</th>
+            ${tenantHeader}
             <th>${escapeHtml(t('import.col.interval'))}</th>
             <th>${escapeHtml(t('import.col.last_sync'))}</th>
             <th>${escapeHtml(t('import.col.status'))}</th>
@@ -65,6 +77,7 @@ function renderSources(sources) {
                 ${s.label ? `<span class="isrc-label">${escapeHtml(s.label)}</span><br>` : ''}
                 <span class="isrc-path" title="${escapeHtml(s.path)}">${escapeHtml(s.path)}</span>
               </td>
+              ${tenantCell(s)}
               <td>${escapeHtml(intervalLabel(s.interval_hours))}</td>
               <td style="white-space:nowrap;color:var(--text-muted);font-size:12px">${formatTs(s.last_run_at)}</td>
               <td>${statusBadge(s.enabled)}</td>
@@ -138,8 +151,14 @@ async function loadSourceLog(sourceId) {
   try {
     const res = await fetch(`/api/import/sources/${sourceId}/log`)
     const rows = await res.json()
-    if (!rows.length) { logEl.innerHTML = `<p class="empty-state">${escapeHtml(t('import.log.empty'))}</p>`; return }
-    logEl.innerHTML = `<div class="table-wrap"><table class="table import-log-table" data-variant="compact"><thead><tr>
+    // Admin viewing across tenants: show which tenant this source (and its
+    // log) belongs to, since the run log itself carries no per-row tenant info.
+    const source = sourcesCache.find(s => s.id === sourceId)
+    const tenantHeading = (_importTenantGetter && source)
+      ? `<p class="import-log-tenant"><span class="badge" data-variant="neutral" data-size="sm">${escapeHtml(source.tenant_id)}</span></p>`
+      : ''
+    if (!rows.length) { logEl.innerHTML = tenantHeading + `<p class="empty-state">${escapeHtml(t('import.log.empty'))}</p>`; return }
+    logEl.innerHTML = tenantHeading + `<div class="table-wrap"><table class="table import-log-table" data-variant="compact"><thead><tr>
       <th>${t('import.log.run_at')}</th>
       <th>${t('import.log.scanned')}</th>
       <th>${t('import.log.added')}</th>
@@ -159,7 +178,9 @@ async function loadSourceLog(sourceId) {
 
 export async function loadImportSources() {
   try {
-    const res = await fetch('/api/import/sources')
+    const tenant = _importTenantGetter?.()
+    const tenantParam = tenant ? `?tenant=${encodeURIComponent(tenant)}` : ''
+    const res = await fetch('/api/import/sources' + tenantParam)
     sourcesCache = await res.json()
     renderSources(sourcesCache)
   } catch (err) {
@@ -168,7 +189,34 @@ export async function loadImportSources() {
   }
 }
 
+// Populates the admin-only "assign to tenant" select in the add-source form.
+// Hidden entirely for non-admins (initTenantSelector already returned null).
+async function initSourceTenantSelect() {
+  const group = document.getElementById('importSourceTenantGroup')
+  const sel = document.getElementById('importSourceTenant')
+  if (!group || !sel || !_importTenantGetter) return
+  try {
+    const r = await fetch('/api/admin/tenants')
+    if (!r.ok) return
+    const tenants = (await r.json()).items ?? []
+    if (!tenants.length) return
+    sel.innerHTML = tenants.map(ten =>
+      `<option value="${escapeHtml(ten.id)}">${escapeHtml(ten.display_name ? `${ten.display_name} (${ten.id})` : ten.id)}</option>`
+    ).join('')
+    group.hidden = false
+  } catch {}
+}
+
 export function initImportMemories() {
+  // Tenant selector (list view); admin-only "assign to tenant" select in the
+  // add-source form reuses the same admin check. Not awaited here so the
+  // synchronous form-wiring below runs immediately; app.js calls
+  // loadImportSources() right after initImportMemories() regardless (see the
+  // notes in memories.js's initMemories) -- the first render can race ahead
+  // of this resolving, which is benign for the same reason it is there.
+  initTenantSelector('importTenantSelectorContainer', () => loadImportSources())
+    .then(getter => { _importTenantGetter = getter; initSourceTenantSelect() })
+
   // Add source form
   const form = document.getElementById('importAddSourceForm')
   if (form) {
@@ -178,6 +226,8 @@ export function initImportMemories() {
       const path = document.getElementById('importSourcePath').value.trim()
       const label = document.getElementById('importSourceLabel').value.trim()
       const interval = parseInt(document.getElementById('importSourceInterval').value, 10)
+      const tenantSel = document.getElementById('importSourceTenant')
+      const tenantId = _importTenantGetter && tenantSel && !tenantSel.closest('[hidden]') ? tenantSel.value : undefined
 
       if (!path) { showToast(t('import.toast.path_required')); return }
 
@@ -187,7 +237,7 @@ export function initImportMemories() {
         const res = await fetch('/api/import/sources', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type, path, label: label || undefined, interval_hours: interval }),
+          body: JSON.stringify({ type, path, label: label || undefined, interval_hours: interval, tenant_id: tenantId }),
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({ error: 'Hiba' }))
