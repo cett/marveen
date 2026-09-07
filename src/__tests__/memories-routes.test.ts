@@ -38,7 +38,7 @@ function makeBody(data: object): Buffer {
   return Buffer.from(JSON.stringify(data))
 }
 
-function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
+function makeCtx(method: string, path: string, body?: object, opts: { role?: string; tenantId?: string | null } = {}): { ctx: RouteContext; out: { status: number; body: any } } {
   const buf = body ? makeBody(body) : Buffer.alloc(0)
   const req = new EventEmitter() as any
   req.method = method
@@ -50,7 +50,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
     end(b?: string) { try { out.body = JSON.parse(b || '{}') } catch { out.body = b } },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url, role: 'admin' } as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, role: opts.role ?? 'admin', tenantId: opts.tenantId } as RouteContext
   return { ctx, out }
 }
 
@@ -204,6 +204,24 @@ describe('tryHandleMemories', () => {
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
+  })
+
+  it('GET /api/memories/stats -- admin with no ?tenant= gets unfiltered (fleet-wide) stats', async () => {
+    const { ctx } = makeCtx('GET', '/api/memories/stats')
+    await tryHandleMemories(ctx)
+    expect(vi.mocked(db.getMemoryStats)).toHaveBeenCalledWith(undefined)
+  })
+
+  it('GET /api/memories/stats -- admin with ?tenant= narrows stats to that tenant', async () => {
+    const { ctx } = makeCtx('GET', '/api/memories/stats?tenant=acme')
+    await tryHandleMemories(ctx)
+    expect(vi.mocked(db.getMemoryStats)).toHaveBeenCalledWith('acme')
+  })
+
+  it('GET /api/memories/stats -- non-admin is always scoped to their own tenant, ignoring ?tenant=', async () => {
+    const { ctx } = makeCtx('GET', '/api/memories/stats?tenant=other-tenant', undefined, { role: 'viewer', tenantId: 'my-tenant' })
+    await tryHandleMemories(ctx)
+    expect(vi.mocked(db.getMemoryStats)).toHaveBeenCalledWith('my-tenant')
   })
 
   it('POST /api/memories/backfill triggers backfill', async () => {
