@@ -148,3 +148,27 @@ describe('SQL skills route: IDOR null-tenant guard (716 security)', () => {
     expect(out.status).toBe(404)
   })
 })
+
+describe('SQL skills route: slash-containing skill IDs decode correctly', () => {
+  it('GET /api/skills/sql/:id finds the skill when the id contains an encoded slash', async () => {
+    createSkill({ id: 'agent/boo/foo', name: 'Slashed Skill', content: 'x', tenant_id: 'my-tenant' })
+    const { ctx, out } = makeSkillCtx('GET', '/api/skills/sql/agent%2Fboo%2Ffoo', { role: 'viewer', tenantId: 'my-tenant' })
+    await tryHandleSkills(ctx)
+    expect(out.status).toBe(200)
+    expect((out.body as { id: string }).id).toBe('agent/boo/foo')
+  })
+
+  it('grant and revoke access work for a slash-containing skill id', async () => {
+    createSkill({ id: 'agent/boo/access', name: 'Slashed Access', content: 'x', tenant_id: 'fleet', is_global: true })
+
+    const grant = makeSkillCtx('POST', '/api/skills/sql/agent%2Fboo%2Faccess/access', { role: 'admin', body: { tenant_id: 'granted-tenant' } })
+    await tryHandleSkills(grant.ctx)
+    expect(grant.out.status).toBe(200)
+    expect(listSkillAccess('agent/boo/access').some(g => g.tenant_id === 'granted-tenant')).toBe(true)
+
+    const revoke = makeSkillCtx('DELETE', '/api/skills/sql/agent%2Fboo%2Faccess/access/granted-tenant', { role: 'admin' })
+    await tryHandleSkills(revoke.ctx)
+    expect(revoke.out.status).toBe(200)
+    expect(listSkillAccess('agent/boo/access').some(g => g.tenant_id === 'granted-tenant')).toBe(false)
+  })
+})

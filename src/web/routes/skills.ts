@@ -665,7 +665,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillIdMatch && method === 'GET') {
-    const id = sqlSkillIdMatch[1]
+    const id = decodeURIComponent(sqlSkillIdMatch[1])
     const row = getSkill(id)
     if (!row) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin) {
@@ -680,7 +680,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillIdMatch && method === 'PUT') {
-    const id = sqlSkillIdMatch[1]
+    const id = decodeURIComponent(sqlSkillIdMatch[1])
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
@@ -695,7 +695,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillIdMatch && method === 'DELETE') {
-    const id = sqlSkillIdMatch[1]
+    const id = decodeURIComponent(sqlSkillIdMatch[1])
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
@@ -705,7 +705,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlAccessBase && method === 'GET') {
-    const id = sqlAccessBase[1]
+    const id = decodeURIComponent(sqlAccessBase[1])
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
@@ -714,7 +714,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlAccessBase && method === 'POST') {
-    const id = sqlAccessBase[1]
+    const id = decodeURIComponent(sqlAccessBase[1])
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
@@ -728,7 +728,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlAccessItem && method === 'DELETE') {
-    const [, id, tenantId] = sqlAccessItem
+    const [, rawId, rawTenantId] = sqlAccessItem
+    const id = decodeURIComponent(rawId)
+    const tenantId = decodeURIComponent(rawTenantId)
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     const ok = revokeSkillAccess(id, tenantId)
     if (!ok) { json(res, { error: 'not_found' }, 404); return true }
