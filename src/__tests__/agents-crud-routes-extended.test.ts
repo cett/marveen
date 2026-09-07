@@ -41,6 +41,8 @@ vi.mock('../db.js', () => ({
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]) }),
   }),
+  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
+  isTenantAgentEnabled: vi.fn().mockReturnValue(true),
 }))
 vi.mock('../web/telegram.js', () => ({
   sendAvatarChangeMessage: vi.fn().mockResolvedValue(undefined),
@@ -161,11 +163,13 @@ vi.mock('../web/atomic-write.js', () => ({
 }))
 
 import { tryHandleAgentsCrud } from '../web/routes/agents-crud.js'
+import { getAgentDetail, listAgentSummaries } from '../web/routes/agents-helpers.js'
+import { isTenantAgentEnabled, getEnabledAgentsForTenant } from '../db.js'
 
-function makeCtx(opts: { method: string; path: string; body?: string }): {
+function makeCtx(opts: { method: string; path: string; body?: string; role?: RouteContext['role']; tenantId?: RouteContext['tenantId'] }): {
   ctx: RouteContext; statusCode: () => number; responseBody: () => unknown
 } {
-  const { method, path, body = '' } = opts
+  const { method, path, body = '', role, tenantId } = opts
   const em = new EventEmitter()
   Object.assign(em, { headers: {}, method, url: path })
   setImmediate(() => {
@@ -185,6 +189,8 @@ function makeCtx(opts: { method: string; path: string; body?: string }): {
     method,
     url: new URL(`http://localhost${path}`),
     auth: { kind: 'token' },
+    role,
+    tenantId,
   }
   return { ctx, statusCode: () => code, responseBody: () => { try { return JSON.parse(resBody) } catch { return resBody } } }
 }
@@ -227,6 +233,55 @@ describe('agents-crud routes (extended)', () => {
     const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/test-agent' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
+  })
+
+  it('GET /api/agents/:name as non-admin 404s when agent not enabled for their tenant', async () => {
+    vi.mocked(isTenantAgentEnabled).mockReturnValueOnce(false)
+    const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/test-agent', role: 'viewer', tenantId: 'acme' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(404)
+    expect(isTenantAgentEnabled).toHaveBeenCalledWith('acme', 'test-agent')
+  })
+
+  it('GET /api/agents/:name as non-admin 200s + redacts mcpJson when enabled for their tenant', async () => {
+    vi.mocked(isTenantAgentEnabled).mockReturnValueOnce(true)
+    vi.mocked(getAgentDetail).mockClear()
+    const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/test-agent', role: 'viewer', tenantId: 'acme' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    expect(getAgentDetail).toHaveBeenCalledWith('test-agent', true)
+  })
+
+  it('GET /api/agents/:name as admin bypasses tenant scoping and gets unredacted mcpJson', async () => {
+    vi.mocked(getAgentDetail).mockClear()
+    const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/test-agent', role: 'admin' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    expect(getAgentDetail).toHaveBeenCalledWith('test-agent', false)
+  })
+
+  it('GET /api/agents as non-admin returns only tenant-enabled agents', async () => {
+    vi.mocked(listAgentSummaries).mockReturnValueOnce([
+      { name: 'peter' }, { name: 'zack' }, { name: 'zoe' },
+    ] as ReturnType<typeof listAgentSummaries>)
+    vi.mocked(getEnabledAgentsForTenant).mockReturnValueOnce(['peter'])
+    const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents', role: 'viewer', tenantId: 'acme' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(getEnabledAgentsForTenant).toHaveBeenCalledWith('acme')
+    const body = responseBody() as { name: string }[]
+    expect(body.map(a => a.name)).toEqual(['peter'])
+  })
+
+  it('GET /api/agents as admin bypasses tenant scoping and returns the full fleet', async () => {
+    vi.mocked(listAgentSummaries).mockReturnValueOnce([
+      { name: 'peter' }, { name: 'zack' }, { name: 'zoe' },
+    ] as ReturnType<typeof listAgentSummaries>)
+    vi.mocked(getEnabledAgentsForTenant).mockClear()
+    const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents', role: 'admin' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(getEnabledAgentsForTenant).not.toHaveBeenCalled()
+    const body = responseBody() as { name: string }[]
+    expect(body.map(a => a.name)).toEqual(['peter', 'zack', 'zoe'])
   })
 
   it('PUT /api/agents/:name returns 404 for unknown agent', async () => {

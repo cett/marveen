@@ -137,12 +137,22 @@ import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists } from './agents-helpers.js'
+import { getEnabledAgentsForTenant, isTenantAgentEnabled } from '../../db.js'
 
 export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === '/api/agents' && method === 'GET') {
-    jsonMaybeGzip(req, res, listAgentSummaries())
+    // Non-admin: deny-by-default tenant scoping via tenant_agent_availability
+    // (see 0026_tenant_agent_availability.sql) -- only agents explicitly
+    // enabled=1 for this tenant are visible. Admin bypasses (role check, not
+    // tenantId === null -- see RouteContext).
+    if (ctx.role === 'admin') {
+      jsonMaybeGzip(req, res, listAgentSummaries())
+    } else {
+      const enabled = new Set(getEnabledAgentsForTenant(ctx.tenantId ?? 'default'))
+      jsonMaybeGzip(req, res, listAgentSummaries().filter(a => enabled.has(a.name)))
+    }
     return true
   }
 
@@ -758,7 +768,15 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
-    json(res, getAgentDetail(name))
+    const isAdmin = ctx.role === 'admin'
+    // Non-admin: same deny-by-default scoping as the list endpoint -- 404
+    // (not 403) so the tenant can't distinguish "not mine" from "doesn't
+    // exist". mcpJson is always redacted for non-admin, even when the agent
+    // is enabled for their tenant (may hold credentials/endpoints).
+    if (!isAdmin && !isTenantAgentEnabled(ctx.tenantId ?? 'default', name)) {
+      json(res, { error: 'not_found', field: 'name' }, 404); return true
+    }
+    json(res, getAgentDetail(name, !isAdmin))
     return true
   }
 
