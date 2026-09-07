@@ -162,7 +162,7 @@ class TestUnreleasedIdempotency(unittest.TestCase):
 
 
 class TestIncrementalMarker(unittest.TestCase):
-    """Marker-based incremental append (#739) -- hand-written [Unreleased]
+    """Marker-based incremental append -- hand-written [Unreleased]
     content must survive repeated runs untouched."""
 
     def _marker_sha(self, cl: str) -> str:
