@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `06622133` vs fork `62d91630`, 2026-09-08
+> Állapot: upstream `06622133` vs fork `21f54b55`, 2026-09-08
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -53,7 +53,7 @@ A `workspace_docs` tábla (0027-es migráció) a fleet-ágensek munkadokumentuma
 
 A bejelentkezett B2B felhasználónak önkiszolgáló profil-oldal áll rendelkezésre (dashboard "Profilom"): identity card (felhasználónév, megjelenített név, e-mail, szerepkör, tenant), jelszócsere modal (jelenlegi + új jelszó, 12 karakter minimum), és az összes munkamenet kiléptetése. A sidebar alján mindig látható felhasználó-blokk (avatar + név + szerepkör + tenant) navigál a profil-oldalra. Új végpontok: `GET /api/v1/me` (saját profil lekérése, session-token kötelező) és `PATCH /api/v1/me` (display_name / email módosítása, max 128 karakter, validált email formátum).
 
-A meglévő `vault-env-wrapper.sh` (env-változóba injektált titkok) mellé egy `vault-file-materializer.sh` wrapper is bekerült azokhoz az MCP szerverekhez, amelyek egy hitelesítő adatot FÁJL-útvonalként várnak, nem env-változó értékként. Indításkor a titkosított vault-bejegyzést egy privát, 0700 jogú ideiglenes könyvtárba írja ki, a szervernek átadott env-változó erre a fájlra vagy könyvtárra mutat, majd a folyamat leállásakor törli. Opcionális "syncback" móddal a fájl leállás utáni tartalma visszaíródik a vaultba -- ez azoknak a szervereknek kell, amelyek a saját hitelesítő fájljukat maguk frissítik (pl. OAuth-token-frissítés). A titok értéke sosem kerül logba vagy parancssori argumentumba, kizárólag csővezetéken (pipe-on) áramlik.
+A meglévő `vault-env-wrapper.sh` (env-változóba injektált titkok) mellé egy `vault-file-materializer.sh` wrapper is bekerült azokhoz az MCP szerverekhez, amelyek egy hitelesítő adatot FÁJL-útvonalként várnak, nem env-változó értékként. Indításkor a titkosított vault-bejegyzést egy privát, 0700 jogú ideiglenes könyvtárba írja ki, a szervernek átadott env-változó erre a fájlra vagy könyvtárra mutat, majd a folyamat leállásakor törli. Opcionális "syncback" móddal a fájl leállás utáni tartalma visszaíródik a vaultba -- ez azoknak a szervereknek kell, amelyek a saját hitelesítő fájljukat maguk frissítik (pl. OAuth-token-frissítés). A titok értéke sosem kerül logba vagy parancssori argumentumba, kizárólag csővezetéken (pipe-on) áramlik. A harmadik wrapper, a `vault-inject-http-mcp.sh`, a `~/.claude.json` `mcpServers.*.headers` mezőiben lévő `vault:<id>` hivatkozásokat oldja fel közvetlenül a Claude Code indítása előtt, majd EXIT-trap (normál leállás, kill és crash esetén is) visszaállítja az eredeti sablon-fájlt -- ez azokat a HTTP-típusú MCP szervereket fedi le (pl. UptimeRobot), amelyekhez a Claude Code nem parancsindítással, hanem közvetlen HTTP-hívással kapcsolódik, így a vault-env-wrapper.sh env-alapú megközelítése nem alkalmazható rájuk.
 
 **Memória, keresés és adatkezelés**
 
@@ -86,7 +86,7 @@ A DB migration runner checksum-ellenőrzéssel és per-migrációs tranzakciókk
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `06622133` vs fork `62d91630`, 2026-09-08
+Állapot: upstream `06622133` vs fork `21f54b55`, 2026-09-08
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
