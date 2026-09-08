@@ -28,12 +28,14 @@ const mockUpsertBlackboard = vi.fn<(agent_id: unknown, data: unknown) => object>
 // Default: every agent resolves to the 'default' tenant (fleet agent, no
 // tenant_agent_availability rows) -- matches the untouched-ctx.tenantId tests below.
 const mockResolveAgentTenant = vi.fn<(agent_id: unknown) => string>(() => 'default')
+const mockWriteAgentAuditLog = vi.fn()
 vi.mock('../db.js', () => ({
   getDb: vi.fn(() => ({ prepare: mockPrepare })),
   insertBlackboardHistory: (a: unknown) => mockInsertBlackboardHistory(a),
   listBlackboardHistory: (a: unknown) => mockListBlackboardHistory(a),
   upsertBlackboard: (agent_id: unknown, data: unknown) => mockUpsertBlackboard(agent_id, data),
   resolveAgentTenant: (agent_id: unknown) => mockResolveAgentTenant(agent_id),
+  writeAgentAuditLog: (opts: unknown) => mockWriteAgentAuditLog(opts),
 }))
 
 // ---------- settings-store mock (default thresholds) ----------
@@ -181,6 +183,37 @@ describe('POST /api/blackboard', () => {
     expect(mockUpsertBlackboard).toHaveBeenCalledOnce()
   })
 
+  it('records a fleet-audit entry (action=create) for a first-time write', async () => {
+    mockPrepare.mockReturnValue(makeStmt(undefined)) // no existing row for this agent
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
+    const { ctx } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'First write' })
+    await tryHandleBlackboard(ctx)
+    expect(mockWriteAgentAuditLog).toHaveBeenCalledOnce()
+    expect(mockWriteAgentAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'agent-a', entity: 'blackboard', action: 'create', entity_id: ROW_A.id })
+    )
+  })
+
+  it('records a fleet-audit entry (action=update) when the agent already has a row', async () => {
+    mockPrepare.mockReturnValue(makeStmt({ id: ROW_A.id })) // existing row for this agent
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A, summary: 'Updated' })
+    const { ctx } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'Updated' })
+    await tryHandleBlackboard(ctx)
+    expect(mockWriteAgentAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'agent-a', entity: 'blackboard', action: 'update' })
+    )
+  })
+
+  it('a failing audit write does not fail the blackboard write itself', async () => {
+    mockPrepare.mockReturnValue(makeStmt(undefined))
+    mockWriteAgentAuditLog.mockImplementationOnce(() => { throw new Error('audit db down') })
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
+    const { ctx, out } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'Still works' })
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(200)
+    expect((out.body as { ok: boolean }).ok).toBe(true)
+  })
+
   it('rejects missing agent_id', async () => {
     const { ctx, out } = makeCtx('POST', '/api/blackboard', { summary: 'No agent' })
     await tryHandleBlackboard(ctx)
@@ -325,6 +358,17 @@ describe('PATCH /api/blackboard/:id', () => {
     expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'done' })
     )
+    expect(mockWriteAgentAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: ROW_A.agent_id, entity: 'blackboard', action: 'update', entity_id: ROW_A.id })
+    )
+  })
+
+  it('does not record a fleet-audit entry when the id does not exist', async () => {
+    const stmtGet = makeStmt(undefined)
+    mockPrepare.mockReturnValue(stmtGet)
+    const { ctx } = makeCtx('PATCH', '/api/blackboard/nonexistent', { status: 'done' })
+    await tryHandleBlackboard(ctx)
+    expect(mockWriteAgentAuditLog).not.toHaveBeenCalled()
   })
 
   it('returns 404 when id does not exist', async () => {

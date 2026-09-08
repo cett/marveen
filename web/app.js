@@ -524,6 +524,20 @@ initSidebarBrand()
   }
 })()
 
+// Reveal the Audit trail nav link the same way as Vault -- fleet-wide agent
+// and hook activity, not something a tenant-scoped (b2b) user should reach.
+;(async function revealAuditLogNav() {
+  try {
+    const r = await fetch('/api/auth/status')
+    if (!r.ok) return
+    const auth = await r.json()
+    if (auth?.role === 'admin' && auth?.tenant_id === null) {
+      const navLink = document.getElementById('navAuditLog')
+      if (navLink) navLink.hidden = false
+    }
+  } catch {}
+})()
+
 // In an installed (standalone) PWA, lock the zoom: iOS otherwise auto-zooms when
 // a small-text input is focused and allows stray pinch-zoom, neither of which
 // suits an app-like control panel. Left untouched in a normal browser tab so
@@ -730,6 +744,29 @@ registerPage('vault', {
       _moduleCache.set('connectors_inited', true)
     }
     m.loadVaultPage()
+  }
+})
+registerPage('auditLog', {
+  lazy: true,
+  enter: async () => {
+    // Page guard: mirrors the Vault guard above -- direct #auditLog navigation
+    // bypasses the hidden nav link, and this view surfaces fleet-wide agent
+    // and hook activity that a tenant-scoped user should not see.
+    let auth = null
+    try {
+      const r = await fetch('/api/auth/status')
+      auth = r.ok ? await r.json() : null
+    } catch { /* treat as unauthenticated -- guard below denies */ }
+    if (!(auth?.role === 'admin' && auth?.tenant_id === null)) {
+      switchPage('overview')
+      return
+    }
+    const m = await lazyLoad('audit-log', () => import('./modules/audit-log.js'))
+    if (!_moduleCache.get('audit-log_inited')) {
+      m.initAuditLog()
+      _moduleCache.set('audit-log_inited', true)
+    }
+    m.loadAuditLogPage()
   }
 })
 registerPage('migrate',   { lazy: true, enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) }; m.loadMigrateAgents() } })

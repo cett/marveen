@@ -1,4 +1,4 @@
-import { getDb, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, type BlackboardRow } from '../../db.js'
+import { getDb, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, type BlackboardRow } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -200,7 +200,11 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       }
     }
     try {
+      const hadExisting = !!getDb().prepare('SELECT 1 FROM fleet_blackboard WHERE agent_id = ?').get(agent_id)
       const row = upsertBlackboard(agent_id, { task_ref, status, summary })
+      try {
+        writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })
+      } catch { /* audit failure must not abort the write */ }
       json(res, { ok: true, row })
     } catch (err) {
       logger.error({ err }, 'blackboard upsert error')
@@ -233,6 +237,9 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       task_ref: Object.prototype.hasOwnProperty.call(body, 'task_ref') ? (body.task_ref as string | null) : undefined,
     })
     if (!updated) { json(res, { error: 'not_found', hint: 'not found' }, 404); return true }
+    try {
+      writeAgentAuditLog({ agent_id: updated.agent_id, entity: 'blackboard', action: 'update', entity_id: updated.id, detail: { status: updated.status, task_ref: updated.task_ref } })
+    } catch { /* audit failure must not abort the write */ }
     json(res, { ok: true, row: updated })
     return true
   }
