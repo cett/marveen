@@ -215,6 +215,29 @@ def send_compact(session):
         print(f"[{LABEL}] tmux send-keys failed for {session}: {e}", flush=True)
         return False
 
+def record_compact_audit(conn, agent, pct):
+    """Best-effort audit trail for an ACTUAL /compact this monitor just sent.
+    hook_type='PreCompact' (an existing, previously-unused value in the
+    hook_audit_log schema/route -- this is its first user) + verdict='allow'
+    marks "a real compact went through", as opposed to the context-watchdog
+    hook's own verdict='handoff' rows (a HANDOFF was injected, no compact
+    sent yet). Correlating the two lets a query detect a "double compact":
+    a handoff with interlock=yes followed by a PreCompact/allow row for the
+    same agent within the cooldown window means the interlock did NOT
+    actually prevent this heartbeat from also compacting. Direct SQLite
+    write (the script already holds `conn` open for this round) -- never
+    raises, a failed write here must not abort a monitor round that already
+    sent a real /compact."""
+    try:
+        conn.execute(
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, reason) VALUES (?, ?, 'PreCompact', 'allow', ?)",
+            (int(time.time()), agent, f"pct={pct:.0%}"),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
 def send_urgent_notify(session, pct):
     """Write a notification line to the pane without sending Enter."""
     msg = f"\n[context-compact-monitor] Context at {pct:.0%} -- please /compact at your next safe point\n"
@@ -374,6 +397,7 @@ try:
             compacted.append((agent, total, lim, pct))
             state.setdefault(agent, {})["last_compact"] = now
             state_dirty = True
+            record_compact_audit(conn, agent, pct)
 finally:
     conn.close()
 

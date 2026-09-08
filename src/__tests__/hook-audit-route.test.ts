@@ -5,9 +5,10 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { initDatabase, listHookAuditLog } from '../db.js'
+import { initDatabase, listHookAuditLog, getDb } from '../db.js'
 import { tryHandleHookAudit } from '../web/routes/hook-audit.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { DEFAULT_COOLDOWN_SECS } from '../watchdog-validation.js'
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -154,6 +155,78 @@ describe('POST /api/hook-audit/prune', () => {
 
     const rows = listHookAuditLog()
     expect(rows).toHaveLength(0)
+  })
+})
+
+describe('POST /api/hook-audit accepts the handoff verdict', () => {
+  it('records a handoff verdict (context watchdog phase 3)', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/hook-audit', {
+      hook_type: 'PostToolUse',
+      verdict: 'handoff',
+      agent_id: 'agent-a',
+      tool_name: 'Bash',
+      reason: 'ctx=62%;interlock=yes',
+    })
+    const handled = await tryHandleHookAudit(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    const rows = listHookAuditLog({ verdict: 'handoff' })
+    expect(rows).toHaveLength(1)
+  })
+})
+
+describe('GET /api/hook-audit/watchdog-cycles', () => {
+  async function post(body: object) {
+    await tryHandleHookAudit(makeCtx('POST', '/api/hook-audit', body).ctx)
+  }
+
+  // insertHookAuditLog always stamps ts=now, so a just-inserted handoff row
+  // is genuinely 'pending' (the cooldown window hasn't elapsed yet) -- these
+  // tests backdate it past DEFAULT_COOLDOWN_SECS to exercise the
+  // success/double_compact branches, exactly as a real handoff row would
+  // look once enough wall-clock time has actually passed.
+  function backdateAllRows(secondsAgo: number) {
+    getDb().prepare('UPDATE hook_audit_log SET ts = ts - ?').run(secondsAgo)
+  }
+
+  it('reports zero successful cycles with no data', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/hook-audit/watchdog-cycles', undefined, { agent: 'agent-a' })
+    await tryHandleHookAudit(ctx)
+    expect(out.status).toBe(200)
+    const body = out.body as { successful: number; target: number; ready: boolean }
+    expect(body).toEqual(expect.objectContaining({ successful: 0, target: 10, ready: false }))
+  })
+
+  it('counts a successful cycle end to end (handoff + no follow-up compact)', async () => {
+    await post({ hook_type: 'PostToolUse', verdict: 'handoff', agent_id: 'agent-a', reason: 'ctx=62%;interlock=yes' })
+    backdateAllRows(DEFAULT_COOLDOWN_SECS + 60)
+    const { ctx, out } = makeCtx('GET', '/api/hook-audit/watchdog-cycles', undefined, { agent: 'agent-a', target: '1' })
+    await tryHandleHookAudit(ctx)
+    const body = out.body as { successful: number; ready: boolean; totalHandoffs: number }
+    expect(body.totalHandoffs).toBe(1)
+    expect(body.successful).toBe(1)
+    expect(body.ready).toBe(true)
+  })
+
+  it('does not count a double-compact as successful', async () => {
+    await post({ hook_type: 'PostToolUse', verdict: 'handoff', agent_id: 'agent-a', reason: 'ctx=62%;interlock=yes' })
+    await post({ hook_type: 'PreCompact', verdict: 'allow', agent_id: 'agent-a', reason: 'pct=75%' })
+    // Both rows land ~simultaneously in real time; backdate them together so
+    // the compact still falls inside the handoff's cooldown window after the
+    // shift (their relative offset is preserved).
+    backdateAllRows(DEFAULT_COOLDOWN_SECS + 60)
+    const { ctx, out } = makeCtx('GET', '/api/hook-audit/watchdog-cycles', undefined, { agent: 'agent-a', target: '1' })
+    await tryHandleHookAudit(ctx)
+    const body = out.body as { successful: number; ready: boolean; cycles: Array<{ status: string }> }
+    expect(body.cycles[0].status).toBe('double_compact')
+    expect(body.successful).toBe(0)
+    expect(body.ready).toBe(false)
+  })
+
+  it('defaults to the main agent when no ?agent= is given', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/hook-audit/watchdog-cycles')
+    await tryHandleHookAudit(ctx)
+    expect(out.status).toBe(200)
   })
 })
 

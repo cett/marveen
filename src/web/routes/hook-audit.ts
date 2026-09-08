@@ -1,9 +1,22 @@
 import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLog } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+import { MAIN_AGENT_ID } from '../../config.js'
+import { computeWatchdogCycles } from '../../watchdog-validation.js'
+
+// Kept wide enough to see the whole rolling window a validation cycle can
+// span (cooldownSecs, default 45min) plus a comfortable margin for the
+// phase-4 gate's target count of handoffs -- 30 days matches the table's own
+// default prune retention (pruneHookAuditLog), so this never claims to see
+// further back than what's actually still in the table.
+const WATCHDOG_CYCLES_LOOKBACK_SECS = 30 * 86400
 
 const VALID_HOOK_TYPES = new Set(['PreToolUse', 'PostToolUse', 'PreCompact', 'Stop'])
-const VALID_VERDICTS = new Set(['allow', 'deny', 'defer'])
+// 'handoff' (added for the context watchdog's proactive-compaction phase):
+// a PostToolUse row meaning "a rolling HANDOFF summary was injected", not a
+// tool-call gate verdict -- distinct from allow/deny/defer, which describe
+// whether a tool call itself was let through.
+const VALID_VERDICTS = new Set(['allow', 'deny', 'defer', 'handoff'])
 
 export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -58,6 +71,26 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
       limit: limit ? parseInt(limit, 10) : undefined,
     })
     json(res, { entries, total: entries.length })
+    return true
+  }
+
+  // GET /api/hook-audit/watchdog-cycles -- phase-4 validation counter
+  // (?agent=<id>, defaults to the main channels agent; ?target=<n>, default 10)
+  if (path === '/api/hook-audit/watchdog-cycles' && method === 'GET') {
+    const agent = url.searchParams.get('agent') ?? MAIN_AGENT_ID
+    const targetParam = url.searchParams.get('target')
+    const target = targetParam ? parseInt(targetParam, 10) : undefined
+    const rows = listHookAuditLog({
+      agent_id: agent,
+      sinceSecs: WATCHDOG_CYCLES_LOOKBACK_SECS,
+      limit: 1000,
+    })
+    const result = computeWatchdogCycles(rows, {
+      agentId: agent,
+      nowSecs: Math.floor(Date.now() / 1000),
+      target: target && target > 0 ? target : undefined,
+    })
+    json(res, result)
     return true
   }
 
