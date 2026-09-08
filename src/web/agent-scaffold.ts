@@ -336,6 +336,51 @@ export function ensureAgentStalenessHook(name: string): boolean {
   return true
 }
 
+// Phase-4 sub-agent extension: wire the context-watchdog PostToolUse
+// hook (scripts/hooks/context-watchdog.py) into every PERSISTENT NAMED
+// FLEET SUB-AGENT's own settings.json -- proactive-compaction HANDOFF
+// coverage, previously main-channels-agent-only (see the hook's own module
+// docstring for the phase-1..3 history and the design discussion on why the
+// ephemeral agent-worker.ts pool is intentionally excluded).
+//
+// Deliberately SKIPS MAIN_AGENT_ID: the main agent's copy of this hook is
+// registered by hand in the project-tracked .claude/settings.json (not
+// agentSettingsPath(), which for MAIN_AGENT_ID resolves to the separate
+// ~/.claude/settings.json global file -- see agentSettingsPath()'s own
+// comment). Wiring it there too would fire the hook twice per main-agent
+// tool call (both registrations execute), double-writing token rows and
+// potentially double-emitting a HANDOFF for the same context spike.
+//
+// Same fail-open bash-wrapper convention as STALENESS_HOOK_CMD (a scaffold-
+// managed hook must tolerate a stale/removed script path without blocking
+// the tool call it's attached to).
+const _contextWatchdogScript = join(SCRIPTS_DIR, 'scripts', 'hooks', 'context-watchdog.py')
+const CONTEXT_WATCHDOG_HOOK_CMD = `bash -c '[ -f ${_contextWatchdogScript} ] && exec python3 ${_contextWatchdogScript}; exit 0'`
+
+export function ensureContextWatchdogHook(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse as unknown[] : []
+  // Idempotency: already wired if any command entry references the script.
+  const already = JSON.stringify(ptu).includes('context-watchdog.py')
+  if (already) return false
+  // Registration guard: don't write a /tmp or non-existent path into settings.
+  if (isUnsafeHookCommand(CONTEXT_WATCHDOG_HOOK_CMD)) return false
+  ptu.push({ hooks: [{ type: 'command', command: CONTEXT_WATCHDOG_HOOK_CMD, timeout: 10 }] })
+  hooks.PostToolUse = ptu
+  settings.hooks = hooks
+  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: context watchdog for the main channels agent.
+"""PostToolUse hook: context watchdog for the main channels agent and the
+persistent named fleet sub-agents.
 
 Phase 2: on every tool call, read the newest transcript-JSONL line carrying
 `message.usage` for the CURRENT session and write a per-turn row directly
@@ -33,13 +34,29 @@ context-compact-monitor.sh) can be considered: 10 HANDOFF cycles need to
 land with the interlock actually landing and no double-compact slipping
 through before that decision is even on the table.
 
-Scope: ONLY the main channels agent. This hook is registered in the
-PROJECT-ROOT .claude/settings.json (not in any agents/<name>/.claude, nor in
-a worker's isolated CLAUDE_CONFIG_DIR/cwd), so by construction it only ever
-fires inside the main-agent-channels session -- workers run with cwd outside
-PROJECT_ROOT (see agent-worker.ts) and every other fleet agent has its own,
-separate settings.json. The agent_id_from_cwd() check below is a second,
-defense-in-depth gate in case this file is ever registered somewhere else.
+Scope (phase 4 sub-agent extension): the main channels agent AND every
+persistent named fleet sub-agent (agents/<id>/.claude/settings.json) -- each
+scaffolded via agent-scaffold.ts's ensureContextWatchdogHook(), one entry per
+agent's own settings.json, same absolute-path convention already used for its
+other scaffold-managed hooks. Deliberately EXCLUDES the ephemeral
+agent-worker.ts pool (workers run from an isolated home outside both
+PROJECT_ROOT and agents/<id>, e.g. ~/.<agent>-worker(-fast) -- see
+agent-worker.ts): a HANDOFF built from fleet_blackboard/kanban context makes
+sense for a persistent fleet member with its own blackboard row and kanban
+assignments, but not for a short-lived worker that has neither, and the
+compact-interlock stamp is meaningless across multiple concurrent worker
+sessions sharing one derived id.
+
+_known_agent_cwd() below is the authorization gate: unlike
+ledger_lib.agent_id_from_cwd() (shared by a dozen other hooks, none of which
+null-check its result), it recognises ONLY the two structurally-verifiable
+cwd shapes -- the main install root, or a sub-agent's own agents/<id>
+directory -- and returns None for anything else, INCLUDING the ephemeral
+worker homes above (ledger_lib's own fallback would instead return their
+basename, e.g. ".marveen-worker", which is truthy and would silently pass a
+naive "is not None" check). Kept local to this hook rather than folded into
+ledger_lib so the other callers' existing contract (always a non-None
+string) is untouched.
 
 Logging-category hook (CLAUDE.md "Hook fail-closed policy" exception, same
 as tool-log-capture.py): fail/timeout/crash -> SILENT PASS, exit 0 always.
@@ -71,6 +88,27 @@ MAX_HANDOFF_CHARS = 2000
 
 def _install_dir() -> str:
     return ledger_lib._install_dir()
+
+
+def _known_agent_cwd(cwd: str):
+    """Structural allowlist for this hook's scope -- see the module docstring.
+    Returns the agent_id for the two recognised shapes (main install root, or
+    a sub-agent's own agents/<id> dir), or None for everything else (most
+    importantly the ephemeral agent-worker.ts pool). Deliberately does NOT
+    delegate to ledger_lib.agent_id_from_cwd(), whose 'last path component'
+    fallback never returns None."""
+    cwd = (cwd or "").rstrip("/")
+    if not cwd:
+        return None
+    install = _install_dir().rstrip("/")
+    if cwd == install:
+        return ledger_lib.main_agent_id()
+    agents_root = os.path.join(install, "agents")
+    if cwd.startswith(agents_root + os.sep):
+        rel = cwd[len(agents_root) + 1:]
+        agent_id = rel.split(os.sep)[0]
+        return agent_id or None
+    return None
 
 
 def latest_usage_event(transcript_path):
@@ -356,8 +394,8 @@ def main():
         sys.exit(0)
 
     cwd = payload.get("cwd") or ""
-    agent_id = ledger_lib.agent_id_from_cwd(cwd)
-    if agent_id != ledger_lib.main_agent_id():
+    agent_id = _known_agent_cwd(cwd)
+    if agent_id is None:
         sys.exit(0)
 
     session_id = payload.get("session_id") or ""

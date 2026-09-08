@@ -105,3 +105,46 @@ export function computeWatchdogCycles(
     cycles,
   }
 }
+
+// Fleet-level view (phase-4 sub-agent extension): the hook now also
+// fires for the persistent named sub-agents, not just the main channels
+// agent, so the phase-4 gate needs to see coverage across the whole fleet,
+// not just a single agentId. Aggregates computeWatchdogCycles() per agent
+// (unchanged, still pure/single-agent) rather than redefining it -- callers
+// that only care about one agent are untouched.
+//
+// `ready` is the SUM of successful cycles across all agents meeting target,
+// not "every agent independently has target successes" -- a fleet of ten
+// agents would otherwise take roughly 10x as long to prove out. perAgent is
+// included precisely so a reviewer can still see whether the successes are
+// spread across the fleet or concentrated in one agent before treating the
+// aggregate as real coverage proof.
+export interface FleetWatchdogValidationResult {
+  successful: number
+  target: number
+  ready: boolean
+  totalHandoffs: number
+  perAgent: Record<string, WatchdogValidationResult>
+}
+
+export function computeFleetWatchdogCycles(
+  rowsByAgent: Record<string, HookAuditLogEntry[]>,
+  opts: { agentIds: string[]; nowSecs: number; cooldownSecs?: number; target?: number },
+): FleetWatchdogValidationResult {
+  const target = opts.target ?? DEFAULT_VALIDATION_TARGET
+  const perAgent: Record<string, WatchdogValidationResult> = {}
+  let successful = 0
+  let totalHandoffs = 0
+  for (const agentId of opts.agentIds) {
+    const result = computeWatchdogCycles(rowsByAgent[agentId] ?? [], {
+      agentId,
+      nowSecs: opts.nowSecs,
+      cooldownSecs: opts.cooldownSecs,
+      target,
+    })
+    perAgent[agentId] = result
+    successful += result.successful
+    totalHandoffs += result.totalHandoffs
+  }
+  return { successful, target, ready: successful >= target, totalHandoffs, perAgent }
+}

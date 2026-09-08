@@ -9,6 +9,9 @@ import { initDatabase, listHookAuditLog, getDb } from '../db.js'
 import { tryHandleHookAudit } from '../web/routes/hook-audit.js'
 import type { RouteContext } from '../web/routes/types.js'
 import { DEFAULT_COOLDOWN_SECS } from '../watchdog-validation.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { mkdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -227,6 +230,39 @@ describe('GET /api/hook-audit/watchdog-cycles', () => {
     const { ctx, out } = makeCtx('GET', '/api/hook-audit/watchdog-cycles')
     await tryHandleHookAudit(ctx)
     expect(out.status).toBe(200)
+  })
+
+  // Phase-4 sub-agent extension: ?agent=all aggregates across the fleet.
+  describe('?agent=all', () => {
+    it('returns a fleet aggregate including the main agent, even with no other agents present', async () => {
+      const { ctx, out } = makeCtx('GET', '/api/hook-audit/watchdog-cycles', undefined, { agent: 'all' })
+      await tryHandleHookAudit(ctx)
+      expect(out.status).toBe(200)
+      const body = out.body as { successful: number; ready: boolean; perAgent: Record<string, unknown> }
+      expect(body).toEqual(expect.objectContaining({ successful: 0, ready: false }))
+      expect(Object.keys(body.perAgent)).toContain(MAIN_AGENT_ID)
+    })
+
+    it('counts a sub-agent handoff toward the fleet aggregate', async () => {
+      // The route's ?agent=all path enumerates [MAIN_AGENT_ID, ...listAgentNames()],
+      // and listAgentNames() reads AGENTS_BASE_DIR = <PROJECT_ROOT>/agents/*
+      // from disk -- so a real sub-agent id must exist as a directory there
+      // for the aggregate to pick it up, matching production exactly.
+      const subAgentDir = join(PROJECT_ROOT, 'agents', 'a-watchdog-cycles-test-subagent')
+      mkdirSync(subAgentDir, { recursive: true })
+      try {
+        await post({ hook_type: 'PostToolUse', verdict: 'handoff', agent_id: 'a-watchdog-cycles-test-subagent', reason: 'ctx=65%;interlock=yes' })
+        backdateAllRows(DEFAULT_COOLDOWN_SECS + 60)
+        const { ctx, out } = makeCtx('GET', '/api/hook-audit/watchdog-cycles', undefined, { agent: 'all', target: '1' })
+        await tryHandleHookAudit(ctx)
+        const body = out.body as { successful: number; ready: boolean; perAgent: Record<string, { successful: number }> }
+        expect(body.perAgent['a-watchdog-cycles-test-subagent'].successful).toBe(1)
+        expect(body.successful).toBeGreaterThanOrEqual(1)
+        expect(body.ready).toBe(true)
+      } finally {
+        rmSync(subAgentDir, { recursive: true, force: true })
+      }
+    })
   })
 })
 

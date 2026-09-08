@@ -15,7 +15,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureGovernanceGateCommands, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureGovernanceGateCommands, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -595,6 +595,7 @@ export function startWebServer(port = 3420): http.Server {
       const stalePatched: string[] = []
       const egressPatched: string[] = []
       const govPatched: string[] = []
+      const watchdogPatched: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
       // into ~/.claude/settings.json alongside existing hooks (e.g. telegram_progress.py).
@@ -607,6 +608,9 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
+        // No-op for MAIN_AGENT_ID (already covered via the project-tracked
+        // .claude/settings.json) -- see ensureContextWatchdogHook's own comment.
+        if (ensureContextWatchdogHook(agentName)) watchdogPatched.push(agentName)
         ensureQuarantineReader(agentName)
       }
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
@@ -614,6 +618,7 @@ export function startWebServer(port = 3420): http.Server {
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
+      if (watchdogPatched.length) logger.info({ patched: watchdogPatched }, 'context-watchdog PostToolUse hook backfilled into sub-agent settings.json')
     } catch (err) {
       logger.warn({ err }, 'Agent hook backfill skipped')
     }
