@@ -86,16 +86,18 @@ describe('package.json scripts', () => {
 // ---------------------------------------------------------------------------
 // 5. Unused exports unexported
 // ---------------------------------------------------------------------------
-describe('cosineSimilarity and vectorSearch are not exported from db.ts', () => {
+describe('cosineSimilarity and vectorSearch are not exported from db/vector.ts', () => {
+  // db.ts was split into src/db/*.ts by domain (774); both symbols now live
+  // in the vector-search module rather than the top-level shim.
   it('cosineSimilarity is not an exported symbol', () => {
-    const src = readFileSync(join(REPO_ROOT, 'src', 'db.ts'), 'utf8')
+    const src = readFileSync(join(REPO_ROOT, 'src', 'db', 'vector.ts'), 'utf8')
     // Must be defined (function exists) but NOT exported.
     expect(src).toContain('function cosineSimilarity(')
     expect(src).not.toMatch(/export\s+function\s+cosineSimilarity/)
   })
 
   it('vectorSearch is not an exported symbol', () => {
-    const src = readFileSync(join(REPO_ROOT, 'src', 'db.ts'), 'utf8')
+    const src = readFileSync(join(REPO_ROOT, 'src', 'db', 'vector.ts'), 'utf8')
     expect(src).toContain('function vectorSearch(')
     expect(src).not.toMatch(/export\s+function\s+vectorSearch/)
   })

@@ -75,7 +75,8 @@ describe('staleness-guard wiring (static)', () => {
   })
 
   it('ensureAgentStalenessHook merges idempotently (keyed on the script path)', () => {
-    const src = readFileSync(join(ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
+    // moved to agent-scaffold-hooks.ts in #773/#779
+    const src = readFileSync(join(ROOT, 'src', 'web', 'agent-scaffold-hooks.ts'), 'utf-8')
     expect(src).toContain('export function ensureAgentStalenessHook')
     // idempotency guard + non-clobbering merge into existing hooks
     expect(src).toContain("includes('staleness-guard.py')")

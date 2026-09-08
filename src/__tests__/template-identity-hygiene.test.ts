@@ -215,8 +215,9 @@ describe('runtime-seeded placeholders are all substituted', () => {
   })
 
   it('agent-scaffold.ts contains no hardcoded localhost:3420 in its generateClaudeMd prompt', () => {
-    const scaffold = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(scaffold, 'src/web/agent-scaffold.ts must use ${WEB_PORT}, not localhost:3420').not.toContain('localhost:3420')
+    // generateClaudeMd moved to agent-scaffold-templates.ts in #773/#779.
+    const scaffold = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold-templates.ts'), 'utf-8')
+    expect(scaffold, 'src/web/agent-scaffold-templates.ts must use ${WEB_PORT}, not localhost:3420').not.toContain('localhost:3420')
   })
 
   it('install scripts write WEB_PORT into the generated .env (heredoc contains WEB_PORT line)', () => {

@@ -75,7 +75,7 @@ describe('P1#3 — .bun/bin PATH on every claude (re)spawn path', () => {
   // channel-deafness-recovery.test.ts; agent-process.ts startAgentProcess is
   // a runtime template -- assert its source carries the export here too.
   it('agent-process.ts sub-agent launch exports .bun/bin', () => {
-    expect(read('src/web/agent-process.ts')).toMatch(/export PATH=[^\n]*\.bun\/bin/)
+    expect(read('src/web/agent-process-spawn.ts')).toMatch(/export PATH=[^\n]*\.bun\/bin/)
   })
 })
 

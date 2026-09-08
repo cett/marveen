@@ -166,7 +166,7 @@ describe('v2.1.201 fresh-session readiness (ghost example-suggestion)', () => {
 describe('isSessionReadyForPrompt wiring (dim-ghost tolerant idle)', () => {
   it('resolves idle through idleOrGhost/captureParkedInputView and saturation on the plain capture', () => {
     const src = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '../web/agent-process.ts'),
+      join(dirname(fileURLToPath(import.meta.url)), '../web/agent-process-session.ts'),
       'utf-8',
     )
     const start = src.indexOf('export async function isSessionReadyForPrompt')

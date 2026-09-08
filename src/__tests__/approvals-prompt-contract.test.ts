@@ -12,7 +12,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SCAFFOLD = readFileSync(join(__dirname, '../../src/web/agent-scaffold.ts'), 'utf-8')
+// buildAutonomyBody/ensureAutonomySection moved to agent-scaffold-templates.ts in #773/#779.
+const SCAFFOLD = readFileSync(join(__dirname, '../../src/web/agent-scaffold-templates.ts'), 'utf-8')
 
 // Slice the buildAutonomyBody function body -- assertions must land inside the
 // function definition, not anywhere else in the 800-line file.

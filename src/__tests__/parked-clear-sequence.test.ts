@@ -25,7 +25,8 @@ import { parkedClearSequence } from '../pane-state.js'
 // newline joining the next one. The live box took 20 such rounds to reach zero.
 
 const ROOT = join(__dirname, '..', '..')
-const AGENT_PROCESS = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
+const AGENT_PROCESS = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+  .map(f => readFileSync(join(ROOT, 'src', 'web', f), 'utf-8')).join('\n')
 
 describe('parkedClearSequence', () => {
   it('starts at the beginning of the buffer so the first kill has something ahead of it', () => {

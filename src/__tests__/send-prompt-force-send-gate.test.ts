@@ -13,7 +13,8 @@ import { join } from 'node:path'
 // per-tick block. The fix threads an optional waitForIdle flag (default true,
 // gate ON for every other caller) and the forceSend path opts out.
 
-const AGENT_PROCESS = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+const AGENT_PROCESS = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+  .map(f => readFileSync(join(__dirname, '../web/' + f), 'utf-8')).join('\n')
 const SCHEDULE_RUNNER = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
 
 describe('sendPromptToSession waitForIdle gate', () => {

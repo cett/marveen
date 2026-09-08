@@ -109,7 +109,8 @@ describe('maxSameProviderContenders', () => {
 // isolated-channel-config.test.ts approach: assert the loud-alert path is
 // actually wired into the token-absent branch and that it re-arms when the
 // token returns.
-const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+const SRC = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+  .map(f => readFileSync(join(__dirname, '../web/' + f), 'utf-8')).join('\n')
 
 describe('silent-degradation alert wiring', () => {
   it('routes the alert through notifyChannel (direct Bot API, not the inter-agent relay)', () => {

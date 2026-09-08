@@ -15,7 +15,14 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '../..')
 
+// MCP scope tab + Channel tab were split out of agents.js into
+// agents-channels.js (#773/#776); the tab-switch guard and the
+// openAgentDetail call-site that invokes loadMcpScope live in
+// agents-detail.js. applyMarveenReadonlyMode (hideButtonIds list, checked
+// below) stayed in agents.js.
 const AGENTS_JS  = readFileSync(join(root, 'web/modules/agents.js'), 'utf-8')
+const AGENTS_DETAIL_JS   = readFileSync(join(root, 'web/modules/agents-detail.js'), 'utf-8')
+const AGENTS_CHANNELS_JS = readFileSync(join(root, 'web/modules/agents-channels.js'), 'utf-8')
 const INDEX_HTML = readFileSync(join(root, 'web/index.html'), 'utf-8')
 const CATALOG    = JSON.parse(readFileSync(join(root, 'mcp-catalog.json'), 'utf-8'))
 
@@ -79,27 +86,27 @@ describe('mcp-catalog.json tools[] schema', () => {
 
 describe('agents.js MCP scope wiring', () => {
   it('loadMcpScope function is defined', () => {
-    expect(AGENTS_JS).toContain('async function loadMcpScope(')
+    expect(AGENTS_CHANNELS_JS).toContain('async function loadMcpScope(')
   })
 
   it('buildMcpScopeValue function is defined', () => {
-    expect(AGENTS_JS).toContain('function buildMcpScopeValue(')
+    expect(AGENTS_CHANNELS_JS).toContain('function buildMcpScopeValue(')
   })
 
   it('renderMcpServerSection function is defined', () => {
-    expect(AGENTS_JS).toContain('function renderMcpServerSection(')
+    expect(AGENTS_CHANNELS_JS).toContain('function renderMcpServerSection(')
   })
 
   it('saveMcpScopeBtn click handler is wired', () => {
-    expect(AGENTS_JS).toContain("getElementById('saveMcpScopeBtn').addEventListener('click'")
+    expect(AGENTS_CHANNELS_JS).toContain("getElementById('saveMcpScopeBtn').addEventListener('click'")
   })
 
   it('tabMcpScope is handled in switchAgentTab', () => {
-    expect(AGENTS_JS).toMatch(/tabMcpScope.*hidden.*tab.*!==.*mcp-scope/)
+    expect(AGENTS_DETAIL_JS).toMatch(/tabMcpScope.*hidden.*tab.*!==.*mcp-scope/)
   })
 
   it('loadMcpScope is called from openAgentDetail', () => {
-    expect(AGENTS_JS).toContain('await loadMcpScope(currentAgent)')
+    expect(AGENTS_DETAIL_JS).toContain('await loadMcpScope(currentAgent)')
   })
 
   it('saveMcpScopeBtn is included in Marveen readonly hide list', () => {
@@ -111,27 +118,27 @@ describe('agents.js MCP scope wiring', () => {
   })
 
   it('mcpScope field is sent in the PATCH body', () => {
-    expect(AGENTS_JS).toContain('mcpScope: scopeValue')
+    expect(AGENTS_CHANNELS_JS).toContain('mcpScope: scopeValue')
   })
 
   it('dangerous-tool confirm gate fires before save', () => {
     // confirm() must appear before the fetch in the save handler
-    const saveHandlerStart = AGENTS_JS.indexOf("getElementById('saveMcpScopeBtn').addEventListener('click'")
-    const confirmIdx = AGENTS_JS.indexOf("confirm(t('agents.mcp_scope.confirm_dangerous')", saveHandlerStart)
-    const fetchIdx = AGENTS_JS.indexOf("fetch(`/api/agents/", saveHandlerStart)
+    const saveHandlerStart = AGENTS_CHANNELS_JS.indexOf("getElementById('saveMcpScopeBtn').addEventListener('click'")
+    const confirmIdx = AGENTS_CHANNELS_JS.indexOf("confirm(t('agents.mcp_scope.confirm_dangerous')", saveHandlerStart)
+    const fetchIdx = AGENTS_CHANNELS_JS.indexOf("fetch(`/api/agents/", saveHandlerStart)
     expect(confirmIdx).toBeGreaterThan(saveHandlerStart)
     expect(confirmIdx).toBeLessThan(fetchIdx)
   })
 
   it('fetchMcpCatalog uses /api/mcp-catalog endpoint', () => {
-    expect(AGENTS_JS).toContain("fetch('/api/mcp-catalog')")
+    expect(AGENTS_CHANNELS_JS).toContain("fetch('/api/mcp-catalog')")
   })
 
   it('readonly mode auto-filters to list/get/search tool prefixes', () => {
-    expect(AGENTS_JS).toContain('MCP_READONLY_PREFIXES')
-    expect(AGENTS_JS).toContain("'list_'")
-    expect(AGENTS_JS).toContain("'get_'")
-    expect(AGENTS_JS).toContain("'search_'")
+    expect(AGENTS_CHANNELS_JS).toContain('MCP_READONLY_PREFIXES')
+    expect(AGENTS_CHANNELS_JS).toContain("'list_'")
+    expect(AGENTS_CHANNELS_JS).toContain("'get_'")
+    expect(AGENTS_CHANNELS_JS).toContain("'search_'")
   })
 })
 
