@@ -177,13 +177,28 @@ function renderAgentMatrix(items, tenantId) {
   `).join('')
 }
 
-async function setAgentAvailability(tenantId, agentId, enabled) {
+async function setAgentAvailability(tenantId, agentId, enabled, confirmed = false) {
   try {
     const r = await fetch('/api/admin/agent-availability', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenant_id: tenantId, agent_id: agentId, enabled }),
+      body: JSON.stringify({ tenant_id: tenantId, agent_id: agentId, enabled, confirm: confirmed }),
     })
+    if (r.status === 409) {
+      const e = await r.json()
+      if (Array.isArray(e.risky_mcp_servers)) {
+        // Fleet-only-agents policy gate (src/web/mcp-risk-policy.ts): this
+        // agent carries an MCP server with no tenant boundary of its own
+        // (GitHub/GitLab, Hetzner, filesystem, GA4...) -- confirm with the
+        // operator before granting a B2B tenant cross-visibility onto it.
+        if (confirm(`${e.hint}\n\nIGEN, TUDATOSAN -- OK\nNEM -- Mégse`)) {
+          await setAgentAvailability(tenantId, agentId, enabled, true)
+          return
+        }
+        await showAgentMatrix(tenantId) // revert the checkbox to the actual server state
+        return
+      }
+    }
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
     showToast(`${agentId}: ${enabled ? 'engedélyezve' : 'letiltva'}`)
     await showAgentMatrix(tenantId)
