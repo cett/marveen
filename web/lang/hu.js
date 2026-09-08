@@ -1928,6 +1928,7 @@ window._i18n.hu = {
   'admin.b2b.user.tenant':           'Tenant',
   'admin.b2b.user.email':            'Email (opcionális)',
   'admin.b2b.user.display_name':     'Megjelenített név (opcionális)',
+  'admin.b2b.user.scope_fleet':      'Fleet (globális)',
 
   'admin.b2b.permission_matrix.title':    'Szerepkör-jogosultság mátrix',
   'admin.b2b.permission_matrix.subtitle': 'Ki milyen műveleteket hajthat végre',
