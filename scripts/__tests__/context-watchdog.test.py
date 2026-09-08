@@ -179,6 +179,36 @@ class TestLatestUsageEvent(unittest.TestCase):
             self.assertIsNone(hook.latest_usage_event(path))
 
 
+class TestKnownAgentCwd(unittest.TestCase):
+    """Phase-4 gate: recognises the main install root and a sub-agent's own
+    agents/<id> dir; rejects everything else (unknown paths AND the
+    ephemeral agent-worker.ts pool, whose cwd is outside both shapes)."""
+
+    def test_main_install_root_resolves_to_main_agent_id(self):
+        self.assertEqual(hook._known_agent_cwd(_INSTALL_DIR), hook.ledger_lib.main_agent_id())
+
+    def test_subagent_dir_resolves_to_its_own_id(self):
+        cwd = os.path.join(_INSTALL_DIR, "agents", "sub-a")
+        self.assertEqual(hook._known_agent_cwd(cwd), "sub-a")
+
+    def test_subagent_dir_trailing_slash_still_resolves(self):
+        cwd = os.path.join(_INSTALL_DIR, "agents", "sub-a") + "/"
+        self.assertEqual(hook._known_agent_cwd(cwd), "sub-a")
+
+    def test_ephemeral_worker_home_is_rejected(self):
+        # Matches agent-worker.ts's workerHomeFor(): ~/.{agent}-worker(-fast),
+        # outside both the install root and agents/<id>.
+        cwd = os.path.expanduser("~/.marveen-worker")
+        self.assertIsNone(hook._known_agent_cwd(cwd))
+
+    def test_unrelated_path_is_rejected(self):
+        self.assertIsNone(hook._known_agent_cwd("/tmp/some/other/worker/home"))
+
+    def test_empty_cwd_is_rejected(self):
+        self.assertIsNone(hook._known_agent_cwd(""))
+        self.assertIsNone(hook._known_agent_cwd(None))
+
+
 class TestResolveTenant(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -431,7 +461,7 @@ class TestMainSubprocess(unittest.TestCase):
         self.assertEqual(row[1], "handoff")
         self.assertIn("interlock=yes", row[2])
 
-    def test_non_main_agent_cwd_is_noop(self):
+    def test_unknown_agent_cwd_is_noop(self):
         _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000)])
         r = self._run_hook(self._payload(cwd="/tmp/some/other/worker/home"))
         self.assertEqual(r.returncode, 0)
@@ -440,6 +470,34 @@ class TestMainSubprocess(unittest.TestCase):
         count = conn.execute("SELECT COUNT(*) FROM token_usage").fetchone()[0]
         conn.close()
         self.assertEqual(count, 0)
+
+    def test_ephemeral_worker_home_cwd_is_noop(self):
+        # agent-worker.ts's actual worker cwd shape: ~/.{agent}-worker(-fast).
+        _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000)])
+        r = self._run_hook(self._payload(cwd=os.path.expanduser(f"~/.{MAIN_AGENT}-worker")))
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.strip(), "")
+        conn = sqlite3.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) FROM token_usage").fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
+
+    def test_subagent_cwd_writes_row_and_can_emit_handoff(self):
+        # cwd = <install>/agents/<subagent-id> -- the shape a sub-agent's own
+        # settings.json runs the hook with (ensureContextWatchdogHook).
+        sub_agent = "subagent-x"
+        with open(self.gate_config_path, "w") as f:
+            json.dump({sub_agent: {"enabled": True, "thresholdTokens": 400000}}, f)
+        _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000, output_tokens=10)])
+        cwd = os.path.join(_INSTALL_DIR, "agents", sub_agent)
+        r = self._run_hook(self._payload(cwd=cwd))
+        self.assertEqual(r.returncode, 0)
+        out = json.loads(r.stdout.strip())
+        self.assertIn("CONTEXT-WATCHDOG HANDOFF", out["hookSpecificOutput"]["additionalContext"])
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT agent FROM token_usage").fetchone()
+        conn.close()
+        self.assertEqual(row[0], sub_agent)
 
     def test_missing_transcript_path_is_noop(self):
         r = self._run_hook(self._payload(transcript_path=""))

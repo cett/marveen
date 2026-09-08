@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeWatchdogCycles, DEFAULT_COOLDOWN_SECS, DEFAULT_VALIDATION_TARGET } from '../watchdog-validation.js'
+import { computeWatchdogCycles, computeFleetWatchdogCycles, DEFAULT_COOLDOWN_SECS, DEFAULT_VALIDATION_TARGET } from '../watchdog-validation.js'
 import type { HookAuditLogEntry } from '../db.js'
 
 const AGENT = 'agent-main'
@@ -154,5 +154,61 @@ describe('computeWatchdogCycles', () => {
     expect(result.successful).toBe(0)
     expect(result.totalHandoffs).toBe(0)
     expect(result.ready).toBe(false)
+  })
+})
+
+// Phase-4 sub-agent extension: the gate now needs to prove coverage
+// across the whole fleet, not just the main agent.
+describe('computeFleetWatchdogCycles', () => {
+  it('sums successful cycles across agents and exposes a perAgent breakdown', () => {
+    const now = 10_000
+    const rowsByAgent = {
+      'agent-main': [handoffRow(now - DEFAULT_COOLDOWN_SECS - 1, 62, 'yes', { agent_id: 'agent-main' })],
+      'sub-a': [handoffRow(now - DEFAULT_COOLDOWN_SECS - 1, 70, 'yes', { agent_id: 'sub-a' })],
+      'sub-b': [], // no watchdog activity at all for this agent
+    }
+    const result = computeFleetWatchdogCycles(rowsByAgent, {
+      agentIds: ['agent-main', 'sub-a', 'sub-b'],
+      nowSecs: now,
+    })
+    expect(result.successful).toBe(2)
+    expect(result.totalHandoffs).toBe(2)
+    expect(Object.keys(result.perAgent)).toEqual(['agent-main', 'sub-a', 'sub-b'])
+    expect(result.perAgent['agent-main'].successful).toBe(1)
+    expect(result.perAgent['sub-a'].successful).toBe(1)
+    expect(result.perAgent['sub-b'].successful).toBe(0)
+    expect(result.perAgent['sub-b'].totalHandoffs).toBe(0)
+  })
+
+  it('ready flips true once the aggregate successful count reaches target, even if no single agent does alone', () => {
+    const now = 10_000
+    const rowsByAgent = {
+      'sub-a': Array.from({ length: 5 }, (_, i) =>
+        handoffRow(now - DEFAULT_COOLDOWN_SECS - 1 - i * 10, 62, 'yes', { agent_id: 'sub-a' })),
+      'sub-b': Array.from({ length: 5 }, (_, i) =>
+        handoffRow(now - DEFAULT_COOLDOWN_SECS - 1 - i * 10, 62, 'yes', { agent_id: 'sub-b' })),
+    }
+    const result = computeFleetWatchdogCycles(rowsByAgent, { agentIds: ['sub-a', 'sub-b'], nowSecs: now })
+    expect(result.perAgent['sub-a'].ready).toBe(false) // 5 < default target of 10, alone
+    expect(result.perAgent['sub-b'].ready).toBe(false)
+    expect(result.successful).toBe(10)
+    expect(result.ready).toBe(true) // but the fleet aggregate reaches the target
+  })
+
+  it('an agent id with no key in rowsByAgent is treated as zero rows, not an error', () => {
+    const result = computeFleetWatchdogCycles({}, { agentIds: ['ghost-agent'], nowSecs: 10_000 })
+    expect(result.perAgent['ghost-agent'].totalHandoffs).toBe(0)
+    expect(result.successful).toBe(0)
+    expect(result.ready).toBe(false)
+  })
+
+  it('respects a custom target for the aggregate', () => {
+    const now = 10_000
+    const rowsByAgent = {
+      'sub-a': [handoffRow(now - DEFAULT_COOLDOWN_SECS - 1, 62, 'yes', { agent_id: 'sub-a' })],
+    }
+    const result = computeFleetWatchdogCycles(rowsByAgent, { agentIds: ['sub-a'], nowSecs: now, target: 1 })
+    expect(result.ready).toBe(true)
+    expect(result.target).toBe(1)
   })
 })

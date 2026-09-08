@@ -1,8 +1,9 @@
-import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLog } from '../../db.js'
+import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLog, type HookAuditLogEntry } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 import { MAIN_AGENT_ID } from '../../config.js'
-import { computeWatchdogCycles } from '../../watchdog-validation.js'
+import { listAgentNames } from '../agent-config.js'
+import { computeWatchdogCycles, computeFleetWatchdogCycles } from '../../watchdog-validation.js'
 
 // Kept wide enough to see the whole rolling window a validation cycle can
 // span (cooldownSecs, default 45min) plus a comfortable margin for the
@@ -75,19 +76,38 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
   }
 
   // GET /api/hook-audit/watchdog-cycles -- phase-4 validation counter
-  // (?agent=<id>, defaults to the main channels agent; ?target=<n>, default 10)
+  // (?agent=<id>, defaults to the main channels agent; ?agent=all aggregates
+  // across the whole fleet -- main + every persistent sub-agent, part of the
+  // phase-4 sub-agent extension; ?target=<n>, default 10)
   if (path === '/api/hook-audit/watchdog-cycles' && method === 'GET') {
-    const agent = url.searchParams.get('agent') ?? MAIN_AGENT_ID
+    const agentParam = url.searchParams.get('agent') ?? MAIN_AGENT_ID
     const targetParam = url.searchParams.get('target')
     const target = targetParam ? parseInt(targetParam, 10) : undefined
+    const nowSecs = Math.floor(Date.now() / 1000)
+
+    if (agentParam === 'all') {
+      const agentIds = [MAIN_AGENT_ID, ...listAgentNames()]
+      const rowsByAgent: Record<string, HookAuditLogEntry[]> = {}
+      for (const id of agentIds) {
+        rowsByAgent[id] = listHookAuditLog({ agent_id: id, sinceSecs: WATCHDOG_CYCLES_LOOKBACK_SECS, limit: 1000 })
+      }
+      const result = computeFleetWatchdogCycles(rowsByAgent, {
+        agentIds,
+        nowSecs,
+        target: target && target > 0 ? target : undefined,
+      })
+      json(res, result)
+      return true
+    }
+
     const rows = listHookAuditLog({
-      agent_id: agent,
+      agent_id: agentParam,
       sinceSecs: WATCHDOG_CYCLES_LOOKBACK_SECS,
       limit: 1000,
     })
     const result = computeWatchdogCycles(rows, {
-      agentId: agent,
-      nowSecs: Math.floor(Date.now() / 1000),
+      agentId: agentParam,
+      nowSecs,
       target: target && target > 0 ? target : undefined,
     })
     json(res, result)
