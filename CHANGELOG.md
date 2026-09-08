@@ -9,10 +9,14 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: 9c4ee1024a840155c6a818486132e889212f20ac -->
+<!-- changelog-auto-sha: ab5de359663f10445cd68a6f8a1565a89b61ea31 -->
 
 ### Added
 
+- file-based credential materializer for MCP servers
+- context watchdog for the main channels agent (phases 2+3)
+- PostToolUse injection-detection gate + structured hook audit log
+- tenant isolation for SSH servers, nav guard, add-modal tenant select
 - context watchdog for the main channels agent (proactive compaction, phases 2+3): a PostToolUse hook now reads the newest transcript-JSONL usage line on every tool call and writes it straight into the `token_usage` table, bypassing the periodic collector so the dashboard and the compact heartbeat never see data older than the agent's last tool call; once the estimated context usage crosses 60% of the restart-gate's configured threshold, the same hook injects a rolling HANDOFF summary (current task, recent blackboard activity, open kanban cards, best-guess next step, context%) into the session via the hook's own additional-context channel, and stamps the compact-monitor's cooldown state so the two mechanisms don't fire back-to-back for the same spike. Logging-category hook (fail/timeout -> silent pass, never blocks a tool call); no network calls, local SQLite reads only. Scoped to the main channels agent only -- workers and other fleet agents never load it
 - **[API]** structured hook audit log -- POST/GET /api/hook-audit, deny-only, PostToolUse injection-detection gate scoped to mcp__* and WebFetch tool responses
 - SQL-first skill creation instruction (Phase 3)
@@ -243,6 +247,15 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- collect interval 60min -> 5min (context watchdog phase 1)
+- coverage gate never enforced -- coverage block sat outside test
+- tenant isolation for secret store and SSH key pool
+- resolve qs/adm-zip/xlsx npm audit findings (0 high/moderate)
+- scope import sources, audit log, stats and search to tenant
+- scope memory stat cards to the selected tenant
+- decode URI-encoded skill ids in SQL skill route captures
+- align B2B/RBAC admin tab and panel markup with the tab-nav template
+- scope agent list/detail visibility to tenant availability
 - shorten the periodic token-usage collector from a 1-hour to a 5-minute interval, bounding how long a stale reading can survive a process restart and drive a false-positive context-compact trigger (context watchdog, phase 1)
 - **[API]** extend Vault tenant isolation to the SSH *server* metadata routes (`/api/vault/ssh-servers`), which the earlier Vault tenant-isolation fix deliberately left fleet-default scoped -- `vault_ssh_servers` now carries `tenant_id` (existing rows backfill to `default`), and list/create/update/delete/generate-key/public-key all scope by tenant the same way the rest of the Vault surface does (admin with no `?tenant=` sees everything, admin with `?tenant=` narrows, non-admin is always scoped to their own tenant; cross-tenant single-item access 404s, anti-enumeration). A generated SSH keypair now binds to the server's own tenant rather than always `default`. The Vault nav link and page are also now hidden from non-global-admin users (both the sidebar link and a direct `#vault` hash navigation redirect to the overview page), since every Vault sub-resource is fleet/admin-scoped by design and a tenant-scoped user would otherwise land on a page whose lists are always empty for them. The three "add" panels (secret, SSH key, SSH server) show an explicit tenant `<select>` for a global admin so they can target a specific tenant when creating an entry, independent of the page-level tenant filter
 - **[API]** fix the Vault (encrypted secret store + SSH key pool) having no tenant concept at all, and a security hole in the fix: a shared single-key store meant a tenant-scoped caller could shadow or overwrite a fleet-level secret (or another tenant's) that happened to share the same id. `vault.json` entries and the `vault_ssh_keys` table now carry `tenant_id`, and every store operation (`setSecret`/`getSecret`/`deleteSecret`) keys off the compound `(tenant_id, id)` pair rather than `id` alone -- existing entries backfill to `default` on read, and every internal caller (agent API-key storage, MCP binding sync, env resolution) keeps calling these without a tenant argument, which resolves to `default` and only ever touches fleet-level secrets. `GET/POST /api/vault`, `GET/DELETE /api/vault/:id` and the whole `/api/vault/ssh-keys` sub-tree now scope by tenant the same way the existing tenant-isolated routes do (admin with no `?tenant=` sees everything, admin with `?tenant=` narrows, non-admin is always scoped to their own tenant), with cross-tenant single-item access returning 404 rather than 403 (anti-enumeration, so a scoped caller can't use the response to confirm a given secret id exists under another tenant)
@@ -605,6 +618,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- update fork-diff for context watchdog
+- update fork-diff for security dep fixes (#718)
+- add entry for tenant-scoped agent list/detail fix
+- bootstrap marker + note the incremental-generator fix
 - update for SPA fallback routing fix
 - update for skill SQL-regen Phase 1
 - document per-skill instant regen (kanban 3f52d485 Phase 1)
@@ -724,6 +741,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- lower coverage floor below CI-measured baseline
+- add npm audit gate to build-and-test job
+- drop internal issue reference from test docstring
 - add a `Security audit` step to the CI build-and-test job (`npm audit --audit-level=high`, after `npm ci` and before `Build`) so a newly introduced high/critical dependency vulnerability blocks the pipeline instead of only showing up in a manual audit; moderate-severity findings are listed but don't block
 - fix the coverage gate: `vitest.config.ts`'s `coverage` block sat as a top-level sibling of `test` instead of nested under it, which vitest 4.x silently ignores -- the configured include/exclude/thresholds never actually applied, so `npm run coverage` always exited 0 regardless of measured percentages. Moved `coverage` under `test.coverage` and re-measured the baseline with the (now actually applied) include/exclude filters; the ratchet floor is set just below that real baseline so the gate stays green on `develop` but now genuinely fails a PR that drops coverage
 - make `generate-changelog.mjs` incremental -- it used to recompute the entire [Unreleased] section from conventional-commit subjects since the last git tag on every run, silently discarding any hand-written elaboration added to entries afterwards (discovered while patching the CHANGELOG for the tenant-scoped overview fix, when a run reverted several manually-enriched entries back to terse commit subjects). A hidden `<!-- changelog-auto-sha: <sha> -->` marker inside [Unreleased] now tracks the last-processed commit; each run only reads commits after that marker and prepends them into the matching section, leaving everything else untouched. This run bootstraps the marker at the current HEAD without touching any existing content
