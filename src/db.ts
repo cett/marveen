@@ -3324,6 +3324,73 @@ export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
   `).all(cutoff30, cutoff90) as SkillUsageSummaryRow[]
 }
 
+// --- Hook Audit Log (structured, deny-only) ---
+
+export interface HookAuditLogEntry {
+  id: number
+  ts: number
+  agent_id: string | null
+  hook_type: 'PreToolUse' | 'PostToolUse' | 'PreCompact' | 'Stop'
+  verdict: 'allow' | 'deny' | 'defer'
+  tool_name: string | null
+  content_hash: string | null
+  reason: string | null
+  session_id: string | null
+}
+
+export function insertHookAuditLog(entry: {
+  agent_id?: string | null
+  hook_type: string
+  verdict: string
+  tool_name?: string | null
+  content_hash?: string | null
+  reason?: string | null
+  session_id?: string | null
+}): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(
+    now,
+    entry.agent_id ?? null,
+    entry.hook_type,
+    entry.verdict,
+    entry.tool_name ?? null,
+    entry.content_hash ?? null,
+    entry.reason ?? null,
+    entry.session_id ?? null,
+  )
+}
+
+export function listHookAuditLog(opts: {
+  sinceSecs?: number
+  verdict?: string
+  agent_id?: string
+  limit?: number
+} = {}): HookAuditLogEntry[] {
+  const clauses: string[] = []
+  const params: unknown[] = []
+
+  const sinceSecs = opts.sinceSecs ?? 3600
+  const cutoff = Math.floor(Date.now() / 1000) - sinceSecs
+  clauses.push('ts >= ?')
+  params.push(cutoff)
+
+  if (opts.verdict) { clauses.push('verdict = ?'); params.push(opts.verdict) }
+  if (opts.agent_id) { clauses.push('agent_id = ?'); params.push(opts.agent_id) }
+
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000)
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+  return db.prepare(
+    `SELECT * FROM hook_audit_log ${where} ORDER BY ts DESC LIMIT ?`,
+  ).all(...params, limit) as HookAuditLogEntry[]
+}
+
+export function pruneHookAuditLog(olderThanSecs = 30 * 86400): void {
+  const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
+  db.prepare('DELETE FROM hook_audit_log WHERE ts < ?').run(cutoff)
+}
+
 // --- Config Change Log ---
 // Pass null for oldValue/newValue when the registry entry is secret:true --
 // this keeps secret values out of the audit trail entirely rather than

@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** structured hook audit log -- POST/GET /api/hook-audit, deny-only, PostToolUse injection-detection gate scoped to mcp__* and WebFetch tool responses
 - SQL-first skill creation instruction (Phase 3)
 - read/write skills via SQL instead of the file mirror
 - per-skill instant SQL->file regen on dashboard write
