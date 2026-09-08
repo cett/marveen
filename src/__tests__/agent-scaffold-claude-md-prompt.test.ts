@@ -21,6 +21,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // generateClaudeMd/generateSoulMd moved to agent-scaffold-templates.ts in #773/#779.
 const SCAFFOLD_PATH = join(__dirname, '..', 'web', 'agent-scaffold-templates.ts')
 const SCAFFOLD_SRC = readFileSync(SCAFFOLD_PATH, 'utf-8')
+// The removed-heartbeat-scaffold guard below must cover both halves of the
+// #773/#779 split, not just the templates side -- otherwise a regression
+// that reintroduces the sweep-model functions into agent-scaffold-hooks.ts
+// would go undetected (Boo's negative-assert audit, msg 5502).
+const HOOKS_SRC = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold-hooks.ts'), 'utf-8')
 const AGENTS_CRUD_SRC = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents-crud.ts'), 'utf-8')
 
 function promptBodyOf(fnName: string, terminator: string): string {
@@ -109,12 +114,14 @@ describe.each(GENERATORS)('$name prompt: formatting rules', ({ name, terminator 
 })
 
 describe('per-agent heartbeat scaffold removed (sweep model)', () => {
-  it('agent-scaffold.ts does not export scaffoldAgentMemoriaHeartbeat', () => {
+  it('agent-scaffold (hooks+templates) does not export scaffoldAgentMemoriaHeartbeat', () => {
     expect(SCAFFOLD_SRC).not.toContain('scaffoldAgentMemoriaHeartbeat')
+    expect(HOOKS_SRC).not.toContain('scaffoldAgentMemoriaHeartbeat')
   })
 
-  it('agent-scaffold.ts does not contain heartbeatMinuteFor', () => {
+  it('agent-scaffold (hooks+templates) does not contain heartbeatMinuteFor', () => {
     expect(SCAFFOLD_SRC).not.toContain('heartbeatMinuteFor')
+    expect(HOOKS_SRC).not.toContain('heartbeatMinuteFor')
   })
 
   it('agents-crud.ts does not call scaffoldAgentMemoriaHeartbeat', () => {
