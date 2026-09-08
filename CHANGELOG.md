@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- context watchdog for the main channels agent (proactive compaction, phases 2+3): a PostToolUse hook now reads the newest transcript-JSONL usage line on every tool call and writes it straight into the `token_usage` table, bypassing the periodic collector so the dashboard and the compact heartbeat never see data older than the agent's last tool call; once the estimated context usage crosses 60% of the restart-gate's configured threshold, the same hook injects a rolling HANDOFF summary (current task, recent blackboard activity, open kanban cards, best-guess next step, context%) into the session via the hook's own additional-context channel, and stamps the compact-monitor's cooldown state so the two mechanisms don't fire back-to-back for the same spike. Logging-category hook (fail/timeout -> silent pass, never blocks a tool call); no network calls, local SQLite reads only. Scoped to the main channels agent only -- workers and other fleet agents never load it
 - **[API]** structured hook audit log -- POST/GET /api/hook-audit, deny-only, PostToolUse injection-detection gate scoped to mcp__* and WebFetch tool responses
 - SQL-first skill creation instruction (Phase 3)
 - read/write skills via SQL instead of the file mirror
