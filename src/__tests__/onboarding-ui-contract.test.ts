@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP            = readFileSync(join(__dirname, '../../web/app.js'),                    'utf-8')
 const ONBOARDING_MOD = readFileSync(join(__dirname, '../../web/modules/onboarding.js'),     'utf-8')
 const AGENTS_MOD     = readFileSync(join(__dirname, '../../web/modules/agents.js'),         'utf-8')
+// The DI registration (initAgents) still lives in agents.js, but the actual
+// call site moved to agents-channels.js in the #773/#776 split.
+const AGENTS_CHANNELS_MOD = readFileSync(join(__dirname, '../../web/modules/agents-channels.js'), 'utf-8')
 const HTML           = readFileSync(join(__dirname, '../../web/index.html'),                 'utf-8')
 
 describe('onboarding module wiring', () => {
@@ -49,9 +52,10 @@ describe('onboarding module wiring', () => {
     expect(AGENTS_MOD).toMatch(/showSudoModal[,\s]/)
     // Must use the private DI reference, not call showSudoModal directly
     expect(AGENTS_MOD).toContain('_showSudoModal')
-    expect(AGENTS_MOD).toMatch(/_showSudoModal\?\.\(/)
+    expect(AGENTS_CHANNELS_MOD).toMatch(/_showSudoModal\?\.\(/)
     // Must NOT call showSudoModal directly (which was the pre-existing bug)
     expect(AGENTS_MOD).not.toMatch(/(?<!_)showSudoModal\(/)
+    expect(AGENTS_CHANNELS_MOD).not.toMatch(/(?<!_)showSudoModal\(/)
   })
 
   it('onboarding overlay and close button exist in HTML', () => {

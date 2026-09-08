@@ -8,8 +8,9 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const agentsSource = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents-process.ts'), 'utf8')
-// openAgentDetail was extracted to web/modules/agents.js in S-6 modularization.
-const appSource = readFileSync(join(__dirname, '..', '..', 'web', 'modules', 'agents.js'), 'utf8')
+// openAgentDetail was extracted to web/modules/agents.js in S-6 modularization,
+// then split into web/modules/agents-detail.js in #773/#776.
+const appSource = readFileSync(join(__dirname, '..', '..', 'web', 'modules', 'agents-detail.js'), 'utf8')
 
 function sourceBetween(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker)
