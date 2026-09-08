@@ -31,27 +31,32 @@ export default defineConfig({
     // Default 5 s is too tight for DB-heavy tests in a fully-parallel suite run.
     // Affected tests pass in isolation; the timeout is a concurrency artefact.
     testTimeout: 15000,
-  },
-  coverage: {
-    provider: 'v8',
-    reporter: ['text', 'html', 'json-summary'],
-    reportsDirectory: 'coverage',
-    // Only measure backend TypeScript; web/modules/*.js is browser-only JS
-    // and cannot be instrumented by vitest (would show 0% and break the gate).
-    include: ['src/**/*.ts'],
-    exclude: ['src/__tests__/**', 'dist/**'],
-    // Thresholds ratcheted to F3b measured baseline (2026-07-27) after adding
-    // route-handler unit tests for agents-channels, agents-crud (extended),
-    // marveen, scheduled-tasks-io, skills (extended).
-    // Stmts at 64% (not 65%) after fixing wrong vi.mock paths in batch-1 tests:
-    // incorrect '../../channel-provider.js' now correctly mocks the module,
-    // removing accidental side-effect coverage from the real channel-provider.ts.
-    // Measured with include:['src/**/*.ts'], exclude:['src/__tests__/**','dist/**'].
-    thresholds: {
-      statements: 64,
-      branches: 63,
-      functions: 66,
-      lines: 66,
+    // `coverage` must live under `test` -- it was previously a top-level sibling
+    // of `test`, which vitest 4.x silently ignores (no error, no warning), so
+    // the configured thresholds never actually enforced. `npm run coverage`
+    // always exited 0 regardless of the measured percentages.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html', 'json-summary'],
+      reportsDirectory: 'coverage',
+      // Only measure backend TypeScript; web/modules/*.js is browser-only JS
+      // and cannot be instrumented by vitest (would show 0% and break the gate).
+      include: ['src/**/*.ts'],
+      exclude: ['src/__tests__/**', 'dist/**'],
+      // Ratchet floor re-measured after fixing the coverage block's placement
+      // (previously the block sat outside `test`, so it never took effect --
+      // the include/exclude filters above are now actually applied for the
+      // first time, and the resulting numbers differ from the earlier,
+      // unenforced thresholds measured under the default config).
+      // Measured baseline: statements 57.98%, branches 56.81%, functions
+      // 60.54%, lines 59.12% -- floor set a point below each so develop stays
+      // green, but any further drop now actually fails the gate.
+      thresholds: {
+        statements: 57,
+        branches: 56,
+        functions: 60,
+        lines: 59,
+      },
     },
   },
 })
