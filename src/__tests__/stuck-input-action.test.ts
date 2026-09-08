@@ -1,44 +1,22 @@
 import { describe, it, expect } from 'vitest'
 import {
   decideStuckInputAction,
-  submitLanded,
-  parkedInputRowCount,
-  stuckInputSignature,
+  decideStuckInputRecovery,
   type StuckInputActionFacts,
+  type StuckInputState,
+  type StuckInputThresholds,
 } from '../pane-state.js'
 
-// Delivery-reliability deep-fix (BA56A500): the I/O submit-escalation + post-
-// submit verification path. These cover the pure decision (decideStuckInputAction)
-// and the two submit predicates (parkedInputRowCount, submitLanded). The pre-
-// existing recovery-stack tests (decideStuckInputRecovery et al.) are untouched.
-
-// Realistic `tmux capture-pane -p` fixtures (same box-drawing bytes as
-// pane-state.test.ts: U+2500 ─, U+276F ❯).
-const SEP = '─'.repeat(80)
-const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
-
-// A single-row parked <channel> block (complete: header + chat_id + close tag).
-const PARKED_CHANNEL_SINGLEROW = [
-  '',
-  SEP,
-  '❯ <channel source="plugin:telegram" chat_id="123">rovid uzenet</channel>',
-  SEP,
-  FOOTER,
-].join('\n')
-
-// The same block wrapped across 3 visual rows of the live input box.
-const PARKED_CHANNEL_MULTIROW = [
-  '',
-  SEP,
-  '❯ <channel source="plugin:telegram" chat_id="123">Szia, ez egy jó',
-  '  hosszú üzenet ami több sorba tördelődött a terminál szélén és',
-  '  több vizuális sort foglal el a beviteli dobozban</channel>',
-  SEP,
-  FOOTER,
-].join('\n')
-
-// An idle pane: empty input box, nothing parked.
-const IDLE = ['', SEP, '❯ ', SEP, FOOTER].join('\n')
+// Delivery-reliability deep-fix (BA56A500): the I/O submit-escalation
+// decision (decideStuckInputAction). The pre-existing recovery-stack tests
+// (decideStuckInputRecovery et al.) are untouched. Coverage for the submit
+// predicates (parkedInputRowCount, submitLanded) themselves lives in
+// pane-state.test.ts, which already exercises every case these fixtures
+// covered (single-row, wrapped multi-row, idle/no-box, landed/not-landed/
+// null-capture) via its own generic parked-input fixtures -- the row/signature
+// logic under test is content-agnostic (structural box parsing), so the
+// <channel>-tag-specific fixtures here added no distinct edge case (moved
+// out as part of #786 dedup, not merged elsewhere).
 
 function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
   return {
@@ -178,34 +156,79 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
   })
 })
 
-describe('submitLanded (post-submit verification)', () => {
-  it('verified-landed -> stop: the parked signature cleared after submit', () => {
-    const prev = stuckInputSignature(PARKED_CHANNEL_SINGLEROW)
-    expect(prev).not.toBeNull()
-    expect(submitLanded(prev!, IDLE)).toBe(true)
+// Contract for the LOCAL FAST stuck-input recovery (stuck-input-watcher.ts):
+// on the 15s tick the same parked signature must reach the clear+re-inject
+// escalation (attempt > MAIN_STUCK_ENTER_ATTEMPTS=2, i.e. attempts 3..) WELL
+// BEFORE the give-up cap, so a swallowed Enter gets the message actually
+// re-injected within ~30-45s instead of waiting minutes for the slow
+// channel-monitor backstop. These thresholds mirror LOCAL_FAST_THRESHOLDS,
+// which the fast watcher applies to BOTH local sub-agents and the MAIN
+// channels session (MAIN no longer bare-Enter-only).
+describe('sub-agent fast stuck-input recovery contract', () => {
+  const LOCAL_FAST_THRESHOLDS: StuckInputThresholds = {
+    confirmMs: 12_000,
+    dedupMs: 12_000,
+    maxAttempts: 5,
+  }
+
+  const NO_STATE: StuckInputState = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
+  const MAIN_STUCK_ENTER_ATTEMPTS = 2 // bare Enters before clear+re-inject escalation
+
+  // Drive a stable parked signature through the decision fn on a fixed tick,
+  // collecting the attempt number on every tick that recovers.
+  function runSpell(sig: string, tickMs: number, ticks: number): number[] {
+    let state = NO_STATE
+    let now = 0
+    const recoveredAttempts: number[] = []
+    for (let i = 0; i < ticks; i++) {
+      now += tickMs
+      const { recover, next } = decideStuckInputRecovery(sig, state, now, LOCAL_FAST_THRESHOLDS)
+      if (recover) recoveredAttempts.push(next.attempts)
+      state = next
+    }
+    return recoveredAttempts
+  }
+
+  it('reaches clear+re-inject escalation before the give-up cap', () => {
+    // 15s tick (the watcher interval). First seen at t=15s, confirm window
+    // 12s already elapsed by the next tick, then one action per tick.
+    const attempts = runSpell('parked Németh Gábor ...', 15_000, 10)
+    // Recovers exactly maxAttempts times, numbered 1..5.
+    expect(attempts).toEqual([1, 2, 3, 4, 5])
+    // At least one escalation attempt (>2) happened -> clear + re-inject is
+    // exercised, not just bare Enter.
+    expect(attempts.some((a) => a > MAIN_STUCK_ENTER_ATTEMPTS)).toBe(true)
   })
 
-  it('not-landed -> escalate: the same text is still parked after the attempt', () => {
-    const prev = stuckInputSignature(PARKED_CHANNEL_SINGLEROW)
-    expect(submitLanded(prev!, PARKED_CHANNEL_SINGLEROW)).toBe(false)
+  it('stops acting once the give-up cap is hit (no infinite recovery)', () => {
+    const attempts = runSpell('still parked', 15_000, 40)
+    expect(attempts).toEqual([1, 2, 3, 4, 5])
+    expect(attempts.length).toBe(LOCAL_FAST_THRESHOLDS.maxAttempts)
   })
 
-  it('null capture after submit -> not landed (cannot confirm -> escalate)', () => {
-    const prev = stuckInputSignature(PARKED_CHANNEL_SINGLEROW)
-    expect(submitLanded(prev!, null)).toBe(false)
+  it('a changed signature restarts the spell (message still arriving / edited)', () => {
+    let state = NO_STATE
+    let now = 0
+    // First signature parks and recovers once...
+    now += 15_000
+    let d = decideStuckInputRecovery('sig-a', state, now, LOCAL_FAST_THRESHOLDS)
+    state = d.next // record only (new spell)
+    now += 15_000
+    d = decideStuckInputRecovery('sig-a', state, now, LOCAL_FAST_THRESHOLDS)
+    expect(d.recover).toBe(true)
+    expect(d.next.attempts).toBe(1)
+    state = d.next
+    // ...then the text changes: confirm window restarts, no immediate action.
+    now += 15_000
+    d = decideStuckInputRecovery('sig-b', state, now, LOCAL_FAST_THRESHOLDS)
+    expect(d.recover).toBe(false)
+    expect(d.next.attempts).toBe(0)
+    expect(d.next.firstSeenAt).toBe(now)
   })
-})
 
-describe('parkedInputRowCount', () => {
-  it('single-row parked input -> 1', () => {
-    expect(parkedInputRowCount(PARKED_CHANNEL_SINGLEROW)).toBe(1)
-  })
-
-  it('wrapped multi-row parked input -> >1', () => {
-    expect(parkedInputRowCount(PARKED_CHANNEL_MULTIROW)).toBe(3)
-  })
-
-  it('idle / empty box -> 0', () => {
-    expect(parkedInputRowCount(IDLE)).toBe(0)
+  it('clears state when nothing is parked', () => {
+    const d = decideStuckInputRecovery(null, { parkedSig: 'x', firstSeenAt: 1, lastRecoverAt: 1, attempts: 2 }, 99_999, LOCAL_FAST_THRESHOLDS)
+    expect(d.recover).toBe(false)
+    expect(d.next.parkedSig).toBeNull()
   })
 })

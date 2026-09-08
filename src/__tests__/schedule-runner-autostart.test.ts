@@ -24,6 +24,9 @@ import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 // task must NOT drop the delivery.
 
 const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+// Schedule row rendering extracted to web/modules/schedules.js in S-7 modularization.
+const ROUTE = readFileSync(join(__dirname, '../web/routes/schedules.ts'), 'utf-8')
+const APP = readFileSync(join(__dirname, '../../web/modules/schedules.js'), 'utf-8')
 
 describe('schedule-runner auto-starts a stopped agent for its scheduled task', () => {
   it('attemptFireTask can return a distinct "starting" state', () => {
@@ -471,5 +474,42 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     expect(fnBody).toMatch(/running LLM anyway/)
     // Missing file returns { skip: false }
     expect(fnBody).toMatch(/not found, running LLM anyway/)
+  })
+})
+
+// "Run now" feature: an operator can fire a scheduled task immediately from
+// the dashboard, instead of waiting for its cron (or hand-editing the cron to
+// the next minute). It reuses the runner's fire path (attemptFireTask), so a
+// stopped agent is auto-started and the prompt is queued for delivery just
+// like a real cron fire.
+describe('Run now: runner exports an immediate-fire entry point', () => {
+  it('schedule-runner exports runScheduledTaskNow', () => {
+    expect(SRC).toMatch(/export async function runScheduledTaskNow\(/)
+  })
+
+  it('a manual run delivers regardless of skipIfBusy (always enqueues on starting/busy)', () => {
+    const fn = SRC.slice(SRC.indexOf('export async function runScheduledTaskNow('))
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 3)
+    // Reuses the real fire path...
+    expect(body).toMatch(/attemptFireTask\(/)
+    // ...and queues delivery for both an auto-started ('starting') and a
+    // busy session, WITHOUT consulting task.skipIfBusy (that's a cron-cadence knob).
+    expect(body).toMatch(/insertPendingTaskRetryIfNew/)
+    expect(body).not.toMatch(/task\.skipIfBusy/)
+  })
+})
+
+describe('Run now: REST route', () => {
+  it('schedules route handles POST /api/schedules/{name}/run', () => {
+    // The route matcher ends in `/run$/` and delegates to the runner.
+    expect(ROUTE).toMatch(/\/run\$\//)
+    expect(ROUTE).toMatch(/runScheduledTaskNow/)
+  })
+})
+
+describe('Run now: dashboard button', () => {
+  it('schedule row has a run action wired to the run endpoint', () => {
+    expect(APP).toMatch(/data-action="run"/)
+    expect(APP).toMatch(/\/api\/schedules\/\$\{encodeURIComponent\(task\.name\)\}\/run/)
   })
 })
