@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `06622133` vs fork `bbc94147`, 2026-09-08
+> Állapot: upstream `06622133` vs fork `03c57020`, 2026-09-08
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -52,6 +52,8 @@ Az npm dependency-lánc három biztonsági sebezhetetlenséget zárt le `npm ove
 A `workspace_docs` tábla (0027-es migráció) a fleet-ágensek munkadokumentumait tárolja: tervek, briefek, riportok, megjegyzések és bináris fájlok. UPSERT-et az `(agent_id, doc_key)` egyedi index biztosít, így egy ágens ugyanazt a terv-slugot újramentve mindig frissít, nem duplikál. `content_type` értékei: `text` (max 2 MB), `code` (max 4 MB), `binary` (max 16 MB, BLOB, API-n base64-kódoltan). Tenant-szintű izolálás: nem-admin hívók csak saját tenantjuk dokumentumait látják; írás kizárólag fleet-ágens token (`auth.kind = 'token'`) számára engedélyezett, session-felhasználók 403-at kapnak. Az alkalmazásszintű vektorszinkron (`vec_workspace_docs`, adatbázis-trigger nélkül) szöveges és kód típusú dokumentumokat indexel; bináris fájlok embedding nélkül tárolódnak. A TTL sweeper 5 percenként fut és az `updated_at` alapján törli a lejárt, nem-bináris dokumentumokat (küszöb: `WORKSPACE_DOCS_TTL_DAYS` config-kulcs, alapértelmezetten 14 nap), de megvédi azokat, amelyek nyitott kanban-kártyára mutatnak. A context-guard auto-handoff frissesség-ellenőrzése (megéri-e még a HANDOFF.md, vagy a session azóta tovább dolgozott) elsődlegesen ugyanennek a táblának a `doc_key='handoff'` sorát olvassa (`updated_at`), és csak akkor esik vissza a fájl-mtime-ra, ha ez a sor még nem létezik.
 
 A bejelentkezett B2B felhasználónak önkiszolgáló profil-oldal áll rendelkezésre (dashboard "Profilom"): identity card (felhasználónév, megjelenített név, e-mail, szerepkör, tenant), jelszócsere modal (jelenlegi + új jelszó, 12 karakter minimum), és az összes munkamenet kiléptetése. A sidebar alján mindig látható felhasználó-blokk (avatar + név + szerepkör + tenant) navigál a profil-oldalra. Új végpontok: `GET /api/v1/me` (saját profil lekérése, session-token kötelező) és `PATCH /api/v1/me` (display_name / email módosítása, max 128 karakter, validált email formátum).
+
+A meglévő `vault-env-wrapper.sh` (env-változóba injektált titkok) mellé egy `vault-file-materializer.sh` wrapper is bekerült azokhoz az MCP szerverekhez, amelyek egy hitelesítő adatot FÁJL-útvonalként várnak, nem env-változó értékként. Indításkor a titkosított vault-bejegyzést egy privát, 0700 jogú ideiglenes könyvtárba írja ki, a szervernek átadott env-változó erre a fájlra vagy könyvtárra mutat, majd a folyamat leállásakor törli. Opcionális "syncback" móddal a fájl leállás utáni tartalma visszaíródik a vaultba -- ez azoknak a szervereknek kell, amelyek a saját hitelesítő fájljukat maguk frissítik (pl. OAuth-token-frissítés). A titok értéke sosem kerül logba vagy parancssori argumentumba, kizárólag csővezetéken (pipe-on) áramlik.
 
 **Memória, keresés és adatkezelés**
 
