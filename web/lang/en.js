@@ -1929,6 +1929,7 @@ window._i18n.en = {
   'admin.b2b.user.tenant':           'Tenant',
   'admin.b2b.user.email':            'Email (optional)',
   'admin.b2b.user.display_name':     'Display name (optional)',
+  'admin.b2b.user.scope_fleet':      'Fleet (global)',
 
   'admin.b2b.permission_matrix.title':    'Role/permission matrix',
   'admin.b2b.permission_matrix.subtitle': 'Who can do what',
