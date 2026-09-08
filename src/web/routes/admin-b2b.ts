@@ -114,8 +114,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const existing = getTenant(tenantId)
     if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
     const result = deleteTenant(tenantId)
-    auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: result.memoriesDeleted })
-    json(res, { ok: true, tenant_id: tenantId, memories_deleted: result.memoriesDeleted })
+    auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted })
+    json(res, { ok: true, tenant_id: tenantId, memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted })
     return true
   }
 

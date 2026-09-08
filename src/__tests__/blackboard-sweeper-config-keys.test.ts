@@ -12,6 +12,7 @@ vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
 vi.mock('../config.js', () => ({
+  PROJECT_ROOT: '/tmp/bb-keycheck-' + process.pid,
   STORE_DIR: '/tmp/bb-keycheck-' + process.pid,
   OLLAMA_URL: 'http://localhost:11434',
   APP_TZ: 'Europe/Budapest',

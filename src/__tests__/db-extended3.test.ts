@@ -38,6 +38,7 @@ vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
 vi.mock('../config.js', () => ({
+  PROJECT_ROOT: '/tmp/db-ext3-test-' + process.pid,
   STORE_DIR: '/tmp/db-ext3-test-' + process.pid,
   OLLAMA_URL: 'http://localhost:11434',
   APP_TZ: 'Europe/Budapest',

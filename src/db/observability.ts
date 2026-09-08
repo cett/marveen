@@ -5,6 +5,7 @@ import { db, vecExtensionLoaded } from './connection.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
+import { purgeSecretsForTenant } from '../web/vault.js'
 
 export function recordMemoryRead(
   agentId: string,
@@ -326,12 +327,18 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //  11. Drop skills.
 //  12. Drop vec_workspace_docs then workspace_docs (app-level vec sync, no trigger).
 //  13. Drop tenant_agent_availability.
-//  14. Drop the tenant row itself.
+//  14. Drop vault_ssh_servers (child of vault_ssh_keys by FK direction).
+//  15. Drop vault_ssh_keys.
+//  16. Purge vault.json secrets -- the one non-transactional step (file I/O,
+//      not part of the SQLite transaction), placed right before the final
+//      tenant-row delete so if it throws, that last SQL statement never
+//      runs and the whole SQL transaction rolls back consistently.
+//  17. Drop the tenant row itself.
 // The 'default' tenant is permanently guarded and throws if passed.
-export function deleteTenant(tenantId: string): { memoriesDeleted: number } {
+export function deleteTenant(tenantId: string): { memoriesDeleted: number, secretsDeleted: number } {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  return db.transaction((): { memoriesDeleted: number } => {
+  return db.transaction((): { memoriesDeleted: number, secretsDeleted: number } => {
     // 1. Reject pending approvals
     db.prepare(
       "UPDATE approvals SET status = 'rejected', resolved_at = unixepoch() WHERE tenant_id = ? AND status = 'pending'",
@@ -400,10 +407,18 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number } {
     // 13. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
     db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
 
-    // 14. Drop the tenant row
+    // 14 & 15. Drop the vault SSH pool (child before parent by FK direction;
+    //          SQLite FK enforcement is off by default, same as steps 10/13).
+    db.prepare('DELETE FROM vault_ssh_servers WHERE tenant_id = ?').run(tenantId)
+    db.prepare('DELETE FROM vault_ssh_keys WHERE tenant_id = ?').run(tenantId)
+
+    // 16. Purge vault.json secrets (non-transactional file I/O -- see comment above)
+    const secretsDeleted = purgeSecretsForTenant(tenantId)
+
+    // 17. Drop the tenant row
     db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
 
-    return { memoriesDeleted: memIds.length }
+    return { memoriesDeleted: memIds.length, secretsDeleted }
   })()
 }
 
