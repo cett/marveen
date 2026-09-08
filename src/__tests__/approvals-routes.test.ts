@@ -43,6 +43,7 @@ vi.mock('../db.js', () => ({
   }]),
   expireTimedOutApprovals: vi.fn().mockReturnValue(0),
   createAgentMessage: vi.fn(),
+  writeAgentAuditLog: vi.fn(),
 }))
 
 import { tryHandleApprovals } from '../web/routes/approvals.js'
@@ -101,6 +102,23 @@ describe('tryHandleApprovals', () => {
     expect(out.status).toBe(201)
     expect(out.body.id).toBe('appr-uuid-1')
     expect(out.body.status).toBe('pending')
+    const db = await import('../db.js')
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'agent-d', entity: 'approval', action: 'create', entity_id: 'appr-uuid-1' })
+    )
+  })
+
+  it('a failing audit write does not fail approval creation', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.writeAgentAuditLog).mockImplementationOnce(() => { throw new Error('audit db down') })
+    const { ctx, out } = makeCtx('POST', '/api/approvals', {
+      agent_id: 'agent-d',
+      category: 'file_write',
+      action_description: 'Write to /etc',
+    })
+    const handled = await tryHandleApprovals(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(201)
   })
 
   it('GET /api/approvals lists all approvals', async () => {
@@ -143,6 +161,9 @@ describe('tryHandleApprovals', () => {
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
     expect(out.body.status).toBe('approved')
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'user', entity: 'approval', action: 'update', entity_id: 'appr-uuid-1', detail: expect.objectContaining({ status: 'approved', requested_by: 'agent-d' }) })
+    )
   })
 
   it('PATCH /api/approvals/:id returns 400 for invalid status', async () => {

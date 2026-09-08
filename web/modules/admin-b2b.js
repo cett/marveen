@@ -1,6 +1,9 @@
 // B2B Admin UI: Tenantok / Felhasználók / Eszközkulcsok
 // Global admin only (role=admin, tenant_id=null).
 
+import { PERMISSION_MATRIX_ROLES, PERMISSION_MATRIX_CATEGORIES, permissionI18nKeyPart } from './rbac-permission-matrix-data.js'
+import { SCREEN_ACCESS_ROLES, SCREEN_ACCESS_ROWS } from './rbac-screen-access-data.js'
+
 const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 const $ = (id) => document.getElementById(id)
 const t = (k, fb) => (typeof window.t === 'function' ? window.t(k) : null) ?? fb
@@ -58,8 +61,74 @@ function switchTab(tab) {
     if (panel) panel.hidden = p !== tab
   })
   if (tab === 'tenants') loadTenants()
-  if (tab === 'users') loadUsers()
+  if (tab === 'users') { loadUsers(); renderPermissionMatrix(); renderScreenAccessMatrix() }
   if (tab === 'deviceKeys') loadDeviceKeys()
+}
+
+// ── Permission matrix (read-only, static mirror of rbac.ts) ────────────────
+
+function renderPermissionMatrix() {
+  const el = $('permissionMatrix')
+  if (!el) return
+  const roleHeaderCells = PERMISSION_MATRIX_ROLES
+    .map(role => `<th class="admin-b2b-perm-cell">${esc(t(`admin.b2b.permission_matrix.role.${role}`, role))}</th>`)
+    .join('')
+  const bodyRows = PERMISSION_MATRIX_CATEGORIES.map(category => {
+    const categoryLabel = esc(t(`admin.b2b.permission_matrix.cat.${category.key}`, category.key))
+    const categoryRow = `<tr class="admin-b2b-perm-category"><td colspan="${1 + PERMISSION_MATRIX_ROLES.length}">${categoryLabel}</td></tr>`
+    const permRows = category.permissions.map(perm => {
+      const keyPart = permissionI18nKeyPart(perm.key)
+      const label = esc(t(`admin.b2b.perm.${keyPart}.label`, perm.key))
+      const desc = esc(t(`admin.b2b.perm.${keyPart}.desc`, ''))
+      const cells = PERMISSION_MATRIX_ROLES.map(role => {
+        const allowed = !!perm.roles[role]
+        return `<td class="admin-b2b-perm-cell ${allowed ? 'admin-b2b-perm-yes' : 'admin-b2b-perm-no'}">${allowed ? '✓' : '–'}</td>`
+      }).join('')
+      return `<tr><td><span class="admin-b2b-perm-label">${label}</span>${desc ? `<span class="admin-b2b-perm-desc">${desc}</span>` : ''}</td>${cells}</tr>`
+    }).join('')
+    return categoryRow + permRows
+  }).join('')
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>${esc(t('admin.b2b.permission_matrix.title', 'Permission'))}</th>${roleHeaderCells}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  `
+}
+
+// Symbol + CSS class for each screen-access level (see rbac-screen-access-data.js).
+const SCREEN_ACCESS_SYMBOLS = {
+  full: { symbol: '✓', cls: 'admin-b2b-access-full', i18nKey: 'admin.b2b.screen_access.legend.full' },
+  ro:   { symbol: '(R)', cls: 'admin-b2b-access-ro',   i18nKey: 'admin.b2b.screen_access.legend.ro' },
+  gap:  { symbol: '(!)', cls: 'admin-b2b-access-gap',  i18nKey: 'admin.b2b.screen_access.legend.gap' },
+  none: { symbol: '–', cls: 'admin-b2b-access-none',  i18nKey: 'admin.b2b.screen_access.legend.none' },
+}
+
+function renderScreenAccessMatrix() {
+  const el = $('screenAccessMatrix')
+  if (!el) return
+  const roleHeaderCells = SCREEN_ACCESS_ROLES
+    .map(role => `<th class="admin-b2b-perm-cell">${esc(t(`admin.b2b.permission_matrix.role.${role}`, role))}</th>`)
+    .join('')
+  const legend = Object.values(SCREEN_ACCESS_SYMBOLS)
+    .map(({ symbol, cls, i18nKey }) => `<span><span class="${cls}">${symbol}</span>${esc(t(i18nKey, i18nKey))}</span>`)
+    .join('')
+  const bodyRows = SCREEN_ACCESS_ROWS.map(row => {
+    const label = esc(t(`admin.b2b.screen_access.screen.${row.key}`, row.key))
+    const cells = SCREEN_ACCESS_ROLES.map(role => {
+      const level = row.roles[role]
+      const meta = SCREEN_ACCESS_SYMBOLS[level] || SCREEN_ACCESS_SYMBOLS.none
+      return `<td class="admin-b2b-perm-cell ${meta.cls}">${meta.symbol}</td>`
+    }).join('')
+    return `<tr title="${esc(row.backend)}"><td><span class="admin-b2b-perm-label">${label}</span></td>${cells}</tr>`
+  }).join('')
+  el.innerHTML = `
+    <div class="admin-b2b-access-legend">${legend}</div>
+    <table>
+      <thead><tr><th>${esc(t('admin.b2b.screen_access.title', 'Screen'))}</th>${roleHeaderCells}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  `
 }
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
@@ -177,13 +246,28 @@ function renderAgentMatrix(items, tenantId) {
   `).join('')
 }
 
-async function setAgentAvailability(tenantId, agentId, enabled) {
+async function setAgentAvailability(tenantId, agentId, enabled, confirmed = false) {
   try {
     const r = await fetch('/api/admin/agent-availability', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenant_id: tenantId, agent_id: agentId, enabled }),
+      body: JSON.stringify({ tenant_id: tenantId, agent_id: agentId, enabled, confirm: confirmed }),
     })
+    if (r.status === 409) {
+      const e = await r.json()
+      if (Array.isArray(e.risky_mcp_servers)) {
+        // Fleet-only-agents policy gate (src/web/mcp-risk-policy.ts): this
+        // agent carries an MCP server with no tenant boundary of its own
+        // (GitHub/GitLab, Hetzner, filesystem, GA4...) -- confirm with the
+        // operator before granting a B2B tenant cross-visibility onto it.
+        if (confirm(`${e.hint}\n\nIGEN, TUDATOSAN -- OK\nNEM -- Mégse`)) {
+          await setAgentAvailability(tenantId, agentId, enabled, true)
+          return
+        }
+        await showAgentMatrix(tenantId) // revert the checkbox to the actual server state
+        return
+      }
+    }
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
     showToast(`${agentId}: ${enabled ? 'engedélyezve' : 'letiltva'}`)
     await showAgentMatrix(tenantId)
@@ -247,7 +331,7 @@ function renderUserList() {
         <span class="admin-b2b-row-name">${esc(u.display_name || u.username)}</span>
         ${u.display_name ? `<code class="admin-b2b-row-id">${esc(u.username)}</code>` : ''}
         <span class="badge" data-variant="${u.role === 'admin' ? 'info' : 'neutral'}">${esc(u.role)}</span>
-        ${u.tenant_id ? `<code class="admin-b2b-row-id">${esc(u.tenant_id)}</code>` : '<span class="badge" data-variant="info">global admin</span>'}
+        <span class="badge" data-variant="neutral">${u.tenant_id ? esc(u.tenant_id) : t('admin.b2b.user.scope_fleet', 'Fleet (globális)')}</span>
         ${u.disabled ? '<span class="badge" data-variant="neutral">letiltva</span>' : ''}
       </div>
       <div class="admin-b2b-row-actions">
@@ -533,6 +617,6 @@ export async function loadAdminB2b() {
   if (!isGlobalAdmin(auth)) return
   // Ensure tenants are loaded first (device keys and user filter need them).
   await loadTenants()
-  if (_activeTab === 'users') await loadUsers()
+  if (_activeTab === 'users') { await loadUsers(); renderPermissionMatrix(); renderScreenAccessMatrix() }
   if (_activeTab === 'deviceKeys') await loadDeviceKeys()
 }

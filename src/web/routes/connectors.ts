@@ -15,7 +15,7 @@ import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../
 import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
-import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
+import { listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant } from '../vault.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -677,18 +677,52 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   // === Vault ===
+  // Tenant scope: admin sees/manages every tenant (optionally narrowed via
+  // ?tenant=), a scoped caller is restricted to their own tenant_id. Mirrors
+  // the deny-by-default pattern used elsewhere (import-memories.ts), except
+  // single-item ownership mismatches 404 here rather than 403 -- anti-
+  // enumeration: a 403 would confirm to a tenant-scoped caller that a given
+  // secret id exists at all, even one belonging to another tenant.
+  const vaultIsAdmin = ctx.role === 'admin'
+  const vaultTenantParam = vaultIsAdmin ? (ctx.url.searchParams.get('tenant') ?? null) : null
+  const vaultEffectiveTenantId: string | null = vaultTenantParam ?? (vaultIsAdmin ? null : (ctx.tenantId ?? 'default'))
+
+  /** Cross-tenant ownership guard for a single secret id. Writes a 404 and
+   *  returns null when access should be denied; caller must `return true` in
+   *  that case. Returns the entry's actual owning tenant on success -- admin
+   *  is unrestricted, so the lookup always resolves by the real owner, not
+   *  by whatever tenant the admin selector happens to be scoped to. */
+  function resolveVaultAccess(id: string): string | null {
+    const ownerTenantId = findSecretTenant(id)
+    if (ownerTenantId === null) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return null }
+    if (!vaultIsAdmin && ownerTenantId !== vaultEffectiveTenantId) {
+      json(res, { error: 'not_found', hint: 'Not found' }, 404)
+      return null
+    }
+    return ownerTenantId
+  }
+
   if (path === '/api/vault' && method === 'GET') {
     // ssh-key-* entries are managed exclusively via the SSH key pool
     // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
-    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-')) })
+    const all = listSecrets().filter(s => !s.id.startsWith('ssh-key-'))
+    const scoped = vaultIsAdmin && vaultTenantParam === null ? all : all.filter(s => s.tenant_id === vaultEffectiveTenantId)
+    json(res, { secrets: scoped })
     return true
   }
 
   if (path === '/api/vault' && method === 'POST') {
     const body = await readBody(req)
-    const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
+    const { id, label, value, tenant_id } = JSON.parse(body.toString()) as { id: string, label: string, value: string, tenant_id?: string }
     if (!id?.trim() || !value) { json(res, { error: 'required', hint: 'id and value required' }, 400); return true }
-    setSecret(id.trim(), label || id.trim(), value)
+    // Admin may target any tenant (explicit body field, else whatever the
+    // selector is scoped to, else 'default'); a scoped caller always writes
+    // to their own tenant -- a client-supplied tenant_id is ignored so a
+    // tenant-scoped user can never write into another tenant's secret store.
+    const targetTenantId = vaultIsAdmin
+      ? (tenant_id?.trim() || vaultEffectiveTenantId || 'default')
+      : (ctx.tenantId ?? 'default')
+    setSecret(id.trim(), label || id.trim(), value, targetTenantId)
     const syncResult = syncSecret(id.trim())
     json(res, { ok: true, synced: syncResult.updated })
     return true
@@ -703,15 +737,18 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
-    const val = getSecret(id)
-    if (val === null) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
+    const ownerTenantId = resolveVaultAccess(id)
+    if (ownerTenantId === null) return true
+    const val = getSecret(id, ownerTenantId)
     json(res, { id, value: val })
     return true
   }
 
   if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
-    if (!deleteSecret(id)) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
+    const ownerTenantId = resolveVaultAccess(id)
+    if (ownerTenantId === null) return true
+    deleteSecret(id, ownerTenantId)
     removeBindingsForSecret(id)
     json(res, { ok: true })
     return true

@@ -66,9 +66,31 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
 
   if (!path.startsWith('/api/vault/ssh-keys')) return false
 
+  // Same tenant-scope shape as the generic vault routes (connectors.ts) --
+  // admin sees/manages every tenant (optionally narrowed via ?tenant=), a
+  // scoped caller only ever sees/touches their own tenant's keys. Ownership
+  // mismatches 404, not 403 (anti-enumeration).
+  const isAdmin = ctx.role === 'admin'
+  const tenantParam = isAdmin ? (ctx.url.searchParams.get('tenant') ?? null) : null
+  const effectiveTenantId: string | null = tenantParam ?? (isAdmin ? null : (ctx.tenantId ?? 'default'))
+
+  /** Cross-tenant ownership guard for a single key id. Writes a 404 and
+   *  returns null when access should be denied; caller must `return true` in
+   *  that case. Returns the key row on success. */
+  function resolveKeyAccess(id: string): VaultSshKey | null {
+    const key = getVaultSshKey(id)
+    if (!key) { json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404); return null }
+    if (!isAdmin && key.tenant_id !== effectiveTenantId) {
+      json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404)
+      return null
+    }
+    return key
+  }
+
   // GET /api/vault/ssh-keys
   if (path === '/api/vault/ssh-keys' && method === 'GET') {
-    json(res, { keys: listVaultSshKeys().map(toApiShape) })
+    const scopeTenantId = isAdmin && tenantParam === null ? null : effectiveTenantId
+    json(res, { keys: listVaultSshKeys(scopeTenantId).map(toApiShape) })
     return true
   }
 
@@ -86,14 +108,18 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
         return true
       }
 
+      const targetTenantId = isAdmin
+        ? ((typeof data.tenant_id === 'string' && data.tenant_id.trim()) || effectiveTenantId || 'default')
+        : (ctx.tenantId ?? 'default')
+
       const id = randomBytes(8).toString('hex')
       const comment = `${username} (${label})`
       const { privateKey, publicKey, fingerprint } = generateSshKeyPair(comment)
 
       const vaultKeyId = `ssh-key-${id}`
-      setSecret(vaultKeyId, `SSH private key: ${label}`, privateKey)
+      setSecret(vaultKeyId, `SSH private key: ${label}`, privateKey, targetTenantId)
 
-      const key = createVaultSshKey({ id, label, username, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: 'ed25519' })
+      const key = createVaultSshKey({ id, label, username, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: 'ed25519', tenant_id: targetTenantId })
       logger.info({ id, label, fingerprint }, 'SSH key created')
       json(res, { key: toApiShape(key), publicKey }, 201)
     } catch (err: any) {
@@ -117,6 +143,10 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
         json(res, { error: 'required', hint: 'label, username and privateKey are required' }, 400)
         return true
       }
+
+      const targetTenantId = isAdmin
+        ? ((typeof data.tenant_id === 'string' && data.tenant_id.trim()) || effectiveTenantId || 'default')
+        : (ctx.tenantId ?? 'default')
 
       // Validate key and extract public key via ssh-keygen -y (same pattern as extractPublicKeyFromVault)
       const tmpDir = mkdtempSync(join(tmpdir(), 'marveen-ssh-'))
@@ -145,8 +175,8 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
       const id = randomBytes(8).toString('hex')
       const vaultKeyId = `ssh-key-${id}`
 
-      setSecret(vaultKeyId, `SSH private key: ${label}`, privateKey)
-      const key = createVaultSshKey({ id, label, username, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: keyType })
+      setSecret(vaultKeyId, `SSH private key: ${label}`, privateKey, targetTenantId)
+      const key = createVaultSshKey({ id, label, username, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: keyType, tenant_id: targetTenantId })
       logger.info({ id, label, fingerprint, keyType }, 'SSH key imported')
       json(res, { key: toApiShape(key), publicKey }, 201)
     } catch (err: any) {
@@ -160,8 +190,8 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
   const pubKeyMatch = path.match(/^\/api\/vault\/ssh-keys\/([^/]+)\/public-key$/)
   if (pubKeyMatch && method === 'GET') {
     const id = decodeURIComponent(pubKeyMatch[1])
-    const key = getVaultSshKey(id)
-    if (!key) { json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404); return true }
+    const key = resolveKeyAccess(id)
+    if (!key) return true
     json(res, { publicKey: key.public_key, fingerprint: key.fingerprint, keyType: key.key_type })
     return true
   }
@@ -170,8 +200,8 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
   const delMatch = path.match(/^\/api\/vault\/ssh-keys\/([^/]+)$/)
   if (delMatch && method === 'DELETE') {
     const id = decodeURIComponent(delMatch[1])
-    const key = getVaultSshKey(id)
-    if (!key) { json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404); return true }
+    const key = resolveKeyAccess(id)
+    if (!key) return true
     const { deleted, unassigned } = deleteVaultSshKey(id)
     if (!deleted) { json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404); return true }
     // The pool row is gone, but the encrypted private key still sits in the
@@ -179,7 +209,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
     // otherwise it lingers as an orphaned "ssh-key-*" entry, visible/revealable
     // in the generic secrets list with no pool entry pointing back to it
     // (2026-07-01, found during Vault key-pool redesign verification).
-    deleteSecret(key.vault_key_id)
+    deleteSecret(key.vault_key_id, key.tenant_id)
     logger.info({ id, unassigned }, 'SSH key deleted')
     json(res, { ok: true, unassigned })
     return true

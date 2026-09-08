@@ -3324,6 +3324,77 @@ export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
   `).all(cutoff30, cutoff90) as SkillUsageSummaryRow[]
 }
 
+// --- Hook Audit Log (structured) ---
+// Originally deny-only (the injection-detection gate); 'handoff' was added
+// for the context watchdog's proactive-compaction rows and 'allow' gained a
+// second producer (context-compact-monitor.sh's PreCompact rows) -- see
+// src/watchdog-validation.ts for the query that correlates the two.
+
+export interface HookAuditLogEntry {
+  id: number
+  ts: number
+  agent_id: string | null
+  hook_type: 'PreToolUse' | 'PostToolUse' | 'PreCompact' | 'Stop'
+  verdict: 'allow' | 'deny' | 'defer' | 'handoff'
+  tool_name: string | null
+  content_hash: string | null
+  reason: string | null
+  session_id: string | null
+}
+
+export function insertHookAuditLog(entry: {
+  agent_id?: string | null
+  hook_type: string
+  verdict: string
+  tool_name?: string | null
+  content_hash?: string | null
+  reason?: string | null
+  session_id?: string | null
+}): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(
+    now,
+    entry.agent_id ?? null,
+    entry.hook_type,
+    entry.verdict,
+    entry.tool_name ?? null,
+    entry.content_hash ?? null,
+    entry.reason ?? null,
+    entry.session_id ?? null,
+  )
+}
+
+export function listHookAuditLog(opts: {
+  sinceSecs?: number
+  verdict?: string
+  agent_id?: string
+  limit?: number
+} = {}): HookAuditLogEntry[] {
+  const clauses: string[] = []
+  const params: unknown[] = []
+
+  const sinceSecs = opts.sinceSecs ?? 3600
+  const cutoff = Math.floor(Date.now() / 1000) - sinceSecs
+  clauses.push('ts >= ?')
+  params.push(cutoff)
+
+  if (opts.verdict) { clauses.push('verdict = ?'); params.push(opts.verdict) }
+  if (opts.agent_id) { clauses.push('agent_id = ?'); params.push(opts.agent_id) }
+
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000)
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+  return db.prepare(
+    `SELECT * FROM hook_audit_log ${where} ORDER BY ts DESC LIMIT ?`,
+  ).all(...params, limit) as HookAuditLogEntry[]
+}
+
+export function pruneHookAuditLog(olderThanSecs = 30 * 86400): void {
+  const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
+  db.prepare('DELETE FROM hook_audit_log WHERE ts < ?').run(cutoff)
+}
+
 // --- Config Change Log ---
 // Pass null for oldValue/newValue when the registry entry is secret:true --
 // this keeps secret values out of the audit trail entirely rather than
@@ -3386,7 +3457,7 @@ export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
 
 // --- Unified Audit Log Query ---
 
-export type AuditSource = 'config' | 'idea' | 'store' | 'diary' | 'agent'
+export type AuditSource = 'config' | 'idea' | 'store' | 'diary' | 'agent' | 'hook'
 
 export interface AuditLogEntry {
   id: number
@@ -3418,6 +3489,13 @@ export interface AuditLogEntry {
   action?: string
   entity_id?: string
   detail?: string
+  // hook (hook_audit_log -- shares agent_id above for the acting agent)
+  hook_type?: string
+  verdict?: string
+  tool_name?: string | null
+  content_hash?: string | null
+  reason?: string | null
+  session_id?: string | null
 }
 
 export interface AgentAuditLogRow {
@@ -3432,7 +3510,7 @@ export interface AgentAuditLogRow {
 
 export function writeAgentAuditLog(opts: {
   agent_id: string
-  entity: 'memory' | 'kanban' | 'message' | 'agent'
+  entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval'
   action: 'create' | 'update' | 'delete'
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
@@ -3457,7 +3535,7 @@ export function queryAuditLog(opts: {
   limit: number
 }): AuditLogEntry[] {
   const { sources, from, to, q, agent, limit } = opts
-  const all: AuditSource[] = ['config', 'idea', 'store', 'diary', 'agent']
+  const all: AuditSource[] = ['config', 'idea', 'store', 'diary', 'agent', 'hook']
   const active = sources.length > 0 ? sources : all
 
   const parts: AuditLogEntry[] = []
@@ -3533,6 +3611,29 @@ export function queryAuditLog(opts: {
       id: r.id, source: 'agent', created_at: r.created_at,
       agent_id: r.agent_id, entity: r.entity, action: r.action,
       entity_id: r.entity_id ?? undefined, detail: r.detail ?? undefined,
+    })
+  }
+
+  // hook_audit_log uses its own `ts` column name (not created_at) -- aliased
+  // below so it merges into the same AuditLogEntry.created_at field as every
+  // other source.
+  if (active.includes('hook')) {
+    let hookSql = 'SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, ts AS created_at FROM hook_audit_log WHERE 1=1'
+    const hookParams: unknown[] = []
+    if (from)  { hookSql += ' AND ts >= ?'; hookParams.push(from) }
+    if (to)    { hookSql += ' AND ts <= ?'; hookParams.push(to) }
+    if (agent) { hookSql += ' AND agent_id = ?'; hookParams.push(agent) }
+    if (q)     { hookSql += ' AND (agent_id LIKE ? OR hook_type LIKE ? OR verdict LIKE ? OR tool_name LIKE ? OR reason LIKE ?)'; const p = `%${q}%`; hookParams.push(p, p, p, p, p) }
+    hookSql += ' ORDER BY ts DESC, id DESC LIMIT ?'; hookParams.push(limit)
+    const hookRows = db.prepare(hookSql).all(...hookParams) as Array<{
+      id: number; agent_id: string | null; hook_type: string; verdict: string
+      tool_name: string | null; content_hash: string | null; reason: string | null
+      session_id: string | null; created_at: number
+    }>
+    for (const r of hookRows) parts.push({
+      id: r.id, source: 'hook', created_at: r.created_at,
+      agent_id: r.agent_id ?? undefined, hook_type: r.hook_type, verdict: r.verdict,
+      tool_name: r.tool_name, content_hash: r.content_hash, reason: r.reason, session_id: r.session_id,
     })
   }
 
@@ -3666,22 +3767,25 @@ export interface VaultSshKey {
   fingerprint: string
   key_type: string
   created_at: number
+  tenant_id: string
 }
 
-export function listVaultSshKeys(): VaultSshKey[] {
-  return db.prepare('SELECT * FROM vault_ssh_keys ORDER BY label ASC').all() as VaultSshKey[]
+/** tenantId null -- admin global view (no filter, every tenant's keys). */
+export function listVaultSshKeys(tenantId: string | null = null): VaultSshKey[] {
+  if (tenantId === null) return db.prepare('SELECT * FROM vault_ssh_keys ORDER BY label ASC').all() as VaultSshKey[]
+  return db.prepare('SELECT * FROM vault_ssh_keys WHERE tenant_id = ? ORDER BY label ASC').all(tenantId) as VaultSshKey[]
 }
 
 export function getVaultSshKey(id: string): VaultSshKey | undefined {
   return db.prepare('SELECT * FROM vault_ssh_keys WHERE id = ?').get(id) as VaultSshKey | undefined
 }
 
-export function createVaultSshKey(key: Pick<VaultSshKey, 'id' | 'label' | 'username' | 'vault_key_id' | 'public_key' | 'fingerprint' | 'key_type'>): VaultSshKey {
+export function createVaultSshKey(key: Pick<VaultSshKey, 'id' | 'label' | 'username' | 'vault_key_id' | 'public_key' | 'fingerprint' | 'key_type' | 'tenant_id'>): VaultSshKey {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(key.id, key.label, key.username, key.vault_key_id, key.public_key, key.fingerprint, key.key_type, now)
+    `INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(key.id, key.label, key.username, key.vault_key_id, key.public_key, key.fingerprint, key.key_type, now, key.tenant_id)
   return { ...key, created_at: now }
 }
 
@@ -3711,6 +3815,7 @@ export interface VaultSshServer {
   username: string
   ssh_key_id: string | null
   description: string | null
+  tenant_id: string
   created_at: number
   updated_at: number
 }
@@ -3721,20 +3826,22 @@ export function computeSshKeyStatus(server: VaultSshServer): SshKeyStatus {
   return server.ssh_key_id ? 'ok' : 'missing'
 }
 
-export function listVaultSshServers(): VaultSshServer[] {
-  return db.prepare('SELECT * FROM vault_ssh_servers ORDER BY name ASC').all() as VaultSshServer[]
+export function listVaultSshServers(tenantId?: string | null): VaultSshServer[] {
+  const tc = tenantId ? ' WHERE tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
+  return db.prepare(`SELECT * FROM vault_ssh_servers${tc} ORDER BY name ASC`).all(...tp) as VaultSshServer[]
 }
 
 export function getVaultSshServer(id: string): VaultSshServer | undefined {
   return db.prepare('SELECT * FROM vault_ssh_servers WHERE id = ?').get(id) as VaultSshServer | undefined
 }
 
-export function createVaultSshServer(server: Pick<VaultSshServer, 'id' | 'name' | 'host' | 'port' | 'username' | 'description'>): VaultSshServer {
+export function createVaultSshServer(server: Pick<VaultSshServer, 'id' | 'name' | 'host' | 'port' | 'username' | 'description' | 'tenant_id'>): VaultSshServer {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO vault_ssh_servers (id, name, host, port, username, description, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(server.id, server.name, server.host, server.port, server.username, server.description ?? null, now, now)
+    `INSERT INTO vault_ssh_servers (id, name, host, port, username, description, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(server.id, server.name, server.host, server.port, server.username, server.description ?? null, server.tenant_id, now, now)
   return { ...server, ssh_key_id: null, created_at: now, updated_at: now }
 }
 

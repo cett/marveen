@@ -68,13 +68,21 @@ alapértelmezet, amikor egy új felhasználó regisztrál.
 | Kanban írása/törlése | X | X | | |
 | Ágensek listázása | X | X | X | X |
 | Üzenet küldése ágensnek | X | X | | |
-| Jóváhagyások olvasása | X | X | | |
-| Jóváhagyások írása | X | | | |
-| Blackboard olvasása | X | X | X | |
+| Jóváhagyások olvasása | X | X | X | X |
+| Jóváhagyások írása | X | | X | X |
+| Blackboard olvasása | X | X | X | X |
 | Blackboard írása | X | X | | |
+| Federáció olvasása | X | X | | |
+| Federáció írása | X | X | | |
 | Admin felület | X | | | |
 
 A jogosultsági modell részletes döntési háttere: [ADR-002](adr-002-rbac-permission-model.md).
+
+A fenti táblázat kézzel karbantartott -- a dashboard Felhasználók fülének
+"Szerepkör-jogosultság mátrix" nézete a tényleges forrásból (`src/web/rbac.ts`)
+tükrözött adaton fut, és egy teszt (`rbac-permission-matrix-data.test.ts`)
+elkapja, ha a frontend-mirror eltér a kódtól. Eltérés esetén ez a táblázat a
+kódot (`src/web/rbac.ts` `ROLE_PERMISSIONS`) kövesse, nem fordítva.
 
 ---
 
@@ -173,6 +181,41 @@ A fleet ágensek a `"default"` tenantot olvassák és írják -- ez változatlan
   látja, mely ágensek futnak. Ez szándékos: a fleet-státusz nem számít érzékeny adatnak.
 - A blackboard szintén tenant-független olvasással rendelkezik agent és admin szerepkörök
   számára -- a fleet-koordináció megköveteli, hogy az ágensek lássák egymás állapotát.
+
+### Külső MCP-szerverek (strukturálisan nem izolálhatók)
+
+A fenti `WHERE tenant_id = ...` szűrés a Marveen SAJÁT adatrétegére vonatkozik. Egy KÜLSŐ
+MCP-szervernek (GitHub, GitLab, Hetzner, egy fájlrendszer-szerver, GA4...) nincs tenant_id
+fogalma -- nincs mit szűrni. Ha egy ilyen hitelesítő adatot hordozó ágenst egy B2B tenanthoz
+rendelnek, az a tenant a hitelesítő adat TELJES hatókörét látja (pl. egy GitHub PAT esetén
+a lefedett repókat, egy Hetzner tokennél a teljes infrastruktúrát) -- ez adatréteg-szűréssel
+nem zárható le, csak policy-val előzhető meg.
+
+**Magas kockázatú MCP-szerverek** (`src/web/mcp-risk-policy.ts` `HIGH_RISK_MCP_SERVERS`):
+`hetzner`, `github`, `gitlab`, `filesystem`, és a `ga4`-családba tartozó szerverek
+(`ga4`, `ga4-*`).
+
+**Fleet-only agents kapu**: a `PUT /api/admin/agent-availability` végpont (nem-`default`
+tenant + `enabled:true` esetén) megnézi az ágens `.mcp.json`-jában konfigurált szervereket,
+és ha van köztük magas kockázatú, 409-es választ ad `risky_mcp_servers` mezővel a kockázatos
+szerverek listájával -- a hívónak `confirm:true`-val kell újraküldenie a kérést, ha ez
+szándékos. A dashboard admin UI-ja ezt megerősítő dialógusként jeleníti meg. Ez STRUKTURÁLIS
+védelem (a döntést kikényszerítő kapu), nem adatréteg-szűrés -- a kapu csak figyelmeztet és
+naplóz (`admin.agent_availability.risky_confirmed`), nem tiltja le a hozzárendelést, mert
+lehet tudatos üzleti döntés (pl. egy tenant saját GitHub-repóit kezelő ágens).
+
+**GA4 per-tenant ágens**: ha egy B2B tenant saját GA4-property-hez kér hozzáférést, NE az
+általános (fleet-only) GA4-ágenst rendeld hozzá -- hozz létre helyette egy KÜLÖN ágenst,
+amelynek `.mcp.json`-ja kizárólag az adott tenant property-jére korlátozott GA4-hitelesítő
+adatot (saját vault-bejegyzés) hordozza. A meglévő GA4-ágens két property-t (`ga4`,
+`ga4-aimit`) fed le közös hitelesítő adattal -- egy tenant-ágensnél ugyanez az elv, de a
+hitelesítő adat is a tenant saját property-jére szűkítve, sosem az összes property-t lefedő
+közös adattal.
+
+**Jövőbeli irány (Phase 2, ha saját MCP-szerver készül)**: egy Marveen-hosztolt MCP-szerver
+minden tool-handlerében kikényszeríthető a `WHERE tenant_id = caller_tenant_id` minta
+(ugyanúgy, ahogy pl. a memóriák API-ja csinálja), admin bypass-szal. Ez jelenleg nem áll
+fenn, mert nincs saját hosztolt SQL/adat-MCP.
 
 ---
 

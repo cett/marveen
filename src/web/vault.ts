@@ -19,9 +19,12 @@ interface VaultEntry {
   id: string
   label: string
   encrypted: string  // base64(salt + iv + tag + ciphertext)
+  tenant_id: string
   createdAt: string
   updatedAt: string
 }
+
+const DEFAULT_TENANT = 'default'
 
 interface VaultStore {
   entries: VaultEntry[]
@@ -175,8 +178,16 @@ function decrypt(packed: string): string {
   return decryptWithKey(getMasterKey(), packed)
 }
 
+// Every existing vault.json entry pre-dates tenant isolation and carries no
+// tenant_id -- normalise it to 'default' on read so callers never have to
+// special-case a missing field (all 7 pre-existing fleet secrets backfill
+// this way, without a separate startup migration).
 function readVault(): VaultStore {
-  try { return JSON.parse(readFileSync(VAULT_PATH, 'utf-8')) }
+  try {
+    const store = JSON.parse(readFileSync(VAULT_PATH, 'utf-8')) as VaultStore
+    store.entries = (store.entries ?? []).map(e => ({ ...e, tenant_id: e.tenant_id ?? DEFAULT_TENANT }))
+    return store
+  }
   catch { return { entries: [] } }
 }
 
@@ -184,15 +195,21 @@ function writeVault(store: VaultStore): void {
   atomicWriteFileSync(VAULT_PATH, JSON.stringify(store, null, 2) + '\n', { mode: 0o600 })
 }
 
-export function listSecrets(): Array<{ id: string, label: string, createdAt: string, updatedAt: string }> {
-  return readVault().entries.map(({ id, label, createdAt, updatedAt }) => ({ id, label, createdAt, updatedAt }))
+export function listSecrets(): Array<{ id: string, label: string, tenant_id: string, createdAt: string, updatedAt: string }> {
+  return readVault().entries.map(({ id, label, tenant_id, createdAt, updatedAt }) => ({ id, label, tenant_id, createdAt, updatedAt }))
 }
 
-export function setSecret(id: string, label: string, value: string): void {
+// (tenant_id, id) is the compound key for every operation below. Without it,
+// a tenant-scoped caller could write/read/delete an entry that shadows or
+// clobbers another tenant's (or the fleet-default) secret of the same id.
+// Every internal caller (agents-crud.ts, connectors.ts sync/bindings,
+// getSecretsForEnv) calls these without a tenantId, which resolves to
+// 'default' -- they only ever touch fleet-level secrets, never a tenant's.
+export function setSecret(id: string, label: string, value: string, tenantId: string = DEFAULT_TENANT): void {
   const store = readVault()
   const now = new Date().toISOString()
-  const idx = store.entries.findIndex(e => e.id === id)
-  const entry: VaultEntry = { id, label, encrypted: encrypt(value), createdAt: now, updatedAt: now }
+  const idx = store.entries.findIndex(e => e.id === id && e.tenant_id === tenantId)
+  const entry: VaultEntry = { id, label, encrypted: encrypt(value), tenant_id: tenantId, createdAt: now, updatedAt: now }
   if (idx >= 0) {
     entry.createdAt = store.entries[idx].createdAt
     store.entries[idx] = entry
@@ -202,20 +219,29 @@ export function setSecret(id: string, label: string, value: string): void {
   writeVault(store)
 }
 
-export function getSecret(id: string): string | null {
+export function getSecret(id: string, tenantId: string = DEFAULT_TENANT): string | null {
   const store = readVault()
-  const entry = store.entries.find(e => e.id === id)
+  const entry = store.entries.find(e => e.id === id && e.tenant_id === tenantId)
   if (!entry) return null
   return decrypt(entry.encrypted)
 }
 
-export function deleteSecret(id: string): boolean {
+export function deleteSecret(id: string, tenantId: string = DEFAULT_TENANT): boolean {
   const store = readVault()
   const before = store.entries.length
-  store.entries = store.entries.filter(e => e.id !== id)
+  store.entries = store.entries.filter(e => !(e.id === id && e.tenant_id === tenantId))
   if (store.entries.length === before) return false
   writeVault(store)
   return true
+}
+
+// Looks up which tenant actually owns an entry, regardless of the caller's
+// own tenant -- used by routes for the cross-tenant ownership check (404 for
+// a non-admin whose tenant doesn't match) and to let an admin fetch/delete an
+// entry that belongs to any tenant without needing to guess it up front.
+export function findSecretTenant(id: string): string | null {
+  const entry = readVault().entries.find(e => e.id === id)
+  return entry ? entry.tenant_id : null
 }
 
 export function getSecretsForEnv(envMap: Record<string, string>): Record<string, string> {

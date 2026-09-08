@@ -76,6 +76,7 @@ import { tryHandleSpans } from './web/routes/spans.js'
 import { tryHandleSkillUsage } from './web/routes/skill-usage.js'
 import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
+import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
@@ -147,6 +148,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleVaultSshKeys)
   .add(tryHandleVaultSsh)
   .add(tryHandleAuditLog)
+  .add(tryHandleHookAudit)
   .add(tryHandleFleetQ)
   .add(tryHandleFleet)
   .add(ctx => tryHandleStatic(ctx, WEB_DIR))
@@ -496,8 +498,11 @@ export function startWebServer(port = 3420): http.Server {
   const capabilityRunnerInterval = webOnly ? undefined : startCapabilitySummaryRunner()
   if (!webOnly) logger.info('Capability summary runner started (5min poll, 65s offset; idle while federation is off)')
 
-  // Collect token usage from JSONL transcripts every hour so the run-history
-  // token estimates stay fresh without requiring a manual dashboard visit.
+  // Collect token usage from JSONL transcripts every 5 minutes so the
+  // run-history token estimates (and anything gating on them, e.g. the
+  // context-compact-monitor heartbeat) stay fresh. Previously 1h -- that
+  // staleness window let a stale high reading survive a restart and drive a
+  // false-positive compact trigger (context watchdog, phase 1).
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
 
@@ -517,10 +522,10 @@ export function startWebServer(port = 3420): http.Server {
 
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
-  }, 60 * 60 * 1000)
+  }, 5 * 60 * 1000)
   if (!webOnly) {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
-    logger.info('Token usage auto-collect started (1h poll + startup)')
+    logger.info('Token usage auto-collect started (5min poll + startup)')
   }
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.

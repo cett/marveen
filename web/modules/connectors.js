@@ -2,11 +2,62 @@ import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 
 let _openModal = null, _closeModal = null
+// null for non-admin (tenant selector hidden); set to a getter for global admins.
+let _vaultTenantGetter = null
 export function initConnectors({ openModal, closeModal } = {}) {
   _openModal = openModal; _closeModal = closeModal
+  initTenantSelector('vaultTenantSelectorContainer', () => loadVaultPage())
+    .then(getter => { _vaultTenantGetter = getter })
+}
+
+// --- Vault add-modal tenant select (admin only) ---
+// A non-admin never sees this: the backend always resolves their own tenant
+// server-side regardless of what (if anything) the client sends.
+let _vaultAuthCache = null
+async function _fetchVaultAuth() {
+  if (_vaultAuthCache) return _vaultAuthCache
+  try {
+    const r = await fetch('/api/auth/status')
+    if (r.ok) _vaultAuthCache = await r.json()
+  } catch {}
+  return _vaultAuthCache
+}
+function _isVaultAdmin(auth) {
+  return auth?.role === 'admin' && auth?.tenant_id === null
+}
+
+let _vaultTenantList = []  // [{id, display_name}]
+async function _ensureVaultTenantList() {
+  if (_vaultTenantList.length > 0) return
+  try {
+    const r = await fetch('/api/admin/tenants')
+    if (r.ok) _vaultTenantList = (await r.json()).items ?? []
+  } catch {}
+}
+
+// Shows (and populates) the tenant <select> in an add-modal for a global
+// admin; hides the row and returns false for everyone else. Default
+// selection mirrors whatever the page-level tenant selector is currently
+// scoped to, but the modal's own choice is what actually gets submitted.
+async function _showVaultTenantRowIfAdmin(rowId, selectId) {
+  const row = document.getElementById(rowId)
+  if (!row) return false
+  const auth = await _fetchVaultAuth()
+  if (!_isVaultAdmin(auth)) { row.hidden = true; return false }
+  await _ensureVaultTenantList()
+  const sel = document.getElementById(selectId)
+  if (sel) {
+    const current = _vaultTenantGetter?.() || 'default'
+    sel.innerHTML = _vaultTenantList.map(ten =>
+      `<option value="${escapeHtml(ten.id)}"${ten.id === current ? ' selected' : ''}>${escapeHtml(ten.display_name ? `${ten.display_name} (${ten.id})` : ten.id)}</option>`
+    ).join('')
+  }
+  row.hidden = false
+  return true
 }
 
 // ============================================================
@@ -791,7 +842,7 @@ let _sshEditingId = null
 
 async function loadSshServers() {
   try {
-    const res = await fetch('/api/vault/ssh-servers')
+    const res = await fetch('/api/vault/ssh-servers' + vaultTenantQuery())
     const data = await res.json()
     _sshServers = data.servers || []
     renderSshServers()
@@ -800,7 +851,7 @@ async function loadSshServers() {
 
 async function loadSshKeys() {
   try {
-    const res = await fetch('/api/vault/ssh-keys')
+    const res = await fetch('/api/vault/ssh-keys' + vaultTenantQuery())
     if (!res.ok) return
     const data = await res.json()
     _sshKeys = data.keys || []
@@ -1010,6 +1061,11 @@ function renderSshServers() {
       const titleEl = document.getElementById('sshAddPanelTitle')
       if (titleEl) titleEl.textContent = `Szerver szerkesztése – ${server.name}`
 
+      // Editing never reassigns the server's tenant (the PUT handler doesn't
+      // accept tenant_id) -- hide the selector so it isn't shown as editable.
+      const tenantRow = document.getElementById('sshAddTenantRow')
+      if (tenantRow) tenantRow.hidden = true
+
       const panel = document.getElementById('sshAddPanel')
       panel.hidden = false
       document.getElementById('sshNameInput').focus()
@@ -1047,6 +1103,7 @@ function openSshKeygenModal(callback) {
   document.getElementById('sshKeygenForm').hidden = false
   document.getElementById('sshKeygenPubkeyBox').value = ''
   _sshKeygenCallback = callback || null
+  _showVaultTenantRowIfAdmin('sshKeygenTenantRow', 'sshKeygenTenantSelect')
   _openModal?.(overlay)
   document.getElementById('sshKeygenLabelInput').focus()
 }
@@ -1072,10 +1129,14 @@ function openSshKeygenModal(callback) {
     document.getElementById('sshKeygenFooter').hidden = true
 
     try {
+      const tenantRow = document.getElementById('sshKeygenTenantRow')
+      const tenant_id = (tenantRow && !tenantRow.hidden)
+        ? (document.getElementById('sshKeygenTenantSelect')?.value || undefined)
+        : (_vaultTenantGetter?.() || undefined)
       const res = await fetch('/api/vault/ssh-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, username }),
+        body: JSON.stringify({ label, username, tenant_id }),
       })
       const data = await res.json()
       if (!res.ok) { showToast(getErrorMessage(data, 'Generálás sikertelen')); resetKeygenForm(); return }
@@ -1281,7 +1342,10 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
   newBtn.addEventListener('click', () => {
     if (panel.hidden) resetSshAddForm()
     panel.hidden = !panel.hidden
-    if (!panel.hidden) document.getElementById('sshNameInput').focus()
+    if (!panel.hidden) {
+      document.getElementById('sshNameInput').focus()
+      _showVaultTenantRowIfAdmin('sshAddTenantRow', 'sshAddTenantSelect')
+    }
   })
   closeBtn?.addEventListener('click', () => { panel.hidden = true; resetSshAddForm() })
 
@@ -1310,13 +1374,17 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     const sshKeyId = document.getElementById('sshKeySelectInput')?.value || null
     if (!name || !host || !user) { showToast('Név, IP és felhasználó megadása kötelező'); return }
     const isEdit = !!_sshEditingId
+    const tenantRow = document.getElementById('sshAddTenantRow')
+    const tenant_id = (!isEdit && tenantRow && !tenantRow.hidden)
+      ? (document.getElementById('sshAddTenantSelect')?.value || undefined)
+      : undefined
     try {
       const res = await fetch(
         isEdit ? `/api/vault/ssh-servers/${encodeURIComponent(_sshEditingId)}` : '/api/vault/ssh-servers',
         {
           method: isEdit ? 'PUT' : 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, host, user, port, desc, sshKeyId: sshKeyId || undefined }),
+          body: JSON.stringify({ name, host, user, port, desc, sshKeyId: sshKeyId || undefined, tenant_id }),
         }
       )
       if (!res.ok) {
@@ -1362,10 +1430,15 @@ let _vaultSecrets = []
 
 let _vaultBindings = []
 
+function vaultTenantQuery() {
+  const tenant = _vaultTenantGetter?.()
+  return tenant ? `?tenant=${encodeURIComponent(tenant)}` : ''
+}
+
 export async function loadVaultPage() {
   try {
     const [secretsRes, bindingsRes] = await Promise.all([
-      fetch('/api/vault'),
+      fetch('/api/vault' + vaultTenantQuery()),
       fetch('/api/vault/bindings'),
     ])
     const secretsData = await secretsRes.json()
@@ -1391,7 +1464,12 @@ function renderVaultGrid(secrets) {
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
     const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
     const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
-    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn vault-card-reveal" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn vault-card-edit" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn vault-card-delete" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
+    // Tenant badge only makes sense for a global admin, who can see secrets
+    // across tenants; a scoped user only ever sees their own tenant's rows.
+    const tenantBadge = _vaultTenantGetter && s.tenant_id
+      ? `<span class="badge" data-variant="neutral" data-size="sm">${escapeHtml(s.tenant_id)}</span>`
+      : ''
+    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge} ${tenantBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn vault-card-reveal" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn vault-card-edit" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn vault-card-delete" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
     list.appendChild(card)
   }
   list.querySelectorAll('.vault-card-reveal').forEach(btn => {
@@ -1436,10 +1514,14 @@ function renderVaultGrid(secrets) {
         const saveBtn = form.querySelector('.vault-edit-save')
         saveBtn.disabled = true
         saveBtn.textContent = '...'
+        // Target the entry's OWN tenant, not whatever the selector currently
+        // shows -- an admin viewing "All tenants" must not accidentally
+        // re-home an edited secret onto 'default'.
+        const tenant_id = _vaultSecrets.find(s => s.id === id)?.tenant_id || undefined
         const res = await fetch('/api/vault', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, label, value: newVal }),
+          body: JSON.stringify({ id, label, value: newVal, tenant_id }),
         })
         if (!res.ok) {
           const e = await res.json().catch(() => ({}))
@@ -1480,7 +1562,10 @@ function renderVaultGrid(secrets) {
 
   newBtn.addEventListener('click', () => {
     panel.hidden = !panel.hidden
-    if (!panel.hidden) document.getElementById('vaultPageIdInput').focus()
+    if (!panel.hidden) {
+      document.getElementById('vaultPageIdInput').focus()
+      _showVaultTenantRowIfAdmin('vaultAddTenantRow', 'vaultAddTenantSelect')
+    }
   })
   closeBtn?.addEventListener('click', () => { panel.hidden = true })
 
@@ -1490,10 +1575,17 @@ function renderVaultGrid(secrets) {
     const value = document.getElementById('vaultPageValueInput').value
     if (!id || !value) return
     addBtn.disabled = true
+    // Admin: the modal's own explicit tenant select wins over the page-level
+    // selector. Non-admin never sends this -- the backend ignores it for them
+    // anyway and always uses their own tenant.
+    const tenantRow = document.getElementById('vaultAddTenantRow')
+    const tenant_id = (tenantRow && !tenantRow.hidden)
+      ? (document.getElementById('vaultAddTenantSelect')?.value || undefined)
+      : (_vaultTenantGetter?.() || undefined)
     await fetch('/api/vault', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, label, value }),
+      body: JSON.stringify({ id, label, value, tenant_id }),
     })
     document.getElementById('vaultPageIdInput').value = ''
     document.getElementById('vaultPageLabelInput').value = ''

@@ -508,6 +508,7 @@ describe('vault SSH functions', () => {
       public_key: 'ssh-rsa AAAAB3N...',
       fingerprint: 'SHA256:abc',
       key_type: 'ed25519',
+      tenant_id: 'default',
     })
     expect(key.id).toBe('db2-key-1')
     const retrieved = getVaultSshKey('db2-key-1')
@@ -517,6 +518,23 @@ describe('vault SSH functions', () => {
   it('listVaultSshKeys returns created key', () => {
     const keys = listVaultSshKeys()
     expect(keys.some(k => k.id === 'db2-key-1')).toBe(true)
+  })
+
+  it('listVaultSshKeys(tenantId) filters to that tenant only', () => {
+    createVaultSshKey({
+      id: 'db2-key-tenant',
+      label: 'Tenant Key',
+      username: 'deploy',
+      vault_key_id: 'vault-key-tenant',
+      public_key: 'ssh-ed25519 AAAAC3...',
+      fingerprint: 'SHA256:def',
+      key_type: 'ed25519',
+      tenant_id: 'eszter',
+    })
+    expect(listVaultSshKeys('eszter').every(k => k.id === 'db2-key-tenant')).toBe(true)
+    expect(listVaultSshKeys('default').some(k => k.id === 'db2-key-tenant')).toBe(false)
+    expect(listVaultSshKeys(null).some(k => k.id === 'db2-key-tenant')).toBe(true)
+    deleteVaultSshKey('db2-key-tenant')
   })
 
   it('deleteVaultSshKey removes key and unassigns servers', () => {
@@ -534,9 +552,11 @@ describe('vault SSH functions', () => {
       port: 22,
       username: 'deploy',
       description: 'Test server',
+      tenant_id: 'default',
     })
     expect(server.id).toBe('db2-srv-1')
     expect(server.ssh_key_id).toBeNull()
+    expect(server.tenant_id).toBe('default')
     const retrieved = getVaultSshServer('db2-srv-1')
     expect(retrieved?.name).toBe('Test Server')
   })
@@ -544,6 +564,22 @@ describe('vault SSH functions', () => {
   it('listVaultSshServers returns created server', () => {
     const servers = listVaultSshServers()
     expect(servers.some(s => s.id === 'db2-srv-1')).toBe(true)
+  })
+
+  it('listVaultSshServers(tenantId) filters by tenant', () => {
+    createVaultSshServer({
+      id: 'db2-srv-eszter',
+      name: 'Eszter Server',
+      host: '192.168.1.2',
+      port: 22,
+      username: 'deploy',
+      description: null,
+      tenant_id: 'eszter',
+    })
+    expect(listVaultSshServers('eszter').map(s => s.id)).toEqual(['db2-srv-eszter'])
+    expect(listVaultSshServers('default').some(s => s.id === 'db2-srv-eszter')).toBe(false)
+    expect(listVaultSshServers(null).some(s => s.id === 'db2-srv-eszter')).toBe(true)
+    deleteVaultSshServer('db2-srv-eszter')
   })
 
   it('updateVaultSshServer updates fields', () => {

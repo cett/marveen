@@ -37,6 +37,7 @@ import { readBody, json } from '../http-helpers.js'
 import { hashPassword } from '../password-hash.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, listAgentNames } from '../agent-config.js'
+import { getHighRiskMcpServersForAgent } from '../mcp-risk-policy.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -415,11 +416,44 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!tenant || tenant.disabled_at !== null) {
       json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
     }
-    if (!isKnownAgent(sanitizeAgentIdent(agentId))) {
+    const sanitizedAgentId = sanitizeAgentIdent(agentId)
+    if (!isKnownAgent(sanitizedAgentId)) {
       json(res, { error: 'not_found', field: 'agent_id', hint: 'Unknown agent' }, 404); return true
     }
 
-    const row = setTenantAgentAvailability(tenantId, sanitizeAgentIdent(agentId), enabled)
+    // "Fleet-only agents" structural gate (see src/web/mcp-risk-policy.ts):
+    // some MCP servers (GitHub/GitLab, Hetzner, filesystem, GA4...) have no
+    // tenant_id concept at all, so no data-layer WHERE clause can scope them
+    // -- enabling an agent that carries one for a B2B tenant is a genuine
+    // cross-tenant exposure, not just a UI nicety to warn about. The 'default'
+    // tenant is the fleet owner's own, not a B2B customer, so it is exempt;
+    // disabling an agent is always safe and skips the check entirely. The
+    // gate is enforced HERE (not only in the frontend confirm dialog) so a
+    // direct API call can't bypass it -- the caller must resubmit with
+    // confirm:true once they've seen the risky server list. Uses the
+    // catalog's existing 'conflict' token (see api-error-catalog.ts) --
+    // the presence of `risky_mcp_servers` in the body, not a bespoke token,
+    // is what a caller should key off of to tell this apart from an
+    // unrelated 409.
+    const confirmed = body.confirm === true
+    if (enabled && tenantId !== 'default') {
+      const riskyServers = getHighRiskMcpServersForAgent(sanitizedAgentId)
+      if (riskyServers.length && !confirmed) {
+        json(res, {
+          error: 'conflict',
+          hint: `${sanitizedAgentId} nem-tenant-aware MCP szervereket tartalmaz (${riskyServers.join(', ')}) -- a tenant keresztlátást kapna rájuk ezeken keresztül. Küldd újra confirm:true-val, ha ez szándékos.`,
+          agent_id: sanitizedAgentId,
+          tenant_id: tenantId,
+          risky_mcp_servers: riskyServers,
+        }, 409)
+        return true
+      }
+      if (riskyServers.length) {
+        auditAdmin(ctx, 'admin.agent_availability.risky_confirmed', `${tenantId}/${sanitizedAgentId}`, { risky_mcp_servers: riskyServers })
+      }
+    }
+
+    const row = setTenantAgentAvailability(tenantId, sanitizedAgentId, enabled)
     auditAdmin(ctx, 'admin.agent_availability.set', `${tenantId}/${agentId}`, { enabled })
     json(res, { tenant_id: row.tenant_id, agent_id: row.agent_id, enabled: row.enabled === 1, updated_at: row.updated_at })
     return true
