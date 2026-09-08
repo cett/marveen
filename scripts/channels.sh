@@ -491,6 +491,20 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # down, so there is never a second concurrent poller in steady state. Nothing to
 # set here: the coordinator gates itself on native liveness.
 
+# Vault-injected MCP HTTP headers (e.g. UptimeRobot's static bearer token):
+# resolve vault: references in ~/.claude.json's mcpServers.*.headers.* into
+# real values right before Claude launches, so an HTTP-transport MCP server
+# never carries a static plaintext token in the tracked config at rest.
+# vault-env-wrapper.sh already covers spawned STDIO servers' env vars; this is
+# the HTTP-header counterpart (see scripts/vault-inject-http-mcp.sh). The trap
+# restores the vault:-reference template on ANY exit from this script (normal
+# wait-loop return below, an early `exit`, or a launchd/systemd stop signal),
+# so ~/.claude.json never keeps a live token once the channel bot is down.
+# Best-effort both ways: a vault/config problem here is logged, never fatal --
+# it must not block the channel bot from starting or stopping.
+"$INSTALL_DIR/scripts/vault-inject-http-mcp.sh" inject >> "$INSTALL_DIR/store/channels-failures.log" 2>&1 || true
+trap '"$INSTALL_DIR/scripts/vault-inject-http-mcp.sh" restore >> "$INSTALL_DIR/store/channels-failures.log" 2>&1 || true' EXIT INT TERM
+
 # Tmux session indítás
 #
 # Always start a fresh conversation. --continue is intentionally omitted:
