@@ -26,7 +26,12 @@ this agent to "now" -- context-compact-monitor.sh's own 45-min COOLDOWN_S
 gate then skips it, so the watchdog and the heartbeat-driven /compact never
 fire back-to-back for the same context spike (the interlock the task asked
 for, reusing the monitor's existing cooldown state file instead of adding a
-new one).
+new one). Every HANDOFF firing is also logged as a verdict='handoff' row in
+the existing hook_audit_log table (see record_handoff_audit()) -- this is
+the validation counter Jonas asked for before phase 4 (retiring
+context-compact-monitor.sh) can be considered: 10 HANDOFF cycles need to
+land with the interlock actually landing and no double-compact slipping
+through before that decision is even on the table.
 
 Scope: ONLY the main channels agent. This hook is registered in the
 PROJECT-ROOT .claude/settings.json (not in any agents/<name>/.claude, nor in
@@ -278,13 +283,16 @@ def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) 
     return text
 
 
-def stamp_compact_interlock(agent_id: str) -> None:
+def stamp_compact_interlock(agent_id: str) -> bool:
     """Interlock with context-compact-monitor.sh: writing last_compact = now
     into its own state file makes the monitor's 45-min COOLDOWN_S gate skip
     this agent, so a HANDOFF we just wrote doesn't get immediately followed
     by the heartbeat sending its own /compact for the same spike. Same file,
     same field, atomic tmp+rename -- exactly how the monitor writes it
-    itself, so a concurrent monitor run sees a consistent file either way."""
+    itself, so a concurrent monitor run sees a consistent file either way.
+    Returns whether the stamp actually landed -- the caller records this in
+    the handoff's own audit row (reason='...;interlock=yes|no') so the
+    validation counter can tell an attempted interlock from a landed one."""
     path = _compact_state_path()
     try:
         try:
@@ -297,8 +305,38 @@ def stamp_compact_interlock(agent_id: str) -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
         os.replace(tmp, path)
+        return True
     except Exception:
-        pass  # best-effort interlock; a missed stamp just means one extra heartbeat check
+        return False  # best-effort interlock; a missed stamp just means one extra heartbeat check
+
+
+def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, interlock_ok) -> None:
+    """Validation-counter instrumentation (phase-4 gate, kicsi/small task
+    on top of phases 1-3): log every HANDOFF firing into the existing
+    hook_audit_log table (no migration -- hook_type stays a true CC event
+    name, 'PostToolUse', matching every other row in the table; 'handoff' is
+    a new verdict value alongside the existing allow/deny/defer, added to
+    the GET/POST /api/hook-audit route's validation sets). reason carries
+    both the context% and whether the compact-monitor interlock stamp
+    landed, e.g. 'ctx=62%;interlock=yes' -- the counter query correlates
+    this against context-compact-monitor.sh's own 'PreCompact'/allow rows
+    (see record_compact_audit() there) to detect a double-compact. Never
+    raises -- this is instrumentation, not a gate."""
+    try:
+        conn.execute(
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, reason, session_id) "
+            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?)",
+            (
+                int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
+                agent_id,
+                tool_name,
+                f"ctx={pct:.0%};interlock={'yes' if interlock_ok else 'no'}",
+                session_id,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        pass
 
 
 def emit_handoff(text: str) -> None:
@@ -348,7 +386,8 @@ def main():
         if pct >= CONTEXT_PCT_THRESHOLD:
             handoff = build_handoff(conn, agent_id, pct, tokens, threshold)
             emit_handoff(handoff)
-            stamp_compact_interlock(agent_id)
+            interlock_ok = stamp_compact_interlock(agent_id)
+            record_handoff_audit(conn, agent_id, session_id, tool_name, pct, interlock_ok)
     except Exception:
         pass  # logging-category hook: never fail the tool call
     finally:

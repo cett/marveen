@@ -90,6 +90,18 @@ def _make_db(path):
           content TEXT NOT NULL,
           created_at INTEGER NOT NULL
         );
+
+        CREATE TABLE hook_audit_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          agent_id TEXT,
+          hook_type TEXT NOT NULL,
+          verdict TEXT NOT NULL,
+          tool_name TEXT,
+          content_hash TEXT,
+          reason TEXT,
+          session_id TEXT
+        );
         """
     )
     conn.commit()
@@ -233,6 +245,63 @@ class TestWriteTokenRow(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class TestRecordHandoffAudit(unittest.TestCase):
+    """Validation-counter instrumentation (phase-4 gate): every HANDOFF
+    firing must land a verdict='handoff' hook_audit_log row."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.conn = _make_db(self.tmp.name)
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.tmp.name)
+
+    def test_inserts_expected_row(self):
+        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62, True)
+        row = self.conn.execute(
+            "SELECT agent_id, hook_type, verdict, tool_name, reason, session_id FROM hook_audit_log"
+        ).fetchone()
+        self.assertEqual(row, (MAIN_AGENT, "PostToolUse", "handoff", "Bash", "ctx=62%;interlock=yes", "sess-1"))
+
+    def test_interlock_false_is_recorded_in_reason(self):
+        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.9, False)
+        reason = self.conn.execute("SELECT reason FROM hook_audit_log").fetchone()[0]
+        self.assertIn("interlock=no", reason)
+
+    def test_never_raises_on_a_closed_connection(self):
+        self.conn.close()
+        try:
+            hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62, True)
+        except Exception as e:  # pragma: no cover -- the point of the test is that this doesn't happen
+            self.fail(f"record_handoff_audit raised: {e!r}")
+        self.conn = sqlite3.connect(self.tmp.name)  # reopen (schema already on disk) so tearDown's close() is valid
+
+
+class TestStampCompactInterlock(unittest.TestCase):
+    def test_returns_true_and_writes_last_compact_on_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "compact.json")
+            os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"] = path
+            try:
+                ok = hook.stamp_compact_interlock(MAIN_AGENT)
+                self.assertTrue(ok)
+                with open(path) as f:
+                    state = json.load(f)
+                self.assertIn("last_compact", state[MAIN_AGENT])
+            finally:
+                del os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"]
+
+    def test_returns_false_when_the_path_is_unwritable(self):
+        os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"] = "/nonexistent/dir/x/compact.json"
+        try:
+            ok = hook.stamp_compact_interlock(MAIN_AGENT)
+            self.assertFalse(ok)
+        finally:
+            del os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"]
+
+
 class TestBuildHandoff(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -353,6 +422,14 @@ class TestMainSubprocess(unittest.TestCase):
         with open(self.compact_state_path) as f:
             state = json.load(f)
         self.assertIn("last_compact", state.get(MAIN_AGENT, {}))
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT hook_type, verdict, reason FROM hook_audit_log WHERE agent_id = ?", (MAIN_AGENT,)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row[0], "PostToolUse")
+        self.assertEqual(row[1], "handoff")
+        self.assertIn("interlock=yes", row[2])
 
     def test_non_main_agent_cwd_is_noop(self):
         _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000)])
