@@ -545,11 +545,3 @@ export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}
   }
   return startAgentProcess(name, opts)
 }
-
-// Claude Code occasionally pops a "How is Claude doing this session? (optional)"
-// rating modal above the prompt input. The footer line still reads
-// "bypass permissions on (shift+tab to cycle)" so detectPaneState() classifies
-// the pane as idle, but the modal swallows the next keystroke and pinches off
-// every scheduled prompt + agent message until a human dismisses it. We strip
-// it pre-flight by sending "0" (Dismiss) when the marker is visible, so any
-// caller writing a prompt has a clear input field.
