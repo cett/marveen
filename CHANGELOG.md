@@ -720,6 +720,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- add a `Security audit` step to the CI build-and-test job (`npm audit --audit-level=high`, after `npm ci` and before `Build`) so a newly introduced high/critical dependency vulnerability blocks the pipeline instead of only showing up in a manual audit; moderate-severity findings are listed but don't block
 - make `generate-changelog.mjs` incremental -- it used to recompute the entire [Unreleased] section from conventional-commit subjects since the last git tag on every run, silently discarding any hand-written elaboration added to entries afterwards (discovered while patching the CHANGELOG for the tenant-scoped overview fix, when a run reverted several manually-enriched entries back to terse commit subjects). A hidden `<!-- changelog-auto-sha: <sha> -->` marker inside [Unreleased] now tracks the last-processed commit; each run only reads commits after that marker and prepends them into the matching section, leaving everything else untouched. This run bootstraps the marker at the current HEAD without touching any existing content
 - add GET /api/skills/sql route-shadow fix entry
 - add fleet-wide installer for skill-sql-sync hook
