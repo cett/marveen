@@ -39,4 +39,29 @@ describe('admin-b2b permission matrix UI wiring', () => {
       expect(EN).toContain(`'${key}'`)
     }
   })
+
+  it('index.html has the screenAccessMatrix container inside panel-users', () => {
+    expect(INDEX_HTML).toMatch(/id="permissionMatrix"[\s\S]{0,500}id="screenAccessMatrix"/)
+  })
+
+  it('admin-b2b.js imports the screen-access data mirror', () => {
+    expect(ADMIN_B2B).toMatch(/import\s*\{[^}]*SCREEN_ACCESS_ROWS[^}]*\}\s*from\s*'\.\/rbac-screen-access-data\.js'/)
+  })
+
+  it('renderScreenAccessMatrix is called when the users tab is shown', () => {
+    expect(ADMIN_B2B).toMatch(/tab === 'users'.*renderScreenAccessMatrix\(\)/)
+  })
+
+  it('hu.js and en.js both define the screen-access i18n keys', () => {
+    for (const key of [
+      'admin.b2b.screen_access.title',
+      'admin.b2b.screen_access.shadow_note',
+      'admin.b2b.screen_access.legend.gap',
+      'admin.b2b.screen_access.screen.overview',
+      'admin.b2b.screen_access.screen.profile',
+    ]) {
+      expect(HU).toContain(`'${key}'`)
+      expect(EN).toContain(`'${key}'`)
+    }
+  })
 })

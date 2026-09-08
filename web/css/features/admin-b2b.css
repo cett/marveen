@@ -141,6 +141,29 @@
 .admin-b2b-perm-yes { color: var(--success, #22c55e); }
 .admin-b2b-perm-no  { color: var(--text-muted); }
 
+/* Screen-access matrix (read-only, Users tab, second section) */
+.admin-b2b-access-full { color: var(--success, #22c55e); }
+.admin-b2b-access-ro   { color: var(--accent, #3b82f6); }
+.admin-b2b-access-gap  { color: var(--warning, #f59e0b); }
+.admin-b2b-access-none { color: var(--text-muted); }
+
+.admin-b2b-access-legend {
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 4px 16px;
+  margin-bottom: 8px;
+}
+
+.admin-b2b-access-legend span.admin-b2b-access-full,
+.admin-b2b-access-legend span.admin-b2b-access-ro,
+.admin-b2b-access-legend span.admin-b2b-access-gap,
+.admin-b2b-access-legend span.admin-b2b-access-none {
+  font-weight: 600;
+  margin-right: 3px;
+}
+
 /* Device key tenant select */
 .admin-b2b-select {
   background: var(--surface);
