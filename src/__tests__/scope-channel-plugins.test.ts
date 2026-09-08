@@ -70,7 +70,8 @@ describe('scopeChannelPlugins', () => {
 // path (not in agents/, launched via channels.sh), but this locks the explicit
 // guard so a future refactor cannot regress it.
 describe('main-agent telegram channel is protected from spawn-time scoping', () => {
-  const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+  const SRC = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+    .map(f => readFileSync(join(__dirname, '../web/' + f), 'utf-8')).join('\n')
 
   it('the spawn-time scoping block is guarded by name !== MAIN_AGENT_ID', () => {
     // The scopeChannelPlugins call must sit inside an `if (name !== MAIN_AGENT_ID)`.
@@ -145,7 +146,8 @@ describe('spawn-time enable decision (ownChannelProviderForScope + scopeChannelP
 // (the explicit channelProvider field, null for every sub-agent), which disabled
 // the plugin for legitimately-channelled sub-agents.
 describe('spawn-time scoping is gated on the own token, not the explicit provider field', () => {
-  const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+  const SRC = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+    .map(f => readFileSync(join(__dirname, '../web/' + f), 'utf-8')).join('\n')
 
   it('the scopeChannelPlugins source is gated on ownChannelProviderForScope(...), not readAgentChannelProvider', () => {
     // The per-agent mcp.json feature (35fdef8) routes the scope through a local

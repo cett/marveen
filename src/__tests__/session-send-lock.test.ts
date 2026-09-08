@@ -119,7 +119,8 @@ describe('withSessionSendLock -- per-session delivery serialization', () => {
 // UNDER the lock, and the recovery re-inject must use recover-mode. If a future
 // edit removes the wrap, these fail.
 describe('sendPromptToSession delivery-lock wiring', () => {
-  const AGENT_PROCESS = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+  const AGENT_PROCESS = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+    .map(f => readFileSync(join(__dirname, '../web/' + f), 'utf-8')).join('\n')
   const CHANNEL_MONITOR = readFileSync(join(__dirname, '../web/channel-monitor.ts'), 'utf-8')
 
   it('sendPromptToSession runs its emit span inside withSessionSendLock', () => {

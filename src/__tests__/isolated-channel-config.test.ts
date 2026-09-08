@@ -148,7 +148,8 @@ describe('ensureIsolatedChannelConfigDir', () => {
 // Source-level contract for the launcher wiring (startAgentProcess). These
 // guard the auth mechanism Szotasz asked for: no symlinked creds, a long-lived
 // OAuth token injected via env, and isolation gated on that token's presence.
-const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+const SRC = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+  .map(f => readFileSync(join(__dirname, '../web/' + f), 'utf-8')).join('\n')
 
 describe('isolated-config launcher wiring', () => {
   it('skips .credentials.json from the symlink set', () => {

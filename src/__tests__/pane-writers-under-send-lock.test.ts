@@ -108,7 +108,8 @@ describe('every unguarded pane writer routes through the send lane', () => {
   })
 
   it('the modal dismissals acquire the lane fail-closed, except when the caller already holds it', () => {
-    const src = read('../web/agent-process.ts')
+    const src = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
+      .map(f => read('../web/' + f)).join('\n')
     expect(src).toMatch(/releaseDismissLane = tryAcquireSessionSendLane\(session, host\)/)
     expect(src).toMatch(/modal dismissals skipped/)
     // 'held' callers run the dismissals WITHOUT re-acquiring (self-deadlock guard):
