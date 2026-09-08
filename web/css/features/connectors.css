@@ -190,6 +190,10 @@
   grid-column: 1 / -1;
 }
 .vault-field-group { display: flex; flex-direction: column; gap: 4px; }
+/* The admin-only tenant-select rows in the vault add-panels toggle [hidden]
+   via JS -- without this override the unconditional display:flex above
+   outranks the UA [hidden] default and the row never actually disappears. */
+.vault-field-group[hidden] { display: none; }
 .vault-field-label {
   font-size: 11px;
   font-weight: 600;

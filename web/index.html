@@ -169,7 +169,7 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             <span class="sb-label">Beállítások</span>
           </a>
-          <a href="#" class="sb-link" data-page="vault">
+          <a href="#" class="sb-link" data-page="vault" id="navVault" hidden>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
             <span class="sb-label">Vault</span>
           </a>
@@ -1598,6 +1598,10 @@
           <button class="modal-close" id="vaultAddPanelClose">&times;</button>
         </div>
         <div class="vault-add-fields">
+          <div class="vault-field-group" id="vaultAddTenantRow" hidden>
+            <label class="vault-field-label">Tenant</label>
+            <select id="vaultAddTenantSelect" class="input"></select>
+          </div>
           <div class="vault-field-group">
             <label class="vault-field-label" data-i18n="vault.field.name_label">Kulcs neve</label>
             <input type="text" id="vaultPageIdInput" class="input" placeholder="pl. OPENAI_API_KEY">
@@ -1710,6 +1714,10 @@
             <button class="modal-close" id="sshAddPanelClose">&times;</button>
           </div>
           <div class="vault-add-fields" style="grid-template-columns:1fr 1fr 1fr">
+            <div class="vault-field-group" id="sshAddTenantRow" hidden>
+              <label class="vault-field-label">Tenant</label>
+              <select id="sshAddTenantSelect" class="input"></select>
+            </div>
             <div class="vault-field-group">
               <label class="vault-field-label">Név</label>
               <input type="text" id="sshNameInput" class="input" placeholder="pl. web-prod-01">
@@ -1792,6 +1800,10 @@
           <div class="modal-body">
             <p class="vault-scan-desc">Új ed25519 kulcspár generálása. A privát kulcs titkosítva tárolódik a Vault-ban, soha nem hagyja el a szervert.</p>
             <div id="sshKeygenForm">
+              <div class="form-group" id="sshKeygenTenantRow" hidden>
+                <label for="sshKeygenTenantSelect">Tenant</label>
+                <select id="sshKeygenTenantSelect" class="input"></select>
+              </div>
               <div class="form-group">
                 <label for="sshKeygenLabelInput">Cimke</label>
                 <input type="text" id="sshKeygenLabelInput" class="input" placeholder="pl. bishop-ro jumphost">

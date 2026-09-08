@@ -3714,6 +3714,7 @@ export interface VaultSshServer {
   username: string
   ssh_key_id: string | null
   description: string | null
+  tenant_id: string
   created_at: number
   updated_at: number
 }
@@ -3724,20 +3725,22 @@ export function computeSshKeyStatus(server: VaultSshServer): SshKeyStatus {
   return server.ssh_key_id ? 'ok' : 'missing'
 }
 
-export function listVaultSshServers(): VaultSshServer[] {
-  return db.prepare('SELECT * FROM vault_ssh_servers ORDER BY name ASC').all() as VaultSshServer[]
+export function listVaultSshServers(tenantId?: string | null): VaultSshServer[] {
+  const tc = tenantId ? ' WHERE tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
+  return db.prepare(`SELECT * FROM vault_ssh_servers${tc} ORDER BY name ASC`).all(...tp) as VaultSshServer[]
 }
 
 export function getVaultSshServer(id: string): VaultSshServer | undefined {
   return db.prepare('SELECT * FROM vault_ssh_servers WHERE id = ?').get(id) as VaultSshServer | undefined
 }
 
-export function createVaultSshServer(server: Pick<VaultSshServer, 'id' | 'name' | 'host' | 'port' | 'username' | 'description'>): VaultSshServer {
+export function createVaultSshServer(server: Pick<VaultSshServer, 'id' | 'name' | 'host' | 'port' | 'username' | 'description' | 'tenant_id'>): VaultSshServer {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO vault_ssh_servers (id, name, host, port, username, description, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(server.id, server.name, server.host, server.port, server.username, server.description ?? null, now, now)
+    `INSERT INTO vault_ssh_servers (id, name, host, port, username, description, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(server.id, server.name, server.host, server.port, server.username, server.description ?? null, server.tenant_id, now, now)
   return { ...server, ssh_key_id: null, created_at: now, updated_at: now }
 }
 

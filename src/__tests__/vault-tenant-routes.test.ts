@@ -106,6 +106,7 @@ vi.mock('../web/vault-bindings.js', () => ({
 
 import { tryHandleConnectors } from '../web/routes/connectors.js'
 import { tryHandleVaultSshKeys } from '../web/routes/vault-ssh-keys.js'
+import { tryHandleVaultSsh } from '../web/routes/vault-ssh.js'
 import { getSecret } from '../web/vault.js'
 
 const VAULT_JSON = join(STORE_DIR, 'vault.json')
@@ -330,5 +331,99 @@ describe('/api/vault/ssh-keys -- tenant scoping', () => {
     await tryHandleVaultSshKeys(delCtx)
     expect(delOut.status).toBe(200)
     expect(getSecret(`ssh-key-${id}`, 'eszter')).toBeNull()
+  })
+})
+
+// ── Test vectors T4-T10: SSH server metadata cross-tenant isolation ───────────
+async function createServer(id: string, opts: { role?: string; tenantId?: string | null } = {}, tenantIdField?: string) {
+  const { ctx, out } = makeCtx(
+    'POST', '/api/vault/ssh-servers',
+    { id, name: id, host: '10.0.0.1', user: 'deploy', ...(tenantIdField ? { tenant_id: tenantIdField } : {}) },
+    undefined, opts,
+  )
+  await tryHandleVaultSsh(ctx)
+  return out
+}
+
+describe('/api/vault/ssh-servers -- tenant scoping', () => {
+  it('T4: list is scoped to the caller\'s own tenant', async () => {
+    await createServer('default-srv', { role: 'admin', tenantId: null })
+    await createServer('eszter-srv', { role: 'user', tenantId: 'eszter' })
+
+    const { ctx, out } = makeCtx('GET', '/api/vault/ssh-servers', undefined, undefined, { role: 'user', tenantId: 'eszter' })
+    await tryHandleVaultSsh(ctx)
+    const servers = (out.body as { servers: Array<{ id: string }> }).servers
+    expect(servers.map(s => s.id)).toEqual(['eszter-srv'])
+  })
+
+  it('T5: reading another tenant\'s server by id 404s (not 403)', async () => {
+    await createServer('default-srv', { role: 'admin', tenantId: null })
+
+    const { ctx, out } = makeCtx('GET', '/api/vault/ssh-servers/default-srv/public-key', undefined, undefined, { role: 'user', tenantId: 'eszter' })
+    await tryHandleVaultSsh(ctx)
+    expect(out.status).toBe(404)
+    expect((out.body as { error: string }).error).toBe('not_found')
+  })
+
+  it('T6: deleting another tenant\'s server 404s and it survives', async () => {
+    await createServer('default-srv', { role: 'admin', tenantId: null })
+
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/ssh-servers/default-srv', undefined, undefined, { role: 'user', tenantId: 'eszter' })
+    await tryHandleVaultSsh(ctx)
+    expect(out.status).toBe(404)
+
+    const { ctx: listCtx, out: listOut } = makeCtx('GET', '/api/vault/ssh-servers', undefined, undefined, { role: 'admin', tenantId: null })
+    await tryHandleVaultSsh(listCtx)
+    expect((listOut.body as { servers: Array<{ id: string }> }).servers.some(s => s.id === 'default-srv')).toBe(true)
+  })
+
+  it('T7: a non-admin creating a server binds it to their own tenant automatically', async () => {
+    // Even if the caller tries to override it in the body -- targetTenantId
+    // for a non-admin always comes from ctx.tenantId, never data.tenant_id.
+    const out = await createServer('eszter-srv', { role: 'user', tenantId: 'eszter' }, 'default')
+    expect(out.status).toBe(201)
+    expect((out.body as { server: { id: string } }).server.id).toBe('eszter-srv')
+
+    const { ctx, out: getOut } = makeCtx('GET', '/api/vault/ssh-servers', undefined, { tenant: 'eszter' }, { role: 'admin', tenantId: null })
+    await tryHandleVaultSsh(ctx)
+    expect((getOut.body as { servers: Array<{ id: string }> }).servers.map(s => s.id)).toEqual(['eszter-srv'])
+  })
+
+  it('T8: admin with no ?tenant sees every tenant\'s servers', async () => {
+    await createServer('default-srv', { role: 'admin', tenantId: null })
+    await createServer('eszter-srv', { role: 'user', tenantId: 'eszter' })
+
+    const { ctx, out } = makeCtx('GET', '/api/vault/ssh-servers', undefined, undefined, { role: 'admin', tenantId: null })
+    await tryHandleVaultSsh(ctx)
+    const ids = (out.body as { servers: Array<{ id: string }> }).servers.map(s => s.id)
+    expect(ids).toEqual(expect.arrayContaining(['default-srv', 'eszter-srv']))
+  })
+
+  it('T9: admin with ?tenant=eszter sees only eszter\'s servers', async () => {
+    await createServer('default-srv', { role: 'admin', tenantId: null })
+    await createServer('eszter-srv', { role: 'user', tenantId: 'eszter' })
+
+    const { ctx, out } = makeCtx('GET', '/api/vault/ssh-servers', undefined, { tenant: 'eszter' }, { role: 'admin', tenantId: null })
+    await tryHandleVaultSsh(ctx)
+    expect((out.body as { servers: Array<{ id: string }> }).servers.map(s => s.id)).toEqual(['eszter-srv'])
+  })
+
+  it('T10: generate-key on an eszter-tenant server binds the new pool key to eszter, not default', async () => {
+    await createServer('eszter-srv', { role: 'user', tenantId: 'eszter' })
+
+    const { ctx, out } = makeCtx('POST', '/api/vault/ssh-servers/eszter-srv/generate-key', undefined, undefined, { role: 'user', tenantId: 'eszter' })
+    await tryHandleVaultSsh(ctx)
+    expect(out.status).toBe(200)
+    const keyId = (out.body as { server: { sshKeyId: string } }).server.sshKeyId
+    expect(getSecret(`ssh-key-${keyId}`, 'eszter')).not.toBeNull()
+    expect(getSecret(`ssh-key-${keyId}`, 'default')).toBeNull()
+  })
+
+  it('admin can reach any tenant\'s server unrestricted', async () => {
+    await createServer('eszter-srv', { role: 'user', tenantId: 'eszter' })
+
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/ssh-servers/eszter-srv', undefined, undefined, { role: 'admin', tenantId: null })
+    await tryHandleVaultSsh(ctx)
+    expect(out.status).toBe(200)
   })
 })

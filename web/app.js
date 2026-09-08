@@ -498,6 +498,21 @@ initSidebarBrand()
   } catch {}
 })()
 
+// Reveal the Vault nav link the same way -- Vault holds fleet-wide secrets and
+// SSH keys, not something a tenant-scoped (b2b) user should see or reach via
+// nav even though the API itself already denies cross-tenant access.
+;(async function revealVaultNav() {
+  try {
+    const r = await fetch('/api/auth/status')
+    if (!r.ok) return
+    const auth = await r.json()
+    if (auth?.role === 'admin' && auth?.tenant_id === null) {
+      const navLink = document.getElementById('navVault')
+      if (navLink) navLink.hidden = false
+    }
+  } catch {}
+})()
+
 // Reveal the RBAC admin nav link (tokens/partner-senders/skill access, kanban
 // 722-B) as soon as the client can() check resolves -- mirrors revealAdminNav
 // above but goes through rbac-client so it also unhides for the legacy
@@ -697,6 +712,18 @@ registerPage('connectors', {
 registerPage('vault', {
   lazy: true,
   enter: async () => {
+    // Page guard: direct #vault navigation (typed hash, bookmark) bypasses the
+    // hidden nav link, and the scoped Vault API would otherwise just render an
+    // empty/404-riddled page for a non-admin -- redirect to overview instead.
+    let auth = null
+    try {
+      const r = await fetch('/api/auth/status')
+      auth = r.ok ? await r.json() : null
+    } catch { /* treat as unauthenticated -- guard below denies */ }
+    if (!(auth?.role === 'admin' && auth?.tenant_id === null)) {
+      switchPage('overview')
+      return
+    }
     const m = await lazyLoad('connectors', () => import('./modules/connectors.js'))
     if (!_moduleCache.get('connectors_inited')) {
       m.initConnectors({ openModal, closeModal })
