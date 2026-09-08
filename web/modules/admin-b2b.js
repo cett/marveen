@@ -331,7 +331,7 @@ function renderUserList() {
         <span class="admin-b2b-row-name">${esc(u.display_name || u.username)}</span>
         ${u.display_name ? `<code class="admin-b2b-row-id">${esc(u.username)}</code>` : ''}
         <span class="badge" data-variant="${u.role === 'admin' ? 'info' : 'neutral'}">${esc(u.role)}</span>
-        ${u.tenant_id ? `<code class="admin-b2b-row-id">${esc(u.tenant_id)}</code>` : '<span class="badge" data-variant="info">global admin</span>'}
+        <span class="badge" data-variant="neutral">${u.tenant_id ? esc(u.tenant_id) : t('admin.b2b.user.scope_fleet', 'Fleet (globális)')}</span>
         ${u.disabled ? '<span class="badge" data-variant="neutral">letiltva</span>' : ''}
       </div>
       <div class="admin-b2b-row-actions">
