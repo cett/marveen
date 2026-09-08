@@ -61,7 +61,8 @@ describe('quarantine-reader sub-agent definition', () => {
 
   it('scaffold deploys it to agents on creation (scaffoldAgentDir reference)', () => {
     // Regression guard: the scaffold must deploy the quarantine-reader template.
-    const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf8')
+    // scaffoldAgentDir moved to agent-scaffold-hooks.ts in #773/#779.
+    const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold-hooks.ts'), 'utf8')
     expect(src).toContain('quarantine-reader.md')
   })
 })
@@ -242,7 +243,9 @@ describe('loadRuntimeAllowlist', () => {
 })
 
 describe('injectEgressGate (source-level checks)', () => {
-  const scaffoldSrc = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf8')
+  // injectEgressGate/ensureEgressGate/writeAgentSettingsFromProfile moved to
+  // agent-scaffold-hooks.ts in #773/#779.
+  const scaffoldSrc = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold-hooks.ts'), 'utf8')
 
   it('injectEgressGate is exported from agent-scaffold.ts', () => {
     expect(scaffoldSrc).toContain('export function injectEgressGate(')
@@ -300,7 +303,8 @@ describe('injectEgressGate (source-level checks)', () => {
 
 describe('ensureEgressGate', () => {
   it('is exported from agent-scaffold.ts', () => {
-    const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf8')
+    // moved to agent-scaffold-hooks.ts in #773/#779
+    const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold-hooks.ts'), 'utf8')
     expect(src).toContain('export function ensureEgressGate(')
   })
 })

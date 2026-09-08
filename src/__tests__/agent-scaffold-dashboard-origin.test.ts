@@ -24,7 +24,9 @@ import { resolveDashboardOrigin } from '../web/agent-scaffold.js'
 import { renderHeartbeatClaudeMd, type HeartbeatIdentity } from '../web/heartbeat-agent-scaffold.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SCAFFOLD_SRC = join(__dirname, '..', 'web', 'agent-scaffold.ts')
+// resolveDashboardOrigin/dashboardOrigin/generateClaudeMd moved to
+// agent-scaffold-templates.ts in #773/#779.
+const SCAFFOLD_SRC = join(__dirname, '..', 'web', 'agent-scaffold-templates.ts')
 const HEARTBEAT_SRC = join(__dirname, '..', 'web', 'heartbeat-agent-scaffold.ts')
 
 // ---------------------------------------------------------------------------

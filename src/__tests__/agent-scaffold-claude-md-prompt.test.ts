@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SCAFFOLD_PATH = join(__dirname, '..', 'web', 'agent-scaffold.ts')
+// generateClaudeMd/generateSoulMd moved to agent-scaffold-templates.ts in #773/#779.
+const SCAFFOLD_PATH = join(__dirname, '..', 'web', 'agent-scaffold-templates.ts')
 const SCAFFOLD_SRC = readFileSync(SCAFFOLD_PATH, 'utf-8')
 const AGENTS_CRUD_SRC = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents-crud.ts'), 'utf-8')
 
