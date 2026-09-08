@@ -9,10 +9,23 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: 9c4ee1024a840155c6a818486132e889212f20ac -->
+<!-- changelog-auto-sha: 81cf0615de4f79a96a4b8bf3e64755fa3def38cd -->
 
 ### Added
 
+- cascade-delete vault SSH pool and purge vault.json secrets
+- add purgeSecretsForTenant for tenant hard-delete cleanup
+- extend context-watchdog to persistent fleet sub-agents
+- screen-access matrix section (dashboard Users tab)
+- role/permission matrix on the dashboard Users tab
+- fleet-only agents MCP tenant-isolation gate
+- vault-backed injection for HTTP MCP server headers
+- fleet-audit trail Phase 1 -- blackboard/approval writes, hook merge
+- watchdog validation counter -- phase-4 gate
+- file-based credential materializer for MCP servers
+- context watchdog for the main channels agent (phases 2+3)
+- PostToolUse injection-detection gate + structured hook audit log
+- tenant isolation for SSH servers, nav guard, add-modal tenant select
 - Role/permission matrix on the dashboard's Felhasznalok > Felhasznalok tab, in two read-only sections. First, every role (admin/agent/read_only/viewer) against every permission from `src/web/rbac.ts`, grouped by category (memory, tasks, agents & communication, approvals, federation, administration): the frontend keeps a manually-synced mirror of `rbac.ts`'s permission set (a live endpoint was judged unnecessary indirection for config that changes at the same pace as its own edits) -- a new test asserts every cell in that mirror matches `hasPermission()` from the real `rbac.ts`, so a drift between the two fails CI. Second, a screen-access section (~28 dashboard screens x role, full/read-only/gap/no-access) showing the RBAC enforce state the fleet will have once shadow mode ends -- since nav-visibility gating is currently spread ad-hoc across the frontend rather than centrally sourced, this section is a manually-curated data table (its five stable, pre-existing nav-gate conditions are still string-contract tested against the real source) rather than a live-derived mirror; it is display-only and does not add the still-missing nav-hide logic for the screens it flags as inconsistent with the backend truth -- that remains separate follow-up work. Both `hu.js` and `en.js` gained the matching i18n keys for both sections
 - **[API]** "fleet-only agents" tenant-isolation gate (Phase 1 of the MCP tenant-isolation defense-in-depth plan): `PUT /api/admin/agent-availability` now refuses (409, with a `risky_mcp_servers` list) to enable an agent for a non-default tenant if that agent's `.mcp.json` carries an MCP server with no tenant concept of its own (GitHub, GitLab, Hetzner, filesystem, or a GA4 instance) -- these credentials expose their full scope to whichever tenant the agent is granted to, which no data-layer `WHERE tenant_id` filter can close. The caller (the admin dashboard's agent-availability matrix, or a direct API call) must resubmit with `confirm: true` to proceed; disabling an agent and assignments to the fleet's own `default` tenant are never gated. Documented alongside the existing tenant-isolation model in `docs/rbac-multi-tenant.md`, including the per-tenant-GA4-agent policy
 - vault-backed injection for HTTP-transport MCP server headers (e.g. a monitoring integration's static bearer token): a new `scripts/vault-inject-http-mcp.sh` resolves `vault:<id>` references in the Claude Code config's `mcpServers.*.headers.*` fields into real values right before the main channel agent launches, and restores the vault-reference template on exit (normal shutdown, crash, or a service-manager stop signal), so the config never keeps a live token on disk once the agent is down. Complements the existing env-var vault wrapper, which only covers spawned stdio MCP servers -- an HTTP-transport server's headers sit directly in the config file with no process-launch hook to intercept
@@ -250,6 +263,18 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- restore 3 missing imports in agents.js spoke files (776 QA fix)
+- unify visual style of the two RBAC matrices
+- unify user-row scope chip styling (tenant vs global admin)
+- collect interval 60min -> 5min (context watchdog phase 1)
+- coverage gate never enforced -- coverage block sat outside test
+- tenant isolation for secret store and SSH key pool
+- resolve qs/adm-zip/xlsx npm audit findings (0 high/moderate)
+- scope import sources, audit log, stats and search to tenant
+- scope memory stat cards to the selected tenant
+- decode URI-encoded skill ids in SQL skill route captures
+- align B2B/RBAC admin tab and panel markup with the tab-nav template
+- scope agent list/detail visibility to tenant availability
 - Felhasznalok tab: the permission matrix and the screen-access matrix (two separate sections, deliberately kept at their own abstraction levels -- API permissions vs. dashboard screens) now share one visual system instead of two slightly different ones -- a legend (the permission matrix previously had none) built through the same helper in both, and one shared cell-marker color language (a new `admin-b2b-matrix-full/ro/gap/none` class family) where the permission matrix's binary allowed/not-allowed reuses the full/none levels rather than its own separate color pair. Both `hu.js` and `en.js` gained the matching legend labels for the permission matrix
 - Felhasznalok tab user rows: the tenant-user scope indicator and the global-admin scope indicator now render as the same badge chip (previously a `<code>` chip for a tenant user vs. a differently-styled badge for a global admin), with a new "Fleet (globális)" / "Fleet (global)" label for the global-admin case. Display only, no behavior change
 - shorten the periodic token-usage collector from a 1-hour to a 5-minute interval, bounding how long a stale reading can survive a process restart and drive a false-positive context-compact trigger (context watchdog, phase 1)
@@ -580,6 +605,12 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- split agent-scaffold.ts into hooks + templates (779)
+- split agents.js into 5 files (776)
+- split connectors.js into connectors/vault (778)
+- extract Canvas graph engine from memories.js into memory-graph.js (777)
+- split agent-process.ts into spawn/session/config/identity (775)
+- split db.ts into src/db/*.ts by domain (774)
 - remove reggeli-napindito from workspace-docs PR
 - replace stringly-typed not-ready detection with discriminated union (673)
 - drop restart TOCTOU hint override, propagate stop hint as-is
@@ -614,6 +645,16 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- update fork-diff for fleet-only agents MCP tenant gate
+- update fork-diff for HTTP MCP header vault injection
+- update fork-diff for fleet-audit trail #764
+- update fork-diff for watchdog validation counter
+- document vault-file-materializer.sh in fork-diff
+- file materializer + backfill unrecorded develop commits
+- update fork-diff for context watchdog
+- update fork-diff for security dep fixes (#718)
+- add entry for tenant-scoped agent list/detail fix
+- bootstrap marker + note the incremental-generator fix
 - update for SPA fallback routing fix
 - update for skill SQL-regen Phase 1
 - document per-skill instant regen (kanban 3f52d485 Phase 1)
@@ -733,6 +774,13 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- cover agent-scaffold-hooks.ts in the removed-heartbeat-scaffold guard
+- drop orphan comment in agent-process-spawn.ts
+- bump vitest + @vitest/coverage-v8 to 5.0.0 (combined)
+- lower coverage floor below CI-measured baseline
+- add npm audit gate to build-and-test job
+- bump the minor-and-patch group across 1 directory with 6 updates
+- drop internal issue reference from test docstring
 - bump `vitest` and `@vitest/coverage-v8` together from 4.1.x to 5.0.0 (a combined chore replacing two independent Dependabot PRs that each failed CI on their own -- the coverage provider is peer-dependency-locked to the same major as the test runner). `vitest.config.ts`'s nested `test.coverage` block and its enforced thresholds needed no changes: re-verified the gate genuinely still fails a real regression under 5.x (not just re-measured a passing baseline) by temporarily raising a threshold and confirming `npm run coverage` exits non-zero with the expected "does not meet global threshold" message, then restored it
 - add a `Security audit` step to the CI build-and-test job (`npm audit --audit-level=high`, after `npm ci` and before `Build`) so a newly introduced high/critical dependency vulnerability blocks the pipeline instead of only showing up in a manual audit; moderate-severity findings are listed but don't block
 - fix the coverage gate: `vitest.config.ts`'s `coverage` block sat as a top-level sibling of `test` instead of nested under it, which vitest 4.x silently ignores -- the configured include/exclude/thresholds never actually applied, so `npm run coverage` always exited 0 regardless of measured percentages. Moved `coverage` under `test.coverage` and re-measured the baseline with the (now actually applied) include/exclude filters; the ratchet floor is set just below that real baseline so the gate stays green on `develop` but now genuinely fails a PR that drops coverage
