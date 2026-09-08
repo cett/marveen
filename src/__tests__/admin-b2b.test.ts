@@ -46,6 +46,10 @@ vi.mock('../web/agent-config.js', () => ({
   listAgentNames: vi.fn().mockReturnValue([]),
 }))
 
+vi.mock('../web/mcp-risk-policy.js', () => ({
+  getHighRiskMcpServersForAgent: vi.fn().mockReturnValue([]),
+}))
+
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }))
@@ -53,6 +57,7 @@ vi.mock('../logger.js', () => ({
 import * as db from '../db.js'
 import * as agentConfig from '../web/agent-config.js'
 import * as deviceKeys from '../web/auth-device-keys.js'
+import * as mcpRiskPolicy from '../web/mcp-risk-policy.js'
 import { tryHandleAdminB2b } from '../web/routes/admin-b2b.js'
 import { normalizePath } from '../web/routes/versioning.js'
 
@@ -593,3 +598,66 @@ describe('PATCH /api/v1/admin/device-keys/:id', () => {
   })
 })
 
+
+// ── Agent availability matrix -- fleet-only agents MCP risk gate ───────────
+
+describe('PUT /api/v1/admin/agent-availability -- fleet-only agents MCP risk gate', () => {
+  beforeEach(() => {
+    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
+    vi.mocked(agentConfig.isKnownAgent).mockReturnValue(true)
+    vi.mocked(db.setTenantAgentAvailability).mockReturnValue({ tenant_id: 'acme-corp', agent_id: 'agent-a', enabled: 1, updated_at: 1787000000 })
+  })
+
+  it('enables an agent with no high-risk MCP servers directly (no confirmation needed)', async () => {
+    vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent).mockReturnValue([])
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'agent-a', enabled: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.enabled).toBe(true)
+    expect(vi.mocked(db.setTenantAgentAvailability)).toHaveBeenCalledWith('acme-corp', 'agent-a', true)
+  })
+
+  it('returns 409 with risky_mcp_servers when enabling an agent with high-risk MCP servers for a B2B tenant', async () => {
+    vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent).mockReturnValue(['github', 'hetzner'])
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'agent-b', enabled: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('conflict')
+    expect(out.body.risky_mcp_servers).toEqual(['github', 'hetzner'])
+    expect(vi.mocked(db.setTenantAgentAvailability)).not.toHaveBeenCalled()
+  })
+
+  it('proceeds when confirm:true is sent alongside a high-risk agent', async () => {
+    vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent).mockReturnValue(['github'])
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'agent-b', enabled: true, confirm: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.setTenantAgentAvailability)).toHaveBeenCalledWith('acme-corp', 'agent-b', true)
+  })
+
+  it('does not gate on the default tenant even for a high-risk agent', async () => {
+    vi.mocked(db.getTenant).mockReturnValue({ id: 'default', display_name: 'Fleet', created_at: 0, disabled_at: null })
+    vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent).mockReturnValue(['hetzner'])
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'default', agent_id: 'agent-a', enabled: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.setTenantAgentAvailability)).toHaveBeenCalledWith('default', 'agent-a', true)
+  })
+
+  it('does not gate when disabling an agent, even if it carries high-risk MCP servers', async () => {
+    vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent).mockReturnValue(['github'])
+    vi.mocked(db.setTenantAgentAvailability).mockReturnValue({ tenant_id: 'acme-corp', agent_id: 'agent-b', enabled: 0, updated_at: 1787000000 })
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'agent-b', enabled: false })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.setTenantAgentAvailability)).toHaveBeenCalledWith('acme-corp', 'agent-b', false)
+  })
+
+  it('returns 404 for an unknown agent before evaluating MCP risk', async () => {
+    vi.mocked(agentConfig.isKnownAgent).mockReturnValue(false)
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'ghost', enabled: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(404)
+    expect(vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent)).not.toHaveBeenCalled()
+  })
+})
