@@ -68,13 +68,21 @@ alapértelmezet, amikor egy új felhasználó regisztrál.
 | Kanban írása/törlése | X | X | | |
 | Ágensek listázása | X | X | X | X |
 | Üzenet küldése ágensnek | X | X | | |
-| Jóváhagyások olvasása | X | X | | |
-| Jóváhagyások írása | X | | | |
-| Blackboard olvasása | X | X | X | |
+| Jóváhagyások olvasása | X | X | X | X |
+| Jóváhagyások írása | X | | X | X |
+| Blackboard olvasása | X | X | X | X |
 | Blackboard írása | X | X | | |
+| Federáció olvasása | X | X | | |
+| Federáció írása | X | X | | |
 | Admin felület | X | | | |
 
 A jogosultsági modell részletes döntési háttere: [ADR-002](adr-002-rbac-permission-model.md).
+
+A fenti táblázat kézzel karbantartott -- a dashboard Felhasználók fülének
+"Szerepkör-jogosultság mátrix" nézete a tényleges forrásból (`src/web/rbac.ts`)
+tükrözött adaton fut, és egy teszt (`rbac-permission-matrix-data.test.ts`)
+elkapja, ha a frontend-mirror eltér a kódtól. Eltérés esetén ez a táblázat a
+kódot (`src/web/rbac.ts` `ROLE_PERMISSIONS`) kövesse, nem fordítva.
 
 ---
 

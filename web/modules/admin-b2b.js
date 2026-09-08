@@ -1,6 +1,8 @@
 // B2B Admin UI: Tenantok / Felhasználók / Eszközkulcsok
 // Global admin only (role=admin, tenant_id=null).
 
+import { PERMISSION_MATRIX_ROLES, PERMISSION_MATRIX_CATEGORIES, permissionI18nKeyPart } from './rbac-permission-matrix-data.js'
+
 const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 const $ = (id) => document.getElementById(id)
 const t = (k, fb) => (typeof window.t === 'function' ? window.t(k) : null) ?? fb
@@ -58,8 +60,39 @@ function switchTab(tab) {
     if (panel) panel.hidden = p !== tab
   })
   if (tab === 'tenants') loadTenants()
-  if (tab === 'users') loadUsers()
+  if (tab === 'users') { loadUsers(); renderPermissionMatrix() }
   if (tab === 'deviceKeys') loadDeviceKeys()
+}
+
+// ── Permission matrix (read-only, static mirror of rbac.ts) ────────────────
+
+function renderPermissionMatrix() {
+  const el = $('permissionMatrix')
+  if (!el) return
+  const roleHeaderCells = PERMISSION_MATRIX_ROLES
+    .map(role => `<th class="admin-b2b-perm-cell">${esc(t(`admin.b2b.permission_matrix.role.${role}`, role))}</th>`)
+    .join('')
+  const bodyRows = PERMISSION_MATRIX_CATEGORIES.map(category => {
+    const categoryLabel = esc(t(`admin.b2b.permission_matrix.cat.${category.key}`, category.key))
+    const categoryRow = `<tr class="admin-b2b-perm-category"><td colspan="${1 + PERMISSION_MATRIX_ROLES.length}">${categoryLabel}</td></tr>`
+    const permRows = category.permissions.map(perm => {
+      const keyPart = permissionI18nKeyPart(perm.key)
+      const label = esc(t(`admin.b2b.perm.${keyPart}.label`, perm.key))
+      const desc = esc(t(`admin.b2b.perm.${keyPart}.desc`, ''))
+      const cells = PERMISSION_MATRIX_ROLES.map(role => {
+        const allowed = !!perm.roles[role]
+        return `<td class="admin-b2b-perm-cell ${allowed ? 'admin-b2b-perm-yes' : 'admin-b2b-perm-no'}">${allowed ? '✓' : '–'}</td>`
+      }).join('')
+      return `<tr><td><span class="admin-b2b-perm-label">${label}</span>${desc ? `<span class="admin-b2b-perm-desc">${desc}</span>` : ''}</td>${cells}</tr>`
+    }).join('')
+    return categoryRow + permRows
+  }).join('')
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>${esc(t('admin.b2b.permission_matrix.title', 'Permission'))}</th>${roleHeaderCells}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  `
 }
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
@@ -548,6 +581,6 @@ export async function loadAdminB2b() {
   if (!isGlobalAdmin(auth)) return
   // Ensure tenants are loaded first (device keys and user filter need them).
   await loadTenants()
-  if (_activeTab === 'users') await loadUsers()
+  if (_activeTab === 'users') { await loadUsers(); renderPermissionMatrix() }
   if (_activeTab === 'deviceKeys') await loadDeviceKeys()
 }
