@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import XLSX from 'xlsx'
+import ExcelJS from 'exceljs'
 import { extractBinaryContent } from '../web/import-binary-worker.js'
 import { MAX_EXTRACTED_BYTES } from '../web/import-config.js'
 
@@ -24,17 +24,18 @@ beforeEach(() => { mkdirSync(TMP_DIR, { recursive: true }) })
 afterEach(() => { rmSync(TMP_DIR, { recursive: true, force: true }) })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function makeXlsxBuffer(cells: unknown[][]): Buffer {
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cells), 'Sheet1')
-  return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }))
+async function makeXlsxBuffer(cells: unknown[][]): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('Sheet1')
+  for (const row of cells) ws.addRow(row)
+  return Buffer.from(await wb.xlsx.writeBuffer())
 }
 
 // ── xlsx / xls extraction ─────────────────────────────────────────────────────
 describe('extractBinaryContent -- xlsx', () => {
   it('returns cell text from a valid xlsx', async () => {
     const p = join(TMP_DIR, 'report.xlsx')
-    writeFileSync(p, makeXlsxBuffer([['revenue', '12345'], ['cost', '6789']]))
+    writeFileSync(p, await makeXlsxBuffer([['revenue', '12345'], ['cost', '6789']]))
 
     const result = await extractBinaryContent(p, 'xlsx')
 
@@ -43,11 +44,11 @@ describe('extractBinaryContent -- xlsx', () => {
   })
 
   it('concatenates all sheets', async () => {
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['alpha']]), 'First')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['beta']]), 'Second')
+    const wb = new ExcelJS.Workbook()
+    wb.addWorksheet('First').addRow(['alpha'])
+    wb.addWorksheet('Second').addRow(['beta'])
     const p = join(TMP_DIR, 'multi.xlsx')
-    writeFileSync(p, Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })))
+    writeFileSync(p, Buffer.from(await wb.xlsx.writeBuffer()))
 
     const result = await extractBinaryContent(p, 'xlsx')
 
@@ -55,7 +56,16 @@ describe('extractBinaryContent -- xlsx', () => {
     expect(result).toContain('beta')
   })
 
-  it('throws for binary garbage bytes (non-printable ratio > 10%)', async () => {
+  it('quotes fields that contain a comma', async () => {
+    const p = join(TMP_DIR, 'commas.xlsx')
+    writeFileSync(p, await makeXlsxBuffer([['Acme, Inc.', 'ok']]))
+
+    const result = await extractBinaryContent(p, 'xlsx')
+
+    expect(result).toContain('"Acme, Inc."')
+  })
+
+  it('throws corrupt_workbook for a file that is not a valid xlsx zip', async () => {
     const p = join(TMP_DIR, 'garbage.xlsx')
     const buf = Buffer.from([
       0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
@@ -63,19 +73,20 @@ describe('extractBinaryContent -- xlsx', () => {
     ])
     writeFileSync(p, buf)
 
-    await expect(extractBinaryContent(p, 'xlsx')).rejects.toThrow('garbage_content')
+    await expect(extractBinaryContent(p, 'xlsx')).rejects.toThrow('corrupt_workbook')
   })
 
-  it('throws for a 0-byte xlsx (empty workbook = 0 sheets)', async () => {
+  // The `garbage_content` non-printable-ratio guard is now effectively a
+  // defensive backstop: ExcelJS's XML serializer strips/escapes control
+  // characters on write, and rejects non-zip input before that check ever
+  // runs (covered by the corrupt_workbook test above). Kept in place and
+  // verified by code review, same as the ZIP-bomb guard below.
+
+  it('throws for a 0-byte xlsx (not a valid zip container)', async () => {
     const p = join(TMP_DIR, 'zero.xlsx')
     writeFileSync(p, Buffer.alloc(0))
 
-    // SheetJS returns a workbook with 1 empty sheet for an empty buffer --
-    // if SheetNames.length === 1 but csv is empty, that is still valid (blank sheet).
-    // The guard only fires on 0 sheets, so 0-byte may not throw -- just return ''.
-    // Either outcome (throws or returns empty string) is acceptable; no crash is the key claim.
-    const result = await extractBinaryContent(p, 'xlsx').catch(() => null)
-    expect(typeof result === 'string' || result === null).toBe(true)
+    await expect(extractBinaryContent(p, 'xlsx')).rejects.toThrow()
   })
 })
 
