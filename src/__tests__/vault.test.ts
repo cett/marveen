@@ -27,7 +27,7 @@ vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'marveen',
 }))
 
-import { setSecret, getSecret, deleteSecret, listSecrets, getSecretsForEnv, findSecretTenant } from '../web/vault.js'
+import { setSecret, getSecret, deleteSecret, listSecrets, getSecretsForEnv, findSecretTenant, purgeSecretsForTenant } from '../web/vault.js'
 
 const VAULT_JSON = join(STORE_DIR, 'vault.json')
 const VAULT_KEY = join(STORE_DIR, '.vault-key')
@@ -175,6 +175,30 @@ describe('tenant isolation (compound key)', () => {
     setSecret('owned', 'O', 'v', 'eszter')
     expect(findSecretTenant('owned')).toBe('eszter')
     expect(findSecretTenant('missing-entirely')).toBeNull()
+  })
+})
+
+// #789/#788: deleteTenant() must not leave orphaned secrets behind. Proving
+// isolation (not just "count went to zero") matters because a bug that
+// purges everything would also show zero for the target tenant.
+describe('purgeSecretsForTenant', () => {
+  it('removes only the target tenant\'s entries and leaves other tenants intact', () => {
+    setSecret('key1', 'K1', 'v1', 'tenant-a')
+    setSecret('key2', 'K2', 'v2', 'tenant-b')
+
+    const removed = purgeSecretsForTenant('tenant-a')
+
+    expect(removed).toBe(1)
+    const ids = listSecrets().map(s => s.id)
+    expect(ids).not.toContain('key1')
+    expect(ids).toContain('key2')
+    expect(getSecret('key2', 'tenant-b')).toBe('v2')
+  })
+
+  it('returns 0 and writes nothing when the tenant owns no entries', () => {
+    setSecret('untouched', 'U', 'v', 'tenant-b')
+    expect(purgeSecretsForTenant('tenant-with-no-secrets')).toBe(0)
+    expect(getSecret('untouched', 'tenant-b')).toBe('v')
   })
 })
 

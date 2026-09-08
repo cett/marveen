@@ -127,18 +127,19 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
 
   it('returns 200 with ok and cascade summary for a valid tenant', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 7 })
+    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 7, secretsDeleted: 2 })
     const { ctx, out } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
     expect(out.body.ok).toBe(true)
     expect(out.body.tenant_id).toBe('acme-corp')
     expect(out.body.memories_deleted).toBe(7)
+    expect(out.body.secrets_deleted).toBe(2)
   })
 
   it('calls deleteTenant with the correct tenantId', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0 })
+    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0, secretsDeleted: 0 })
     const { ctx } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
     expect(vi.mocked(db.deleteTenant)).toHaveBeenCalledOnce()
@@ -256,6 +257,19 @@ function buildDb(): Database.Database {
       granted_at INTEGER NOT NULL DEFAULT (unixepoch()),
       PRIMARY KEY (skill_id, tenant_id)
     );
+    CREATE TABLE IF NOT EXISTS vault_ssh_keys (
+      id TEXT PRIMARY KEY, label TEXT NOT NULL, username TEXT NOT NULL,
+      vault_key_id TEXT NOT NULL, public_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+      key_type TEXT NOT NULL DEFAULT 'ed25519', created_at INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT 'default'
+    );
+    CREATE TABLE IF NOT EXISTS vault_ssh_servers (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
+      port INTEGER NOT NULL DEFAULT 22, username TEXT NOT NULL,
+      ssh_key_id TEXT REFERENCES vault_ssh_keys(id), description TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT 'default'
+    );
     CREATE TABLE IF NOT EXISTS workspace_docs (
       id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL,
       tenant_id TEXT NOT NULL DEFAULT 'default', doc_key TEXT, title TEXT NOT NULL,
@@ -331,6 +345,10 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
       INSERT INTO skill_tenant_access (skill_id, tenant_id) VALUES ('sk-y1', 'co-y');
       INSERT INTO workspace_docs (id, agent_id, tenant_id, title, content_type, type)
         VALUES ('wdoc-y1', 'agent-a', 'co-y', 'Plan', 'text', 'plan');
+      INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, created_at, tenant_id)
+        VALUES ('key-y1', 'Key Y1', 'deploy', 'vk-y1', 'ssh-ed25519 AAA', 'fp-y1', 1, 'co-y');
+      INSERT INTO vault_ssh_servers (id, name, host, username, ssh_key_id, created_at, updated_at, tenant_id)
+        VALUES ('srv-y1', 'Server Y1', 'host-y1.example', 'deploy', 'key-y1', 1, 1, 'co-y');
     `)
 
     // Run the same cascade as deleteTenant()
@@ -365,6 +383,8 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     d.prepare('DELETE FROM skills WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM workspace_docs WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id=?').run('co-y')
+    d.prepare('DELETE FROM vault_ssh_servers WHERE tenant_id=?').run('co-y')
+    d.prepare('DELETE FROM vault_ssh_keys WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenants WHERE id=?').run('co-y')
 
     // Verify everything gone
@@ -384,6 +404,8 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     expect(d.prepare("SELECT skill_id FROM skill_tenant_access WHERE skill_id='sk-y1'").get()).toBeUndefined()
     expect(d.prepare('SELECT id FROM workspace_docs WHERE tenant_id=?').get('co-y')).toBeUndefined()
     expect(d.prepare('SELECT tenant_id FROM tenant_agent_availability WHERE tenant_id=?').get('co-y')).toBeUndefined()
+    expect(d.prepare('SELECT id FROM vault_ssh_servers WHERE tenant_id=?').get('co-y')).toBeUndefined()
+    expect(d.prepare('SELECT id FROM vault_ssh_keys WHERE tenant_id=?').get('co-y')).toBeUndefined()
     // Default tenant untouched
     expect(d.prepare("SELECT id FROM tenants WHERE id='default'").get()).toBeDefined()
     // Fleet schedules (NULL tenant_id) must survive
@@ -457,6 +479,48 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     expect(d.prepare("SELECT id FROM schedules WHERE id='tenant-sched'").get()).toBeUndefined()
     expect(d.prepare("SELECT id FROM schedules WHERE id='fleet-sched'").get()).toBeDefined()
   })
+
+  // #791/#792: proves cross-tenant isolation, not just "count went to zero"
+  // (a naive DELETE with no WHERE would also pass a too-weak zero-count check
+  // if only the deleted tenant's rows were ever inserted).
+  it('deletes vault_ssh_keys/vault_ssh_servers for the target tenant but leaves another tenant\'s rows intact', () => {
+    const d = buildDb()
+    d.exec(`
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-r', 'Co R', 1);
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-s', 'Co S', 1);
+      INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, created_at, tenant_id)
+        VALUES ('key-r1', 'Key R1', 'deploy', 'vk-r1', 'ssh-ed25519 AAA', 'fp-r1', 1, 'co-r');
+      INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, created_at, tenant_id)
+        VALUES ('key-s1', 'Key S1', 'deploy', 'vk-s1', 'ssh-ed25519 BBB', 'fp-s1', 1, 'co-s');
+      INSERT INTO vault_ssh_servers (id, name, host, username, ssh_key_id, created_at, updated_at, tenant_id)
+        VALUES ('srv-r1', 'Server R1', 'host-r1.example', 'deploy', 'key-r1', 1, 1, 'co-r');
+      INSERT INTO vault_ssh_servers (id, name, host, username, ssh_key_id, created_at, updated_at, tenant_id)
+        VALUES ('srv-s1', 'Server S1', 'host-s1.example', 'deploy', 'key-s1', 1, 1, 'co-s');
+    `)
+
+    // Data present before delete, for both tenants
+    expect((d.prepare('SELECT COUNT(*) c FROM vault_ssh_keys WHERE tenant_id=?').get('co-r') as { c: number }).c).toBe(1)
+    expect((d.prepare('SELECT COUNT(*) c FROM vault_ssh_servers WHERE tenant_id=?').get('co-r') as { c: number }).c).toBe(1)
+
+    // Replicate the cascade from deleteTenant() for co-r
+    d.prepare('DELETE FROM vault_ssh_servers WHERE tenant_id=?').run('co-r')
+    d.prepare('DELETE FROM vault_ssh_keys WHERE tenant_id=?').run('co-r')
+
+    // co-r's rows are gone
+    expect((d.prepare('SELECT COUNT(*) c FROM vault_ssh_keys WHERE tenant_id=?').get('co-r') as { c: number }).c).toBe(0)
+    expect((d.prepare('SELECT COUNT(*) c FROM vault_ssh_servers WHERE tenant_id=?').get('co-r') as { c: number }).c).toBe(0)
+    // co-s's rows survive untouched
+    expect((d.prepare('SELECT COUNT(*) c FROM vault_ssh_keys WHERE tenant_id=?').get('co-s') as { c: number }).c).toBe(1)
+    expect((d.prepare('SELECT COUNT(*) c FROM vault_ssh_servers WHERE tenant_id=?').get('co-s') as { c: number }).c).toBe(1)
+    expect(d.prepare("SELECT id FROM vault_ssh_keys WHERE id='key-s1'").get()).toBeDefined()
+    expect(d.prepare("SELECT id FROM vault_ssh_servers WHERE id='srv-s1'").get()).toBeDefined()
+  })
+
+  // #790: the vault.json purge (purgeSecretsForTenant, src/web/vault.ts) is
+  // unit-tested against the real function in vault.test.ts, not replicated
+  // here -- vault.json is a separate flat-file store with no module-level
+  // singleton problem, so there's no reason to hand-copy its filter logic
+  // (that would just be a weaker, drift-prone guess at the real behavior).
 
   it('rolls back all changes atomically when an error occurs mid-cascade', () => {
     const d = buildDb()
