@@ -1,6 +1,9 @@
 // Agents page: grid / org-chart view toggle (split out of agents.js for
 // #773/#776). Page-level view-toggle, not a modal tab.
 
+import { t } from './i18n.js'
+import { showToast } from './toast.js'
+import { escapeHtml } from './util.js'
 import { agents, avatarBust, setAgentsActiveView } from './agents.js'
 import { openAgentDetail } from './agents-detail.js'
 

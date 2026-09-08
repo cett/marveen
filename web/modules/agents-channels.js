@@ -4,6 +4,7 @@
 
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { escapeHtml } from './util.js'
 import { getErrorMessage } from './error-message.js'
 import { _showSudoModal, agents, currentAgent, loadAgents } from './agents.js'
 import {
