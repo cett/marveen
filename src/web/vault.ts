@@ -235,6 +235,18 @@ export function deleteSecret(id: string, tenantId: string = DEFAULT_TENANT): boo
   return true
 }
 
+// Deletes every vault entry belonging to a tenant -- called from
+// deleteTenant() so a removed tenant's encrypted API keys / SSH private
+// keys never survive as orphans in the flat JSON store (#789/#788).
+export function purgeSecretsForTenant(tenantId: string): number {
+  const store = readVault()
+  const before = store.entries.length
+  store.entries = store.entries.filter(e => e.tenant_id !== tenantId)
+  const removed = before - store.entries.length
+  if (removed > 0) writeVault(store)
+  return removed
+}
+
 // Looks up which tenant actually owns an entry, regardless of the caller's
 // own tenant -- used by routes for the cross-tenant ownership check (404 for
 // a non-admin whose tenant doesn't match) and to let an admin fetch/delete an
