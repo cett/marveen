@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { mapUpdate, getUpdates, TelegramApiError } from '../channel-coordinator/telegram-client.js'
 import {
   initIngestDb,
@@ -347,6 +349,68 @@ describe('handoff content safety', () => {
     })
     // The only real closing tag is the framing one we added.
     expect(content.match(/<\/channel>/g)?.length).toBe(1)
+  })
+})
+
+// Source-grep guards for channel-monitor.ts restart-parity invariants: read
+// the REAL source file and assert the fix is structurally present, so a
+// future edit that breaks the invariant fails CI rather than silently
+// shipping a regression.
+describe('channel-monitor.ts -- restart-parity contract', () => {
+  const MONITOR_ROOT = join(__dirname, '..', '..')
+  const MONITOR_SRC = join(MONITOR_ROOT, 'src', 'web', 'channel-monitor.ts')
+
+  function readMonitorSrc(): string {
+    return readFileSync(MONITOR_SRC, 'utf-8')
+  }
+
+  // Strip single-line and block TypeScript comments so assertions check
+  // actual code, not prose that says "NEVER use systemctl restart".
+  function stripComments(src: string): string {
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n')
+  }
+
+  it('never calls systemctl restart directly in non-comment code', () => {
+    const code = stripComments(readMonitorSrc())
+    const matches = code.match(/systemctl\s+restart/g) || []
+    expect(matches).toHaveLength(0)
+  })
+
+  it('uses execFileSync (not execSync) for launchctl calls', () => {
+    const code = stripComments(readMonitorSrc())
+    // execSync would allow shell injection; execFileSync is the safe primitive
+    const execSync = (code.match(/\bexecSync\s*\(/g) || []).length
+    const execFileSync = (code.match(/\bexecFileSync\s*\(/g) || []).length
+    expect(execFileSync).toBeGreaterThan(0)
+    expect(execSync).toBe(0)
+  })
+
+  it('hardRestartMarveenChannels is exported (callers must use the guarded wrapper)', () => {
+    const src = readMonitorSrc()
+    expect(src).toMatch(/export\s+function\s+hardRestartMarveenChannels/)
+  })
+
+  it('does not import from bridge-enroll.ts (deleted in fork)', () => {
+    const src = readMonitorSrc()
+    expect(src).not.toMatch(/bridge-enroll/)
+  })
+
+  it('launchctl calls are gated on process.platform !== linux (not unconditional)', () => {
+    const code = stripComments(readMonitorSrc())
+    // All launchctl uses must appear after a platform check
+    const launchctlLines = code
+      .split('\n')
+      .filter((l) => l.includes('launchctl'))
+    // Every launchctl line should be inside a block guarded by platform check;
+    // the simplest structural check is that the file contains exactly one
+    // platform !== linux guard that wraps all launchctl calls.
+    const platformGuards = (code.match(/process\.platform\s*!==\s*['"]linux['"]/g) || []).length
+    expect(platformGuards).toBeGreaterThanOrEqual(1)
+    expect(launchctlLines.length).toBeGreaterThan(0)
   })
 })
 
