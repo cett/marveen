@@ -2,11 +2,16 @@ import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 
 let _openModal = null, _closeModal = null
+// null for non-admin (tenant selector hidden); set to a getter for global admins.
+let _vaultTenantGetter = null
 export function initConnectors({ openModal, closeModal } = {}) {
   _openModal = openModal; _closeModal = closeModal
+  initTenantSelector('vaultTenantSelectorContainer', () => loadVaultPage())
+    .then(getter => { _vaultTenantGetter = getter })
 }
 
 // ============================================================
@@ -800,7 +805,7 @@ async function loadSshServers() {
 
 async function loadSshKeys() {
   try {
-    const res = await fetch('/api/vault/ssh-keys')
+    const res = await fetch('/api/vault/ssh-keys' + vaultTenantQuery())
     if (!res.ok) return
     const data = await res.json()
     _sshKeys = data.keys || []
@@ -1072,10 +1077,11 @@ function openSshKeygenModal(callback) {
     document.getElementById('sshKeygenFooter').hidden = true
 
     try {
+      const tenant_id = _vaultTenantGetter?.() || undefined
       const res = await fetch('/api/vault/ssh-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, username }),
+        body: JSON.stringify({ label, username, tenant_id }),
       })
       const data = await res.json()
       if (!res.ok) { showToast(getErrorMessage(data, 'Generálás sikertelen')); resetKeygenForm(); return }
@@ -1362,10 +1368,15 @@ let _vaultSecrets = []
 
 let _vaultBindings = []
 
+function vaultTenantQuery() {
+  const tenant = _vaultTenantGetter?.()
+  return tenant ? `?tenant=${encodeURIComponent(tenant)}` : ''
+}
+
 export async function loadVaultPage() {
   try {
     const [secretsRes, bindingsRes] = await Promise.all([
-      fetch('/api/vault'),
+      fetch('/api/vault' + vaultTenantQuery()),
       fetch('/api/vault/bindings'),
     ])
     const secretsData = await secretsRes.json()
@@ -1391,7 +1402,12 @@ function renderVaultGrid(secrets) {
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
     const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
     const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
-    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn vault-card-reveal" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn vault-card-edit" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn vault-card-delete" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
+    // Tenant badge only makes sense for a global admin, who can see secrets
+    // across tenants; a scoped user only ever sees their own tenant's rows.
+    const tenantBadge = _vaultTenantGetter && s.tenant_id
+      ? `<span class="badge" data-variant="neutral" data-size="sm">${escapeHtml(s.tenant_id)}</span>`
+      : ''
+    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge} ${tenantBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn vault-card-reveal" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn vault-card-edit" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn vault-card-delete" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
     list.appendChild(card)
   }
   list.querySelectorAll('.vault-card-reveal').forEach(btn => {
@@ -1436,10 +1452,14 @@ function renderVaultGrid(secrets) {
         const saveBtn = form.querySelector('.vault-edit-save')
         saveBtn.disabled = true
         saveBtn.textContent = '...'
+        // Target the entry's OWN tenant, not whatever the selector currently
+        // shows -- an admin viewing "All tenants" must not accidentally
+        // re-home an edited secret onto 'default'.
+        const tenant_id = _vaultSecrets.find(s => s.id === id)?.tenant_id || undefined
         const res = await fetch('/api/vault', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, label, value: newVal }),
+          body: JSON.stringify({ id, label, value: newVal, tenant_id }),
         })
         if (!res.ok) {
           const e = await res.json().catch(() => ({}))
@@ -1490,10 +1510,14 @@ function renderVaultGrid(secrets) {
     const value = document.getElementById('vaultPageValueInput').value
     if (!id || !value) return
     addBtn.disabled = true
+    // Admin: inherit whatever tenant the selector is scoped to (undefined =
+    // let the backend default to 'default'). Non-admin never sends this --
+    // the backend ignores it for them anyway and always uses their own tenant.
+    const tenant_id = _vaultTenantGetter?.() || undefined
     await fetch('/api/vault', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, label, value }),
+      body: JSON.stringify({ id, label, value, tenant_id }),
     })
     document.getElementById('vaultPageIdInput').value = ''
     document.getElementById('vaultPageLabelInput').value = ''

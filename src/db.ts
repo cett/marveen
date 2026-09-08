@@ -3666,22 +3666,25 @@ export interface VaultSshKey {
   fingerprint: string
   key_type: string
   created_at: number
+  tenant_id: string
 }
 
-export function listVaultSshKeys(): VaultSshKey[] {
-  return db.prepare('SELECT * FROM vault_ssh_keys ORDER BY label ASC').all() as VaultSshKey[]
+/** tenantId null -- admin global view (no filter, every tenant's keys). */
+export function listVaultSshKeys(tenantId: string | null = null): VaultSshKey[] {
+  if (tenantId === null) return db.prepare('SELECT * FROM vault_ssh_keys ORDER BY label ASC').all() as VaultSshKey[]
+  return db.prepare('SELECT * FROM vault_ssh_keys WHERE tenant_id = ? ORDER BY label ASC').all(tenantId) as VaultSshKey[]
 }
 
 export function getVaultSshKey(id: string): VaultSshKey | undefined {
   return db.prepare('SELECT * FROM vault_ssh_keys WHERE id = ?').get(id) as VaultSshKey | undefined
 }
 
-export function createVaultSshKey(key: Pick<VaultSshKey, 'id' | 'label' | 'username' | 'vault_key_id' | 'public_key' | 'fingerprint' | 'key_type'>): VaultSshKey {
+export function createVaultSshKey(key: Pick<VaultSshKey, 'id' | 'label' | 'username' | 'vault_key_id' | 'public_key' | 'fingerprint' | 'key_type' | 'tenant_id'>): VaultSshKey {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(key.id, key.label, key.username, key.vault_key_id, key.public_key, key.fingerprint, key.key_type, now)
+    `INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(key.id, key.label, key.username, key.vault_key_id, key.public_key, key.fingerprint, key.key_type, now, key.tenant_id)
   return { ...key, created_at: now }
 }
 

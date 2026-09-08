@@ -183,8 +183,12 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       const vaultKeyId = `ssh-key-${keyId}`
       setSecret(vaultKeyId, `SSH private key: ${label}`, privateKey)
 
+      // vault_ssh_servers (this route's resource) has no tenant concept of its
+      // own and is out of scope for the vault tenant-isolation fix (scoped to
+      // the generic secret store + the SSH key pool) -- this legacy
+      // convenience endpoint stays fleet-default, same as before.
       const { createVaultSshKey } = await import('../../db.js')
-      createVaultSshKey({ id: keyId, label, username: keyUser, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: 'ed25519' })
+      createVaultSshKey({ id: keyId, label, username: keyUser, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: 'ed25519', tenant_id: 'default' })
 
       updateVaultSshServer(id, { ssh_key_id: keyId })
       const updated = getVaultSshServer(id)!
