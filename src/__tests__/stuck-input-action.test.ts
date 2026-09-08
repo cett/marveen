@@ -1,47 +1,22 @@
 import { describe, it, expect } from 'vitest'
 import {
   decideStuckInputAction,
-  submitLanded,
-  parkedInputRowCount,
-  stuckInputSignature,
   decideStuckInputRecovery,
   type StuckInputActionFacts,
   type StuckInputState,
   type StuckInputThresholds,
 } from '../pane-state.js'
 
-// Delivery-reliability deep-fix (BA56A500): the I/O submit-escalation + post-
-// submit verification path. These cover the pure decision (decideStuckInputAction)
-// and the two submit predicates (parkedInputRowCount, submitLanded). The pre-
-// existing recovery-stack tests (decideStuckInputRecovery et al.) are untouched.
-
-// Realistic `tmux capture-pane -p` fixtures (same box-drawing bytes as
-// pane-state.test.ts: U+2500 ─, U+276F ❯).
-const SEP = '─'.repeat(80)
-const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
-
-// A single-row parked <channel> block (complete: header + chat_id + close tag).
-const PARKED_CHANNEL_SINGLEROW = [
-  '',
-  SEP,
-  '❯ <channel source="plugin:telegram" chat_id="123">rovid uzenet</channel>',
-  SEP,
-  FOOTER,
-].join('\n')
-
-// The same block wrapped across 3 visual rows of the live input box.
-const PARKED_CHANNEL_MULTIROW = [
-  '',
-  SEP,
-  '❯ <channel source="plugin:telegram" chat_id="123">Szia, ez egy jó',
-  '  hosszú üzenet ami több sorba tördelődött a terminál szélén és',
-  '  több vizuális sort foglal el a beviteli dobozban</channel>',
-  SEP,
-  FOOTER,
-].join('\n')
-
-// An idle pane: empty input box, nothing parked.
-const IDLE = ['', SEP, '❯ ', SEP, FOOTER].join('\n')
+// Delivery-reliability deep-fix (BA56A500): the I/O submit-escalation
+// decision (decideStuckInputAction). The pre-existing recovery-stack tests
+// (decideStuckInputRecovery et al.) are untouched. Coverage for the submit
+// predicates (parkedInputRowCount, submitLanded) themselves lives in
+// pane-state.test.ts, which already exercises every case these fixtures
+// covered (single-row, wrapped multi-row, idle/no-box, landed/not-landed/
+// null-capture) via its own generic parked-input fixtures -- the row/signature
+// logic under test is content-agnostic (structural box parsing), so the
+// <channel>-tag-specific fixtures here added no distinct edge case (moved
+// out as part of #786 dedup, not merged elsewhere).
 
 function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
   return {
@@ -178,38 +153,6 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
       facts({ rowCount: 3, scheduledTaskBlock: true, allowPlainReinject: true, hasPlainText: true, machineOrigin: true }),
     )
     expect(a).toBe('clear-scheduled')
-  })
-})
-
-describe('submitLanded (post-submit verification)', () => {
-  it('verified-landed -> stop: the parked signature cleared after submit', () => {
-    const prev = stuckInputSignature(PARKED_CHANNEL_SINGLEROW)
-    expect(prev).not.toBeNull()
-    expect(submitLanded(prev!, IDLE)).toBe(true)
-  })
-
-  it('not-landed -> escalate: the same text is still parked after the attempt', () => {
-    const prev = stuckInputSignature(PARKED_CHANNEL_SINGLEROW)
-    expect(submitLanded(prev!, PARKED_CHANNEL_SINGLEROW)).toBe(false)
-  })
-
-  it('null capture after submit -> not landed (cannot confirm -> escalate)', () => {
-    const prev = stuckInputSignature(PARKED_CHANNEL_SINGLEROW)
-    expect(submitLanded(prev!, null)).toBe(false)
-  })
-})
-
-describe('parkedInputRowCount', () => {
-  it('single-row parked input -> 1', () => {
-    expect(parkedInputRowCount(PARKED_CHANNEL_SINGLEROW)).toBe(1)
-  })
-
-  it('wrapped multi-row parked input -> >1', () => {
-    expect(parkedInputRowCount(PARKED_CHANNEL_MULTIROW)).toBe(3)
-  })
-
-  it('idle / empty box -> 0', () => {
-    expect(parkedInputRowCount(IDLE)).toBe(0)
   })
 })
 
