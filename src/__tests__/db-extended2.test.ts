@@ -508,6 +508,7 @@ describe('vault SSH functions', () => {
       public_key: 'ssh-rsa AAAAB3N...',
       fingerprint: 'SHA256:abc',
       key_type: 'ed25519',
+      tenant_id: 'default',
     })
     expect(key.id).toBe('db2-key-1')
     const retrieved = getVaultSshKey('db2-key-1')
@@ -517,6 +518,23 @@ describe('vault SSH functions', () => {
   it('listVaultSshKeys returns created key', () => {
     const keys = listVaultSshKeys()
     expect(keys.some(k => k.id === 'db2-key-1')).toBe(true)
+  })
+
+  it('listVaultSshKeys(tenantId) filters to that tenant only', () => {
+    createVaultSshKey({
+      id: 'db2-key-tenant',
+      label: 'Tenant Key',
+      username: 'deploy',
+      vault_key_id: 'vault-key-tenant',
+      public_key: 'ssh-ed25519 AAAAC3...',
+      fingerprint: 'SHA256:def',
+      key_type: 'ed25519',
+      tenant_id: 'eszter',
+    })
+    expect(listVaultSshKeys('eszter').every(k => k.id === 'db2-key-tenant')).toBe(true)
+    expect(listVaultSshKeys('default').some(k => k.id === 'db2-key-tenant')).toBe(false)
+    expect(listVaultSshKeys(null).some(k => k.id === 'db2-key-tenant')).toBe(true)
+    deleteVaultSshKey('db2-key-tenant')
   })
 
   it('deleteVaultSshKey removes key and unassigns servers', () => {

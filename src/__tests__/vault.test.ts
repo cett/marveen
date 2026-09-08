@@ -27,7 +27,7 @@ vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'marveen',
 }))
 
-import { setSecret, getSecret, deleteSecret, listSecrets, getSecretsForEnv } from '../web/vault.js'
+import { setSecret, getSecret, deleteSecret, listSecrets, getSecretsForEnv, findSecretTenant } from '../web/vault.js'
 
 const VAULT_JSON = join(STORE_DIR, 'vault.json')
 const VAULT_KEY = join(STORE_DIR, '.vault-key')
@@ -121,5 +121,77 @@ describe('getSecretsForEnv', () => {
     expect(env.A).toBe('v1')
     expect(env.B).toBe('v2')
     expect(env.C).toBeUndefined()
+  })
+})
+
+// Compound (tenant_id, id) key: without this, a tenant-scoped caller could
+// shadow or clobber another tenant's (or the fleet-default) secret sharing
+// the same id.
+describe('tenant isolation (compound key)', () => {
+  it('defaults every call to the "default" tenant', () => {
+    setSecret('shared-id', 'Shared', 'default-value')
+    expect(getSecret('shared-id')).toBe('default-value')
+    expect(getSecret('shared-id', 'default')).toBe('default-value')
+  })
+
+  it('a write under a different tenant creates a separate entry, not a shadow', () => {
+    setSecret('github-GITHUB_TOKEN', 'Fleet token', 'fleet-value')
+    setSecret('github-GITHUB_TOKEN', 'Tenant token', 'eszter-value', 'eszter')
+
+    expect(getSecret('github-GITHUB_TOKEN')).toBe('fleet-value')
+    expect(getSecret('github-GITHUB_TOKEN', 'default')).toBe('fleet-value')
+    expect(getSecret('github-GITHUB_TOKEN', 'eszter')).toBe('eszter-value')
+
+    const rows = listSecrets().filter(s => s.id === 'github-GITHUB_TOKEN')
+    expect(rows).toHaveLength(2)
+    expect(rows.map(r => r.tenant_id).sort()).toEqual(['default', 'eszter'])
+  })
+
+  it('getSecret for a tenant that never wrote the id returns null, not another tenant\'s value', () => {
+    setSecret('only-in-default', 'X', 'v', 'default')
+    expect(getSecret('only-in-default', 'eszter')).toBeNull()
+  })
+
+  it('deleteSecret only removes the given tenant\'s copy', () => {
+    setSecret('dup-id', 'Dup', 'default-value')
+    setSecret('dup-id', 'Dup', 'eszter-value', 'eszter')
+
+    expect(deleteSecret('dup-id', 'eszter')).toBe(true)
+    expect(getSecret('dup-id', 'eszter')).toBeNull()
+    expect(getSecret('dup-id')).toBe('default-value')
+  })
+
+  it('overwrite (upsert) only replaces the matching tenant\'s entry', () => {
+    setSecret('over', 'O', 'default-v1')
+    setSecret('over', 'O', 'eszter-v1', 'eszter')
+    setSecret('over', 'O', 'eszter-v2', 'eszter')
+
+    expect(getSecret('over')).toBe('default-v1')
+    expect(getSecret('over', 'eszter')).toBe('eszter-v2')
+    expect(listSecrets().filter(s => s.id === 'over')).toHaveLength(2)
+  })
+
+  it('findSecretTenant reports the owning tenant, or null if the id does not exist anywhere', () => {
+    setSecret('owned', 'O', 'v', 'eszter')
+    expect(findSecretTenant('owned')).toBe('eszter')
+    expect(findSecretTenant('missing-entirely')).toBeNull()
+  })
+})
+
+describe('backfill: entries written before tenant_id existed', () => {
+  it('normalises a legacy vault.json entry (no tenant_id) to "default" on read', () => {
+    const { writeFileSync, mkdirSync } = require('node:fs') as typeof import('node:fs')
+    mkdirSync(STORE_DIR, { recursive: true })
+    // Simulate a pre-migration vault.json entry: encrypted value doesn't
+    // matter for this test, only that tenant_id is absent from the JSON.
+    setSecret('legacy-entry', 'Legacy', 'legacy-value')
+    const raw = JSON.parse(require('node:fs').readFileSync(VAULT_JSON, 'utf-8'))
+    delete raw.entries[0].tenant_id
+    writeFileSync(VAULT_JSON, JSON.stringify(raw, null, 2) + '\n')
+
+    const list = listSecrets()
+    expect(list).toHaveLength(1)
+    expect(list[0].tenant_id).toBe('default')
+    expect(getSecret('legacy-entry')).toBe('legacy-value')
   })
 })

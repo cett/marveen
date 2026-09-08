@@ -74,6 +74,7 @@ vi.mock('../web/vault.js', () => ({
   setSecret: vi.fn(),
   listSecrets: vi.fn().mockReturnValue([]),
   deleteSecret: vi.fn(),
+  findSecretTenant: vi.fn().mockReturnValue(null),
 }))
 
 vi.mock('../web/vault-bindings.js', () => ({
