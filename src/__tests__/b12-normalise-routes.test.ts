@@ -67,6 +67,32 @@ describe('B12 normalise -- audit-log', () => {
     expect((body() as any).error).toBe('invalid_value')
     expect((body() as any).field).toBe('from')
   })
+
+  it('accepts source=hook and passes it through to queryAuditLog (fleet-audit trail)', async () => {
+    const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
+    const db = await import('../db.js')
+    const settings = await import('../settings-store.js')
+    vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
+    const { ctx, status } = makeCtx({ method: 'GET', path: '/api/audit-log?source=agent,hook' })
+    await tryHandleAuditLog(ctx)
+    expect(status()).toBe(200)
+    expect(vi.mocked(db.queryAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ sources: ['agent', 'hook'] })
+    )
+  })
+
+  it('silently drops an unknown source value rather than erroring', async () => {
+    const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
+    const db = await import('../db.js')
+    const settings = await import('../settings-store.js')
+    vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
+    const { ctx, status } = makeCtx({ method: 'GET', path: '/api/audit-log?source=hook,bogus' })
+    await tryHandleAuditLog(ctx)
+    expect(status()).toBe(200)
+    expect(vi.mocked(db.queryAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ sources: ['hook'] })
+    )
+  })
 })
 
 describe('B12 normalise -- migrate', () => {

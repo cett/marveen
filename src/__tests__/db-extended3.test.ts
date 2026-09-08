@@ -19,6 +19,8 @@ import {
   pruneToolCallLog,
   logToolCall,
   queryAuditLog,
+  insertHookAuditLog,
+  writeAgentAuditLog,
   updateIdea,
   createIdea,
   logStoreFileEvent,
@@ -369,6 +371,46 @@ describe('queryAuditLog with diary source', () => {
   it('filters diary by query string', () => {
     const results = queryAuditLog({ sources: ['diary'], q: 'coverage', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
+  })
+})
+
+describe('queryAuditLog with hook source', () => {
+  beforeAll(() => {
+    insertHookAuditLog({ agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'deny', tool_name: 'Bash', reason: 'audit_test_reason' })
+  })
+
+  it('returns hook audit entries with the shared AuditLogEntry shape (ts aliased to created_at)', () => {
+    const results = queryAuditLog({ sources: ['hook'], limit: 50 })
+    const hookEntry = results.find(r => r.source === 'hook' && r.reason === 'audit_test_reason')
+    expect(hookEntry).toBeDefined()
+    expect(hookEntry?.agent_id).toBe('agent-a')
+    expect(hookEntry?.hook_type).toBe('PreToolUse')
+    expect(hookEntry?.verdict).toBe('deny')
+    expect(hookEntry?.tool_name).toBe('Bash')
+    expect(typeof hookEntry?.created_at).toBe('number')
+  })
+
+  it('filters hook entries by agent', () => {
+    const results = queryAuditLog({ sources: ['hook'], agent: 'agent-a', limit: 50 })
+    expect(results.every(r => r.source !== 'hook' || r.agent_id === 'agent-a')).toBe(true)
+  })
+
+  it('filters hook entries by query string', () => {
+    const results = queryAuditLog({ sources: ['hook'], q: 'audit_test_reason', limit: 50 })
+    expect(results.some(r => r.source === 'hook' && r.reason === 'audit_test_reason')).toBe(true)
+  })
+})
+
+describe('queryAuditLog with agent source: blackboard/approval entities', () => {
+  beforeAll(() => {
+    writeAgentAuditLog({ agent_id: 'agent-a', entity: 'blackboard', action: 'update', entity_id: 'bb-audit-test', detail: { status: 'active' } })
+    writeAgentAuditLog({ agent_id: 'agent-a', entity: 'approval', action: 'create', entity_id: 'appr-audit-test', detail: { category: 'file_write' } })
+  })
+
+  it('merges blackboard and approval agent-audit entries', () => {
+    const results = queryAuditLog({ sources: ['agent'], agent: 'agent-a', limit: 100 })
+    expect(results.some(r => r.entity === 'blackboard' && r.entity_id === 'bb-audit-test')).toBe(true)
+    expect(results.some(r => r.entity === 'approval' && r.entity_id === 'appr-audit-test')).toBe(true)
   })
 })
 

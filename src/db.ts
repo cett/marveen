@@ -3457,7 +3457,7 @@ export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
 
 // --- Unified Audit Log Query ---
 
-export type AuditSource = 'config' | 'idea' | 'store' | 'diary' | 'agent'
+export type AuditSource = 'config' | 'idea' | 'store' | 'diary' | 'agent' | 'hook'
 
 export interface AuditLogEntry {
   id: number
@@ -3489,6 +3489,13 @@ export interface AuditLogEntry {
   action?: string
   entity_id?: string
   detail?: string
+  // hook (hook_audit_log -- shares agent_id above for the acting agent)
+  hook_type?: string
+  verdict?: string
+  tool_name?: string | null
+  content_hash?: string | null
+  reason?: string | null
+  session_id?: string | null
 }
 
 export interface AgentAuditLogRow {
@@ -3503,7 +3510,7 @@ export interface AgentAuditLogRow {
 
 export function writeAgentAuditLog(opts: {
   agent_id: string
-  entity: 'memory' | 'kanban' | 'message' | 'agent'
+  entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval'
   action: 'create' | 'update' | 'delete'
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
@@ -3528,7 +3535,7 @@ export function queryAuditLog(opts: {
   limit: number
 }): AuditLogEntry[] {
   const { sources, from, to, q, agent, limit } = opts
-  const all: AuditSource[] = ['config', 'idea', 'store', 'diary', 'agent']
+  const all: AuditSource[] = ['config', 'idea', 'store', 'diary', 'agent', 'hook']
   const active = sources.length > 0 ? sources : all
 
   const parts: AuditLogEntry[] = []
@@ -3604,6 +3611,29 @@ export function queryAuditLog(opts: {
       id: r.id, source: 'agent', created_at: r.created_at,
       agent_id: r.agent_id, entity: r.entity, action: r.action,
       entity_id: r.entity_id ?? undefined, detail: r.detail ?? undefined,
+    })
+  }
+
+  // hook_audit_log uses its own `ts` column name (not created_at) -- aliased
+  // below so it merges into the same AuditLogEntry.created_at field as every
+  // other source.
+  if (active.includes('hook')) {
+    let hookSql = 'SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, ts AS created_at FROM hook_audit_log WHERE 1=1'
+    const hookParams: unknown[] = []
+    if (from)  { hookSql += ' AND ts >= ?'; hookParams.push(from) }
+    if (to)    { hookSql += ' AND ts <= ?'; hookParams.push(to) }
+    if (agent) { hookSql += ' AND agent_id = ?'; hookParams.push(agent) }
+    if (q)     { hookSql += ' AND (agent_id LIKE ? OR hook_type LIKE ? OR verdict LIKE ? OR tool_name LIKE ? OR reason LIKE ?)'; const p = `%${q}%`; hookParams.push(p, p, p, p, p) }
+    hookSql += ' ORDER BY ts DESC, id DESC LIMIT ?'; hookParams.push(limit)
+    const hookRows = db.prepare(hookSql).all(...hookParams) as Array<{
+      id: number; agent_id: string | null; hook_type: string; verdict: string
+      tool_name: string | null; content_hash: string | null; reason: string | null
+      session_id: string | null; created_at: number
+    }>
+    for (const r of hookRows) parts.push({
+      id: r.id, source: 'hook', created_at: r.created_at,
+      agent_id: r.agent_id ?? undefined, hook_type: r.hook_type, verdict: r.verdict,
+      tool_name: r.tool_name, content_hash: r.content_hash, reason: r.reason, session_id: r.session_id,
     })
   }
 

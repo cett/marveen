@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage,
+  createAgentMessage, writeAgentAuditLog,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -118,6 +118,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     })
 
     notifyMainAgent(approval)
+    try {
+      writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
+    } catch { /* audit failure must not abort the write */ }
     logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
     return true
@@ -237,6 +240,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const approval = getApproval(idMatch[1])
+    try {
+      writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null } })
+    } catch { /* audit failure must not abort the write */ }
     logger.info({ id: idMatch[1], status, resolved_by: effectiveResolvedBy }, 'Approval resolved')
     json(res, approval)
     return true
