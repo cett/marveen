@@ -3324,14 +3324,18 @@ export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
   `).all(cutoff30, cutoff90) as SkillUsageSummaryRow[]
 }
 
-// --- Hook Audit Log (structured, deny-only) ---
+// --- Hook Audit Log (structured) ---
+// Originally deny-only (the injection-detection gate); 'handoff' was added
+// for the context watchdog's proactive-compaction rows and 'allow' gained a
+// second producer (context-compact-monitor.sh's PreCompact rows) -- see
+// src/watchdog-validation.ts for the query that correlates the two.
 
 export interface HookAuditLogEntry {
   id: number
   ts: number
   agent_id: string | null
   hook_type: 'PreToolUse' | 'PostToolUse' | 'PreCompact' | 'Stop'
-  verdict: 'allow' | 'deny' | 'defer'
+  verdict: 'allow' | 'deny' | 'defer' | 'handoff'
   tool_name: string | null
   content_hash: string | null
   reason: string | null
