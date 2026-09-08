@@ -1935,6 +1935,8 @@ window._i18n.hu = {
   'admin.b2b.permission_matrix.role.agent':     'Ágens',
   'admin.b2b.permission_matrix.role.read_only': 'Csak olvasás',
   'admin.b2b.permission_matrix.role.viewer':    'Néző',
+  'admin.b2b.permission_matrix.legend.full':    'engedélyezve',
+  'admin.b2b.permission_matrix.legend.none':    'nincs engedélyezve',
   'admin.b2b.permission_matrix.cat.memory':     'Memória',
   'admin.b2b.permission_matrix.cat.kanban':     'Feladatok',
   'admin.b2b.permission_matrix.cat.agents':     'Ágensek és kommunikáció',
