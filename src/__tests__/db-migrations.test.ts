@@ -1,10 +1,14 @@
 import Database from 'better-sqlite3'
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { applyMigrations } from '../db-migrations.js'
 import { logger } from '../logger.js'
+import { initDatabase, getDb, createTenant, setTenantAgentAvailability, upsertBlackboard } from '../db.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -483,5 +487,295 @@ describe('import shadow migration schema-only', () => {
     } finally {
       cleanup()
     }
+  })
+})
+
+// Verifies migration 0032: re-resolving fleet_blackboard/history tenant_id
+// against the CURRENT tenant_agent_availability state, for rows that were
+// stamped BEFORE a later availability change and never re-written since.
+//
+// Regression scenario (found during live verification of the tenant-isolation
+// migration): an existing fleet agent (0 tenant_agent_availability rows,
+// implicit tenant_id=default) gets granted to a real tenant. upsertBlackboard's
+// own on-write re-resolve correctly derives '_multi_' for any FUTURE write,
+// but that agent's PRIOR, un-touched blackboard row keeps showing the
+// single-tenant value from before the grant -- exposing default-tenant data
+// under the granted tenant's view until the agent writes again. 0032 is the
+// one-time catch-up.
+describe('Migration 0032 -- re-resolves stale rows against current availability', () => {
+  const MIGRATION_0032_PATH = join(__dirname, '../../src/migrations/0032_blackboard_tenant_id_reresolve.sql')
+
+  function reapplyMigration0032(db: Database.Database): void {
+    db.exec(readFileSync(MIGRATION_0032_PATH, 'utf-8'))
+  }
+
+  beforeEach(() => {
+    initDatabase(':memory:')
+    createTenant('tenant-a', 'Tenant A')
+    createTenant('tenant-b', 'Tenant B')
+  })
+
+  it('a fleet agent later also granted to a tenant: stale single-tenant row becomes "_multi_"', () => {
+    // Agent starts as a pure fleet agent (0 rows) and writes -- tenant_id="default".
+    upsertBlackboard('agent-a', { status: 'active', summary: 'fleet work' })
+    // Now granted to tenant-a WITHOUT an explicit "default" row yet (the bug's
+    // starting state) -- the row is still stale at this point.
+    setTenantAgentAvailability('tenant-a', 'agent-a', true)
+
+    const db = getDb()
+    const before = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-a') as { tenant_id: string }
+    expect(before.tenant_id).toBe('default') // stale -- not re-derived yet
+
+    // The gap is closed by also granting the agent's original "default"
+    // membership explicitly (the immediate operational fix)...
+    setTenantAgentAvailability('default', 'agent-a', true)
+    // ...but the existing row STILL hasn't been re-written, so it is still stale.
+    const stillStale = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-a') as { tenant_id: string }
+    expect(stillStale.tenant_id).toBe('default')
+
+    reapplyMigration0032(db)
+
+    const after = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-a') as { tenant_id: string }
+    expect(after.tenant_id).toBe('_multi_')
+  })
+
+  it('a single-tenant agent stays correctly single-tenant after re-resolve (no false positive)', () => {
+    setTenantAgentAvailability('tenant-a', 'agent-b', true)
+    upsertBlackboard('agent-b', { status: 'active', summary: 'tenant work' })
+
+    const db = getDb()
+    reapplyMigration0032(db)
+
+    const row = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-b') as { tenant_id: string }
+    expect(row.tenant_id).toBe('tenant-a')
+  })
+
+  it('a revoked (fully disabled) agent reverts to "default" on re-resolve', () => {
+    setTenantAgentAvailability('tenant-a', 'agent-c', true)
+    upsertBlackboard('agent-c', { status: 'active', summary: 'tenant work' })
+    setTenantAgentAvailability('tenant-a', 'agent-c', false) // revoked
+
+    const db = getDb()
+    const stale = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-c') as { tenant_id: string }
+    expect(stale.tenant_id).toBe('tenant-a') // stale -- upsertBlackboard was never called again
+
+    reapplyMigration0032(db)
+
+    const after = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-c') as { tenant_id: string }
+    expect(after.tenant_id).toBe('default')
+  })
+
+  it('re-resolves fleet_blackboard_history rows the same way', () => {
+    upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
+    setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    setTenantAgentAvailability('default', 'agent-a', true)
+
+    const db = getDb()
+    reapplyMigration0032(db)
+
+    const rows = db.prepare('SELECT tenant_id FROM fleet_blackboard_history WHERE agent_id = ?').all('agent-a') as { tenant_id: string }[]
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) expect(r.tenant_id).toBe('_multi_')
+  })
+
+  it('is idempotent -- running it twice in a row does not change the result', () => {
+    upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
+    setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    setTenantAgentAvailability('default', 'agent-a', true)
+
+    const db = getDb()
+    reapplyMigration0032(db)
+    reapplyMigration0032(db)
+
+    const row = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-a') as { tenant_id: string }
+    expect(row.tenant_id).toBe('_multi_')
+  })
+})
+
+// Verifies migration 0033: backfilling token_usage.tenant_id from
+// tenant_agent_availability (the deny-by-default opt-in matrix), the same
+// architecture as 0031/0032 (fleet_blackboard tenant isolation, kanban #735)
+// applied to the Overview "Token ma" card's data source.
+//
+//   0 enabled availability rows for the agent -> tenant_id = 'default'
+//   1 enabled row                             -> tenant_id = that tenant
+//   2+ enabled rows                           -> tenant_id = '_multi_'
+describe('Migration 0033 -- backfills token_usage.tenant_id from tenant_agent_availability', () => {
+  const MIGRATION_0033_PATH = join(__dirname, '../../src/migrations/0033_token_usage_tenant_id.sql')
+
+  function reapplyMigration0033(db: Database.Database): void {
+    // The migration's own ALTER TABLE only runs once (0033 is already applied
+    // by initDatabase's normal migration pass), so re-apply just the backfill
+    // UPDATE statements -- skip the ALTER TABLE line to avoid "duplicate column".
+    const sql = readFileSync(MIGRATION_0033_PATH, 'utf-8')
+    const withoutAlter = sql
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('ALTER TABLE'))
+      .join('\n')
+    db.exec(withoutAlter)
+  }
+
+  function insertTokenUsageRow(db: Database.Database, agent: string, sessionId: string, timestamp: number): void {
+    db.prepare(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, model)
+       VALUES (?, ?, ?, 100, 50, 'claude-sonnet-5')`
+    ).run(agent, sessionId, timestamp)
+  }
+
+  beforeEach(() => {
+    initDatabase(':memory:')
+    createTenant('tenant-a', 'Tenant A')
+    createTenant('tenant-b', 'Tenant B')
+  })
+
+  it('a fleet agent (0 enabled rows) defaults to "default"', () => {
+    const db = getDb()
+    insertTokenUsageRow(db, 'fleet-agent', 'sess-1', 1000)
+
+    const row = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('fleet-agent') as { tenant_id: string }
+    expect(row.tenant_id).toBe('default')
+  })
+
+  it('a single-tenant agent backfills to that tenant', () => {
+    const db = getDb()
+    setTenantAgentAvailability('tenant-a', 'agent-b', true)
+    insertTokenUsageRow(db, 'agent-b', 'sess-1', 1000)
+    // Row was inserted with the column DEFAULT ('default') -- simulate a
+    // pre-existing row from before the agent was granted, needing backfill.
+    reapplyMigration0033(db)
+
+    const row = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('agent-b') as { tenant_id: string }
+    expect(row.tenant_id).toBe('tenant-a')
+  })
+
+  it('a multi-tenant agent (2+ enabled rows) backfills to "_multi_"', () => {
+    const db = getDb()
+    setTenantAgentAvailability('tenant-a', 'agent-c', true)
+    setTenantAgentAvailability('tenant-b', 'agent-c', true)
+    insertTokenUsageRow(db, 'agent-c', 'sess-1', 1000)
+    reapplyMigration0033(db)
+
+    const row = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('agent-c') as { tenant_id: string }
+    expect(row.tenant_id).toBe('_multi_')
+  })
+
+  it('a revoked (fully disabled) agent reverts to "default" on re-resolve', () => {
+    const db = getDb()
+    setTenantAgentAvailability('tenant-a', 'agent-d', true)
+    insertTokenUsageRow(db, 'agent-d', 'sess-1', 1000)
+    reapplyMigration0033(db)
+    const midway = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('agent-d') as { tenant_id: string }
+    expect(midway.tenant_id).toBe('tenant-a')
+
+    setTenantAgentAvailability('tenant-a', 'agent-d', false)
+    reapplyMigration0033(db)
+
+    const after = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('agent-d') as { tenant_id: string }
+    expect(after.tenant_id).toBe('default')
+  })
+
+  it('is idempotent -- running the backfill twice in a row does not change the result', () => {
+    const db = getDb()
+    setTenantAgentAvailability('tenant-a', 'agent-e', true)
+    setTenantAgentAvailability('tenant-b', 'agent-e', true)
+    insertTokenUsageRow(db, 'agent-e', 'sess-1', 1000)
+
+    reapplyMigration0033(db)
+    reapplyMigration0033(db)
+
+    const row = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('agent-e') as { tenant_id: string }
+    expect(row.tenant_id).toBe('_multi_')
+  })
+})
+
+// Verifies migration 0034: tenant isolation for import_sources / import_audit_log.
+//
+// Unlike 0031/0033 (derived from tenant_agent_availability), import_sources
+// has no per-agent signal to derive tenant_id from -- existing rows simply
+// default to 'default'. import_audit_log inherits its tenant_id from the
+// parent source via source_id.
+describe('Migration 0034 -- import_sources / import_audit_log tenant_id', () => {
+  const MIGRATION_0034_PATH = join(__dirname, '../../src/migrations/0034_import_sources_tenant.sql')
+
+  function reapplyBackfill0034(db: Database.Database): void {
+    // The ALTER TABLE lines only run once (0034 is already applied by
+    // initDatabase's normal migration pass) -- skip them and re-run just the
+    // backfill UPDATE + index creation to simulate rows that predate the
+    // migration.
+    const sql = readFileSync(MIGRATION_0034_PATH, 'utf-8')
+    const withoutAlter = sql
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('ALTER TABLE'))
+      .join('\n')
+    db.exec(withoutAlter)
+  }
+
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  it('a new import_sources row defaults to tenant_id "default"', () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`
+      INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at)
+      VALUES ('mig-src-1', 'local', '/tmp/mig', 4, 1, ?, ?)
+    `).run(now, now)
+
+    const row = db.prepare("SELECT tenant_id FROM import_sources WHERE id = 'mig-src-1'").get() as { tenant_id: string }
+    expect(row.tenant_id).toBe('default')
+  })
+
+  it('backfills import_audit_log.tenant_id from its parent source', () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`
+      INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id)
+      VALUES ('mig-src-2', 'local', '/tmp/mig2', 4, 1, ?, ?, 'tenant-mig')
+    `).run(now, now)
+
+    // Simulate a pre-migration audit row: tenant_id lands on the column
+    // DEFAULT ('default') since the insert below doesn't set it explicitly.
+    db.prepare(`
+      INSERT INTO import_audit_log (source_id, run_at, files_scanned, files_added, files_updated,
+        files_skipped_hash, files_skipped_secret, files_skipped_size, files_skipped_type)
+      VALUES ('mig-src-2', ?, 3, 1, 0, 0, 0, 0, 0)
+    `).run(now)
+
+    const before = db.prepare("SELECT tenant_id FROM import_audit_log WHERE source_id = 'mig-src-2'").get() as { tenant_id: string }
+    expect(before.tenant_id).toBe('default')
+
+    reapplyBackfill0034(db)
+
+    const after = db.prepare("SELECT tenant_id FROM import_audit_log WHERE source_id = 'mig-src-2'").get() as { tenant_id: string }
+    expect(after.tenant_id).toBe('tenant-mig')
+  })
+
+  it('is idempotent -- running the backfill twice in a row does not change the result', () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`
+      INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id)
+      VALUES ('mig-src-3', 'local', '/tmp/mig3', 4, 1, ?, ?, 'tenant-idem')
+    `).run(now, now)
+    db.prepare(`
+      INSERT INTO import_audit_log (source_id, run_at, files_scanned, files_added, files_updated,
+        files_skipped_hash, files_skipped_secret, files_skipped_size, files_skipped_type)
+      VALUES ('mig-src-3', ?, 1, 0, 0, 0, 0, 0, 0)
+    `).run(now)
+
+    reapplyBackfill0034(db)
+    reapplyBackfill0034(db)
+
+    const row = db.prepare("SELECT tenant_id FROM import_audit_log WHERE source_id = 'mig-src-3'").get() as { tenant_id: string }
+    expect(row.tenant_id).toBe('tenant-idem')
+  })
+
+  it('creates the tenant indexes on import_sources and import_audit_log', () => {
+    const db = getDb()
+    const sourceIndexes = db.prepare("PRAGMA index_list(import_sources)").all() as { name: string }[]
+    const auditIndexes = db.prepare("PRAGMA index_list(import_audit_log)").all() as { name: string }[]
+    expect(sourceIndexes.some(i => i.name === 'idx_import_sources_tenant')).toBe(true)
+    expect(auditIndexes.some(i => i.name === 'idx_import_audit_tenant')).toBe(true)
   })
 })
