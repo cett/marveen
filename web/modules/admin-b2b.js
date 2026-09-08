@@ -65,7 +65,29 @@ function switchTab(tab) {
   if (tab === 'deviceKeys') loadDeviceKeys()
 }
 
-// ── Permission matrix (read-only, static mirror of rbac.ts) ────────────────
+// ── RBAC matrices (read-only, Users tab) ────────────────────────────────────
+// Two separate tables (permission matrix: API permissions from rbac.ts;
+// screen-access matrix: dashboard screens) at different abstraction levels,
+// sharing one visual system: same table/legend markup, same cell-marker
+// color language. The permission matrix's binary yes/no reuses two of the
+// four graduated access levels (full/none) below rather than a separate
+// color pair.
+
+// Symbol + CSS class per access level (see .admin-b2b-matrix-* in admin-b2b.css).
+const MATRIX_LEVEL_SYMBOLS = {
+  full: { symbol: '✓', cls: 'admin-b2b-matrix-full' },
+  ro:   { symbol: '(R)', cls: 'admin-b2b-matrix-ro' },
+  gap:  { symbol: '(!)', cls: 'admin-b2b-matrix-gap' },
+  none: { symbol: '–', cls: 'admin-b2b-matrix-none' },
+}
+
+function renderMatrixLegend(entries) {
+  const items = entries.map(({ level, i18nKey }) => {
+    const meta = MATRIX_LEVEL_SYMBOLS[level]
+    return `<span><span class="${meta.cls}">${meta.symbol}</span>${esc(t(i18nKey, i18nKey))}</span>`
+  }).join('')
+  return `<div class="admin-b2b-matrix-legend">${items}</div>`
+}
 
 function renderPermissionMatrix() {
   const el = $('permissionMatrix')
@@ -73,6 +95,10 @@ function renderPermissionMatrix() {
   const roleHeaderCells = PERMISSION_MATRIX_ROLES
     .map(role => `<th class="admin-b2b-perm-cell">${esc(t(`admin.b2b.permission_matrix.role.${role}`, role))}</th>`)
     .join('')
+  const legend = renderMatrixLegend([
+    { level: 'full', i18nKey: 'admin.b2b.permission_matrix.legend.full' },
+    { level: 'none', i18nKey: 'admin.b2b.permission_matrix.legend.none' },
+  ])
   const bodyRows = PERMISSION_MATRIX_CATEGORIES.map(category => {
     const categoryLabel = esc(t(`admin.b2b.permission_matrix.cat.${category.key}`, category.key))
     const categoryRow = `<tr class="admin-b2b-perm-category"><td colspan="${1 + PERMISSION_MATRIX_ROLES.length}">${categoryLabel}</td></tr>`
@@ -81,27 +107,20 @@ function renderPermissionMatrix() {
       const label = esc(t(`admin.b2b.perm.${keyPart}.label`, perm.key))
       const desc = esc(t(`admin.b2b.perm.${keyPart}.desc`, ''))
       const cells = PERMISSION_MATRIX_ROLES.map(role => {
-        const allowed = !!perm.roles[role]
-        return `<td class="admin-b2b-perm-cell ${allowed ? 'admin-b2b-perm-yes' : 'admin-b2b-perm-no'}">${allowed ? '✓' : '–'}</td>`
+        const meta = MATRIX_LEVEL_SYMBOLS[perm.roles[role] ? 'full' : 'none']
+        return `<td class="admin-b2b-perm-cell ${meta.cls}">${meta.symbol}</td>`
       }).join('')
       return `<tr><td><span class="admin-b2b-perm-label">${label}</span>${desc ? `<span class="admin-b2b-perm-desc">${desc}</span>` : ''}</td>${cells}</tr>`
     }).join('')
     return categoryRow + permRows
   }).join('')
   el.innerHTML = `
+    ${legend}
     <table>
       <thead><tr><th>${esc(t('admin.b2b.permission_matrix.title', 'Permission'))}</th>${roleHeaderCells}</tr></thead>
       <tbody>${bodyRows}</tbody>
     </table>
   `
-}
-
-// Symbol + CSS class for each screen-access level (see rbac-screen-access-data.js).
-const SCREEN_ACCESS_SYMBOLS = {
-  full: { symbol: '✓', cls: 'admin-b2b-access-full', i18nKey: 'admin.b2b.screen_access.legend.full' },
-  ro:   { symbol: '(R)', cls: 'admin-b2b-access-ro',   i18nKey: 'admin.b2b.screen_access.legend.ro' },
-  gap:  { symbol: '(!)', cls: 'admin-b2b-access-gap',  i18nKey: 'admin.b2b.screen_access.legend.gap' },
-  none: { symbol: '–', cls: 'admin-b2b-access-none',  i18nKey: 'admin.b2b.screen_access.legend.none' },
 }
 
 function renderScreenAccessMatrix() {
@@ -110,20 +129,22 @@ function renderScreenAccessMatrix() {
   const roleHeaderCells = SCREEN_ACCESS_ROLES
     .map(role => `<th class="admin-b2b-perm-cell">${esc(t(`admin.b2b.permission_matrix.role.${role}`, role))}</th>`)
     .join('')
-  const legend = Object.values(SCREEN_ACCESS_SYMBOLS)
-    .map(({ symbol, cls, i18nKey }) => `<span><span class="${cls}">${symbol}</span>${esc(t(i18nKey, i18nKey))}</span>`)
-    .join('')
+  const legend = renderMatrixLegend([
+    { level: 'full', i18nKey: 'admin.b2b.screen_access.legend.full' },
+    { level: 'ro', i18nKey: 'admin.b2b.screen_access.legend.ro' },
+    { level: 'gap', i18nKey: 'admin.b2b.screen_access.legend.gap' },
+    { level: 'none', i18nKey: 'admin.b2b.screen_access.legend.none' },
+  ])
   const bodyRows = SCREEN_ACCESS_ROWS.map(row => {
     const label = esc(t(`admin.b2b.screen_access.screen.${row.key}`, row.key))
     const cells = SCREEN_ACCESS_ROLES.map(role => {
-      const level = row.roles[role]
-      const meta = SCREEN_ACCESS_SYMBOLS[level] || SCREEN_ACCESS_SYMBOLS.none
+      const meta = MATRIX_LEVEL_SYMBOLS[row.roles[role]] || MATRIX_LEVEL_SYMBOLS.none
       return `<td class="admin-b2b-perm-cell ${meta.cls}">${meta.symbol}</td>`
     }).join('')
     return `<tr title="${esc(row.backend)}"><td><span class="admin-b2b-perm-label">${label}</span></td>${cells}</tr>`
   }).join('')
   el.innerHTML = `
-    <div class="admin-b2b-access-legend">${legend}</div>
+    ${legend}
     <table>
       <thead><tr><th>${esc(t('admin.b2b.screen_access.title', 'Screen'))}</th>${roleHeaderCells}</tr></thead>
       <tbody>${bodyRows}</tbody>

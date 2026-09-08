@@ -1937,6 +1937,8 @@ window._i18n.en = {
   'admin.b2b.permission_matrix.role.agent':     'Agent',
   'admin.b2b.permission_matrix.role.read_only': 'Read-only',
   'admin.b2b.permission_matrix.role.viewer':    'Viewer',
+  'admin.b2b.permission_matrix.legend.full':    'allowed',
+  'admin.b2b.permission_matrix.legend.none':    'not allowed',
   'admin.b2b.permission_matrix.cat.memory':     'Memory',
   'admin.b2b.permission_matrix.cat.kanban':     'Tasks',
   'admin.b2b.permission_matrix.cat.agents':     'Agents & communication',

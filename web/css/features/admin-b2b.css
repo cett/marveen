@@ -90,7 +90,12 @@
 .admin-b2b-matrix-status.enabled  { color: var(--success, #22c55e); }
 .admin-b2b-matrix-status.disabled { color: var(--text-muted); }
 
-/* Permission matrix (read-only, Users tab) */
+/* RBAC matrices (read-only, Users tab): permission matrix + screen-access
+   matrix are two separate tables (different abstraction levels -- API
+   permissions vs. dashboard screens), sharing one visual system: same table
+   CSS, same legend form/placement, same cell-marker color language. The
+   permission matrix's binary yes/no reuses two of the four graduated
+   access levels (full/none) rather than a separate yes/no color pair. */
 .admin-b2b-permission-matrix {
   margin-top: 12px;
   overflow-x: auto;
@@ -138,16 +143,14 @@
   white-space: normal;
 }
 
-.admin-b2b-perm-yes { color: var(--success, #22c55e); }
-.admin-b2b-perm-no  { color: var(--text-muted); }
+/* Shared cell-marker color language (both matrices use these four levels;
+   the permission matrix only ever uses -full/-none). */
+.admin-b2b-matrix-full { color: var(--success, #22c55e); }
+.admin-b2b-matrix-ro   { color: var(--accent, #3b82f6); }
+.admin-b2b-matrix-gap  { color: var(--warning, #f59e0b); }
+.admin-b2b-matrix-none { color: var(--text-muted); }
 
-/* Screen-access matrix (read-only, Users tab, second section) */
-.admin-b2b-access-full { color: var(--success, #22c55e); }
-.admin-b2b-access-ro   { color: var(--accent, #3b82f6); }
-.admin-b2b-access-gap  { color: var(--warning, #f59e0b); }
-.admin-b2b-access-none { color: var(--text-muted); }
-
-.admin-b2b-access-legend {
+.admin-b2b-matrix-legend {
   color: var(--text-muted);
   display: flex;
   flex-wrap: wrap;
@@ -156,10 +159,10 @@
   margin-bottom: 8px;
 }
 
-.admin-b2b-access-legend span.admin-b2b-access-full,
-.admin-b2b-access-legend span.admin-b2b-access-ro,
-.admin-b2b-access-legend span.admin-b2b-access-gap,
-.admin-b2b-access-legend span.admin-b2b-access-none {
+.admin-b2b-matrix-legend span.admin-b2b-matrix-full,
+.admin-b2b-matrix-legend span.admin-b2b-matrix-ro,
+.admin-b2b-matrix-legend span.admin-b2b-matrix-gap,
+.admin-b2b-matrix-legend span.admin-b2b-matrix-none {
   font-weight: 600;
   margin-right: 3px;
 }
