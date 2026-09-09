@@ -47,23 +47,22 @@ export default defineConfig({
       // and cannot be instrumented by vitest (would show 0% and break the gate).
       include: ['src/**/*.ts'],
       exclude: ['src/__tests__/**', 'dist/**'],
-      // Ratchet floor re-measured after fixing the coverage block's placement
-      // (previously the block sat outside `test`, so it never took effect --
-      // the include/exclude filters above are now actually applied for the
-      // first time, and the resulting numbers differ from the earlier,
-      // unenforced thresholds measured under the default config).
-      // Local baseline: statements 57.98%, branches 56.81%, functions 60.54%,
-      // lines 59.12%. CI measures slightly lower (statements 57.6, branches
-      // 56.64, functions 60.13, lines 58.77) -- environment variance ~0.35%.
-      // The first enforced run failed on lines (58.77% < 59%), so the floor is
-      // set ~1-1.8 points below the CI numbers: a real regression still fails
-      // the gate, but normal cross-environment jitter does not. Ratchet up via
-      // the coverage-to-85% card as tests are added.
+      // Ratchet floor, re-measured for #751 (backend coverage -> 85%, one
+      // feature branch for the whole gradual series -- Jonas's call, keep
+      // adding steps here rather than opening a PR per module). Steps so
+      // far: src/web/routes/fleet-q.ts and src/web/routes/docs.ts, both
+      // 0% -> fully covered. Local baseline after both: statements 59.08%,
+      // branches 58.12%, functions 61.55%, lines 60.31%. Floor kept at the
+      // same values as after step 1 (still ~1.5-2.3 points of buffer below
+      // the new numbers) rather than bumped again for this small an
+      // increment -- raise only once the level actually reached clearly
+      // supports it, never round up ahead of the measurement. Ratchet up
+      // further as more steps land in this branch.
       thresholds: {
-        statements: 56,
-        branches: 55,
-        functions: 59,
-        lines: 57,
+        statements: 57,
+        branches: 56,
+        functions: 60,
+        lines: 58,
       },
     },
   },
