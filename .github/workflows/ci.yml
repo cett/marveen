@@ -166,6 +166,19 @@ jobs:
           done
           exit $fail
 
+      - name: Shell tests
+        # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
+        # vault-file-materializer / channels-mcp-unlock / channels-auth-probe,
+        # etc.) previously only ran manually/locally -- this loop is the exact
+        # pattern of the "Python tests" step above, just for the shell ones.
+        run: |
+          fail=0
+          for f in scripts/__tests__/*.test.sh; do
+            echo "== $f =="
+            bash "$f" || fail=1
+          done
+          exit $fail
+
       - name: Coverage
         run: npm run coverage
 
