@@ -1,4 +1,5 @@
 import { escapeHtml, mainAgentId } from './util.js'
+import { getMemTenant } from './memories.js'
 
 // === Memory Graph (Force-directed, Obsidian-style) ===
 
@@ -111,6 +112,8 @@ export async function loadMemoryGraph() {
   if (agent) params.set('agent', agent)
   params.set('limit', String(Math.min(500, Math.max(1, limit))))
   params.set('weight_min', '0.75')
+  const tenant = getMemTenant()
+  if (tenant) params.set('tenant', tenant)
 
   try {
     const res = await fetch(`/api/memories/graph?${params}`)
