@@ -177,6 +177,21 @@ WRC=$?
 unset CRED_H
 
 # ---------------------------------------------------------------------------
+# (i) stdin forwarding -- a backgrounded child in a non-interactive shell gets
+#     /dev/null as stdin by POSIX default unless the wrapper explicitly ties
+#     it back to its own stdin. A stdio MCP server (e.g. garmin-mcp) run
+#     through this wrapper needs its JSON-RPC input on stdin or its login
+#     hangs forever (#806).
+# ---------------------------------------------------------------------------
+echo ""
+echo "(i) stdin forwarding"
+seed_secret "test-i" "x"
+export CRED_I="vault-file:test-i:file:x.json"
+STDIN_OUT="$("$WRAPPER" bash -c 'cat' <<< "piped-stdin-content")"
+[ "$STDIN_OUT" = "piped-stdin-content" ] && pass "stdin: child receives the wrapper's stdin" || fail "stdin: child got '$STDIN_OUT'"
+unset CRED_I
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "============================="
 TOTAL=$((PASS + FAIL))
