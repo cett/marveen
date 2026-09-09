@@ -413,20 +413,28 @@ Respond ONLY with JSON, nothing else:
 
     const db2 = getDb()
 
+    // Tenant isolation (#809/#810): admins may narrow with ?tenant=, everyone
+    // else is pinned to effectiveTenantId -- same rule as the rest of this file.
+    // Edges/degree/tier-change rows below are all derived from nodeRows ids, so
+    // scoping this one query scopes the whole timeline payload.
+    const timelineTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
+    const timelineTenantClause = timelineTenantId ? ' AND tenant_id = ?' : ''
+    const timelineTenantParams = timelineTenantId ? [timelineTenantId] : []
+
     // Nodes created within the requested window (agent-filtered if provided)
     const nodeRows: Memory[] = agentParam
       ? db2.prepare(
           `SELECT id, content, agent_id, category, created_at, accessed_at
            FROM memories
-           WHERE agent_id = ? AND created_at >= ? AND created_at <= ?
+           WHERE agent_id = ? AND created_at >= ? AND created_at <= ?${timelineTenantClause}
            ORDER BY created_at ASC`
-        ).all(agentParam, fromTs, toTs) as Memory[]
+        ).all(agentParam, fromTs, toTs, ...timelineTenantParams) as Memory[]
       : db2.prepare(
           `SELECT id, content, agent_id, category, created_at, accessed_at
            FROM memories
-           WHERE created_at >= ? AND created_at <= ?
+           WHERE created_at >= ? AND created_at <= ?${timelineTenantClause}
            ORDER BY created_at ASC`
-        ).all(fromTs, toTs) as Memory[]
+        ).all(fromTs, toTs, ...timelineTenantParams) as Memory[]
 
     const nodeIdSet    = new Set(nodeRows.map(r => r.id))
     const placeholders = nodeRows.map(() => '?').join(',')
@@ -523,15 +531,23 @@ Respond ONLY with JSON, nothing else:
     const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') || '200', 10)))
     const db2 = getDb()
 
+    // Tenant isolation (#809/#810): admins may narrow with ?tenant=, everyone
+    // else is pinned to effectiveTenantId -- same rule as the rest of this file.
+    // Edges below are derived from nodeRows ids, so scoping this query scopes
+    // the whole graph payload.
+    const graphTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
+    const graphTenantClause = graphTenantId ? ' AND tenant_id = ?' : ''
+    const graphTenantParams = graphTenantId ? [graphTenantId] : []
+
     const nodeRows = agentParam
       ? db2.prepare(
           `SELECT id, content, agent_id, category, created_at, accessed_at
-           FROM memories WHERE agent_id = ? ORDER BY accessed_at DESC LIMIT ?`
-        ).all(agentParam, limit) as Memory[]
+           FROM memories WHERE agent_id = ?${graphTenantClause} ORDER BY accessed_at DESC LIMIT ?`
+        ).all(agentParam, ...graphTenantParams, limit) as Memory[]
       : db2.prepare(
           `SELECT id, content, agent_id, category, created_at, accessed_at
-           FROM memories ORDER BY accessed_at DESC LIMIT ?`
-        ).all(limit) as Memory[]
+           FROM memories${graphTenantId ? ' WHERE tenant_id = ?' : ''} ORDER BY accessed_at DESC LIMIT ?`
+        ).all(...graphTenantParams, limit) as Memory[]
 
     const nodeIdSet = new Set(nodeRows.map(r => r.id))
     const placeholders = nodeRows.map(() => '?').join(',')

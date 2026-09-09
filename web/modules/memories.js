@@ -18,10 +18,25 @@ let _canWriteMemories = true
 
 export async function initMemories({ openModal, closeModal } = {}) {
   _openModal = openModal; _closeModal = closeModal
-  _memTenantGetter = await initTenantSelector('memoriesTenantSelectorContainer', () => { loadMemories(); loadMemStats() })
+  _memTenantGetter = await initTenantSelector('memoriesTenantSelectorContainer', () => {
+    loadMemories(); loadMemStats()
+    // #809: tenant switch left the graph/timeline tab showing the previous
+    // tenant's data (only the card list reloaded) -- reload whichever of the
+    // two is currently visible.
+    if (currentMemTier === 'graph') {
+      if (tlMode === 'timeline') loadTimeline(); else loadMemoryGraph()
+    }
+  })
   // The actual gate check lives in loadMemStats()/loadMemories(), which
   // app.js always calls right after this (see the notes there) -- no need
   // to duplicate it here.
+}
+
+// #809/#811: memory-graph.js needs the current tenant to scope its own
+// /api/memories/graph fetch, but it doesn't have access to _memTenantGetter
+// (set here after initTenantSelector resolves).
+export function getMemTenant() {
+  return _memTenantGetter?.() ?? null
 }
 
 // ============================================================
@@ -683,6 +698,8 @@ async function loadTimeline() {
   const agent = document.getElementById('memAgentFilter').value
   const params = new URLSearchParams({ weight_min: '0.75' })
   if (agent) params.set('agent', agent)
+  const tenant = _memTenantGetter?.()
+  if (tenant) params.set('tenant', tenant)
   try {
     const res = await fetch(`/api/memories/graph/timeline?${params}`)
     const data = await res.json()

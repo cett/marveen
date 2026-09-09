@@ -46,7 +46,11 @@ vi.mock('../config.js', () => ({
 
 import { tryHandleMemories } from '../web/routes/memories.js'
 
-function makeCtx(path: string): { ctx: RouteContext; out: { status: number; body: any } } {
+function makeCtx(
+  path: string,
+  role: 'admin' | 'viewer' | 'read_only' = 'viewer',
+  tenantId: string | null = null,
+): { ctx: RouteContext; out: { status: number; body: any } } {
   const req = new EventEmitter() as any
   req.method = 'GET'
   req.headers = {}
@@ -59,7 +63,7 @@ function makeCtx(path: string): { ctx: RouteContext; out: { status: number; body
     },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method: 'GET', url } as RouteContext
+  const ctx = { req, res, path: url.pathname, method: 'GET', url, role, tenantId } as RouteContext
   return { ctx, out }
 }
 
@@ -157,8 +161,61 @@ describe('GET /api/memories/graph/timeline', () => {
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?agent=agent-a&from=900&to=2000')
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
-    // agent-filtered query receives agent as first arg
-    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', expect.any(Number), expect.any(Number))
+    // agent-filtered query receives agent as first arg, then from/to, then
+    // the #809/#810 tenant scope ('default' -- no ctx.tenantId in this fixture)
+    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', expect.any(Number), expect.any(Number), 'default')
+  })
+
+  it('#810: non-admin viewer is scoped to their own tenant', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000', 'viewer', 'tenant-a')
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 'tenant-a')
+  })
+
+  it('#810: a non-admin cannot escape their tenant via ?tenant= (param ignored)', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000&tenant=tenant-b', 'viewer', 'tenant-a')
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 'tenant-a')
+  })
+
+  it('#810: admin with no ?tenant= sees every tenant (no tenant_id filter)', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000', 'admin', null)
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number))
+  })
+
+  it('#810: admin with ?tenant= narrows to that one tenant', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000&tenant=tenant-b', 'admin', null)
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 'tenant-b')
   })
 
   it('returns 400 when from > to', async () => {
