@@ -224,13 +224,16 @@ def record_compact_audit(conn, agent, pct):
     sent yet). Correlating the two lets a query detect a "double compact":
     a handoff with interlock=yes followed by a PreCompact/allow row for the
     same agent within the cooldown window means the interlock did NOT
-    actually prevent this heartbeat from also compacting. Direct SQLite
-    write (the script already holds `conn` open for this round) -- never
-    raises, a failed write here must not abort a monitor round that already
-    sent a real /compact."""
+    actually prevent this heartbeat from also compacting. trigger_source=
+    'compact-monitor' (migration 0038) names this row's producer directly,
+    so a coverage audit doesn't have to re-derive it from hook_type+verdict.
+    Direct SQLite write (the script already holds `conn` open for this
+    round) -- never raises, a failed write here must not abort a monitor
+    round that already sent a real /compact."""
     try:
         conn.execute(
-            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, reason) VALUES (?, ?, 'PreCompact', 'allow', ?)",
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, reason, trigger_source) "
+            "VALUES (?, ?, 'PreCompact', 'allow', ?, 'compact-monitor')",
             (int(time.time()), agent, f"pct={pct:.0%}"),
         )
         conn.commit()

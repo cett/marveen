@@ -184,6 +184,9 @@ export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
 // for the context watchdog's proactive-compaction rows and 'allow' gained a
 // second producer (context-compact-monitor.sh's PreCompact rows) -- see
 // src/watchdog-validation.ts for the query that correlates the two.
+// trigger_source (migration 0038) names which of those two producers wrote
+// a given handoff/PreCompact row directly, instead of leaving it to be
+// inferred from the hook_type+verdict combination.
 
 export interface HookAuditLogEntry {
   id: number
@@ -195,6 +198,7 @@ export interface HookAuditLogEntry {
   content_hash: string | null
   reason: string | null
   session_id: string | null
+  trigger_source: 'watchdog' | 'compact-monitor' | null
 }
 
 export function insertHookAuditLog(entry: {
@@ -205,10 +209,11 @@ export function insertHookAuditLog(entry: {
   content_hash?: string | null
   reason?: string | null
   session_id?: string | null
+  trigger_source?: string | null
 }): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(
     now,
     entry.agent_id ?? null,
@@ -218,6 +223,7 @@ export function insertHookAuditLog(entry: {
     entry.content_hash ?? null,
     entry.reason ?? null,
     entry.session_id ?? null,
+    entry.trigger_source ?? null,
   )
 }
 
@@ -225,6 +231,7 @@ export function listHookAuditLog(opts: {
   sinceSecs?: number
   verdict?: string
   agent_id?: string
+  trigger_source?: string
   limit?: number
 } = {}): HookAuditLogEntry[] {
   const clauses: string[] = []
@@ -237,6 +244,7 @@ export function listHookAuditLog(opts: {
 
   if (opts.verdict) { clauses.push('verdict = ?'); params.push(opts.verdict) }
   if (opts.agent_id) { clauses.push('agent_id = ?'); params.push(opts.agent_id) }
+  if (opts.trigger_source) { clauses.push('trigger_source = ?'); params.push(opts.trigger_source) }
 
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000)
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''

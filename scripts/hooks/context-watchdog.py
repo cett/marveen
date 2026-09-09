@@ -351,19 +351,22 @@ def stamp_compact_interlock(agent_id: str) -> bool:
 def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, interlock_ok) -> None:
     """Validation-counter instrumentation (phase-4 gate, kicsi/small task
     on top of phases 1-3): log every HANDOFF firing into the existing
-    hook_audit_log table (no migration -- hook_type stays a true CC event
-    name, 'PostToolUse', matching every other row in the table; 'handoff' is
-    a new verdict value alongside the existing allow/deny/defer, added to
-    the GET/POST /api/hook-audit route's validation sets). reason carries
-    both the context% and whether the compact-monitor interlock stamp
-    landed, e.g. 'ctx=62%;interlock=yes' -- the counter query correlates
-    this against context-compact-monitor.sh's own 'PreCompact'/allow rows
-    (see record_compact_audit() there) to detect a double-compact. Never
-    raises -- this is instrumentation, not a gate."""
+    hook_audit_log table (no migration for the row shape -- hook_type stays
+    a true CC event name, 'PostToolUse', matching every other row in the
+    table; 'handoff' is a new verdict value alongside the existing
+    allow/deny/defer, added to the GET/POST /api/hook-audit route's
+    validation sets). reason carries both the context% and whether the
+    compact-monitor interlock stamp landed, e.g. 'ctx=62%;interlock=yes' --
+    the counter query correlates this against context-compact-monitor.sh's
+    own 'PreCompact'/allow rows (see record_compact_audit() there) to
+    detect a double-compact. trigger_source='watchdog' (migration 0038)
+    names this row's producer directly, so a coverage audit doesn't have
+    to re-derive it from hook_type+verdict. Never raises -- this is
+    instrumentation, not a gate."""
     try:
         conn.execute(
-            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, reason, session_id) "
-            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?)",
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, reason, session_id, trigger_source) "
+            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, 'watchdog')",
             (
                 int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
                 agent_id,

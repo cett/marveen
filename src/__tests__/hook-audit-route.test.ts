@@ -94,6 +94,31 @@ describe('POST /api/hook-audit', () => {
     await tryHandleHookAudit(ctx)
     expect(out.status).toBe(400)
   })
+
+  it('records the trigger_source when provided', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/hook-audit', {
+      hook_type: 'PostToolUse', verdict: 'handoff', agent_id: 'agent-a', trigger_source: 'watchdog',
+    })
+    await tryHandleHookAudit(ctx)
+    expect(out.status).toBe(200)
+    const rows = listHookAuditLog()
+    expect(rows[0].trigger_source).toBe('watchdog')
+  })
+
+  it('leaves trigger_source null when not provided', async () => {
+    const { ctx } = makeCtx('POST', '/api/hook-audit', { hook_type: 'PostToolUse', verdict: 'deny' })
+    await tryHandleHookAudit(ctx)
+    const rows = listHookAuditLog()
+    expect(rows[0].trigger_source).toBeNull()
+  })
+
+  it('rejects an invalid trigger_source with 400', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/hook-audit', {
+      hook_type: 'PostToolUse', verdict: 'handoff', trigger_source: 'something-else',
+    })
+    await tryHandleHookAudit(ctx)
+    expect(out.status).toBe(400)
+  })
 })
 
 describe('GET /api/hook-audit', () => {
@@ -134,6 +159,27 @@ describe('GET /api/hook-audit', () => {
     const entries = (out.body as { entries: Array<{ agent_id: string }> }).entries
     expect(entries).toHaveLength(1)
     expect(entries[0].agent_id).toBe('agent-a')
+  })
+
+  it('filters by trigger_source', async () => {
+    await tryHandleHookAudit(makeCtx('POST', '/api/hook-audit', {
+      hook_type: 'PostToolUse', verdict: 'handoff', agent_id: 'agent-a', trigger_source: 'watchdog',
+    }).ctx)
+    await tryHandleHookAudit(makeCtx('POST', '/api/hook-audit', {
+      hook_type: 'PreCompact', verdict: 'allow', agent_id: 'agent-a', trigger_source: 'compact-monitor',
+    }).ctx)
+
+    const { ctx, out } = makeCtx('GET', '/api/hook-audit', undefined, { trigger_source: 'compact-monitor' })
+    await tryHandleHookAudit(ctx)
+    const entries = (out.body as { entries: Array<{ trigger_source: string }> }).entries
+    expect(entries).toHaveLength(1)
+    expect(entries[0].trigger_source).toBe('compact-monitor')
+  })
+
+  it('rejects an invalid trigger_source filter with 400', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/hook-audit', undefined, { trigger_source: 'bogus' })
+    await tryHandleHookAudit(ctx)
+    expect(out.status).toBe(400)
   })
 })
 

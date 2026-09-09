@@ -100,7 +100,8 @@ def _make_db(path):
           tool_name TEXT,
           content_hash TEXT,
           reason TEXT,
-          session_id TEXT
+          session_id TEXT,
+          trigger_source TEXT
         );
         """
     )
@@ -291,9 +292,9 @@ class TestRecordHandoffAudit(unittest.TestCase):
     def test_inserts_expected_row(self):
         hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62, True)
         row = self.conn.execute(
-            "SELECT agent_id, hook_type, verdict, tool_name, reason, session_id FROM hook_audit_log"
+            "SELECT agent_id, hook_type, verdict, tool_name, reason, session_id, trigger_source FROM hook_audit_log"
         ).fetchone()
-        self.assertEqual(row, (MAIN_AGENT, "PostToolUse", "handoff", "Bash", "ctx=62%;interlock=yes", "sess-1"))
+        self.assertEqual(row, (MAIN_AGENT, "PostToolUse", "handoff", "Bash", "ctx=62%;interlock=yes", "sess-1", "watchdog"))
 
     def test_interlock_false_is_recorded_in_reason(self):
         hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.9, False)

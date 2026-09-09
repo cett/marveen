@@ -16,16 +16,17 @@ function row(overrides: Partial<HookAuditLogEntry>): HookAuditLogEntry {
     content_hash: null,
     reason: null,
     session_id: null,
+    trigger_source: null,
     ...overrides,
   }
 }
 
 function handoffRow(ts: number, pct: number, interlock: 'yes' | 'no', overrides: Partial<HookAuditLogEntry> = {}) {
-  return row({ ts, reason: `ctx=${pct}%;interlock=${interlock}`, ...overrides })
+  return row({ ts, reason: `ctx=${pct}%;interlock=${interlock}`, trigger_source: 'watchdog', ...overrides })
 }
 
 function compactRow(ts: number, overrides: Partial<HookAuditLogEntry> = {}) {
-  return row({ ts, hook_type: 'PreCompact', verdict: 'allow', reason: 'pct=75%', ...overrides })
+  return row({ ts, hook_type: 'PreCompact', verdict: 'allow', reason: 'pct=75%', trigger_source: 'compact-monitor', ...overrides })
 }
 
 describe('computeWatchdogCycles', () => {
