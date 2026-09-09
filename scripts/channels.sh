@@ -502,8 +502,25 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # so ~/.claude.json never keeps a live token once the channel bot is down.
 # Best-effort both ways: a vault/config problem here is logged, never fatal --
 # it must not block the channel bot from starting or stopping.
+#
+# #761 [3.1]: the default target above (~/.claude.json) is NOT what the
+# channels bot actually reads when running in "isolated" main-agent-config
+# mode (MAIN_AGENT_ISOLATED_CONFIG=1, see the CFG_ENV block above) -- that
+# mode's CLAUDE_CONFIG_DIR resolves to $INSTALL_DIR/.channels-config, whose
+# own .claude.json carries its own separate mcpServers.*.headers block. The
+# provisioner (main-agent-isolated-config.mjs) that creates/refreshes this
+# dir is additive-only, so it never propagates the ~/.claude.json vault:
+# template into it -- left unhandled, this second config's HTTP MCP headers
+# (e.g. UptimeRobot's) sit as plaintext at rest, uncovered by the inject/
+# restore cycle above. Run the same inject/restore against it too; both
+# calls are independent and idempotent (each guarded by its own
+# "<target>.vault-template" existence check in vault-inject-http-mcp.mjs),
+# so running this unconditionally -- even on an install that never uses
+# isolated mode, where the file below won't exist and the call is a no-op --
+# is safe.
 "$INSTALL_DIR/scripts/vault-inject-http-mcp.sh" inject >> "$INSTALL_DIR/store/channels-failures.log" 2>&1 || true
-trap '"$INSTALL_DIR/scripts/vault-inject-http-mcp.sh" restore >> "$INSTALL_DIR/store/channels-failures.log" 2>&1 || true' EXIT INT TERM
+"$INSTALL_DIR/scripts/vault-inject-http-mcp.sh" inject "$INSTALL_DIR/.channels-config/.claude.json" >> "$INSTALL_DIR/store/channels-failures.log" 2>&1 || true
+trap '"$INSTALL_DIR/scripts/vault-inject-http-mcp.sh" restore >> "$INSTALL_DIR/store/channels-failures.log" 2>&1 || true; "$INSTALL_DIR/scripts/vault-inject-http-mcp.sh" restore "$INSTALL_DIR/.channels-config/.claude.json" >> "$INSTALL_DIR/store/channels-failures.log" 2>&1 || true' EXIT INT TERM
 
 # Tmux session indítás
 #
