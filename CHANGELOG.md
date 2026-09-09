@@ -265,6 +265,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- exclude `agents/**` and `.channels-config/**` from the vitest collection glob -- in a shared repo root, other fleet agents' worktrees/config directories under those paths were being picked up as spurious test files (#807)
 - restore 3 missing imports in agents.js spoke files (776 QA fix)
 - unify visual style of the two RBAC matrices
 - unify user-row scope chip styling (tenant vs global admin)

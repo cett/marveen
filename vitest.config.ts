@@ -27,7 +27,11 @@ export default defineConfig({
     env: {
       MARVEEN_SCRIPTS_DIR: mainRepoRoot,
     },
-    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'dist/**'],
+    // 'agents/**' and '.channels-config/**' are excluded because a shared working
+    // tree (multiple fleet agents checking out worktrees/config under this repo
+    // root) otherwise gets picked up by vitest's default glob, causing spurious
+    // failures from other agents' Playwright/config files (#807).
+    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'dist/**', 'agents/**', '.channels-config/**'],
     // Default 5 s is too tight for DB-heavy tests in a fully-parallel suite run.
     // Affected tests pass in isolation; the timeout is a concurrency artefact.
     testTimeout: 15000,
