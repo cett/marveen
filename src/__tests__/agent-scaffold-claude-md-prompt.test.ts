@@ -82,6 +82,31 @@ describe('generateClaudeMd: stranger-sender ARANYSZABÁLY block is bot-name agno
   })
 })
 
+describe('fleet-wide rule: delegate/QA only through the coordinator, never peer-to-peer', () => {
+  it('the auto-synced fleet-roster block (delivered to existing agents on respawn) states the rule', () => {
+    const rosterFnStart = SCAFFOLD_SRC.indexOf('function buildFleetRosterBody')
+    expect(rosterFnStart, 'buildFleetRosterBody not found').toBeGreaterThan(0)
+    const rosterFnEnd = SCAFFOLD_SRC.indexOf('\n}', rosterFnStart)
+    expect(rosterFnEnd, 'buildFleetRosterBody end not found').toBeGreaterThan(rosterFnStart)
+    const rosterFnBody = SCAFFOLD_SRC.slice(rosterFnStart, rosterFnEnd)
+
+    expect(rosterFnBody).toMatch(/Feladat-delegálást.*MINDIG a koordinátor/)
+    expect(rosterFnBody).toMatch(/csak TÁJÉKOZTATÁS\/JELZÉS/)
+    expect(rosterFnBody).toContain('${MAIN_AGENT_ID}')
+  })
+
+  it('the CLAUDE.md generation prompt bakes the same rule into brand-new agents (not just existing ones via respawn)', () => {
+    const promptStart = SCAFFOLD_SRC.indexOf('export async function generateClaudeMd')
+    expect(promptStart, 'generateClaudeMd entry not found').toBeGreaterThan(0)
+    const promptEnd = SCAFFOLD_SRC.indexOf('export async function generateSoulMd')
+    expect(promptEnd, 'generateSoulMd terminator not found').toBeGreaterThan(promptStart)
+    const promptBody = SCAFFOLD_SRC.slice(promptStart, promptEnd)
+
+    expect(promptBody).toContain('## Delegálás és QA — csak a koordinátoron keresztül')
+    expect(promptBody).toMatch(/Feladat-delegálást.*MINDIG a koordinátor/)
+  })
+})
+
 describe('deferred MCP tool hint (FLEETDEFER809)', () => {
   it('the shared scaffold teaches select-then-keyword ToolSearch before claiming absence', () => {
     expect(SCAFFOLD_SRC).toContain('deferred betöltése (FLEETDEFER809)')
