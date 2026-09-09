@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `trigger_source` column on the hook-audit table, naming which of the two context-protection layers wrote a given handoff/PreCompact row (`watchdog` for the context-watchdog PostToolUse hook, `compact-monitor` for the scheduled compact heartbeat) instead of leaving it to be inferred from the `hook_type`+`verdict` combination. Both `POST /api/hook-audit` and `GET /api/hook-audit` (new optional `trigger_source` filter) accept/validate the field; the two hook scripts that already wrote to this table now stamp their own value on every row they insert
 - cascade-delete vault SSH pool and purge vault.json secrets
 - add purgeSecretsForTenant for tenant hard-delete cleanup
 - extend context-watchdog to persistent fleet sub-agents
