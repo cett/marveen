@@ -1,6 +1,14 @@
-import { logToolCall, analyzeWorkflowCandidates, getRecentToolCalls, pruneToolCallLog } from '../../db.js'
+import { logToolCall, analyzeWorkflowCandidates, getRecentToolCalls, pruneToolCallLog, upsertOtelSpan } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+
+// mcp__<server>__<tool> -- pull the server segment out for the OTel span
+// attribute (Rick's #800 plan, F2). Non-MCP tool names (Bash, Read, ...)
+// don't match and get no mcp_server attribute.
+function mcpServerFromToolName(toolName: string): string | undefined {
+  const m = toolName.match(/^mcp__([^_].*?)__/)
+  return m ? m[1] : undefined
+}
 
 export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -18,7 +26,36 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
       duration_ms?: number
     }
     if (!data.session_id || !data.tool_name) { json(res, { error: 'required', hint: 'session_id and tool_name required' }, 400); return true }
-    logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, data.success !== false, data.agent_id ?? null, data.trace_id ?? null, data.duration_ms ?? null)
+    const success = data.success !== false
+    logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, success, data.agent_id ?? null, data.trace_id ?? null, data.duration_ms ?? null)
+
+    // OTel F2 (#800/#803): one tool.call span per logged call. The hook only
+    // fires once, after the tool already finished, so this is an
+    // upsert-and-close in one shot rather than a separate open+close pair.
+    // trace_id = session_id groups every tool call (and, from F3 onward,
+    // model-call/agent-turn spans) from one Claude Code session under one
+    // trace; span_id = the CC-native tool_use_id (already unique per call,
+    // same value tool_call_log stores as its own `trace_id` column).
+    if (data.trace_id && data.agent_id) {
+      const endMs = Date.now()
+      const startMs = typeof data.duration_ms === 'number' ? endMs - data.duration_ms : endMs
+      const mcpServer = mcpServerFromToolName(data.tool_name)
+      upsertOtelSpan({
+        trace_id: data.session_id,
+        span_id: data.trace_id,
+        parent_span_id: null,
+        agent_id: data.agent_id,
+        operation: `tool.${data.tool_name}`,
+        start_ms: startMs,
+        end_ms: endMs,
+        status: success ? 'ok' : 'error',
+        attributes: JSON.stringify({
+          tool_name: data.tool_name,
+          ...(mcpServer ? { mcp_server: mcpServer } : {}),
+        }),
+      })
+    }
+
     json(res, { ok: true })
     return true
   }
