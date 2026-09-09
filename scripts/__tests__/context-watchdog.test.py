@@ -103,6 +103,21 @@ def _make_db(path):
           session_id TEXT,
           trigger_source TEXT
         );
+
+        CREATE TABLE otel_spans (
+          trace_id       TEXT NOT NULL,
+          span_id        TEXT NOT NULL,
+          parent_span_id TEXT,
+          agent_id       TEXT NOT NULL,
+          operation      TEXT NOT NULL,
+          start_ms       INTEGER NOT NULL,
+          end_ms         INTEGER,
+          status         TEXT NOT NULL DEFAULT 'ok'
+                           CHECK(status IN ('ok','error','timeout','running')),
+          attributes     TEXT,
+          exported_at    INTEGER,
+          PRIMARY KEY (trace_id, span_id)
+        );
         """
     )
     conn.commit()
@@ -131,6 +146,32 @@ def _usage_event(input_tokens=1000, output_tokens=50, cache_read=0, cache_creati
                 "cache_creation_input_tokens": cache_creation,
             },
             "content": [{"type": "text", "text": text}],
+        },
+    }
+
+
+def _user_event(text="hi", ts="2026-09-08T09:59:00.000Z", uuid="turn-uuid-1"):
+    """A real user-turn-start transcript line (F3 agent.turn boundary)."""
+    return {
+        "type": "user",
+        "timestamp": ts,
+        "uuid": uuid,
+        "sessionId": "sess-1",
+        "message": {"role": "user", "content": text},
+    }
+
+
+def _tool_result_event(ts="2026-09-08T09:59:30.000Z", uuid="tr-1"):
+    """A tool_result envelope Claude Code also logs with role=user -- must
+    NOT be mistaken for a real agent.turn boundary."""
+    return {
+        "type": "user",
+        "timestamp": ts,
+        "uuid": uuid,
+        "sessionId": "sess-1",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}],
         },
     }
 
@@ -274,6 +315,127 @@ class TestWriteTokenRow(unittest.TestCase):
         ev["timestamp"] = None
         ok = hook.write_token_row(self.conn, MAIN_AGENT, "sess-1", ev, "Bash")
         self.assertFalse(ok)
+
+
+class TestIsRealUserTurnStart(unittest.TestCase):
+    def test_string_content_is_real(self):
+        self.assertTrue(hook._is_real_user_turn_start({"role": "user", "content": "hello"}))
+
+    def test_empty_string_is_not_real(self):
+        self.assertFalse(hook._is_real_user_turn_start({"role": "user", "content": "   "}))
+
+    def test_tool_result_only_list_is_not_real(self):
+        content = [{"type": "tool_result", "tool_use_id": "x"}]
+        self.assertFalse(hook._is_real_user_turn_start({"role": "user", "content": content}))
+
+    def test_text_block_in_list_is_real(self):
+        content = [{"type": "text", "text": "hi"}]
+        self.assertTrue(hook._is_real_user_turn_start({"role": "user", "content": content}))
+
+    def test_mixed_list_with_any_non_tool_result_is_real(self):
+        content = [{"type": "tool_result", "tool_use_id": "x"}, {"type": "text", "text": "hi"}]
+        self.assertTrue(hook._is_real_user_turn_start({"role": "user", "content": content}))
+
+    def test_missing_content_is_not_real(self):
+        self.assertFalse(hook._is_real_user_turn_start({"role": "user"}))
+
+
+class TestFindTurnStartEvent(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmpdir.name, "t.jsonl")
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_finds_nearest_real_user_message_skipping_tool_results(self):
+        events = [
+            _user_event(text="first turn", ts="2026-09-08T09:00:00.000Z", uuid="turn-1"),
+            _usage_event(ts="2026-09-08T09:00:05.000Z"),
+            _tool_result_event(ts="2026-09-08T09:00:06.000Z", uuid="tr-1"),
+            _user_event(text="second turn", ts="2026-09-08T09:05:00.000Z", uuid="turn-2"),
+            _usage_event(ts="2026-09-08T09:05:05.000Z"),
+        ]
+        _write_jsonl(self.path, events)
+        ev = hook.find_turn_start_event(self.path, before_ts=hook._parse_ts("2026-09-08T09:05:05.000Z"))
+        self.assertEqual(ev["uuid"], "turn-2")
+
+    def test_before_ts_excludes_later_turns(self):
+        events = [
+            _user_event(text="first turn", ts="2026-09-08T09:00:00.000Z", uuid="turn-1"),
+            _usage_event(ts="2026-09-08T09:00:05.000Z"),
+            _user_event(text="second turn", ts="2026-09-08T09:05:00.000Z", uuid="turn-2"),
+        ]
+        _write_jsonl(self.path, events)
+        ev = hook.find_turn_start_event(self.path, before_ts=hook._parse_ts("2026-09-08T09:00:05.000Z"))
+        self.assertEqual(ev["uuid"], "turn-1")
+
+    def test_no_user_message_returns_none(self):
+        _write_jsonl(self.path, [_usage_event()])
+        self.assertIsNone(hook.find_turn_start_event(self.path))
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(hook.find_turn_start_event("/nonexistent/path/x.jsonl"))
+
+    def test_empty_path_returns_none(self):
+        self.assertIsNone(hook.find_turn_start_event(""))
+
+
+class TestOtelSpanWrites(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.conn = _make_db(self.tmp.name)
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.tmp.name)
+
+    def test_write_model_call_span_inserts_row(self):
+        ev = _usage_event(input_tokens=10, output_tokens=5, cache_read=1, cache_creation=2)
+        span_id = hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", ev, "turn-1")
+        self.assertEqual(span_id, "msg_1")
+        row = self.conn.execute(
+            "SELECT trace_id, span_id, parent_span_id, agent_id, operation, status FROM otel_spans WHERE span_id = ?",
+            (span_id,),
+        ).fetchone()
+        self.assertEqual(row, ("sess-1", "msg_1", "turn-1", MAIN_AGENT, "model.call", "ok"))
+
+    def test_write_model_call_span_missing_id_returns_none(self):
+        ev = _usage_event()
+        del ev["message"]["id"]
+        self.assertIsNone(hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", ev, None))
+        count = self.conn.execute("SELECT COUNT(*) FROM otel_spans").fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_write_agent_turn_span_inserts_running_row(self):
+        turn_ev = _user_event(uuid="turn-1", ts="2026-09-08T09:00:00.000Z")
+        span_id = hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn_ev, 1700000000000)
+        self.assertEqual(span_id, "turn-1")
+        row = self.conn.execute(
+            "SELECT operation, status, end_ms, parent_span_id FROM otel_spans WHERE span_id = ?", (span_id,)
+        ).fetchone()
+        self.assertEqual(row, ("agent.turn", "running", 1700000000000, None))
+
+    def test_write_agent_turn_span_rolls_end_ms_forward(self):
+        turn_ev = _user_event(uuid="turn-1", ts="2026-09-08T09:00:00.000Z")
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn_ev, 1000)
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn_ev, 2000)
+        end_ms = self.conn.execute("SELECT end_ms FROM otel_spans WHERE span_id = 'turn-1'").fetchone()[0]
+        self.assertEqual(end_ms, 2000)
+        count = self.conn.execute("SELECT COUNT(*) FROM otel_spans").fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_close_stale_turn_spans_closes_other_running_spans_only(self):
+        turn1 = _user_event(uuid="turn-1", ts="2026-09-08T09:00:00.000Z")
+        turn2 = _user_event(uuid="turn-2", ts="2026-09-08T09:05:00.000Z")
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn1, 1000)
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn2, 2000)
+        hook.close_stale_turn_spans(self.conn, "sess-1", keep_span_id="turn-2")
+        rows = dict(self.conn.execute(
+            "SELECT span_id, status FROM otel_spans WHERE operation = 'agent.turn'"
+        ).fetchall())
+        self.assertEqual(rows, {"turn-1": "ok", "turn-2": "running"})
 
 
 class TestRecordHandoffAudit(unittest.TestCase):
@@ -441,6 +603,44 @@ class TestMainSubprocess(unittest.TestCase):
         if os.path.exists(self.compact_state_path):
             with open(self.compact_state_path) as f:
                 self.assertNotIn(MAIN_AGENT, json.load(f))
+
+    def test_writes_agent_turn_and_model_call_spans(self):
+        _write_jsonl(self.transcript_path, [
+            _user_event(text="do the thing", ts="2026-09-08T10:00:00.000Z", uuid="turn-a"),
+            _usage_event(ts="2026-09-08T10:00:05.000Z", input_tokens=500, output_tokens=20),
+        ])
+        r = self._run_hook(self._payload())
+        self.assertEqual(r.returncode, 0)
+        conn = sqlite3.connect(self.db_path)
+        turn = conn.execute(
+            "SELECT span_id, parent_span_id, status FROM otel_spans WHERE operation = 'agent.turn'"
+        ).fetchone()
+        model = conn.execute(
+            "SELECT span_id, parent_span_id, trace_id FROM otel_spans WHERE operation = 'model.call'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(turn, ("turn-a", None, "running"))
+        self.assertEqual(model, ("msg_1", "turn-a", "sess-1"))
+
+    def test_second_turn_closes_first_turn_span(self):
+        _write_jsonl(self.transcript_path, [
+            _user_event(text="first", ts="2026-09-08T10:00:00.000Z", uuid="turn-a"),
+            _usage_event(ts="2026-09-08T10:00:05.000Z"),
+        ])
+        self._run_hook(self._payload())
+        _write_jsonl(self.transcript_path, [
+            _user_event(text="first", ts="2026-09-08T10:00:00.000Z", uuid="turn-a"),
+            _usage_event(ts="2026-09-08T10:00:05.000Z"),
+            _user_event(text="second", ts="2026-09-08T10:05:00.000Z", uuid="turn-b"),
+            _usage_event(ts="2026-09-08T10:05:05.000Z"),
+        ])
+        self._run_hook(self._payload())
+        conn = sqlite3.connect(self.db_path)
+        rows = dict(conn.execute(
+            "SELECT span_id, status FROM otel_spans WHERE operation = 'agent.turn'"
+        ).fetchall())
+        conn.close()
+        self.assertEqual(rows, {"turn-a": "ok", "turn-b": "running"})
 
     def test_high_usage_emits_handoff_and_stamps_interlock(self):
         # 65% of the 400000 threshold configured in setUp.

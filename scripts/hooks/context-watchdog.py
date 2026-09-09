@@ -34,6 +34,23 @@ context-compact-monitor.sh) can be considered: 10 HANDOFF cycles need to
 land with the interlock actually landing and no double-compact slipping
 through before that decision is even on the table.
 
+#800 F3 (distinct numbering from this hook's own phase 2/3 above -- this is
+OTel work, not the watchdog gate): on the same PostToolUse call that writes
+the token_usage row, also upsert an `agent.turn` span and a `model.call`
+span into otel_spans (see db/observability.ts's upsertOtelSpan for the TS
+counterpart used by the F2 tool.call span). model.call is one span per
+distinct assistant message (span_id = the API's own msg_... id, already
+unique -- see write_model_call_span()). agent.turn has no dedicated
+start/end hook (Rick's plan named this hook's own PostToolUse as the
+implementation site, not a new Stop hook): find_turn_start_event() walks the
+transcript backward for the nearest real user-turn boundary and
+write_agent_turn_span() upserts that span, rolling its end_ms forward on
+every tool call within the turn; close_stale_turn_spans() flips any OTHER
+still-'running' agent.turn span on the same trace to 'ok' once a new turn
+boundary is detected, since a turn only becomes provably finished once a
+newer one has started. Same local-SQLite-only, no-network constraint as the
+rest of this hook -- see the Logging-category paragraph below.
+
 Scope (phase 4 sub-agent extension): the main channels agent AND every
 persistent named fleet sub-agent (agents/<id>/.claude/settings.json) -- each
 scaffolded via agent-scaffold.ts's ensureContextWatchdogHook(), one entry per
@@ -220,6 +237,156 @@ def write_token_row(conn, agent_id, session_id, ev, tool_name) -> bool:
     )
     conn.commit()
     return True
+
+
+def _is_real_user_turn_start(msg: dict) -> bool:
+    """True turn boundary: a user message carrying actual user content, not
+    one of the tool_result envelopes Claude Code also logs with role=user
+    (one per tool call, in between agent.turn boundaries). A content list
+    counts as a real boundary if any block is NOT a tool_result -- covers
+    plain text, images, and any future block type; a plain string content
+    counts if non-empty."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(
+            isinstance(b, dict) and b.get("type") != "tool_result"
+            for b in content
+        )
+    return False
+
+
+def find_turn_start_event(transcript_path, before_ts=None):
+    """Scan the transcript backward for the nearest real user-turn-start
+    event (see _is_real_user_turn_start) at or before before_ts (epoch
+    seconds). Returns the raw parsed transcript line, or None if no boundary
+    is found (e.g. the transcript was truncated past the turn's start).
+    Read separately from latest_usage_event() -- same defensive per-call file
+    read, kept independently testable, mirrors this module's existing style."""
+    if not transcript_path:
+        return None
+    try:
+        with open(transcript_path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        msg = ev.get("message") or {}
+        if msg.get("role") != "user":
+            continue
+        if before_ts is not None:
+            ts = _parse_ts(ev.get("timestamp"))
+            if ts is not None and ts > before_ts:
+                continue
+        if _is_real_user_turn_start(msg):
+            return ev
+    return None
+
+
+def upsert_otel_span(conn, trace_id, span_id, parent_span_id, agent_id, operation,
+                      start_ms, end_ms, status, attributes) -> None:
+    """Same upsert shape as db/observability.ts's upsertOtelSpan (TS side,
+    used by the F2 tool-call span) -- INSERT, and on a (trace_id, span_id)
+    conflict, only refresh end_ms/status/attributes so a span already closed
+    by another writer is never reopened."""
+    conn.execute(
+        """
+        INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (trace_id, span_id) DO UPDATE SET
+          end_ms = excluded.end_ms,
+          status = excluded.status,
+          attributes = COALESCE(excluded.attributes, otel_spans.attributes)
+        """,
+        (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes),
+    )
+
+
+def close_stale_turn_spans(conn, trace_id: str, keep_span_id: str) -> None:
+    """Once a new agent.turn boundary is detected for this trace, any OTHER
+    still-'running' agent.turn span on the same trace is from a now-finished
+    turn -- close it in place (status only; its end_ms already reflects the
+    last tool call processed while it was the current turn, since every
+    PostToolUse call during that turn kept extending it via upsert_otel_span
+    above). No Stop hook exists to close a turn exactly when it ends (see
+    module docstring on scope); this is the turn boundary's own PostToolUse
+    extension standing in for one, same implementation site Rick's plan
+    named for the agent.turn span."""
+    conn.execute(
+        """
+        UPDATE otel_spans SET status = 'ok'
+        WHERE trace_id = ? AND operation = 'agent.turn' AND status = 'running' AND span_id != ?
+        """,
+        (trace_id, keep_span_id),
+    )
+
+
+def write_agent_turn_span(conn, agent_id: str, session_id: str, turn_ev: dict, latest_ts_ms: int) -> str | None:
+    """Upsert the agent.turn span for the turn currently in progress. Reuses
+    the turn-start event's own transcript uuid as the span_id (stable,
+    already unique) and rolls end_ms forward to the latest processed event
+    on every call, so the span keeps growing until close_stale_turn_spans()
+    closes it on the next turn's first tool call."""
+    turn_span_id = turn_ev.get("uuid")
+    if not turn_span_id:
+        return None
+    start_ts = _parse_ts(turn_ev.get("timestamp"))
+    start_ms = start_ts * 1000 if start_ts is not None else latest_ts_ms
+    upsert_otel_span(
+        conn,
+        trace_id=session_id,
+        span_id=turn_span_id,
+        parent_span_id=None,
+        agent_id=agent_id,
+        operation="agent.turn",
+        start_ms=start_ms,
+        end_ms=latest_ts_ms,
+        status="running",
+        attributes=None,
+    )
+    return turn_span_id
+
+
+def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_span_id) -> str | None:
+    """Upsert the model.call span for the latest assistant usage event.
+    span_id = the Anthropic API message id (msg_..., already unique per
+    model call, present on every usage-bearing transcript line) -- so a
+    later PostToolUse call that re-reads the same "latest" line before a
+    newer one exists is a harmless no-op upsert, not a duplicate span."""
+    msg = ev.get("message") or {}
+    usage = msg.get("usage") or {}
+    model_id = msg.get("id")
+    ts = _parse_ts(ev.get("timestamp"))
+    if not model_id or ts is None:
+        return None
+    ts_ms = ts * 1000
+    upsert_otel_span(
+        conn,
+        trace_id=session_id,
+        span_id=model_id,
+        parent_span_id=turn_span_id,
+        agent_id=agent_id,
+        operation="model.call",
+        start_ms=ts_ms,
+        end_ms=ts_ms,
+        status="ok",
+        attributes=json.dumps({
+            "model": msg.get("model"),
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
+            "cache_creation_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+        }),
+    )
+    return model_id
 
 
 def _gate_config_path() -> str:
@@ -421,6 +588,21 @@ def main():
 
     try:
         write_token_row(conn, agent_id, session_id, ev, tool_name)
+
+        # F3 (#800): agent.turn + model.call spans, same PostToolUse call.
+        # A missing turn boundary (e.g. transcript truncated past the turn's
+        # start) still lets the model.call span through, just without a
+        # parent -- best-effort, never blocks token_row/HANDOFF logic below.
+        ev_ts = _parse_ts(ev.get("timestamp"))
+        turn_span_id = None
+        if ev_ts is not None:
+            turn_ev = find_turn_start_event(transcript_path, before_ts=ev_ts)
+            if turn_ev is not None:
+                turn_span_id = write_agent_turn_span(conn, agent_id, session_id, turn_ev, ev_ts * 1000)
+                if turn_span_id:
+                    close_stale_turn_spans(conn, session_id, turn_span_id)
+        write_model_call_span(conn, agent_id, session_id, ev, turn_span_id)
+        conn.commit()
 
         threshold = _read_gate_threshold(agent_id)
         pct = (tokens / threshold) if threshold > 0 else 0
