@@ -13,7 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
-- Backend coverage step 1 of #751 (85% target, gradual): `src/web/routes/fleet-q.ts` (`GET /.well-known/fleetq`, `PUT /api/agents/:name/capabilities`) was at 0% -- fully covered now (manifest building, 404/400 validation paths, URL-decoding, unmatched-route passthrough). `vitest.config.ts`'s coverage floor ratcheted up to match (statements 56->57, branches 55->56, functions 59->60, lines 57->58), ~2 points below the actual measured numbers to absorb normal jitter
+- Backend coverage -> 85% target (#751, gradual, all steps landing on this one feature branch per Jonas's call rather than a PR per module). So far: `src/web/routes/fleet-q.ts` (`GET /.well-known/fleetq`, `PUT /api/agents/:name/capabilities`) and `src/web/routes/docs.ts` (`GET /api/docs`, `GET /api/docs/:name`, incl. its path-traversal rejection) were both at 0% -- fully covered now. `vitest.config.ts`'s coverage floor ratcheted up to match (statements 56->57, branches 55->56, functions 59->60, lines 57->58), kept ~1.5-2.3 points below the actual measured numbers (59.08/58.12/61.55/60.31) to absorb normal jitter
 
 - CI: a new "Shell tests" step runs `scripts/__tests__/*.test.sh` (same red/green loop pattern as the existing "Python tests" step) -- these shell contract tests (channels.sh vault-inject coverage, vault-file-materializer, channels-mcp-unlock, channels-auth-probe, disk-space-guard, etc.) previously only ran manually/locally, so a regression in any of them could merge unnoticed (#813, found by Zack while working on #761)
 
