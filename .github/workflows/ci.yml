@@ -37,6 +37,56 @@ jobs:
       - name: Security audit
         run: npm audit --audit-level=high
 
+      - name: pip-audit (Python script dependencies)
+        env:
+          PIP_AUDIT_VERSION: 2.10.1
+        run: |
+          python3 -m venv /tmp/pip-audit-venv
+          /tmp/pip-audit-venv/bin/pip install --quiet "pip-audit==$PIP_AUDIT_VERSION"
+          /tmp/pip-audit-venv/bin/pip-audit \
+            -r scripts/gdocs-requirements.txt \
+            -r scripts/watchdog-requirements.txt
+
+      - name: Semgrep JS/TS security scan (report-only)
+        # #816: best-ROI static analysis per #814's assessment -- npm audit
+        # (above) only covers the dependency layer, this catches patterns in
+        # our OWN code (injection, hardcoded-secret shapes, misconfigured
+        # crypto/CORS, etc). Starts report-only (continue-on-error) until the
+        # first findings are triaged; flip to blocking once that's done.
+        continue-on-error: true
+        env:
+          SEMGREP_VERSION: 1.176.1
+        run: |
+          python3 -m venv /tmp/semgrep-venv
+          /tmp/semgrep-venv/bin/pip install --quiet "semgrep==$SEMGREP_VERSION"
+          /tmp/semgrep-venv/bin/semgrep scan \
+            --config=p/security-audit --config=p/secrets \
+            --config=p/javascript --config=p/typescript \
+            --exclude=node_modules --exclude=dist --exclude=coverage \
+            --json --output=semgrep-results.json \
+            src web scripts
+          python3 - <<'PYEOF'
+          import json
+          with open('semgrep-results.json') as f:
+              data = json.load(f)
+          results = data.get('results', [])
+          print(f"\nSemgrep: {len(results)} finding(s) (report-only, not blocking this build)\n")
+          for r in results:
+              path = r.get('path')
+              line = r.get('start', {}).get('line')
+              rule = r.get('check_id')
+              msg = r.get('extra', {}).get('message', '').split('\n')[0]
+              print(f"  {path}:{line}  {rule}\n    {msg}")
+          PYEOF
+
+      - name: Upload Semgrep results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-report
+          path: semgrep-results.json
+          retention-days: 30
+
       - name: CSS design system guard
         run: bash scripts/css-guard.sh
 
