@@ -222,7 +222,7 @@ function encryptWithPassword(plaintext: string, password: string): string {
   const salt = randomBytes(KDF_SALT_LEN)
   const key = scryptSync(password, salt, KDF_KEYLEN, { N: 2 ** KDF_N_LOG2, r: KDF_R, p: KDF_P, maxmem: 256 * 1024 * 1024 })
   const iv = randomBytes(GCM_IV_LEN)
-  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const cipher = createCipheriv('aes-256-gcm', key, iv, { authTagLength: GCM_TAG_LEN })
   const enc = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()])
   const tag = cipher.getAuthTag()
   const header = Buffer.from([KDF_VERSION, KDF_N_LOG2, KDF_R, KDF_P])
@@ -253,7 +253,12 @@ function decryptWithPassword(packed: string, password: string): string {
   const tag = buf.subarray(off + KDF_SALT_LEN + GCM_IV_LEN, off + KDF_SALT_LEN + GCM_IV_LEN + GCM_TAG_LEN)
   const ciphertext = buf.subarray(off + KDF_SALT_LEN + GCM_IV_LEN + GCM_TAG_LEN)
   const key = scryptSync(password, salt, KDF_KEYLEN, { N: 2 ** nLog2, r, p, maxmem: 256 * 1024 * 1024 })
-  const decipher = createDecipheriv('aes-256-gcm', key, iv)
+  // authTagLength pinned explicitly (matches encryptWithPassword's GCM_TAG_LEN)
+  // so a malformed/short tag fails loudly instead of GCM silently accepting a
+  // weaker-than-intended tag length (#817, Semgrep gcm-no-tag-length). The
+  // MIN_PACKED_LEN check above already guarantees `tag` is exactly
+  // GCM_TAG_LEN bytes, so this is defense-in-depth, not a behavior change.
+  const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: GCM_TAG_LEN })
   decipher.setAuthTag(tag)
   // Buffer.concat avoids multi-byte UTF-8 split corruption at chunk boundary
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf-8')

@@ -203,7 +203,14 @@ export function startWebServer(port = 3420): http.Server {
     // in Allow-Headers or the preflight rejects the Bearer header.
     if (origin && (allowedOrigins.has(origin) ||
         originMatchesServedHost(origin, req.headers.host, req.headers['x-forwarded-host'] as string | undefined))) {
-      res.setHeader('Access-Control-Allow-Origin', origin)
+      // #817 triage: reflecting `origin` here is intentional and already validated --
+      // it only runs inside the allowlist/same-host branch above (Set membership or
+      // originMatchesServedHost's Host/X-Forwarded-Host comparison), not a raw
+      // reflection of an unchecked header. Reflecting a *specific validated* origin
+      // (rather than a static single value or "*") is the only spec-compliant way to
+      // support multiple allowed origins with credentialed requests -- Semgrep's
+      // pattern can't see the preceding boolean-guard control flow.
+      res.setHeader('Access-Control-Allow-Origin', origin) // nosemgrep: javascript.express.security.cors-misconfiguration.cors-misconfiguration
       res.setHeader('Vary', 'Origin')
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
