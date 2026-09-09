@@ -4,7 +4,7 @@
 //
 // Spec: opentelemetry-proto/trace/v1/trace.proto (JSON encoding)
 
-import type { OtelSpan } from './db.js'
+import type { OtelSpan, TokenUsageMetricRow } from './db.js'
 
 interface OtelAttribute {
   key: string
@@ -71,8 +71,10 @@ function normaliseId(id: string): string {
 }
 
 // Group spans by agent_id, then emit one resourceSpans block per agent
-// so Grafana Tempo / Jaeger can filter by service.name.
-export function spansToOtelJson(spans: OtelSpan[]): OtelExportPayload {
+// so Grafana Tempo / Jaeger can filter by service.name. `serviceNamespace`
+// distinguishes multiple Marveen deployments pushing to the same collector
+// (OTEL_SERVICE_NAME setting); per-agent service.name is unaffected.
+export function spansToOtelJson(spans: OtelSpan[], serviceNamespace = 'marveen'): OtelExportPayload {
   const byAgent = new Map<string, OtelSpan[]>()
   for (const span of spans) {
     const bucket = byAgent.get(span.agent_id) ?? []
@@ -105,7 +107,7 @@ export function spansToOtelJson(spans: OtelSpan[]): OtelExportPayload {
       resource: {
         attributes: [
           { key: 'service.name', value: { stringValue: `marveen-agent-${agentId}` } },
-          { key: 'service.namespace', value: { stringValue: 'marveen' } },
+          { key: 'service.namespace', value: { stringValue: serviceNamespace } },
         ],
       },
       scopeSpans: [{
@@ -116,4 +118,110 @@ export function spansToOtelJson(spans: OtelSpan[]): OtelExportPayload {
   }
 
   return { resourceSpans }
+}
+
+// ── OTLP Metrics (gen_ai.client.token.usage) ──────────────────────────────────
+// Spec: opentelemetry-proto/metrics/v1/metrics.proto (JSON encoding).
+// Follows the OTel GenAI Semantic Conventions metric name and the
+// gen_ai.token.type attribute; marveen.agent.id / marveen.tenant.id are our
+// own dimensions (not yet standardised for multi-tenant agent fleets).
+
+interface OtelNumberDataPoint {
+  attributes: OtelAttribute[]
+  startTimeUnixNano: string
+  timeUnixNano: string
+  asInt: string
+}
+
+interface OtelMetric {
+  name: string
+  unit: string
+  sum: {
+    dataPoints: OtelNumberDataPoint[]
+    aggregationTemporality: number // 2 = DELTA
+    isMonotonic: boolean
+  }
+}
+
+interface ScopeMetrics {
+  scope: { name: string; version: string }
+  metrics: OtelMetric[]
+}
+
+interface ResourceMetrics {
+  resource: { attributes: OtelAttribute[] }
+  scopeMetrics: ScopeMetrics[]
+}
+
+export interface OtelMetricsExportPayload {
+  resourceMetrics: ResourceMetrics[]
+}
+
+const TOKEN_TYPE_FIELDS: { field: keyof TokenUsageMetricRow; type: string }[] = [
+  { field: 'input_tokens', type: 'input' },
+  { field: 'output_tokens', type: 'output' },
+  { field: 'cache_read_tokens', type: 'cache_read' },
+  { field: 'cache_creation_tokens', type: 'cache_creation' },
+  { field: 'thinking_tokens', type: 'thinking' },
+]
+
+// One resourceMetrics block per agent (mirrors spansToOtelJson), one data
+// point per (model, tenant, token type) with a nonzero delta in the window.
+export function tokenUsageToOtelMetricsJson(
+  rows: TokenUsageMetricRow[],
+  windowStartSec: number,
+  windowEndSec: number,
+  serviceNamespace = 'marveen',
+): OtelMetricsExportPayload {
+  const startNano = msToNano(windowStartSec * 1000)
+  const endNano = msToNano(windowEndSec * 1000)
+
+  const byAgent = new Map<string, TokenUsageMetricRow[]>()
+  for (const row of rows) {
+    const bucket = byAgent.get(row.agent) ?? []
+    bucket.push(row)
+    byAgent.set(row.agent, bucket)
+  }
+
+  const resourceMetrics: ResourceMetrics[] = []
+  for (const [agentId, agentRows] of byAgent) {
+    const dataPoints: OtelNumberDataPoint[] = []
+    for (const row of agentRows) {
+      for (const { field, type } of TOKEN_TYPE_FIELDS) {
+        const value = row[field] as number
+        if (!value) continue
+        dataPoints.push({
+          attributes: [
+            { key: 'gen_ai.request.model', value: { stringValue: row.model ?? 'unknown' } },
+            { key: 'gen_ai.token.type', value: { stringValue: type } },
+            { key: 'marveen.agent.id', value: { stringValue: agentId } },
+            { key: 'marveen.tenant.id', value: { stringValue: row.tenant_id } },
+          ],
+          startTimeUnixNano: startNano,
+          timeUnixNano: endNano,
+          asInt: String(Math.round(value)),
+        })
+      }
+    }
+    if (dataPoints.length === 0) continue
+
+    resourceMetrics.push({
+      resource: {
+        attributes: [
+          { key: 'service.name', value: { stringValue: `marveen-agent-${agentId}` } },
+          { key: 'service.namespace', value: { stringValue: serviceNamespace } },
+        ],
+      },
+      scopeMetrics: [{
+        scope: { name: 'marveen', version: '1' },
+        metrics: [{
+          name: 'gen_ai.client.token.usage',
+          unit: '{token}',
+          sum: { dataPoints, aggregationTemporality: 2, isMonotonic: true },
+        }],
+      }],
+    })
+  }
+
+  return { resourceMetrics }
 }

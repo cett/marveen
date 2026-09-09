@@ -263,6 +263,77 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
   `).all(limit) as OtelTraceSummary[]
 }
 
+// ── OTLP push exporter (#800/#802) ────────────────────────────────────────────
+// Closed, not-yet-pushed spans -- the push loop's per-tick trace batch.
+// "Closed" (end_ms set) so a span still open on another agent's turn is
+// never exported half-finished; it becomes visible once it closes.
+export function getUnexportedOtelSpans(limit = 500): OtelSpan[] {
+  return db.prepare(`
+    SELECT * FROM otel_spans
+    WHERE end_ms IS NOT NULL AND exported_at IS NULL
+    ORDER BY end_ms ASC
+    LIMIT ?
+  `).all(limit) as OtelSpan[]
+}
+
+// Marks a batch of spans as pushed. Runs as one transaction so a crash
+// mid-batch can't leave some spans marked and others not for the same POST.
+export function markOtelSpansExported(pairs: { trace_id: string; span_id: string }[], exportedAtMs: number): void {
+  if (pairs.length === 0) return
+  const stmt = db.prepare('UPDATE otel_spans SET exported_at = ? WHERE trace_id = ? AND span_id = ?')
+  const tx = db.transaction((rows: typeof pairs) => {
+    for (const p of rows) stmt.run(exportedAtMs, p.trace_id, p.span_id)
+  })
+  tx(pairs)
+}
+
+export interface OtelMetricsExportState {
+  last_export_ms: number
+}
+
+export function getOtelMetricsExportState(): OtelMetricsExportState {
+  const row = db.prepare('SELECT last_export_ms FROM otel_metrics_export_state WHERE id = 1')
+    .get() as OtelMetricsExportState | undefined
+  return row ?? { last_export_ms: 0 }
+}
+
+export function setOtelMetricsExportWatermark(lastExportMs: number): void {
+  db.prepare('UPDATE otel_metrics_export_state SET last_export_ms = ? WHERE id = 1').run(lastExportMs)
+}
+
+export interface TokenUsageMetricRow {
+  agent: string
+  model: string | null
+  tenant_id: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  thinking_tokens: number
+}
+
+// Aggregates token_usage rows in (sinceMs, untilMs] -- both in *seconds* to
+// match token_usage.timestamp -- grouped by (agent, model, tenant), for the
+// gen_ai.client.token.usage delta metric export. Bounded window (not just
+// ">= sinceMs") so a slow tick can't double-count rows a later tick would
+// also pick up.
+export function sumTokenUsageWindow(sinceSec: number, untilSec: number): TokenUsageMetricRow[] {
+  return db.prepare(`
+    SELECT
+      agent,
+      model,
+      tenant_id,
+      SUM(input_tokens)          AS input_tokens,
+      SUM(output_tokens)         AS output_tokens,
+      SUM(cache_read_tokens)     AS cache_read_tokens,
+      SUM(cache_creation_tokens) AS cache_creation_tokens,
+      SUM(thinking_tokens)       AS thinking_tokens
+    FROM token_usage
+    WHERE timestamp > ? AND timestamp <= ?
+    GROUP BY agent, model, tenant_id
+  `).all(sinceSec, untilSec) as TokenUsageMetricRow[]
+}
+
 // ── B2B Tenant registry ───────────────────────────────────────────────────────
 
 export interface Tenant {
