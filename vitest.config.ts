@@ -50,14 +50,14 @@ export default defineConfig({
       // Ratchet floor, re-measured for #751 (backend coverage -> 85%, one
       // feature branch for the whole gradual series -- Jonas's call, keep
       // adding steps here rather than opening a PR per module). Steps so
-      // far: src/web/routes/fleet-q.ts and src/web/routes/docs.ts, both
-      // 0% -> fully covered. Local baseline after both: statements 59.08%,
-      // branches 58.12%, functions 61.55%, lines 60.31%. Floor kept at the
-      // same values as after step 1 (still ~1.5-2.3 points of buffer below
-      // the new numbers) rather than bumped again for this small an
-      // increment -- raise only once the level actually reached clearly
-      // supports it, never round up ahead of the measurement. Ratchet up
-      // further as more steps land in this branch.
+      // far: src/web/routes/fleet-q.ts, src/web/routes/docs.ts, and
+      // src/web/routes/agent-taskstate.ts, all 0% -> fully covered. Local
+      // baseline after all three: statements 59.22%, branches 58.26%,
+      // functions 61.59%, lines 60.45%. Floor kept at the same values (still
+      // ~1.6-2.5 points of buffer below the new numbers) rather than bumped
+      // again for this small an increment per step -- raise only once the
+      // level actually reached clearly supports it, never round up ahead of
+      // the measurement. Ratchet up further as more steps land in this branch.
       thresholds: {
         statements: 57,
         branches: 56,
