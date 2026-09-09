@@ -13,6 +13,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `POST /api/tool-log`'s `tool.call` OTel span gains an `mcp_tool` attribute alongside the existing `mcp_server` one for `mcp__<server>__<tool>` calls (#800 F4, the "realistic MCP correlation" scope from Rick's plan -- full W3C trace propagation into STDIO MCP servers, the majority, isn't possible; a span attribute an operator can grep an MCP server's own logs against is what's achievable). The split is on the first `__` boundary, so a server name that itself contains underscores (e.g. `plugin_telegram_telegram`) still keeps its full name in `mcp_server`
+- context-watchdog.py (the PostToolUse hook already writing per-turn `token_usage` rows) now also upserts `agent.turn` and `model.call` OTel spans into `otel_spans` on every tool call (#800 F3): `model.call` is one span per distinct assistant message (span_id = the API's own `msg_...` id), attributed with model + token counts; `agent.turn` spans the turn in progress (span_id = the nearest preceding real user message's transcript uuid, found by walking the transcript backward past any tool_result envelopes), rolling its `end_ms` forward on every tool call and getting closed once a newer turn boundary is detected -- no dedicated Stop hook needed, the boundary detection lives entirely in this hook's existing PostToolUse call. Same local-SQLite-only, no-network, best-effort semantics as the rest of the hook
+- **[API]** `POST /api/tool-log` now also writes a closed `tool.call` OTel span to `otel_spans` for every logged tool call (trace_id = session_id, span_id = the existing CC-native `tool_use_id`), with an `mcp_server` attribute for `mcp__<server>__<tool>` calls -- feeds the F1 OTLP push exporter (#800 F2)
 - **[API]** `trigger_source` column on the hook-audit table, naming which of the two context-protection layers wrote a given handoff/PreCompact row (`watchdog` for the context-watchdog PostToolUse hook, `compact-monitor` for the scheduled compact heartbeat) instead of leaving it to be inferred from the `hook_type`+`verdict` combination. Both `POST /api/hook-audit` and `GET /api/hook-audit` (new optional `trigger_source` filter) accept/validate the field; the two hook scripts that already wrote to this table now stamp their own value on every row they insert
 - cascade-delete vault SSH pool and purge vault.json secrets
 - add purgeSecretsForTenant for tenant hard-delete cleanup
@@ -264,8 +267,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- exclude `agents/**` and `.channels-config/**` from the vitest collection glob -- in a shared repo root, other fleet agents' worktrees/config directories under those paths were being picked up as spurious test files (#807)
 - vault-file-materializer no longer severs the wrapped command's stdin -- a backgrounded child in a non-interactive shell got `/dev/null` by the POSIX async default, which silently broke every stdio MCP server launched through the credential materializer (its handshake/login hung forever waiting for JSON-RPC input that would never arrive; observed as a Garmin MCP login hang). One-line fix: `"$@" <&0 &` instead of `"$@" &`, tying the child's stdin back to the wrapper's own
-
 - restore 3 missing imports in agents.js spoke files (776 QA fix)
 - unify visual style of the two RBAC matrices
 - unify user-row scope chip styling (tenant vs global admin)

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { spansToOtelJson } from '../otel-exporter.js'
-import type { OtelSpan } from '../db.js'
+import { spansToOtelJson, tokenUsageToOtelMetricsJson } from '../otel-exporter.js'
+import type { OtelSpan, TokenUsageMetricRow } from '../db.js'
 
 function span(overrides: Partial<OtelSpan> = {}): OtelSpan {
   return {
@@ -129,5 +129,99 @@ describe('spansToOtelJson', () => {
   it('sets scope name to marveen', () => {
     const result = spansToOtelJson([span()])
     expect(result.resourceSpans[0].scopeSpans[0].scope.name).toBe('marveen')
+  })
+
+  it('defaults service.namespace to marveen', () => {
+    const result = spansToOtelJson([span()])
+    const attrs = result.resourceSpans[0].resource.attributes
+    expect(attrs.find(a => a.key === 'service.namespace')?.value.stringValue).toBe('marveen')
+  })
+
+  it('uses the given serviceNamespace override, leaving per-agent service.name unaffected', () => {
+    const result = spansToOtelJson([span({ agent_id: 'agent-a' })], 'marveen-eu')
+    const attrs = result.resourceSpans[0].resource.attributes
+    expect(attrs.find(a => a.key === 'service.namespace')?.value.stringValue).toBe('marveen-eu')
+    expect(attrs.find(a => a.key === 'service.name')?.value.stringValue).toBe('marveen-agent-agent-a')
+  })
+})
+
+function tokenRow(overrides: Partial<TokenUsageMetricRow> = {}): TokenUsageMetricRow {
+  return {
+    agent: 'agent-a',
+    model: 'claude-sonnet-5',
+    tenant_id: 'default',
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    thinking_tokens: 0,
+    ...overrides,
+  }
+}
+
+describe('tokenUsageToOtelMetricsJson', () => {
+  it('returns empty resourceMetrics for empty input', () => {
+    const result = tokenUsageToOtelMetricsJson([], 1000, 2000)
+    expect(result.resourceMetrics).toHaveLength(0)
+  })
+
+  it('groups rows by agent into separate resourceMetrics blocks', () => {
+    const rows = [
+      tokenRow({ agent: 'agent-a', input_tokens: 10 }),
+      tokenRow({ agent: 'agent-b', input_tokens: 20 }),
+    ]
+    const result = tokenUsageToOtelMetricsJson(rows, 1000, 2000)
+    expect(result.resourceMetrics).toHaveLength(2)
+  })
+
+  it('emits one data point per nonzero token-type field', () => {
+    const rows = [tokenRow({ input_tokens: 10, output_tokens: 5, cache_read_tokens: 0 })]
+    const result = tokenUsageToOtelMetricsJson(rows, 1000, 2000)
+    const points = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints
+    expect(points).toHaveLength(2)
+    const types = points.map(p => p.attributes.find(a => a.key === 'gen_ai.token.type')?.value.stringValue)
+    expect(types.sort()).toEqual(['input', 'output'])
+  })
+
+  it('skips zero-value token types entirely', () => {
+    const rows = [tokenRow({ input_tokens: 0, output_tokens: 0 })]
+    const result = tokenUsageToOtelMetricsJson(rows, 1000, 2000)
+    expect(result.resourceMetrics).toHaveLength(0)
+  })
+
+  it('sets the metric name to gen_ai.client.token.usage', () => {
+    const result = tokenUsageToOtelMetricsJson([tokenRow({ input_tokens: 1 })], 1000, 2000)
+    expect(result.resourceMetrics[0].scopeMetrics[0].metrics[0].name).toBe('gen_ai.client.token.usage')
+  })
+
+  it('carries model, agent, and tenant as data-point attributes', () => {
+    const result = tokenUsageToOtelMetricsJson(
+      [tokenRow({ agent: 'agent-a', model: 'claude-sonnet-5', tenant_id: 'acme', input_tokens: 1 })],
+      1000, 2000,
+    )
+    const attrs = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].attributes
+    expect(attrs.find(a => a.key === 'gen_ai.request.model')?.value.stringValue).toBe('claude-sonnet-5')
+    expect(attrs.find(a => a.key === 'marveen.agent.id')?.value.stringValue).toBe('agent-a')
+    expect(attrs.find(a => a.key === 'marveen.tenant.id')?.value.stringValue).toBe('acme')
+  })
+
+  it('falls back model to "unknown" when null', () => {
+    const result = tokenUsageToOtelMetricsJson([tokenRow({ model: null, input_tokens: 1 })], 1000, 2000)
+    const attrs = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].attributes
+    expect(attrs.find(a => a.key === 'gen_ai.request.model')?.value.stringValue).toBe('unknown')
+  })
+
+  it('converts the window bounds (seconds) to nanosecond start/end timestamps', () => {
+    const result = tokenUsageToOtelMetricsJson([tokenRow({ input_tokens: 1 })], 1000, 1030)
+    const p = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0]
+    expect(p.startTimeUnixNano).toBe('1000000000000')
+    expect(p.timeUnixNano).toBe('1030000000000')
+  })
+
+  it('marks the sum as DELTA (2) and monotonic', () => {
+    const result = tokenUsageToOtelMetricsJson([tokenRow({ input_tokens: 1 })], 1000, 2000)
+    const sum = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum
+    expect(sum.aggregationTemporality).toBe(2)
+    expect(sum.isMonotonic).toBe(true)
   })
 })

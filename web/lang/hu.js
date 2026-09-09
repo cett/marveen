@@ -1049,6 +1049,7 @@ window._i18n.hu = {
   'settings.module.channels':    'Csatornák',
   'settings.module.autonomy':    'Autonómia',
   'settings.module.security':    'Biztonság',
+  'settings.module.observability': 'Megfigyelhetőség',
   'settings.col.key':            'Kulcs',
   'settings.col.value':          'Érték',
   'settings.col.description':    'Leírás',
@@ -1108,6 +1109,9 @@ window._i18n.hu = {
   'settings.desc.BB_STALE_SHORT_RUNNING_MIN':   'Blackboard stale-határ (perc) short-running tier ágenseinek (heartbeat/ütemezett, percek alatt kész). Alapértelmezetten 15 perc.',
   'settings.desc.BB_STALE_DEFAULT_MIN':         'Blackboard stale-határ (perc) ismeretlen (default) tier ágenseinek. Konzervatív fallback. Alapértelmezetten 60 perc.',
   'settings.desc.WORKSPACE_DOCS_TTL_DAYS':      'Munkadokumentum (workspace_docs) lejárati ideje napokban -- csak lezárt (vagy task nélküli) dokumentumokra vonatkozik, bináris tartalom kivétel. Alapértelmezetten 14 nap.',
+  'settings.desc.OTEL_EXPORT_ENABLED':          'OTLP push exportőr be/ki. Bekapcsolva a 30 másodperces háttérciklus lezárt trace-eket és token-usage metrikát küld az OTLP endpointra. Alapértelmezetten kikapcsolva.',
+  'settings.desc.OTEL_EXPORTER_OTLP_ENDPOINT':  'OTLP/HTTP collector bázis-URL (pl. http://localhost:4318). Üresen hagyva a push exportőr nem küld semmit még bekapcsolt állapotban sem.',
+  'settings.desc.OTEL_SERVICE_NAME':            'OTLP resource service.namespace attribútum értéke. Alapértelmezetten "marveen".',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

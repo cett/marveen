@@ -615,6 +615,34 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Observability module (OTel push exporter, #800/#802) ---
+  {
+    key: 'OTEL_EXPORT_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'OTLP push exportőr be/ki. Bekapcsolva a 30 másodperces háttérciklus lezárt trace-eket (otel_spans) és token-usage metrikát (gen_ai.client.token.usage) küld az alábbi OTLP endpointra. A ciklus minden lefutáskor újraolvassa ezt a beállítást -- nem igényel újraindítást.',
+    module: 'observability',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+    type: 'string',
+    default: '',
+    description: 'OTLP/HTTP collector bázis-URL (pl. http://localhost:4318), amire a trace-ek a /v1/traces, a metrikák a /v1/metrics útvonalon mennek ki. Üresen hagyva a push exportőr nem küld semmit még bekapcsolt állapotban sem.',
+    module: 'observability',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'OTEL_SERVICE_NAME',
+    type: 'string',
+    default: 'marveen',
+    description: 'OTLP resource service.namespace attribútum értéke (a service.name per-ágens marad, pl. marveen-agent-zack). Több Marveen-telepítés megkülönböztetésére a közös collectoron.',
+    module: 'observability',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

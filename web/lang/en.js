@@ -727,6 +727,7 @@ window._i18n.en = {
   'settings.module.channels':    'Channels',
   'settings.module.autonomy':    'Autonomy',
   'settings.module.security':    'Security',
+  'settings.module.observability': 'Observability',
   'settings.col.key':            'Key',
   'settings.col.value':          'Value',
   'settings.col.description':    'Description',
@@ -786,6 +787,9 @@ window._i18n.en = {
   'settings.desc.BB_STALE_SHORT_RUNNING_MIN':   'Blackboard stale threshold (minutes) for short-running-tier agents (heartbeat/scheduled, done in minutes). Default: 15 minutes.',
   'settings.desc.BB_STALE_DEFAULT_MIN':         'Blackboard stale threshold (minutes) for unknown (default) tier agents. Conservative fallback. Default: 60 minutes.',
   'settings.desc.WORKSPACE_DOCS_TTL_DAYS':      'Expiry for workspace documents (workspace_docs), in days -- applies only to docs with no task_ref or whose linked kanban card is done; binary content is exempt. Default: 14 days.',
+  'settings.desc.OTEL_EXPORT_ENABLED':          'OTLP push exporter on/off. When on, the 30-second background loop pushes closed traces and token-usage metrics to the OTLP endpoint. Default: off.',
+  'settings.desc.OTEL_EXPORTER_OTLP_ENDPOINT':  'OTLP/HTTP collector base URL (e.g. http://localhost:4318). Left empty, the push exporter sends nothing even when enabled.',
+  'settings.desc.OTEL_SERVICE_NAME':            'OTLP resource service.namespace attribute value. Default: "marveen".',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

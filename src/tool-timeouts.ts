@@ -11,4 +11,5 @@ export const TOOL_TIMEOUTS = {
   // former 30s deadline and left large memories permanently un-vectorized
   // (search silently fell back to FTS). 90s covers the slow CPU path.
   'ollama-embedding': 90_000,
+  'otel-export':      10_000,
 } as const
