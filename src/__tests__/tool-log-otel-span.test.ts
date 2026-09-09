@@ -98,9 +98,28 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
     const attrs = JSON.parse(span.attributes)
     expect(attrs.tool_name).toBe('mcp__github__get_pull_request')
     expect(attrs.mcp_server).toBe('github')
+    expect(attrs.mcp_tool).toBe('get_pull_request')
   })
 
-  it('omits mcp_server attribute for a non-MCP tool', async () => {
+  it('splits on the first __ so an underscored server name keeps its full name', async () => {
+    // #800 F4: e.g. mcp__plugin_telegram_telegram__reply -- the server
+    // segment itself contains underscores; only the tool segment after the
+    // first "__" boundary should end up as mcp_tool.
+    await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
+      session_id: 'session-otel-4b',
+      tool_name: 'mcp__plugin_telegram_telegram__reply',
+      success: true,
+      agent_id: 'agent-a',
+      trace_id: 'tooluse-otel-4b',
+    }).ctx)
+
+    const span = getSpan('session-otel-4b', 'tooluse-otel-4b')
+    const attrs = JSON.parse(span.attributes)
+    expect(attrs.mcp_server).toBe('plugin_telegram_telegram')
+    expect(attrs.mcp_tool).toBe('reply')
+  })
+
+  it('omits mcp_server and mcp_tool attributes for a non-MCP tool', async () => {
     await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
       session_id: 'session-otel-5',
       tool_name: 'Read',
@@ -112,6 +131,7 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
     const span = getSpan('session-otel-5', 'tooluse-otel-5')
     const attrs = JSON.parse(span.attributes)
     expect(attrs.mcp_server).toBeUndefined()
+    expect(attrs.mcp_tool).toBeUndefined()
   })
 
   it('does not write a span when trace_id (tool_use_id) is missing', async () => {

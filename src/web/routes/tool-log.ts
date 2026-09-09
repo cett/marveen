@@ -2,12 +2,19 @@ import { logToolCall, analyzeWorkflowCandidates, getRecentToolCalls, pruneToolCa
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
-// mcp__<server>__<tool> -- pull the server segment out for the OTel span
-// attribute (Rick's #800 plan, F2). Non-MCP tool names (Bash, Read, ...)
-// don't match and get no mcp_server attribute.
-function mcpServerFromToolName(toolName: string): string | undefined {
-  const m = toolName.match(/^mcp__([^_].*?)__/)
-  return m ? m[1] : undefined
+// mcp__<server>__<tool> -- split into (server, tool) for the OTel span
+// attributes. mcp_server alone shipped in F2; F4 (#800) adds mcp_tool
+// alongside it -- the "realistic MCP correlation" scope from Rick's plan
+// (full W3C trace propagation into STDIO MCP servers isn't possible; a
+// tool.call span attribute an operator can grep an MCP server's own logs
+// against is what's actually achievable). Non-MCP tool names (Bash, Read,
+// ...) don't match and get neither attribute. Server names with their own
+// underscores (e.g. mcp__plugin_telegram_telegram__reply) are handled
+// correctly because the split is on the FIRST "__" -- same behavior F2
+// already had, just also captures what follows it.
+function mcpServerAndToolFromToolName(toolName: string): { server: string; tool: string } | undefined {
+  const m = toolName.match(/^mcp__([^_].*?)__(.+)$/)
+  return m ? { server: m[1], tool: m[2] } : undefined
 }
 
 export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
@@ -39,7 +46,7 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
     if (data.trace_id && data.agent_id) {
       const endMs = Date.now()
       const startMs = typeof data.duration_ms === 'number' ? endMs - data.duration_ms : endMs
-      const mcpServer = mcpServerFromToolName(data.tool_name)
+      const mcp = mcpServerAndToolFromToolName(data.tool_name)
       upsertOtelSpan({
         trace_id: data.session_id,
         span_id: data.trace_id,
@@ -51,7 +58,7 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
         status: success ? 'ok' : 'error',
         attributes: JSON.stringify({
           tool_name: data.tool_name,
-          ...(mcpServer ? { mcp_server: mcpServer } : {}),
+          ...(mcp ? { mcp_server: mcp.server, mcp_tool: mcp.tool } : {}),
         }),
       })
     }
