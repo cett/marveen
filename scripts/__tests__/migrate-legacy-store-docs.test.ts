@@ -8,7 +8,7 @@
 // functions guard, and manifest.test covers "does every real file have an
 // entry, and does every entry point at a real file".
 import { describe, it, expect } from 'vitest'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import {
@@ -105,12 +105,19 @@ describe('legacy-store-docs-manifest.json integrity', () => {
 
   // This is the guard that matters most for a manifest maintained by hand:
   // every legacy .md file that actually exists on disk right now must have
-  // exactly one manifest entry, and vice versa. Skipped when store/ isn't
-  // present (store/ is gitignored -- CI checks out only tracked files, so
-  // this file set is only there on a real install).
-  const storeExists = (() => {
-    try { readdirSync(STORE_DIR); return true } catch { return false }
-  })()
+  // exactly one manifest entry, and vice versa. Skipped when the legacy
+  // files aren't actually present (store/ is gitignored -- CI checks out
+  // only tracked files, so this file set is only there on a real install).
+  // NOT just "does store/ exist": on CI the directory itself gets created
+  // empty (e.g. by a DB-init step's mkdirSync(STORE_DIR)) even though its
+  // gitignored contents were never checked out -- readdirSync() on that
+  // empty dir succeeds fine, so a mere try/catch around it says "present"
+  // when every file is actually missing, and the coverage test below then
+  // (correctly, but uselessly) fails on all 61 entries. Check for real file
+  // presence instead: at least one manifest-listed file actually on disk.
+  const storeExists = (manifest as Array<{ file: string }>).some(
+    e => existsSync(path.join(STORE_DIR, e.file))
+  )
 
   it.runIf(storeExists)('covers exactly the .md files currently in store/', () => {
     const actual = new Set(readdirSync(STORE_DIR).filter(f => f.endsWith('.md')))
