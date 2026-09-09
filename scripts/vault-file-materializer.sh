@@ -101,7 +101,12 @@ for var in $(env | grep '=vault-file:' | cut -d= -f1); do
   fi
 done
 
-"$@" &
+# <&0 ties the child's stdin back to this script's own stdin. Without it, a
+# backgrounded command in a non-interactive shell gets /dev/null by the POSIX
+# async rule -- fine for most wrapped servers, but fatal for a stdio MCP
+# server (e.g. garmin-mcp) that needs its JSON-RPC requests on stdin: its
+# login just hangs forever waiting for input that will never arrive (#806).
+"$@" <&0 &
 child_pid=$!
 # `wait` returns early (128+signum) the moment a trapped signal arrives,
 # without reaping the child -- it does NOT mean the child has exited. Forward

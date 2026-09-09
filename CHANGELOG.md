@@ -264,6 +264,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- vault-file-materializer no longer severs the wrapped command's stdin -- a backgrounded child in a non-interactive shell got `/dev/null` by the POSIX async default, which silently broke every stdio MCP server launched through the credential materializer (its handshake/login hung forever waiting for JSON-RPC input that would never arrive; observed as a Garmin MCP login hang). One-line fix: `"$@" <&0 &` instead of `"$@" &`, tying the child's stdin back to the wrapper's own
+
 - restore 3 missing imports in agents.js spoke files (776 QA fix)
 - unify visual style of the two RBAC matrices
 - unify user-row scope chip styling (tenant vs global admin)
