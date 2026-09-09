@@ -47,23 +47,20 @@ export default defineConfig({
       // and cannot be instrumented by vitest (would show 0% and break the gate).
       include: ['src/**/*.ts'],
       exclude: ['src/__tests__/**', 'dist/**'],
-      // Ratchet floor re-measured after fixing the coverage block's placement
-      // (previously the block sat outside `test`, so it never took effect --
-      // the include/exclude filters above are now actually applied for the
-      // first time, and the resulting numbers differ from the earlier,
-      // unenforced thresholds measured under the default config).
-      // Local baseline: statements 57.98%, branches 56.81%, functions 60.54%,
-      // lines 59.12%. CI measures slightly lower (statements 57.6, branches
-      // 56.64, functions 60.13, lines 58.77) -- environment variance ~0.35%.
-      // The first enforced run failed on lines (58.77% < 59%), so the floor is
-      // set ~1-1.8 points below the CI numbers: a real regression still fails
-      // the gate, but normal cross-environment jitter does not. Ratchet up via
-      // the coverage-to-85% card as tests are added.
+      // Ratchet floor, re-measured for #751 (backend coverage -> 85%, step 2:
+      // src/web/routes/docs.ts 0% -> fully covered). Local baseline after
+      // that addition: statements 58.99%, branches 58.04%, functions 61.48%,
+      // lines 60.21%. Floor set ~2 points below the local numbers (matching
+      // the buffer size used when this ratchet was first enforced) to absorb
+      // the ~0.35% local-vs-CI environment variance observed back then plus
+      // normal jitter, while still failing a real regression. Ratchet up via
+      // the coverage-to-85% card (#751) as more tests are added -- raise only
+      // to the level actually reached, never round up ahead of the measurement.
       thresholds: {
-        statements: 56,
-        branches: 55,
+        statements: 57,
+        branches: 56,
         functions: 59,
-        lines: 57,
+        lines: 58,
       },
     },
   },
