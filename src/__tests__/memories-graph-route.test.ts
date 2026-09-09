@@ -46,7 +46,11 @@ vi.mock('../config.js', () => ({
 
 import { tryHandleMemories } from '../web/routes/memories.js'
 
-function makeCtx(path: string): { ctx: RouteContext; out: { status: number; body: any } } {
+function makeCtx(
+  path: string,
+  role: 'admin' | 'viewer' | 'read_only' = 'viewer',
+  tenantId: string | null = null,
+): { ctx: RouteContext; out: { status: number; body: any } } {
   const req = new EventEmitter() as any
   req.method = 'GET'
   req.headers = {}
@@ -59,7 +63,7 @@ function makeCtx(path: string): { ctx: RouteContext; out: { status: number; body
     },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method: 'GET', url } as RouteContext
+  const ctx = { req, res, path: url.pathname, method: 'GET', url, role, tenantId } as RouteContext
   return { ctx, out }
 }
 
@@ -164,8 +168,70 @@ describe('GET /api/memories/graph', () => {
     const { ctx, out } = makeCtx('/api/memories/graph?agent=agent-a')
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
-    // The agent filter query passes 'agent-a' as first arg
-    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', 200)
+    // The agent filter query passes 'agent-a' as first arg, then the
+    // #809/#810 tenant scope ('default' -- no ctx.tenantId in this fixture),
+    // then limit
+    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', 'default', 200)
+  })
+
+  it('#810: non-admin viewer is scoped to their own tenant, agent branch', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([NODE_A])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph?agent=agent-a', 'viewer', 'tenant-a')
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', 'tenant-a', 200)
+  })
+
+  it('#810: non-admin viewer is scoped to their own tenant, no-agent branch', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph', 'viewer', 'tenant-a')
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith('tenant-a', 200)
+  })
+
+  it('#810: a non-admin cannot escape their tenant via ?tenant= (param ignored)', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph?tenant=tenant-b', 'viewer', 'tenant-a')
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith('tenant-a', 200)
+  })
+
+  it('#810: admin with no ?tenant= sees every tenant (no tenant_id filter)', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph', 'admin', null)
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith(200)
+  })
+
+  it('#810: admin with ?tenant= narrows to that one tenant', async () => {
+    const nodeAllMock = vi.fn().mockReturnValue([])
+    mockDb.prepare = vi.fn()
+      .mockReturnValueOnce({ all: nodeAllMock })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+
+    const { ctx } = makeCtx('/api/memories/graph?tenant=tenant-b', 'admin', null)
+    await tryHandleMemories(ctx)
+    expect(nodeAllMock).toHaveBeenCalledWith('tenant-b', 200)
   })
 
   it('limit param is clamped to max 500', async () => {
@@ -177,8 +243,9 @@ describe('GET /api/memories/graph', () => {
 
     const { ctx, out } = makeCtx('/api/memories/graph?limit=9999')
     await tryHandleMemories(ctx)
-    // Without agent filter the second arg (limit) must be <= 500
-    expect(nodeAllMock).toHaveBeenCalledWith(500)
+    // Without agent filter: #809/#810 tenant scope ('default') then limit,
+    // which must be clamped to <= 500
+    expect(nodeAllMock).toHaveBeenCalledWith('default', 500)
   })
 
   it('weight_min default is 0.75 when not specified', async () => {
