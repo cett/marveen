@@ -27,7 +27,7 @@ vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'marveen',
 }))
 
-import { setSecret, getSecret, deleteSecret, listSecrets, getSecretsForEnv, findSecretTenant, purgeSecretsForTenant } from '../web/vault.js'
+import { setSecret, getSecret, deleteSecret, listSecrets, getSecretsForEnv, findSecretTenant, purgeSecretsForTenant, VaultKeyError } from '../web/vault.js'
 
 const VAULT_JSON = join(STORE_DIR, 'vault.json')
 const VAULT_KEY = join(STORE_DIR, '.vault-key')
@@ -217,5 +217,21 @@ describe('backfill: entries written before tenant_id existed', () => {
     expect(list).toHaveLength(1)
     expect(list[0].tenant_id).toBe('default')
     expect(getSecret('legacy-entry')).toBe('legacy-value')
+  })
+})
+
+describe('decrypt: corrupt/truncated entry (#817, Semgrep gcm-no-tag-length triage)', () => {
+  it('throws VaultKeyError instead of silently accepting a short auth tag', () => {
+    const { writeFileSync } = require('node:fs') as typeof import('node:fs')
+    setSecret('truncated-entry', 'Truncated', 'some-value')
+    const raw = JSON.parse(require('node:fs').readFileSync(VAULT_JSON, 'utf-8'))
+    // salt(32) + iv(16) + tag(16) = 64 bytes minimum before any ciphertext.
+    // Truncate the packed blob to well under that so `tag` would end up
+    // short if the pre-slice length guard weren't there.
+    const buf = Buffer.from(raw.entries[0].encrypted, 'base64')
+    raw.entries[0].encrypted = buf.subarray(0, 40).toString('base64')
+    writeFileSync(VAULT_JSON, JSON.stringify(raw, null, 2) + '\n')
+
+    expect(() => getSecret('truncated-entry')).toThrow(VaultKeyError)
   })
 })

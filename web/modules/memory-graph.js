@@ -1263,7 +1263,12 @@ function gcFillBody(panel, node, detail) {
   if (oldBody) oldBody.remove()
   const oldFooter = panel.querySelector('.gc-footer')
   if (oldFooter) oldFooter.remove()
-  panel.insertAdjacentHTML('beforeend', bodyHtml + footerHtml)
+  // #817 triage: every dynamic value folded into bodyHtml/footerHtml above (memory
+  // content, keywords, neighbor labels, timestamps) already goes through
+  // escapeHtml()/escapeAttr() before concatenation -- footerHtml is 100% static
+  // markup. Semgrep flags the insertAdjacentHTML sink itself, it can't trace that
+  // the string it's called with was pre-escaped upstream.
+  panel.insertAdjacentHTML('beforeend', bodyHtml + footerHtml) // nosemgrep: typescript.react.security.audit.react-unsanitized-method.react-unsanitized-method
 
   // Keyword +N collapse
   const kwBox = panel.querySelector('#gcKwBox')

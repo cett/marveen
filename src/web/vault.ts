@@ -156,7 +156,7 @@ function encrypt(plaintext: string): string {
   const salt = randomBytes(SALT_LENGTH)
   const key = deriveKey(master, salt)
   const iv = randomBytes(IV_LENGTH)
-  const cipher = createCipheriv(ALGORITHM, key, iv)
+  const cipher = createCipheriv(ALGORITHM, key, iv, { authTagLength: TAG_LENGTH })
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()])
   const tag = cipher.getAuthTag()
   return Buffer.concat([salt, iv, tag, encrypted]).toString('base64')
@@ -164,12 +164,21 @@ function encrypt(plaintext: string): string {
 
 function decryptWithKey(master: Buffer, packed: string): string {
   const buf = Buffer.from(packed, 'base64')
+  const MIN_PACKED_LEN = SALT_LENGTH + IV_LENGTH + TAG_LENGTH
+  if (buf.length < MIN_PACKED_LEN) {
+    throw new VaultKeyError(
+      `Corrupt vault entry: expected at least ${MIN_PACKED_LEN} bytes, got ${buf.length}.`
+    )
+  }
   const salt = buf.subarray(0, SALT_LENGTH)
   const iv = buf.subarray(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
   const tag = buf.subarray(SALT_LENGTH + IV_LENGTH, SALT_LENGTH + IV_LENGTH + TAG_LENGTH)
   const ciphertext = buf.subarray(SALT_LENGTH + IV_LENGTH + TAG_LENGTH)
   const key = deriveKey(master, salt)
-  const decipher = createDecipheriv(ALGORITHM, key, iv)
+  // authTagLength pinned explicitly (matches encrypt()'s TAG_LENGTH) so a
+  // malformed/short tag fails loudly instead of GCM silently accepting a
+  // weaker-than-intended tag length (#817, Semgrep gcm-no-tag-length).
+  const decipher = createDecipheriv(ALGORITHM, key, iv, { authTagLength: TAG_LENGTH })
   decipher.setAuthTag(tag)
   return decipher.update(ciphertext) + decipher.final('utf-8')
 }
