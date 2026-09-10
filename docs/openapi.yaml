@@ -183,6 +183,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -253,6 +254,46 @@ components:
         created_at: 1787400000
         accessed_at: 1787486000
         is_stale: false
+
+    WorkspaceDocSearchResult:
+      type: object
+      required: [id, title, agent_id, tenant_id, type, created_at, updated_at, snippet]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        agent_id:
+          type: string
+        tenant_id:
+          type: string
+        type:
+          type: string
+          enum: [plan, brief, report, notes]
+        task_ref:
+          type: [string, "null"]
+        doc_key:
+          type: [string, "null"]
+        created_at:
+          type: integer
+          description: Unix timestamp (seconds)
+        updated_at:
+          type: integer
+          description: Unix timestamp (seconds)
+        snippet:
+          type: string
+          description: FTS5 match-highlighted excerpt, matches wrapped in `[...]`
+      example:
+        id: "doc_abc123"
+        title: "Budget-plafon riasztás -- design terv"
+        agent_id: "agent-a"
+        tenant_id: "default"
+        type: "plan"
+        task_ref: "670b6218"
+        doc_key: null
+        created_at: 1789000000
+        updated_at: 1789000000
+        snippet: "...the [BudgetEntry] amount is measured in tokens..."
 
     MemoryLink:
       type: object
@@ -689,15 +730,40 @@ paths:
           schema:
             type: string
           description: "Admin only: narrow results to one tenant (omit to see fleet-default scope)"
+        - name: include_docs
+          in: query
+          schema:
+            type: string
+            enum: ["1"]
+          description: >
+            Opt-in only, and only takes effect alongside `q` (a search).
+            When set to "1", workspace_docs (fleet-agent plans/briefs/reports/
+            notes) are searched via the same FTS5 index and included in the
+            response, which then switches from a plain array to
+            `{ memories, workspace_docs }` -- see the two response schemas
+            below. Omitting this param (the default) leaves every existing
+            caller's response shape exactly as it was before this feature.
       responses:
         "200":
-          description: Memory list (gzip-compressed when Accept-Encoding includes gzip)
+          description: Memory list, or a combined memories+workspace_docs object when `include_docs=1` is set alongside `q` (gzip-compressed when Accept-Encoding includes gzip)
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Memory"
+                oneOf:
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/Memory"
+                  - type: object
+                    required: [memories, workspace_docs]
+                    properties:
+                      memories:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Memory"
+                      workspace_docs:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/WorkspaceDocSearchResult"
         "401":
           description: Missing or invalid Bearer token
           content:

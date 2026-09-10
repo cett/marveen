@@ -10,6 +10,7 @@ import {
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
+import { searchWorkspaceDocs, type WorkspaceDocSearchResult } from '../../workspace-store.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -87,6 +88,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'hybrid'
+    // Opt-in only (kanban 9156e583): without this param the response stays
+    // the plain array it always was -- every existing caller (dashboard,
+    // agent recall via curl/fetch) is unaffected. With it, and only for a
+    // search (q present), the response becomes { memories, workspace_docs }.
+    const includeDocs = url.searchParams.get('include_docs') === '1'
 
     let results: Memory[]
     const recallTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
@@ -176,6 +182,22 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
+
+    if (q && includeDocs) {
+      // Same tenant/agent/limit semantics as the memories search above --
+      // recallTenantId undefined means "admin, no ?tenant= filter" (every
+      // tenant), a string means SQL-level scoping to exactly that tenant.
+      // This is the one call site for searchWorkspaceDocs; its own doc
+      // comment carries the tenant-isolation contract.
+      const docResults: WorkspaceDocSearchResult[] = searchWorkspaceDocs(q, {
+        tenantId: recallTenantId,
+        agentId: agentId || undefined,
+        limit,
+      })
+      jsonMaybeGzip(req, res, { memories: formatted, workspace_docs: docResults })
+      return true
+    }
+
     jsonMaybeGzip(req, res, formatted)
     return true
   }
