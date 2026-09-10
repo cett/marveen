@@ -29,7 +29,32 @@ const TOKEN_SUM_EXPR = 'input_tokens + output_tokens + cache_read_tokens + cache
 // cleanup) and have no token-volume equivalent. Fail-open: treated as no data.
 const UNSUPPORTED_SCOPES = new Set(['source', 'provider', 'product'])
 
-function monthlyTokenSpend(db: Database.Database, agent: string | null, nowSec: number): number {
+interface SpendFilter {
+  agent?: string
+  tenant?: string
+}
+
+function monthlyTokenSpend(db: Database.Database, filter: SpendFilter, nowSec: number): number {
+  if (filter.tenant) {
+    // token_usage_monthly has NO tenant_id column (only token_usage does,
+    // since migration 0033) -- a tenant-scoped budget can only be measured
+    // against the raw table. This means the same "under-reports once rows
+    // age past TOKEN_USAGE_RETENTION_DAYS" caveat as the dual-source query
+    // below applies here too, except there's no monthly fallback to catch
+    // the rolled-up portion for a tenant. In practice this only matters for
+    // the first day or two of a new month once the raw retention window
+    // (default 30 days) starts overlapping the previous month.
+    const row = db.prepare(`
+      SELECT COALESCE(SUM(${TOKEN_SUM_EXPR}), 0) AS total
+      FROM token_usage
+      WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
+            = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+        AND tenant_id = @tenant
+    `).get({ nowSec, tenant: filter.tenant }) as { total: number }
+    return row.total
+  }
+
+  const agent = filter.agent ?? null
   const row = db.prepare(`
     SELECT
       COALESCE((
@@ -66,11 +91,14 @@ export function evaluateBudgets(
     if (UNSUPPORTED_SCOPES.has(scope) || budget.amount <= 0) {
       return { budget, spent: 0, ratio: 0, level: 'ok', blocked: false }
     }
-    if (scope === 'agent' && !budget.scope_ref) {
+    if ((scope === 'agent' || scope === 'tenant') && !budget.scope_ref) {
       return { budget, spent: 0, ratio: 0, level: 'ok', blocked: false }
     }
-    const agent = scope === 'agent' ? budget.scope_ref! : null
-    const spent = monthlyTokenSpend(db, agent, nowSec)
+    const filter: SpendFilter =
+      scope === 'agent' ? { agent: budget.scope_ref } :
+      scope === 'tenant' ? { tenant: budget.scope_ref } :
+      {}
+    const spent = monthlyTokenSpend(db, filter, nowSec)
     const ratio = spent / budget.amount
     const warn = budget.warning_threshold ?? 0.8
     const hard = budget.hard_threshold ?? 1.0

@@ -9,7 +9,8 @@ import { loadCostopsConfig, saveCostopsConfig, type BudgetEntry } from '../../co
 import { evaluateBudgets } from '../../costops/budget-alert.js'
 import type { RouteContext } from './types.js'
 
-const VALID_SCOPES = new Set(['global', 'source', 'provider', 'product', 'agent'])
+const VALID_SCOPES = new Set(['global', 'source', 'provider', 'product', 'agent', 'tenant'])
+const SCOPE_REF_REQUIRED = new Set(['agent', 'tenant'])
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,62}$/
 
 type ValidationResult = { value: BudgetEntry } | { error: string; field: string; hint: string }
@@ -30,8 +31,8 @@ function normalizeBudgetEntry(id: string, body: Record<string, unknown>, base: P
   }
 
   const scope_ref = body.scope_ref !== undefined ? body.scope_ref : base.scope_ref
-  if (scope === 'agent' && (typeof scope_ref !== 'string' || !scope_ref)) {
-    return { error: 'required', field: 'scope_ref', hint: 'scope "agent" requires a non-empty scope_ref (agent id)' }
+  if (SCOPE_REF_REQUIRED.has(scope) && (typeof scope_ref !== 'string' || !scope_ref)) {
+    return { error: 'required', field: 'scope_ref', hint: `scope "${scope}" requires a non-empty scope_ref (${scope === 'tenant' ? 'tenant id' : 'agent id'})` }
   }
   if (scope_ref !== undefined && typeof scope_ref !== 'string') {
     return { error: 'invalid_value', field: 'scope_ref', hint: 'scope_ref must be a string' }

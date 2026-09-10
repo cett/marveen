@@ -50,22 +50,24 @@ function config(budgets: BudgetEntry[]): CostOpsConfig {
 
 function insertRawUsage(agent: string, timestampSec: number, tokens: Partial<{
   input_tokens: number; output_tokens: number; cache_read_tokens: number
-  cache_creation_tokens: number; thinking_tokens: number
+  cache_creation_tokens: number; thinking_tokens: number; tenant_id: string
 }>): void {
   const db = getDb()
+  const tenant_id = tokens.tenant_id ?? 'default'
   db.prepare(`
     INSERT INTO token_usage
       (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model, tenant_id)
-    VALUES (@agent, @session_id, @timestamp, @input_tokens, @output_tokens, @cache_read_tokens, @cache_creation_tokens, @thinking_tokens, 'test-model', 'default')
+    VALUES (@agent, @session_id, @timestamp, @input_tokens, @output_tokens, @cache_read_tokens, @cache_creation_tokens, @thinking_tokens, 'test-model', @tenant_id)
   `).run({
     agent,
-    session_id: `sess-${agent}-${timestampSec}`,
+    session_id: `sess-${agent}-${tenant_id}-${timestampSec}`,
     timestamp: timestampSec,
     input_tokens: tokens.input_tokens ?? 0,
     output_tokens: tokens.output_tokens ?? 0,
     cache_read_tokens: tokens.cache_read_tokens ?? 0,
     cache_creation_tokens: tokens.cache_creation_tokens ?? 0,
     thinking_tokens: tokens.thinking_tokens ?? 0,
+    tenant_id,
   })
 }
 
@@ -157,6 +159,24 @@ describe('evaluateBudgets', () => {
       NOW_MS,
     )
     expect(status.spent).toBe(100)
+  })
+
+  it('scopes to a single tenant when scope is "tenant" (other tenants excluded)', () => {
+    insertRawUsage('agent-a', NOW_SEC, { input_tokens: 100, tenant_id: 'acme' })
+    insertRawUsage('agent-b', NOW_SEC, { input_tokens: 900, tenant_id: 'other-tenant' })
+    const [status] = evaluateBudgets(
+      getDb(),
+      config([budget({ id: 'acme-monthly', scope: 'tenant', scope_ref: 'acme', amount: 1000 })]),
+      NOW_MS,
+    )
+    expect(status.spent).toBe(100)
+  })
+
+  it('fails open (ok, spent 0) for a tenant-scope budget missing scope_ref', () => {
+    insertRawUsage('agent-a', NOW_SEC, { input_tokens: 5000, tenant_id: 'acme' })
+    const [status] = evaluateBudgets(getDb(), config([budget({ scope: 'tenant', amount: 1000 })]), NOW_MS)
+    expect(status.level).toBe('ok')
+    expect(status.spent).toBe(0)
   })
 
   it('fails open (ok, spent 0) for an agent-scope budget missing scope_ref', () => {

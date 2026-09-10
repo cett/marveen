@@ -48,7 +48,7 @@ export interface FixedCostEntry {
 export interface BudgetEntry {
   id: string
   name?: string
-  scope?: 'global' | 'source' | 'provider' | 'product' | 'agent'
+  scope?: 'global' | 'source' | 'provider' | 'product' | 'agent' | 'tenant'
   scope_ref?: string
   amount: number               // token count for 'global'/'agent' scope (see budget-alert.ts)
   currency?: string

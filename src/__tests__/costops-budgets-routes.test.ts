@@ -150,6 +150,30 @@ describe('costops budgets route -- CRUD', () => {
     expect(body().field).toBe('scope_ref')
   })
 
+  it('requires scope_ref when scope is "tenant"', async () => {
+    const { ctx, status, body } = makeCtx({
+      method: 'POST',
+      path: '/api/costops/budgets',
+      role: 'admin',
+      body: { id: 'tenant-budget', amount: 1000, scope: 'tenant' },
+    })
+    await tryHandleCostopsBudgets(ctx)
+    expect(status()).toBe(400)
+    expect(body().field).toBe('scope_ref')
+  })
+
+  it('accepts a tenant-scoped budget with scope_ref set', async () => {
+    const { ctx, status, body } = makeCtx({
+      method: 'POST',
+      path: '/api/costops/budgets',
+      role: 'admin',
+      body: { id: 'acme-monthly', amount: 1000, scope: 'tenant', scope_ref: 'acme' },
+    })
+    await tryHandleCostopsBudgets(ctx)
+    expect(status()).toBe(201)
+    expect(body().budget).toMatchObject({ scope: 'tenant', scope_ref: 'acme' })
+  })
+
   it('409s on a duplicate id', async () => {
     await tryHandleCostopsBudgets(makeCtx({
       method: 'POST', path: '/api/costops/budgets', role: 'admin', body: { id: 'dup', amount: 1000 },
