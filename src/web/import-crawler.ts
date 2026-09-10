@@ -16,8 +16,12 @@ import {
   MAX_FILES_PER_RUN,
   MAX_TOTAL_CONTENT_BYTES,
   MAX_CONCURRENT_READS,
+  CONFLUENCE_PAGE_LIMIT,
+  CONFLUENCE_MAX_RETRIES,
+  CONFLUENCE_REQUEST_TIMEOUT_MS,
 } from './import-config.js'
 import { HTML_LIKE_EXTS, stripMarkup } from './import-utils.js'
+import { getSecret } from './vault.js'
 
 // ── Secret-gate patterns ─────────────────────────────────────────────────────
 // Matches API tokens, private keys, passwords and similar credentials that must
@@ -149,6 +153,7 @@ function getTotalImportSize(): number {
 type ImportSource = {
   id: string; type: string; path: string; label: string | null
   interval_hours: number; enabled: number; last_run_at: number | null; tenant_id: string
+  vault_token_ref: string | null; confluence_email: string | null; base_url: string | null
 }
 
 function getEnabledSources(): ImportSource[] {
@@ -394,6 +399,196 @@ async function crawlSharePointSource(
   return counts
 }
 
+// ── Confluence Cloud connector (kanban 21d27a8c) ──────────────────────────────
+// Reference: https://developer.atlassian.com/cloud/confluence/rest/v2/
+//
+// Fork-portability (explicit requirement, enforced 3x this feature): NOTHING
+// about a specific Confluence instance is hardcoded here. base_url,
+// vault_token_ref and confluence_email all come from the source row -- see
+// the column comments in migration 0041 and the validation in
+// routes/import-memories.ts.
+
+type ConfluenceSpace = { id: string; key: string; name: string; type: string; status: string }
+type ConfluencePageSummary = { id: string; title: string; spaceId: string; version?: { createdAt: string } }
+type ConfluencePageDetail = {
+  id: string; title: string; spaceId: string
+  body?: { storage?: { value: string } }
+  version?: { number: number; createdAt: string }
+}
+
+/**
+ * fetch() wrapper for the Confluence API: retries on 429 (rate limit),
+ * honoring Retry-After when the server sends one, exponential backoff
+ * otherwise (1s, 2s, 4s), up to CONFLUENCE_MAX_RETRIES attempts. Any other
+ * status (including a final exhausted-retries 429) is returned as-is for
+ * the caller to interpret -- this wrapper never throws on a non-2xx status,
+ * only on a genuine network/timeout failure.
+ */
+async function confluenceFetch(url: string, authHeader: string): Promise<Response> {
+  let attempt = 0
+  for (;;) {
+    const res = await fetch(url, {
+      headers: { Authorization: authHeader, Accept: 'application/json' },
+      signal: AbortSignal.timeout(CONFLUENCE_REQUEST_TIMEOUT_MS),
+    })
+    if (res.status !== 429 || attempt >= CONFLUENCE_MAX_RETRIES) return res
+    attempt++
+    const retryAfterSec = parseInt(res.headers.get('Retry-After') ?? '', 10)
+    const waitMs = Number.isFinite(retryAfterSec) ? retryAfterSec * 1000 : attempt * 1000 * 2
+    await new Promise(r => setTimeout(r, waitMs))
+  }
+}
+
+/** Resolves `_links.next` (a relative path in the v2 API) against base_url; passes an absolute URL through unchanged. */
+function resolveConfluenceNextLink(baseUrl: string, next: string | undefined): string | null {
+  if (!next) return null
+  return next.startsWith('http') ? next : `${baseUrl}${next}`
+}
+
+async function listConfluenceSpaces(baseUrl: string, authHeader: string): Promise<ConfluenceSpace[]> {
+  const spaces: ConfluenceSpace[] = []
+  let url: string | null = `${baseUrl}/wiki/api/v2/spaces?limit=${CONFLUENCE_PAGE_LIMIT}`
+  while (url) {
+    const res = await confluenceFetch(url, authHeader)
+    if (!res.ok) throw new Error(`Confluence spaces list failed: HTTP ${res.status}`)
+    const data = await res.json() as { results: ConfluenceSpace[]; _links?: { next?: string } }
+    spaces.push(...data.results)
+    url = resolveConfluenceNextLink(baseUrl, data._links?.next)
+  }
+  return spaces
+}
+
+async function resolveConfluenceSpaceByKey(baseUrl: string, authHeader: string, key: string): Promise<ConfluenceSpace[]> {
+  const res = await confluenceFetch(`${baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(key)}&limit=1`, authHeader)
+  if (!res.ok) throw new Error(`Confluence space lookup failed for '${key}': HTTP ${res.status}`)
+  const data = await res.json() as { results: ConfluenceSpace[] }
+  return data.results
+}
+
+/**
+ * Lists pages in a space. Full sync (sinceMs === null): every current page,
+ * cursor-paginated, capped at MAX_FILES_PER_RUN. Incremental sync
+ * (sinceMs set): sorted newest-modified-first, and pagination stops as soon
+ * as a page's version.createdAt is older than sinceMs -- every remaining
+ * page in that space is guaranteed unchanged since the last run.
+ */
+async function listConfluencePages(
+  baseUrl: string, authHeader: string, spaceId: string, sinceMs: number | null,
+): Promise<ConfluencePageSummary[]> {
+  const pages: ConfluencePageSummary[] = []
+  const sortParams = sinceMs !== null ? '&sort=modified-date&direction=desc' : ''
+  let url: string | null = `${baseUrl}/wiki/api/v2/pages?space-id=${spaceId}&status=current&limit=${CONFLUENCE_PAGE_LIMIT}${sortParams}`
+  while (url && pages.length < MAX_FILES_PER_RUN) {
+    const res = await confluenceFetch(url, authHeader)
+    if (!res.ok) throw new Error(`Confluence pages list failed for space ${spaceId}: HTTP ${res.status}`)
+    const data = await res.json() as { results: ConfluencePageSummary[]; _links?: { next?: string } }
+    let stopped = false
+    for (const p of data.results) {
+      if (sinceMs !== null && p.version?.createdAt) {
+        if (new Date(p.version.createdAt).getTime() < sinceMs) { stopped = true; break }
+      }
+      pages.push(p)
+    }
+    if (stopped) break
+    url = resolveConfluenceNextLink(baseUrl, data._links?.next)
+  }
+  return pages
+}
+
+/** Returns null (never throws) on a non-2xx response -- the caller treats a missing/inaccessible page as a skip, not a fatal error. */
+async function getConfluencePageDetail(baseUrl: string, authHeader: string, pageId: string): Promise<ConfluencePageDetail | null> {
+  const res = await confluenceFetch(`${baseUrl}/wiki/api/v2/pages/${pageId}?body-format=storage`, authHeader)
+  if (!res.ok) return null
+  return await res.json() as ConfluencePageDetail
+}
+
+async function crawlConfluenceSource(
+  source: ImportSource,
+  totalSizeBefore: number,
+): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number; dirsSkippedError: number }> {
+  const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0, dirsSkippedError: 0 }
+  const now = Math.floor(Date.now() / 1000)
+  let totalSize = totalSizeBefore
+
+  if (!source.base_url || !source.vault_token_ref || !source.confluence_email) {
+    // Already validated at source-creation time (routes/import-memories.ts);
+    // this is a defensive check for the case where the row was edited
+    // directly or the validation is ever bypassed.
+    logger.error({ sourceId: source.id }, 'Confluence: source missing base_url/vault_token_ref/confluence_email, skipping')
+    return counts
+  }
+
+  // The token is re-read from the vault on every crawl (never cached across
+  // runs, never logged) so a rotated/revoked token takes effect on the very
+  // next scheduled crawl without any other change.
+  const token = getSecret(source.vault_token_ref, source.tenant_id)
+  if (!token) {
+    logger.error({ sourceId: source.id }, 'Confluence: vault token missing, skipping')
+    return counts
+  }
+  const authHeader = 'Basic ' + Buffer.from(`${source.confluence_email}:${token}`).toString('base64')
+  const baseUrl = source.base_url
+
+  // path='*' crawls every visible space; otherwise path is a single space key.
+  const spaces = source.path === '*'
+    ? await listConfluenceSpaces(baseUrl, authHeader)
+    : await resolveConfluenceSpaceByKey(baseUrl, authHeader, source.path)
+
+  const sinceMs = source.last_run_at !== null ? source.last_run_at * 1000 : null
+
+  for (const space of spaces) {
+    if (totalSize >= MAX_TOTAL_CONTENT_BYTES || counts.scanned >= MAX_FILES_PER_RUN) break
+
+    let pages: ConfluencePageSummary[]
+    try {
+      pages = await listConfluencePages(baseUrl, authHeader, space.id, sinceMs)
+    } catch (err) {
+      // A single space becoming inaccessible (access revoked, space deleted)
+      // must not abort the crawl for the other spaces in a path='*' source.
+      logger.warn({ sourceId: source.id, spaceKey: space.key, err: err instanceof Error ? err.message : String(err) }, 'Confluence: failed to list pages for space, skipping space')
+      continue
+    }
+
+    for (const pageSummary of pages) {
+      if (totalSize >= MAX_TOTAL_CONTENT_BYTES || counts.scanned >= MAX_FILES_PER_RUN) break
+      counts.scanned++
+
+      let detail: ConfluencePageDetail | null
+      try {
+        detail = await getConfluencePageDetail(baseUrl, authHeader, pageSummary.id)
+      } catch {
+        // Network/timeout error on one page -- skip it, the crawl continues.
+        counts.skippedType++
+        continue
+      }
+      if (!detail?.body?.storage?.value) { counts.skippedType++; continue }
+
+      const rawHtml = detail.body.storage.value
+      const stripped = stripMarkup(rawHtml)
+      if (containsSecret(stripped)) { counts.skippedSecret++; continue }
+
+      const content = stripped.length > MAX_CONTENT_BYTES
+        ? stripped.slice(0, MAX_CONTENT_BYTES) + '\n[truncated]'
+        : stripped
+
+      // Hashed on the original storage-format HTML (not the stripped text)
+      // so a whitespace-only stripMarkup change never looks like a content
+      // change to the dedup check.
+      const hash = createHash('sha256').update(rawHtml).digest('hex')
+      const filePath = `confluence/${space.key}/${detail.id}`
+      const fileName = `${detail.title}.html`
+      const keywords = `${space.key}, ${detail.title.split(' ').slice(0, 10).join(', ')}`
+
+      const result = upsertImportMemory(source.id, filePath, fileName, hash, content, keywords, now, source.tenant_id)
+      if (result === 'added') { counts.added++; totalSize += content.length }
+      else if (result === 'updated') { counts.updated++ }
+      else { counts.skippedHash++ }
+    }
+  }
+
+  return counts
+}
+
 // ── Main crawl entry point ────────────────────────────────────────────────────
 export async function crawlSource(sourceId: string): Promise<void> {
   if (runningScans.has(sourceId)) {
@@ -419,6 +614,8 @@ export async function crawlSource(sourceId: string): Promise<void> {
       counts = await crawlGdriveSource(source, totalSizeBefore)
     } else if (source.type === 'sharepoint') {
       counts = await crawlSharePointSource(source, totalSizeBefore)
+    } else if (source.type === 'confluence') {
+      counts = await crawlConfluenceSource(source, totalSizeBefore)
     } else {
       throw new Error(`Unknown source type: ${source.type}`)
     }
