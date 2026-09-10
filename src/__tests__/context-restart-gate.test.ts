@@ -8,9 +8,12 @@ import {
 } from '../web/context-restart-gate-runner.js'
 import {
   decideGate,
+  shouldForceRestart,
   DEFAULT_THRESHOLD_TOKENS,
   DEFAULT_STALE_CUTOFF_MS,
   DEFAULT_PERSISTENT_BLOCK_ALERT_MS,
+  DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS,
+  DEFAULT_FORCE_RESTART_AFTER_MS,
   normalizeGateConfig,
   DEFAULT_GATE_CONFIG,
   type GateInputs,
@@ -52,6 +55,23 @@ describe('normalizeGateConfig', () => {
 
   it('accepts a custom valid threshold', () => {
     expect(normalizeGateConfig({ thresholdTokens: 300_000 }).thresholdTokens).toBe(300_000)
+  })
+
+  it('defaults childCheckFallbackAfterMs to 30 minutes', () => {
+    expect(normalizeGateConfig({}).childCheckFallbackAfterMs).toBe(DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS)
+    expect(DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS).toBe(30 * 60 * 1000)
+  })
+
+  it('defaults forceRestartAfterMs to 4 hours', () => {
+    expect(normalizeGateConfig({}).forceRestartAfterMs).toBe(DEFAULT_FORCE_RESTART_AFTER_MS)
+    expect(DEFAULT_FORCE_RESTART_AFTER_MS).toBe(4 * 60 * 60 * 1000)
+  })
+
+  it('accepts custom childCheckFallbackAfterMs / forceRestartAfterMs, coerces invalid to default', () => {
+    expect(normalizeGateConfig({ childCheckFallbackAfterMs: 60_000 }).childCheckFallbackAfterMs).toBe(60_000)
+    expect(normalizeGateConfig({ childCheckFallbackAfterMs: -1 }).childCheckFallbackAfterMs).toBe(DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS)
+    expect(normalizeGateConfig({ forceRestartAfterMs: 60_000 }).forceRestartAfterMs).toBe(60_000)
+    expect(normalizeGateConfig({ forceRestartAfterMs: 'nope' }).forceRestartAfterMs).toBe(DEFAULT_FORCE_RESTART_AFTER_MS)
   })
 })
 
@@ -168,6 +188,72 @@ describe('decideGate -- child process guard', () => {
   })
 })
 
+describe('decideGate -- child-check fallback passthrough (childCheckFallbackAfterMs)', () => {
+  it('still blocks when hasChildProcesses is null and firstBlockedAt is null (no streak yet)', () => {
+    const d = decide({ hasChildProcesses: null }, null)
+    expect(d.action).toBe('block')
+    expect(d.reason).toMatch(/child-process-check-failed \(fail-closed\)/)
+  })
+
+  it('still blocks when the block streak is younger than childCheckFallbackAfterMs', () => {
+    const d = decide(
+      { hasChildProcesses: null },
+      NOW - (DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS - 60_000),  // 1 min short
+    )
+    expect(d.action).toBe('block')
+    expect(d.reason).toMatch(/child-process-check-failed \(fail-closed\)/)
+  })
+
+  it('allows (passthrough) once the block streak reaches childCheckFallbackAfterMs with the pane idle', () => {
+    const d = decide(
+      { hasChildProcesses: null, paneState: 'idle' },
+      NOW - DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS,
+    )
+    expect(d.action).toBe('allow')
+    expect(d.reason).toMatch(/child-check-stalled-pane-idle-passthrough/)
+    expect(d.reason).toMatch(/pane confirmed idle/)
+  })
+
+  it('allows (passthrough) well past childCheckFallbackAfterMs', () => {
+    const d = decide(
+      { hasChildProcesses: null },
+      NOW - (DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS + 60 * 60_000),
+    )
+    expect(d.action).toBe('allow')
+    expect(d.reason).toMatch(/child-check-stalled-pane-idle-passthrough/)
+  })
+
+  it('does NOT passthrough when the pane is not confirmed idle -- pane guard still wins (fail-closed)', () => {
+    // Pane checks run before the child-process guard, so a busy/typing/unknown
+    // pane blocks regardless of how long the streak has run or what
+    // childCheckFallbackAfterMs is set to.
+    const d = decide(
+      { hasChildProcesses: null, paneState: 'busy' },
+      NOW - (DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS + 60 * 60_000),
+    )
+    expect(d.action).toBe('block')
+    expect(d.reason).toMatch(/pane-busy/)
+  })
+
+  it('a real live child process still blocks even after the fallback window (passthrough only covers null, not true)', () => {
+    const d = decide(
+      { hasChildProcesses: true },
+      NOW - (DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS + 60 * 60_000),
+    )
+    expect(d.action).toBe('block')
+    expect(d.reason).toMatch(/live-child-processes/)
+  })
+
+  it('passthrough still fail-closes on a later gate condition (e.g. pending outbound)', () => {
+    const d = decide(
+      { hasChildProcesses: null, pendingOutboundCount: 1 },
+      NOW - DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS,
+    )
+    expect(d.action).toBe('block')
+    expect(d.reason).toMatch(/pending-outbound-messages/)
+  })
+})
+
 describe('decideGate -- dispatched outbound messages', () => {
   it('blocks when pending outbound messages exist', () => {
     const d = decide({ pendingOutboundCount: 2 })
@@ -235,6 +321,53 @@ describe('decideGate -- persistent block alert', () => {
       null,
     )
     expect(d.action).toBe('block')
+  })
+})
+
+describe('shouldForceRestart -- persistent-block escalation (forceRestartAfterMs)', () => {
+  const FORCE_CFG: GateConfig = { ...ENABLED, forceRestartAfterMs: 60_000 }  // 1 min for test
+  const IDLE_CLEAR: GateInputs = { ...CLEAR_INPUTS, hasChildProcesses: false }
+
+  it('does not fire when there is no blocking streak (firstBlockedAt null)', () => {
+    expect(shouldForceRestart(IDLE_CLEAR, FORCE_CFG, null)).toBe(false)
+  })
+
+  it('does not fire before the streak reaches forceRestartAfterMs', () => {
+    expect(shouldForceRestart(IDLE_CLEAR, FORCE_CFG, NOW - 30_000)).toBe(false)  // 30s < 1min
+  })
+
+  it('fires once the streak reaches forceRestartAfterMs with the pane idle and nothing in flight', () => {
+    expect(shouldForceRestart(IDLE_CLEAR, FORCE_CFG, NOW - 90_000)).toBe(true)  // 90s > 1min
+  })
+
+  it('does NOT fire when the pane is not confirmed idle, even mid-blocked-streak', () => {
+    expect(shouldForceRestart({ ...IDLE_CLEAR, paneState: 'busy' }, FORCE_CFG, NOW - 90_000)).toBe(false)
+    expect(shouldForceRestart({ ...IDLE_CLEAR, paneState: 'unknown' }, FORCE_CFG, NOW - 90_000)).toBe(false)
+  })
+
+  it('does NOT fire when a live child process is running (real work in flight)', () => {
+    expect(shouldForceRestart({ ...IDLE_CLEAR, hasChildProcesses: true }, FORCE_CFG, NOW - 90_000)).toBe(false)
+  })
+
+  it('does NOT fire when hasChildProcesses is unmeasurable (null) -- never force past an unconfirmed signal', () => {
+    expect(shouldForceRestart({ ...IDLE_CLEAR, hasChildProcesses: null }, FORCE_CFG, NOW - 90_000)).toBe(false)
+  })
+
+  it('does NOT fire with pending outbound messages', () => {
+    expect(shouldForceRestart({ ...IDLE_CLEAR, pendingOutboundCount: 1 }, FORCE_CFG, NOW - 90_000)).toBe(false)
+  })
+
+  it('does NOT fire with an open inbound question', () => {
+    expect(shouldForceRestart({ ...IDLE_CLEAR, hasOpenQuestion: true }, FORCE_CFG, NOW - 90_000)).toBe(false)
+  })
+
+  it('does NOT fire with live task state', () => {
+    expect(shouldForceRestart({ ...IDLE_CLEAR, hasLiveTaskState: true }, FORCE_CFG, NOW - 90_000)).toBe(false)
+  })
+
+  it('the default forceRestartAfterMs is 4 hours', () => {
+    expect(shouldForceRestart(IDLE_CLEAR, ENABLED, NOW - (DEFAULT_FORCE_RESTART_AFTER_MS - 1))).toBe(false)
+    expect(shouldForceRestart(IDLE_CLEAR, ENABLED, NOW - DEFAULT_FORCE_RESTART_AFTER_MS)).toBe(true)
   })
 })
 

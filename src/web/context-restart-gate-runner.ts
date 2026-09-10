@@ -19,6 +19,7 @@ import {
 } from '../db.js'
 import {
   decideGate,
+  shouldForceRestart,
   type GateInputs,
 } from '../context-restart-gate.js'
 
@@ -377,6 +378,19 @@ function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): string[] 
   } catch { return [] }
 }
 
+// ---- /clear sender -----------------------------------------------------------
+
+/**
+ * Send /clear to the agent's session via the send lane. Shared by the normal
+ * allow path and the persistent-block force-restart escalation below.
+ */
+async function sendClear(session: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    execFileSync(TMUX, ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+  })
+}
+
 // ---- Gate check for one agent -----------------------------------------------
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
@@ -440,6 +454,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 
   switch (decision.action) {
     case 'allow': {
+      if (decision.reason.startsWith('child-check-stalled-pane-idle-passthrough')) {
+        logger.warn({ agent: name, reason: decision.reason },
+          'context-restart-gate: child-check unmeasurable, pane-idle passthrough after fallback window')
+      }
       if (decision.noteStaleOutbound) {
         logger.info({ agent: name },
           'context-restart-gate: opening despite stale dispatched messages (beyond staleCutoffMs)')
@@ -448,10 +466,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
       // it immediately; the SessionStart hooks fire on the next boot and inject
       // the fresh context snapshot.
       try {
-        await withSessionSendLock(session, null, 'deliver', async () => {
-          execFileSync(TMUX, ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
-          execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-        })
+        await sendClear(session)
         logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
         writeGateRunState(name, {
           ...runState,
@@ -465,6 +480,38 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     }
 
     case 'block-alert': {
+      // Escalation: a block that has continued past forceRestartAfterMs with
+      // the pane confirmed idle and every other live-work signal clear is
+      // itself a stuck-gate symptom -- force a /clear instead of alerting
+      // forever. Checked first so it takes priority over (and, on success,
+      // replaces) the plain alert below.
+      if (shouldForceRestart(inputs, cfg, runState.firstBlockedAt)) {
+        const blockedSinceMin = runState.firstBlockedAt !== null
+          ? Math.round((nowMs - runState.firstBlockedAt) / 60_000)
+          : '?'
+        try {
+          await sendClear(session)
+          logger.warn({ agent: name, blockedSinceMin, reason: decision.reason },
+            'context-restart-gate: force-restart after persistent block')
+          createAgentMessage(
+            name,
+            MAIN_AGENT_ID,
+            `[CONTEXT-RESTART-GATE] force-restart after 4h persistent block: a(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt (utolso ok: ${decision.reason}), a pane idle es nincs elo munka-jel -- /clear elkuldve.`,
+            'context-restart-gate force-restart',
+          )
+          writeGateRunState(name, {
+            ...runState,
+            firstBlockedAt: null,
+            lastAlertAt: nowMs,
+            lastClearAt: nowMs,
+          })
+          break
+        } catch (err) {
+          logger.warn({ err, agent: name }, 'context-restart-gate: force-restart /clear send failed, falling back to alert')
+          // Fall through to the normal alert path below.
+        }
+      }
+
       // Continuous blocking for >= persistentBlockAlertMs. Alert bigme, but
       // only once per persistentBlockAlertMs to avoid message spam.
       const alertDue = runState.lastAlertAt === null
