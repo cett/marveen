@@ -68,6 +68,14 @@ export interface FleetJson {
   dailyLogs: DailyLogRow[]   // ALL agent_ids
   kanban: KanbanExport
   ideaBox: IdeaBoxExport
+  schedules: Record<string, unknown>[]
+  importSources: Record<string, unknown>[]
+  // P4: metadata only (id/label/username/public_key/fingerprint/key_type/vault_key_id,
+  // and host/port/name/description) -- neither table has a private-key column. The
+  // actual SSH private key is a generic vault secret (id = vault_key_id) and travels
+  // ONLY inside the existing encrypted `vault` section below, never here in plaintext.
+  vaultSshKeys: Record<string, unknown>[]
+  vaultSshServers: Record<string, unknown>[]
   dashboardSettings: DashboardSettingsExport
   vault?: VaultExport
 }
@@ -136,6 +144,16 @@ export interface DashboardSettingsExport {
   autoRestart: Record<string, unknown>
   agentsDesired: Record<string, unknown>
   norbertPersonal: Record<string, unknown>
+  // P3: overwrite semantics (whole-file replace), same as the four fields above --
+  // these are fleet operational policy, consistent with the identity-takeover model.
+  modelFallback: Record<string, unknown>
+  federation: Record<string, unknown>
+  costopsConfig: Record<string, unknown>
+  // P3: MERGE semantics (union, not replace) -- see importFleet(). An allowlist is a
+  // security-positive control that can only ever be narrowed by an overwrite, and a
+  // target machine may have its own already-approved domains for integrations the
+  // source fleet never used; losing those on import would be a silent regression.
+  egressAllowlist: Record<string, unknown>
 }
 
 export interface MemoryRow {
@@ -179,6 +197,10 @@ export interface DiffReport {
     labels: number
     dailyLogs: number
     ideaBox: number
+    schedules: number
+    importSources: number
+    vaultSshKeys: number
+    vaultSshServers: number
   }
   wouldOverwrite: {
     agents: string[]  // existing sub-agent names that would be overwritten
@@ -200,6 +222,10 @@ export interface ImportResult {
     labels: number
     dailyLogs: number
     ideaBox: number
+    schedules: number
+    importSources: number
+    vaultSshKeys: number
+    vaultSshServers: number
   }
   warnings?: string[]
 }
@@ -623,6 +649,10 @@ function exportDashboardSettings(): DashboardSettingsExport {
     autoRestart: read('auto-restart.json'),
     agentsDesired: read('agents-desired.json'),
     norbertPersonal: read('norbert-personal.json'),
+    modelFallback: read('model-fallback.json'),
+    federation: read('federation.json'),
+    costopsConfig: read('costops-config.json'),
+    egressAllowlist: read('egress-allowlist.json'),
   }
 }
 
@@ -699,6 +729,32 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     statusLog: db.prepare('SELECT * FROM idea_status_log').all() as Record<string, unknown>[],
   }
 
+  // DB-based schedules (dashboard-schedule-crud API), distinct from the file-based
+  // scheduledTasks[] above. Force-disabled at export time, same as scheduledTasks,
+  // so an imported fleet never starts firing a source fleet's cron jobs unreviewed.
+  const schedules = (db.prepare('SELECT * FROM schedules').all() as Record<string, unknown>[])
+    .map(row => ({ ...row, enabled: 0 }))
+
+  // Import-pipeline source configs (local/gdrive/sharepoint/confluence). Only the
+  // config row is exported -- vault_token_ref is just the vault entry's id (the
+  // secret itself travels via the vault section), and the crawled content
+  // (import_memories) is deliberately NOT exported: the crawler re-fetches it.
+  // Force-disabled + last_run_at cleared at export time: a target's local paths
+  // and gdrive/sharepoint/confluence credentials are never portable as-is, AND
+  // leaving last_run_at set would make the next crawl treat itself as incremental
+  // and silently skip everything older than that cutoff -- content the target
+  // never actually has, since import_memories didn't come along for the ride.
+  const importSources = (db.prepare('SELECT * FROM import_sources').all() as Record<string, unknown>[])
+    .map(row => ({ ...row, enabled: 0, last_run_at: null }))
+
+  // SSH key-pool metadata (P4). Neither table has a private-key column -- the
+  // actual private key material lives as a generic vault secret keyed by
+  // vault_key_id, and is included ONLY when the vault section below is (i.e.
+  // only in an encrypted, password-protected export). This metadata alone is
+  // safe in plaintext: public key, fingerprint, host/port/username, no secret.
+  const vaultSshKeys = db.prepare('SELECT * FROM vault_ssh_keys').all() as Record<string, unknown>[]
+  const vaultSshServers = db.prepare('SELECT * FROM vault_ssh_servers').all() as Record<string, unknown>[]
+
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
   const vault = withSecrets ? exportVault() : undefined
 
@@ -714,6 +770,10 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     dailyLogs,
     kanban,
     ideaBox,
+    schedules,
+    importSources,
+    vaultSshKeys,
+    vaultSshServers,
     dashboardSettings: exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
@@ -841,8 +901,43 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       .get((c as any).card_id, (c as any).content)) newComments++
   }
 
+  let newSchedules = 0
+  for (const sch of fleet.schedules ?? []) {
+    if (!db.prepare('SELECT 1 FROM schedules WHERE id = ?').get((sch as any).id)) newSchedules++
+  }
+  if (newSchedules > 0) {
+    warnings.push(`${newSchedules} ütemezés importálva -- letiltva érkezik, kézi átvizsgálás és engedélyezés szükséges célgépen.`)
+  }
+
+  let newImportSources = 0
+  for (const src of fleet.importSources ?? []) {
+    if (!db.prepare('SELECT 1 FROM import_sources WHERE id = ?').get((src as any).id)) newImportSources++
+  }
+  if (newImportSources > 0) {
+    warnings.push(
+      `${newImportSources} import-forrás importálva -- letiltva érkezik, a tartalom (import_memories) nem került át. ` +
+      `A vault_token_ref-ek csak akkor engedélyezhetők újra, ha a hivatkozott vault-bejegyzés a célgépen is létezik.`
+    )
+  }
+
+  let newVaultSshKeys = 0
+  for (const key of fleet.vaultSshKeys ?? []) {
+    if (!db.prepare('SELECT 1 FROM vault_ssh_keys WHERE id = ?').get((key as any).id)) newVaultSshKeys++
+  }
+  let newVaultSshServers = 0
+  for (const srv of fleet.vaultSshServers ?? []) {
+    if (!db.prepare('SELECT 1 FROM vault_ssh_servers WHERE id = ?').get((srv as any).id)) newVaultSshServers++
+  }
+
   if (!fleet.vault) {
     warnings.push('vault szekció hiányzik -- az MCP szerverek token nélkül indulnak el, manuális re-auth szükséges.')
+    if (newVaultSshKeys > 0) {
+      warnings.push(
+        `${newVaultSshKeys} SSH kulcs metaadata importálva, de a PRIVÁT kulcs anyaga NEM -- az csak ` +
+        'titkosított (jelszavas) vault-exportban utazik. A kulcsok publikus adatai (fingerprint, ' +
+        'nyilvános kulcs) láthatók lesznek, de használat előtt a privát kulcsot újra fel kell tölteni.'
+      )
+    }
   }
 
   // H3: track which existing agents and main agent would be overwritten
@@ -877,6 +972,10 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       labels: newLabels,
       dailyLogs: newDailyLogs,
       ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+      schedules: newSchedules,
+      importSources: newImportSources,
+      vaultSshKeys: newVaultSshKeys,
+      vaultSshServers: newVaultSshServers,
     },
     wouldOverwrite: {
       agents: existingAgentsToOverwrite,
@@ -1010,7 +1109,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
 
 const EMPTY_DIFF: DiffReport = {
   dryRun: true,
-  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0 },
+  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, schedules: 0, importSources: 0, vaultSshKeys: 0, vaultSshServers: 0 },
   wouldOverwrite: { agents: [], mainAgent: false },
   warnings: [],
   errors: [],
@@ -1133,6 +1232,22 @@ export function importFleet(
       trackedWrite(join(STORE_DIR, 'agents-desired.json'), JSON.stringify(s.agentsDesired, null, 2), tracker)
     if (s.norbertPersonal && Object.keys(s.norbertPersonal).length)
       trackedWrite(join(STORE_DIR, 'norbert-personal.json'), JSON.stringify(s.norbertPersonal, null, 2), tracker)
+    if (s.modelFallback && Object.keys(s.modelFallback).length)
+      trackedWrite(join(STORE_DIR, 'model-fallback.json'), JSON.stringify(s.modelFallback, null, 2), tracker)
+    if (s.federation && Object.keys(s.federation).length)
+      trackedWrite(join(STORE_DIR, 'federation.json'), JSON.stringify(s.federation, null, 2), tracker)
+    if (s.costopsConfig && Object.keys(s.costopsConfig).length)
+      trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
+    // egress-allowlist.json -- MERGE, not overwrite (see DashboardSettingsExport doc):
+    // union the source's domains into whatever the target already has, so a
+    // target-specific integration domain never gets silently dropped.
+    const sourceDomains = Array.isArray((s.egressAllowlist as any)?.domains) ? (s.egressAllowlist as any).domains as string[] : []
+    if (sourceDomains.length > 0) {
+      const existing = safeReadJson(join(STORE_DIR, 'egress-allowlist.json'))
+      const existingDomains = Array.isArray((existing as any).domains) ? (existing as any).domains as string[] : []
+      const merged = [...new Set([...existingDomains, ...sourceDomains])].sort()
+      trackedWrite(join(STORE_DIR, 'egress-allowlist.json'), JSON.stringify({ ...existing, domains: merged }, null, 2), tracker)
+    }
 
     // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
     const importTx = db.transaction(() => {
@@ -1186,6 +1301,87 @@ export function importFleet(
         if (!c.card_id || !c.label_id) continue
         db.prepare('INSERT OR IGNORE INTO kanban_card_labels (card_id, label_id, created_at) VALUES (?, ?, ?)')
           .run(c.card_id, c.label_id, c.created_at)
+      }
+
+      // schedules -- idempotent on id. Always imported disabled regardless of the
+      // exported value (defense in depth -- mirrors the file-based scheduledTasks
+      // pause-on-import above): a migrated fleet must never start firing a source
+      // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
+      for (const sch of fleet.schedules ?? []) {
+        const s = sch as any
+        if (!s.id || !s.schedule || !s.agent || !s.type) {
+          logger.warn({ id: s.id }, 'Fleet import: skipping schedule with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO schedules
+           (id, prompt, description, schedule, agent, type, enabled, tenant_id, skip_if_busy,
+            force_send, target_session, command, timeout_ms, fail_threshold, pre_check,
+            catch_up_max_age_minutes, stuck_after_minutes, requires, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          s.id, s.prompt ?? '', s.description ?? '', s.schedule, s.agent, s.type,
+          s.tenant_id ?? null, s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
+          s.command ?? null, s.timeout_ms ?? null, s.fail_threshold ?? null, s.pre_check ?? null,
+          s.catch_up_max_age_minutes ?? null, s.stuck_after_minutes ?? null, s.requires ?? null,
+          s.created_at, s.updated_at,
+        )
+      }
+
+      // import_sources -- idempotent on id. Always imported disabled with
+      // last_run_at cleared, regardless of the exported values (defense in
+      // depth, mirrors schedules above): the crawled content itself was never
+      // exported, so a preserved last_run_at would make the next run treat
+      // itself as incremental and silently skip everything the target doesn't
+      // actually have. vault_token_ref is carried over as-is (just the vault
+      // entry id); re-enabling still requires that entry to exist on this
+      // machine (enforced by the route layer, not by this raw insert).
+      for (const src of fleet.importSources ?? []) {
+        const s = src as any
+        if (!s.id || !s.type || !s.path) {
+          logger.warn({ id: s.id }, 'Fleet import: skipping import source with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO import_sources
+           (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at,
+            tenant_id, vault_token_ref, confluence_email, base_url)
+           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          s.id, s.type, s.path, s.label ?? null, s.interval_hours ?? 4,
+          s.created_at, s.updated_at, s.tenant_id ?? 'default',
+          s.vault_token_ref ?? null, s.confluence_email ?? null, s.base_url ?? null,
+        )
+      }
+
+      // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
+      // inserted before vault_ssh_servers below since a server's ssh_key_id refers
+      // to it (foreign_keys enforcement is off for this connection, as elsewhere in
+      // this schema, but the insert order still matches the logical dependency).
+      for (const key of fleet.vaultSshKeys ?? []) {
+        const k = key as any
+        if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type) {
+          logger.warn({ id: k.id }, 'Fleet import: skipping SSH key with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO vault_ssh_keys
+           (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(k.id, k.label, k.username, k.vault_key_id, k.public_key, k.fingerprint, k.key_type, k.created_at, k.tenant_id ?? 'default')
+      }
+
+      // vault_ssh_servers -- idempotent on id.
+      for (const srv of fleet.vaultSshServers ?? []) {
+        const s2 = srv as any
+        if (!s2.id || !s2.name || !s2.host || !s2.username) {
+          logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO vault_ssh_servers
+           (id, name, host, port, username, ssh_key_id, description, tenant_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          s2.id, s2.name, s2.host, s2.port ?? 22, s2.username, s2.ssh_key_id ?? null,
+          s2.description ?? null, s2.tenant_id ?? 'default', s2.created_at, s2.updated_at,
+        )
       }
 
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
@@ -1320,6 +1516,10 @@ export function importFleet(
         labels: (fleet.kanban?.labels ?? []).length,
         dailyLogs: (fleet.dailyLogs ?? []).length,
         ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+        schedules: (fleet.schedules ?? []).length,
+        importSources: (fleet.importSources ?? []).length,
+        vaultSshKeys: (fleet.vaultSshKeys ?? []).length,
+        vaultSshServers: (fleet.vaultSshServers ?? []).length,
       },
       ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
     }

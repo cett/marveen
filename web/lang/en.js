@@ -1719,6 +1719,12 @@ window._i18n.en = {
   'fleet.stat.skills':            'Global skills',
   'fleet.stat.tasks':             'Scheduled tasks',
   'fleet.stat.agent_names':       'Agents',
+  'fleet.stat.schedules':         'DB schedules',
+  'fleet.stat.import_sources':    'Import sources',
+  'fleet.stat.ssh_keys':          'SSH keys',
+  'fleet.stat.ssh_servers':       'SSH servers',
+
+  'fleet.import.new_sections_note': 'Schedules and import sources arrive disabled (manual review required); SSH key public data imports, but the private key only travels in an encrypted (password-protected) export. Most store settings are overwritten, but the egress-allowlist domain list is merged with the target\'s own list instead of being replaced.',
 
   // --- Dashboard browser login (optional) ---
   'auth.login.title':             'Sign in',

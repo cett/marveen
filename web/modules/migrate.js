@@ -126,6 +126,22 @@ export function initMigrate() {
             <div class="fleet-dry-run-stat-value">${wc.scheduledTasks ?? 0}</div>
             <div class="fleet-dry-run-stat-label">${t('fleet.stat.tasks')}</div>
           </div>
+          <div class="fleet-dry-run-stat">
+            <div class="fleet-dry-run-stat-value">${wc.schedules ?? 0}</div>
+            <div class="fleet-dry-run-stat-label">${t('fleet.stat.schedules')}</div>
+          </div>
+          <div class="fleet-dry-run-stat">
+            <div class="fleet-dry-run-stat-value">${wc.importSources ?? 0}</div>
+            <div class="fleet-dry-run-stat-label">${t('fleet.stat.import_sources')}</div>
+          </div>
+          <div class="fleet-dry-run-stat">
+            <div class="fleet-dry-run-stat-value">${wc.vaultSshKeys ?? 0}</div>
+            <div class="fleet-dry-run-stat-label">${t('fleet.stat.ssh_keys')}</div>
+          </div>
+          <div class="fleet-dry-run-stat">
+            <div class="fleet-dry-run-stat-value">${wc.vaultSshServers ?? 0}</div>
+            <div class="fleet-dry-run-stat-label">${t('fleet.stat.ssh_servers')}</div>
+          </div>
         </div>
         ${agentNames.length ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">${t('fleet.stat.agent_names')}: ${escapeHtml(agentNames.join(', '))}</div>` : ''}
         ` : ''}
@@ -183,6 +199,10 @@ export function initMigrate() {
           <div>${t('fleet.stat.kanban')}: ${imp.kanbanCards ?? 0}</div>
           <div>${t('fleet.stat.skills')}: ${imp.globalSkills ?? 0}</div>
           <div>${t('fleet.stat.tasks')}: ${imp.scheduledTasks ?? 0}</div>
+          <div>${t('fleet.stat.schedules')}: ${imp.schedules ?? 0}</div>
+          <div>${t('fleet.stat.import_sources')}: ${imp.importSources ?? 0}</div>
+          <div>${t('fleet.stat.ssh_keys')}: ${imp.vaultSshKeys ?? 0}</div>
+          <div>${t('fleet.stat.ssh_servers')}: ${imp.vaultSshServers ?? 0}</div>
         </div>
       `
 
