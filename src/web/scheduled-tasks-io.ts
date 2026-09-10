@@ -217,7 +217,11 @@ export function listScheduledTasksFromFiles(): ScheduledTask[] {
   return tasks.sort((a, b) => b.createdAt - a.createdAt)
 }
 
-function rowToTask(row: ScheduleRow): ScheduledTask {
+// Exported so route handlers returning DB rows over the API can map them to
+// the same { name, ... } shape the file-based branch has always returned
+// (DB rows key on `id`, not `name` -- see the writeScheduledTask note below
+// for the sibling bug this shape mismatch is a cousin of).
+export function rowToTask(row: ScheduleRow): ScheduledTask {
   return {
     name: row.id,
     description: row.description,
@@ -250,9 +254,8 @@ export function writeScheduledTask(
     tenantId?: string | null; requires?: { mcp_servers?: string[] };
   },
 ): void {
-  const existing = countSchedules() > 0
-    ? (getScheduleFromDb(taskName) ? rowToTask(getScheduleFromDb(taskName)!) : null)
-    : readScheduledTask(taskName)
+  const dbRow = countSchedules() > 0 ? getScheduleFromDb(taskName) : null
+  const existing = dbRow ? rowToTask(dbRow) : (countSchedules() > 0 ? null : readScheduledTask(taskName))
 
   const merged = {
     prompt:                   data.prompt                   ?? existing?.prompt                   ?? '',
@@ -273,7 +276,13 @@ export function writeScheduledTask(
     requires:                 data.requires !== undefined
                                 ? (data.requires ? JSON.stringify(data.requires) : null)
                                 : (existing?.requires ? JSON.stringify(existing.requires) : null),
-    tenant_id:                data.tenantId !== undefined ? (data.tenantId ?? null) : null,
+    // ScheduledTask (the `existing` shape above) carries no tenant_id --
+    // it's the file-based task representation, and tenant scoping is a
+    // DB-only concept. Without falling back to the raw dbRow here, every
+    // write that doesn't explicitly pass tenantId (toggle's file-mirror
+    // call, the PUT edit handler) would silently reset a tenant-owned
+    // schedule's tenant_id to NULL (fleet scope) on next edit/toggle.
+    tenant_id:                data.tenantId !== undefined ? (data.tenantId ?? null) : (dbRow?.tenant_id ?? null),
   }
 
   upsertSchedule(taskName, merged)
