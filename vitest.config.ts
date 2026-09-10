@@ -51,20 +51,21 @@ export default defineConfig({
       // feature branch for the whole gradual series -- Jonas's call, keep
       // adding steps here rather than opening a PR per module). Steps so
       // far: src/web/routes/fleet-q.ts, src/web/routes/docs.ts,
-      // src/web/routes/agent-taskstate.ts, and src/web/routes/fleet.ts
-      // (export/import), all 0% -> fully covered. Local baseline after all
-      // four: statements 59.37%, branches 58.43%, functions 61.62%,
-      // lines 60.63%. Floor kept at the same values (still ~1.4-2.6 points
-      // of buffer below the new numbers, `functions` now the tightest)
-      // rather than bumped again for this small an increment per step --
+      // src/web/routes/agent-taskstate.ts, src/web/routes/fleet.ts
+      // (export/import), src/web/routes/spans.ts, src/web/routes/status.ts,
+      // and src/web/routes/backups.ts, all 0% -> fully covered. Local
+      // baseline after this step: statements 60.42%, branches 59.63%,
+      // functions 62.35%, lines 61.72%. Floor bumped to match (still
+      // ~1.3-1.7 points of buffer below the measured numbers) rather than
+      // bumped again for this small an increment per step --
       // raise only once the level actually reached clearly supports it,
       // never round up ahead of the measurement. Ratchet up further as more
       // steps land in this branch.
       thresholds: {
-        statements: 57,
-        branches: 56,
-        functions: 60,
-        lines: 58,
+        statements: 59,
+        branches: 58,
+        functions: 61,
+        lines: 60,
       },
     },
   },
