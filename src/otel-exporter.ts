@@ -4,6 +4,7 @@
 //
 // Spec: opentelemetry-proto/trace/v1/trace.proto (JSON encoding)
 
+import { createHash } from 'node:crypto'
 import type { OtelSpan, TokenUsageMetricRow } from './db.js'
 
 interface OtelAttribute {
@@ -64,10 +65,16 @@ function msToNano(ms: number): string {
   return String(ms * 1_000_000)
 }
 
-// Normalise a hex trace/span id to the OTEL canonical form (lowercase hex).
-// If the id is not already hex (e.g. a UUID-like string), pass it through.
-function normaliseId(id: string): string {
-  return id.replace(/-/g, '').toLowerCase()
+// OTLP requires traceId to be exactly 16 bytes (32 hex chars) and spanId
+// exactly 8 bytes (16 hex chars) of raw hex -- not a UUID, not a Claude-native
+// id. Our ids are session_ids, msg_... ids, tool_use ids and transcript UUIDs,
+// none of which are hex or the right length, so a collector validates and
+// rejects (400) every export. Hash deterministically instead of trying to
+// "clean up" the original string: the same input always yields the same
+// output, so trace/span correlation (parent-child links across multiple
+// export calls) is preserved.
+function toHexId(id: string, byteLen: 8 | 16): string {
+  return createHash('sha256').update(id).digest('hex').slice(0, byteLen * 2)
 }
 
 // Group spans by agent_id, then emit one resourceSpans block per agent
@@ -87,8 +94,8 @@ export function spansToOtelJson(spans: OtelSpan[], serviceNamespace = 'marveen')
     const exportedSpans: OtelSpanExport[] = agentSpans.map((s) => {
       const endMs = s.end_ms ?? s.start_ms // fallback for still-running spans
       const out: OtelSpanExport = {
-        traceId: normaliseId(s.trace_id),
-        spanId: normaliseId(s.span_id),
+        traceId: toHexId(s.trace_id, 16),
+        spanId: toHexId(s.span_id, 8),
         name: s.operation,
         startTimeUnixNano: msToNano(s.start_ms),
         endTimeUnixNano: msToNano(endMs),
@@ -99,7 +106,7 @@ export function spansToOtelJson(spans: OtelSpan[], serviceNamespace = 'marveen')
           ...parseAttributes(s.attributes),
         ],
       }
-      if (s.parent_span_id) out.parentSpanId = normaliseId(s.parent_span_id)
+      if (s.parent_span_id) out.parentSpanId = toHexId(s.parent_span_id, 8)
       return out
     })
 
