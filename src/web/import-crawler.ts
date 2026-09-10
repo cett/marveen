@@ -216,6 +216,17 @@ export function upsertImportMemory(
   return 'added'
 }
 
+// Never throws: this is called from both the success and
+// error paths of crawlSource()'s try/catch. Before this guard, an INSERT
+// failure here -- for whatever reason -- would be caught by crawlSource's
+// OUTER catch (meant for crawl errors, not audit-log errors), which would
+// then call writeAuditLog() a second time to record that "error"; if the
+// same underlying problem made the retry fail too, the exception propagated
+// out uncaught while the `finally` block still updated last_run_at -- so the
+// crawl looked like it ran (last_run_at moved) but the run log stayed
+// permanently empty, with nothing in the logs explaining why. Catching and
+// logging loudly here means a future INSERT failure is visible instead of
+// silently vanishing, and can never get misrouted into the crawl-error path.
 function writeAuditLog(
   sourceId: string,
   runAt: number,
@@ -225,17 +236,21 @@ function writeAuditLog(
   },
   error?: string,
 ): void {
-  getDb().prepare(`
-    INSERT INTO import_audit_log
-      (source_id, run_at, files_scanned, files_added, files_updated,
-       files_skipped_hash, files_skipped_secret, files_skipped_size, files_skipped_type, error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    sourceId, runAt,
-    counts.scanned, counts.added, counts.updated,
-    counts.skippedHash, counts.skippedSecret, counts.skippedSize, counts.skippedType,
-    error ?? null,
-  )
+  try {
+    getDb().prepare(`
+      INSERT INTO import_audit_log
+        (source_id, run_at, files_scanned, files_added, files_updated,
+         files_skipped_hash, files_skipped_secret, files_skipped_size, files_skipped_type, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      sourceId, runAt,
+      counts.scanned, counts.added, counts.updated,
+      counts.skippedHash, counts.skippedSecret, counts.skippedSize, counts.skippedType,
+      error ?? null,
+    )
+  } catch (err) {
+    logger.error({ sourceId, runAt, err }, 'Import crawl: failed to persist audit log row')
+  }
 }
 
 // ── Local FS connector ────────────────────────────────────────────────────────
