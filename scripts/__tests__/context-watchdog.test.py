@@ -662,6 +662,37 @@ class TestMainSubprocess(unittest.TestCase):
         self.assertEqual(row[1], "handoff")
         self.assertIn("interlock=yes", row[2])
 
+    def test_cc_subagent_tool_call_writes_row_but_never_emits_handoff(self):
+        # A Claude-Code Agent-tool sub-agent (fork/quarantine-reader/...)
+        # spawned FROM this session shares this session's cwd, so it's only
+        # distinguishable via Claude Code's own "agent_id"/"agent_type"
+        # payload fields (present only on a sub-agent's own tool-call
+        # events). Same 65%-over-threshold usage as
+        # test_high_usage_emits_handoff_and_stamps_interlock above, but this
+        # must NOT leak the parent's HANDOFF state into the sub-agent's
+        # isolated context -- while still counting its real token spend.
+        _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000, output_tokens=10)])
+        r = self._run_hook(self._payload(agent_id="cc-subagent-uuid-1", agent_type="quarantine-reader"))
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.strip(), "")  # no additionalContext injected
+        if os.path.exists(self.compact_state_path):
+            with open(self.compact_state_path) as f:
+                self.assertNotIn(MAIN_AGENT, json.load(f))
+        conn = sqlite3.connect(self.db_path)
+        handoff_row = conn.execute(
+            "SELECT COUNT(*) FROM hook_audit_log WHERE agent_id = ? AND verdict = 'handoff'", (MAIN_AGENT,)
+        ).fetchone()[0]
+        token_count = conn.execute(
+            "SELECT COUNT(*) FROM token_usage WHERE agent = ?", (MAIN_AGENT,)
+        ).fetchone()[0]
+        span_count = conn.execute(
+            "SELECT COUNT(*) FROM otel_spans WHERE agent_id = ? AND operation = 'model.call'", (MAIN_AGENT,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(handoff_row, 0)
+        self.assertEqual(token_count, 1)  # bookkeeping still runs
+        self.assertEqual(span_count, 1)   # otel bookkeeping still runs too
+
     def test_unknown_agent_cwd_is_noop(self):
         _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000)])
         r = self._run_hook(self._payload(cwd="/tmp/some/other/worker/home"))
