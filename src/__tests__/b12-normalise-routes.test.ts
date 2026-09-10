@@ -95,34 +95,6 @@ describe('B12 normalise -- audit-log', () => {
   })
 })
 
-describe('B12 normalise -- migrate', () => {
-  it('returns not_found + 404 for non-existent path', async () => {
-    mocks.existsSync.mockReturnValueOnce(false)
-    const { tryHandleMigrate } = await import('../web/routes/migrate.js')
-    const { ctx, status, body } = makeCtx({
-      method: 'POST',
-      path: '/api/migrate/scan',
-      body: { sourcePath: '/some/nonexistent/path' },
-    })
-    await tryHandleMigrate(ctx)
-    expect(status()).toBe(404)
-    expect((body() as any).error).toBe('not_found')
-  })
-
-  it('returns required + 400 + field:path for missing sourcePath', async () => {
-    const { tryHandleMigrate } = await import('../web/routes/migrate.js')
-    const { ctx, status, body } = makeCtx({
-      method: 'POST',
-      path: '/api/migrate/scan',
-      body: { sourcePath: '' },
-    })
-    await tryHandleMigrate(ctx)
-    expect(status()).toBe(400)
-    expect((body() as any).error).toBe('required')
-    expect((body() as any).field).toBe('path')
-  })
-})
-
 describe('B12 normalise -- daily-log', () => {
   it('returns required + 400 + field:content for empty content', async () => {
     const { tryHandleDailyLog } = await import('../web/routes/daily-log.js')

@@ -769,7 +769,7 @@ registerPage('auditLog', {
     m.loadAuditLogPage()
   }
 })
-registerPage('migrate',   { lazy: true, enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) }; m.loadMigrateAgents() } })
+registerPage('migrate',   { lazy: true, enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) } } })
 registerPage('import',    { lazy: true, enter: async () => { const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js')); if (!_moduleCache.get('import_inited')) { m.initImportMemories(); _moduleCache.set('import_inited', true) }; m.loadImportSources() } })
 registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
 registerPage('status',    { lazy: true, enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })

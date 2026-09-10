@@ -179,7 +179,7 @@ const PAGE_HEADER_I18N = {
   recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
   bgTasksPage:    { title: 'bgTasks.page_title',     sub: 'bgTasks.page_subtitle' },
   connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
-  migratePage:    { title: 'migrate.page_title',     sub: 'migrate.page_subtitle' },
+  migratePage:    { title: 'fleet.section_title',    sub: 'fleet.section_desc' },
   docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
   statusPage:     { title: 'status.page_title',      sub: 'status.page_subtitle' },
   teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
