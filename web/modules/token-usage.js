@@ -134,6 +134,7 @@ export async function loadTokenUsage() {
   const timeline = await tlRes.json()
   renderTuTimeline(timeline, agent)
   renderTuBudgetCards()
+  renderCostopsBudgetStatus()
 
   tuDetailSearch = ''
   const searchEl = document.getElementById('tuSearchInput')
@@ -625,6 +626,51 @@ function renderTuBudgetCards() {
       renderTuBudgetCards()
     })
   })
+}
+
+// Unrelated to the tu-budget-* cards above (those track Claude's own 5h/weekly
+// rate-limit windows). This renders costops-config.json budgets -- token-count
+// limits with warning/hard thresholds, evaluated against real spend server-side
+// (evaluateBudgets()). GET /api/costops/budgets is admin-only, so a non-admin
+// caller (403) or a fleet with no budgets configured (empty list) both mean:
+// leave the whole card hidden rather than show an empty/error state.
+const COSTOPS_LEVEL_COLOR = { ok: '#22c55e', warning: '#f59e0b', hard: '#ef4444' }
+
+function costopsBudgetScopeLabel(budget) {
+  if (budget.scope === 'agent') return t('tokenUsage.costops_scope_agent', { name: budget.scope_ref })
+  if (budget.scope === 'tenant') return t('tokenUsage.costops_scope_tenant', { name: budget.scope_ref })
+  return t('tokenUsage.costops_scope_global')
+}
+
+async function renderCostopsBudgetStatus() {
+  const card = document.getElementById('tuCostopsBudgetsCard')
+  const el = document.getElementById('tuCostopsBudgets')
+  if (!card || !el) return
+
+  let budgets = []
+  try {
+    const res = await fetch('/api/costops/budgets')
+    if (!res.ok) { card.hidden = true; return }
+    budgets = (await res.json()).budgets || []
+  } catch {
+    card.hidden = true
+    return
+  }
+
+  if (budgets.length === 0) { card.hidden = true; return }
+
+  el.innerHTML = budgets.map(b => {
+    const color = COSTOPS_LEVEL_COLOR[b.level] || COSTOPS_LEVEL_COLOR.ok
+    const pct = b.amount > 0 ? Math.round((b.ratio || 0) * 100) : 0
+    const blockedNote = b.blocked ? ` · ${escapeHtml(t('tokenUsage.costops_blocked'))}` : ''
+    return `
+      <div class="overview-stat" style="border-left:3px solid ${color}">
+        <div class="overview-stat-label">${escapeHtml(b.name || b.id)}</div>
+        <div class="overview-stat-value" style="color:${color}">${tuFormatTokens(b.spent)} / ${tuFormatTokens(b.amount)}</div>
+        <div class="overview-stat-sub">${escapeHtml(costopsBudgetScopeLabel(b))} · ${pct}%${blockedNote}</div>
+      </div>`
+  }).join('')
+  card.hidden = false
 }
 
 let tuDetailData = []

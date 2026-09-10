@@ -118,7 +118,7 @@ window.addEventListener('beforeunload', (e) => {
 // entry never requires a frontend change just to render a sane heading.
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
-  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, observability: true }
+  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, observability: true, costops: true }
   return known[mod] ? t(key) : (mod.charAt(0).toUpperCase() + mod.slice(1))
 }
 
@@ -559,7 +559,7 @@ export async function loadSettings() {
     const securityDefs = byModule.get('security') ?? []
     byModule.delete('security')
 
-    const allModules = [...byModule.keys(), 'security', 'autonomy']
+    const allModules = [...byModule.keys(), 'security', 'autonomy', 'costops']
     const savedTab = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY) || allModules[0]
     const activeTab = allModules.includes(savedTab) ? savedTab : allModules[0]
 
@@ -668,6 +668,54 @@ export async function loadSettings() {
         renderAutonomyContent(grid, footer)
       }
     }
+
+    // CostOps budgets tab (synthetic, like security/autonomy)
+    {
+      const mod = 'costops'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = settingsModuleLabel(mod)
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = 'settings-panel-costops'
+      panel.hidden = mod !== activeTab
+
+      const toolbar = document.createElement('div')
+      toolbar.style.cssText = 'margin-bottom:12px'
+      const addBtn = document.createElement('button')
+      addBtn.className = 'btn'
+      addBtn.dataset.variant = 'primary'
+      addBtn.dataset.size = 'compact'
+      addBtn.textContent = t('settings.costops.add_btn')
+      addBtn.addEventListener('click', () => openCostopsBudgetModal(null))
+      toolbar.appendChild(addBtn)
+      panel.appendChild(toolbar)
+
+      const tableWrap = document.createElement('div')
+      tableWrap.className = 'table-wrap'
+      tableWrap.innerHTML = `
+        <table class="table" data-size="compact">
+          <thead><tr>
+            <th>${t('settings.costops.col.name')}</th>
+            <th>${t('settings.costops.col.scope')}</th>
+            <th>${t('settings.costops.col.amount')}</th>
+            <th>${t('settings.costops.col.status')}</th>
+            <th></th>
+          </tr></thead>
+          <tbody id="costopsBudgetsTbody"></tbody>
+        </table>`
+      panel.appendChild(tableWrap)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        loadCostopsBudgetsTable()
+      }
+    }
   } catch (err) {
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
@@ -686,6 +734,9 @@ function activateSettingsTab(mod) {
     const grid = document.getElementById('settingsAutonomyGrid')
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
+  }
+  if (mod === 'costops') {
+    loadCostopsBudgetsTable()
   }
 }
 
@@ -837,4 +888,161 @@ function resetAllSettings() {
 
 document.getElementById('settingsSaveAllBtn')?.addEventListener('click', saveAllSettings)
 document.getElementById('settingsResetBtn')?.addEventListener('click', resetAllSettings)
+
+// ── CostOps budgets (Settings tab) ──────────────────────────────────────────
+
+function openCostopsModal(id) {
+  const m = document.getElementById(id)
+  if (m) { m.hidden = false; m.classList.add('active') }
+}
+function closeCostopsModal(id) {
+  const m = document.getElementById(id)
+  if (m) { m.classList.remove('active'); m.hidden = true }
+}
+document.addEventListener('click', (e) => {
+  const closeId = e.target.closest('[data-close="costopsBudgetModal"]')?.dataset.close
+  if (closeId) closeCostopsModal(closeId)
+})
+
+let costopsEditingId = null
+
+function updateCostopsScopeRefField() {
+  const scope = document.getElementById('costopsBudgetScopeInput')?.value
+  const group = document.getElementById('costopsBudgetScopeRefGroup')
+  const label = document.getElementById('costopsBudgetScopeRefLabel')
+  if (!group || !label) return
+  if (scope === 'agent') {
+    group.style.display = ''
+    label.textContent = t('settings.costops.field.scope_ref.agent')
+  } else if (scope === 'tenant') {
+    group.style.display = ''
+    label.textContent = t('settings.costops.field.scope_ref.tenant')
+  } else {
+    group.style.display = 'none'
+  }
+}
+document.getElementById('costopsBudgetScopeInput')?.addEventListener('change', updateCostopsScopeRefField)
+
+function openCostopsBudgetModal(budget) {
+  costopsEditingId = budget ? budget.id : null
+  document.getElementById('costopsBudgetModalTitle').textContent =
+    budget ? t('settings.costops.modal.edit_title') : t('settings.costops.modal.add_title')
+  const idInput = document.getElementById('costopsBudgetIdInput')
+  idInput.value = budget ? budget.id : ''
+  idInput.disabled = !!budget
+  document.getElementById('costopsBudgetNameInput').value = budget?.name ?? ''
+  document.getElementById('costopsBudgetScopeInput').value = budget?.scope ?? 'global'
+  document.getElementById('costopsBudgetScopeRefInput').value = budget?.scope_ref ?? ''
+  document.getElementById('costopsBudgetAmountInput').value = budget?.amount ?? ''
+  document.getElementById('costopsBudgetWarningInput').value = budget?.warning_threshold ?? 0.8
+  document.getElementById('costopsBudgetHardInput').value = budget?.hard_threshold ?? 1.0
+  document.getElementById('costopsBudgetBlockOnHardInput').checked = !!budget?.block_on_hard
+  updateCostopsScopeRefField()
+  openCostopsModal('costopsBudgetModal')
+}
+
+async function saveCostopsBudget() {
+  const id = document.getElementById('costopsBudgetIdInput').value.trim()
+  const body = {
+    name: document.getElementById('costopsBudgetNameInput').value.trim() || undefined,
+    scope: document.getElementById('costopsBudgetScopeInput').value,
+    scope_ref: document.getElementById('costopsBudgetScopeRefInput').value.trim() || undefined,
+    amount: Number(document.getElementById('costopsBudgetAmountInput').value),
+    warning_threshold: Number(document.getElementById('costopsBudgetWarningInput').value),
+    hard_threshold: Number(document.getElementById('costopsBudgetHardInput').value),
+    block_on_hard: document.getElementById('costopsBudgetBlockOnHardInput').checked,
+  }
+  const isEdit = !!costopsEditingId
+  const url = isEdit ? `/api/costops/budgets/${encodeURIComponent(costopsEditingId)}` : '/api/costops/budgets'
+  const method = isEdit ? 'PUT' : 'POST'
+  if (!isEdit) body.id = id
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      showToast(data.hint || getErrorMessage(data) || t('settings.costops.toast.error'), 'error')
+      return
+    }
+    closeCostopsModal('costopsBudgetModal')
+    showToast(t('settings.costops.toast.saved'))
+    loadCostopsBudgetsTable()
+  } catch {
+    showToast(t('settings.costops.toast.error'), 'error')
+  }
+}
+document.getElementById('costopsBudgetSaveBtn')?.addEventListener('click', saveCostopsBudget)
+
+async function deleteCostopsBudget(id) {
+  if (!window.confirm(t('settings.costops.confirm_delete', { id }))) return
+  try {
+    const res = await fetch(`/api/costops/budgets/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) { showToast(t('settings.costops.toast.error'), 'error'); return }
+    showToast(t('settings.costops.toast.deleted'))
+    loadCostopsBudgetsTable()
+  } catch {
+    showToast(t('settings.costops.toast.error'), 'error')
+  }
+}
+
+async function loadCostopsBudgetsTable() {
+  const tbody = document.getElementById('costopsBudgetsTbody')
+  if (!tbody) return
+  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--text-muted)">${t('settings.loading')}</td></tr>`
+  let budgets = []
+  try {
+    const res = await fetch('/api/costops/budgets')
+    if (!res.ok) {
+      tbody.innerHTML = `<tr><td colspan="5" style="color:var(--danger)">${t('settings.costops.toast.error')}</td></tr>`
+      return
+    }
+    budgets = (await res.json()).budgets || []
+  } catch {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--danger)">${t('settings.costops.toast.error')}</td></tr>`
+    return
+  }
+
+  if (budgets.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--text-muted)">${t('settings.costops.empty')}</td></tr>`
+    return
+  }
+
+  tbody.innerHTML = budgets.map(b => `
+    <tr data-budget-id="${escapeHtml(b.id)}">
+      <td>${escapeHtml(b.name || b.id)}</td>
+      <td>${escapeHtml(costopsBudgetScopeLabel(b))}</td>
+      <td>${tuFormatCostopsAmount(b.spent)} / ${tuFormatCostopsAmount(b.amount)}</td>
+      <td>${escapeHtml(b.level || 'ok')}${b.blocked ? ` · ${escapeHtml(t('tokenUsage.costops_blocked'))}` : ''}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn" data-variant="secondary" data-size="compact" data-action="edit">${escapeHtml(t('common.btn.edit'))}</button>
+        <button class="btn" data-variant="danger" data-size="compact" data-action="delete">${escapeHtml(t('common.btn.delete'))}</button>
+      </td>
+    </tr>`).join('')
+
+  tbody.querySelectorAll('tr[data-budget-id]').forEach(row => {
+    const id = row.dataset.budgetId
+    const budget = budgets.find(b => b.id === id)
+    row.querySelector('[data-action="edit"]')?.addEventListener('click', () => openCostopsBudgetModal(budget))
+    row.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteCostopsBudget(id))
+  })
+}
+
+// Local formatter (settings.js doesn't import token-usage.js's tuFormatTokens)
+function tuFormatCostopsAmount(n) {
+  if (n == null || isNaN(n)) return '0'
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return String(n)
+}
+
+function costopsBudgetScopeLabel(budget) {
+  if (budget.scope === 'agent') return t('tokenUsage.costops_scope_agent', { name: budget.scope_ref })
+  if (budget.scope === 'tenant') return t('tokenUsage.costops_scope_tenant', { name: budget.scope_ref })
+  return t('tokenUsage.costops_scope_global')
+}
 

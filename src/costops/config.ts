@@ -48,12 +48,13 @@ export interface FixedCostEntry {
 export interface BudgetEntry {
   id: string
   name?: string
-  scope?: 'global' | 'source' | 'provider' | 'product' | 'agent'
+  scope?: 'global' | 'source' | 'provider' | 'product' | 'agent' | 'tenant'
   scope_ref?: string
-  amount: number
+  amount: number               // token count for 'global'/'agent' scope (see budget-alert.ts)
   currency?: string
   warning_threshold?: number  // fraction, default 0.8
   hard_threshold?: number     // fraction, default 1.0
+  block_on_hard?: boolean     // default false; see budget-alert.ts BudgetStatus.blocked
 }
 
 export interface CostOpsConfig {
@@ -75,7 +76,7 @@ const EMPTY_CONFIG: CostOpsConfig = {
 const EXAMPLE_CONFIG = {
   version: 1,
   currency: 'HUF',
-  _doc: 'CostOps local config. Copy to store/costops-config.json and fill in real values. Amounts are per month. No secrets/API keys here -- put those in the Vault.',
+  _doc: 'CostOps local config. Copy to store/costops-config.json and fill in real values. fixed_costs amounts are per month in `currency`; budgets amounts are a token count (see budget-alert.ts), not money. No secrets/API keys here -- put those in the Vault.',
   fixed_costs: [
     { source_id: 'anthropic-max', name: 'Claude Max', provider: 'anthropic', source_type: 'subscription', amount: 0, period: 'monthly', charge_category: 'subscription', confidence: 'manual' },
     { source_id: 'openai-chatgpt', name: 'ChatGPT', provider: 'openai', source_type: 'subscription', amount: 0, period: 'monthly', confidence: 'manual' },
@@ -84,7 +85,7 @@ const EXAMPLE_CONFIG = {
     { source_id: 'domain', name: 'Domain', provider: 'other', source_type: 'domain', amount: 0, period: 'monthly', confidence: 'manual' },
   ],
   budgets: [
-    { id: 'global-monthly', name: 'Global monthly', scope: 'global', amount: 0, warning_threshold: 0.8, hard_threshold: 1.0 },
+    { id: 'global-monthly', name: 'Global monthly', scope: 'global', amount: 0, warning_threshold: 0.8, hard_threshold: 1.0, block_on_hard: false },
   ],
 }
 
@@ -103,16 +104,31 @@ export interface ConfigLoadResult {
 export function loadCostopsConfig(): ConfigLoadResult {
   if (!existsSync(COSTOPS_CONFIG_PATH)) {
     ensureExampleConfig()
-    return { config: { ...EMPTY_CONFIG }, exists: false, errors: [] }
+    // Fresh arrays every call: a caller that mutates the returned config
+    // in place (e.g. pushing a new budget before saving) must never corrupt
+    // the shared EMPTY_CONFIG singleton for the rest of the process.
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: [] }, exists: false, errors: [] }
   }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(COSTOPS_CONFIG_PATH, 'utf-8'))
   } catch (err) {
     logger.warn({ err }, 'costops-config.json is not valid JSON')
-    return { config: { ...EMPTY_CONFIG }, exists: true, errors: ['config is not valid JSON'] }
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: [] }, exists: true, errors: ['config is not valid JSON'] }
   }
   return validateConfig(raw)
+}
+
+/**
+ * Persist a config object (typically an in-memory mutation of a prior
+ * loadCostopsConfig() result) back to costops-config.json. Re-validates
+ * before writing so the on-disk shape always matches validateConfig's
+ * normalized output (defaults filled in, unknown fields dropped).
+ */
+export function saveCostopsConfig(config: CostOpsConfig): ConfigLoadResult {
+  const validated = validateConfig(config)
+  writeFileSync(COSTOPS_CONFIG_PATH, JSON.stringify(validated.config, null, 2) + '\n', 'utf-8')
+  return validated
 }
 
 export function ensureExampleConfig(): void {
@@ -170,6 +186,7 @@ export function validateConfig(raw: unknown): ConfigLoadResult {
       currency: typeof b.currency === 'string' ? b.currency : currency,
       warning_threshold: typeof b.warning_threshold === 'number' ? b.warning_threshold : 0.8,
       hard_threshold: typeof b.hard_threshold === 'number' ? b.hard_threshold : 1.0,
+      block_on_hard: b.block_on_hard === true,
     })
   }
 
