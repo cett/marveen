@@ -20,6 +20,8 @@ export const DEFAULT_THRESHOLD_TOKENS = 400_000
 export const DEFAULT_STALE_CUTOFF_MS  = 2 * 60 * 60 * 1000   // 2 h
 export const DEFAULT_RETRY_INTERVAL_MS = 5 * 60 * 1000        // 5 min
 export const DEFAULT_PERSISTENT_BLOCK_ALERT_MS = 2 * 60 * 60 * 1000  // 2 h
+export const DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS = 30 * 60 * 1000  // 30 min
+export const DEFAULT_FORCE_RESTART_AFTER_MS = 4 * 60 * 60 * 1000     // 4 h
 
 export interface GateConfig {
   /** Master toggle. Default false (opt-in per agent). */
@@ -47,6 +49,25 @@ export interface GateConfig {
    * this long. A permanently-blocked gate is itself a signal something is wrong.
    */
   persistentBlockAlertMs: number
+  /**
+   * The child-process check is the most fragile signal (tmux/ps snapshot,
+   * fails whenever the pane can't be read cleanly) -- a single unlucky
+   * failure fail-closes the same as a real live child. If the block has
+   * persisted at least this long with the pane confirmed idle and the child
+   * check still can't be measured, treat it as a stalled check rather than
+   * blocking forever: downgrade only this one signal (as if it read false)
+   * and continue evaluating the rest of the gate normally.
+   */
+  childCheckFallbackAfterMs: number
+  /**
+   * Escalation past persistentBlockAlertMs: once a block has continued this
+   * long with the pane confirmed idle and every other live-work signal
+   * clear (no live children, no dispatched outbound, no open question, no
+   * live task state), force a /clear instead of alerting indefinitely. A
+   * gate stuck open for this long, with nothing actually in flight, is
+   * itself the failure -- see shouldForceRestart().
+   */
+  forceRestartAfterMs: number
 }
 
 export function normalizeGateConfig(raw: unknown): GateConfig {
@@ -55,10 +76,12 @@ export function normalizeGateConfig(raw: unknown): GateConfig {
     (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.floor(v) : dflt
   return {
     enabled: o.enabled === true,
-    thresholdTokens:         posInt(o.thresholdTokens,         DEFAULT_THRESHOLD_TOKENS),
-    staleCutoffMs:           posInt(o.staleCutoffMs,           DEFAULT_STALE_CUTOFF_MS),
-    retryIntervalMs:         posInt(o.retryIntervalMs,         DEFAULT_RETRY_INTERVAL_MS),
-    persistentBlockAlertMs:  posInt(o.persistentBlockAlertMs,  DEFAULT_PERSISTENT_BLOCK_ALERT_MS),
+    thresholdTokens:            posInt(o.thresholdTokens,            DEFAULT_THRESHOLD_TOKENS),
+    staleCutoffMs:               posInt(o.staleCutoffMs,               DEFAULT_STALE_CUTOFF_MS),
+    retryIntervalMs:             posInt(o.retryIntervalMs,             DEFAULT_RETRY_INTERVAL_MS),
+    persistentBlockAlertMs:      posInt(o.persistentBlockAlertMs,      DEFAULT_PERSISTENT_BLOCK_ALERT_MS),
+    childCheckFallbackAfterMs:   posInt(o.childCheckFallbackAfterMs,   DEFAULT_CHILD_CHECK_FALLBACK_AFTER_MS),
+    forceRestartAfterMs:         posInt(o.forceRestartAfterMs,         DEFAULT_FORCE_RESTART_AFTER_MS),
   }
 }
 
@@ -185,11 +208,18 @@ export function decideGate(
 
   // Child process guard: live children of the claude process = Task-tool
   // subagent or background Bash still running.
-  // null = unmeasurable → fail-closed.
+  // null = unmeasurable → fail-closed, UNLESS the block has already persisted
+  // past childCheckFallbackAfterMs with the pane confirmed idle -- then this
+  // one fragile signal is downgraded to "assume clear" and evaluation
+  // continues (the remaining conditions below still fail-closed normally).
+  let childCheckPassthroughMin: number | null = null
   if (inputs.hasChildProcesses === null) {
-    return block(firstBlockedAt, inputs.nowMs, cfg, 'child-process-check-failed (fail-closed)')
-  }
-  if (inputs.hasChildProcesses) {
+    const blockedForMs = firstBlockedAt !== null ? inputs.nowMs - firstBlockedAt : 0
+    if (blockedForMs < cfg.childCheckFallbackAfterMs) {
+      return block(firstBlockedAt, inputs.nowMs, cfg, 'child-process-check-failed (fail-closed)')
+    }
+    childCheckPassthroughMin = Math.round(blockedForMs / 60_000)
+  } else if (inputs.hasChildProcesses) {
     return block(firstBlockedAt, inputs.nowMs, cfg, 'live-child-processes (Task-tool or background Bash)')
   }
 
@@ -213,9 +243,40 @@ export function decideGate(
   // All gate conditions clear.
   return {
     action: 'allow',
-    reason: `context ${inputs.contextTokens} >= ${cfg.thresholdTokens}, all gate conditions clear`,
+    reason: childCheckPassthroughMin !== null
+      ? `child-check-stalled-pane-idle-passthrough (blocked ${childCheckPassthroughMin}min, child-check unmeasurable, pane confirmed idle, other gate conditions clear)`
+      : `context ${inputs.contextTokens} >= ${cfg.thresholdTokens}, all gate conditions clear`,
     noteStaleOutbound: inputs.hasStaleOutbound,
   }
+}
+
+/**
+ * Force-restart eligibility for the persistent-block escalation path: once a
+ * 'block-alert' decision has continued past forceRestartAfterMs, the runner
+ * calls this (with the same inputs already gathered for decideGate) to decide
+ * whether to force a /clear despite the ongoing block.
+ *
+ * Pure and deliberately conservative -- reaches the same "nothing in flight"
+ * bar as a normal allow (idle pane, no live children, no dispatched outbound,
+ * no open question, no live task state), just evaluated after the persistent
+ * block window instead of via the trigger path. Unlike the child-check
+ * passthrough above, an unmeasurable hasChildProcesses (null) does NOT
+ * qualify here -- this path forces action, so it never proceeds past a
+ * signal it cannot actually confirm.
+ */
+export function shouldForceRestart(
+  inputs: GateInputs,
+  cfg: GateConfig,
+  firstBlockedAt: number | null,
+): boolean {
+  if (firstBlockedAt === null) return false
+  if (inputs.nowMs - firstBlockedAt < cfg.forceRestartAfterMs) return false
+  if (inputs.paneState !== 'idle') return false
+  if (inputs.hasChildProcesses !== false) return false
+  if (inputs.pendingOutboundCount > 0) return false
+  if (inputs.hasOpenQuestion) return false
+  if (inputs.hasLiveTaskState) return false
+  return true
 }
 
 function block(
