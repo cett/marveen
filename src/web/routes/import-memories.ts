@@ -4,16 +4,31 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { crawlSource } from '../import-crawler.js'
 import { VALID_INTERVALS } from '../import-config.js'
+import { getSecret } from '../vault.js'
 import type { RouteContext } from './types.js'
 
 function genId(): string {
   return createHash('sha256').update(`${Date.now()}-${Math.random()}`).digest('hex').slice(0, 8)
 }
 
+const VALID_SOURCE_TYPES = ['local', 'gdrive', 'sharepoint', 'confluence']
+
 type ImportSource = {
   id: string; type: string; path: string; label: string | null
   interval_hours: number; enabled: number; last_run_at: number | null
   created_at: number; updated_at: number; tenant_id: string
+  vault_token_ref: string | null; confluence_email: string | null
+}
+
+// Confluence-only precondition (kanban 21d27a8c ST2): a source may only be
+// created, or (re-)enabled, once its vault_token_ref actually resolves to a
+// stored secret. This is enforced here rather than left to the crawler
+// because a silently-failing scheduled crawl is much harder to notice than
+// an immediate 409 at source-creation time. The email is never checked
+// against the vault -- it isn't a secret, see the vault_token_ref/
+// confluence_email column comments in migration 0041.
+function confluenceTokenMissing(vaultTokenRef: string, tenantId: string): boolean {
+  return getSecret(vaultTokenRef, tenantId) === null
 }
 
 type AuditRow = {
@@ -67,10 +82,11 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       type?: string; path?: string; label?: string; interval_hours?: number; enabled?: boolean; tenant_id?: string
+      vault_token_ref?: string; confluence_email?: string
     }
 
-    if (!data.type || !['local', 'gdrive', 'sharepoint'].includes(data.type)) {
-      json(res, { error: 'invalid_value', field: 'type', hint: 'type must be local | gdrive | sharepoint' }, 400); return true
+    if (!data.type || !VALID_SOURCE_TYPES.includes(data.type)) {
+      json(res, { error: 'invalid_value', field: 'type', hint: `type must be one of: ${VALID_SOURCE_TYPES.join(', ')}` }, 400); return true
     }
     if (!data.path?.trim()) {
       json(res, { error: 'required', field: 'path', hint: 'path is required' }, 400); return true
@@ -81,12 +97,27 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     }
     const tenantId = isAdmin ? (data.tenant_id?.trim() || 'default') : (ctx.tenantId ?? 'default')
 
+    const vaultTokenRef = data.vault_token_ref?.trim() || null
+    const confluenceEmail = data.confluence_email?.trim() || null
+    if (data.type === 'confluence') {
+      if (!vaultTokenRef || !confluenceEmail) {
+        json(res, { error: 'required', hint: 'Confluence forráshoz vault_token_ref és confluence_email kötelező', field: !vaultTokenRef ? 'vault_token_ref' : 'confluence_email' }, 400); return true
+      }
+      if (confluenceTokenMissing(vaultTokenRef, tenantId)) {
+        json(res, {
+          error: 'conflict',
+          hint: `A vault_token_ref '${vaultTokenRef}' nem található a vaultban. Előbb vedd fel a tokent a vaultba, majd hozd létre a forrást.`,
+          field: 'vault_token_ref',
+        }, 409); return true
+      }
+    }
+
     const now = Math.floor(Date.now() / 1000)
     const id = genId()
     getDb().prepare(`
-      INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id)
-      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
-    `).run(id, data.type, data.path.trim(), data.label?.trim() || null, intervalHours, data.enabled !== false ? 1 : 0, now, now, tenantId)
+      INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id, vault_token_ref, confluence_email)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+    `).run(id, data.type, data.path.trim(), data.label?.trim() || null, intervalHours, data.enabled !== false ? 1 : 0, now, now, tenantId, vaultTokenRef, confluenceEmail)
 
     logger.info({ id, type: data.type, path: data.path, tenantId }, 'Import source created')
     json(res, { ok: true, id })
@@ -101,6 +132,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       label?: string; interval_hours?: number; enabled?: boolean; path?: string
+      vault_token_ref?: string; confluence_email?: string
     }
     const now = Math.floor(Date.now() / 1000)
     const db = getDb()
@@ -109,12 +141,42 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
       json(res, { error: 'invalid_value', field: 'interval_hours', hint: `interval_hours must be one of: ${[...VALID_INTERVALS].join(', ')}` }, 400); return true
     }
 
+    const existing = db.prepare("SELECT * FROM import_sources WHERE id = ?").get(id) as ImportSource
+
+    // Same token-precondition as creation, re-checked here because enabling
+    // (or re-pointing vault_token_ref on) a Confluence source is another
+    // path to a scheduled crawl running with no valid credential. Only runs
+    // when the request actually touches enablement or the auth fields --
+    // NOT on every PUT to an already-enabled source (e.g. a bare label
+    // rename must not start failing just because a token was rotated out
+    // of band since the source was last (re-)enabled).
+    const touchesAuthRelevantFields = data.enabled !== undefined || data.vault_token_ref !== undefined || data.confluence_email !== undefined
+    if (existing.type === 'confluence' && touchesAuthRelevantFields) {
+      const effectiveEnabled = data.enabled !== undefined ? data.enabled : existing.enabled === 1
+      const effectiveVaultTokenRef = data.vault_token_ref !== undefined ? (data.vault_token_ref?.trim() || null) : existing.vault_token_ref
+      const effectiveConfluenceEmail = data.confluence_email !== undefined ? (data.confluence_email?.trim() || null) : existing.confluence_email
+      if (effectiveEnabled) {
+        if (!effectiveVaultTokenRef || !effectiveConfluenceEmail) {
+          json(res, { error: 'required', hint: 'Confluence forráshoz vault_token_ref és confluence_email kötelező', field: !effectiveVaultTokenRef ? 'vault_token_ref' : 'confluence_email' }, 400); return true
+        }
+        if (confluenceTokenMissing(effectiveVaultTokenRef, existing.tenant_id)) {
+          json(res, {
+            error: 'conflict',
+            hint: `A vault_token_ref '${effectiveVaultTokenRef}' nem található a vaultban. Előbb vedd fel a tokent a vaultba, majd engedélyezd a forrást.`,
+            field: 'vault_token_ref',
+          }, 409); return true
+        }
+      }
+    }
+
     const fields: string[] = ['updated_at = ?']
     const values: unknown[] = [now]
     if (data.label !== undefined) { fields.push('label = ?'); values.push(data.label?.trim() || null) }
     if (data.interval_hours !== undefined) { fields.push('interval_hours = ?'); values.push(data.interval_hours) }
     if (data.enabled !== undefined) { fields.push('enabled = ?'); values.push(data.enabled ? 1 : 0) }
     if (data.path !== undefined) { fields.push('path = ?'); values.push(data.path.trim()) }
+    if (data.vault_token_ref !== undefined) { fields.push('vault_token_ref = ?'); values.push(data.vault_token_ref?.trim() || null) }
+    if (data.confluence_email !== undefined) { fields.push('confluence_email = ?'); values.push(data.confluence_email?.trim() || null) }
     values.push(id)
 
     db.prepare(`UPDATE import_sources SET ${fields.join(', ')} WHERE id = ?`).run(...values)
