@@ -25,6 +25,7 @@ function typeLabel(type) {
   if (type === 'local') return t('import.type.local')
   if (type === 'gdrive') return t('import.type.gdrive')
   if (type === 'sharepoint') return t('import.type.sharepoint')
+  if (type === 'confluence') return t('import.type.confluence')
   return type
 }
 
@@ -32,6 +33,7 @@ function typeIcon(type) {
   if (type === 'local') return '💾'
   if (type === 'gdrive') return '☁️'
   if (type === 'sharepoint') return '🏢'
+  if (type === 'confluence') return '📘'
   return '📂'
 }
 
@@ -217,6 +219,23 @@ export function initImportMemories() {
   initTenantSelector('importTenantSelectorContainer', () => loadImportSources())
     .then(getter => { _importTenantGetter = getter; initSourceTenantSelect() })
 
+  // SharePoint disclaimer + Confluence fields toggle (mutually exclusive
+  // with each other, shown only for their own source type). Declared before
+  // the form handler below so the submit handler can re-apply it after
+  // form.reset() (which does not fire a 'change' event on the type select).
+  const spInfo = document.getElementById('importSharePointInfo')
+  const confluenceInfo = document.getElementById('importConfluenceInfo')
+  const typeSelect = document.getElementById('importSourceType')
+  const applyTypeVisibility = () => {
+    if (!typeSelect) return
+    if (spInfo) spInfo.hidden = typeSelect.value !== 'sharepoint'
+    if (confluenceInfo) confluenceInfo.hidden = typeSelect.value !== 'confluence'
+  }
+  if (typeSelect) {
+    typeSelect.addEventListener('change', applyTypeVisibility)
+    applyTypeVisibility()
+  }
+
   // Add source form
   const form = document.getElementById('importAddSourceForm')
   if (form) {
@@ -231,13 +250,20 @@ export function initImportMemories() {
 
       if (!path) { showToast(t('import.toast.path_required')); return }
 
+      const body = { type, path, label: label || undefined, interval_hours: interval, tenant_id: tenantId }
+      if (type === 'confluence') {
+        body.base_url = document.getElementById('importSourceBaseUrl').value.trim()
+        body.confluence_email = document.getElementById('importSourceConfluenceEmail').value.trim()
+        body.vault_token_ref = document.getElementById('importSourceVaultTokenRef').value.trim()
+      }
+
       const btn = form.querySelector('button[type="submit"]')
       if (btn) { btn.disabled = true }
       try {
         const res = await fetch('/api/import/sources', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type, path, label: label || undefined, interval_hours: interval, tenant_id: tenantId }),
+          body: JSON.stringify(body),
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({ error: 'Hiba' }))
@@ -246,6 +272,7 @@ export function initImportMemories() {
         }
         showToast(t('import.toast.source_added'))
         form.reset()
+        applyTypeVisibility() // form.reset() doesn't fire 'change' on the type select
         loadImportSources()
       } catch { showToast(t('import.toast.error')) }
       finally { if (btn) btn.disabled = false }
@@ -260,15 +287,5 @@ export function initImportMemories() {
       await fetch('/api/import/memories', { method: 'DELETE' })
       showToast(t('import.toast.all_wiped'))
     })
-  }
-
-  // SharePoint disclaimer toggle
-  const spInfo = document.getElementById('importSharePointInfo')
-  const typeSelect = document.getElementById('importSourceType')
-  if (spInfo && typeSelect) {
-    typeSelect.addEventListener('change', () => {
-      spInfo.hidden = typeSelect.value !== 'sharepoint'
-    })
-    spInfo.hidden = typeSelect.value !== 'sharepoint'
   }
 }

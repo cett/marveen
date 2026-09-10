@@ -51,3 +51,14 @@ export const BLOCKED_BASENAMES = new Set(['id_rsa', 'id_ed25519'])
 
 /** Valid interval_hours values. */
 export const VALID_INTERVALS = new Set([1, 2, 4, 24])
+
+// ── Confluence connector limits ────────────────────────────────────────────
+
+/** Page size for every Confluence v2 API list request (spaces, pages). */
+export const CONFLUENCE_PAGE_LIMIT = 50
+
+/** Max 429 (rate limit) retries per request before giving up on that request. */
+export const CONFLUENCE_MAX_RETRIES = 3
+
+/** Per-request timeout for Confluence API calls. */
+export const CONFLUENCE_REQUEST_TIMEOUT_MS = 15_000

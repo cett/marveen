@@ -1121,6 +1121,7 @@
                   <option value="local" data-i18n="import.type.local">Helyi mappa</option>
                   <option value="gdrive" data-i18n="import.type.gdrive">Google Drive</option>
                   <option value="sharepoint" data-i18n="import.type.sharepoint">SharePoint</option>
+                  <option value="confluence" data-i18n="import.type.confluence">Confluence</option>
                 </select>
               </div>
               <div class="form-group" style="flex:1">
@@ -1155,6 +1156,29 @@
             <!-- SharePoint disclaimer (shown only when type=sharepoint) -->
             <div id="importSharePointInfo" class="import-disclaimer" hidden>
               <span data-i18n="import.sharepoint.warning">SharePoint: Ellenőrizd, hogy a szervezeted IT/adatvédelmi szabályzata engedélyezi-e a tartalom személyes AI rendszerbe másolását. Szükséges Graph scope: Sites.Read.All.</span>
+            </div>
+            <!-- Confluence-specific fields (shown only when type=confluence).
+                 Nothing here defaults to any particular Confluence instance --
+                 base_url/vault_token_ref/confluence_email are always supplied
+                 by whoever adds the source. -->
+            <div id="importConfluenceInfo" hidden>
+              <div class="import-disclaimer" data-i18n="import.confluence.hint">Confluence: az Útvonal mező a space-kulcsot veszi fel (pl. MYSPACE), vagy '*' az összes látható space-hez. A tokent előbb a Vault oldalon kell felvenni -- a lenti mezőben csak a vault-bejegyzés azonosítóját add meg, ne magát a tokent.</div>
+              <div class="form-row">
+                <div class="form-group" style="flex:1">
+                  <label for="importSourceBaseUrl" data-i18n="import.form.base_url">Confluence-instance URL</label>
+                  <input type="text" id="importSourceBaseUrl" placeholder="https://yourorg.atlassian.net">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group" style="flex:1">
+                  <label for="importSourceConfluenceEmail" data-i18n="import.form.confluence_email">Atlassian fiók email</label>
+                  <input type="email" id="importSourceConfluenceEmail" placeholder="you@example.com">
+                </div>
+                <div class="form-group" style="flex:1">
+                  <label for="importSourceVaultTokenRef" data-i18n="import.form.vault_token_ref">Vault token azonosító</label>
+                  <input type="text" id="importSourceVaultTokenRef" placeholder="my-confluence-token">
+                </div>
+              </div>
             </div>
             <div class="form-actions">
               <button type="submit" class="btn" data-variant="primary" data-size="compact" data-i18n="import.btn.add">Forrás hozzáadása</button>
