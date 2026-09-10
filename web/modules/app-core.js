@@ -155,7 +155,7 @@ const NAV_I18N = {
   agents: 'nav.agents', team: 'nav.team',
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
-  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
+  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'fleet.section_title',
   approvals: 'nav.approvals',
   docs: 'nav.docs', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
