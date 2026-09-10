@@ -70,6 +70,12 @@ export interface FleetJson {
   ideaBox: IdeaBoxExport
   schedules: Record<string, unknown>[]
   importSources: Record<string, unknown>[]
+  // P4: metadata only (id/label/username/public_key/fingerprint/key_type/vault_key_id,
+  // and host/port/name/description) -- neither table has a private-key column. The
+  // actual SSH private key is a generic vault secret (id = vault_key_id) and travels
+  // ONLY inside the existing encrypted `vault` section below, never here in plaintext.
+  vaultSshKeys: Record<string, unknown>[]
+  vaultSshServers: Record<string, unknown>[]
   dashboardSettings: DashboardSettingsExport
   vault?: VaultExport
 }
@@ -193,6 +199,8 @@ export interface DiffReport {
     ideaBox: number
     schedules: number
     importSources: number
+    vaultSshKeys: number
+    vaultSshServers: number
   }
   wouldOverwrite: {
     agents: string[]  // existing sub-agent names that would be overwritten
@@ -216,6 +224,8 @@ export interface ImportResult {
     ideaBox: number
     schedules: number
     importSources: number
+    vaultSshKeys: number
+    vaultSshServers: number
   }
   warnings?: string[]
 }
@@ -737,6 +747,14 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const importSources = (db.prepare('SELECT * FROM import_sources').all() as Record<string, unknown>[])
     .map(row => ({ ...row, enabled: 0, last_run_at: null }))
 
+  // SSH key-pool metadata (P4). Neither table has a private-key column -- the
+  // actual private key material lives as a generic vault secret keyed by
+  // vault_key_id, and is included ONLY when the vault section below is (i.e.
+  // only in an encrypted, password-protected export). This metadata alone is
+  // safe in plaintext: public key, fingerprint, host/port/username, no secret.
+  const vaultSshKeys = db.prepare('SELECT * FROM vault_ssh_keys').all() as Record<string, unknown>[]
+  const vaultSshServers = db.prepare('SELECT * FROM vault_ssh_servers').all() as Record<string, unknown>[]
+
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
   const vault = withSecrets ? exportVault() : undefined
 
@@ -754,6 +772,8 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     ideaBox,
     schedules,
     importSources,
+    vaultSshKeys,
+    vaultSshServers,
     dashboardSettings: exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
@@ -900,8 +920,24 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
     )
   }
 
+  let newVaultSshKeys = 0
+  for (const key of fleet.vaultSshKeys ?? []) {
+    if (!db.prepare('SELECT 1 FROM vault_ssh_keys WHERE id = ?').get((key as any).id)) newVaultSshKeys++
+  }
+  let newVaultSshServers = 0
+  for (const srv of fleet.vaultSshServers ?? []) {
+    if (!db.prepare('SELECT 1 FROM vault_ssh_servers WHERE id = ?').get((srv as any).id)) newVaultSshServers++
+  }
+
   if (!fleet.vault) {
     warnings.push('vault szekció hiányzik -- az MCP szerverek token nélkül indulnak el, manuális re-auth szükséges.')
+    if (newVaultSshKeys > 0) {
+      warnings.push(
+        `${newVaultSshKeys} SSH kulcs metaadata importálva, de a PRIVÁT kulcs anyaga NEM -- az csak ` +
+        'titkosított (jelszavas) vault-exportban utazik. A kulcsok publikus adatai (fingerprint, ' +
+        'nyilvános kulcs) láthatók lesznek, de használat előtt a privát kulcsot újra fel kell tölteni.'
+      )
+    }
   }
 
   // H3: track which existing agents and main agent would be overwritten
@@ -938,6 +974,8 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       ideaBox: (fleet.ideaBox?.ideas ?? []).length,
       schedules: newSchedules,
       importSources: newImportSources,
+      vaultSshKeys: newVaultSshKeys,
+      vaultSshServers: newVaultSshServers,
     },
     wouldOverwrite: {
       agents: existingAgentsToOverwrite,
@@ -1071,7 +1109,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
 
 const EMPTY_DIFF: DiffReport = {
   dryRun: true,
-  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, schedules: 0, importSources: 0 },
+  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, schedules: 0, importSources: 0, vaultSshKeys: 0, vaultSshServers: 0 },
   wouldOverwrite: { agents: [], mainAgent: false },
   warnings: [],
   errors: [],
@@ -1314,6 +1352,38 @@ export function importFleet(
         )
       }
 
+      // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
+      // inserted before vault_ssh_servers below since a server's ssh_key_id refers
+      // to it (foreign_keys enforcement is off for this connection, as elsewhere in
+      // this schema, but the insert order still matches the logical dependency).
+      for (const key of fleet.vaultSshKeys ?? []) {
+        const k = key as any
+        if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type) {
+          logger.warn({ id: k.id }, 'Fleet import: skipping SSH key with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO vault_ssh_keys
+           (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(k.id, k.label, k.username, k.vault_key_id, k.public_key, k.fingerprint, k.key_type, k.created_at, k.tenant_id ?? 'default')
+      }
+
+      // vault_ssh_servers -- idempotent on id.
+      for (const srv of fleet.vaultSshServers ?? []) {
+        const s2 = srv as any
+        if (!s2.id || !s2.name || !s2.host || !s2.username) {
+          logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO vault_ssh_servers
+           (id, name, host, port, username, ssh_key_id, description, tenant_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          s2.id, s2.name, s2.host, s2.port ?? 22, s2.username, s2.ssh_key_id ?? null,
+          s2.description ?? null, s2.tenant_id ?? 'default', s2.created_at, s2.updated_at,
+        )
+      }
+
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
@@ -1448,6 +1518,8 @@ export function importFleet(
         ideaBox: (fleet.ideaBox?.ideas ?? []).length,
         schedules: (fleet.schedules ?? []).length,
         importSources: (fleet.importSources ?? []).length,
+        vaultSshKeys: (fleet.vaultSshKeys ?? []).length,
+        vaultSshServers: (fleet.vaultSshServers ?? []).length,
       },
       ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
     }
