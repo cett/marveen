@@ -14,7 +14,7 @@ import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
-  listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask,
+  listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
@@ -141,7 +141,10 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       } else {
         rows = listSchedulesFromDb({ tenantId: scope })
       }
-      json(res, rows)
+      // DB rows key on `id`; the frontend (and the file-based branch below)
+      // expect `name` -- without this mapping, delete/toggle/run/edit send
+      // requests to /api/schedules/undefined and silently 404.
+      json(res, rows.map(rowToTask))
     } else {
       json(res, listScheduledTasksFromFiles())
     }

@@ -139,4 +139,57 @@ describe('scheduled-tasks-io', () => {
       expect(task!.type).toBe('heartbeat')
     })
   })
+
+  // DB-mode tenant_id preservation: writeScheduledTask is called with no
+  // tenantId at all by the toggle route's file-mirror step and by the PUT
+  // edit route. Before the fix, the merge always fell back to a hardcoded
+  // null there, silently moving a tenant-owned schedule to fleet scope
+  // (tenant_id NULL) on every edit or toggle.
+  describe('writeScheduledTask -- DB-mode tenant_id preservation', () => {
+    it('preserves the existing DB row tenant_id when the caller omits tenantId', async () => {
+      const db = await import('../db.js')
+      vi.mocked(db.countSchedules).mockReturnValue(1)
+      vi.mocked(db.getScheduleFromDb).mockReturnValue({
+        id: 'tenant-task', prompt: 'p', description: 'd', schedule: '0 9 * * *',
+        agent: 'marveen', type: 'task', enabled: 1, tenant_id: 'tenant-a',
+        skip_if_busy: 0, force_send: 0, target_session: null, command: null,
+        timeout_ms: null, fail_threshold: null, pre_check: null,
+        catch_up_max_age_minutes: null, stuck_after_minutes: null, requires: null,
+        created_at: 1700000000, updated_at: 1700000000,
+      } as any)
+
+      writeScheduledTask('tenant-task', { enabled: false })
+
+      expect(vi.mocked(db.upsertSchedule)).toHaveBeenCalledWith(
+        'tenant-task',
+        expect.objectContaining({ tenant_id: 'tenant-a' }),
+      )
+
+      vi.mocked(db.countSchedules).mockReturnValue(0)
+      vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+    })
+
+    it('still honors an explicit tenantId (including explicit null) from the caller', async () => {
+      const db = await import('../db.js')
+      vi.mocked(db.countSchedules).mockReturnValue(1)
+      vi.mocked(db.getScheduleFromDb).mockReturnValue({
+        id: 'tenant-task-2', prompt: 'p', description: 'd', schedule: '0 9 * * *',
+        agent: 'marveen', type: 'task', enabled: 1, tenant_id: 'tenant-a',
+        skip_if_busy: 0, force_send: 0, target_session: null, command: null,
+        timeout_ms: null, fail_threshold: null, pre_check: null,
+        catch_up_max_age_minutes: null, stuck_after_minutes: null, requires: null,
+        created_at: 1700000000, updated_at: 1700000000,
+      } as any)
+
+      writeScheduledTask('tenant-task-2', { tenantId: null })
+
+      expect(vi.mocked(db.upsertSchedule)).toHaveBeenCalledWith(
+        'tenant-task-2',
+        expect.objectContaining({ tenant_id: null }),
+      )
+
+      vi.mocked(db.countSchedules).mockReturnValue(0)
+      vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+    })
+  })
 })
