@@ -68,6 +68,7 @@ export interface FleetJson {
   dailyLogs: DailyLogRow[]   // ALL agent_ids
   kanban: KanbanExport
   ideaBox: IdeaBoxExport
+  schedules: Record<string, unknown>[]
   dashboardSettings: DashboardSettingsExport
   vault?: VaultExport
 }
@@ -179,6 +180,7 @@ export interface DiffReport {
     labels: number
     dailyLogs: number
     ideaBox: number
+    schedules: number
   }
   wouldOverwrite: {
     agents: string[]  // existing sub-agent names that would be overwritten
@@ -200,6 +202,7 @@ export interface ImportResult {
     labels: number
     dailyLogs: number
     ideaBox: number
+    schedules: number
   }
   warnings?: string[]
 }
@@ -699,6 +702,12 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     statusLog: db.prepare('SELECT * FROM idea_status_log').all() as Record<string, unknown>[],
   }
 
+  // DB-based schedules (dashboard-schedule-crud API), distinct from the file-based
+  // scheduledTasks[] above. Force-disabled at export time, same as scheduledTasks,
+  // so an imported fleet never starts firing a source fleet's cron jobs unreviewed.
+  const schedules = (db.prepare('SELECT * FROM schedules').all() as Record<string, unknown>[])
+    .map(row => ({ ...row, enabled: 0 }))
+
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
   const vault = withSecrets ? exportVault() : undefined
 
@@ -714,6 +723,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     dailyLogs,
     kanban,
     ideaBox,
+    schedules,
     dashboardSettings: exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
@@ -841,6 +851,14 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       .get((c as any).card_id, (c as any).content)) newComments++
   }
 
+  let newSchedules = 0
+  for (const sch of fleet.schedules ?? []) {
+    if (!db.prepare('SELECT 1 FROM schedules WHERE id = ?').get((sch as any).id)) newSchedules++
+  }
+  if (newSchedules > 0) {
+    warnings.push(`${newSchedules} ütemezés importálva -- letiltva érkezik, kézi átvizsgálás és engedélyezés szükséges célgépen.`)
+  }
+
   if (!fleet.vault) {
     warnings.push('vault szekció hiányzik -- az MCP szerverek token nélkül indulnak el, manuális re-auth szükséges.')
   }
@@ -877,6 +895,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       labels: newLabels,
       dailyLogs: newDailyLogs,
       ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+      schedules: newSchedules,
     },
     wouldOverwrite: {
       agents: existingAgentsToOverwrite,
@@ -1010,7 +1029,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
 
 const EMPTY_DIFF: DiffReport = {
   dryRun: true,
-  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0 },
+  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, schedules: 0 },
   wouldOverwrite: { agents: [], mainAgent: false },
   warnings: [],
   errors: [],
@@ -1188,6 +1207,30 @@ export function importFleet(
           .run(c.card_id, c.label_id, c.created_at)
       }
 
+      // schedules -- idempotent on id. Always imported disabled regardless of the
+      // exported value (defense in depth -- mirrors the file-based scheduledTasks
+      // pause-on-import above): a migrated fleet must never start firing a source
+      // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
+      for (const sch of fleet.schedules ?? []) {
+        const s = sch as any
+        if (!s.id || !s.schedule || !s.agent || !s.type) {
+          logger.warn({ id: s.id }, 'Fleet import: skipping schedule with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO schedules
+           (id, prompt, description, schedule, agent, type, enabled, tenant_id, skip_if_busy,
+            force_send, target_session, command, timeout_ms, fail_threshold, pre_check,
+            catch_up_max_age_minutes, stuck_after_minutes, requires, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          s.id, s.prompt ?? '', s.description ?? '', s.schedule, s.agent, s.type,
+          s.tenant_id ?? null, s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
+          s.command ?? null, s.timeout_ms ?? null, s.fail_threshold ?? null, s.pre_check ?? null,
+          s.catch_up_max_age_minutes ?? null, s.stuck_after_minutes ?? null, s.requires ?? null,
+          s.created_at, s.updated_at,
+        )
+      }
+
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
@@ -1320,6 +1363,7 @@ export function importFleet(
         labels: (fleet.kanban?.labels ?? []).length,
         dailyLogs: (fleet.dailyLogs ?? []).length,
         ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+        schedules: (fleet.schedules ?? []).length,
       },
       ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
     }
