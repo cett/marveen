@@ -17,7 +17,7 @@ type ImportSource = {
   id: string; type: string; path: string; label: string | null
   interval_hours: number; enabled: number; last_run_at: number | null
   created_at: number; updated_at: number; tenant_id: string
-  vault_token_ref: string | null; confluence_email: string | null
+  vault_token_ref: string | null; confluence_email: string | null; base_url: string | null
 }
 
 // Confluence-only precondition (kanban 21d27a8c ST2): a source may only be
@@ -29,6 +29,20 @@ type ImportSource = {
 // confluence_email column comments in migration 0041.
 function confluenceTokenMissing(vaultTokenRef: string, tenantId: string): boolean {
   return getSecret(vaultTokenRef, tenantId) === null
+}
+
+// Normalises a user-supplied Confluence site URL: trims, strips a trailing
+// slash (so the crawler can always append '/wiki/api/v2/...' without a
+// double slash), and rejects anything that isn't a well-formed http(s) URL.
+// Returns null for empty/invalid input.
+function normaliseConfluenceBaseUrl(raw: string | undefined): string | null {
+  const trimmed = raw?.trim().replace(/\/+$/, '')
+  if (!trimmed) return null
+  try {
+    const u = new URL(trimmed)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+  } catch { return null }
+  return trimmed
 }
 
 type AuditRow = {
@@ -82,7 +96,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       type?: string; path?: string; label?: string; interval_hours?: number; enabled?: boolean; tenant_id?: string
-      vault_token_ref?: string; confluence_email?: string
+      vault_token_ref?: string; confluence_email?: string; base_url?: string
     }
 
     if (!data.type || !VALID_SOURCE_TYPES.includes(data.type)) {
@@ -99,9 +113,11 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
 
     const vaultTokenRef = data.vault_token_ref?.trim() || null
     const confluenceEmail = data.confluence_email?.trim() || null
+    const baseUrl = normaliseConfluenceBaseUrl(data.base_url)
     if (data.type === 'confluence') {
-      if (!vaultTokenRef || !confluenceEmail) {
-        json(res, { error: 'required', hint: 'Confluence forráshoz vault_token_ref és confluence_email kötelező', field: !vaultTokenRef ? 'vault_token_ref' : 'confluence_email' }, 400); return true
+      if (!vaultTokenRef || !confluenceEmail || !baseUrl) {
+        const field = !baseUrl ? 'base_url' : !vaultTokenRef ? 'vault_token_ref' : 'confluence_email'
+        json(res, { error: 'required', hint: 'Confluence forráshoz base_url, vault_token_ref és confluence_email kötelező (base_url érvényes http(s) URL kell legyen)', field }, 400); return true
       }
       if (confluenceTokenMissing(vaultTokenRef, tenantId)) {
         json(res, {
@@ -115,9 +131,9 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     const now = Math.floor(Date.now() / 1000)
     const id = genId()
     getDb().prepare(`
-      INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id, vault_token_ref, confluence_email)
-      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
-    `).run(id, data.type, data.path.trim(), data.label?.trim() || null, intervalHours, data.enabled !== false ? 1 : 0, now, now, tenantId, vaultTokenRef, confluenceEmail)
+      INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id, vault_token_ref, confluence_email, base_url)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+    `).run(id, data.type, data.path.trim(), data.label?.trim() || null, intervalHours, data.enabled !== false ? 1 : 0, now, now, tenantId, vaultTokenRef, confluenceEmail, baseUrl)
 
     logger.info({ id, type: data.type, path: data.path, tenantId }, 'Import source created')
     json(res, { ok: true, id })
@@ -132,7 +148,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       label?: string; interval_hours?: number; enabled?: boolean; path?: string
-      vault_token_ref?: string; confluence_email?: string
+      vault_token_ref?: string; confluence_email?: string; base_url?: string
     }
     const now = Math.floor(Date.now() / 1000)
     const db = getDb()
@@ -140,24 +156,29 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     if (data.interval_hours !== undefined && !VALID_INTERVALS.has(data.interval_hours)) {
       json(res, { error: 'invalid_value', field: 'interval_hours', hint: `interval_hours must be one of: ${[...VALID_INTERVALS].join(', ')}` }, 400); return true
     }
+    if (data.base_url !== undefined && data.base_url.trim() && !normaliseConfluenceBaseUrl(data.base_url)) {
+      json(res, { error: 'invalid_value', field: 'base_url', hint: 'base_url must be a valid http(s) URL' }, 400); return true
+    }
 
     const existing = db.prepare("SELECT * FROM import_sources WHERE id = ?").get(id) as ImportSource
 
     // Same token-precondition as creation, re-checked here because enabling
-    // (or re-pointing vault_token_ref on) a Confluence source is another
-    // path to a scheduled crawl running with no valid credential. Only runs
-    // when the request actually touches enablement or the auth fields --
-    // NOT on every PUT to an already-enabled source (e.g. a bare label
-    // rename must not start failing just because a token was rotated out
-    // of band since the source was last (re-)enabled).
-    const touchesAuthRelevantFields = data.enabled !== undefined || data.vault_token_ref !== undefined || data.confluence_email !== undefined
+    // (or re-pointing vault_token_ref/base_url on) a Confluence source is
+    // another path to a scheduled crawl running with no valid credential.
+    // Only runs when the request actually touches enablement or the auth
+    // fields -- NOT on every PUT to an already-enabled source (e.g. a bare
+    // label rename must not start failing just because a token was rotated
+    // out of band since the source was last (re-)enabled).
+    const touchesAuthRelevantFields = data.enabled !== undefined || data.vault_token_ref !== undefined || data.confluence_email !== undefined || data.base_url !== undefined
     if (existing.type === 'confluence' && touchesAuthRelevantFields) {
       const effectiveEnabled = data.enabled !== undefined ? data.enabled : existing.enabled === 1
       const effectiveVaultTokenRef = data.vault_token_ref !== undefined ? (data.vault_token_ref?.trim() || null) : existing.vault_token_ref
       const effectiveConfluenceEmail = data.confluence_email !== undefined ? (data.confluence_email?.trim() || null) : existing.confluence_email
+      const effectiveBaseUrl = data.base_url !== undefined ? normaliseConfluenceBaseUrl(data.base_url) : existing.base_url
       if (effectiveEnabled) {
-        if (!effectiveVaultTokenRef || !effectiveConfluenceEmail) {
-          json(res, { error: 'required', hint: 'Confluence forráshoz vault_token_ref és confluence_email kötelező', field: !effectiveVaultTokenRef ? 'vault_token_ref' : 'confluence_email' }, 400); return true
+        if (!effectiveVaultTokenRef || !effectiveConfluenceEmail || !effectiveBaseUrl) {
+          const field = !effectiveBaseUrl ? 'base_url' : !effectiveVaultTokenRef ? 'vault_token_ref' : 'confluence_email'
+          json(res, { error: 'required', hint: 'Confluence forráshoz base_url, vault_token_ref és confluence_email kötelező', field }, 400); return true
         }
         if (confluenceTokenMissing(effectiveVaultTokenRef, existing.tenant_id)) {
           json(res, {
@@ -177,6 +198,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     if (data.path !== undefined) { fields.push('path = ?'); values.push(data.path.trim()) }
     if (data.vault_token_ref !== undefined) { fields.push('vault_token_ref = ?'); values.push(data.vault_token_ref?.trim() || null) }
     if (data.confluence_email !== undefined) { fields.push('confluence_email = ?'); values.push(data.confluence_email?.trim() || null) }
+    if (data.base_url !== undefined) { fields.push('base_url = ?'); values.push(normaliseConfluenceBaseUrl(data.base_url)) }
     values.push(id)
 
     db.prepare(`UPDATE import_sources SET ${fields.join(', ')} WHERE id = ?`).run(...values)

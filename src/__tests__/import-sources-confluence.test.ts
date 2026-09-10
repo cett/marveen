@@ -1,8 +1,8 @@
 // Confluence source-type validation for POST/PUT /api/import/sources
-// (kanban 21d27a8c ST2): required vault_token_ref/confluence_email, and the
-// token-must-already-exist-in-the-vault precondition. Other source types
-// (local/gdrive/sharepoint) are covered by import-memories.test.ts and are
-// deliberately not re-tested here.
+// (kanban 21d27a8c ST2): required base_url/vault_token_ref/confluence_email,
+// and the token-must-already-exist-in-the-vault precondition. Other source
+// types (local/gdrive/sharepoint) are covered by import-memories.test.ts and
+// are deliberately not re-tested here.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
@@ -54,11 +54,16 @@ function makeCtx(
 
 import { tryHandleImportMemories } from '../web/routes/import-memories.js'
 
+const VALID_CONFLUENCE_FIELDS = {
+  type: 'confluence', path: 'SPACE',
+  vault_token_ref: 'my-token', confluence_email: 'user@example.com',
+  base_url: 'https://example.atlassian.net',
+}
+
 describe('POST /api/import/sources -- confluence validation', () => {
   it('rejects a confluence source missing vault_token_ref', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/import/sources', {
-      type: 'confluence', path: 'SPACE', confluence_email: 'user@example.com',
-    })
+    const { vault_token_ref: _omit, ...rest } = VALID_CONFLUENCE_FIELDS
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', rest)
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(400)
     expect((out.body as any).error).toBe('required')
@@ -66,20 +71,33 @@ describe('POST /api/import/sources -- confluence validation', () => {
   })
 
   it('rejects a confluence source missing confluence_email', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/import/sources', {
-      type: 'confluence', path: 'SPACE', vault_token_ref: 'my-token',
-    })
+    const { confluence_email: _omit, ...rest } = VALID_CONFLUENCE_FIELDS
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', rest)
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(400)
     expect((out.body as any).error).toBe('required')
     expect((out.body as any).field).toBe('confluence_email')
   })
 
+  it('rejects a confluence source missing base_url', async () => {
+    const { base_url: _omit, ...rest } = VALID_CONFLUENCE_FIELDS
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', rest)
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as any).error).toBe('required')
+    expect((out.body as any).field).toBe('base_url')
+  })
+
+  it('rejects a confluence source with a malformed base_url', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', { ...VALID_CONFLUENCE_FIELDS, base_url: 'not-a-url' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as any).field).toBe('base_url')
+  })
+
   it('409s when vault_token_ref does not resolve to a stored secret', async () => {
     mockGetSecret.mockReturnValue(null)
-    const { ctx, out } = makeCtx('POST', '/api/import/sources', {
-      type: 'confluence', path: 'SPACE', vault_token_ref: 'missing-token', confluence_email: 'user@example.com',
-    })
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', { ...VALID_CONFLUENCE_FIELDS, vault_token_ref: 'missing-token' })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(409)
     expect((out.body as any).error).toBe('conflict')
@@ -87,11 +105,9 @@ describe('POST /api/import/sources -- confluence validation', () => {
     expect(mockGetSecret).toHaveBeenCalledWith('missing-token', 'default')
   })
 
-  it('creates the source when the token exists in the vault', async () => {
+  it('creates the source when the token exists in the vault, base_url trailing slash stripped', async () => {
     mockGetSecret.mockReturnValue('FIXTURE-TOKEN-real-value-000')
-    const { ctx, out } = makeCtx('POST', '/api/import/sources', {
-      type: 'confluence', path: 'SPACE', vault_token_ref: 'my-token', confluence_email: 'user@example.com',
-    })
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', { ...VALID_CONFLUENCE_FIELDS, base_url: 'https://example.atlassian.net/' })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(200)
     expect((out.body as any).ok).toBe(true)
@@ -99,18 +115,17 @@ describe('POST /api/import/sources -- confluence validation', () => {
     expect(row.type).toBe('confluence')
     expect(row.vault_token_ref).toBe('my-token')
     expect(row.confluence_email).toBe('user@example.com')
+    expect(row.base_url).toBe('https://example.atlassian.net')
   })
 
   it('never logs or echoes the actual token value back in the response', async () => {
     mockGetSecret.mockReturnValue('FIXTURE-TOKEN-do-not-leak-999')
-    const { ctx, out } = makeCtx('POST', '/api/import/sources', {
-      type: 'confluence', path: 'SPACE', vault_token_ref: 'my-token', confluence_email: 'user@example.com',
-    })
+    const { ctx, out } = makeCtx('POST', '/api/import/sources', VALID_CONFLUENCE_FIELDS)
     await tryHandleImportMemories(ctx)
     expect(JSON.stringify(out.body)).not.toContain('FIXTURE-TOKEN-do-not-leak-999')
   })
 
-  it('does not require vault_token_ref/confluence_email for non-confluence types', async () => {
+  it('does not require vault_token_ref/confluence_email/base_url for non-confluence types', async () => {
     const { ctx, out } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/whatever' })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(200)
@@ -119,12 +134,12 @@ describe('POST /api/import/sources -- confluence validation', () => {
 })
 
 describe('PUT /api/import/sources/:id -- confluence validation', () => {
-  function seedConfluenceSource(overrides: Partial<{ vault_token_ref: string | null; confluence_email: string | null; enabled: number; tenant_id: string }> = {}): string {
+  function seedConfluenceSource(overrides: Partial<{ vault_token_ref: string | null; confluence_email: string | null; base_url: string | null; enabled: number; tenant_id: string }> = {}): string {
     const id = 'src-conf-1'
     const now = Math.floor(Date.now() / 1000)
     getDb().prepare(`
-      INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id, vault_token_ref, confluence_email)
-      VALUES (?, 'confluence', 'SPACE', NULL, 4, ?, NULL, ?, ?, ?, ?, ?)
+      INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id, vault_token_ref, confluence_email, base_url)
+      VALUES (?, 'confluence', 'SPACE', NULL, 4, ?, NULL, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       overrides.enabled ?? 1,
@@ -132,6 +147,7 @@ describe('PUT /api/import/sources/:id -- confluence validation', () => {
       overrides.tenant_id ?? 'default',
       overrides.vault_token_ref === undefined ? 'my-token' : overrides.vault_token_ref,
       overrides.confluence_email === undefined ? 'user@example.com' : overrides.confluence_email,
+      overrides.base_url === undefined ? 'https://example.atlassian.net' : overrides.base_url,
     )
     return id
   }
@@ -170,6 +186,23 @@ describe('PUT /api/import/sources/:id -- confluence validation', () => {
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(409)
     expect(mockGetSecret).toHaveBeenCalledWith('rotated-token', 'default')
+  })
+
+  it('rejects setting an empty base_url on an enabled confluence source', async () => {
+    const id = seedConfluenceSource({ enabled: 1 })
+    const { ctx, out } = makeCtx('PUT', `/api/import/sources/${id}`, { base_url: '' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as any).field).toBe('base_url')
+    expect(mockGetSecret).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed base_url on PUT', async () => {
+    const id = seedConfluenceSource({ enabled: 1 })
+    const { ctx, out } = makeCtx('PUT', `/api/import/sources/${id}`, { base_url: 'not-a-url' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as any).field).toBe('base_url')
   })
 
   it('disabling a confluence source never triggers a vault check', async () => {

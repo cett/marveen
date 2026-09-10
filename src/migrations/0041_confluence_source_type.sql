@@ -5,15 +5,19 @@
 -- its own transaction (BEGIN/COMMIT must NOT appear here -- see
 -- src/db-migrations.ts:95).
 --
--- vault_token_ref / confluence_email (kanban 21d27a8c, fork-portability
--- requirement): the Atlassian API token lives in the vault under whatever
--- id the user chooses (vault_token_ref); the account email is NOT a secret
--- (it's the Basic-auth username half) so it is stored directly on the
--- source row, never in the vault, and never hardcoded anywhere in the
--- codebase. Both columns stay NULL for the existing local/gdrive/sharepoint
--- source types.
+-- vault_token_ref / confluence_email / base_url (kanban 21d27a8c,
+-- fork-portability requirement): the Atlassian API token lives in the vault
+-- under whatever id the user chooses (vault_token_ref); the account email
+-- is NOT a secret (it's the Basic-auth username half) so it is stored
+-- directly on the source row, never in the vault. base_url is the
+-- Confluence Cloud SITE root (e.g. "https://yourorg.atlassian.net", no
+-- trailing slash, no /wiki suffix -- the connector appends /wiki/api/v2
+-- itself) -- this is org-specific too, so it is a per-source field rather
+-- than a constant, exactly like the token and email. None of the three are
+-- ever hardcoded anywhere in the codebase. All three columns stay NULL for
+-- the existing local/gdrive/sharepoint source types.
 
--- 1. New import_sources with the extended CHECK constraint + 2 new columns
+-- 1. New import_sources with the extended CHECK constraint + 3 new columns
 CREATE TABLE import_sources_new (
   id               TEXT    PRIMARY KEY,
   type             TEXT    NOT NULL
@@ -27,11 +31,12 @@ CREATE TABLE import_sources_new (
   updated_at       INTEGER NOT NULL,
   tenant_id        TEXT    NOT NULL DEFAULT 'default',
   vault_token_ref  TEXT,
-  confluence_email TEXT
+  confluence_email TEXT,
+  base_url         TEXT
 );
 
 -- 2. Copy existing rows (explicit column list to surface schema drift at
--- migration time); the two new columns default to NULL for every existing
+-- migration time); the three new columns default to NULL for every existing
 -- row, which is correct for all non-confluence source types.
 INSERT INTO import_sources_new
   (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id)
