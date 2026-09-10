@@ -19,6 +19,7 @@ const { TMP_ROOT, STORE_DIR } = vi.hoisted(() => {
 
 vi.mock('../config.js', () => ({ PROJECT_ROOT: TMP_ROOT, STORE_DIR }))
 
+import { initDatabase, getDb } from '../db.js'
 import { tryHandleCostopsBudgets } from '../web/routes/costops-budgets.js'
 
 const COSTOPS_CONFIG_PATH = join(STORE_DIR, 'costops-config.json')
@@ -53,6 +54,8 @@ function makeCtx(opts: { method: string; path: string; body?: object; role?: Rou
 }
 
 beforeEach(() => {
+  process.env.NODE_ENV = 'test'
+  initDatabase(':memory:')
   try { rmSync(COSTOPS_CONFIG_PATH) } catch { /* fine */ }
 })
 
@@ -92,6 +95,23 @@ describe('costops budgets route -- CRUD', () => {
     const onDisk = JSON.parse(readFileSync(COSTOPS_CONFIG_PATH, 'utf-8'))
     expect(onDisk.budgets).toHaveLength(1)
     expect(onDisk.budgets[0].id).toBe('global-monthly')
+  })
+
+  it('GET enriches each budget with live status (spent/ratio/level/blocked)', async () => {
+    await tryHandleCostopsBudgets(makeCtx({
+      method: 'POST', path: '/api/costops/budgets', role: 'admin',
+      body: { id: 'status-check', amount: 1000, hard_threshold: 1.0 },
+    }).ctx)
+
+    const nowSec = Math.floor(Date.now() / 1000)
+    getDb().prepare(`
+      INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tenant_id)
+      VALUES ('agent-a', 'sess-1', ?, 900, 100, 'default')
+    `).run(nowSec)
+
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/costops/budgets', role: 'admin' })
+    await tryHandleCostopsBudgets(ctx)
+    expect(body().budgets[0]).toMatchObject({ id: 'status-check', spent: 1000, ratio: 1, level: 'hard', blocked: false })
   })
 
   it('rejects an id that fails the slug pattern', async () => {
