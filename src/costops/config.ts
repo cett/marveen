@@ -104,16 +104,31 @@ export interface ConfigLoadResult {
 export function loadCostopsConfig(): ConfigLoadResult {
   if (!existsSync(COSTOPS_CONFIG_PATH)) {
     ensureExampleConfig()
-    return { config: { ...EMPTY_CONFIG }, exists: false, errors: [] }
+    // Fresh arrays every call: a caller that mutates the returned config
+    // in place (e.g. pushing a new budget before saving) must never corrupt
+    // the shared EMPTY_CONFIG singleton for the rest of the process.
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: [] }, exists: false, errors: [] }
   }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(COSTOPS_CONFIG_PATH, 'utf-8'))
   } catch (err) {
     logger.warn({ err }, 'costops-config.json is not valid JSON')
-    return { config: { ...EMPTY_CONFIG }, exists: true, errors: ['config is not valid JSON'] }
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: [] }, exists: true, errors: ['config is not valid JSON'] }
   }
   return validateConfig(raw)
+}
+
+/**
+ * Persist a config object (typically an in-memory mutation of a prior
+ * loadCostopsConfig() result) back to costops-config.json. Re-validates
+ * before writing so the on-disk shape always matches validateConfig's
+ * normalized output (defaults filled in, unknown fields dropped).
+ */
+export function saveCostopsConfig(config: CostOpsConfig): ConfigLoadResult {
+  const validated = validateConfig(config)
+  writeFileSync(COSTOPS_CONFIG_PATH, JSON.stringify(validated.config, null, 2) + '\n', 'utf-8')
+  return validated
 }
 
 export function ensureExampleConfig(): void {

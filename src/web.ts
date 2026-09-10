@@ -76,6 +76,7 @@ import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSpans } from './web/routes/spans.js'
 import { tryHandleSkillUsage } from './web/routes/skill-usage.js'
 import { tryHandleSettings } from './web/routes/settings.js'
+import { tryHandleCostopsBudgets } from './web/routes/costops-budgets.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
@@ -145,6 +146,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleToolLog)
   .add(tryHandleSkillUsage)
   .add(tryHandleSettings)
+  .add(tryHandleCostopsBudgets)
   .add(tryHandleVoice)
   .add(tryHandleVaultSshKeys)
   .add(tryHandleVaultSsh)
