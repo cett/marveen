@@ -2010,6 +2010,11 @@
 
       <div class="overview-stats" id="tuBudgetCards" style="margin-bottom:8px"></div>
 
+      <div class="overview-card" id="tuCostopsBudgetsCard" style="margin-bottom:16px" hidden>
+        <h3 data-i18n="tokenUsage.costops_budgets_title">Havi tokenbudget-riasztás</h3>
+        <div class="overview-stats" id="tuCostopsBudgets"></div>
+      </div>
+
       <div class="overview-card" style="margin-bottom:16px">
         <h3 data-i18n="tokenUsage.timeline_title">Idővonal</h3>
         <div style="height:370px;position:relative;overflow:hidden">
@@ -2515,6 +2520,58 @@
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
           <button class="btn" data-variant="secondary" data-close="tenantAddModal" data-i18n="common.btn.cancel">Mégse</button>
           <button class="btn" data-variant="primary" id="tenantAddConfirmBtn" data-i18n="common.btn.save">Mentés</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CostOps budget add/edit modal -->
+    <div class="modal-overlay" id="costopsBudgetModal" hidden>
+      <div class="modal" style="max-width:440px">
+        <h2 id="costopsBudgetModalTitle" data-i18n="settings.costops.modal.add_title">Új budget</h2>
+        <div class="form-group" style="margin-top:16px">
+          <label class="form-label" data-i18n="settings.costops.field.id">ID</label>
+          <input type="text" id="costopsBudgetIdInput" class="input" placeholder="pl. global-monthly" autocomplete="off">
+          <p class="form-hint" data-i18n="settings.costops.field.id.hint">Kisbetű, szám, kötőjel/aláhúzás; szerkesztéskor nem módosítható</p>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label" data-i18n="settings.costops.field.name">Név</label>
+          <input type="text" id="costopsBudgetNameInput" class="input" placeholder="pl. Global monthly">
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label" data-i18n="settings.costops.field.scope">Hatókör</label>
+          <select id="costopsBudgetScopeInput" class="input">
+            <option value="global" data-i18n="settings.costops.scope.global">Globális</option>
+            <option value="agent" data-i18n="settings.costops.scope.agent">Ágens</option>
+            <option value="tenant" data-i18n="settings.costops.scope.tenant">Tenant</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-top:12px" id="costopsBudgetScopeRefGroup">
+          <label class="form-label" id="costopsBudgetScopeRefLabel" data-i18n="settings.costops.field.scope_ref.agent">Ágens ID</label>
+          <input type="text" id="costopsBudgetScopeRefInput" class="input" placeholder="pl. agent-1" autocomplete="off">
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label" data-i18n="settings.costops.field.amount">Havi limit (token)</label>
+          <input type="number" id="costopsBudgetAmountInput" class="input" min="0" step="1000" placeholder="pl. 5000000">
+        </div>
+        <div style="display:flex;gap:12px;margin-top:12px">
+          <div class="form-group" style="flex:1">
+            <label class="form-label" data-i18n="settings.costops.field.warning_threshold">Warning küszöb</label>
+            <input type="number" id="costopsBudgetWarningInput" class="input" min="0" max="1" step="0.05" value="0.8">
+          </div>
+          <div class="form-group" style="flex:1">
+            <label class="form-label" data-i18n="settings.costops.field.hard_threshold">Hard küszöb</label>
+            <input type="number" id="costopsBudgetHardInput" class="input" min="0" max="1" step="0.05" value="1.0">
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="costopsBudgetBlockOnHardInput">
+            <span data-i18n="settings.costops.field.block_on_hard">Blokkolás hard küszöbnél</span>
+          </label>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" data-close="costopsBudgetModal" data-i18n="common.btn.cancel">Mégse</button>
+          <button class="btn" data-variant="primary" id="costopsBudgetSaveBtn" data-i18n="common.btn.save">Mentés</button>
         </div>
       </div>
     </div>
