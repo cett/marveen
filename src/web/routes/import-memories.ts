@@ -20,7 +20,7 @@ type ImportSource = {
   vault_token_ref: string | null; confluence_email: string | null; base_url: string | null
 }
 
-// Confluence-only precondition (kanban 21d27a8c ST2): a source may only be
+// Confluence-only precondition: a source may only be
 // created, or (re-)enabled, once its vault_token_ref actually resolves to a
 // stored secret. This is enforced here rather than left to the crawler
 // because a silently-failing scheduled crawl is much harder to notice than

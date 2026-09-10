@@ -1,5 +1,5 @@
-// Confluence source-type validation for POST/PUT /api/import/sources
-// (kanban 21d27a8c ST2): required base_url/vault_token_ref/confluence_email,
+// Confluence source-type validation for POST/PUT /api/import/sources:
+// required base_url/vault_token_ref/confluence_email,
 // and the token-must-already-exist-in-the-vault precondition. Other source
 // types (local/gdrive/sharepoint) are covered by import-memories.test.ts and
 // are deliberately not re-tested here.

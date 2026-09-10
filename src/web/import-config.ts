@@ -52,7 +52,7 @@ export const BLOCKED_BASENAMES = new Set(['id_rsa', 'id_ed25519'])
 /** Valid interval_hours values. */
 export const VALID_INTERVALS = new Set([1, 2, 4, 24])
 
-// ── Confluence connector limits (kanban 21d27a8c) ─────────────────────────
+// ── Confluence connector limits ────────────────────────────────────────────
 
 /** Page size for every Confluence v2 API list request (spaces, pages). */
 export const CONFLUENCE_PAGE_LIMIT = 50

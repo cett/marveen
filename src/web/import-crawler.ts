@@ -399,7 +399,7 @@ async function crawlSharePointSource(
   return counts
 }
 
-// ── Confluence Cloud connector (kanban 21d27a8c) ──────────────────────────────
+// ── Confluence Cloud connector ──────────────────────────────────────────────
 // Reference: https://developer.atlassian.com/cloud/confluence/rest/v2/
 //
 // Fork-portability (explicit requirement, enforced 3x this feature): NOTHING

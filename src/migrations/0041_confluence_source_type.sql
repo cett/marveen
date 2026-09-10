@@ -5,8 +5,8 @@
 -- its own transaction (BEGIN/COMMIT must NOT appear here -- see
 -- src/db-migrations.ts:95).
 --
--- vault_token_ref / confluence_email / base_url (kanban 21d27a8c,
--- fork-portability requirement): the Atlassian API token lives in the vault
+-- vault_token_ref / confluence_email / base_url (fork-portability
+-- requirement): the Atlassian API token lives in the vault
 -- under whatever id the user chooses (vault_token_ref); the account email
 -- is NOT a secret (it's the Basic-auth username half) so it is stored
 -- directly on the source row, never in the vault. base_url is the

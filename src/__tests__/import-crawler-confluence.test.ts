@@ -1,4 +1,4 @@
-// crawlConfluenceSource() (kanban 21d27a8c ST3), exercised through the
+// crawlConfluenceSource(), exercised through the
 // exported crawlSource(sourceId) entry point against a real in-memory DB --
 // crawlConfluenceSource itself is module-private, same as the other
 // connectors (crawlLocalSource/crawlGdriveSource/crawlSharePointSource).
