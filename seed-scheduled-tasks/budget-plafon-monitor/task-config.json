@@ -1,0 +1,9 @@
+{
+  "schedule": "0 */6 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": true,
+  "createdAt": 0,
+  "description": "Budget-plafon ellenőrzés (6 óránként, token-alapú). Csak akkor küld értesítést, ha warning/hard szint elérve."
+}
