@@ -23,7 +23,14 @@ export interface ChannelProvider {
 
 // -- Telegram implementation --
 
+// Every real message send funnels through this function regardless of caller
+// (notify.ts, channel-monitor.ts, channel-health-monitor.ts, agent-process-spawn.ts,
+// channel-mcp-reconnect.ts, agents-channels.ts). Under vitest, tests that exercise
+// those callers without mocking channel-provider.js (e.g. auth-routes.test.ts hitting
+// the break-glass password-reset notification) would otherwise fire a real Telegram
+// message using whatever CHANNEL_TOKEN/CHANNEL_CHAT_ID happen to be in .env.
 function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<void> {
+  if (process.env.VITEST) return Promise.resolve()
   return new Promise((resolve, reject) => {
     const req = https.request(
       `https://api.telegram.org/bot${token}/${method}`,

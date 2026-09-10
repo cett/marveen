@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+import https from 'node:https'
 import {
   getProvider,
   getProviderType,
@@ -219,5 +220,20 @@ describe('checkTelegramTokenBusy', () => {
     expect(src).toMatch(/checkTelegramTokenBusy\(botToken\.trim\(\)\)/)
     expect(src).toMatch(/botToken\.trim\(\) !== currentToken/)
     expect(src.indexOf('checkTelegramTokenBusy(botToken')).toBeGreaterThan(src.indexOf('findBotTokenDuplicate'))
+  })
+})
+
+// INSTBOT819: a real message-sending call (via any caller -- notify.ts,
+// channel-monitor.ts, agent-process-spawn.ts, ...) must never hit the real
+// Telegram API while vitest is running, regardless of whether that caller
+// mocks channel-provider.js. process.env.VITEST is always set by the vitest
+// runner itself, so this guard is unconditional under test.
+describe('telegram sendMessage under vitest', () => {
+  it('never opens a real network request, even with a live-looking token', async () => {
+    const requestSpy = vi.spyOn(https, 'request')
+    const provider = getProvider('telegram')
+    await provider.sendMessage('123456:REAL-LOOKING-TOKEN', '999999', 'test message', 'HTML')
+    expect(requestSpy).not.toHaveBeenCalled()
+    requestSpy.mockRestore()
   })
 })
