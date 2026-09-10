@@ -69,6 +69,7 @@ export interface FleetJson {
   kanban: KanbanExport
   ideaBox: IdeaBoxExport
   schedules: Record<string, unknown>[]
+  importSources: Record<string, unknown>[]
   dashboardSettings: DashboardSettingsExport
   vault?: VaultExport
 }
@@ -181,6 +182,7 @@ export interface DiffReport {
     dailyLogs: number
     ideaBox: number
     schedules: number
+    importSources: number
   }
   wouldOverwrite: {
     agents: string[]  // existing sub-agent names that would be overwritten
@@ -203,6 +205,7 @@ export interface ImportResult {
     dailyLogs: number
     ideaBox: number
     schedules: number
+    importSources: number
   }
   warnings?: string[]
 }
@@ -708,6 +711,18 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const schedules = (db.prepare('SELECT * FROM schedules').all() as Record<string, unknown>[])
     .map(row => ({ ...row, enabled: 0 }))
 
+  // Import-pipeline source configs (local/gdrive/sharepoint/confluence). Only the
+  // config row is exported -- vault_token_ref is just the vault entry's id (the
+  // secret itself travels via the vault section), and the crawled content
+  // (import_memories) is deliberately NOT exported: the crawler re-fetches it.
+  // Force-disabled + last_run_at cleared at export time: a target's local paths
+  // and gdrive/sharepoint/confluence credentials are never portable as-is, AND
+  // leaving last_run_at set would make the next crawl treat itself as incremental
+  // and silently skip everything older than that cutoff -- content the target
+  // never actually has, since import_memories didn't come along for the ride.
+  const importSources = (db.prepare('SELECT * FROM import_sources').all() as Record<string, unknown>[])
+    .map(row => ({ ...row, enabled: 0, last_run_at: null }))
+
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
   const vault = withSecrets ? exportVault() : undefined
 
@@ -724,6 +739,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     kanban,
     ideaBox,
     schedules,
+    importSources,
     dashboardSettings: exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
@@ -859,6 +875,17 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
     warnings.push(`${newSchedules} ütemezés importálva -- letiltva érkezik, kézi átvizsgálás és engedélyezés szükséges célgépen.`)
   }
 
+  let newImportSources = 0
+  for (const src of fleet.importSources ?? []) {
+    if (!db.prepare('SELECT 1 FROM import_sources WHERE id = ?').get((src as any).id)) newImportSources++
+  }
+  if (newImportSources > 0) {
+    warnings.push(
+      `${newImportSources} import-forrás importálva -- letiltva érkezik, a tartalom (import_memories) nem került át. ` +
+      `A vault_token_ref-ek csak akkor engedélyezhetők újra, ha a hivatkozott vault-bejegyzés a célgépen is létezik.`
+    )
+  }
+
   if (!fleet.vault) {
     warnings.push('vault szekció hiányzik -- az MCP szerverek token nélkül indulnak el, manuális re-auth szükséges.')
   }
@@ -896,6 +923,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       dailyLogs: newDailyLogs,
       ideaBox: (fleet.ideaBox?.ideas ?? []).length,
       schedules: newSchedules,
+      importSources: newImportSources,
     },
     wouldOverwrite: {
       agents: existingAgentsToOverwrite,
@@ -1029,7 +1057,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
 
 const EMPTY_DIFF: DiffReport = {
   dryRun: true,
-  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, schedules: 0 },
+  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, schedules: 0, importSources: 0 },
   wouldOverwrite: { agents: [], mainAgent: false },
   warnings: [],
   errors: [],
@@ -1231,6 +1259,31 @@ export function importFleet(
         )
       }
 
+      // import_sources -- idempotent on id. Always imported disabled with
+      // last_run_at cleared, regardless of the exported values (defense in
+      // depth, mirrors schedules above): the crawled content itself was never
+      // exported, so a preserved last_run_at would make the next run treat
+      // itself as incremental and silently skip everything the target doesn't
+      // actually have. vault_token_ref is carried over as-is (just the vault
+      // entry id); re-enabling still requires that entry to exist on this
+      // machine (enforced by the route layer, not by this raw insert).
+      for (const src of fleet.importSources ?? []) {
+        const s = src as any
+        if (!s.id || !s.type || !s.path) {
+          logger.warn({ id: s.id }, 'Fleet import: skipping import source with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO import_sources
+           (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at,
+            tenant_id, vault_token_ref, confluence_email, base_url)
+           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          s.id, s.type, s.path, s.label ?? null, s.interval_hours ?? 4,
+          s.created_at, s.updated_at, s.tenant_id ?? 'default',
+          s.vault_token_ref ?? null, s.confluence_email ?? null, s.base_url ?? null,
+        )
+      }
+
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
@@ -1364,6 +1417,7 @@ export function importFleet(
         dailyLogs: (fleet.dailyLogs ?? []).length,
         ideaBox: (fleet.ideaBox?.ideas ?? []).length,
         schedules: (fleet.schedules ?? []).length,
+        importSources: (fleet.importSources ?? []).length,
       },
       ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
     }
