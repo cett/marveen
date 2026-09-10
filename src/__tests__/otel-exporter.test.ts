@@ -85,10 +85,18 @@ describe('spansToOtelJson', () => {
     expect(s).not.toHaveProperty('parentSpanId')
   })
 
-  it('includes parentSpanId when parent_span_id is set (normalised)', () => {
+  it('includes parentSpanId when parent_span_id is set, hashed to a valid 16-hex spanId', () => {
     const result = spansToOtelJson([span({ parent_span_id: 'parent-001' })])
     const s = result.resourceSpans[0].scopeSpans[0].spans[0]
-    expect(s.parentSpanId).toBe('parent001') // normaliseId strips hyphens
+    expect(s.parentSpanId).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  it('hashes a parent_span_id to the SAME value a span with that literal span_id would get (parent-child correlation survives hashing)', () => {
+    const child = spansToOtelJson([span({ span_id: 'child-1', parent_span_id: 'parent-001' })])
+    const parent = spansToOtelJson([span({ span_id: 'parent-001' })])
+    const childSpan = child.resourceSpans[0].scopeSpans[0].spans[0]
+    const parentSpan = parent.resourceSpans[0].scopeSpans[0].spans[0]
+    expect(childSpan.parentSpanId).toBe(parentSpan.spanId)
   })
 
   it('parses string attributes from JSON blob', () => {
@@ -114,11 +122,20 @@ describe('spansToOtelJson', () => {
     expect(attrs.find(a => a.key === 'span.status')?.value.stringValue).toBe('ok')
   })
 
-  it('normalises hyphenated ids to lowercase hex', () => {
-    const result = spansToOtelJson([span({ trace_id: 'TRACE-ABC', span_id: 'SPAN-DEF' })])
+  it('hashes non-hex ids (Claude-native ids, UUIDs) into OTLP-valid hex trace/span ids', () => {
+    const result = spansToOtelJson([span({ trace_id: 'sess_abc123-not-hex', span_id: 'msg_01Xyz-not-hex-either' })])
     const s = result.resourceSpans[0].scopeSpans[0].spans[0]
-    expect(s.traceId).toBe('traceabc')
-    expect(s.spanId).toBe('spandef')
+    expect(s.traceId).toMatch(/^[0-9a-f]{32}$/) // 16 bytes
+    expect(s.spanId).toMatch(/^[0-9a-f]{16}$/) // 8 bytes
+  })
+
+  it('hashes the same id to the same hex value every time (stable correlation across export calls)', () => {
+    const a = spansToOtelJson([span({ trace_id: 'sess-fixed', span_id: 'span-fixed' })])
+    const b = spansToOtelJson([span({ trace_id: 'sess-fixed', span_id: 'span-fixed' })])
+    const sa = a.resourceSpans[0].scopeSpans[0].spans[0]
+    const sb = b.resourceSpans[0].scopeSpans[0].spans[0]
+    expect(sa.traceId).toBe(sb.traceId)
+    expect(sa.spanId).toBe(sb.spanId)
   })
 
   it('returns empty resourceSpans for empty input', () => {
