@@ -34,6 +34,10 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   listScheduledTasks:          vi.fn().mockReturnValue([]),
   listScheduledTasksFromFiles: vi.fn().mockReturnValue([]),
   writeScheduledTask:          vi.fn(),
+  // Minimal id -> name mapping mirroring the real rowToTask, just enough
+  // for the GET /api/schedules assertions below to see the shape the
+  // frontend actually depends on.
+  rowToTask:                   (row: { id: string }) => ({ name: row.id, ...row }),
 }))
 
 vi.mock('../agent.js',        () => ({ runAgent: vi.fn() }))
@@ -123,6 +127,20 @@ describe('GET /api/schedules', () => {
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(mockListSchedulesDb).toHaveBeenCalledWith({ tenantId: 'tenant-a' })
+  })
+
+  // Regression coverage: DB rows key on `id`, but the frontend (and the
+  // file-based branch) key on `name` -- without mapping through rowToTask,
+  // every row in the response is missing `name`, which breaks delete/
+  // toggle/run/edit (they build the URL from task.name -> "/undefined").
+  it('DB-mode rows are mapped to include `name` (= id), not just `id`', async () => {
+    mockListSchedulesDb.mockReturnValue([tenantRow])
+    const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    expect(Array.isArray(out.body)).toBe(true)
+    const rows = out.body as Array<{ name?: string; id?: string }>
+    expect(rows[0].name).toBe('my-report')
   })
 })
 
