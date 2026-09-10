@@ -1718,6 +1718,12 @@ window._i18n.hu = {
   'fleet.stat.skills':            'Globális skillek',
   'fleet.stat.tasks':             'Ütemezett feladatok',
   'fleet.stat.agent_names':       'Ügynökök',
+  'fleet.stat.schedules':         'DB-ütemezések',
+  'fleet.stat.import_sources':    'Import-források',
+  'fleet.stat.ssh_keys':          'SSH kulcsok',
+  'fleet.stat.ssh_servers':       'SSH szerverek',
+
+  'fleet.import.new_sections_note': 'Ütemezések és import-források letiltva érkeznek (kézi átvizsgálás szükséges); az SSH kulcsok publikus adatai importálódnak, a privát kulcs csak titkosított (jelszavas) exportban. A store-beállítások közül a legtöbb felülíródik, az engedélyezett domain-lista viszont egyesül a célgép saját listájával, nem íródik felül.',
 
   // --- Dashboard browser login (optional) ---
   'auth.login.title':             'Bejelentkezés',
