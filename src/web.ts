@@ -52,7 +52,6 @@ import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
-import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
@@ -119,7 +118,6 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleMe)
   .add(tryHandleArtifacts)
   .add(tryHandleWorkspace)
-  .add(tryHandleMigrate)
   .add(tryHandleKanban)
   .add(tryHandleSchedules)
   .add(tryHandleConnectorsHu)
