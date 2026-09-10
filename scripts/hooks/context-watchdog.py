@@ -75,6 +75,25 @@ naive "is not None" check). Kept local to this hook rather than folded into
 ledger_lib so the other callers' existing contract (always a non-None
 string) is untouched.
 
+A SECOND, UNRELATED "sub-agent" concept (naming collision, read carefully):
+everything above is about a persistent, NAMED FLEET member's own top-level
+session (cwd-based). Separately, Claude Code hooks also fire for tool calls
+made by an ephemeral Agent-tool sub-agent (fork, quarantine-reader,
+general-purpose, ...) that a fleet agent's OWN session spawns -- by design,
+per Claude Code's hooks/sub-agents docs. Such a spawned sub-agent inherits
+its parent's cwd, so _known_agent_cwd() alone cannot tell its tool calls
+apart from the parent's own. Claude Code's payload carries a distinct
+`agent_id` field for exactly this (a per-spawn UUID, present ONLY on a
+sub-agent's own tool-call events) -- confusingly the same field name as this
+script's own `agent_id` local (the fleet member's identity), so main() reads
+it into a deliberately different name, `cc_subagent_uuid`, and gates the
+HANDOFF-emission path on it: a spawned sub-agent has no blackboard row or
+kanban assignments of its own, and must never receive the PARENT's real
+state injected into its isolated context as if it were a genuine system
+notification. Token/span bookkeeping is deliberately NOT gated on this -- a
+sub-agent's tool calls are real spend against the same account and should
+still count.
+
 Logging-category hook (CLAUDE.md "Hook fail-closed policy" exception, same
 as tool-log-capture.py): fail/timeout/crash -> SILENT PASS, exit 0 always.
 This is observability + best-effort continuity, not a gate -- it must never
@@ -568,6 +587,20 @@ def main():
     if agent_id is None:
         sys.exit(0)
 
+    # Claude Code's OWN "agent_id" payload field -- unrelated to this script's
+    # `agent_id` above (a Marveen fleet member's identity, resolved from cwd).
+    # This one is the UUID of an Agent-tool-spawned sub-agent (fork,
+    # quarantine-reader, general-purpose, ...); it is present ONLY on a
+    # PostToolUse event that originates from such a sub-agent's own tool call,
+    # and absent for the top-level session's own calls (hooks fire for both,
+    # by design -- see Claude Code's hooks/sub-agents docs). A spawned
+    # sub-agent shares its parent's cwd, so it is otherwise indistinguishable
+    # from the top-level fleet-agent session above -- without this check, a
+    # sub-agent's tool call could trigger emit_handoff() below, injecting the
+    # PARENT's real blackboard/kanban/message state as fake "system reminder"
+    # text into the sub-agent's own isolated, unrelated conversation.
+    cc_subagent_uuid = payload.get("agent_id") or None
+
     session_id = payload.get("session_id") or ""
     transcript_path = payload.get("transcript_path") or ""
     tool_name = payload.get("tool_name") or None
@@ -606,7 +639,12 @@ def main():
 
         threshold = _read_gate_threshold(agent_id)
         pct = (tokens / threshold) if threshold > 0 else 0
-        if pct >= CONTEXT_PCT_THRESHOLD:
+        # Token/span bookkeeping above runs unconditionally (a sub-agent's
+        # tool calls burn real tokens against the same account and should
+        # still count toward CostOps budget tracking); only the HANDOFF path
+        # -- additionalContext injection, the compact-interlock stamp, and
+        # the audit-log 'handoff' row -- is fleet-agent-session-only.
+        if pct >= CONTEXT_PCT_THRESHOLD and not cc_subagent_uuid:
             handoff = build_handoff(conn, agent_id, pct, tokens, threshold)
             emit_handoff(handoff)
             interlock_ok = stamp_compact_interlock(agent_id)
