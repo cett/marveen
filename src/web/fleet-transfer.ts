@@ -138,6 +138,16 @@ export interface DashboardSettingsExport {
   autoRestart: Record<string, unknown>
   agentsDesired: Record<string, unknown>
   norbertPersonal: Record<string, unknown>
+  // P3: overwrite semantics (whole-file replace), same as the four fields above --
+  // these are fleet operational policy, consistent with the identity-takeover model.
+  modelFallback: Record<string, unknown>
+  federation: Record<string, unknown>
+  costopsConfig: Record<string, unknown>
+  // P3: MERGE semantics (union, not replace) -- see importFleet(). An allowlist is a
+  // security-positive control that can only ever be narrowed by an overwrite, and a
+  // target machine may have its own already-approved domains for integrations the
+  // source fleet never used; losing those on import would be a silent regression.
+  egressAllowlist: Record<string, unknown>
 }
 
 export interface MemoryRow {
@@ -629,6 +639,10 @@ function exportDashboardSettings(): DashboardSettingsExport {
     autoRestart: read('auto-restart.json'),
     agentsDesired: read('agents-desired.json'),
     norbertPersonal: read('norbert-personal.json'),
+    modelFallback: read('model-fallback.json'),
+    federation: read('federation.json'),
+    costopsConfig: read('costops-config.json'),
+    egressAllowlist: read('egress-allowlist.json'),
   }
 }
 
@@ -1180,6 +1194,22 @@ export function importFleet(
       trackedWrite(join(STORE_DIR, 'agents-desired.json'), JSON.stringify(s.agentsDesired, null, 2), tracker)
     if (s.norbertPersonal && Object.keys(s.norbertPersonal).length)
       trackedWrite(join(STORE_DIR, 'norbert-personal.json'), JSON.stringify(s.norbertPersonal, null, 2), tracker)
+    if (s.modelFallback && Object.keys(s.modelFallback).length)
+      trackedWrite(join(STORE_DIR, 'model-fallback.json'), JSON.stringify(s.modelFallback, null, 2), tracker)
+    if (s.federation && Object.keys(s.federation).length)
+      trackedWrite(join(STORE_DIR, 'federation.json'), JSON.stringify(s.federation, null, 2), tracker)
+    if (s.costopsConfig && Object.keys(s.costopsConfig).length)
+      trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
+    // egress-allowlist.json -- MERGE, not overwrite (see DashboardSettingsExport doc):
+    // union the source's domains into whatever the target already has, so a
+    // target-specific integration domain never gets silently dropped.
+    const sourceDomains = Array.isArray((s.egressAllowlist as any)?.domains) ? (s.egressAllowlist as any).domains as string[] : []
+    if (sourceDomains.length > 0) {
+      const existing = safeReadJson(join(STORE_DIR, 'egress-allowlist.json'))
+      const existingDomains = Array.isArray((existing as any).domains) ? (existing as any).domains as string[] : []
+      const merged = [...new Set([...existingDomains, ...sourceDomains])].sort()
+      trackedWrite(join(STORE_DIR, 'egress-allowlist.json'), JSON.stringify({ ...existing, domains: merged }, null, 2), tracker)
+    }
 
     // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
     const importTx = db.transaction(() => {
