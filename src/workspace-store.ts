@@ -196,6 +196,64 @@ export function getWorkspaceDocBlob(id: string): Buffer | null {
   return row?.content_blob ?? null
 }
 
+// Escape FTS5 special characters to prevent query-syntax errors on user
+// input. Wraps the term in double quotes so it is treated as a phrase, not
+// as FTS5 operators -- mirrors artifacts-db.ts's ftsEscape.
+function ftsEscape(term: string): string {
+  return `"${term.replace(/"/g, '""')}"`
+}
+
+export interface WorkspaceDocSearchResult {
+  id: string
+  title: string
+  agent_id: string
+  tenant_id: string
+  type: WorkspaceDocType
+  task_ref: string | null
+  doc_key: string | null
+  created_at: number
+  updated_at: number
+  snippet: string
+}
+
+/**
+ * Full-text search over workspace_docs (title + content), joined back from
+ * the workspace_docs_fts external-content index (migration 0040).
+ *
+ * Tenant isolation is the critical property here -- kanban 9156e583 exists
+ * specifically to bring workspace_docs into memory search, and the explicit
+ * requirement is: search is TENANT-scoped, and NO row may cross a
+ * tenant boundary, ever. `tenantId` mirrors the GET /api/memories?q
+ * `recallTenantId` semantics exactly: `undefined` means "no tenant filter"
+ * (admin, no ?tenant= param -- sees every tenant), a string value means
+ * "this tenant only" (SQL-level WHERE, not a post-filter). Callers MUST
+ * pass `undefined` only for an already-verified admin caller -- see
+ * GET /api/memories in web/routes/memories.ts for the one call site.
+ */
+export function searchWorkspaceDocs(
+  q: string,
+  opts: { agentId?: string; tenantId?: string; limit: number },
+): WorkspaceDocSearchResult[] {
+  const conditions: string[] = []
+  const params: unknown[] = [ftsEscape(q)]
+  if (opts.tenantId !== undefined) { conditions.push('wd.tenant_id = ?'); params.push(opts.tenantId) }
+  if (opts.agentId) { conditions.push('wd.agent_id = ?'); params.push(opts.agentId) }
+  const where = conditions.length ? `AND ${conditions.join(' AND ')}` : ''
+  params.push(opts.limit)
+
+  return getDb().prepare(`
+    SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
+           wd.task_ref, wd.doc_key, wd.created_at, wd.updated_at,
+           snippet(workspace_docs_fts, 1, '[', ']', '...', 15) AS snippet
+    FROM workspace_docs_fts
+    JOIN workspace_docs wd ON wd.rowid = workspace_docs_fts.rowid
+    WHERE workspace_docs_fts MATCH ?
+      ${where}
+    ORDER BY rank
+    LIMIT ?
+  `).all(...params) as WorkspaceDocSearchResult[]
+}
+
 export interface ListWorkspaceDocsFilter {
   agentId?: string
   tenantId?: string | null

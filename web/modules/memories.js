@@ -249,6 +249,10 @@ export async function loadMemories() {
   if (q) {
     params.set('q', q)
     params.set('mode', searchMode)
+    // Only meaningful alongside a search query -- the backend only combines
+    // workspace_docs into the response when both q and this flag are present;
+    // without q it would be a no-op anyway, so skip sending it for a plain listing.
+    params.set('include_docs', '1')
   }
   if (agent) params.set('agent', agent)
   if (currentMemTier) params.set('tier', currentMemTier)
@@ -261,19 +265,29 @@ export async function loadMemories() {
       fetch(`/api/memories?${params}`),
       agent ? fetch(`/api/memories/stale?agent_id=${encodeURIComponent(agent)}`) : Promise.resolve(null),
     ])
-    const memories = await memoriesRes.json()
+    const body = await memoriesRes.json()
+    // Plain listing (no q) stays a raw array; a search with include_docs=1
+    // comes back as { memories, workspace_docs } -- see GET /api/memories.
+    const memories = Array.isArray(body) ? body : body.memories
+    const workspaceDocs = Array.isArray(body) ? [] : (body.workspace_docs || [])
     const staleIds = staleRes
       ? new Set((await staleRes.json()).map(m => m.id))
       : new Set()
-    renderMemories(memories, staleIds)
+    renderMemories(memories, staleIds, workspaceDocs)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
   }
 }
 
-function renderMemories(memories, staleIds = new Set()) {
+// Munkadokumentum típus-jelölés a keresési találatok listájában (kanban
+// 9156e583) -- a memória-badge-ekkel azonos mintát követve, de vizuálisan
+// megkülönböztethetően (típus-badge, "Munkadok" jelölés, a snippet mint
+// tartalom-előnézet).
+const WORKSPACE_DOC_TYPE_LABELS = { plan: 'Terv', brief: 'Brief', report: 'Riport', notes: 'Jegyzet' }
+
+function renderMemories(memories, staleIds = new Set(), workspaceDocs = []) {
   memList.innerHTML = ''
-  memEmpty.hidden = memories.length > 0
+  memEmpty.hidden = memories.length > 0 || workspaceDocs.length > 0
 
   for (const mem of memories) {
     const item = document.createElement('div')
@@ -340,6 +354,28 @@ function renderMemories(memories, staleIds = new Set()) {
         showToast(t('common.error_delete'))
       }
     })
+
+    memList.appendChild(item)
+  }
+
+  for (const doc of workspaceDocs) {
+    const item = document.createElement('div')
+    item.className = 'mem-item mem-item-workspace-doc'
+
+    const typeBadge = WORKSPACE_DOC_TYPE_LABELS[doc.type] || doc.type
+    const agentLabel = doc.agent_id || mainAgentId()
+    const dateLabel = doc.updated_at ? new Date(doc.updated_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' }) : ''
+
+    item.innerHTML = `
+      <div class="mem-item-header">
+        <span class="badge" data-variant="info">Munkadok</span>
+        <span class="badge" data-variant="neutral">${escapeHtml(typeBadge)}</span>
+        <span class="mem-agent-badge">${escapeHtml(agentLabel)}</span>
+        <span class="mem-date">${escapeHtml(dateLabel)}</span>
+      </div>
+      <div class="mem-content-short"><strong>${escapeHtml(doc.title)}</strong></div>
+      <div class="mem-content-short">${doc.snippet ? doc.snippet.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\[([^\]]*)\]/g, '<mark>$1</mark>') : ''}</div>
+    `
 
     memList.appendChild(item)
   }

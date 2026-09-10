@@ -73,6 +73,22 @@ export interface Memory {
   accessed_label?: string;
 }
 
+export interface WorkspaceDocSearchResult {
+  id: string;
+  title: string;
+  agent_id: string;
+  tenant_id: string;
+  type: 'plan' | 'brief' | 'report' | 'notes';
+  task_ref?: string | null;
+  doc_key?: string | null;
+  /** Unix timestamp (seconds) */
+  created_at: number;
+  /** Unix timestamp (seconds) */
+  updated_at: number;
+  /** FTS5 match-highlighted excerpt, matches wrapped in `[...]` */
+  snippet: string;
+}
+
 export interface MemoryLink {
   src_id: number;
   dst_id: number;
@@ -255,7 +271,10 @@ export type PaginatedResponse<T> = { items: T[]; total: number; cursor?: string 
 // Per-operation request / response aliases
 // -------------------------------------------------------------------------
 
-export type ListMemoriesResponse = Memory[]
+export type ListMemoriesResponse = Memory[] | {
+  memories: Memory[];
+  workspace_docs: WorkspaceDocSearchResult[];
+}
 
 export type ListStaleMemoriesResponse = Memory[]
 
