@@ -199,42 +199,7 @@
   animation: badge-breathe 2s ease-in-out infinite;
 }
 
-/* === Overview redesign: Fleet Health bar, Attention, Agent grid, Activity feed, KPI strip === */
-
-/* Fleet Health bar */
-.fh-bar {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  padding: 8px 16px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: 14px;
-  flex-wrap: wrap;
-}
-.fh-bar.fh-warn { border-color: var(--warning); background: color-mix(in srgb, var(--warning) 6%, transparent); }
-.fh-bar.fh-danger { border-color: var(--danger); background: var(--danger-soft); }
-.fh-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 14px;
-  font-size: 13px;
-  white-space: nowrap;
-}
-.fh-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--success);
-  flex-shrink: 0;
-}
-.fh-dot.warn { background: var(--warning); }
-.fh-dot.danger { background: var(--danger); }
-.fh-value { font-weight: 600; color: var(--text); }
-.fh-label { color: var(--text-muted); font-size: 11px; }
-.fh-divider { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
+/* === Overview redesign: Attention, Agent grid, Activity feed, KPI strip === */
 
 /* Attention Required section */
 .attention-section {
@@ -465,8 +430,6 @@
 .kpi-trend.down { color: var(--danger); }
 
 @media (max-width: 700px) {
-  .fh-bar { gap: 0; padding: 6px 8px; }
-  .fh-item { padding: 4px 8px; }
   .agents-mini-grid { grid-template-columns: 1fr 1fr; }
   .kpi-strip { flex-wrap: wrap; }
   .kpi-item { min-width: 45%; border-bottom: 1px solid var(--border); }

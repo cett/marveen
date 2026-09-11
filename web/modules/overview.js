@@ -61,27 +61,12 @@ export async function loadOverview() {
     if (gen !== _ovLoadGen) return
     const d = await res.json()
 
-    // === Zone 1: Fleet Health bar (admin-only fields) ===
+    // === Zone 1: shared health counters (admin-only fields, feed the Attention panel) ===
     const isAdminView = 'agents' in d
-    const running = isAdminView ? d.agents.running : 0
-    const total = isAdminView ? d.agents.total : 0
     const pendingApprovals = d.pendingApprovals || 0
     const errors4h = d.errors4h || 0
     const unread = d.unreadMessages || 0
     const stuck = d.stuckTasks || 0
-
-    const bar = document.getElementById('fleetHealthBar')
-    if (bar) bar.hidden = !isAdminView
-    if (isAdminView) {
-      document.getElementById('fhAgentsText').textContent = running + '/' + total
-      document.getElementById('fhApprovalsText').textContent = pendingApprovals
-      document.getElementById('fhCostText').textContent = d.costTodayUsd > 0 ? '$' + d.costTodayUsd.toFixed(2) : '—'
-      document.getElementById('fhErrorsText').textContent = errors4h
-      const dot = document.getElementById('fhDot')
-      const alertLevel = errors4h > 0 || stuck > 0 ? 'danger' : pendingApprovals > 0 ? 'warn' : ''
-      bar.className = 'fh-bar' + (alertLevel ? ' fh-' + alertLevel : '')
-      if (dot) dot.className = 'fh-dot' + (alertLevel ? ' ' + alertLevel : '')
-    }
 
     // === Zone 2: Attention Required ===
     const attSection = document.getElementById('attentionSection')
