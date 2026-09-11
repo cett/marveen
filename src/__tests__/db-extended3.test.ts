@@ -16,7 +16,6 @@ import {
   archiveKanbanCard,
   reparentKanbanCard,
   analyzeWorkflowCandidates,
-  pruneToolCallLog,
   logToolCall,
   queryAuditLog,
   insertHookAuditLog,
@@ -262,7 +261,7 @@ describe('reparentKanbanCard branches', () => {
 })
 
 // ---------------------------------------------------------------------------
-// analyzeWorkflowCandidates + pruneToolCallLog
+// analyzeWorkflowCandidates
 // ---------------------------------------------------------------------------
 
 describe('analyzeWorkflowCandidates', () => {
@@ -275,7 +274,9 @@ describe('analyzeWorkflowCandidates', () => {
     const sessionId = 'wf-test-session-' + Date.now()
     const now = Math.floor(Date.now() / 1000)
     for (let i = 0; i < 6; i++) {
-      logToolCall(sessionId, 'Bash', null, true, 'agent-a', null, 100)
+      // otel_spans PK is (trace_id, span_id) -- trace_id is the shared
+      // session_id here, so span_id (traceId arg) must be unique per call.
+      logToolCall(sessionId, 'Bash', null, true, 'agent-a', `toolu_wf_${i}`, 100)
     }
     const result = analyzeWorkflowCandidates(3600, 5, 300)
     expect(Array.isArray(result)).toBe(true)
@@ -288,16 +289,6 @@ describe('analyzeWorkflowCandidates', () => {
     // Already tested indirectly; just verify structure
     const result = analyzeWorkflowCandidates(3600, 1, 0)
     expect(Array.isArray(result)).toBe(true)
-  })
-})
-
-describe('pruneToolCallLog', () => {
-  it('prunes old entries', () => {
-    pruneToolCallLog(0)
-  })
-
-  it('uses default olderThanSecs', () => {
-    pruneToolCallLog()
   })
 })
 
