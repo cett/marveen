@@ -1,4 +1,4 @@
-import { logToolCall, analyzeWorkflowCandidates, getRecentToolCalls, pruneToolCallLog } from '../../db.js'
+import { logToolCall, analyzeWorkflowCandidates, getRecentToolCalls } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -53,15 +53,6 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
       })),
     }))
     json(res, summary)
-    return true
-  }
-
-  // POST /api/tool-log/prune -- cleanup old entries
-  if (path === '/api/tool-log/prune' && method === 'POST') {
-    const body = await readBody(req)
-    const data = JSON.parse(body.toString()) as { older_than_secs?: number }
-    pruneToolCallLog(data.older_than_secs ?? 86400)
-    json(res, { ok: true })
     return true
   }
 

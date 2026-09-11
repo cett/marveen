@@ -164,11 +164,6 @@ export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, ga
   return candidates
 }
 
-export function pruneToolCallLog(olderThanSecs = 86400): void {
-  const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
-  db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff)
-}
-
 export interface SkillUsageRow {
   id: number
   agent_id: string

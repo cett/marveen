@@ -16,7 +16,6 @@ import {
   archiveKanbanCard,
   reparentKanbanCard,
   analyzeWorkflowCandidates,
-  pruneToolCallLog,
   logToolCall,
   queryAuditLog,
   insertHookAuditLog,
@@ -262,7 +261,7 @@ describe('reparentKanbanCard branches', () => {
 })
 
 // ---------------------------------------------------------------------------
-// analyzeWorkflowCandidates + pruneToolCallLog
+// analyzeWorkflowCandidates
 // ---------------------------------------------------------------------------
 
 describe('analyzeWorkflowCandidates', () => {
@@ -290,16 +289,6 @@ describe('analyzeWorkflowCandidates', () => {
     // Already tested indirectly; just verify structure
     const result = analyzeWorkflowCandidates(3600, 1, 0)
     expect(Array.isArray(result)).toBe(true)
-  })
-})
-
-describe('pruneToolCallLog', () => {
-  it('prunes old entries', () => {
-    pruneToolCallLog(0)
-  })
-
-  it('uses default olderThanSecs', () => {
-    pruneToolCallLog()
   })
 })
 
