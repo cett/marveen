@@ -27,7 +27,6 @@ export const SCREEN_ACCESS_ROWS = [
   { key: 'workspaceDocs', backend: 'memories:read/write', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
   { key: 'agents', backend: 'GET: agents:read; write: admin:all', roles: { admin: 'full', agent: 'ro', read_only: 'ro', viewer: 'ro' } },
   { key: 'memories', backend: 'memories:read/write', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
-  { key: 'naplo', backend: '/api/recall -> memories:read', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
   { key: 'federation', backend: 'federation:read/write; read_only/viewer have neither', roles: { admin: 'full', agent: 'full', read_only: 'gap', viewer: 'gap' } },
   { key: 'docs', backend: 'static', roles: { admin: 'full', agent: 'full', read_only: 'full', viewer: 'full' } },
   { key: 'messages', backend: 'GET: admin:all; POST: messages:write (agent)', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
