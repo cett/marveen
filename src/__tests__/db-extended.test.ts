@@ -23,6 +23,7 @@ afterAll(() => {
   db.exec("DELETE FROM skill_usage WHERE agent_id LIKE 'test-%'")
   db.exec("DELETE FROM config_change_log WHERE actor LIKE 'test-%'")
   db.exec("DELETE FROM store_file_audit WHERE agent LIKE 'test-%' OR rel_path LIKE 'test/%'")
+  db.exec("DELETE FROM hook_audit_log WHERE agent_id LIKE 'test-hook-agent-%'")
   db.exec("DELETE FROM otel_spans WHERE trace_id LIKE 'trace-test-%'")
   db.exec("DELETE FROM agent_messages WHERE from_agent = 'test-from'")
   db.exec("DELETE FROM approvals WHERE agent_id = 'test-agent-approvals'")
@@ -194,6 +195,31 @@ describe('queryAuditLog pagination (offset + total)', () => {
 describe('pruneAuditLogs', () => {
   it('runs without throwing', () => {
     expect(() => pruneAuditLogs()).not.toThrow()
+  })
+
+  // hook_audit_log previously had no automatic sweep at all: pruneHookAuditLog()
+  // only ever ran via a manual POST /api/hook-audit/prune call. This pins the
+  // fix -- pruneAuditLogs() must now also sweep it, using its own `ts` column
+  // (not created_at, which hook_audit_log doesn't have).
+  it('also prunes hook_audit_log rows older than AUDIT_LOG_RETENTION_DAYS', () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const oldTs = now - 200 * 86400 // well past the 90-day default retention
+    db.prepare(
+      "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict) VALUES (?, ?, ?, ?)",
+    ).run(oldTs, 'test-hook-agent-old', 'PreToolUse', 'allow')
+    db.prepare(
+      "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict) VALUES (?, ?, ?, ?)",
+    ).run(now, 'test-hook-agent-fresh', 'PreToolUse', 'allow')
+
+    pruneAuditLogs()
+
+    const remaining = db.prepare(
+      "SELECT agent_id FROM hook_audit_log WHERE agent_id IN ('test-hook-agent-old', 'test-hook-agent-fresh')",
+    ).all() as { agent_id: string }[]
+    const remainingIds = remaining.map(r => r.agent_id)
+    expect(remainingIds).not.toContain('test-hook-agent-old')
+    expect(remainingIds).toContain('test-hook-agent-fresh')
   })
 })
 
