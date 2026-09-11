@@ -1,0 +1,8 @@
+/* Shared pager control (web/modules/paginator.js). */
+.paginator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 16px;
+}

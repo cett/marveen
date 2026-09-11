@@ -6,18 +6,21 @@
 //                 written best-effort by writeAgentAuditLog() at the write site)
 //   - 'hook'   -- hook_audit_log (PreToolUse/PostToolUse/PreCompact/Stop verdicts)
 // Both sources already share one merged, time-sorted shape server-side; this
-// module is display-only.
+// module is display-only. Server-side offset pagination (shared
+// web/modules/paginator.js component) replaces the old hard 200-row cutoff,
+// which used to silently hide everything older than the newest 200 entries.
 
 import { escapeHtml } from './util.js'
+import { renderPaginator } from './paginator.js'
 
 const AUDIT_LOG_LIMIT = 200
 
-const _state = { agent: '', q: '' }
+const _state = { agent: '', q: '', offset: 0 }
 
 export function initAuditLog() {
-  document.getElementById('auditLogRefreshBtn')?.addEventListener('click', loadAuditLogPage)
-  document.getElementById('auditLogSourceAgent')?.addEventListener('change', loadAuditLogPage)
-  document.getElementById('auditLogSourceHook')?.addEventListener('change', loadAuditLogPage)
+  document.getElementById('auditLogRefreshBtn')?.addEventListener('click', () => { _state.offset = 0; loadAuditLogPage() })
+  document.getElementById('auditLogSourceAgent')?.addEventListener('change', () => { _state.offset = 0; loadAuditLogPage() })
+  document.getElementById('auditLogSourceHook')?.addEventListener('change', () => { _state.offset = 0; loadAuditLogPage() })
 
   const agentInput = document.getElementById('auditLogFilterAgent')
   const qInput = document.getElementById('auditLogFilterQuery')
@@ -27,6 +30,7 @@ export function initAuditLog() {
     debounceHandle = setTimeout(() => {
       _state.agent = agentInput?.value.trim() ?? ''
       _state.q = qInput?.value.trim() ?? ''
+      _state.offset = 0
       loadAuditLogPage()
     }, 300)
   }
@@ -43,11 +47,12 @@ export async function loadAuditLogPage() {
   if (document.getElementById('auditLogSourceAgent')?.checked) sources.push('agent')
   if (document.getElementById('auditLogSourceHook')?.checked) sources.push('hook')
   if (sources.length === 0) {
+    document.getElementById('auditLogPagination')?.replaceChildren()
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-muted);padding:24px;text-align:center">Válassz legalább egy forrást.</td></tr>`
     return
   }
 
-  const params = new URLSearchParams({ source: sources.join(','), limit: String(AUDIT_LOG_LIMIT) })
+  const params = new URLSearchParams({ source: sources.join(','), limit: String(AUDIT_LOG_LIMIT), offset: String(_state.offset) })
   if (_state.agent) params.set('agent', _state.agent)
   if (_state.q) params.set('q', _state.q)
 
@@ -56,6 +61,13 @@ export async function loadAuditLogPage() {
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
     _renderAuditLogTable(data.entries ?? [])
+    renderPaginator(document.getElementById('auditLogPagination'), {
+      offset: _state.offset,
+      limit: AUDIT_LOG_LIMIT,
+      total: data.total ?? (data.entries?.length ?? 0),
+      onPrev: () => { _state.offset = Math.max(0, _state.offset - AUDIT_LOG_LIMIT); loadAuditLogPage() },
+      onNext: () => { _state.offset += AUDIT_LOG_LIMIT; loadAuditLogPage() },
+    })
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--danger);padding:24px;text-align:center">Nem sikerült betölteni az audit trailt.</td></tr>`
   }

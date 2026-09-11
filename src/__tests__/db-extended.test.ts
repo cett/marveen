@@ -104,39 +104,88 @@ describe('logStoreFileEvent / getRecentStoreFileEvents', () => {
 
 describe('queryAuditLog', () => {
   it('queries config source', () => {
-    const entries = queryAuditLog({ sources: ['config'], limit: 50 })
+    const { entries } = queryAuditLog({ sources: ['config'], limit: 50 })
     expect(entries.some(e => e.source === 'config')).toBe(true)
   })
 
   it('queries store source', () => {
-    const entries = queryAuditLog({ sources: ['store'], limit: 50 })
+    const { entries } = queryAuditLog({ sources: ['store'], limit: 50 })
     expect(entries.some(e => e.source === 'store')).toBe(true)
   })
 
   it('queries all sources when empty array', () => {
-    const entries = queryAuditLog({ sources: [], limit: 50 })
+    const { entries } = queryAuditLog({ sources: [], limit: 50 })
     expect(entries.length).toBeGreaterThan(0)
   })
 
   it('filters by q (full-text search)', () => {
-    const entries = queryAuditLog({ sources: ['config'], q: 'CHANNEL_TOKEN', limit: 10 })
+    const { entries } = queryAuditLog({ sources: ['config'], q: 'CHANNEL_TOKEN', limit: 10 })
     expect(entries.every(e => JSON.stringify(e).includes('CHANNEL_TOKEN'))).toBe(true)
   })
 
   it('queries idea source without crashing', () => {
-    const entries = queryAuditLog({ sources: ['idea'], limit: 10 })
+    const { entries } = queryAuditLog({ sources: ['idea'], limit: 10 })
     expect(Array.isArray(entries)).toBe(true)
   })
 
   it('queries diary source (daily_logs + memories)', () => {
-    const entries = queryAuditLog({ sources: ['diary'], limit: 10 })
+    const { entries } = queryAuditLog({ sources: ['diary'], limit: 10 })
     expect(Array.isArray(entries)).toBe(true)
   })
 
   it('filters by from/to timestamps', () => {
     const now = Math.floor(Date.now() / 1000)
-    const entries = queryAuditLog({ sources: ['config'], from: now - 60, to: now + 60, limit: 50 })
+    const { entries } = queryAuditLog({ sources: ['config'], from: now - 60, to: now + 60, limit: 50 })
     expect(Array.isArray(entries)).toBe(true)
+  })
+})
+
+describe('queryAuditLog pagination (offset + total)', () => {
+  const ACTOR = 'test-page-actor'
+
+  beforeAll(() => {
+    for (let i = 0; i < 25; i++) {
+      logConfigChange(`test-page-key-${i}`, null, String(i), ACTOR)
+    }
+  })
+
+  it('reports a total independent of limit, not just the returned page length', () => {
+    const { entries, total } = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10 })
+    expect(entries.length).toBe(10)
+    expect(total).toBeGreaterThanOrEqual(25)
+  })
+
+  it('offset pages are contiguous and non-overlapping', () => {
+    const page1 = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 0 })
+    const page2 = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 10 })
+    const page3 = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 20 })
+
+    expect(page1.entries.length).toBe(10)
+    expect(page2.entries.length).toBe(10)
+    expect(page3.entries.length).toBeGreaterThanOrEqual(5)
+
+    const ids1 = page1.entries.map(e => e.id)
+    const ids2 = page2.entries.map(e => e.id)
+    const ids3 = page3.entries.map(e => e.id)
+    // No id appears on more than one page.
+    expect(new Set([...ids1, ...ids2, ...ids3]).size).toBe(ids1.length + ids2.length + ids3.length)
+
+    // Same DESC ordering as an unpaged, larger fetch: the concatenation of
+    // the three pages must equal the first 25+ rows of a single big fetch.
+    const unpaged = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 30 })
+    expect([...ids1, ...ids2, ...ids3]).toEqual(unpaged.entries.map(e => e.id))
+  })
+
+  it('an out-of-range offset returns an empty page but keeps the real total', () => {
+    const { entries, total } = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 10_000 })
+    expect(entries).toEqual([])
+    expect(total).toBeGreaterThanOrEqual(25)
+  })
+
+  it('defaults offset to 0 when omitted', () => {
+    const withDefault = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 5 })
+    const explicitZero = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 5, offset: 0 })
+    expect(withDefault.entries.map(e => e.id)).toEqual(explicitZero.entries.map(e => e.id))
   })
 })
 
