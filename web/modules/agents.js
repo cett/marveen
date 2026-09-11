@@ -554,6 +554,10 @@ function renderAgents() {
   }
 
   for (const agent of agents) {
+    // The main agent already renders above as the dedicated marveen-card;
+    // /api/agents also lists it (it has its own agents/<id> dir), so skip it
+    // here to avoid a duplicate card.
+    if (agent.name === mainAgentId()) continue
     // agent.name is the sanitized id (API/filesystem); displayName keeps the
     // original accented/cased input the user typed.
     const label = agent.displayName || agent.name
