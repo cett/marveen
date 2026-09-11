@@ -5,6 +5,7 @@ import type { RouteContext } from '../web/routes/types.js'
 vi.mock('../db.js', () => ({
   saveAgentMemory: vi.fn().mockReturnValue({ id: 42 }),
   getAgentMemories: vi.fn().mockReturnValue([]),
+  countAgentMemories: vi.fn().mockReturnValue(0),
   searchAgentMemories: vi.fn().mockReturnValue([]),
   getMemoryStats: vi.fn().mockReturnValue({ total: 0 }),
   updateMemory: vi.fn().mockReturnValue(true),
@@ -13,6 +14,7 @@ vi.mock('../db.js', () => ({
   clearMemoryCache: vi.fn(),
   searchMemories: vi.fn().mockReturnValue([]),
   getMemoriesForChat: vi.fn().mockReturnValue([]),
+  countMemoriesForChat: vi.fn().mockReturnValue(0),
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({
       all: vi.fn().mockReturnValue([]),
@@ -351,9 +353,9 @@ describe('tryHandleMemories -- tenant isolation for scoped callers', () => {
     const { ctx, out } = makeScopedCtx('GET', '/api/memories?agent=agent-a', 'acme')
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
-    expect(Array.isArray(out.body)).toBe(true)
-    expect(out.body).toHaveLength(1)
-    expect(out.body[0].content).toBe('visible')
+    // Plain listing (no q) now comes back as a pagination envelope (#861).
+    expect(out.body.memories).toHaveLength(1)
+    expect(out.body.memories[0].content).toBe('visible')
   })
 
   it('PUT /api/memories/:id returns 404 when memory belongs to another tenant', async () => {

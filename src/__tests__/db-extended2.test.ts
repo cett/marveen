@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { APP_TZ } from '../config.js'
+import { APP_TZ, ALLOWED_CHAT_ID } from '../config.js'
 import {
   initDatabase, getDb,
   // Session
   getSession, setSession, incrementSessionCount, clearSession,
   // Memory
   saveAgentMemory, searchMemories, touchMemory, touchMemoriesAccessed,
-  decayMemories, getMemoriesForChat, getMemoryStats, updateMemory,
+  decayMemories, getMemoriesForChat, countMemoriesForChat, getMemoryStats, updateMemory,
+  getAgentMemories, countAgentMemories,
   appendDailyLog, getDailyLog, getDailyLogDates,
   // Background tasks
   createBackgroundTaskAtomic, getRunningBackgroundTasks, finishBackgroundTask,
@@ -188,6 +189,71 @@ describe('memory functions', () => {
   it('updateMemory returns false for non-existent id', () => {
     const ok = updateMemory(999999, 'no such mem', 'hot')
     expect(ok).toBe(false)
+  })
+})
+
+// --- Memory pagination (#861) ---
+
+describe('getAgentMemories / getMemoriesForChat pagination', () => {
+  const AGENT = 'db2-page-agent'
+
+  beforeAll(() => {
+    for (let i = 0; i < 25; i++) {
+      saveAgentMemory(AGENT, `page memory ${i}`, 'warm', '')
+    }
+  })
+
+  afterAll(() => {
+    getDb().exec(`DELETE FROM memories WHERE agent_id = '${AGENT}'`)
+  })
+
+  it('countAgentMemories reports a total independent of limit, not just the page length', () => {
+    const page = getAgentMemories(AGENT, 10)
+    expect(page.length).toBe(10)
+    expect(countAgentMemories(AGENT)).toBe(25)
+  })
+
+  it('getAgentMemories offset pages are contiguous, non-overlapping, and match an unpaged fetch', () => {
+    const page1 = getAgentMemories(AGENT, 10, undefined, undefined, 0)
+    const page2 = getAgentMemories(AGENT, 10, undefined, undefined, 10)
+    const page3 = getAgentMemories(AGENT, 10, undefined, undefined, 20)
+    expect(page1.length).toBe(10)
+    expect(page2.length).toBe(10)
+    expect(page3.length).toBe(5)
+
+    const ids1 = page1.map(m => m.id)
+    const ids2 = page2.map(m => m.id)
+    const ids3 = page3.map(m => m.id)
+    expect(new Set([...ids1, ...ids2, ...ids3]).size).toBe(25)
+
+    const unpaged = getAgentMemories(AGENT, 30)
+    expect([...ids1, ...ids2, ...ids3]).toEqual(unpaged.map(m => m.id))
+  })
+
+  it('an out-of-range offset returns an empty page but keeps the real total', () => {
+    const page = getAgentMemories(AGENT, 10, undefined, undefined, 10_000)
+    expect(page).toEqual([])
+    expect(countAgentMemories(AGENT)).toBe(25)
+  })
+
+  it('the cache key includes offset, so page 2 is not served page 1\'s cached rows', () => {
+    const page1 = getAgentMemories(AGENT, 10, undefined, undefined, 0)
+    const page2 = getAgentMemories(AGENT, 10, undefined, undefined, 10)
+    expect(page1.map(m => m.id)).not.toEqual(page2.map(m => m.id))
+  })
+
+  it('getMemoriesForChat/countMemoriesForChat offset pages match an unpaged fetch of the same window', () => {
+    // Scoped to this agent's own category via the SQL-level category filter,
+    // not chat_id (every saveAgentMemory row shares the same ALLOWED_CHAT_ID),
+    // so the count here is exact regardless of what other tests in this file
+    // have already inserted.
+    const totalWarm = countMemoriesForChat(ALLOWED_CHAT_ID, undefined, 'warm')
+    expect(totalWarm).toBeGreaterThanOrEqual(25)
+
+    const page1 = getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 0)
+    const page2 = getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 10)
+    const unpaged = getMemoriesForChat(ALLOWED_CHAT_ID, 20, undefined, 'warm', 0)
+    expect([...page1, ...page2].map(m => m.id)).toEqual(unpaged.map(m => m.id))
   })
 })
 

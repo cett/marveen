@@ -5,6 +5,7 @@ import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { can } from './rbac-client.js'
+import { renderPaginator } from './paginator.js'
 import {
   loadMemoryGraph, stopGraphSimulation, initGlowSprites, setGraphCanvas,
   graphCanvas, graphCtx, graphGlowSprites, graphParticleSprite,
@@ -19,6 +20,7 @@ let _canWriteMemories = true
 export async function initMemories({ openModal, closeModal } = {}) {
   _openModal = openModal; _closeModal = closeModal
   _memTenantGetter = await initTenantSelector('memoriesTenantSelectorContainer', () => {
+    memOffset = 0
     loadMemories(); loadMemStats()
     // #809: tenant switch left the graph/timeline tab showing the previous
     // tenant's data (only the card list reloaded) -- reload whichever of the
@@ -54,6 +56,13 @@ let memSearchTimer = null
 let currentMemTier = 'hot'
 let currentLogDate = new Date().toISOString().split('T')[0]
 let logDates = []
+
+// Server-side offset pagination (#861), same shared paginator.js component
+// and shape as the audit trail (#860 ST1). Only meaningful for the plain
+// (no-search) listing -- a hybrid/keyword search response has no `total`,
+// so the pager is cleared whenever one is in effect (see loadMemories()).
+const MEM_LIMIT = 50
+let memOffset = 0
 
 const tierLabels = { hot: '\u{1F525} Hot', warm: '\u{1F321}\uFE0F Warm', cold: '\u2744\uFE0F Cold', shared: '\u{1F517} Shared', import: '\u{1F4E5} Import' }
 const tierColors = { hot: '#dc3c3c', warm: '#d97757', cold: '#6a9bcc', shared: '#9a8a30', import: '#39FF14' }
@@ -92,6 +101,7 @@ export async function loadMemAgents() {
 
 // Agent filter change
 document.getElementById('memAgentFilter')?.addEventListener('change', () => {
+  memOffset = 0
   if (currentMemTier === 'graph') {
     loadMemoryGraph()
   } else if (currentMemTier === 'log') {
@@ -103,6 +113,7 @@ document.getElementById('memAgentFilter')?.addEventListener('change', () => {
 
 // Search with debounce
 memSearchInput?.addEventListener('input', () => {
+  memOffset = 0
   clearTimeout(memSearchTimer)
   memSearchTimer = setTimeout(loadMemories, 300)
 })
@@ -110,6 +121,7 @@ memSearchInput?.addEventListener('input', () => {
 // Enter to search immediately
 memSearchInput?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
+    memOffset = 0
     clearTimeout(memSearchTimer)
     loadMemories()
   }
@@ -122,6 +134,7 @@ document.getElementById('memTabs')?.addEventListener('click', (e) => {
   document.querySelectorAll('.mem-tab').forEach(t => t.classList.remove('active'))
   tab.classList.add('active')
   currentMemTier = tab.dataset.tier
+  memOffset = 0
 
   const isLog   = currentMemTier === 'log'
   const isGraph = currentMemTier === 'graph'
@@ -256,7 +269,8 @@ export async function loadMemories() {
   }
   if (agent) params.set('agent', agent)
   if (currentMemTier) params.set('tier', currentMemTier)
-  params.set('limit', '50')
+  params.set('limit', String(MEM_LIMIT))
+  params.set('offset', String(memOffset))
   const tenant = _memTenantGetter?.()
   if (tenant) params.set('tenant', tenant)
 
@@ -266,14 +280,31 @@ export async function loadMemories() {
       agent ? fetch(`/api/memories/stale?agent_id=${encodeURIComponent(agent)}`) : Promise.resolve(null),
     ])
     const body = await memoriesRes.json()
-    // Plain listing (no q) stays a raw array; a search with include_docs=1
-    // comes back as { memories, workspace_docs } -- see GET /api/memories.
-    const memories = Array.isArray(body) ? body : body.memories
-    const workspaceDocs = Array.isArray(body) ? [] : (body.workspace_docs || [])
+    // Plain listing (no q) stays a raw array only for the unpaginated 'import'
+    // pseudo-tier edge case; otherwise it now comes back as
+    // { memories, total, offset, limit }. A search with include_docs=1 comes
+    // back as { memories, workspace_docs } (no `total`) -- see GET /api/memories.
+    const isArray = Array.isArray(body)
+    const memories = isArray ? body : body.memories
+    const workspaceDocs = isArray ? [] : (body.workspace_docs || [])
+    const total = isArray ? undefined : body.total
     const staleIds = staleRes
       ? new Set((await staleRes.json()).map(m => m.id))
       : new Set()
     renderMemories(memories, staleIds, workspaceDocs)
+
+    const pager = document.getElementById('memPagination')
+    if (total !== undefined) {
+      renderPaginator(pager, {
+        offset: memOffset,
+        limit: MEM_LIMIT,
+        total,
+        onPrev: () => { memOffset = Math.max(0, memOffset - MEM_LIMIT); loadMemories() },
+        onNext: () => { memOffset += MEM_LIMIT; loadMemories() },
+      })
+    } else {
+      pager?.replaceChildren()
+    }
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
   }

@@ -4,7 +4,7 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const { mockSaveAgentMemory, mockSearchAgentMemories, mockGetAgentMemories,
   mockSearchMemories, mockGetMemoriesForChat, mockGetDb, mockTouchMemoriesAccessed,
-  mockHybridSearch } = vi.hoisted(() => {
+  mockHybridSearch, mockCountAgentMemories, mockCountMemoriesForChat } = vi.hoisted(() => {
   const fakeMemory = (id: number) => ({
     id, agent_id: 'agent-a', content: 'test content', keywords: 'test',
     category: 'warm', created_at: 1750000000, accessed_at: 1750000001,
@@ -22,12 +22,15 @@ const { mockSaveAgentMemory, mockSearchAgentMemories, mockGetAgentMemories,
     }),
     mockTouchMemoriesAccessed: vi.fn(),
     mockHybridSearch: vi.fn().mockResolvedValue([]),
+    mockCountAgentMemories: vi.fn().mockReturnValue(1),
+    mockCountMemoriesForChat: vi.fn().mockReturnValue(1),
   }
 })
 
 vi.mock('../db.js', () => ({
   saveAgentMemory: mockSaveAgentMemory,
   getAgentMemories: mockGetAgentMemories,
+  countAgentMemories: mockCountAgentMemories,
   searchAgentMemories: mockSearchAgentMemories,
   getMemoryStats: vi.fn().mockReturnValue({ total: 0 }),
   updateMemory: vi.fn().mockReturnValue(true),
@@ -36,6 +39,7 @@ vi.mock('../db.js', () => ({
   clearMemoryCache: vi.fn(),
   searchMemories: mockSearchMemories,
   getMemoriesForChat: mockGetMemoriesForChat,
+  countMemoriesForChat: mockCountMemoriesForChat,
   getDb: mockGetDb,
   touchMemoriesAccessed: mockTouchMemoriesAccessed,
   recordMemoryRead: vi.fn(),
@@ -181,7 +185,7 @@ describe('tryHandleMemories - extended paths', () => {
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { agent: 'agent-a' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
-      expect(mockGetAgentMemories).toHaveBeenCalledWith('agent-a', 50, undefined, 'default')
+      expect(mockGetAgentMemories).toHaveBeenCalledWith('agent-a', 50, undefined, 'default', 0)
     })
 
     it('GET with no params returns chat memories', async () => {
@@ -200,7 +204,8 @@ describe('tryHandleMemories - extended paths', () => {
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { tier: 'hot' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
-      const body = out.body
+      // Plain listing (no q) now comes back as a pagination envelope (#861).
+      const body = out.body.memories
       expect(Array.isArray(body)).toBe(true)
       expect(body.every((m: any) => m.category === 'hot')).toBe(true)
     })
@@ -219,6 +224,54 @@ describe('tryHandleMemories - extended paths', () => {
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(200)
+    })
+
+    it('GET with a negative offset returns 400', async () => {
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { offset: '-1' })
+      const handled = await tryHandleMemories(ctx)
+      expect(handled).toBe(true)
+      expect(out.status).toBe(400)
+      expect(out.body.field).toBe('offset')
+    })
+
+    it('GET with a non-numeric offset returns 400', async () => {
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { offset: 'abc' })
+      const handled = await tryHandleMemories(ctx)
+      expect(handled).toBe(true)
+      expect(out.status).toBe(400)
+      expect(out.body.field).toBe('offset')
+    })
+
+    it('GET with agent and no q forwards offset to getAgentMemories and returns total in the envelope', async () => {
+      mockGetAgentMemories.mockClear()
+      mockCountAgentMemories.mockReturnValueOnce(37)
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { agent: 'agent-a', offset: '20' })
+      const handled = await tryHandleMemories(ctx)
+      expect(handled).toBe(true)
+      expect(mockGetAgentMemories).toHaveBeenCalledWith('agent-a', 50, undefined, 'default', 20)
+      expect(out.body).toEqual(expect.objectContaining({ total: 37, offset: 20, limit: 50 }))
+    })
+
+    it('GET with no agent and no q forwards offset to getMemoriesForChat and returns total in the envelope', async () => {
+      mockGetMemoriesForChat.mockClear()
+      mockCountMemoriesForChat.mockReturnValueOnce(9)
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { offset: '5' })
+      const handled = await tryHandleMemories(ctx)
+      expect(handled).toBe(true)
+      expect(mockGetMemoriesForChat).toHaveBeenCalledWith('123', 50, 'default', undefined, 5)
+      expect(out.body).toEqual(expect.objectContaining({ total: 9, offset: 5, limit: 50 }))
+    })
+
+    it('GET with q ignores offset -- no pagination envelope for search results', async () => {
+      mockCountAgentMemories.mockClear()
+      mockCountMemoriesForChat.mockClear()
+      mockSearchMemories.mockReturnValueOnce([{ id: 1, agent_id: 'x', content: 'hit', category: 'warm' }])
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'hit', offset: '10', include_docs: '0' })
+      const handled = await tryHandleMemories(ctx)
+      expect(handled).toBe(true)
+      expect(Array.isArray(out.body)).toBe(true)
+      expect(mockCountAgentMemories).not.toHaveBeenCalled()
+      expect(mockCountMemoriesForChat).not.toHaveBeenCalled()
     })
   })
 

@@ -191,14 +191,26 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, tenantId?: string): Memory[] {
-  if (tenantId) {
-    return db.prepare('SELECT * FROM memories WHERE chat_id = ? AND tenant_id = ? ORDER BY accessed_at DESC LIMIT ?')
-      .all(chatId, tenantId, limit) as Memory[]
-  }
+export function getMemoriesForChat(chatId: string, limit = 10, tenantId?: string, category?: string, offset = 0): Memory[] {
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
+  const cc = category ? ' AND category = ?' : ''
+  const cp = category ? [category] : []
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC LIMIT ?')
-    .all(chatId, limit) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${tc}${cc} ORDER BY accessed_at DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...tp, ...cp, limit, offset) as Memory[]
+}
+
+// Paired with getMemoriesForChat -- same WHERE clause, no LIMIT/OFFSET, for the
+// dashboard's "no agent filter" listing pagination (GET /api/memories, no `q`).
+export function countMemoriesForChat(chatId: string, tenantId?: string, category?: string): number {
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
+  const cc = category ? ' AND category = ?' : ''
+  const cp = category ? [category] : []
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM memories WHERE chat_id = ?${tc}${cc}`)
+    .get(chatId, ...tp, ...cp) as { n: number }
+  return row.n
 }
 
 //
@@ -292,21 +304,36 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, tenantId?: string): Memory[] {
-  const key = `${agentId}:${limit}:${category ?? ''}:${tenantId ?? ''}`
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, tenantId?: string, offset = 0): Memory[] {
+  const key = `${agentId}:${limit}:${category ?? ''}:${tenantId ?? ''}:${offset}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
   const tc = tenantId ? ' AND tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
   const result = (category
     ? db.prepare(
-        `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ?${tc} ORDER BY accessed_at DESC LIMIT ?`
-      ).all(agentId, category, ...tp, limit)
+        `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ?${tc} ORDER BY accessed_at DESC LIMIT ? OFFSET ?`
+      ).all(agentId, category, ...tp, limit, offset)
     : db.prepare(
-        `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${tc} ORDER BY accessed_at DESC LIMIT ?`
-      ).all(agentId, ...tp, limit)) as Memory[]
+        `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${tc} ORDER BY accessed_at DESC LIMIT ? OFFSET ?`
+      ).all(agentId, ...tp, limit, offset)) as Memory[]
   memoryCacheSet(key, result)
   return result
+}
+
+// Paired with getAgentMemories -- same WHERE clause, no LIMIT/OFFSET, for the
+// dashboard's agent-filtered listing pagination (GET /api/memories, no `q`).
+export function countAgentMemories(agentId: string, category?: string, tenantId?: string): number {
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
+  const row = (category
+    ? db.prepare(
+        `SELECT COUNT(*) AS n FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ?${tc}`
+      ).get(agentId, category, ...tp)
+    : db.prepare(
+        `SELECT COUNT(*) AS n FROM memories WHERE (agent_id = ? OR category = 'shared')${tc}`
+      ).get(agentId, ...tp)) as { n: number }
+  return row.n
 }
 
 export function searchAgentMemories(agentId: string, query: string, limit: number = 10, tenantId?: string): Memory[] {
