@@ -41,6 +41,7 @@ const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs, m
 vi.mock('../db.js', () => ({
   saveAgentMemory: vi.fn(),
   getAgentMemories: vi.fn().mockReturnValue([]),
+  countAgentMemories: vi.fn().mockReturnValue(0),
   searchAgentMemories: vi.fn().mockReturnValue([]),
   getMemoryStats: vi.fn(),
   updateMemory: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('../db.js', () => ({
   clearMemoryCache: vi.fn(),
   searchMemories: mockSearchMemories,
   getMemoriesForChat: vi.fn().mockReturnValue([]),
+  countMemoriesForChat: vi.fn().mockReturnValue(0),
   getDb: mockGetDb,
   touchMemoriesAccessed: vi.fn(),
   recordMemoryRead: vi.fn(),
@@ -117,10 +119,13 @@ describe('GET /api/memories?q= -- explicit include_docs=0 opt-out (always wins)'
     expect(mockHybridSearchDocs).not.toHaveBeenCalled()
   })
 
-  it('returns a plain array for a non-search listing regardless of include_docs (no q)', async () => {
+  it('returns the pagination envelope (not workspace_docs) for a non-search listing regardless of include_docs (no q)', async () => {
     const { ctx, out } = makeCtx('/api/memories', { include_docs: '1' })
     await tryHandleMemories(ctx)
-    expect(Array.isArray(out.body)).toBe(true)
+    // Plain listing (no q) comes back as { memories, total, offset, limit }
+    // (#861) -- never the { memories, workspace_docs } search+docs shape.
+    expect(out.body.workspace_docs).toBeUndefined()
+    expect(Array.isArray(out.body.memories)).toBe(true)
     expect(mockHybridSearchDocs).not.toHaveBeenCalled()
   })
 })

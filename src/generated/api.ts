@@ -274,6 +274,12 @@ export type PaginatedResponse<T> = { items: T[]; total: number; cursor?: string 
 export type ListMemoriesResponse = Memory[] | {
   memories: Memory[];
   workspace_docs: WorkspaceDocSearchResult[];
+} | {
+  memories: Memory[];
+  /** Total matching rows, unbounded by limit */
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export type ListStaleMemoriesResponse = Memory[]
