@@ -1875,6 +1875,10 @@ window._i18n.hu = {
   'bb.signal.b.tooltip': 'Aktív sor régóta változatlanul áll -- a befejezés jele valószínűleg elveszett.',
   'bb.signal.ab.label':  'Mindkét jel',
   'bb.signal.ab.tooltip':'Az ágens aktív volt üzenetküldésben, de a sor nem frissült; emellett a sor már régóta változatlanul active állapotban áll.',
+  'bb.history.row_hint': 'Kattints az ágens állapot-előzményeihez',
+  'bb.history.title':    '{agent} előzményei',
+  'bb.history.empty':    'Nincs előzmény ehhez az ágenshez.',
+  'bb.history.error':    'Hiba az előzmények betöltésekor.',
 
   // Error token translations
   'errors.not_found':                'Nem található',

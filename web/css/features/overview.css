@@ -472,6 +472,17 @@
 /* Row-level highlight so flagged rows catch the eye even before the badge */
 tr.bb-row-flagged { background: color-mix(in srgb, var(--warning, #f0ad4e) 8%, transparent); }
 
+/* Rows open the agent's history modal on click */
+tr.bb-row-clickable { cursor: pointer; }
+tr.bb-row-clickable:hover { background: var(--bg-hover, color-mix(in srgb, var(--text) 4%, transparent)); }
+
+/* Blackboard history modal list */
+.bb-history-list { overflow-y: auto; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.bb-history-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); }
+.bb-history-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.bb-history-item .bb-summary { max-width: none; font-size: 13px; }
+.bb-history-item .bb-ref { margin-top: 2px; }
+
 /* Dark-theme overrides */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .bb-signal.bb-signal-a  { background: #3d2f00; color: #ffd06a; }
