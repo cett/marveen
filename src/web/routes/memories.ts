@@ -11,6 +11,7 @@ import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { hybridSearchDocs, type WorkspaceDocSearchResult } from '../../workspace-store.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -88,11 +89,17 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'hybrid'
-    // Opt-in only (kanban 9156e583): without this param the response stays
-    // the plain array it always was -- every existing caller (dashboard,
-    // agent recall via curl/fetch) is unaffected. With it, and only for a
-    // search (q present), the response becomes { memories, workspace_docs }.
-    const includeDocs = url.searchParams.get('include_docs') === '1'
+    // Default-recall (P4 of #842): an explicit include_docs=0/1 always wins;
+    // absent, it falls back to the WORKSPACE_DOC_RECALL_DEFAULT setting
+    // (default true) so a caller that never heard of this param still gets
+    // workspace_docs folded in. Only matters together with a search (q
+    // present) -- see below, the response becomes { memories, workspace_docs }.
+    const includeDocsParam = url.searchParams.get('include_docs')
+    const includeDocs = includeDocsParam === '0'
+      ? false
+      : includeDocsParam === '1'
+        ? true
+        : getEffectiveSettingValue('WORKSPACE_DOC_RECALL_DEFAULT') === '1'
 
     let results: Memory[]
     const recallTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
@@ -191,11 +198,16 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // fusion); its own doc comment carries the tenant-isolation contract.
       // Still gated behind include_docs=1 -- this does not change the
       // default (non-opt-in) recall response for any other caller.
-      const docResults: WorkspaceDocSearchResult[] = await hybridSearchDocs(q, {
+      let docResults: WorkspaceDocSearchResult[] = await hybridSearchDocs(q, {
         tenantId: recallTenantId,
         agentId: agentId || undefined,
         limit,
       })
+      // Defence-in-depth guard, same rationale as the memories one above:
+      // hybridSearchDocs already scopes tenant_id in SQL, so this is a safety
+      // net, not the primary control -- a non-admin caller must never see
+      // another tenant's docs even if a future branch forgets SQL-level scoping.
+      if (!isAdmin) docResults = docResults.filter(d => (d.tenant_id ?? 'default') === effectiveTenantId)
       jsonMaybeGzip(req, res, { memories: formatted, workspace_docs: docResults })
       return true
     }

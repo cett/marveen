@@ -73,6 +73,10 @@ vi.mock('../config.js', () => ({
   APP_TZ: 'Europe/Budapest',
 }))
 
+vi.mock('../settings-store.js', () => ({
+  getEffectiveSettingValue: () => '0',
+}))
+
 import { tryHandleMemories } from '../web/routes/memories.js'
 
 function makeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { status: number; body: any } } {
