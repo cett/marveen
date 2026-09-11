@@ -1,9 +1,30 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
+import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { db } from './connection.js'
+import { upsertOtelSpan } from './observability.js'
 
+// mcp__<server>__<tool> -- split into (server, tool) for the OTel span
+// attributes. Split on the FIRST "__" so a server name that itself contains
+// underscores (e.g. mcp__plugin_telegram_telegram__reply) still keeps its
+// full name in mcp_server. Non-MCP tool names (Bash, Read, ...) don't match
+// and get neither attribute. Moved here (was private to
+// web/routes/tool-log.ts) because logToolCall is now the sole tool.call
+// span writer -- see the retirement of tool_call_log in favor of otel_spans.
+function mcpServerAndToolFromToolName(toolName: string): { server: string; tool: string } | undefined {
+  const m = toolName.match(/^mcp__([^_].*?)__(.+)$/)
+  return m ? { server: m[1], tool: m[2] } : undefined
+}
+
+// tool_call_log has been retired in favor of otel_spans: this now writes a
+// closed `tool.<name>` OTel span directly (trace_id = session_id, span_id =
+// the CC-native tool_use_id) instead of a separate table row. A missing
+// traceId or agentId means the call can't be correlated or attributed, and
+// otel_spans requires both (agent_id is NOT NULL, span_id is part of the
+// primary key) -- such a call is logged and dropped rather than stored, a
+// deliberate behavior change from the old table (which accepted nulls).
 export function logToolCall(
   sessionId: string,
   toolName: string,
@@ -13,12 +34,32 @@ export function logToolCall(
   traceId: string | null = null,
   durationMs: number | null = null,
 ): void {
-  const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    'INSERT INTO tool_call_log (session_id, tool_name, input_summary, success, created_at, agent_id, trace_id, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(sessionId, toolName, inputSummary, success ? 1 : 0, now, agentId, traceId, durationMs)
+  if (!traceId || !agentId) {
+    logger.warn({ sessionId, toolName, traceId, agentId }, 'logToolCall: missing trace_id or agent_id, skipping tool.call span')
+    return
+  }
+  const endMs = Date.now()
+  const startMs = typeof durationMs === 'number' ? endMs - durationMs : endMs
+  const mcp = mcpServerAndToolFromToolName(toolName)
+  upsertOtelSpan({
+    trace_id: sessionId,
+    span_id: traceId,
+    parent_span_id: null,
+    agent_id: agentId,
+    operation: `tool.${toolName}`,
+    start_ms: startMs,
+    end_ms: endMs,
+    status: success ? 'ok' : 'error',
+    attributes: JSON.stringify({
+      tool_name: toolName,
+      ...(inputSummary ? { input_summary: inputSummary } : {}),
+      ...(mcp ? { mcp_server: mcp.server, mcp_tool: mcp.tool } : {}),
+    }),
+  })
 }
 
+// Shape kept for compatibility with existing readers/consumers even though
+// the backing store is now otel_spans, not tool_call_log.
 export interface ToolCallLogRow {
   id: number
   session_id: string
@@ -39,9 +80,47 @@ export interface WorkflowCandidate {
   duration_minutes: number
 }
 
+interface OtelSpanRow {
+  trace_id: string
+  span_id: string
+  agent_id: string
+  operation: string
+  start_ms: number
+  end_ms: number | null
+  status: string
+  attributes: string | null
+}
+
+function toolCallRowFromSpan(span: OtelSpanRow, id: number): ToolCallLogRow {
+  let attrs: { tool_name?: string; input_summary?: string } = {}
+  try { attrs = span.attributes ? JSON.parse(span.attributes) : {} } catch { /* malformed attributes -- treat as empty */ }
+  return {
+    id,
+    session_id: span.trace_id,
+    tool_name: attrs.tool_name ?? span.operation.replace(/^tool\./, ''),
+    input_summary: attrs.input_summary ?? null,
+    success: span.status === 'error' ? 0 : 1,
+    created_at: Math.floor(span.start_ms / 1000),
+    agent_id: span.agent_id,
+    trace_id: span.span_id,
+    duration_ms: span.end_ms != null ? span.end_ms - span.start_ms : null,
+  }
+}
+
 export function getRecentToolCalls(sinceSecs: number): ToolCallLogRow[] {
-  const cutoff = Math.floor(Date.now() / 1000) - sinceSecs
-  return db.prepare('SELECT * FROM tool_call_log WHERE created_at >= ? ORDER BY created_at ASC').all(cutoff) as ToolCallLogRow[]
+  const cutoffMs = Date.now() - sinceSecs * 1000
+  // Ordered by rowid (= logging/insertion order), not the derived start_ms:
+  // start_ms is computed as end_ms - duration_ms, so two calls logged a
+  // millisecond apart with very different durations can invert on start_ms
+  // alone. rowid matches the old tool_call_log's autoincrement-id ordering,
+  // which is what callers actually rely on (calls in the order they happened).
+  const rows = db.prepare(
+    `SELECT trace_id, span_id, agent_id, operation, start_ms, end_ms, status, attributes
+       FROM otel_spans
+      WHERE operation LIKE 'tool.%' AND start_ms >= ?
+      ORDER BY rowid ASC`,
+  ).all(cutoffMs) as OtelSpanRow[]
+  return rows.map((row, i) => toolCallRowFromSpan(row, i))
 }
 
 export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, gapSecs = 300): WorkflowCandidate[] {

@@ -175,7 +175,7 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
     expect(rows).toHaveLength(0)
   })
 
-  it('does not write a span when agent_id is missing (still logs the tool call)', async () => {
+  it('does not write a span when agent_id is missing, but still returns 200 (tool_call_log retired)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/tool-log', {
       session_id: 'session-otel-7',
       tool_name: 'Bash',
@@ -187,8 +187,6 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
 
     const rows = getDb().prepare('SELECT * FROM otel_spans WHERE trace_id = ?').all('session-otel-7')
     expect(rows).toHaveLength(0)
-    const logged = getDb().prepare('SELECT * FROM tool_call_log WHERE session_id = ?').all('session-otel-7')
-    expect(logged.length).toBeGreaterThan(0)
   })
 
   it('still returns 400 and writes nothing when session_id/tool_name are missing', async () => {
