@@ -458,6 +458,18 @@ export function writeAgentAuditLog(opts: {
   )
 }
 
+export interface AuditLogQueryResult {
+  entries: AuditLogEntry[]
+  /** Total rows matching the filter across all active sources, independent
+   *  of limit/offset -- lets the frontend paginator show "X-Y / total" and
+   *  disable Next past the end, instead of guessing from a page's length. */
+  total: number
+}
+
+function countRows(table: string, whereSql: string, params: unknown[]): number {
+  return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} ${whereSql}`).get(...params) as { n: number }).n
+}
+
 export function queryAuditLog(opts: {
   sources: AuditSource[]
   from?: number
@@ -465,113 +477,142 @@ export function queryAuditLog(opts: {
   q?: string
   agent?: string
   limit: number
-}): AuditLogEntry[] {
-  const { sources, from, to, q, agent, limit } = opts
+  /** Rows to skip in the final, merged+sorted result (default 0). */
+  offset?: number
+}): AuditLogQueryResult {
+  const { sources, from, to, q, agent, limit, offset = 0 } = opts
   const all: AuditSource[] = ['config', 'idea', 'store', 'diary', 'agent', 'hook']
   const active = sources.length > 0 ? sources : all
 
+  // Offset-based pagination over a UNION of independently-sorted per-source
+  // queries has no single index to page on: each source is asked for its
+  // own top (offset + limit) rows -- not just limit -- so that after all
+  // sources are merged and re-sorted, the requested page is guaranteed to be
+  // a contiguous slice of that merged window rather than missing rows a
+  // later-fetched source would have out-ranked. `total` is a separate,
+  // unlimited COUNT(*) per source (same WHERE, no LIMIT) so the frontend
+  // knows the real page count instead of the previous behavior of reporting
+  // the page's own length as "total".
+  const fetchLimit = offset + limit
+
   const parts: AuditLogEntry[] = []
+  let total = 0
 
   if (active.includes('config')) {
-    let sql = 'SELECT id, key, old_value, new_value, actor, created_at FROM config_change_log WHERE 1=1'
+    let whereSql = 'WHERE 1=1'
     const params: unknown[] = []
-    if (from) { sql += ' AND created_at >= ?'; params.push(from) }
-    if (to)   { sql += ' AND created_at <= ?'; params.push(to) }
-    if (q)    { sql += ' AND (key LIKE ? OR old_value LIKE ? OR new_value LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
-    sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
-    const rows = db.prepare(sql).all(...params) as ConfigChangeLogRow[]
+    if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
+    if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
+    if (q)    { whereSql += ' AND (key LIKE ? OR old_value LIKE ? OR new_value LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    const rows = db.prepare(
+      `SELECT id, key, old_value, new_value, actor, created_at FROM config_change_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(...params, fetchLimit) as ConfigChangeLogRow[]
     for (const r of rows) parts.push({ ...r, source: 'config' })
+    total += countRows('config_change_log', whereSql, params)
   }
 
   if (active.includes('idea')) {
-    let sql = 'SELECT id, idea_id, from_status, to_status, actor, note, created_at FROM idea_status_log WHERE 1=1'
+    let whereSql = 'WHERE 1=1'
     const params: unknown[] = []
-    if (from) { sql += ' AND created_at >= ?'; params.push(from) }
-    if (to)   { sql += ' AND created_at <= ?'; params.push(to) }
-    if (q)    { sql += ' AND (idea_id LIKE ? OR to_status LIKE ? OR note LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
-    sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
-    const rows = db.prepare(sql).all(...params) as Array<{ id: number; idea_id: string; from_status: string | null; to_status: string; actor: string; note: string | null; created_at: number }>
+    if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
+    if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
+    if (q)    { whereSql += ' AND (idea_id LIKE ? OR to_status LIKE ? OR note LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    const rows = db.prepare(
+      `SELECT id, idea_id, from_status, to_status, actor, note, created_at FROM idea_status_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(...params, fetchLimit) as Array<{ id: number; idea_id: string; from_status: string | null; to_status: string; actor: string; note: string | null; created_at: number }>
     for (const r of rows) parts.push({ ...r, source: 'idea' })
+    total += countRows('idea_status_log', whereSql, params)
   }
 
   if (active.includes('store')) {
-    let sql = 'SELECT id, rel_path, event_type, is_sensitive, file_size, agent, created_at FROM store_file_audit WHERE 1=1'
+    let whereSql = 'WHERE 1=1'
     const params: unknown[] = []
-    if (from) { sql += ' AND created_at >= ?'; params.push(from) }
-    if (to)   { sql += ' AND created_at <= ?'; params.push(to) }
-    if (agent) { sql += ' AND agent = ?'; params.push(agent) }
-    if (q)    { sql += ' AND (rel_path LIKE ? OR agent LIKE ?)'; const p = `%${q}%`; params.push(p, p) }
-    sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
-    const rows = db.prepare(sql).all(...params) as StoreFileAuditRow[]
+    if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
+    if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
+    if (agent) { whereSql += ' AND agent = ?'; params.push(agent) }
+    if (q)    { whereSql += ' AND (rel_path LIKE ? OR agent LIKE ?)'; const p = `%${q}%`; params.push(p, p) }
+    const rows = db.prepare(
+      `SELECT id, rel_path, event_type, is_sensitive, file_size, agent, created_at FROM store_file_audit ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(...params, fetchLimit) as StoreFileAuditRow[]
     for (const r of rows) parts.push({ ...r, source: 'store' })
+    total += countRows('store_file_audit', whereSql, params)
   }
 
   if (active.includes('diary')) {
     // daily_logs
-    let logSql = 'SELECT id, agent_id, content, created_at FROM daily_logs WHERE 1=1'
+    let logWhereSql = 'WHERE 1=1'
     const logParams: unknown[] = []
-    if (from)  { logSql += ' AND created_at >= ?'; logParams.push(from) }
-    if (to)    { logSql += ' AND created_at <= ?'; logParams.push(to) }
-    if (agent) { logSql += ' AND agent_id = ?'; logParams.push(agent) }
-    if (q)     { logSql += ' AND content LIKE ?'; logParams.push(`%${q}%`) }
-    logSql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; logParams.push(limit)
-    const logRows = db.prepare(logSql).all(...logParams) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
+    if (from)  { logWhereSql += ' AND created_at >= ?'; logParams.push(from) }
+    if (to)    { logWhereSql += ' AND created_at <= ?'; logParams.push(to) }
+    if (agent) { logWhereSql += ' AND agent_id = ?'; logParams.push(agent) }
+    if (q)     { logWhereSql += ' AND content LIKE ?'; logParams.push(`%${q}%`) }
+    const logRows = db.prepare(
+      `SELECT id, agent_id, content, created_at FROM daily_logs ${logWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(...logParams, fetchLimit) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
     for (const r of logRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, entry_type: 'log' })
+    total += countRows('daily_logs', logWhereSql, logParams)
 
     // memories
-    let memSql = 'SELECT id, agent_id, content, category, keywords, created_at FROM memories WHERE 1=1'
+    let memWhereSql = 'WHERE 1=1'
     const memParams: unknown[] = []
-    if (from)  { memSql += ' AND created_at >= ?'; memParams.push(from) }
-    if (to)    { memSql += ' AND created_at <= ?'; memParams.push(to) }
-    if (agent) { memSql += ' AND agent_id = ?'; memParams.push(agent) }
-    if (q)     { memSql += ' AND (content LIKE ? OR keywords LIKE ?)'; memParams.push(`%${q}%`, `%${q}%`) }
-    memSql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; memParams.push(limit)
-    const memRows = db.prepare(memSql).all(...memParams) as Array<{ id: number; agent_id: string; content: string; category: string; keywords: string | null; created_at: number }>
+    if (from)  { memWhereSql += ' AND created_at >= ?'; memParams.push(from) }
+    if (to)    { memWhereSql += ' AND created_at <= ?'; memParams.push(to) }
+    if (agent) { memWhereSql += ' AND agent_id = ?'; memParams.push(agent) }
+    if (q)     { memWhereSql += ' AND (content LIKE ? OR keywords LIKE ?)'; memParams.push(`%${q}%`, `%${q}%`) }
+    const memRows = db.prepare(
+      `SELECT id, agent_id, content, category, keywords, created_at FROM memories ${memWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(...memParams, fetchLimit) as Array<{ id: number; agent_id: string; content: string; category: string; keywords: string | null; created_at: number }>
     for (const r of memRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, category: r.category, keywords: r.keywords ?? undefined, entry_type: 'memory' })
+    total += countRows('memories', memWhereSql, memParams)
   }
 
   if (active.includes('agent')) {
-    let agentSql = 'SELECT id, agent_id, entity, action, entity_id, detail, created_at FROM agent_audit_log WHERE 1=1'
-    const agentParams: unknown[] = []
-    if (from)  { agentSql += ' AND created_at >= ?'; agentParams.push(from) }
-    if (to)    { agentSql += ' AND created_at <= ?'; agentParams.push(to) }
-    if (agent) { agentSql += ' AND agent_id = ?'; agentParams.push(agent) }
-    if (q)     { agentSql += ' AND (agent_id LIKE ? OR entity LIKE ? OR action LIKE ? OR detail LIKE ?)'; const p = `%${q}%`; agentParams.push(p, p, p, p) }
-    agentSql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; agentParams.push(limit)
-    const agentRows = db.prepare(agentSql).all(...agentParams) as AgentAuditLogRow[]
-    for (const r of agentRows) parts.push({
+    let whereSql = 'WHERE 1=1'
+    const params: unknown[] = []
+    if (from)  { whereSql += ' AND created_at >= ?'; params.push(from) }
+    if (to)    { whereSql += ' AND created_at <= ?'; params.push(to) }
+    if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
+    if (q)     { whereSql += ' AND (agent_id LIKE ? OR entity LIKE ? OR action LIKE ? OR detail LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    const rows = db.prepare(
+      `SELECT id, agent_id, entity, action, entity_id, detail, created_at FROM agent_audit_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(...params, fetchLimit) as AgentAuditLogRow[]
+    for (const r of rows) parts.push({
       id: r.id, source: 'agent', created_at: r.created_at,
       agent_id: r.agent_id, entity: r.entity, action: r.action,
       entity_id: r.entity_id ?? undefined, detail: r.detail ?? undefined,
     })
+    total += countRows('agent_audit_log', whereSql, params)
   }
 
   // hook_audit_log uses its own `ts` column name (not created_at) -- aliased
   // below so it merges into the same AuditLogEntry.created_at field as every
-  // other source.
+  // other source. The count query still filters on the real `ts` column.
   if (active.includes('hook')) {
-    let hookSql = 'SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, ts AS created_at FROM hook_audit_log WHERE 1=1'
-    const hookParams: unknown[] = []
-    if (from)  { hookSql += ' AND ts >= ?'; hookParams.push(from) }
-    if (to)    { hookSql += ' AND ts <= ?'; hookParams.push(to) }
-    if (agent) { hookSql += ' AND agent_id = ?'; hookParams.push(agent) }
-    if (q)     { hookSql += ' AND (agent_id LIKE ? OR hook_type LIKE ? OR verdict LIKE ? OR tool_name LIKE ? OR reason LIKE ?)'; const p = `%${q}%`; hookParams.push(p, p, p, p, p) }
-    hookSql += ' ORDER BY ts DESC, id DESC LIMIT ?'; hookParams.push(limit)
-    const hookRows = db.prepare(hookSql).all(...hookParams) as Array<{
+    let whereSql = 'WHERE 1=1'
+    const params: unknown[] = []
+    if (from)  { whereSql += ' AND ts >= ?'; params.push(from) }
+    if (to)    { whereSql += ' AND ts <= ?'; params.push(to) }
+    if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
+    if (q)     { whereSql += ' AND (agent_id LIKE ? OR hook_type LIKE ? OR verdict LIKE ? OR tool_name LIKE ? OR reason LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p, p) }
+    const rows = db.prepare(
+      `SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, ts AS created_at FROM hook_audit_log ${whereSql} ORDER BY ts DESC, id DESC LIMIT ?`,
+    ).all(...params, fetchLimit) as Array<{
       id: number; agent_id: string | null; hook_type: string; verdict: string
       tool_name: string | null; content_hash: string | null; reason: string | null
       session_id: string | null; created_at: number
     }>
-    for (const r of hookRows) parts.push({
+    for (const r of rows) parts.push({
       id: r.id, source: 'hook', created_at: r.created_at,
       agent_id: r.agent_id ?? undefined, hook_type: r.hook_type, verdict: r.verdict,
       tool_name: r.tool_name, content_hash: r.content_hash, reason: r.reason, session_id: r.session_id,
     })
+    total += countRows('hook_audit_log', whereSql, params)
   }
 
-  // Merge and sort by created_at DESC, then id DESC as tiebreaker
+  // Merge and sort by created_at DESC, then id DESC as tiebreaker, then slice
+  // out the requested page.
   parts.sort((a, b) => b.created_at - a.created_at || (b.id ?? 0) - (a.id ?? 0))
-  return parts.slice(0, limit)
+  return { entries: parts.slice(offset, offset + limit), total }
 }
 
 // Prune all three audit tables to AUDIT_LOG_RETENTION_DAYS. Called from the

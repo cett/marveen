@@ -16,7 +16,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...orig, existsSync: mocks.existsSync }
 })
 vi.mock('../db.js', () => ({
-  queryAuditLog: vi.fn().mockReturnValue([]),
+  queryAuditLog: vi.fn().mockReturnValue({ entries: [], total: 0 }),
   saveAgentMemory: vi.fn(),
   appendDailyLog: vi.fn(),
   getDailyLog: vi.fn().mockReturnValue(null),
@@ -92,6 +92,64 @@ describe('B12 normalise -- audit-log', () => {
     expect(vi.mocked(db.queryAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({ sources: ['hook'] })
     )
+  })
+
+  it('defaults offset to 0 and passes it through to queryAuditLog', async () => {
+    const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
+    const db = await import('../db.js')
+    const settings = await import('../settings-store.js')
+    vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
+    const { ctx, status } = makeCtx({ method: 'GET', path: '/api/audit-log?source=hook' })
+    await tryHandleAuditLog(ctx)
+    expect(status()).toBe(200)
+    expect(vi.mocked(db.queryAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ offset: 0 })
+    )
+  })
+
+  it('passes an explicit offset through to queryAuditLog', async () => {
+    const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
+    const db = await import('../db.js')
+    const settings = await import('../settings-store.js')
+    vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
+    const { ctx, status } = makeCtx({ method: 'GET', path: '/api/audit-log?source=hook&offset=400' })
+    await tryHandleAuditLog(ctx)
+    expect(status()).toBe(200)
+    expect(vi.mocked(db.queryAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ offset: 400 })
+    )
+  })
+
+  it('rejects a non-numeric offset with 400', async () => {
+    const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
+    const settings = await import('../settings-store.js')
+    vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
+    const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/audit-log?offset=abc' })
+    await tryHandleAuditLog(ctx)
+    expect(status()).toBe(400)
+    expect((body() as any).field).toBe('offset')
+  })
+
+  it('rejects a negative offset with 400', async () => {
+    const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
+    const settings = await import('../settings-store.js')
+    vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
+    const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/audit-log?offset=-5' })
+    await tryHandleAuditLog(ctx)
+    expect(status()).toBe(400)
+    expect((body() as any).field).toBe('offset')
+  })
+
+  it('responds with the real total (not the page length) alongside offset/limit', async () => {
+    const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
+    const db = await import('../db.js')
+    const settings = await import('../settings-store.js')
+    vi.mocked(db.queryAuditLog).mockReturnValueOnce({ entries: [{ id: 1 }] as any, total: 7000 })
+    vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
+    const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/audit-log?source=hook&offset=200&limit=200' })
+    await tryHandleAuditLog(ctx)
+    expect(status()).toBe(200)
+    expect(body()).toMatchObject({ total: 7000, offset: 200, limit: 200 })
   })
 })
 

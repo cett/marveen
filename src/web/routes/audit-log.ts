@@ -51,7 +51,16 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const entries = queryAuditLog({ sources, from, to, q, agent, limit })
-  json(res, { entries, total: entries.length })
+  // Pagination offset, page-turning through what used to be a hard 200-row
+  // cutoff with no way to see anything older.
+  const offsetParam = params.get('offset')
+  const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+  if (isNaN(offset) || offset < 0) {
+    json(res, { error: 'invalid_value', field: 'offset', hint: 'Invalid "offset" parameter' }, 400)
+    return true
+  }
+
+  const { entries, total } = queryAuditLog({ sources, from, to, q, agent, limit, offset })
+  json(res, { entries, total, offset, limit })
   return true
 }

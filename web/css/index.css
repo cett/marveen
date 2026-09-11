@@ -18,6 +18,7 @@
 @import url("components/empty.css")   layer(components);
 @import url("components/toast.css")   layer(components);
 @import url("components/tooltip.css") layer(components);
+@import url("components/paginator.css") layer(components);
 
 /* Features layer: page and section styles */
 /* Layout */

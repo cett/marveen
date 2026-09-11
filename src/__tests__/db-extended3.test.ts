@@ -304,18 +304,18 @@ describe('queryAuditLog with idea source', () => {
   })
 
   it('returns idea audit entries', () => {
-    const results = queryAuditLog({ sources: ['idea'], limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['idea'], limit: 50 })
     expect(results.some(r => r.source === 'idea')).toBe(true)
   })
 
   it('filters idea entries by from/to', () => {
     const now = Math.floor(Date.now() / 1000)
-    const results = queryAuditLog({ sources: ['idea'], from: now - 5, to: now + 5, limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['idea'], from: now - 5, to: now + 5, limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
   it('filters idea entries by query string', () => {
-    const results = queryAuditLog({ sources: ['idea'], q: 'test note', limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['idea'], q: 'test note', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
@@ -326,42 +326,42 @@ describe('queryAuditLog with store source', () => {
   })
 
   it('returns store audit entries', () => {
-    const results = queryAuditLog({ sources: ['store'], limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['store'], limit: 50 })
     expect(results.some(r => r.source === 'store')).toBe(true)
   })
 
   it('filters store entries by agent', () => {
-    const results = queryAuditLog({ sources: ['store'], agent: 'agent-a', limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['store'], agent: 'agent-a', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
   it('filters store entries by from/to and query', () => {
     const now = Math.floor(Date.now() / 1000)
-    const results = queryAuditLog({ sources: ['store'], from: now - 5, to: now + 5, q: 'test.json', limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['store'], from: now - 5, to: now + 5, q: 'test.json', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
 
 describe('queryAuditLog with diary source', () => {
   it('returns diary entries (logs + memories)', () => {
-    const results = queryAuditLog({ sources: ['diary'], limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['diary'], limit: 50 })
     const hasDiary = results.some(r => r.source === 'diary')
     expect(hasDiary).toBe(true)
   })
 
   it('filters diary by agent', () => {
-    const results = queryAuditLog({ sources: ['diary'], agent: 'agent-a', limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['diary'], agent: 'agent-a', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
   it('filters diary by from/to', () => {
     const now = Math.floor(Date.now() / 1000)
-    const results = queryAuditLog({ sources: ['diary'], from: now - 60, to: now + 60, limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['diary'], from: now - 60, to: now + 60, limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
   it('filters diary by query string', () => {
-    const results = queryAuditLog({ sources: ['diary'], q: 'coverage', limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['diary'], q: 'coverage', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
@@ -372,7 +372,7 @@ describe('queryAuditLog with hook source', () => {
   })
 
   it('returns hook audit entries with the shared AuditLogEntry shape (ts aliased to created_at)', () => {
-    const results = queryAuditLog({ sources: ['hook'], limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['hook'], limit: 50 })
     const hookEntry = results.find(r => r.source === 'hook' && r.reason === 'audit_test_reason')
     expect(hookEntry).toBeDefined()
     expect(hookEntry?.agent_id).toBe('agent-a')
@@ -383,12 +383,12 @@ describe('queryAuditLog with hook source', () => {
   })
 
   it('filters hook entries by agent', () => {
-    const results = queryAuditLog({ sources: ['hook'], agent: 'agent-a', limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['hook'], agent: 'agent-a', limit: 50 })
     expect(results.every(r => r.source !== 'hook' || r.agent_id === 'agent-a')).toBe(true)
   })
 
   it('filters hook entries by query string', () => {
-    const results = queryAuditLog({ sources: ['hook'], q: 'audit_test_reason', limit: 50 })
+    const { entries: results } = queryAuditLog({ sources: ['hook'], q: 'audit_test_reason', limit: 50 })
     expect(results.some(r => r.source === 'hook' && r.reason === 'audit_test_reason')).toBe(true)
   })
 })
@@ -400,7 +400,7 @@ describe('queryAuditLog with agent source: blackboard/approval entities', () => 
   })
 
   it('merges blackboard and approval agent-audit entries', () => {
-    const results = queryAuditLog({ sources: ['agent'], agent: 'agent-a', limit: 100 })
+    const { entries: results } = queryAuditLog({ sources: ['agent'], agent: 'agent-a', limit: 100 })
     expect(results.some(r => r.entity === 'blackboard' && r.entity_id === 'bb-audit-test')).toBe(true)
     expect(results.some(r => r.entity === 'approval' && r.entity_id === 'appr-audit-test')).toBe(true)
   })
@@ -408,7 +408,7 @@ describe('queryAuditLog with agent source: blackboard/approval entities', () => 
 
 describe('queryAuditLog with multiple sources', () => {
   it('merges all sources when sources is empty (default all)', () => {
-    const results = queryAuditLog({ sources: [], limit: 100 })
+    const { entries: results } = queryAuditLog({ sources: [], limit: 100 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
