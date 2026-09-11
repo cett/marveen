@@ -1,7 +1,7 @@
 import {
-  saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
+  saveAgentMemory, getAgentMemories, countAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, clearMemoryCache,
-  searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
+  searchMemories, getMemoriesForChat, countMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
   runMemoryMaintenance, runLinkMaintenance, getLinksForMemories, writeAgentAuditLog,
   syncVecMemoryDelete,
@@ -89,6 +89,21 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'hybrid'
+    // Pagination (#861): only meaningful for the plain-listing branches below
+    // (no `q`) -- a hybrid/keyword search is a ranked top-K result, not a
+    // stable, offset-able list, so `offset` is ignored whenever `q` is set.
+    const offsetParam = url.searchParams.get('offset')
+    const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+    if (isNaN(offset) || offset < 0) {
+      json(res, { error: 'invalid_value', field: 'offset', hint: 'Invalid "offset" parameter' }, 400)
+      return true
+    }
+    // SQL-level category filter for the plain-listing branches, pushed down so
+    // OFFSET/LIMIT paginate the already-filtered set. 'import' is a pseudo-tier
+    // (agent_id = 'import', not a real category) handled separately below via
+    // the existing post-fetch filter, same as before this change -- it stays
+    // unpaginated (no `total`/`offset` support for that one filter combo).
+    const sqlCategory = tier && tier !== 'import' ? tier : undefined
     // Default-recall (P4 of #842): an explicit include_docs=0/1 always wins;
     // absent, it falls back to the WORKSPACE_DOC_RECALL_DEFAULT setting
     // (default true) so a caller that never heard of this param still gets
@@ -102,6 +117,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         : getEffectiveSettingValue('WORKSPACE_DOC_RECALL_DEFAULT') === '1'
 
     let results: Memory[]
+    let total: number | undefined
     const recallTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
     if (q && mode === 'hybrid') {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, recallTenantId)
@@ -126,9 +142,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     } else if (agentId) {
       // Tenant filtering pushed into SQL (before LIMIT) to avoid the post-filter
       // accuracy bug: getAgentMemories enforces tenantId in the WHERE clause.
-      results = getAgentMemories(agentId, limit, tier || undefined, recallTenantId)
+      results = getAgentMemories(agentId, limit, sqlCategory, recallTenantId, offset)
+      if (tier !== 'import') total = countAgentMemories(agentId, sqlCategory, recallTenantId)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, recallTenantId)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, recallTenantId, sqlCategory, offset)
+      if (tier !== 'import') total = countMemoriesForChat(ALLOWED_CHAT_ID, recallTenantId, sqlCategory)
     }
 
     // Tenant isolation: defence-in-depth guard. All branches above now filter
@@ -209,6 +227,15 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // another tenant's docs even if a future branch forgets SQL-level scoping.
       if (!isAdmin) docResults = docResults.filter(d => (d.tenant_id ?? 'default') === effectiveTenantId)
       jsonMaybeGzip(req, res, { memories: formatted, workspace_docs: docResults })
+      return true
+    }
+
+    // Plain listing (no `q`): pagination envelope with a real SQL COUNT(*),
+    // matching the audit-log pagination shape (#860 ST1). Search branches (`q`
+    // set) keep their pre-existing plain-array shape -- offset/total don't
+    // apply to a ranked top-K result.
+    if (!q && total !== undefined) {
+      jsonMaybeGzip(req, res, { memories: formatted, total, offset, limit })
       return true
     }
 

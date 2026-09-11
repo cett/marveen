@@ -86,7 +86,8 @@ describe('GET /api/memories agent_id alias', () => {
   it('?agent_id= without q lists only that agent memories', async () => {
     const { ctx, getBody } = makeCtx('/api/memories', { agent_id: 'agent-a' })
     await tryHandleMemories(ctx)
-    const results = getBody() as any[]
+    // Plain listing (no q) now comes back as a pagination envelope (#861).
+    const results = getBody().memories as any[]
     expect(results.length).toBeGreaterThan(0)
     for (const m of results) {
       expect(m.agent_id).toBe('agent-a')

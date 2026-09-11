@@ -184,6 +184,8 @@ components:
 
 
 
+
+
         hint:
           type: string
           description: >-
@@ -693,7 +695,8 @@ paths:
       description: |
         Returns memories for an agent. When `q` is provided, performs hybrid
         vector + keyword search. Without `q`, returns recent memories for the
-        agent (or the chat owner when `agent` is omitted).
+        agent (or the chat owner when `agent` is omitted), paginated by
+        `offset`/`limit` with a real total count.
         Non-admin callers receive only memories within their own tenant scope.
       parameters:
         - name: q
@@ -701,6 +704,16 @@ paths:
           schema:
             type: string
           description: Search query (triggers hybrid search when present)
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: >
+            Pagination offset. Only takes effect for the plain listing (no
+            `q`) -- a hybrid/keyword search returns a ranked top-K result and
+            ignores this param.
         - name: agent
           in: query
           schema:
@@ -745,7 +758,11 @@ paths:
             caller's response shape exactly as it was before this feature.
       responses:
         "200":
-          description: Memory list, or a combined memories+workspace_docs object when `include_docs=1` is set alongside `q` (gzip-compressed when Accept-Encoding includes gzip)
+          description: >
+            Paginated memory list for the plain listing (no `q`), a combined
+            memories+workspace_docs object when `include_docs=1` is set
+            alongside `q`, or a plain array for a search without
+            `include_docs` (gzip-compressed when Accept-Encoding includes gzip)
           content:
             application/json:
               schema:
@@ -764,6 +781,26 @@ paths:
                         type: array
                         items:
                           $ref: "#/components/schemas/WorkspaceDocSearchResult"
+                  - type: object
+                    required: [memories, total, offset, limit]
+                    properties:
+                      memories:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Memory"
+                      total:
+                        type: integer
+                        description: Total matching rows, unbounded by limit
+                      offset:
+                        type: integer
+                      limit:
+                        type: integer
+        "400":
+          description: Invalid "offset" parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           description: Missing or invalid Bearer token
           content:
