@@ -119,6 +119,35 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
     expect(attrs.mcp_tool).toBe('reply')
   })
 
+  it('records input_summary in attributes when provided', async () => {
+    await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
+      session_id: 'session-otel-4c',
+      tool_name: 'Bash',
+      input_summary: 'ls -la /tmp',
+      success: true,
+      agent_id: 'agent-a',
+      trace_id: 'tooluse-otel-4c',
+    }).ctx)
+
+    const span = getSpan('session-otel-4c', 'tooluse-otel-4c')
+    const attrs = JSON.parse(span.attributes)
+    expect(attrs.input_summary).toBe('ls -la /tmp')
+  })
+
+  it('omits input_summary from attributes when not provided', async () => {
+    await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
+      session_id: 'session-otel-4d',
+      tool_name: 'Bash',
+      success: true,
+      agent_id: 'agent-a',
+      trace_id: 'tooluse-otel-4d',
+    }).ctx)
+
+    const span = getSpan('session-otel-4d', 'tooluse-otel-4d')
+    const attrs = JSON.parse(span.attributes)
+    expect(attrs.input_summary).toBeUndefined()
+  })
+
   it('omits mcp_server and mcp_tool attributes for a non-MCP tool', async () => {
     await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
       session_id: 'session-otel-5',
@@ -146,7 +175,7 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
     expect(rows).toHaveLength(0)
   })
 
-  it('does not write a span when agent_id is missing (still logs the tool call)', async () => {
+  it('does not write a span when agent_id is missing, but still returns 200 (tool_call_log retired)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/tool-log', {
       session_id: 'session-otel-7',
       tool_name: 'Bash',
@@ -158,8 +187,6 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
 
     const rows = getDb().prepare('SELECT * FROM otel_spans WHERE trace_id = ?').all('session-otel-7')
     expect(rows).toHaveLength(0)
-    const logged = getDb().prepare('SELECT * FROM tool_call_log WHERE session_id = ?').all('session-otel-7')
-    expect(logged.length).toBeGreaterThan(0)
   })
 
   it('still returns 400 and writes nothing when session_id/tool_name are missing', async () => {

@@ -17,7 +17,12 @@
 //
 // These tests verify:
 //   (a) all three audit fields are stored and retrievable
-//   (b) rows logged WITHOUT the fields (old/minimal hook callers) stay readable
+//   (b) BREAKING (tool_call_log retirement): a call missing trace_id or
+//       agent_id is no longer stored at all -- the backing store is now
+//       otel_spans, where agent_id is NOT NULL and span_id (=trace_id) is
+//       part of the primary key, so there is nowhere to put such a row.
+//       Old tool_call_log accepted nulls; logToolCall now warns and drops
+//       the call instead.
 //   (c) two calls with different tool_use_ids produce distinct trace_ids
 //   (d) duration_ms is stored as an integer
 //   (e) fix-revert guard: removing the new parameters → assertions fail
@@ -53,14 +58,25 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
     expect(rows[0].duration_ms).toBe(7)
   })
 
-  it('accepts null for all three audit fields (backward compat -- old hook callers)', () => {
+  it('BREAKING: drops the call (no row) when trace_id and agent_id are both missing', () => {
     logToolCall('sess-old', 'WebFetch', 'https://example.invalid', true)
 
     const rows = getRecentToolCalls(3600)
-    expect(rows).toHaveLength(1)
-    expect(rows[0].agent_id).toBeNull()
-    expect(rows[0].trace_id).toBeNull()
-    expect(rows[0].duration_ms).toBeNull()
+    expect(rows).toHaveLength(0)
+  })
+
+  it('BREAKING: drops the call when only agent_id is missing', () => {
+    logToolCall('sess-old2', 'WebFetch', 'https://example.invalid', true, null, 'toolu_no_agent')
+
+    const rows = getRecentToolCalls(3600)
+    expect(rows).toHaveLength(0)
+  })
+
+  it('BREAKING: drops the call when only trace_id is missing', () => {
+    logToolCall('sess-old3', 'WebFetch', 'https://example.invalid', true, 'agent-a')
+
+    const rows = getRecentToolCalls(3600)
+    expect(rows).toHaveLength(0)
   })
 
   it('two calls with different tool_use_ids produce distinct trace_ids', () => {
