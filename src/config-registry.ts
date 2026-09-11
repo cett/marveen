@@ -353,7 +353,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 90,
     min: 1,
     max: 3650,
-    description: 'Az audit napló (config-változások, ötletláda-audit, store-fájl események) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
+    description: 'Az audit napló (config-változások, ötletláda-audit, store-fájl események, ágens-audit, hook-verdiktek) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
     module: 'audit',
     secret: false,
     requiresRestart: false,

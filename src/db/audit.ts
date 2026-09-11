@@ -624,6 +624,12 @@ export function pruneAuditLogs(): void {
   db.prepare('DELETE FROM idea_status_log WHERE created_at < ?').run(cutoff)
   db.prepare('DELETE FROM store_file_audit WHERE created_at < ?').run(cutoff)
   db.prepare('DELETE FROM agent_audit_log WHERE created_at < ?').run(cutoff)
+  // hook_audit_log had no automatic sweep at all -- pruneHookAuditLog() only
+  // ever ran when POST /api/hook-audit/prune was called by hand. At ~1074
+  // rows/day (one row per PreToolUse/PostToolUse/PreCompact/Stop verdict)
+  // that leaked unbounded. Reuses the same AUDIT_LOG_RETENTION_DAYS setting
+  // (already 90 days by default) rather than adding a second retention knob.
+  pruneHookAuditLog(retentionDays * 86400)
 }
 
 export interface TokenUsagePruneResult {
