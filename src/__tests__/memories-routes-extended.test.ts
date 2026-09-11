@@ -54,6 +54,10 @@ vi.mock('../config.js', () => ({
   APP_TZ: 'Europe/Budapest',
 }))
 
+vi.mock('../settings-store.js', () => ({
+  getEffectiveSettingValue: () => '0',
+}))
+
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))

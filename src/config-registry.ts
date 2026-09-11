@@ -615,6 +615,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'WORKSPACE_DOC_RECALL_DEFAULT',
+    type: 'boolean',
+    default: '1',
+    description: 'GET /api/memories?q=... alapból (opt-in include_docs=1 nélkül is) visszaadja a munkadokumentumokat (workspace_docs) is a memóriák mellett. Kikapcsolva a régi, csak explicit include_docs=1-nél bővülő viselkedés marad; egy hívás include_docs=0-val mindig kizárja őket, függetlenül ettől a beállítástól.',
+    module: 'memory',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Observability module (OTel push exporter, #800/#802) ---
   {
     key: 'OTEL_EXPORT_ENABLED',

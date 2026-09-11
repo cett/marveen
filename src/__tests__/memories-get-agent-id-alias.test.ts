@@ -57,11 +57,14 @@ afterAll(() => {
 
 describe('GET /api/memories agent_id alias', () => {
   it('?agent_id= returns same results as ?agent= for a keyword search', async () => {
-    const { ctx: ctxAgent, getBody: getBodyAgent } = makeCtx('/api/memories', { agent: 'agent-a', q: 'alpha' })
+    // include_docs=0: this test is about the agent/agent_id alias, unrelated
+    // to workspace-doc recall -- pin the response to a plain array so it
+    // doesn't couple to the WORKSPACE_DOC_RECALL_DEFAULT setting.
+    const { ctx: ctxAgent, getBody: getBodyAgent } = makeCtx('/api/memories', { agent: 'agent-a', q: 'alpha', include_docs: '0' })
     await tryHandleMemories(ctxAgent)
     const byAgent = getBodyAgent() as any[]
 
-    const { ctx: ctxAlias, getBody: getBodyAlias } = makeCtx('/api/memories', { agent_id: 'agent-a', q: 'alpha' })
+    const { ctx: ctxAlias, getBody: getBodyAlias } = makeCtx('/api/memories', { agent_id: 'agent-a', q: 'alpha', include_docs: '0' })
     await tryHandleMemories(ctxAlias)
     const byAlias = getBodyAlias() as any[]
 
@@ -71,7 +74,7 @@ describe('GET /api/memories agent_id alias', () => {
 
   it('?agent_id=agent-a does NOT return agent-b memories', async () => {
     // Both agents have 'alpha' content, so the global path would return both.
-    const { ctx, getBody } = makeCtx('/api/memories', { agent_id: 'agent-a', q: 'alpha' })
+    const { ctx, getBody } = makeCtx('/api/memories', { agent_id: 'agent-a', q: 'alpha', include_docs: '0' })
     await tryHandleMemories(ctx)
     const results = getBody() as any[]
     // Without the fix, the handler falls through to global searchMemories() and

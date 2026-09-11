@@ -1,17 +1,22 @@
 /**
- * GET /api/memories?q=&include_docs=1 -- opt-in workspace_docs search
- * alongside memories (kanban 9156e583). The critical contract under test:
- * WITHOUT include_docs, the response is byte-identical in shape to before
- * this feature (a plain array) -- no existing caller (dashboard, agent
- * recall via curl/fetch) is affected. WITH it, the response becomes
- * { memories, workspace_docs }, and workspace_docs is tenant-scoped exactly
- * like memories already are.
+ * GET /api/memories?q=&include_docs=... -- workspace_docs search alongside
+ * memories (kanban 9156e583, default-recall P4 of #842). The critical
+ * contracts under test:
+ * - An explicit include_docs=0/1 always wins, regardless of the
+ *   WORKSPACE_DOC_RECALL_DEFAULT setting.
+ * - Absent include_docs falls back to that setting: true (the shipped
+ *   default) folds workspace_docs in automatically; a caller who opts the
+ *   setting back to false keeps the pre-P4 plain-array behavior with no
+ *   further change on their end.
+ * - Either way, the combined shape is { memories, workspace_docs }, and
+ *   workspace_docs is tenant-scoped exactly like memories already are (SQL
+ *   level in hybridSearchDocs, plus a defence-in-depth post-filter here).
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
-const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs } = vi.hoisted(() => {
+const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs, mockGetEffectiveSettingValue } = vi.hoisted(() => {
   const fakeMemory = (id: number) => ({
     id, agent_id: 'agent-a', content: 'test content', keywords: 'test',
     category: 'warm', created_at: 1750000000, accessed_at: 1750000001,
@@ -27,6 +32,9 @@ const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs } 
     mockHybridSearchDocs: vi.fn().mockResolvedValue([
       { id: 'doc1', title: 'Budget plafon terv', agent_id: 'agent-a', tenant_id: 'tenant-a', type: 'plan', task_ref: '670b6218', doc_key: null, created_at: 1750000000, updated_at: 1750000000, snippet: 'The [BudgetEntry] amount' },
     ]),
+    // Defaults to '1' (WORKSPACE_DOC_RECALL_DEFAULT's shipped default); tests
+    // that need the opt-out-by-default scenario override with '0'.
+    mockGetEffectiveSettingValue: vi.fn().mockReturnValue('1'),
   }
 })
 
@@ -58,6 +66,10 @@ vi.mock('../workspace-store.js', () => ({
   hybridSearchDocs: mockHybridSearchDocs,
 }))
 
+vi.mock('../settings-store.js', () => ({
+  getEffectiveSettingValue: mockGetEffectiveSettingValue,
+}))
+
 vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'marveen',
   ALLOWED_CHAT_ID: '123',
@@ -70,6 +82,8 @@ vi.mock('../logger.js', () => ({
 }))
 
 import { tryHandleMemories } from '../web/routes/memories.js'
+
+beforeEach(() => { mockGetEffectiveSettingValue.mockReturnValue('1') })
 
 function makeCtx(
   path: string,
@@ -92,9 +106,11 @@ function makeCtx(
   return { ctx, out }
 }
 
-describe('GET /api/memories?q= -- backward compatibility (no include_docs)', () => {
-  it('returns a plain array when include_docs is absent, exactly as before this feature', async () => {
-    const { ctx, out } = makeCtx('/api/memories', { q: 'budget' })
+describe('GET /api/memories?q= -- explicit include_docs=0 opt-out (always wins)', () => {
+  beforeEach(() => { mockGetEffectiveSettingValue.mockReturnValue('1') })
+
+  it('include_docs=0 forces a plain array even though the default setting is true', async () => {
+    const { ctx, out } = makeCtx('/api/memories', { q: 'budget', include_docs: '0' })
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
     expect(Array.isArray(out.body)).toBe(true)
@@ -107,12 +123,39 @@ describe('GET /api/memories?q= -- backward compatibility (no include_docs)', () 
     expect(Array.isArray(out.body)).toBe(true)
     expect(mockHybridSearchDocs).not.toHaveBeenCalled()
   })
+})
 
-  it('include_docs=0 or any non-"1" value behaves as absent (plain array)', async () => {
-    const { ctx, out } = makeCtx('/api/memories', { q: 'budget', include_docs: '0' })
+describe('GET /api/memories?q= -- default-recall (WORKSPACE_DOC_RECALL_DEFAULT, no include_docs param)', () => {
+  it('absent include_docs + setting true (shipped default) returns the combined { memories, workspace_docs } shape', async () => {
+    mockGetEffectiveSettingValue.mockReturnValue('1')
+    const { ctx, out } = makeCtx('/api/memories', { q: 'budget' })
     await tryHandleMemories(ctx)
+    expect(out.status).toBe(200)
+    expect(Array.isArray(out.body)).toBe(false)
+    expect(Array.isArray(out.body.memories)).toBe(true)
+    expect(Array.isArray(out.body.workspace_docs)).toBe(true)
+    expect(mockHybridSearchDocs).toHaveBeenCalled()
+  })
+
+  it('absent include_docs + setting false preserves the pre-P4 plain-array behavior', async () => {
+    mockGetEffectiveSettingValue.mockReturnValue('0')
+    const { ctx, out } = makeCtx('/api/memories', { q: 'budget' })
+    await tryHandleMemories(ctx)
+    expect(out.status).toBe(200)
     expect(Array.isArray(out.body)).toBe(true)
     expect(mockHybridSearchDocs).not.toHaveBeenCalled()
+  })
+
+  it('a non-admin caller only ever sees their own tenant\'s docs in the default-recall path (defence-in-depth post-filter)', async () => {
+    mockGetEffectiveSettingValue.mockReturnValue('1')
+    mockHybridSearchDocs.mockResolvedValueOnce([
+      { id: 'doc-own', title: 'Own tenant doc', agent_id: 'agent-a', tenant_id: 'tenant-a', type: 'plan', task_ref: null, doc_key: null, created_at: 1750000000, updated_at: 1750000000, snippet: 'ok' },
+      { id: 'doc-other', title: 'Other tenant doc', agent_id: 'agent-b', tenant_id: 'tenant-b', type: 'plan', task_ref: null, doc_key: null, created_at: 1750000000, updated_at: 1750000000, snippet: 'leak' },
+    ])
+    const { ctx, out } = makeCtx('/api/memories', { q: 'budget' }, { role: 'viewer', tenantId: 'tenant-a' })
+    await tryHandleMemories(ctx)
+    expect(out.body.workspace_docs).toHaveLength(1)
+    expect(out.body.workspace_docs[0].id).toBe('doc-own')
   })
 })
 
