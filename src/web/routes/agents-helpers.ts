@@ -46,6 +46,8 @@ import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
 import { readContextGuardConfig } from '../context-guard-store.js'
+import { getTenant, getTenantForMainAgent } from '../../db/observability.js'
+import { getTenantsForAgent } from '../../db/agents.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
 import { json } from '../http-helpers.js'
@@ -188,6 +190,18 @@ export interface AgentSummary {
    *  drives the dashboard "reauth needed" badge + one-click /login button. */
   needsReauth: boolean
   reauthReason?: string
+  /** The tenant id this agent is the designated main agent for (tenants.main_agent_id),
+   *  or null if it isn't any tenant's main agent. Drives the tenant-main-agent badge. */
+  primaryTenantId: string | null
+  /** Tenant ids this agent is enabled=1 for in tenant_agent_availability --
+   *  drives the per-tenant visibility chips. Empty for a fleet-internal agent
+   *  never opted into any tenant. */
+  tenantIds: string[]
+  /** Display name for every tenant id referenced by primaryTenantId or
+   *  tenantIds, keyed by tenant id -- so the badge/chip UI never needs a
+   *  second, admin-gated fetch just to label a tenant it already knows the
+   *  id of. */
+  tenantNames: Record<string, string>
 }
 
 export interface AgentDetail extends AgentSummary {
@@ -264,7 +278,23 @@ export function getAgentSummary(name: string): AgentSummary {
     contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
+    ...tenantSummaryFields(name),
   }
+}
+
+/** primaryTenantId/tenantIds/tenantNames for one agent, factored out of
+ *  getAgentSummary so both fields stay in lockstep with the names they list. */
+function tenantSummaryFields(name: string): Pick<AgentSummary, 'primaryTenantId' | 'tenantIds' | 'tenantNames'> {
+  const primaryTenant = getTenantForMainAgent(name)
+  const tenantIds = getTenantsForAgent(name)
+  const tenantNames: Record<string, string> = {}
+  if (primaryTenant) tenantNames[primaryTenant.id] = primaryTenant.display_name
+  for (const id of tenantIds) {
+    if (id in tenantNames) continue
+    const t = getTenant(id)
+    if (t) tenantNames[id] = t.display_name
+  }
+  return { primaryTenantId: primaryTenant?.id ?? null, tenantIds, tenantNames }
 }
 
 // redactMcp: true replaces mcpJson with an empty object -- used for non-admin

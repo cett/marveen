@@ -151,6 +151,11 @@ nav { display: flex; gap: 4px; }
 .team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
 .team-node.main { background: var(--accent-soft); border-color: var(--accent); }
 .team-node.leader { border-color: var(--accent); }
+.team-node.tenant-main {
+  background: color-mix(in srgb, var(--color-violet-500) 10%, transparent);
+  border-color: var(--color-violet-500);
+}
+.team-node.tenant-main .team-node-meta { color: var(--color-violet-500); font-weight: 600; }
 /* Drag-and-drop reporting edit (Team page). */
 .team-node.team-draggable { cursor: grab; }
 .team-node.team-dragging { opacity: 0.45; cursor: grabbing; }

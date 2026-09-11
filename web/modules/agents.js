@@ -39,6 +39,7 @@ import {
 } from './agents-detail.js'
 import { agentIsConnected, updateChannelTab, updateProviderUI } from './agents-channels.js'
 import { setAgentsView } from './agents-org-chart.js'
+import { can } from './rbac-client.js'
 
 export { loadAvailableModels, setAgentsView }
 
@@ -85,6 +86,10 @@ export function initAgents({
 // Populated by loadAgents() and by the Messages page loadChatAgentList().
 // Messages page accesses it via the exported get/set below.
 let federatedPeerStatus = []
+// Gates the admin-only tenant-visibility chip (renderAgents reads this
+// synchronously; loadAgents refreshes it on every fetch). Defaults true,
+// matching can()'s own fail-open default for a null/legacy-token role.
+let _isAdminView = true
 export function getFederatedPeerStatus() { return federatedPeerStatus }
 export function setFederatedPeerStatus(peers) { federatedPeerStatus = peers }
 
@@ -177,11 +182,13 @@ export async function loadAgents() {
     // The federation status fetch is deliberately failure-proof (.catch ->
     // null): it must NEVER take down the Agents page -- including on an
     // older backend where the route 404s.
-    const [agentsRes, marveenRes, fedStatus] = await Promise.all([
+    const [agentsRes, marveenRes, fedStatus, isAdminView] = await Promise.all([
       fetch('/api/agents'),
       fetch('/api/marveen'),
       fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      can('admin:all'),
     ])
+    _isAdminView = isAdminView
     agents = await agentsRes.json()
     if (fedStatus && Array.isArray(fedStatus.peers)) federatedPeerStatus = fedStatus.peers
     if (marveenRes.ok) {
@@ -568,11 +575,31 @@ function renderAgents() {
     const runDotClass = isRunning ? 'running' : 'stopped'
     const runLabel = isRunning ? t('agents.status.running') : t('agents.status.stopped')
 
+    // Tenant-main-agent badge: visible in every view (a tenant-user benefits
+    // from knowing who their own coordinator is), unlike the chip below.
+    let tenantMainBadgeHtml = ''
+    if (agent.primaryTenantId) {
+      const tenantName = (agent.tenantNames && agent.tenantNames[agent.primaryTenantId]) || agent.primaryTenantId
+      card.classList.add('is-tenant-main')
+      card.dataset.tenant = agent.primaryTenantId
+      tenantMainBadgeHtml = ` <span class="tenant-main-badge" data-tenant="${escapeHtml(agent.primaryTenantId)}" title="${escapeHtml(t('agents.tenant_main_title', { tenant: tenantName }))}">${escapeHtml(t('agents.tenant_main_badge', { tenant: tenantName }))}</span>`
+    }
+    // Tenant visibility chips: admin-only (redundant in a tenant-user's own,
+    // already-scoped view).
+    let tenantChipsHtml = ''
+    if (_isAdminView && Array.isArray(agent.tenantIds) && agent.tenantIds.length > 0) {
+      const chips = agent.tenantIds.map((id) => {
+        const name = (agent.tenantNames && agent.tenantNames[id]) || id
+        return `<span class="tenant-chip" data-tenant="${escapeHtml(id)}">${escapeHtml(t('agents.tenant_chip', { tenant: name }))}</span>`
+      }).join('')
+      tenantChipsHtml = `<span class="chip-group">${chips}</span>`
+    }
+
     card.innerHTML = `
       <div class="agent-card-top">
         <div class="agent-avatar ${gradientClass}">${avatarHtml}</div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(label)}</div>
+          <div class="agent-name">${escapeHtml(label)}${tenantMainBadgeHtml}</div>
           <div class="agent-desc">${escapeHtml(agent.description || '')}</div>
         </div>
       </div>
@@ -580,6 +607,7 @@ function renderAgents() {
         <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
         <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
         <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
+        ${tenantChipsHtml}
       </div>
       ${agent.needsReauth ? `
         <div class="agent-reauth-banner">

@@ -94,6 +94,7 @@ const SAMPLE_TENANT: db.Tenant = {
   display_name: 'Acme Corp',
   created_at: 1787000000,
   disabled_at: null,
+  main_agent_id: null,
 }
 
 beforeEach(() => {

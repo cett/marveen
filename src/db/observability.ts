@@ -341,13 +341,14 @@ export interface Tenant {
   display_name: string
   created_at: number
   disabled_at: number | null
+  main_agent_id: string | null
 }
 
 export function createTenant(id: string, displayName: string): Tenant {
   const now = Math.floor(Date.now() / 1000)
   db.prepare('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)')
     .run(id, displayName, now)
-  return { id, display_name: displayName, created_at: now, disabled_at: null }
+  return { id, display_name: displayName, created_at: now, disabled_at: null, main_agent_id: null }
 }
 
 export function getTenant(id: string): Tenant | undefined {
@@ -359,6 +360,12 @@ export function listTenants(includeDisabled = false): Tenant[] {
     return db.prepare('SELECT * FROM tenants ORDER BY created_at ASC').all() as Tenant[]
   }
   return db.prepare('SELECT * FROM tenants WHERE disabled_at IS NULL ORDER BY created_at ASC').all() as Tenant[]
+}
+
+/** The tenant, if any, whose main_agent_id is this agent -- drives the
+ *  Agents screen's tenant-main-agent badge. */
+export function getTenantForMainAgent(agentId: string): Tenant | undefined {
+  return db.prepare('SELECT * FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL').get(agentId) as Tenant | undefined
 }
 
 export function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean }): Tenant | null {

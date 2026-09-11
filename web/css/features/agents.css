@@ -152,6 +152,57 @@
   margin-left: 4px;
 }
 
+/* === Tenant-main-agent badge (an agent that is a tenant's designated
+   main agent, e.g. a tenant's own coordinator) -- same geometry as
+   .marveen-badge, colored by tenant so it reads distinctly next to it in
+   the admin view. Visible in every view, not just admin -- a tenant-user
+   benefits from knowing who their own coordinator is. === */
+.tenant-main-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+  white-space: nowrap;
+  color: var(--color-violet-500);
+  background: color-mix(in srgb, var(--color-violet-500) 10%, transparent);
+}
+.tenant-main-badge[data-tenant="default"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.agent-card.is-tenant-main { border-left: 3px solid var(--color-violet-500); }
+.agent-card.is-tenant-main[data-tenant="default"] { border-left-color: var(--accent); }
+
+/* === Tenant visibility chip (admin view only) -- neutral pill with a
+   tenant-colored dot, one per tenant the agent is enabled for. === */
+.tenant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: transparent;
+}
+.tenant-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--_tenant-chip-color, var(--text-muted));
+}
+.tenant-chip[data-tenant="default"] { --_tenant-chip-color: var(--accent); }
+.tenant-chip[data-tenant="eszter"] { --_tenant-chip-color: var(--color-violet-500); }
+.chip-group { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
 /* === Telegram status dot === */
 .tg-status {
   display: inline-flex;

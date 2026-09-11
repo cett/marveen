@@ -39,6 +39,13 @@ vi.mock('../claude-plans.js', () => ({
 vi.mock('../agent-team.js', () => ({
   readAgentTeam: vi.fn().mockReturnValue({ members: [], reportsTo: null }),
 }))
+vi.mock('../db/observability.js', () => ({
+  getTenantForMainAgent: vi.fn().mockReturnValue(undefined),
+  getTenant: vi.fn().mockReturnValue(undefined),
+}))
+vi.mock('../db/agents.js', () => ({
+  getTenantsForAgent: vi.fn().mockReturnValue([]),
+}))
 vi.mock('../web/remote-status-cache.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/remote-status-cache.js')>()
   return actual

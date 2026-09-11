@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, getDb, writeAgentAuditLog } from '../../db.js'
+import { createAgentMessage, getDb, writeAgentAuditLog, getTenantForMainAgent } from '../../db.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { setSecret, deleteSecret } from '../vault.js'
@@ -515,6 +515,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       delegatesTo: string[]
       running?: boolean
       securityProfile?: string
+      /** Set when a tenant designates this agent as its main agent
+       *  (tenants.main_agent_id) -- lets the org-chart label it as that
+       *  tenant's main agent instead of its plain team role. Never set for
+       *  MAIN_AGENT_ID, which already renders as role: 'main'. */
+      primaryTenantId?: string
+      primaryTenantName?: string
     }> = []
     nodes.push({
       id: MAIN_AGENT_ID,
@@ -526,6 +532,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     })
     for (const agentName of listAgentNames()) {
       const team = readAgentTeam(agentName)
+      const primaryTenant = getTenantForMainAgent(agentName)
       nodes.push({
         id: agentName,
         label: readAgentDisplayName(agentName),
@@ -534,6 +541,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         delegatesTo: team.delegatesTo,
         running: isAgentRunning(agentName),
         securityProfile: readAgentSecurityProfile(agentName),
+        ...(primaryTenant ? { primaryTenantId: primaryTenant.id, primaryTenantName: primaryTenant.display_name } : {}),
       })
     }
     const knownIds = new Set(nodes.map(n => n.id))
