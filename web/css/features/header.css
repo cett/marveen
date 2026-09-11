@@ -180,6 +180,7 @@ nav { display: flex; gap: 4px; }
 }
 .team-node-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; }
 .team-node-meta { font-size: 12px; color: var(--text-muted); }
+.team-node-chips { margin-top: 6px; justify-content: center; }
 .team-connector {
   width: 2px;
   height: 16px;

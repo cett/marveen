@@ -34,6 +34,11 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
     VALID_PROVIDERS: new Set(['telegram', 'slack', 'discord']),
     parseChannelProvider: vi.fn().mockReturnValue(null),
     validateDiscordChannelId: vi.fn().mockReturnValue({ ok: true }),
+    tenantSummaryFields: vi.fn().mockReturnValue({
+      primaryTenantId: 'eszter',
+      tenantIds: ['default', 'eszter'],
+      tenantNames: { default: 'Fleet (default)', eszter: 'Eszter tenant' },
+    }),
   }
 })
 vi.mock('../db.js', () => ({
@@ -221,6 +226,23 @@ describe('agents-crud routes (extended)', () => {
     const body = responseBody() as any
     expect(Array.isArray(body.nodes)).toBe(true)
     expect(Array.isArray(body.edges)).toBe(true)
+  })
+
+  it('GET /api/team/graph nodes carry tenantIds/tenantNames alongside primaryTenantId (#857)', async () => {
+    const agentConfig = await import('../web/agent-config.js')
+    vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
+    const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph' })
+    await tryHandleAgentsCrud(ctx, WEB_DIR)
+    const body = responseBody() as any
+    const agentNode = body.nodes.find((n: any) => n.id !== body.mainAgentId)
+    expect(agentNode).toBeDefined()
+    expect(agentNode.tenantIds).toEqual(['default', 'eszter'])
+    expect(agentNode.tenantNames).toEqual({ default: 'Fleet (default)', eszter: 'Eszter tenant' })
+    expect(agentNode.primaryTenantId).toBe('eszter')
+    expect(agentNode.primaryTenantName).toBe('Eszter tenant')
+    // The main agent node is built separately and never carries these fields.
+    const mainNode = body.nodes.find((n: any) => n.id === body.mainAgentId)
+    expect(mainNode.tenantIds).toBeUndefined()
   })
 
   it('GET /api/agents/:name returns 404 for unknown agent', async () => {
