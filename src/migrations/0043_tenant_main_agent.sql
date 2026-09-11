@@ -1,4 +1,4 @@
--- Migration 0042: tenant main-agent designation.
+-- Migration 0043: tenant main-agent designation.
 --
 -- tenants.main_agent_id names which agent is that tenant's coordinator, so
 -- the Agents screen can label the right card/node as the tenant's main agent
