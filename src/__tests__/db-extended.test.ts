@@ -11,6 +11,7 @@ import {
   upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces,
   createAgentMessage,
   createApproval,
+  pruneConversationLog, pruneAgentMessages,
 } from '../db.js'
 
 beforeAll(() => {
@@ -27,6 +28,8 @@ afterAll(() => {
   db.exec("DELETE FROM otel_spans WHERE trace_id LIKE 'trace-test-%'")
   db.exec("DELETE FROM agent_messages WHERE from_agent = 'test-from'")
   db.exec("DELETE FROM approvals WHERE agent_id = 'test-agent-approvals'")
+  db.exec("DELETE FROM conversation_log WHERE agent_id = 'test-convlog-agent'")
+  db.exec("DELETE FROM agent_messages WHERE from_agent = 'test-msg-agent'")
 })
 
 // --- Skill Usage ---
@@ -220,6 +223,55 @@ describe('pruneAuditLogs', () => {
     const remainingIds = remaining.map(r => r.agent_id)
     expect(remainingIds).not.toContain('test-hook-agent-old')
     expect(remainingIds).toContain('test-hook-agent-fresh')
+  })
+})
+
+// --- Message log pruning (conversation_log + agent_messages) ---
+
+describe('pruneConversationLog / pruneAgentMessages', () => {
+  it('pruneConversationLog deletes rows older than MESSAGE_LOG_RETENTION_DAYS', () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const oldTs = now - 200 * 86400 // well past the 90-day default retention
+    db.prepare(
+      "INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run('test-convlog-agent', 'chat-1', 'in', 'msg-old', 'old message', oldTs)
+    db.prepare(
+      "INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run('test-convlog-agent', 'chat-1', 'in', 'msg-fresh', 'fresh message', now)
+
+    pruneConversationLog()
+
+    const remaining = db.prepare(
+      "SELECT message_id FROM conversation_log WHERE agent_id = 'test-convlog-agent'",
+    ).all() as { message_id: string }[]
+    const remainingIds = remaining.map(r => r.message_id)
+    expect(remainingIds).not.toContain('msg-old')
+    expect(remainingIds).toContain('msg-fresh')
+  })
+
+  // Deliberately no status carve-out: a message still 'pending' 200 days
+  // later is pruned the same as a 'done' one, matching every other age-only
+  // prune function in this file.
+  it('pruneAgentMessages deletes rows older than MESSAGE_LOG_RETENTION_DAYS regardless of status', () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const oldTs = now - 200 * 86400
+    db.prepare(
+      "INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).run('test-msg-agent', 'test-to', 'old pending message', 'pending', oldTs)
+    db.prepare(
+      "INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).run('test-msg-agent', 'test-to', 'fresh done message', 'done', now)
+
+    pruneAgentMessages()
+
+    const remaining = db.prepare(
+      "SELECT content FROM agent_messages WHERE from_agent = 'test-msg-agent'",
+    ).all() as { content: string }[]
+    const remainingContents = remaining.map(r => r.content)
+    expect(remainingContents).not.toContain('old pending message')
+    expect(remainingContents).toContain('fresh done message')
   })
 })
 

@@ -369,6 +369,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'MESSAGE_LOG_RETENTION_DAYS',
+    type: 'int',
+    default: 90,
+    min: 7,
+    max: 3650,
+    description: 'A conversation_log (csatorna be/kimenő üzenetnapló) és az agent_messages (inter-agent üzenetsor, státusztól függetlenül) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Token usage module ---
   {
     key: 'TOKEN_USAGE_RETENTION_DAYS',
