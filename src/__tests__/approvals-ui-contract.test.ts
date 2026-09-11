@@ -86,6 +86,28 @@ describe('approvals UI wiring', () => {
     expect(APPROVALS_MOD).toMatch(/badge\.hidden\s*=\s*counts\.pending\s*===\s*0/)
   })
 
+  it('badge polls independently of the (lazy) Approvals page, mirroring the updates badge', () => {
+    // pollApprovalsBadge is a standalone export -- it must not depend on
+    // _approvalsAll (which is only populated after loadApprovalsPage runs),
+    // so the nav badge can update on tabs where Approvals was never opened.
+    expect(APPROVALS_MOD).toMatch(/export async function pollApprovalsBadge\(/)
+    const pollIdx = APPROVALS_MOD.indexOf('export async function pollApprovalsBadge(')
+    const nextExport = APPROVALS_MOD.indexOf('\nexport ', pollIdx + 1)
+    const pollBody = APPROVALS_MOD.slice(pollIdx, nextExport > pollIdx ? nextExport : pollIdx + 800)
+    // Server-side status filter keeps the poll payload small (not the full list).
+    expect(pollBody).toContain("/api/approvals?status=pending")
+    expect(pollBody).toContain('approvalsPendingBadge')
+    expect(pollBody).toMatch(/badge\.hidden\s*=\s*count\s*===\s*0/)
+
+    // app.js wires the poll at boot, next to initUpdates(), same 5-min cadence.
+    expect(APP).toMatch(/initUpdates\(\)/)
+    const bootIdx = APP.indexOf('initUpdates()')
+    const afterBoot = APP.slice(bootIdx, bootIdx + 600)
+    expect(afterBoot).toContain("lazyLoad('approvals'")
+    expect(afterBoot).toContain('pollApprovalsBadge()')
+    expect(afterBoot).toMatch(/setInterval\(.*pollApprovalsBadge.*5 \* 60_000\)/s)
+  })
+
   it('pending notice banner exists, hidden by default, shown only when pending > 0', () => {
     expect(HTML).toContain('id="approvalsPendingBanner"')
     expect(HTML).toMatch(/approvalsPendingBanner[^>]*hidden/)
