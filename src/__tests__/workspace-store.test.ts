@@ -4,6 +4,7 @@ import {
   saveWorkspaceDoc,
   getWorkspaceDocUpdatedAtMs,
   sweepExpiredWorkspaceDocs,
+  storeWorkspaceDocEmbedding,
 } from '../workspace-store.js'
 
 beforeAll(() => {
@@ -122,5 +123,43 @@ describe('sweepExpiredWorkspaceDocs', () => {
     insertDoc('doc-old-binary', OLD, { contentType: 'binary' })
     expect(sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
     expect(getDb().prepare('SELECT 1 FROM workspace_docs WHERE id = ?').get('doc-old-binary')).toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// storeWorkspaceDocEmbedding (Ollama-free path -- see artifacts-db.test.ts's
+// equivalent "Ollama-free path" describe block for the same convention: no
+// Ollama server runs in CI, so generateEmbedding resolves to null and this
+// must be a graceful, non-throwing no-op).
+// ---------------------------------------------------------------------------
+
+describe('storeWorkspaceDocEmbedding', () => {
+  it('does not throw when Ollama is unavailable (matches artifacts-db.test.ts convention: only assert no throw, not the null/embedded outcome, since a locally running Ollama would legitimately produce a real embedding)', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Embed-test', content: 'some content to embed', content_type: 'text', type: 'notes',
+    })
+    await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', 'Embed-test some content to embed'))
+      .resolves.toBeUndefined()
+  })
+
+  it('does not throw for an unknown doc id', async () => {
+    await expect(storeWorkspaceDocEmbedding('nonexistent-id', 'agent-a', 'default', 'text')).resolves.toBeUndefined()
+  })
+
+  it('does not throw for empty text', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Empty', content: '', content_type: 'text', type: 'notes',
+    })
+    await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', '')).resolves.toBeUndefined()
+  })
+
+  it('does not throw for a binary doc', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Binary-doc', content_blob: Buffer.from('x'), content_type: 'binary', type: 'notes',
+    })
+    await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', 'Binary-doc')).resolves.toBeUndefined()
   })
 })

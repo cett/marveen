@@ -10,7 +10,7 @@
 //   binary ≤ 16 MB
 
 import { randomBytes } from 'node:crypto'
-import { getDb } from './db.js'
+import { getDb, generateEmbedding, floatsToBlob } from './db.js'
 
 export const WORKSPACE_DOC_SIZE_LIMITS: Record<string, number> = {
   text:   2 * 1024 * 1024,
@@ -328,6 +328,33 @@ export function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInput): Wo
   }
   const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow
   return rowToDoc(row)
+}
+
+/**
+ * Generate and store a title+content embedding for a workspace doc in
+ * vec_workspace_docs. No-op when Ollama is unavailable, the sqlite-vec
+ * extension is not loaded, the doc no longer exists, or content_type is
+ * 'binary' (mirrors storeArtifactEmbedding's Ollama-free graceful path).
+ */
+export async function storeWorkspaceDocEmbedding(
+  id: string,
+  agentId: string,
+  tenantId: string,
+  text: string,
+): Promise<void> {
+  if (!text.trim()) return
+
+  const embedding = await generateEmbedding(text).catch(() => null)
+  if (!embedding) return
+
+  const existing = getDb().prepare(
+    'SELECT content_type FROM workspace_docs WHERE id = ?'
+  ).get(id) as { content_type: WorkspaceContentType } | undefined
+  if (!existing || existing.content_type === 'binary') return
+
+  const blob = floatsToBlob(embedding)
+  getDb().prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, id)
+  syncVecUpsert(id, agentId, tenantId, blob)
 }
 
 export function deleteWorkspaceDoc(id: string): boolean {
