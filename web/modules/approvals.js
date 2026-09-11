@@ -17,6 +17,26 @@ const _approvalsState = { status: '', agent: '', category: '', offset: 0 }
 let _approvalsAll = []
 let _approvalsTenantGetter = null
 
+// ============================================================
+// === Sidebar badge polling (mirrors updates.js pollUpdatesBadge) ===
+// Keeps the nav badge current on every tab, not just when the (lazy)
+// Approvals page has actually been opened. Uses ?status=pending so the
+// request stays cheap even with a large approvals history -- the server
+// already applies the same tenant/admin scoping as the full page load.
+// ============================================================
+export async function pollApprovalsBadge() {
+  try {
+    const res = await fetch('/api/approvals?status=pending&limit=500')
+    if (!res.ok) return
+    const items = await res.json()
+    const badge = document.getElementById('approvalsPendingBadge')
+    if (!badge) return
+    const count = Array.isArray(items) ? items.length : 0
+    badge.textContent = String(count)
+    badge.hidden = count === 0
+  } catch {}
+}
+
 export async function loadApprovalsPage() {
   const tbody = document.getElementById('approvalsTbody')
   const statsEl = document.getElementById('approvalsStats')
