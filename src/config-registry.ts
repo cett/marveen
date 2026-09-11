@@ -605,6 +605,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'BB_STALE_ASSIGNED_MIN',
+    type: 'int',
+    default: 120,
+    min: 15,
+    max: 480,
+    description: 'Blackboard stale-határ (perc) az "assigned" (delegált, de még el nem kezdett) soroknak. Nem tier-alapú -- egy fel nem vett feladatnak nincs tier-je.',
+    module: 'blackboard',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'WORKSPACE_DOCS_TTL_DAYS',
     type: 'int',
     default: 14,

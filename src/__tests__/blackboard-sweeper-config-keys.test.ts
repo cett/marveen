@@ -45,3 +45,16 @@ describe('TIER_CONFIG_KEY values exist in config-registry with correct defaults'
     })
   }
 })
+
+// BB_STALE_ASSIGNED_MIN is deliberately NOT part of TIER_CONFIG_KEY -- an
+// 'assigned' (not yet picked up) row has no tier of its own, so it uses this
+// flat key instead. Verified separately here.
+describe('BB_STALE_ASSIGNED_MIN exists in config-registry with correct default', () => {
+  it('resolves without error', () => {
+    expect(() => getEffectiveSettingValue('BB_STALE_ASSIGNED_MIN')).not.toThrow()
+  })
+
+  it('has expected default of 120', () => {
+    expect(getEffectiveSettingValue('BB_STALE_ASSIGNED_MIN')).toBe(120)
+  })
+})
