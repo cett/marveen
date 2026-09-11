@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
-const { mockSearchMemories, mockHybridSearch, mockGetDb, mockSearchWorkspaceDocs } = vi.hoisted(() => {
+const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs } = vi.hoisted(() => {
   const fakeMemory = (id: number) => ({
     id, agent_id: 'agent-a', content: 'test content', keywords: 'test',
     category: 'warm', created_at: 1750000000, accessed_at: 1750000001,
@@ -24,7 +24,7 @@ const { mockSearchMemories, mockHybridSearch, mockGetDb, mockSearchWorkspaceDocs
     mockGetDb: vi.fn().mockReturnValue({
       prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]), run: vi.fn() }),
     }),
-    mockSearchWorkspaceDocs: vi.fn().mockReturnValue([
+    mockHybridSearchDocs: vi.fn().mockResolvedValue([
       { id: 'doc1', title: 'Budget plafon terv', agent_id: 'agent-a', tenant_id: 'tenant-a', type: 'plan', task_ref: '670b6218', doc_key: null, created_at: 1750000000, updated_at: 1750000000, snippet: 'The [BudgetEntry] amount' },
     ]),
   }
@@ -55,7 +55,7 @@ vi.mock('../db.js', () => ({
 }))
 
 vi.mock('../workspace-store.js', () => ({
-  searchWorkspaceDocs: mockSearchWorkspaceDocs,
+  hybridSearchDocs: mockHybridSearchDocs,
 }))
 
 vi.mock('../config.js', () => ({
@@ -98,26 +98,26 @@ describe('GET /api/memories?q= -- backward compatibility (no include_docs)', () 
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
     expect(Array.isArray(out.body)).toBe(true)
-    expect(mockSearchWorkspaceDocs).not.toHaveBeenCalled()
+    expect(mockHybridSearchDocs).not.toHaveBeenCalled()
   })
 
   it('returns a plain array for a non-search listing regardless of include_docs (no q)', async () => {
     const { ctx, out } = makeCtx('/api/memories', { include_docs: '1' })
     await tryHandleMemories(ctx)
     expect(Array.isArray(out.body)).toBe(true)
-    expect(mockSearchWorkspaceDocs).not.toHaveBeenCalled()
+    expect(mockHybridSearchDocs).not.toHaveBeenCalled()
   })
 
   it('include_docs=0 or any non-"1" value behaves as absent (plain array)', async () => {
     const { ctx, out } = makeCtx('/api/memories', { q: 'budget', include_docs: '0' })
     await tryHandleMemories(ctx)
     expect(Array.isArray(out.body)).toBe(true)
-    expect(mockSearchWorkspaceDocs).not.toHaveBeenCalled()
+    expect(mockHybridSearchDocs).not.toHaveBeenCalled()
   })
 })
 
 describe('GET /api/memories?q=&include_docs=1 -- opt-in combined response', () => {
-  it('returns { memories, workspace_docs } and calls searchWorkspaceDocs with the same q/limit', async () => {
+  it('returns { memories, workspace_docs } and calls hybridSearchDocs with the same q/limit', async () => {
     const { ctx, out } = makeCtx('/api/memories', { q: 'budget', include_docs: '1', limit: '25' })
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
@@ -125,36 +125,36 @@ describe('GET /api/memories?q=&include_docs=1 -- opt-in combined response', () =
     expect(Array.isArray(out.body.memories)).toBe(true)
     expect(Array.isArray(out.body.workspace_docs)).toBe(true)
     expect(out.body.workspace_docs[0].title).toBe('Budget plafon terv')
-    expect(mockSearchWorkspaceDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ limit: 25 }))
+    expect(mockHybridSearchDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ limit: 25 }))
   })
 
   it('a non-admin caller is scoped to their own tenant (SQL-level, mirroring memories search)', async () => {
     const { ctx } = makeCtx('/api/memories', { q: 'budget', include_docs: '1' }, { role: 'viewer', tenantId: 'tenant-a' })
     await tryHandleMemories(ctx)
-    expect(mockSearchWorkspaceDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ tenantId: 'tenant-a' }))
+    expect(mockHybridSearchDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ tenantId: 'tenant-a' }))
   })
 
   it('an admin caller with no ?tenant= filter passes tenantId=undefined (all tenants), matching memories search semantics', async () => {
     const { ctx } = makeCtx('/api/memories', { q: 'budget', include_docs: '1' }, { role: 'admin', tenantId: null })
     await tryHandleMemories(ctx)
-    expect(mockSearchWorkspaceDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ tenantId: undefined }))
+    expect(mockHybridSearchDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ tenantId: undefined }))
   })
 
   it('an admin caller with an explicit ?tenant= filter scopes workspace_docs to exactly that tenant', async () => {
     const { ctx } = makeCtx('/api/memories', { q: 'budget', include_docs: '1', tenant: 'tenant-b' }, { role: 'admin', tenantId: null })
     await tryHandleMemories(ctx)
-    expect(mockSearchWorkspaceDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ tenantId: 'tenant-b' }))
+    expect(mockHybridSearchDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ tenantId: 'tenant-b' }))
   })
 
   it('passes agentId through when ?agent= is set', async () => {
     const { ctx } = makeCtx('/api/memories', { q: 'budget', include_docs: '1', agent: 'agent-a' })
     await tryHandleMemories(ctx)
-    expect(mockSearchWorkspaceDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ agentId: 'agent-a' }))
+    expect(mockHybridSearchDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ agentId: 'agent-a' }))
   })
 
   it('passes agentId as undefined (not empty string) when no ?agent= is set', async () => {
     const { ctx } = makeCtx('/api/memories', { q: 'budget', include_docs: '1' })
     await tryHandleMemories(ctx)
-    expect(mockSearchWorkspaceDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ agentId: undefined }))
+    expect(mockHybridSearchDocs).toHaveBeenCalledWith('budget', expect.objectContaining({ agentId: undefined }))
   })
 })

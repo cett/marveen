@@ -4,6 +4,10 @@ import {
   saveWorkspaceDoc,
   getWorkspaceDocUpdatedAtMs,
   sweepExpiredWorkspaceDocs,
+  storeWorkspaceDocEmbedding,
+  backfillWorkspaceDocs,
+  vectorSearchDocs,
+  hybridSearchDocs,
 } from '../workspace-store.js'
 
 beforeAll(() => {
@@ -122,5 +126,130 @@ describe('sweepExpiredWorkspaceDocs', () => {
     insertDoc('doc-old-binary', OLD, { contentType: 'binary' })
     expect(sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
     expect(getDb().prepare('SELECT 1 FROM workspace_docs WHERE id = ?').get('doc-old-binary')).toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// storeWorkspaceDocEmbedding (Ollama-free path -- see artifacts-db.test.ts's
+// equivalent "Ollama-free path" describe block for the same convention: no
+// Ollama server runs in CI, so generateEmbedding resolves to null and this
+// must be a graceful, non-throwing no-op).
+// ---------------------------------------------------------------------------
+
+describe('storeWorkspaceDocEmbedding', () => {
+  it('does not throw when Ollama is unavailable (matches artifacts-db.test.ts convention: only assert no throw, not the null/embedded outcome, since a locally running Ollama would legitimately produce a real embedding)', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Embed-test', content: 'some content to embed', content_type: 'text', type: 'notes',
+    })
+    await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', 'Embed-test some content to embed'))
+      .resolves.toBeUndefined()
+  })
+
+  it('does not throw for an unknown doc id', async () => {
+    await expect(storeWorkspaceDocEmbedding('nonexistent-id', 'agent-a', 'default', 'text')).resolves.toBeUndefined()
+  })
+
+  it('does not throw for empty text', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Empty', content: '', content_type: 'text', type: 'notes',
+    })
+    await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', '')).resolves.toBeUndefined()
+  })
+
+  it('does not throw for a binary doc', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Binary-doc', content_blob: Buffer.from('x'), content_type: 'binary', type: 'notes',
+    })
+    await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', 'Binary-doc')).resolves.toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// backfillWorkspaceDocs
+// ---------------------------------------------------------------------------
+
+describe('backfillWorkspaceDocs', () => {
+  it('does not throw and returns a number when Ollama is unavailable', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Backfill-me', content: 'needs an embedding', content_type: 'text', type: 'notes',
+    })
+    const count = await backfillWorkspaceDocs()
+    expect(typeof count).toBe('number')
+  })
+
+  it('skips binary docs and docs with no content', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Binary-skip', content_blob: Buffer.from('x'), content_type: 'binary', type: 'notes',
+    })
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'No-content', content: null, content_type: 'text', type: 'notes',
+    })
+    // Neither row is eligible -- the SELECT filter excludes both, so no
+    // Ollama calls happen and the function still resolves cleanly.
+    const count = await backfillWorkspaceDocs()
+    expect(typeof count).toBe('number')
+  })
+
+  it('skips docs that already have an embedding_blob', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Already-embedded', content: 'text', content_type: 'text', type: 'notes',
+    })
+    getDb().prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(Buffer.from([1, 2, 3, 4]), doc.id)
+    const before = (getDb().prepare('SELECT embedding_blob FROM workspace_docs WHERE id = ?').get(doc.id) as { embedding_blob: Buffer }).embedding_blob
+    await backfillWorkspaceDocs()
+    const after = (getDb().prepare('SELECT embedding_blob FROM workspace_docs WHERE id = ?').get(doc.id) as { embedding_blob: Buffer }).embedding_blob
+    expect(after).toEqual(before)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// vectorSearchDocs / hybridSearchDocs
+//
+// No Ollama server runs in CI, so vectorSearchDocs resolves to [] (graceful
+// no-op, same convention as searchArtifactsByVector) -- these tests exercise
+// the parts that do NOT depend on a real embedding: the graceful-empty
+// contract for vectorSearchDocs, and hybridSearchDocs' FTS-only fallback
+// (RRF over a single non-empty list preserves that list's order, so with no
+// vector results hybridSearchDocs must behave exactly like searchWorkspaceDocs).
+// ---------------------------------------------------------------------------
+
+describe('vectorSearchDocs', () => {
+  it('resolves to an empty array when no embedding can be generated (Ollama unavailable)', async () => {
+    await expect(vectorSearchDocs('anything', { limit: 5 })).resolves.toEqual([])
+  })
+})
+
+describe('hybridSearchDocs', () => {
+  it('falls back to pure FTS ranking when vectorSearchDocs finds nothing', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Hybrid fallback test', content: 'unique fusiontestkeyword content', content_type: 'text', type: 'notes',
+    })
+    const results = await hybridSearchDocs('fusiontestkeyword', { limit: 5 })
+    expect(results.length).toBe(1)
+    expect(results[0].title).toBe('Hybrid fallback test')
+  })
+
+  it('is tenant-scoped exactly like searchWorkspaceDocs', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'tenant-x',
+      title: 'Tenant-x doc', content: 'fusionscopekeyword content', content_type: 'text', type: 'notes',
+    })
+    const otherTenant = await hybridSearchDocs('fusionscopekeyword', { tenantId: 'tenant-y', limit: 5 })
+    expect(otherTenant).toEqual([])
+    const sameTenant = await hybridSearchDocs('fusionscopekeyword', { tenantId: 'tenant-x', limit: 5 })
+    expect(sameTenant.length).toBe(1)
+  })
+
+  it('returns an empty array when nothing matches either FTS or vector', async () => {
+    const results = await hybridSearchDocs('nonexistentqueryzzz', { limit: 5 })
+    expect(results).toEqual([])
   })
 })

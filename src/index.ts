@@ -14,6 +14,7 @@ import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
+import { backfillWorkspaceDocs } from './workspace-store.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
@@ -492,6 +493,11 @@ async function main(): Promise<void> {
   backfillEmbeddings().then(count => {
     if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
+
+  // Same fire-and-forget backfill, for workspace_docs saved before this feature existed.
+  backfillWorkspaceDocs().then(count => {
+    if (count > 0) logger.info({ count }, 'Workspace doc embedding backfill befejezve')
+  }).catch(err => logger.warn({ err }, 'Workspace doc embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)
   runDecaySweep()

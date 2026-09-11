@@ -13,7 +13,7 @@ import { logger } from '../../logger.js'
 import {
   saveWorkspaceDoc, getWorkspaceDoc, getWorkspaceDocBlob,
   listWorkspaceDocs, patchWorkspaceDoc, deleteWorkspaceDoc,
-  peekWorkspaceDoc, WORKSPACE_DOC_SIZE_LIMITS,
+  peekWorkspaceDoc, storeWorkspaceDocEmbedding, WORKSPACE_DOC_SIZE_LIMITS,
   type WorkspaceDocType, type WorkspaceContentType,
 } from '../../workspace-store.js'
 import type { RouteContext } from './types.js'
@@ -123,6 +123,11 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
         content_type: contentType, type: docType, task_ref: taskRef,
       })
       logger.info({ agent_id: agentId, id: doc.id, doc_key: docKey }, 'workspace_doc saved')
+      // Fire-and-forget: index title+content embedding for hybrid search.
+      if (contentType !== 'binary' && effectiveContent) {
+        storeWorkspaceDocEmbedding(doc.id, agentId, tenantId, `${title} ${effectiveContent}`)
+          .catch(() => { /* non-critical */ })
+      }
       json(res, doc, 201)
     } catch (err) {
       logger.error({ err }, 'workspace_doc save failed')
@@ -204,6 +209,12 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
 
     const updated = patchWorkspaceDoc(id, patch)
     if (!updated) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
+    // Fire-and-forget: re-index the embedding only when the embedded text
+    // (title/content) actually changed, not on metadata-only patches.
+    if (existing.content_type !== 'binary' && ('title' in patch || 'content' in patch) && updated.content) {
+      storeWorkspaceDocEmbedding(updated.id, meta.agent_id, meta.tenant_id, `${updated.title} ${updated.content}`)
+        .catch(() => { /* non-critical */ })
+    }
     json(res, updated)
     return true
   }

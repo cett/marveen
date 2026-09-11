@@ -13,6 +13,7 @@ vi.mock('../workspace-store.js', () => ({
   patchWorkspaceDoc: vi.fn(),
   deleteWorkspaceDoc: vi.fn(),
   peekWorkspaceDoc: vi.fn(),
+  storeWorkspaceDocEmbedding: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() } }))
