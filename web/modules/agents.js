@@ -90,6 +90,7 @@ let federatedPeerStatus = []
 // synchronously; loadAgents refreshes it on every fetch). Defaults true,
 // matching can()'s own fail-open default for a null/legacy-token role.
 let _isAdminView = true
+export function isAdminView() { return _isAdminView }
 export function getFederatedPeerStatus() { return federatedPeerStatus }
 export function setFederatedPeerStatus(peers) { federatedPeerStatus = peers }
 

@@ -283,8 +283,11 @@ export function getAgentSummary(name: string): AgentSummary {
 }
 
 /** primaryTenantId/tenantIds/tenantNames for one agent, factored out of
- *  getAgentSummary so both fields stay in lockstep with the names they list. */
-function tenantSummaryFields(name: string): Pick<AgentSummary, 'primaryTenantId' | 'tenantIds' | 'tenantNames'> {
+ *  getAgentSummary so both fields stay in lockstep with the names they list.
+ *  Exported so GET /api/team/graph (agents-crud.ts) can surface the same
+ *  fields on org-chart nodes without recomputing the primary-tenant lookup
+ *  or duplicating the tenantNames-merge logic. */
+export function tenantSummaryFields(name: string): Pick<AgentSummary, 'primaryTenantId' | 'tenantIds' | 'tenantNames'> {
   const primaryTenant = getTenantForMainAgent(name)
   const tenantIds = getTenantsForAgent(name)
   const tenantNames: Record<string, string> = {}

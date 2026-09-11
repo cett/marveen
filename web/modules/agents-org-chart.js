@@ -4,7 +4,7 @@
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { escapeHtml } from './util.js'
-import { agents, avatarBust, setAgentsActiveView } from './agents.js'
+import { agents, avatarBust, setAgentsActiveView, isAdminView } from './agents.js'
 import { openAgentDetail } from './agents-detail.js'
 
 // === Team org-chart (now embedded in Agents page, tree view) ===
@@ -90,11 +90,23 @@ function renderTeamGraph(container, data, opts = {}) {
     const avatarUrl = node.id === mainAgentId
       ? `/api/marveen/avatar${avatarBust()}`
       : `/api/agents/${encodeURIComponent(node.id)}/avatar${avatarBust()}`
+    // Tenant-membership chips: admin-only, mirroring the Agents grid card's
+    // tenantChipsHtml (#857 -- the org-chart never got this on #919's
+    // card-only rollout).
+    let tenantChipsHtml = ''
+    if (isAdminView() && Array.isArray(node.tenantIds) && node.tenantIds.length > 0) {
+      const chips = node.tenantIds.map((id) => {
+        const name = (node.tenantNames && node.tenantNames[id]) || id
+        return `<span class="tenant-chip" data-tenant="${escapeHtml(id)}">${escapeHtml(t('agents.tenant_chip', { tenant: name }))}</span>`
+      }).join('')
+      tenantChipsHtml = `<div class="team-node-chips chip-group">${chips}</div>`
+    }
     div.innerHTML = `
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
       <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
       <div class="team-node-meta">${running}</div>
+      ${tenantChipsHtml}
     `
     if (node.id !== mainAgentId) {
       div.addEventListener('click', () => openAgentDetail(node.id))

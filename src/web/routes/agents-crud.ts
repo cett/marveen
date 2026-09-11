@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, getDb, writeAgentAuditLog, getTenantForMainAgent } from '../../db.js'
+import { createAgentMessage, getDb, writeAgentAuditLog } from '../../db.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { setSecret, deleteSecret } from '../vault.js'
@@ -136,7 +136,7 @@ import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
-import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists } from './agents-helpers.js'
+import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists, tenantSummaryFields } from './agents-helpers.js'
 import { getEnabledAgentsForTenant, isTenantAgentEnabled } from '../../db.js'
 
 export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Promise<boolean> {
@@ -521,6 +521,13 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
        *  MAIN_AGENT_ID, which already renders as role: 'main'. */
       primaryTenantId?: string
       primaryTenantName?: string
+      /** Every tenant this agent is enabled for (tenant_agent_availability),
+       *  plus display names -- mirrors AgentSummary's tenantIds/tenantNames
+       *  so the org-chart node can render the same admin-only tenant-
+       *  membership chip the Agents grid card already has (#857, closing a
+       *  gap left by #919's card-only rollout). Never set for MAIN_AGENT_ID. */
+      tenantIds?: string[]
+      tenantNames?: Record<string, string>
     }> = []
     nodes.push({
       id: MAIN_AGENT_ID,
@@ -532,7 +539,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     })
     for (const agentName of listAgentNames()) {
       const team = readAgentTeam(agentName)
-      const primaryTenant = getTenantForMainAgent(agentName)
+      const { primaryTenantId, tenantIds, tenantNames } = tenantSummaryFields(agentName)
+      const primaryTenantName = primaryTenantId ? tenantNames[primaryTenantId] : undefined
       nodes.push({
         id: agentName,
         label: readAgentDisplayName(agentName),
@@ -541,7 +549,9 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         delegatesTo: team.delegatesTo,
         running: isAgentRunning(agentName),
         securityProfile: readAgentSecurityProfile(agentName),
-        ...(primaryTenant ? { primaryTenantId: primaryTenant.id, primaryTenantName: primaryTenant.display_name } : {}),
+        ...(primaryTenantId ? { primaryTenantId, primaryTenantName } : {}),
+        tenantIds,
+        tenantNames,
       })
     }
     const knownIds = new Set(nodes.map(n => n.id))
