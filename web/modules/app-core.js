@@ -154,7 +154,7 @@ const NAV_I18N = {
   overview: 'nav.overview', kanban: 'nav.kanban', archived: 'nav.archived',
   agents: 'nav.agents', team: 'nav.team',
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
-  recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
+  recall: 'nav.recall', bgTasks: 'nav.bgTasks',
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'fleet.section_title',
   approvals: 'nav.approvals',
   docs: 'nav.docs', status: 'nav.status',
@@ -189,7 +189,6 @@ const PAGE_HEADER_I18N = {
   vaultPage:      { title: 'vault.page_title',       sub: 'vault.page_subtitle' },
   tokenUsagePage: { title: 'tokenUsage.page_title',  sub: 'tokenUsage.page_subtitle' },
   updatesPage:    { title: 'updates.page_title',     sub: null },
-  naploPage:      { title: 'naplo.page_title',       sub: 'naplo.page_subtitle' },
   federationPage: { title: 'federation.page_title',  sub: 'federation.page_subtitle' },
   approvalsPage:  { title: 'approvals.page_title',   sub: 'approvals.page_subtitle' },
 }

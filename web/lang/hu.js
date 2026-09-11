@@ -643,6 +643,9 @@ window._i18n.hu = {
   // --- Recall / Napló ---
   'recall.page_title':           'Napló',
   'recall.page_subtitle':        'Session recall: napi naplók és emlékek visszakeresése',
+  // used directly by the Recall page header markup (data-i18n="naplo.page_title/subtitle")
+  'naplo.page_title':            'Napló',
+  'naplo.page_subtitle':         'Session recall: napi naplók és emlékek visszakeresése',
   'recall.loading':              'Betöltés...',
   'recall.error':                'Hiba történt',
   'recall.load_error':           'Nem sikerült betölteni',
@@ -670,27 +673,6 @@ window._i18n.hu = {
   'recall.empty':                'Nincs találat',
   'recall.empty_period':         'Nincs találat erre az időszakra.',
   'recall.sort.asc':             'Növekvő sorrend (legrégebbi elöl)',
-
-  // --- Napló (Unified Audit) ---
-  'naplo.page_title':            'Napló',
-  'naplo.page_subtitle':         'Audit idővonal: konfig-változások, ötletláda-állapotváltások, store-fájl események',
-  'naplo.summary':               '{n} bejegyzés',
-  'naplo.error':                 'Hálózati hiba: {msg}',
-  'naplo.source.all':            'Összes',
-  'naplo.source.diary':          'Eseménynapló',
-  'naplo.source.config':         'Config',
-  'naplo.source.idea':           'Ötletláda',
-  'naplo.source.store':          'Store-fájlok',
-  'naplo.search_placeholder':    'Keresés...',
-  'naplo.agent_placeholder':     'Ágens (pl. agent-a)',
-  'naplo.btn.search':            'Keresés',
-  'naplo.btn.refresh':           'Frissítés',
-  'naplo.empty':                 'Nincs találat.',
-  'naplo.empty_hint':            'Válassz szűrőt és kattints Keresés-re.',
-  'naplo.loading':               'Betöltés...',
-  'naplo.diary.log_badge':       'Napló',
-  'naplo.diary.memory_badge':    'Emlék',
-  'naplo.entry.sensitive':       'sensitív',
 
   // --- Background Tasks ---
   'bgTasks.page_title':          'Háttérfeladatok',
@@ -1997,7 +1979,6 @@ window._i18n.hu = {
   'admin.b2b.screen_access.screen.workspaceDocs': 'Munkadokumentumok',
   'admin.b2b.screen_access.screen.agents':        'Ügynökök',
   'admin.b2b.screen_access.screen.memories':      'Memória',
-  'admin.b2b.screen_access.screen.naplo':         'Napló',
   'admin.b2b.screen_access.screen.federation':    'Föderáció',
   'admin.b2b.screen_access.screen.docs':          'Dokumentáció',
   'admin.b2b.screen_access.screen.messages':      'Üzenetek',
