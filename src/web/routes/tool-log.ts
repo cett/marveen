@@ -58,6 +58,7 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
         status: success ? 'ok' : 'error',
         attributes: JSON.stringify({
           tool_name: data.tool_name,
+          ...(data.input_summary ? { input_summary: data.input_summary } : {}),
           ...(mcp ? { mcp_server: mcp.server, mcp_tool: mcp.tool } : {}),
         }),
       })
