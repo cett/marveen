@@ -202,7 +202,10 @@
   flex: 1;
 }
 
-/* === Archivum empty/error state (shared) === */
+/* === Archivum toolbar/list state (shared) === */
+.naplo-search { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
+.naplo-date { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
+.naplo-summary { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
 .naplo-empty { color: var(--text-muted); font-size: 14px; text-align: center; margin-top: 40px; }
 .naplo-empty.error { color: var(--danger); }
 

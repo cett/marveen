@@ -643,6 +643,9 @@ window._i18n.hu = {
   // --- Recall / Napló ---
   'recall.page_title':           'Napló',
   'recall.page_subtitle':        'Session recall: napi naplók és emlékek visszakeresése',
+  // used directly by the Recall page header markup (data-i18n="naplo.page_title/subtitle")
+  'naplo.page_title':            'Napló',
+  'naplo.page_subtitle':         'Session recall: napi naplók és emlékek visszakeresése',
   'recall.loading':              'Betöltés...',
   'recall.error':                'Hiba történt',
   'recall.load_error':           'Nem sikerült betölteni',

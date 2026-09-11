@@ -442,6 +442,9 @@ window._i18n.en = {
   // --- Recall / Napló ---
   'recall.page_title':           'Diary',
   'recall.page_subtitle':        'Session recall: search daily logs and memories',
+  // used directly by the Recall page header markup (data-i18n="naplo.page_title/subtitle")
+  'naplo.page_title':            'Diary',
+  'naplo.page_subtitle':         'Session recall: search daily logs and memories',
   'recall.search_placeholder':   'Search diary text...',
   'recall.expr_placeholder':     'e.g. yesterday, last week...',
   'recall.filter.all_agents':    'All agents',
