@@ -273,6 +273,17 @@
       <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
       <div id="overviewTenantSelectorContainer" hidden></div>
 
+      <!-- Subscription quota strip: admin-only (fleet-level data), overview.js
+           keeps it hidden entirely for a non-admin response. -->
+      <div class="quota-strip" id="quotaStrip" hidden>
+        <div class="quota-strip-head">
+          <span class="quota-strip-title" data-i18n="overview.quota.title">Előfizetési keret</span>
+          <span class="quota-strip-age" id="quotaStripAge"></span>
+        </div>
+        <div class="quota-bars" id="quotaBars"></div>
+        <div class="quota-strip-note" id="quotaStripNote" hidden></div>
+      </div>
+
       <!-- Zone 1: Attention Required (hidden when empty, collapsible) -->
       <div class="attention-section" id="attentionSection" hidden>
         <div class="attention-header" id="attentionHeader">

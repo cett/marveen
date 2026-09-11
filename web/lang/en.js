@@ -1638,6 +1638,16 @@ window._i18n.en = {
 
   // --- Overview stats labels (index.html static) ---
   'overview.stat.agents':        'Active agents',
+  'overview.quota.title':           'Subscription quota',
+  'overview.quota.five_hour':       '5-hour',
+  'overview.quota.seven_day':       'Weekly',
+  'overview.quota.resets_in':       'resets in {d}',
+  'overview.quota.expired':         'window already reset',
+  'overview.quota.measured':        'measured {age} ago',
+  'overview.quota.stale':           'This reading is older than the freshness limit, so treat the numbers as out of date: the status line has not written a new one.',
+  'overview.quota.none.no_file':    'No quota reading yet. The numbers arrive with the status line, after the first API response of a session.',
+  'overview.quota.none.unreadable': 'The quota file could not be read, so no numbers are shown rather than stale ones.',
+  'overview.quota.none.no_rate_limits': 'This account reports no quota windows (API-key accounts do not have them).',
   'overview.stat.tasks':         'Tasks run today',
   'overview.stat.memories':      'Memory',
   'overview.stat.skills':        'Generated skills',
