@@ -9,6 +9,7 @@ import {
 import { readAgentTeam } from '../agent-team.js'
 import { isAgentRunning } from '../agent-process.js'
 import { jsonMaybeGzip } from '../http-helpers.js'
+import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC } from '../quota.js'
 import type { RouteContext } from './types.js'
 
 // Count "real" user turns (operator prompts, Telegram messages) in every
@@ -302,6 +303,12 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       })
     }
 
+    // Subscription quota (5h/7-day), as scripts/statusline-ratelimit.sh last
+    // wrote it to store/.claude-rate-limits.json -- fleet-level, so it only
+    // ever goes out inside the admin-only spread below.
+    const quotaMaxAgeSec = Number(process.env['QUOTA_MAX_AGE_SEC']) || DEFAULT_MAX_AGE_SEC
+    const quota = readQuotaSnapshot(join(PROJECT_ROOT, 'store', '.claude-rate-limits.json'), Math.floor(nowMs / 1000), quotaMaxAgeSec)
+
     jsonMaybeGzip(req, res, {
       // Tenant-scoped: visible to all authenticated callers.
       memories: { count: memStats.c, categories: memCats.c },
@@ -321,6 +328,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         pendingApprovals,
         errors4h,
         stuckTasks,
+        quota,
       }),
     })
     return true

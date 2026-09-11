@@ -1638,6 +1638,16 @@ window._i18n.hu = {
 
   // --- Overview stats labels (index.html static) ---
   'overview.stat.agents':        'Aktív ügynökök',
+  'overview.quota.title':           'Előfizetési keret',
+  'overview.quota.five_hour':       '5 órás',
+  'overview.quota.seven_day':       'Heti',
+  'overview.quota.resets_in':       'nullázódik {d} múlva',
+  'overview.quota.expired':         'a keret azóta nullázódott',
+  'overview.quota.measured':        '{age} régi mérés',
+  'overview.quota.stale':           'Ez a mérés régebbi a frissességi határnál, tehát a számok elavultak: a státuszsor nem írt újat.',
+  'overview.quota.none.no_file':    'Még nincs keret-mérés. A számokat a státuszsor írja, a munkamenet első API-válasza után.',
+  'overview.quota.none.unreadable': 'A keret-fájl nem olvasható, ezért inkább nem mutatunk számot, mint elavultat.',
+  'overview.quota.none.no_rate_limits': 'Ez a fiók nem jelent keret-ablakokat (az API-kulcsos fiókoknak nincsenek).',
   'overview.stat.tasks':         'Ma futott feladat',
   'overview.stat.memories':      'Memória',
   'overview.stat.skills':        'Generált skillek',
