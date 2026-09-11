@@ -6,6 +6,8 @@ import {
   sweepExpiredWorkspaceDocs,
   storeWorkspaceDocEmbedding,
   backfillWorkspaceDocs,
+  vectorSearchDocs,
+  hybridSearchDocs,
 } from '../workspace-store.js'
 
 beforeAll(() => {
@@ -204,5 +206,50 @@ describe('backfillWorkspaceDocs', () => {
     await backfillWorkspaceDocs()
     const after = (getDb().prepare('SELECT embedding_blob FROM workspace_docs WHERE id = ?').get(doc.id) as { embedding_blob: Buffer }).embedding_blob
     expect(after).toEqual(before)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// vectorSearchDocs / hybridSearchDocs
+//
+// No Ollama server runs in CI, so vectorSearchDocs resolves to [] (graceful
+// no-op, same convention as searchArtifactsByVector) -- these tests exercise
+// the parts that do NOT depend on a real embedding: the graceful-empty
+// contract for vectorSearchDocs, and hybridSearchDocs' FTS-only fallback
+// (RRF over a single non-empty list preserves that list's order, so with no
+// vector results hybridSearchDocs must behave exactly like searchWorkspaceDocs).
+// ---------------------------------------------------------------------------
+
+describe('vectorSearchDocs', () => {
+  it('resolves to an empty array when no embedding can be generated (Ollama unavailable)', async () => {
+    await expect(vectorSearchDocs('anything', { limit: 5 })).resolves.toEqual([])
+  })
+})
+
+describe('hybridSearchDocs', () => {
+  it('falls back to pure FTS ranking when vectorSearchDocs finds nothing', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Hybrid fallback test', content: 'unique fusiontestkeyword content', content_type: 'text', type: 'notes',
+    })
+    const results = await hybridSearchDocs('fusiontestkeyword', { limit: 5 })
+    expect(results.length).toBe(1)
+    expect(results[0].title).toBe('Hybrid fallback test')
+  })
+
+  it('is tenant-scoped exactly like searchWorkspaceDocs', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'tenant-x',
+      title: 'Tenant-x doc', content: 'fusionscopekeyword content', content_type: 'text', type: 'notes',
+    })
+    const otherTenant = await hybridSearchDocs('fusionscopekeyword', { tenantId: 'tenant-y', limit: 5 })
+    expect(otherTenant).toEqual([])
+    const sameTenant = await hybridSearchDocs('fusionscopekeyword', { tenantId: 'tenant-x', limit: 5 })
+    expect(sameTenant.length).toBe(1)
+  })
+
+  it('returns an empty array when nothing matches either FTS or vector', async () => {
+    const results = await hybridSearchDocs('nonexistentqueryzzz', { limit: 5 })
+    expect(results).toEqual([])
   })
 })

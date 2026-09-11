@@ -10,7 +10,7 @@ import {
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
-import { searchWorkspaceDocs, type WorkspaceDocSearchResult } from '../../workspace-store.js'
+import { hybridSearchDocs, type WorkspaceDocSearchResult } from '../../workspace-store.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -187,9 +187,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // Same tenant/agent/limit semantics as the memories search above --
       // recallTenantId undefined means "admin, no ?tenant= filter" (every
       // tenant), a string means SQL-level scoping to exactly that tenant.
-      // This is the one call site for searchWorkspaceDocs; its own doc
-      // comment carries the tenant-isolation contract.
-      const docResults: WorkspaceDocSearchResult[] = searchWorkspaceDocs(q, {
+      // This is the one call site for hybridSearchDocs (FTS+vector RRF
+      // fusion); its own doc comment carries the tenant-isolation contract.
+      // Still gated behind include_docs=1 -- this does not change the
+      // default (non-opt-in) recall response for any other caller.
+      const docResults: WorkspaceDocSearchResult[] = await hybridSearchDocs(q, {
         tenantId: recallTenantId,
         agentId: agentId || undefined,
         limit,

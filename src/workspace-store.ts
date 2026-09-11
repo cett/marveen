@@ -11,6 +11,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { getDb, generateEmbedding, floatsToBlob } from './db.js'
+import { logger } from './logger.js'
 
 export const WORKSPACE_DOC_SIZE_LIMITS: Record<string, number> = {
   text:   2 * 1024 * 1024,
@@ -252,6 +253,106 @@ export function searchWorkspaceDocs(
     ORDER BY rank
     LIMIT ?
   `).all(...params) as WorkspaceDocSearchResult[]
+}
+
+/**
+ * ANN vector search over vec_workspace_docs. Mirrors searchArtifactsByVector
+ * (src/db/vector.ts) -- no recency decay, no rerank, those are out of scope
+ * here. Candidates are over-fetched (limit*2) so hybridSearchDocs' RRF fusion
+ * has enough overlap with FTS results to be meaningful.
+ *
+ * Same tenant-isolation contract as searchWorkspaceDocs: the ANN hit set is
+ * joined back to workspace_docs with the SAME SQL-level tenant/agent WHERE
+ * clause, so a vec0 hit can never surface a row outside the caller's scope.
+ */
+export async function vectorSearchDocs(
+  q: string,
+  opts: { agentId?: string; tenantId?: string; limit: number },
+): Promise<WorkspaceDocSearchResult[]> {
+  if (!vecEnabled()) return []
+  const queryEmbedding = await generateEmbedding(q).catch(() => null)
+  if (!queryEmbedding) return []
+
+  try {
+    const queryBlob = floatsToBlob(queryEmbedding)
+    const annRows = getDb().prepare(`
+      SELECT doc_id, distance
+      FROM vec_workspace_docs
+      WHERE embedding MATCH ?
+        AND k = ?
+      ORDER BY distance
+    `).all(queryBlob, BigInt(opts.limit * 2)) as { doc_id: string; distance: number }[]
+
+    if (annRows.length === 0) return []
+
+    const conditions: string[] = []
+    const ids = annRows.map(r => r.doc_id)
+    const params: unknown[] = [...ids]
+    if (opts.tenantId !== undefined) { conditions.push('tenant_id = ?'); params.push(opts.tenantId) }
+    if (opts.agentId) { conditions.push('agent_id = ?'); params.push(opts.agentId) }
+    const where = conditions.length ? `AND ${conditions.join(' AND ')}` : ''
+    const placeholders = ids.map(() => '?').join(',')
+
+    const rows = getDb().prepare(`
+      SELECT id, title, agent_id, tenant_id, type, task_ref, doc_key,
+             created_at, updated_at, content
+      FROM workspace_docs
+      WHERE id IN (${placeholders}) ${where}
+    `).all(...params) as (WorkspaceDocSearchResult & { content: string | null })[]
+
+    const distMap = new Map(annRows.map(r => [r.doc_id, r.distance]))
+    return rows
+      .map(({ content, ...r }) => ({
+        ...r,
+        // Plain-text excerpt (no FTS match highlighting available here) so
+        // vector-only hits still render something in the UI.
+        snippet: content ? content.slice(0, 200) : '',
+        score: 1 / (1 + (distMap.get(r.id) ?? Infinity)),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .map(({ score: _score, ...r }) => r)
+  } catch (err) {
+    logger.debug({ err }, 'vectorSearchDocs: ANN query failed')
+    return []
+  }
+}
+
+/**
+ * Hybrid (FTS + vector) search over workspace_docs, fused with Reciprocal
+ * Rank Fusion (k=60) -- same constant as memories' hybridSearch. NO graph
+ * traversal and NO cross-encoder rerank: both explicitly out of scope for
+ * this feature (see card description). Falls back to pure FTS ranking when
+ * Ollama/sqlite-vec is unavailable (RRF over a single non-empty list
+ * preserves that list's original order).
+ */
+export async function hybridSearchDocs(
+  q: string,
+  opts: { agentId?: string; tenantId?: string; limit: number },
+): Promise<WorkspaceDocSearchResult[]> {
+  const RRF_K = 60
+  const overfetch = { ...opts, limit: opts.limit * 2 }
+
+  const ftsResults = searchWorkspaceDocs(q, overfetch)
+  const vecResults = await vectorSearchDocs(q, overfetch)
+
+  const scores = new Map<string, number>()
+  const byId = new Map<string, WorkspaceDocSearchResult>()
+
+  ftsResults.forEach((d, rank) => {
+    scores.set(d.id, (scores.get(d.id) || 0) + 1 / (RRF_K + rank + 1))
+    byId.set(d.id, d)
+  })
+  vecResults.forEach((d, rank) => {
+    scores.set(d.id, (scores.get(d.id) || 0) + 1 / (RRF_K + rank + 1))
+    // Prefer the FTS entry when both lists hit the same doc -- it carries a
+    // real match-highlighted snippet instead of a plain-text excerpt.
+    if (!byId.has(d.id)) byId.set(d.id, d)
+  })
+
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, opts.limit)
+    .map(([id]) => byId.get(id)!)
 }
 
 export interface ListWorkspaceDocsFilter {
