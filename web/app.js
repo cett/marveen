@@ -21,6 +21,7 @@ import { wireBranchDriftBanner, initUpdates, loadUpdates } from './modules/updat
 // Static: showSudoModal/dismissOnboarding/initChannelSetup used at boot.
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
 import { can } from './modules/rbac-client.js'
+import { renderPaginator } from './modules/paginator.js'
 
 // ── Lazy-load helper ──────────────────────────────────────────────────────────
 // Deduplicates module loads: the Promise is stored on first call, subsequent calls
@@ -963,6 +964,15 @@ if (document.readyState !== 'loading') boot();
 // === Archivalt kartyak ===
 ;(() => {
   let archivedInit = false
+  // Client-side pagination (#862): the backend still returns the whole
+  // filtered result in one shot (capped by KANBAN_ARCHIVED_MAX_ROWS, same as
+  // before), a fetch per filter/search change, not per page turn -- the same
+  // model approvals.js already used, now wired through the shared
+  // web/modules/paginator.js component instead of a hand-rolled pager.
+  const ARCHIVED_PAGE_LIMIT = 50
+  let archivedCards = []
+  let archivedOffset = 0
+  let archivedFetchLimit = 0
 
   const STATUS_LABELS = {
     planned:     () => t('kanban.status.planned'),
@@ -1106,12 +1116,69 @@ if (document.readyState !== 'loading') boot();
     } catch { /* best-effort */ }
   }
 
+  // Renders the current page slice of archivedCards (client-side, no fetch) --
+  // called on initial search and on every paginator Prev/Next click.
+  function renderArchivedPage() {
+    const list = document.getElementById('archivedList')
+    const summary = document.getElementById('archivedSummary')
+    const total = archivedCards.length
+    summary.textContent = t('archived.summary', {count: total, limit: archivedFetchLimit})
+    if (total === 0) {
+      list.className = ''
+      list.innerHTML = '<p class="naplo-empty">' + t('archived.empty') + '</p>'
+      document.getElementById('archivedPagination')?.replaceChildren()
+      return
+    }
+    const page = archivedCards.slice(archivedOffset, archivedOffset + ARCHIVED_PAGE_LIMIT)
+    list.className = 'archived-grid'
+    list.innerHTML = page.map(renderArchivedCard).join('')
+    const byId = new Map(page.map(c => [c.id, c]))
+    // Whole card opens the read-only detail; restore button acts on its own.
+    list.querySelectorAll('.archived-card').forEach(el => {
+      el.addEventListener('click', () => {
+        const card = byId.get(el.dataset.id)
+        if (card) showArchivedDetail(card)
+      })
+    })
+    list.querySelectorAll('.archived-restore-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        const id = btn.dataset.id
+        btn.disabled = true
+        btn.textContent = '...'
+        try {
+          const resp = await fetch(`/api/kanban/${id}/unarchive`, { method: 'POST' })
+          if (resp.ok) {
+            const cardEl = btn.closest('.archived-card')
+            if (cardEl) cardEl.style.opacity = '0.4'
+            btn.textContent = t('archived.btn.restored')
+          } else {
+            btn.disabled = false
+            btn.textContent = t('archived.btn.restore')
+            showToast(t('archived.restore_error'))
+          }
+        } catch {
+          btn.disabled = false
+          btn.textContent = t('archived.btn.restore')
+        }
+      })
+    })
+    renderPaginator(document.getElementById('archivedPagination'), {
+      offset: archivedOffset,
+      limit: ARCHIVED_PAGE_LIMIT,
+      total,
+      onPrev: () => { archivedOffset = Math.max(0, archivedOffset - ARCHIVED_PAGE_LIMIT); renderArchivedPage() },
+      onNext: () => { archivedOffset += ARCHIVED_PAGE_LIMIT; renderArchivedPage() },
+    })
+  }
+
   async function doArchivedSearch() {
     const list = document.getElementById('archivedList')
     const summary = document.getElementById('archivedSummary')
     list.className = ''
     list.innerHTML = '<p class="naplo-empty">' + t('common.loading') + '</p>'
     summary.textContent = ''
+    document.getElementById('archivedPagination')?.replaceChildren()
 
     const params = new URLSearchParams()
     const q = document.getElementById('archivedQ').value.trim()
@@ -1127,42 +1194,10 @@ if (document.readyState !== 'loading') boot();
       const r = await fetch('/api/kanban/archived?' + params.toString())
       if (!r.ok) { list.innerHTML = '<p class="naplo-empty error">' + t('archived.error.http', {status: r.status}) + '</p>'; return }
       const data = await r.json()
-      const cards = data.cards || []
-      summary.textContent = t('archived.summary', {count: cards.length, limit: data.limit})
-      if (cards.length === 0) { list.innerHTML = '<p class="naplo-empty">' + t('archived.empty') + '</p>'; return }
-      list.className = 'archived-grid'
-      list.innerHTML = cards.map(renderArchivedCard).join('')
-      const byId = new Map(cards.map(c => [c.id, c]))
-      // Whole card opens the read-only detail; restore button acts on its own.
-      list.querySelectorAll('.archived-card').forEach(el => {
-        el.addEventListener('click', () => {
-          const card = byId.get(el.dataset.id)
-          if (card) showArchivedDetail(card)
-        })
-      })
-      list.querySelectorAll('.archived-restore-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.stopPropagation()
-          const id = btn.dataset.id
-          btn.disabled = true
-          btn.textContent = '...'
-          try {
-            const resp = await fetch(`/api/kanban/${id}/unarchive`, { method: 'POST' })
-            if (resp.ok) {
-              const cardEl = btn.closest('.archived-card')
-              if (cardEl) cardEl.style.opacity = '0.4'
-              btn.textContent = t('archived.btn.restored')
-            } else {
-              btn.disabled = false
-              btn.textContent = t('archived.btn.restore')
-              showToast(t('archived.restore_error'))
-            }
-          } catch {
-            btn.disabled = false
-            btn.textContent = t('archived.btn.restore')
-          }
-        })
-      })
+      archivedCards = data.cards || []
+      archivedFetchLimit = data.limit
+      archivedOffset = 0
+      renderArchivedPage()
     } catch (err) {
       list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: err.message}) + '</p>'
     }
