@@ -3,6 +3,10 @@
     "telegram@claude-plugins-official": true
   },
   "effortLevel": "high",
+  "statusLine": {
+    "type": "command",
+    "command": "bash {{PROJECT_ROOT}}/scripts/statusline-ratelimit.sh"
+  },
   "hooks": {
     "PreCompact": [
       {
