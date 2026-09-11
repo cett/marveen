@@ -237,6 +237,9 @@ async function loadBlackboard() {
     tbody.innerHTML = ''
     for (const r of rows) {
       const tr = document.createElement('tr')
+      tr.classList.add('bb-row-clickable')
+      tr.dataset.agentId = r.agent_id
+      tr.title = t('bb.history.row_hint')
       const statusLabel = BB_STATUS_LABEL[r.status] || r.status
       const statusCls = BB_STATUS_CLASS[r.status] || ''
       const signalHtml = bbSignalBadge(r.signal)
@@ -251,5 +254,56 @@ async function loadBlackboard() {
     }
   } catch (_err) {
     tbody.innerHTML = '<tr><td colspan="5" class="ov-activity-empty" style="color:var(--danger)">Blackboard hiba.</td></tr>'
+  }
+}
+
+// === Blackboard history modal ===
+// .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
+// only becomes visible via the .active class -- [hidden] alone toggles
+// display:none/block but never restores visibility. Both must be set.
+function bbOpenModal(id) { const m = document.getElementById(id); if (m) { m.hidden = false; m.classList.add('active') } }
+function bbCloseModal(id) { const m = document.getElementById(id); if (m) { m.classList.remove('active'); m.hidden = true } }
+
+document.addEventListener('click', (e) => {
+  const closeId = e.target.closest('[data-close="bbHistoryModal"]')?.dataset.close
+  if (closeId) bbCloseModal(closeId)
+})
+
+document.addEventListener('click', (e) => {
+  const row = e.target.closest('#ovBlackboardBody tr[data-agent-id]')
+  if (row) openBlackboardHistory(row.dataset.agentId)
+})
+
+async function openBlackboardHistory(agentId) {
+  const titleEl = document.getElementById('bbHistoryModalTitle')
+  const listEl = document.getElementById('bbHistoryList')
+  if (!titleEl || !listEl) return
+  titleEl.textContent = t('bb.history.title', { agent: agentId })
+  listEl.innerHTML = '<div class="ov-activity-empty">' + escapeHtml(t('common.loading')) + '</div>'
+  bbOpenModal('bbHistoryModal')
+  try {
+    const res = await fetch('/api/blackboard/history?agent_id=' + encodeURIComponent(agentId) + '&limit=30')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const rows = await res.json()
+    if (!rows.length) {
+      listEl.innerHTML = '<div class="ov-activity-empty">' + escapeHtml(t('bb.history.empty')) + '</div>'
+      return
+    }
+    listEl.innerHTML = ''
+    for (const r of rows) {
+      const statusLabel = BB_STATUS_LABEL[r.status] || r.status
+      const statusCls = BB_STATUS_CLASS[r.status] || ''
+      const item = document.createElement('div')
+      item.className = 'bb-history-item'
+      item.innerHTML = '<div class="bb-history-item-head">'
+        + '<span class="bb-status ' + statusCls + '">' + escapeHtml(statusLabel) + '</span>'
+        + '<span class="bb-time">' + formatRelative(r.created_at * 1000) + '</span>'
+        + '</div>'
+        + '<div class="bb-summary">' + escapeHtml(r.summary) + '</div>'
+        + (r.task_ref ? '<div class="bb-ref">' + escapeHtml(r.task_ref) + '</div>' : '')
+      listEl.appendChild(item)
+    }
+  } catch (_err) {
+    listEl.innerHTML = '<div class="ov-activity-empty" style="color:var(--danger)">' + escapeHtml(t('bb.history.error')) + '</div>'
   }
 }

@@ -1876,6 +1876,10 @@ window._i18n.en = {
   'bb.signal.b.tooltip': 'Active row has not changed for a long time — the completion signal was likely lost.',
   'bb.signal.ab.label':  'Both signals',
   'bb.signal.ab.tooltip':'Agent was active in messages but the row was not updated; additionally the row has been active and unchanged for a long time.',
+  'bb.history.row_hint': 'Click for this agent\'s status history',
+  'bb.history.title':    '{agent} history',
+  'bb.history.empty':    'No history for this agent yet.',
+  'bb.history.error':    'Error loading history.',
 
   // Error token translations
   'errors.not_found':                'Not found',
