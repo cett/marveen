@@ -79,8 +79,13 @@ function renderTeamGraph(container, data, opts = {}) {
     const div = document.createElement('div')
     div.className = 'team-node'
     if (node.role === 'main') div.classList.add('main')
+    else if (node.primaryTenantId) div.classList.add('tenant-main')
     else if (node.role === 'leader') div.classList.add('leader')
-    const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
+    const roleLabel = node.role === 'main'
+      ? t('team.role.main')
+      : node.primaryTenantId
+        ? t('agents.tenant_main_badge', { tenant: node.primaryTenantName || node.primaryTenantId })
+        : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
     const running = node.running ? t('team.running') : t('team.stopped')
     const avatarUrl = node.id === mainAgentId
       ? `/api/marveen/avatar${avatarBust()}`

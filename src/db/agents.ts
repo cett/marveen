@@ -625,4 +625,15 @@ export function getEnabledAgentsForTenant(tenantId: string): string[] {
   return rows.map(r => r.agent_id)
 }
 
+/** List tenant_ids this agent is enabled=1 for -- the inverse of
+ *  getEnabledAgentsForTenant, used for the Agents screen's per-tenant
+ *  visibility chips. An agent with no rows at all (e.g. a fleet-internal
+ *  agent never opted into any tenant) returns an empty array. */
+export function getTenantsForAgent(agentId: string): string[] {
+  const rows = db
+    .prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1')
+    .all(agentId) as { tenant_id: string }[]
+  return rows.map(r => r.tenant_id)
+}
+
 // Schedules (SQL-backed, replaces file-based scheduled-tasks-io)

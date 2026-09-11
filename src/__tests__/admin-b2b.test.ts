@@ -86,7 +86,7 @@ function makeCtx(method: string, rawPath: string, body?: object): { ctx: RouteCo
   }
 }
 
-const SAMPLE_TENANT: db.Tenant = { id: 'acme-corp', display_name: 'Acme Corp', created_at: 1787000000, disabled_at: null }
+const SAMPLE_TENANT: db.Tenant = { id: 'acme-corp', display_name: 'Acme Corp', created_at: 1787000000, disabled_at: null, main_agent_id: null }
 const SAMPLE_USER = { id: 5, username: 'acme-viewer', role: 'agent', tenant_id: 'acme-corp', email: null, display_name: null, created_at: 1787000000, updated_at: 1787000000, password_hash: '$hash$', disabled: 0 }
 
 beforeEach(() => {
@@ -187,7 +187,7 @@ describe('PATCH /api/v1/admin/tenants/:id', () => {
   })
 
   it('returns 403 when disabling default tenant', async () => {
-    vi.mocked(db.getTenant).mockReturnValue({ id: 'default', display_name: 'Fleet', created_at: 0, disabled_at: null })
+    vi.mocked(db.getTenant).mockReturnValue({ id: 'default', display_name: 'Fleet', created_at: 0, disabled_at: null, main_agent_id: null })
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/tenants/default', { disabled: true })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(403)
@@ -636,7 +636,7 @@ describe('PUT /api/v1/admin/agent-availability -- fleet-only agents MCP risk gat
   })
 
   it('does not gate on the default tenant even for a high-risk agent', async () => {
-    vi.mocked(db.getTenant).mockReturnValue({ id: 'default', display_name: 'Fleet', created_at: 0, disabled_at: null })
+    vi.mocked(db.getTenant).mockReturnValue({ id: 'default', display_name: 'Fleet', created_at: 0, disabled_at: null, main_agent_id: null })
     vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent).mockReturnValue(['hetzner'])
     const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'default', agent_id: 'agent-a', enabled: true })
     await tryHandleAdminB2b(ctx)
