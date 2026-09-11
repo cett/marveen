@@ -5,6 +5,7 @@ import {
   getWorkspaceDocUpdatedAtMs,
   sweepExpiredWorkspaceDocs,
   storeWorkspaceDocEmbedding,
+  backfillWorkspaceDocs,
 } from '../workspace-store.js'
 
 beforeAll(() => {
@@ -161,5 +162,47 @@ describe('storeWorkspaceDocEmbedding', () => {
       title: 'Binary-doc', content_blob: Buffer.from('x'), content_type: 'binary', type: 'notes',
     })
     await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', 'Binary-doc')).resolves.toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// backfillWorkspaceDocs
+// ---------------------------------------------------------------------------
+
+describe('backfillWorkspaceDocs', () => {
+  it('does not throw and returns a number when Ollama is unavailable', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Backfill-me', content: 'needs an embedding', content_type: 'text', type: 'notes',
+    })
+    const count = await backfillWorkspaceDocs()
+    expect(typeof count).toBe('number')
+  })
+
+  it('skips binary docs and docs with no content', async () => {
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Binary-skip', content_blob: Buffer.from('x'), content_type: 'binary', type: 'notes',
+    })
+    saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'No-content', content: null, content_type: 'text', type: 'notes',
+    })
+    // Neither row is eligible -- the SELECT filter excludes both, so no
+    // Ollama calls happen and the function still resolves cleanly.
+    const count = await backfillWorkspaceDocs()
+    expect(typeof count).toBe('number')
+  })
+
+  it('skips docs that already have an embedding_blob', async () => {
+    const doc = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default',
+      title: 'Already-embedded', content: 'text', content_type: 'text', type: 'notes',
+    })
+    getDb().prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(Buffer.from([1, 2, 3, 4]), doc.id)
+    const before = (getDb().prepare('SELECT embedding_blob FROM workspace_docs WHERE id = ?').get(doc.id) as { embedding_blob: Buffer }).embedding_blob
+    await backfillWorkspaceDocs()
+    const after = (getDb().prepare('SELECT embedding_blob FROM workspace_docs WHERE id = ?').get(doc.id) as { embedding_blob: Buffer }).embedding_blob
+    expect(after).toEqual(before)
   })
 })

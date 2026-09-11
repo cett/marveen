@@ -357,6 +357,33 @@ export async function storeWorkspaceDocEmbedding(
   syncVecUpsert(id, agentId, tenantId, blob)
 }
 
+/**
+ * Backfill embeddings for workspace docs saved before this feature existed
+ * (or before Ollama was available). Mirrors backfillEmbeddings() in
+ * src/db/vector.ts: targets rows with no embedding yet, skips binary
+ * content, and sleeps 100ms between rows so as not to overwhelm Ollama.
+ */
+export async function backfillWorkspaceDocs(): Promise<number> {
+  const rows = getDb().prepare(`
+    SELECT id, agent_id, tenant_id, title, content FROM workspace_docs
+    WHERE embedding_blob IS NULL AND content_type != 'binary' AND content IS NOT NULL
+  `).all() as { id: string; agent_id: string; tenant_id: string; title: string; content: string }[]
+
+  let count = 0
+  for (const row of rows) {
+    const embedding = await generateEmbedding(`${row.title} ${row.content}`).catch(() => null)
+    if (embedding) {
+      const blob = floatsToBlob(embedding)
+      getDb().prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
+      syncVecUpsert(row.id, row.agent_id, row.tenant_id, blob)
+      count++
+    }
+    // Small delay to not overwhelm Ollama
+    await new Promise(r => setTimeout(r, 100))
+  }
+  return count
+}
+
 export function deleteWorkspaceDoc(id: string): boolean {
   syncVecDelete(id)
   const res = getDb().prepare('DELETE FROM workspace_docs WHERE id = ?').run(id)
