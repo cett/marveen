@@ -221,6 +221,31 @@ describe('pruneAuditLogs', () => {
     expect(remainingIds).not.toContain('test-hook-agent-old')
     expect(remainingIds).toContain('test-hook-agent-fresh')
   })
+
+  // otel_spans.start_ms is milliseconds, unlike every other audit table's
+  // second-resolution timestamp column -- this pins that pruneOtelSpans()
+  // computes its cutoff in ms (a Math.floor(Date.now()/1000) regression here
+  // would prune everything, since a second-based cutoff is ~1000x too old).
+  it('also prunes otel_spans rows older than OTEL_SPAN_RETENTION_DAYS', () => {
+    const db = getDb()
+    const now = Date.now()
+    const oldStartMs = now - 60 * 86400000 // well past the 30-day default retention
+    db.prepare(
+      "INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms) VALUES (?, ?, ?, ?, ?)",
+    ).run('trace-test-otel-old', 'span-test-otel-old', 'test-otel-agent', 'test.op', oldStartMs)
+    db.prepare(
+      "INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms) VALUES (?, ?, ?, ?, ?)",
+    ).run('trace-test-otel-fresh', 'span-test-otel-fresh', 'test-otel-agent', 'test.op', now)
+
+    pruneAuditLogs()
+
+    const remaining = db.prepare(
+      "SELECT trace_id FROM otel_spans WHERE trace_id IN ('trace-test-otel-old', 'trace-test-otel-fresh')",
+    ).all() as { trace_id: string }[]
+    const remainingIds = remaining.map(r => r.trace_id)
+    expect(remainingIds).not.toContain('trace-test-otel-old')
+    expect(remainingIds).toContain('trace-test-otel-fresh')
+  })
 })
 
 // --- Message Trace Stamping ---

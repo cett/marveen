@@ -369,6 +369,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'OTEL_SPAN_RETENTION_DAYS',
+    type: 'int',
+    default: 30,
+    min: 7,
+    max: 3650,
+    description: 'Az OpenTelemetry trace-spanok (otel_spans, inter-agent üzenetek trace-waterfall-ja) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Token usage module ---
   {
     key: 'TOKEN_USAGE_RETENTION_DAYS',
