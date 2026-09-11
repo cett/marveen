@@ -54,21 +54,22 @@ export default defineConfig({
       // src/web/routes/agent-taskstate.ts, src/web/routes/fleet.ts
       // (export/import), src/web/routes/spans.ts, src/web/routes/status.ts,
       // src/web/routes/backups.ts, src/web/routes/ideas.ts,
-      // src/web/routes/profiles.ts, src/web/routes/connectors-hu.ts, and
-      // (this step) src/web/routes/agent-conversation.ts,
-      // src/web/routes/agents-skills.ts, all 0% -> fully covered. Local
-      // baseline after this step: statements 63.68%, branches 62.97%,
-      // functions 64.81%, lines 65%. Floor bumped to match (still ~1.7-2
-      // points of buffer below the measured numbers) rather than bumped
-      // again for this small an increment per step -- raise only once the
-      // level actually reached clearly supports it, never round up ahead of
-      // the measurement. Ratchet up further as more steps land in this
+      // src/web/routes/profiles.ts, src/web/routes/connectors-hu.ts,
+      // src/web/routes/agent-conversation.ts, src/web/routes/agents-skills.ts,
+      // and (this step) src/web/routes/onboarding.ts (18% -> ~93%). Local
+      // baseline after this step: statements 64.38%, branches 63.68%,
+      // functions 65.08%, lines 65.73%. Floor bumped to match (~1-1.7 points
+      // of buffer below the measured numbers; functions left unchanged this
+      // step -- its buffer would drop below 1.1 otherwise) rather than
+      // bumped again for this small an increment per step -- raise only once
+      // the level actually reached clearly supports it, never round up ahead
+      // of the measurement. Ratchet up further as more steps land in this
       // branch.
       thresholds: {
-        statements: 62,
-        branches: 61,
+        statements: 63,
+        branches: 62,
         functions: 63,
-        lines: 63,
+        lines: 64,
       },
     },
   },
