@@ -650,6 +650,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- fix fleet blackboard stale-sweeper never aging out "assigned" (delegated but never picked up) rows: it now also sweeps them, using a new flat threshold instead of the tier-based active thresholds, transitioning them to "stale" (not "done") once stuck past it
 - split agent-scaffold.ts into hooks + templates (779)
 - split agents.js into 5 files (776)
 - split connectors.js into connectors/vault (778)

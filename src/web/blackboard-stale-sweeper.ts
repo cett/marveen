@@ -28,7 +28,8 @@ export function startBlackboardStaleSweeper(): NodeJS.Timeout {
         thresholdsByAgent[id] = resolveThresholdSec(id)
       }
       const defaultSec = resolveThresholdSec('__nonexistent__')
-      const marked = markBlackboardStale(thresholdsByAgent, defaultSec)
+      const assignedSec = (getEffectiveSettingValue('BB_STALE_ASSIGNED_MIN') as number) * 60
+      const marked = markBlackboardStale(thresholdsByAgent, defaultSec, assignedSec)
       if (marked > 0) {
         logger.info({ marked }, 'blackboard-stale-sweeper: marked stale rows')
       }

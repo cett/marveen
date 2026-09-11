@@ -479,20 +479,25 @@ export function pruneBlackboardHistory(ttlDays = 30): number {
   return db.prepare('DELETE FROM fleet_blackboard_history WHERE created_at < ?').run(cutoff).changes
 }
 
-// Mark fleet_blackboard 'active' rows as 'stale' when they have not been
-// updated for longer than the per-agent threshold. Returns how many rows were
-// marked. Called by the blackboard-stale-sweeper on a background interval.
+// Mark fleet_blackboard 'active'/'assigned' rows as 'stale' when they have
+// not been updated for longer than the applicable threshold. 'active' rows
+// use the per-agent tier threshold (thresholdsByAgent/defaultThresholdSec);
+// 'assigned' rows (delegated but never picked up) use the flat
+// assignedThresholdSec instead, since a not-yet-started task has no tier of
+// its own. Returns how many rows were marked. Called by the
+// blackboard-stale-sweeper on a background interval.
 export function markBlackboardStale(
   thresholdsByAgent: Record<string, number>,
   defaultThresholdSec: number,
+  assignedThresholdSec: number,
   nowSec = Math.floor(Date.now() / 1000),
 ): number {
   const rows = db.prepare(
-    `SELECT id, agent_id, task_ref, summary, updated_at FROM fleet_blackboard WHERE status = 'active'`,
-  ).all() as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number }[]
+    `SELECT id, agent_id, task_ref, summary, updated_at, status FROM fleet_blackboard WHERE status IN ('active', 'assigned')`,
+  ).all() as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number; status: string }[]
   let marked = 0
   for (const row of rows) {
-    const threshold = thresholdsByAgent[row.agent_id] ?? defaultThresholdSec
+    const threshold = row.status === 'assigned' ? assignedThresholdSec : (thresholdsByAgent[row.agent_id] ?? defaultThresholdSec)
     if (nowSec - row.updated_at > threshold) {
       db.prepare(
         `UPDATE fleet_blackboard SET status = 'stale', updated_at = ? WHERE id = ?`,
@@ -510,7 +515,7 @@ export function getAgentTier(agentId: string): string {
 }
 
 export function getActiveBlackboardAgentIds(): string[] {
-  const rows = db.prepare("SELECT DISTINCT agent_id FROM fleet_blackboard WHERE status = 'active'").all() as { agent_id: string }[]
+  const rows = db.prepare("SELECT DISTINCT agent_id FROM fleet_blackboard WHERE status IN ('active', 'assigned')").all() as { agent_id: string }[]
   return rows.map((r) => r.agent_id)
 }
 
