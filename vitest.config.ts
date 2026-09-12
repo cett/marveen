@@ -79,17 +79,34 @@ export default defineConfig({
       // remain uncovered by design, since those are dead code paths from
       // this file's own tests' point of view). Local baseline after this
       // step: statements 65.19%, branches 64.51%, functions 65.63%,
-      // lines 66.61%. Floor left UNCHANGED this step: updates.ts is only
-      // 302 of ~24.5k total statements, so even its ~58-point jump moves the
-      // global baseline by well under half a point -- the existing buffer
-      // already comfortably covers it. Raise only once the level actually
-      // reached clearly supports it, never round up ahead of the
-      // measurement. Ratchet up further as more steps land in this branch.
+      // lines 66.61%. Floor left UNCHANGED that step: updates.ts is only
+      // 302 of ~24.5k total statements, so even its ~58-point jump moved the
+      // global baseline by well under half a point. And (this step)
+      // src/web/routes/connectors.ts (26.6% -> 89.64% statements / 81.77%
+      // branches -- the lowest-coverage route file left, and the largest at
+      // 898 lines: GET /api/connectors (the full plugin/.mcp.json/mcp-list-
+      // cache/agent/agent-project/external-project listing), connector
+      // detail/add/delete/assign, external-paths and github-repos CRUD,
+      // GET /api/mcp-catalog installed-detection (cache match + configMatch-
+      // via-.mcp.json fallback), catalog install/uninstall success paths,
+      // and the entire previously-untested Vault section -- secrets CRUD
+      // with the admin-vs-tenant-scoped access guard, bindings (explicit
+      // targets and serverName-derived targets), sync, scan, and import --
+      // plus GET /api/ollama/models. atomic-write.js is mocked so success
+      // paths that persist to disk (add/delete/assign) never touch the real
+      // filesystem. Local baseline after this step: statements 66.61%,
+      // branches 65.64%, functions 65.92%, lines 68.15% -- a materially
+      // bigger jump than prior steps since connectors.ts is a large file, so
+      // the floor moves up this time (a modest +1 on each metric, well
+      // inside the buffer the fresh measurement leaves). Raise only once the
+      // level actually reached clearly supports it, never round up ahead of
+      // the measurement. Ratchet up further as more steps land in this
+      // branch.
       thresholds: {
-        statements: 63,
-        branches: 62,
-        functions: 63,
-        lines: 64,
+        statements: 64,
+        branches: 63,
+        functions: 64,
+        lines: 65,
       },
     },
   },
