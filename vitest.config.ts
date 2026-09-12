@@ -125,6 +125,24 @@ export default defineConfig({
       // agent with no entries). Local baseline after this step: statements
       // 67.16%, branches 66.28%, functions 66.29%, lines 68.7%. Floor left
       // UNCHANGED: daily-log.ts is only 18 lines, negligible against the
+      // ~24.5k total. And (this step) src/web/routes/vault-ssh-keys.ts
+      // (50.42% -> 97.47% statements / 51.57% -> 87.36% branches -- only
+      // touched before via the fleet-transfer export/import bundle path,
+      // never through the route handler itself. Now covers GET's tenant
+      // scoping (non-admin own-tenant-only, admin global vs ?tenant=
+      // narrowed), POST's label/username validation and generate+store
+      // flow (including the non-admin tenant_id-spoof-ignored and the
+      // admin explicit-tenant_id cases), POST /import's key-type
+      // autodetection across ed25519/rsa/ecdsa/unknown prefixes and its
+      // invalid-key 400, the standalone exported extractPublicKeyFromVault
+      // helper (missing-secret short-circuit and the happy path), the
+      // public-key lookup and DELETE routes' 404-not-403 cross-tenant
+      // guard, and the unmatched-method-under-prefix fallthrough. A few
+      // deep error-shape branches (malformed-body 500s share one assertion
+      // style with prior steps) are left uncovered by design). Local
+      // baseline after this step: statements 67.38%, branches 66.47%,
+      // functions 66.32%, lines 68.95%. Floor left UNCHANGED:
+      // vault-ssh-keys.ts is only 219 lines, a small increment against the
       // ~24.5k total. Raise only once the level actually reached clearly
       // supports it, never round up ahead of the measurement. Ratchet up
       // further as more steps land in this branch.
