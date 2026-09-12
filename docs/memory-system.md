@@ -168,13 +168,13 @@ POST /api/memories/resort
 
 A `memory-maintenance` karbantartó job **alapból kikapcsolt** (`enabled: false`). Ez szándékos opt-in döntés: a tier-átsorolás visszafordítható ugyan, de éles rendszeren csak akkor szabad automatizálni, ha az operátor meggyőződött róla, hogy a threshold-ok (30 nap, 2 ágens) illeszkednek az adott flotta munkastílusához.
 
-Bekapcsolás: a job megjelenik a dashboard **Ütemezések** listájában `memory-maintenance` néven, alapból kikapcsolva. Ott kapcsold be a sorához tartozó kapcsolóval — nem kell fájlt másolni vagy configot szerkeszteni.
+Bekapcsolás: a job megjelenik a dashboard **Feladatok** oldalának **Ütemezett** fülén `memory-maintenance` néven, alapból kikapcsolva. Ott kapcsold be a sorához tartozó kapcsolóval — nem kell fájlt másolni vagy configot szerkeszteni.
 
 Alapértelmezetten naponta 03:00-kor fut (`0 3 * * *`), csak akkor jelent Telegramon, ha valamelyik szám > 0.
 
 ### Link-gráf karbantartó job
 
-A szemantikus link-gráfnak külön karbantartó jobja van: **`memory-link-maintenance`**. A `memory-maintenance`-szel ellentétben ez **alapból BE van kapcsolva** (`enabled: true`), mert kizárólag additív, visszafordítható műveleteket végez a gráfon (nem sorol át tiereket): elavult emlékek újra-embeddingje, szomszéd-linkek frissítése, a `0.1` súly alatti élek nyesése, árva-emlékek számlálása. Megjelenik a dashboard **Ütemezések** listájában, ahol ki-be kapcsolható.
+A szemantikus link-gráfnak külön karbantartó jobja van: **`memory-link-maintenance`**. A `memory-maintenance`-szel ellentétben ez **alapból BE van kapcsolva** (`enabled: true`), mert kizárólag additív, visszafordítható műveleteket végez a gráfon (nem sorol át tiereket): elavult emlékek újra-embeddingje, szomszéd-linkek frissítése, a `0.1` súly alatti élek nyesése, árva-emlékek számlálása. Megjelenik a dashboard **Feladatok** oldalának **Ütemezett** fülén, ahol ki-be kapcsolható.
 
 Naponta 04:00-kor fut (`0 4 * * *`), `heartbeat` típus (`skipIfBusy: true`), a `POST /api/memories/links/maintain` végpontot hívja. Ez az a job, ami a **meglévő** emlékekre visszamenőleg is felépíti a linkeket (az automatikus linkelés csak új mentéseknél fut).
 
