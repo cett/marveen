@@ -56,13 +56,15 @@ export default defineConfig({
       // src/web/routes/backups.ts, src/web/routes/ideas.ts,
       // src/web/routes/profiles.ts, src/web/routes/connectors-hu.ts,
       // src/web/routes/agent-conversation.ts, src/web/routes/agents-skills.ts,
-      // and (this step) src/web/routes/onboarding.ts (18% -> ~93%). Local
-      // baseline after this step: statements 64.38%, branches 63.68%,
-      // functions 65.08%, lines 65.73%. Floor bumped to match (~1-1.7 points
-      // of buffer below the measured numbers; functions left unchanged this
-      // step -- its buffer would drop below 1.1 otherwise) rather than
-      // bumped again for this small an increment per step -- raise only once
-      // the level actually reached clearly supports it, never round up ahead
+      // src/web/routes/onboarding.ts (18% -> ~93%), and (this step)
+      // src/web/routes/background-tasks.ts (22.76% -> 72.35% statements,
+      // covering the GET list/by-id, DELETE, validation, and
+      // sweepOrphanedBackgroundTasks paths that only had 2 POST-error tests
+      // before). Local baseline after this step: statements 64.69%,
+      // branches 64.02%, functions 65.41%, lines 66.06%. Floor left
+      // UNCHANGED this step: the existing buffer (1.4-2.4 points) already
+      // comfortably covers this small an increment (~0.2-0.25 points) --
+      // raise only once the level actually reached clearly supports it, never round up ahead
       // of the measurement. Ratchet up further as more steps land in this
       // branch.
       thresholds: {
