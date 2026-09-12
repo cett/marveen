@@ -78,7 +78,6 @@ window._i18n.en = {
   'nav.skills':       'Skills',
   'nav.connectors':   'MCP',
   'nav.docs':         'Documentation',
-  'nav.status':       'Status',
   'nav.approvals':    'Approvals',
   'nav.settings':     'Settings',
   'nav.vault':        'Vault',
@@ -578,9 +577,7 @@ window._i18n.en = {
   'docs.open_error':             'Failed to open',
 
   // --- Research ---
-  // --- Status ---
-  'status.page_title':           'Status',
-  'status.page_subtitle':        'Claude service status',
+  // --- Status (Rendszer section on Overview) ---
   'status.loading':              'Loading...',
   'status.overall.operational':  'All systems operational',
   'status.overall.degraded':     'Active incident',

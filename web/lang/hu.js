@@ -78,7 +78,6 @@ window._i18n.hu = {
   'nav.skills':       'Skillek',
   'nav.connectors':   'MCP',
   'nav.docs':         'Dokumentáció',
-  'nav.status':       'Státusz',
   'nav.approvals':    'Jóváhagyások',
   'nav.settings':     'Beállítások',
   'nav.vault':        'Vault',
@@ -836,9 +835,7 @@ window._i18n.hu = {
   'docs.download_btn':           '⬇ .md letöltés',
   'docs.open_error':             'Nem sikerült megnyitni',
 
-  // --- Status ---
-  'status.page_title':           'Státusz',
-  'status.page_subtitle':        'Claude szolgáltatások állapota',
+  // --- Status (Rendszer szekció az Áttekintésben) ---
   'status.loading':              'Betöltés...',
   'status.overall.operational':  'Minden szolgáltatás működik',
   'status.overall.degraded':     'Aktiv incidens',

@@ -83,14 +83,18 @@ describe('lazy-load: module structure', () => {
       // in registerPage). Check that at least ONE occurrence has lazy: true nearby
       // -- OR sits inside a `load<X>Tab()` helper (the tasks/import tab merges:
       // a module that only backs a SUB-TAB of an already-lazy page, loaded on
-      // tab click or from that page's own enter(), never at eager startup).
+      // tab click or from that page's own enter(), never at eager startup) --
+      // OR inside `loadOverviewPage()` (the status-costs merge: a module that
+      // now backs a SECTION of the static, non-lazy Overview page instead of
+      // its own page, dynamic-import()ed from Overview's own enter() so it
+      // still ships as a separate chunk even though it is not itself lazy).
       const importStr = `import('./modules/${mod}')`
       let pos = 0
       let found = false
       while ((pos = APP_JS.indexOf(importStr, pos)) !== -1) {
         const before = APP_JS.slice(Math.max(0, pos - 800), pos)
         const surrounding = before + APP_JS.slice(pos, pos + 50)
-        if (surrounding.includes('lazy: true') || /async function load\w*Tab\(\)\s*\{[^}]*$/.test(before)) {
+        if (surrounding.includes('lazy: true') || /async function (load\w*Tab|loadOverviewPage)\(\)\s*\{[^}]*$/.test(before)) {
           found = true
           break
         }

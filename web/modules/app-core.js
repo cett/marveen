@@ -157,7 +157,7 @@ const NAV_I18N = {
   recall: 'nav.recall',
   skills: 'nav.skills', connectors: 'nav.connectors',
   approvals: 'nav.approvals',
-  docs: 'nav.docs', status: 'nav.status',
+  docs: 'nav.docs',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates',
 }
@@ -179,7 +179,6 @@ const PAGE_HEADER_I18N = {
   recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
   connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
   docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
-  statusPage:     { title: 'status.page_title',      sub: 'status.page_subtitle' },
   teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
   messagesPage:   { title: 'messages.page_title',    sub: 'messages.page_subtitle' },
   settingsPage:   { title: 'settings.page_title',    sub: 'settings.page_subtitle' },

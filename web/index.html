@@ -148,10 +148,6 @@
           <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </button>
         <div class="sb-group-items" id="sbGroupSystem">
-          <a href="#" class="sb-link" data-page="status">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-            <span class="sb-label">Státusz</span>
-          </a>
           <a href="#" class="sb-link" data-page="updates">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             <span class="sb-label">Frissítések</span>
@@ -352,6 +348,26 @@
       </div>
       <div class="ov-activity-feed" id="ovActivityFeed">
         <div class="ov-activity-empty">Nincs aktivitás az elmúlt 4 órában.</div>
+      </div>
+
+      <!-- Zone 7: Rendszer (korábban önálló Státusz oldal, Claude szolgáltatások állapota) -->
+      <div class="ov-activity-header" style="margin-top:18px;">
+        <span class="ov-section-title" title="Claude szolgáltatások állapota">Rendszer</span>
+        <button class="btn" data-variant="secondary" data-size="compact" id="refreshStatusBtn" data-i18n="common.btn.refresh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          Frissítés
+        </button>
+      </div>
+      <div class="status-overall" id="statusOverall"></div>
+      <div class="status-services" id="statusServices">
+        <h3 data-i18n="status.services_title">Szolgáltatások</h3>
+        <div class="status-service-grid" id="statusServiceGrid"></div>
+      </div>
+      <div class="status-incidents">
+        <h3 data-i18n="status.incidents_title">Incidensek</h3>
+        <div class="status-incident-list" id="statusIncidentList"></div>
       </div>
 
     </div>
@@ -1229,35 +1245,7 @@
     </div>
 
     <!-- === Research Page === -->
-    <!-- === Status Page === -->
-    <div class="page" id="statusPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="status.page_title">Státusz</h1>
-            <p class="subtitle" data-i18n="status.page_subtitle">Claude szolgáltatások állapota</p>
-          </div>
-          <button class="btn" data-variant="secondary" data-size="compact" id="refreshStatusBtn" data-i18n="common.btn.refresh">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            Frissítés
-          </button>
-        </div>
-      </div>
-
-      <div class="status-overall" id="statusOverall"></div>
-
-      <div class="status-services" id="statusServices">
-        <h3 data-i18n="status.services_title">Szolgáltatások</h3>
-        <div class="status-service-grid" id="statusServiceGrid"></div>
-      </div>
-
-      <div class="status-incidents">
-        <h3>Incidensek</h3>
-        <div class="status-incident-list" id="statusIncidentList"></div>
-      </div>
-    </div>
+    <!-- Status page merged into the Overview page as the "Rendszer" section below. -->
 
     <!-- Team page merged into Agents page (view toggle: grid / org-chart) -->
 

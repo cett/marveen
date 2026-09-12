@@ -333,7 +333,7 @@ const SIDEBAR_GROUPS = [
   { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks'] },
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'ideas', 'artifacts'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['tokenUsage'] },
-  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'updates', 'settings', 'vault'] },
+  { key: 'system',      labelKey: 'nav.group.system',      pages: ['updates', 'settings', 'vault'] },
   { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'import'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
@@ -560,7 +560,11 @@ if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.
 
 // === Init ===
 populateAvatarGrid()
-loadOverview()
+// Overview is the default-visible page (no `hidden` in index.html), so it never
+// goes through switchPage()'s registerPage('overview').enter() on a fresh load
+// with no hash -- call the same enter function (loadOverviewPage, hoisted below)
+// directly here so the merged-in Rendszer/status section loads on first paint too.
+loadOverviewPage()
 loadAvailableModels()
 {
   const onbClose = document.getElementById('onboardingClose')
@@ -688,8 +692,24 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
 // so the alias is available when routeFromHash() resolves the initial URL.
 registerAlias('team', 'agents', () => setAgentsActiveView('tree'))
 
+// The Status page (Claude service status) merged into Overview as its
+// "Rendszer" section. 'status' stays as an alias so old #status links still
+// land on the overview page (same pattern as the 'team' -> 'agents' alias
+// above and the 'bgTasks'/'migrate' aliases below).
+registerAlias('status', 'overview')
+
+async function loadOverviewPage() {
+  loadOverview()
+  const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js'))
+  if (!_moduleCache.get('status_inited')) {
+    m.initStatus()
+    _moduleCache.set('status_inited', true)
+  }
+  m.loadStatus()
+}
+
 // Static pages (modules loaded at boot).
-registerPage('overview',  { enter: loadOverview })
+registerPage('overview',  { enter: loadOverviewPage })
 registerPage('kanban',    { enter: () => { window._initGanttViewSwitcher?.(); loadKanban(); startKanbanRefresh() }, leave: stopKanbanRefresh })
 registerPage('agents',    { enter: () => { loadAgents().then(() => setAgentsView(getAgentsActiveView() || 'grid')); startAgentsBusyPoll() }, leave: stopAgentsBusyPoll })
 registerPage('skills',    { enter: loadGlobalSkills })
@@ -869,7 +889,6 @@ registerPage('import', {
   }
 })
 registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
-registerPage('status',    { lazy: true, enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })
 registerPage('recall',    { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })
 registerPage('approvals', { lazy: true, enter: async () => { const m = await lazyLoad('approvals', () => import('./modules/approvals.js')); if (!_moduleCache.get('approvals_inited')) { m.initApprovals(); _moduleCache.set('approvals_inited', true) }; m.loadApprovalsPage() } })
 registerPage('settings',  {
