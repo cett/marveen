@@ -67,13 +67,24 @@ export default defineConfig({
       // measurement, but its own POST and GET-recent-rows routes had zero
       // route-level tests -- only summary/stats were covered plus
       // standalone schema tests that never call the handler; now 100%
-      // statements / 97.14% branches). Local baseline after this step:
-      // statements 64.83%, branches 64.28%, functions 65.52%, lines 66.22%.
-      // Floor left UNCHANGED this step: the existing buffer already
-      // comfortably covers this small an increment (~0.14-0.26 points) --
-      // raise only once the level actually reached clearly supports it, never round up ahead
-      // of the measurement. Ratchet up further as more steps land in this
-      // branch.
+      // statements / 97.14% branches), and (this step)
+      // src/web/routes/updates.ts (28.96% -> 86.89% statements / 86.95%
+      // branches -- GET /api/updates, GET /api/updates/status,
+      // POST /api/updates/diagnose, and every previously-untested
+      // POST /api/updates/apply branch (lock-write-failed, EEXIST retry-race
+      // vs retry-lock-write-failed, preflight crash, dirty-tree+autoStash,
+      // store-unwritable, the happy path, and the async spawn error handler)
+      // now have route-level tests; only the pf/git inline closures passed
+      // into the already-mocked checkNoConcurrentUpdate/checkUpdatePreflight
+      // remain uncovered by design, since those are dead code paths from
+      // this file's own tests' point of view). Local baseline after this
+      // step: statements 65.19%, branches 64.51%, functions 65.63%,
+      // lines 66.61%. Floor left UNCHANGED this step: updates.ts is only
+      // 302 of ~24.5k total statements, so even its ~58-point jump moves the
+      // global baseline by well under half a point -- the existing buffer
+      // already comfortably covers it. Raise only once the level actually
+      // reached clearly supports it, never round up ahead of the
+      // measurement. Ratchet up further as more steps land in this branch.
       thresholds: {
         statements: 63,
         branches: 62,
