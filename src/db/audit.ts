@@ -332,6 +332,14 @@ export function pruneHookAuditLog(olderThanSecs = 30 * 86400): void {
   db.prepare('DELETE FROM hook_audit_log WHERE ts < ?').run(cutoff)
 }
 
+// otel_spans.start_ms is milliseconds (unlike every other audit table's
+// second-resolution created_at/ts), so the cutoff and default window are
+// both computed in ms here to avoid an off-by-1000x prune.
+export function pruneOtelSpans(olderThanMs = 30 * 86400000): void {
+  const cutoff = Date.now() - olderThanMs
+  db.prepare('DELETE FROM otel_spans WHERE start_ms < ?').run(cutoff)
+}
+
 // Pass null for oldValue/newValue when the registry entry is secret:true --
 // this keeps secret values out of the audit trail entirely rather than
 // relying on a UI to not display them.
@@ -630,6 +638,11 @@ export function pruneAuditLogs(): void {
   // that leaked unbounded. Reuses the same AUDIT_LOG_RETENTION_DAYS setting
   // (already 90 days by default) rather than adding a second retention knob.
   pruneHookAuditLog(retentionDays * 86400)
+  // otel_spans has its own retention knob (OTEL_SPAN_RETENTION_DAYS, default
+  // 30) rather than reusing AUDIT_LOG_RETENTION_DAYS -- spans are a much
+  // higher-volume, shorter-lived trace record than the audit tables above.
+  const otelRetentionDays = Number(getEffectiveSettingValue('OTEL_SPAN_RETENTION_DAYS'))
+  pruneOtelSpans(otelRetentionDays * 86400000)
 }
 
 export interface TokenUsagePruneResult {
