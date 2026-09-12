@@ -61,8 +61,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note, assign } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string; assign?: boolean }
+    const { from, to, content, origin_note, assign, complete } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; assign?: boolean; complete?: boolean }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'required', hint: 'from, to, and content are required' }, 400)
       return true
@@ -215,6 +215,20 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
           status: 'assigned',
           summary: normalizedContent.slice(0, 100),
           task_ref: null,
+        })
+      }
+    }
+    // Symmetric completion hook: complete:true closes the SENDER's own
+    // 'assigned'/'active' row to 'done'. A 'stale', already-'done', or
+    // missing row is a no-op -- the sweeper already reclaimed it or it was
+    // never opened, and #854's TTL sweep stays as the safety net either way.
+    if (complete === true) {
+      const senderRow = findBlackboardRowByAgent(from.trim())
+      if (senderRow && (senderRow.status === 'assigned' || senderRow.status === 'active')) {
+        upsertBlackboard(senderRow.agent_id, {
+          status: 'done',
+          summary: senderRow.summary,
+          task_ref: senderRow.task_ref,
         })
       }
     }

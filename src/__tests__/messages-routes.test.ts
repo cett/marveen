@@ -332,3 +332,124 @@ describe('POST /api/messages: assign:true delivery hook', () => {
     expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
   })
 })
+
+describe('POST /api/messages: complete:true delivery hook', () => {
+  beforeEach(async () => {
+    const db = await import('../db.js')
+    const { isKnownAgent } = await import('../web/agent-config.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue(undefined)
+    vi.mocked(db.upsertBlackboard).mockClear()
+    vi.mocked(isKnownAgent).mockReset()
+    vi.mocked(isKnownAgent).mockReturnValue(true)
+  })
+
+  it('complete:true closes the sender\'s assigned row to done', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+      id: 'abc', agent_id: 'agent-b', task_ref: '#867', status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default',
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 50, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Done, see PR #123',
+      complete: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.findBlackboardRowByAgent)).toHaveBeenCalledWith('agent-b')
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledOnce()
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledWith('agent-b', {
+      status: 'done',
+      summary: 'Working on it',
+      task_ref: '#867',
+    })
+  })
+
+  it('complete:true closes the sender\'s active row to done', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'active', summary: 'Working on it', updated_at: 0, tenant_id: 'default',
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 51, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Done',
+      complete: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledOnce()
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledWith('agent-b', {
+      status: 'done',
+      summary: 'Working on it',
+      task_ref: null,
+    })
+  })
+
+  it('complete:true is a no-op when the sender row is already stale', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'stale', summary: 'Old task', updated_at: 0, tenant_id: 'default',
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 52, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Done',
+      complete: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+
+  it('complete:true is a no-op when the sender row is already done', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'done', summary: 'Old task', updated_at: 0, tenant_id: 'default',
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 53, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Done',
+      complete: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+
+  it('complete:true does not error when the sender has no blackboard row', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce(undefined)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 54, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Done',
+      complete: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+
+  it('complete omitted: no blackboard row touched', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default',
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 55, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Just a heads up',
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+})
