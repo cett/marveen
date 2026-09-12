@@ -334,7 +334,7 @@ const SIDEBAR_GROUPS = [
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'ideas', 'artifacts'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'updates', 'settings', 'vault'] },
-  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate', 'import'] },
+  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'import'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
 // data-page -> group key, derived from the map (not the DOM) so the map wins.
@@ -816,8 +816,56 @@ registerPage('auditLog', {
     m.loadAuditLogPage()
   }
 })
-registerPage('migrate',   { lazy: true, enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) } } })
-registerPage('import',    { lazy: true, enter: async () => { const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js')); if (!_moduleCache.get('import_inited')) { m.initImportMemories(); _moduleCache.set('import_inited', true) }; m.loadImportSources() } })
+// Import & Migráció merge: two tabs on the 'import' page. 'migrate' stays as
+// an alias so old #migrate links still land on the right tab (same pattern
+// as the 'team' -> 'agents' and 'bgTasks' -> 'tasks' aliases above).
+let _importPendingTab = null
+registerAlias('migrate', 'import', () => { _importPendingTab = 'migrate' })
+
+async function loadMigrateTab() {
+  const m = await lazyLoad('migrate', () => import('./modules/migrate.js'))
+  if (!_moduleCache.get('migrate_inited')) {
+    m.initMigrate()
+    _moduleCache.set('migrate_inited', true)
+  }
+}
+
+function activateImportTab(tabName) {
+  document.querySelectorAll('#importTabNav .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName)
+  })
+  document.querySelectorAll('#importTabPanels .tab-panel').forEach(panel => {
+    panel.hidden = panel.id !== `import-panel-${tabName}`
+  })
+}
+
+registerPage('import', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js'))
+    if (!_moduleCache.get('import_inited')) {
+      m.initImportMemories()
+      _moduleCache.set('import_inited', true)
+    }
+    m.loadImportSources()
+
+    if (!_moduleCache.get('importTabs_wired')) {
+      document.querySelectorAll('#importTabNav .tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab
+          activateImportTab(tab)
+          if (tab === 'migrate') loadMigrateTab()
+        })
+      })
+      _moduleCache.set('importTabs_wired', true)
+    }
+
+    const targetTab = _importPendingTab || 'sources'
+    _importPendingTab = null
+    activateImportTab(targetTab)
+    if (targetTab === 'migrate') await loadMigrateTab()
+  }
+})
 registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
 registerPage('status',    { lazy: true, enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })
 registerPage('recall',    { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })

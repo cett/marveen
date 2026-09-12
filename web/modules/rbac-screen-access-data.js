@@ -40,7 +40,6 @@ export const SCREEN_ACCESS_ROWS = [
   { key: 'settings', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'backups', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'connectors', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
-  { key: 'migrate', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'import', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'vault', backend: 'page guard (admin+global) + nav hidden', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
   { key: 'auditLog', backend: 'page guard (admin+global) + nav hidden', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
@@ -54,6 +53,6 @@ export const SCREEN_ACCESS_ROWS = [
 // work, not implemented by this display-only matrix.
 export const SCREEN_ACCESS_GAPS = [
   'messages', 'tasks', 'skills', 'ideas', 'artifacts', 'tokenUsage',
-  'status', 'updates', 'settings', 'backups', 'connectors', 'migrate', 'import',
+  'status', 'updates', 'settings', 'backups', 'connectors', 'import',
   'federation',
 ]

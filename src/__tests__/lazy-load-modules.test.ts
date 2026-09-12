@@ -80,13 +80,20 @@ describe('lazy-load: module structure', () => {
       // overlay/timeout logic in switchPage fires only for actual module loads,
       // not for the fire-and-forget data-fetching calls of static pages.
       // A module may appear multiple times (e.g. ideas.js in the kanban thunk AND
-      // in registerPage). Check that at least ONE occurrence has lazy: true nearby.
+      // in registerPage). Check that at least ONE occurrence has lazy: true nearby
+      // -- OR sits inside a `load<X>Tab()` helper (the tasks/import tab merges:
+      // a module that only backs a SUB-TAB of an already-lazy page, loaded on
+      // tab click or from that page's own enter(), never at eager startup).
       const importStr = `import('./modules/${mod}')`
       let pos = 0
       let found = false
       while ((pos = APP_JS.indexOf(importStr, pos)) !== -1) {
-        const surrounding = APP_JS.slice(Math.max(0, pos - 800), pos + 50)
-        if (surrounding.includes('lazy: true')) { found = true; break }
+        const before = APP_JS.slice(Math.max(0, pos - 800), pos)
+        const surrounding = before + APP_JS.slice(pos, pos + 50)
+        if (surrounding.includes('lazy: true') || /async function load\w*Tab\(\)\s*\{[^}]*$/.test(before)) {
+          found = true
+          break
+        }
         pos += importStr.length
       }
       expect(found).toBe(true)
