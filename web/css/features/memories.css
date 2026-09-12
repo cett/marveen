@@ -106,6 +106,31 @@
   margin-top: 16px;
 }
 
+/* === Audit trail / approvals row-click detail modals === */
+tr.audit-log-row-clickable, tr.approvals-row-clickable { cursor: pointer; }
+tr.audit-log-row-clickable:hover, tr.approvals-row-clickable:hover {
+  background: var(--bg-hover, color-mix(in srgb, var(--text) 4%, transparent));
+}
+.audit-log-detail-pre {
+  margin: 0;
+  padding: var(--sp-6);
+  overflow: auto;
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.approvals-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--sp-6);
+  overflow-y: auto;
+}
+.approvals-detail-row { display: flex; flex-direction: column; gap: 2px; }
+.approvals-detail-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.approvals-detail-value { font-size: 13px; word-break: break-word; white-space: pre-wrap; }
+
 /* === Memory Toolbar === */
 .mem-toolbar {
   display: flex;
