@@ -17,6 +17,50 @@ const _approvalsState = { status: '', agent: '', category: '', offset: 0 }
 let _approvalsAll = []
 let _approvalsTenantGetter = null
 
+// .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
+// only becomes visible via the .active class -- [hidden] alone toggles
+// display:none/block but never restores visibility. Both must be set.
+function openModal(id) { const m = document.getElementById(id); if (m) { m.hidden = false; m.classList.add('active') } }
+function closeModal(id) { const m = document.getElementById(id); if (m) { m.classList.remove('active'); m.hidden = true } }
+
+// [data-close] delegation for this module's own modal.
+document.addEventListener('click', (e) => {
+  const closeId = e.target.closest('[data-close]')?.dataset.close
+  if (closeId) closeModal(closeId)
+})
+
+// Row click -> detail modal, delegated so it survives table re-renders.
+// Ignores clicks that land on the approve/reject action buttons.
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.approvals-decide')) return
+  const row = e.target.closest('#approvalsTbody tr[data-approval-id]')
+  if (row) openApprovalDetail(row.dataset.approvalId)
+})
+
+function openApprovalDetail(id) {
+  const a = _approvalsAll.find(x => x.id === id)
+  if (!a) return
+  const bodyEl = document.getElementById('approvalsDetailBody')
+  if (!bodyEl) return
+  const row = (label, value) => `
+    <div class="approvals-detail-row">
+      <span class="approvals-detail-label">${escapeHtml(label)}</span>
+      <span class="approvals-detail-value">${escapeHtml(value ?? '')}</span>
+    </div>`
+  bodyEl.innerHTML = [
+    row('ID', a.id),
+    row('Ágens', a.agent_id),
+    row('Kategória', a.category),
+    row('Állapot', t('approvals.status.' + a.status) || a.status),
+    row('Kérés ideje', a.requested_at ? new Date(a.requested_at * 1000).toLocaleString('hu-HU') : ''),
+    row('Timeout', a.timeout_at ? new Date(a.timeout_at * 1000).toLocaleString('hu-HU') : ''),
+    row('Elbírálva', a.resolved_by || ''),
+    row('Elbírálás ideje', a.resolved_at ? new Date(a.resolved_at * 1000).toLocaleString('hu-HU') : ''),
+    row('Teljes leírás', a.action_description),
+  ].join('')
+  openModal('approvalsDetailModal')
+}
+
 // ============================================================
 // === Sidebar badge polling (mirrors updates.js pollUpdatesBadge) ===
 // Keeps the nav badge current on every tab, not just when the (lazy)
@@ -135,7 +179,7 @@ function _renderApprovalsTable() {
           const resolvedStr = resolvedDate.toLocaleString('hu-HU', sameDay ? { timeStyle: 'short' } : { dateStyle: 'short', timeStyle: 'short' })
           return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}<br><span style="font-size:11px;opacity:0.7">${escapeHtml(resolvedStr)}</span></span>`
         })()
-    return `<tr style="${rowStyle}">
+    return `<tr class="approvals-row-clickable" data-approval-id="${escapeAttr(a.id)}" title="Kattints a részletekért" style="${rowStyle}">
       <td style="white-space:nowrap;font-size:12px">${escapeHtml(time)}</td>
       <td><code style="font-size:12px">${escapeHtml(a.agent_id)}</code></td>
       <td style="font-size:12px">${escapeHtml(a.category)}</td>

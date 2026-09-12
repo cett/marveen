@@ -14,11 +14,76 @@ import { escapeHtml } from './util.js'
 import { renderPaginator } from './paginator.js'
 
 const AUDIT_LOG_LIMIT = 200
+const AUDIT_LOG_EXPORT_LIMIT = 10000
 
 const _state = { agent: '', q: '', offset: 0 }
+let _lastEntries = []
+
+// .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
+// only becomes visible via the .active class -- [hidden] alone toggles
+// display:none/block but never restores visibility. Both must be set.
+function openModal(id) { const m = document.getElementById(id); if (m) { m.hidden = false; m.classList.add('active') } }
+function closeModal(id) { const m = document.getElementById(id); if (m) { m.classList.remove('active'); m.hidden = true } }
+
+// [data-close] delegation for this module's own modal.
+document.addEventListener('click', (e) => {
+  const closeId = e.target.closest('[data-close]')?.dataset.close
+  if (closeId) closeModal(closeId)
+})
+
+// Row click -> detail modal, delegated so it survives table re-renders.
+document.addEventListener('click', (e) => {
+  const row = e.target.closest('#auditLogTbody tr[data-entry-idx]')
+  if (row) openAuditLogDetail(Number(row.dataset.entryIdx))
+})
+
+function openAuditLogDetail(idx) {
+  const entry = _lastEntries[idx]
+  if (!entry) return
+  const titleEl = document.getElementById('auditLogDetailModalTitle')
+  const bodyEl = document.getElementById('auditLogDetailBody')
+  if (!titleEl || !bodyEl) return
+  const label = entry.source === 'hook' ? `Hook -- ${entry.hook_type ?? ''}` : `${entry.agent_id ?? ''} -- ${entry.action ?? ''}`
+  titleEl.textContent = label
+  bodyEl.textContent = JSON.stringify(entry, null, 2)
+  openModal('auditLogDetailModal')
+}
+
+async function exportAuditLog() {
+  const sources = []
+  if (document.getElementById('auditLogSourceAgent')?.checked) sources.push('agent')
+  if (document.getElementById('auditLogSourceHook')?.checked) sources.push('hook')
+  if (sources.length === 0) return
+
+  const params = new URLSearchParams({ source: sources.join(','), limit: String(AUDIT_LOG_EXPORT_LIMIT), offset: '0' })
+  if (_state.agent) params.set('agent', _state.agent)
+  if (_state.q) params.set('q', _state.q)
+
+  const btn = document.getElementById('auditLogExportBtn')
+  if (btn) btn.disabled = true
+  try {
+    const res = await fetch(`/api/audit-log?${params.toString()}`)
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    const blob = new Blob([JSON.stringify(data.entries ?? [], null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `audit-log-export-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (_err) {
+    // Export failure is non-critical (the table itself already shows the error state).
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
 
 export function initAuditLog() {
   document.getElementById('auditLogRefreshBtn')?.addEventListener('click', () => { _state.offset = 0; loadAuditLogPage() })
+  document.getElementById('auditLogExportBtn')?.addEventListener('click', () => { exportAuditLog() })
   document.getElementById('auditLogSourceAgent')?.addEventListener('change', () => { _state.offset = 0; loadAuditLogPage() })
   document.getElementById('auditLogSourceHook')?.addEventListener('change', () => { _state.offset = 0; loadAuditLogPage() })
 
@@ -121,12 +186,13 @@ function _detailCell(entry) {
 function _renderAuditLogTable(entries) {
   const tbody = document.getElementById('auditLogTbody')
   if (!tbody) return
+  _lastEntries = entries
   if (entries.length === 0) {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-muted);padding:24px;text-align:center">Nincs találat.</td></tr>`
     return
   }
-  tbody.innerHTML = entries.map(entry => `
-    <tr>
+  tbody.innerHTML = entries.map((entry, idx) => `
+    <tr data-entry-idx="${idx}" class="audit-log-row-clickable" title="Kattints a részletekért">
       <td>${_formatTime(entry.created_at)}</td>
       <td>${_sourceLabel(entry.source)}</td>
       <td>${escapeHtml(entry.agent_id ?? '')}</td>
