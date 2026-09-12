@@ -97,11 +97,27 @@ export default defineConfig({
       // filesystem. Local baseline after this step: statements 66.61%,
       // branches 65.64%, functions 65.92%, lines 68.15% -- a materially
       // bigger jump than prior steps since connectors.ts is a large file, so
-      // the floor moves up this time (a modest +1 on each metric, well
-      // inside the buffer the fresh measurement leaves). Raise only once the
-      // level actually reached clearly supports it, never round up ahead of
-      // the measurement. Ratchet up further as more steps land in this
-      // branch.
+      // the floor moved up that step (a modest +1 on each metric). And (this
+      // step) src/web/routes/voice.ts (30.8% -> 91.91% statements / 85.62%
+      // branches -- GET /api/voice/directive's full responseMode matrix
+      // (text/voice/auto x audio/non-audio, plus the non-fatal STT-failure
+      // path), GET /api/voice/modality + POST .../modality/set success,
+      // GET /api/voice/status (installed voice list filtered by which .onnx
+      // files exist), POST /api/voice/stt and /api/voice/tts success +
+      // failure (including the ok=/id= stdout parsing and the unknown/
+      // missing-onnx voice_model 400s), and POST /api/voice/install
+      // (already-installed, deps-missing sudo hint, and the background-
+      // install start). A fake ChildProcess (stdout/stderr EventEmitters +
+      // a delayed 'close') drives runProc()'s spawn() calls; the
+      // already-running install race and the async child 'error' handler
+      // are left uncovered by design -- flaky to set up deterministically
+      // for a module-level in-flight flag, low value. Local baseline after
+      // this step: statements 67.11%, branches 66.18%, functions 66.29%,
+      // lines 68.65%. Floor left UNCHANGED this step: voice.ts is only 321
+      // lines, a small increment against ~24.5k total statements -- the
+      // existing buffer comfortably covers it. Raise only once the level
+      // actually reached clearly supports it, never round up ahead of the
+      // measurement. Ratchet up further as more steps land in this branch.
       thresholds: {
         statements: 64,
         branches: 63,
