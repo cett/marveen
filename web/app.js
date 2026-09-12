@@ -520,13 +520,15 @@ initSidebarBrand()
   } catch {}
 })()
 
-// Reveal the RBAC admin nav link (tokens/partner-senders/skill access, kanban
-// 722-B) as soon as the client can() check resolves -- mirrors revealAdminNav
-// above but goes through rbac-client so it also unhides for the legacy
-// store/.dashboard-token bearer caller (null role resolves can() to true).
+// Reveal the B2B admin nav link the same way for the RBAC tabs it now also
+// carries (tokens/partner-senders/skill access, kanban 722-B, folded in by
+// reveal below) -- mirrors revealAdminNav above but goes through rbac-client so
+// it also unhides for the legacy store/.dashboard-token bearer caller (null
+// role resolves can() to true), which revealAdminNav's strict role check
+// above does not cover.
 ;(async function revealAdminRbacNav() {
   if (await can('admin:all')) {
-    const navLink = document.getElementById('navAdminRbac')
+    const navLink = document.getElementById('navAdminB2b')
     if (navLink) navLink.hidden = false
   }
 })()
@@ -931,6 +933,14 @@ registerPage('backups', {
   }
 })
 
+// The former standalone RBAC admin page (tokens/partner-senders/skill
+// access) merged into the B2B admin page ("Felhasználók") as three more
+// tabs. 'adminRbac' stays as an alias so old #adminRbac deep links and the
+// '/admin' path (see PATH_PAGE_MAP in app-core.js) still land on the right
+// tab, mirroring the bgTasks/migrate aliases above.
+let _adminB2bPendingTab = null
+registerAlias('adminRbac', 'adminB2b', () => { _adminB2bPendingTab = 'tokens' })
+
 registerPage('adminB2b', {
   lazy: true,
   domId: 'page-admin-b2b',
@@ -941,19 +951,10 @@ registerPage('adminB2b', {
       _moduleCache.set('admin-b2b_inited', true)
     }
     await m.loadAdminB2b()
-  }
-})
-
-registerPage('adminRbac', {
-  lazy: true,
-  domId: 'page-admin-rbac',
-  enter: async () => {
-    const m = await lazyLoad('admin-rbac', () => import('./modules/admin-rbac.js'))
-    if (!_moduleCache.get('admin-rbac_inited')) {
-      await m.initAdminRbac()
-      _moduleCache.set('admin-rbac_inited', true)
+    if (_adminB2bPendingTab) {
+      m.switchTab(_adminB2bPendingTab)
+      _adminB2bPendingTab = null
     }
-    await m.loadAdminRbac()
   }
 })
 

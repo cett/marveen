@@ -43,8 +43,7 @@ export const SCREEN_ACCESS_ROWS = [
   { key: 'import', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'vault', backend: 'page guard (admin+global) + nav hidden', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
   { key: 'auditLog', backend: 'page guard (admin+global) + nav hidden', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
-  { key: 'adminB2b', backend: 'nav hidden (admin+global)', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
-  { key: 'adminRbac', backend: "nav hidden (can(admin:all))", roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
+  { key: 'adminB2b', backend: 'nav hidden (admin+global, also can(admin:all) for the merged-in RBAC tabs)', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
   { key: 'profile', backend: 'nav hidden (session-only); /api/me -> memories:read', roles: { admin: 'full', agent: 'none', read_only: 'full', viewer: 'full' } },
 ]
 

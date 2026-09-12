@@ -1922,7 +1922,7 @@ window._i18n.en = {
 
   // B2B Admin page
   'nav.adminB2b':                    'Users',
-  'admin.b2b.subtitle':              'Manage tenants, B2B users and device keys',
+  'admin.b2b.subtitle':              'Manage tenants, B2B users, device keys, API tokens, partner senders and skill access',
   'admin.b2b.tab.tenants':           'Tenants',
   'admin.b2b.tab.users':             'Users',
   'admin.b2b.tab.device_keys':       'Device keys',
@@ -2015,7 +2015,6 @@ window._i18n.en = {
   'admin.b2b.screen_access.screen.vault':         'Vault',
   'admin.b2b.screen_access.screen.auditLog':      'Full audit trail',
   'admin.b2b.screen_access.screen.adminB2b':      'Users admin',
-  'admin.b2b.screen_access.screen.adminRbac':     'RBAC admin',
   'admin.b2b.screen_access.screen.profile':       'Profile',
 
   // Profile page
@@ -2062,9 +2061,7 @@ window._i18n.en = {
   // Connectors env-var modal (pre-existing key, was never added to either lang file)
   'connectors.env_modal.desc':       'This MCP server requires the following env variables. Values are encrypted into the Vault.',
 
-  // RBAC Admin page
-  'nav.adminRbac':                              'RBAC Admin',
-  'admin.rbac.subtitle':                        'Manage API tokens, partner senders and skill access',
+  // RBAC Admin tabs (merged into the B2B admin / Users page)
   'admin.rbac.tab.tokens':                      'Tokens',
   'admin.rbac.tab.partner_senders':             'Partner Senders',
   'admin.rbac.tab.skill_access':                'Skill Access',

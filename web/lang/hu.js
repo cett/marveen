@@ -1921,7 +1921,7 @@ window._i18n.hu = {
 
   // B2B Admin page
   'nav.adminB2b':                    'Felhasználók',
-  'admin.b2b.subtitle':              'Tenantok, B2B felhasználók és eszközkulcsok kezelése',
+  'admin.b2b.subtitle':              'Tenantok, B2B felhasználók, eszközkulcsok, API tokenek, partner-küldők és skill-hozzáférések kezelése',
   'admin.b2b.tab.tenants':           'Tenantok',
   'admin.b2b.tab.users':             'Felhasználók',
   'admin.b2b.tab.device_keys':       'Eszközkulcsok',
@@ -2014,7 +2014,6 @@ window._i18n.hu = {
   'admin.b2b.screen_access.screen.vault':         'Vault',
   'admin.b2b.screen_access.screen.auditLog':      'Teljes audit trail',
   'admin.b2b.screen_access.screen.adminB2b':      'Felhasználók admin',
-  'admin.b2b.screen_access.screen.adminRbac':     'RBAC admin',
   'admin.b2b.screen_access.screen.profile':       'Profil',
 
   // Profile page
@@ -2061,9 +2060,7 @@ window._i18n.hu = {
   // Connectors env-var modal (pre-existing key, was never added to either lang file)
   'connectors.env_modal.desc':       'Ez az MCP szerver az alábbi env változókat igényli. Az értékek titkosítva kerülnek a Vault-ba.',
 
-  // RBAC Admin page
-  'nav.adminRbac':                              'RBAC admin',
-  'admin.rbac.subtitle':                        'API tokenek, partner-küldők és skill-hozzáférések kezelése',
+  // RBAC Admin tabs (merged into the B2B admin / "Felhasználók" page)
   'admin.rbac.tab.tokens':                      'Tokenek',
   'admin.rbac.tab.partner_senders':             'Partner-küldők',
   'admin.rbac.tab.skill_access':                'Skill-hozzáférés',

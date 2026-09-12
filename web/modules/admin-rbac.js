@@ -2,7 +2,10 @@
 // grant/revoke management -- global admin only. All three are existing
 // backend endpoints (tokens.ts, admin-b2b.ts, skills.ts) that previously had
 // no UI. Entry is gated with rbac-client's can('admin:all'), consistent with
-// the 722 Part A client gating (web/modules/rbac-client.js).
+// the 722 Part A client gating (web/modules/rbac-client.js). Originally its
+// own standalone page; merged into the "Felhasználók" (B2B admin) page as
+// three additional tabs -- admin-b2b.js owns tab switching and nav-link
+// visibility, this module keeps its own data-fetch/render/CRUD logic.
 
 import { escapeHtml as esc } from './util.js'
 import { showToast } from './toast.js'
@@ -18,9 +21,8 @@ function openModal(id) { const m = $(id); if (m) { m.hidden = false; m.classList
 function closeModal(id) { const m = $(id); if (m) { m.classList.remove('active'); m.hidden = true } }
 
 // [data-close] delegation for this module's own modals -- admin-b2b.js
-// registers an equivalent listener, but only once that module has been
-// lazy-loaded; a session that only ever visits the RBAC admin page must not
-// depend on that.
+// registers an equivalent listener too, but this one is independent since
+// admin-b2b.js imports this module statically and both load together.
 document.addEventListener('click', (e) => {
   const closeId = e.target.closest('[data-close]')?.dataset.close
   if (closeId) closeModal(closeId)
@@ -29,24 +31,6 @@ document.addEventListener('click', (e) => {
 function fmtDate(unixSeconds) {
   if (unixSeconds == null) return '—'
   return new Date(unixSeconds * 1000).toLocaleString('hu-HU')
-}
-
-// ── Tabs ─────────────────────────────────────────────────────────────────────
-
-let _activeTab = 'tokens'
-
-function switchTab(tab) {
-  _activeTab = tab
-  document.querySelectorAll('#adminRbacTabs .admin-b2b-tab').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tab)
-  })
-  ;['tokens', 'partnerSenders', 'skillAccess'].forEach(p => {
-    const panel = $('adminRbacPanel' + p.charAt(0).toUpperCase() + p.slice(1))
-    if (panel) panel.hidden = p !== tab
-  })
-  if (tab === 'tokens') loadTokens()
-  if (tab === 'partnerSenders') loadPartnerSenders()
-  if (tab === 'skillAccess') loadSkillList()
 }
 
 // ── Shared: tenant list (for selects across all three tabs) ───────────────────
@@ -72,7 +56,7 @@ function tenantOptions(selectedId) {
 
 let _tokens = []
 
-async function loadTokens() {
+export async function loadTokens() {
   const list = $('tokenList')
   if (!list) return
   list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
@@ -192,7 +176,7 @@ async function revokeToken(id, name) {
 
 let _partnerSenders = []
 
-async function loadPartnerSenders(tenantFilter) {
+export async function loadPartnerSenders(tenantFilter) {
   const list = $('partnerSenderList')
   if (!list) return
   list.innerHTML = `<p style="color:var(--text-muted);padding:8px 0">${t('common.loading', 'Betöltés...')}</p>`
@@ -285,7 +269,7 @@ async function deletePartnerSender(senderId, tenantId) {
 let _skills = []
 let _selectedSkillId = null
 
-async function loadSkillList() {
+export async function loadSkillList() {
   const sel = $('skillAccessSkillSelect')
   if (!sel) return
   try {
@@ -398,13 +382,8 @@ export async function initAdminRbac() {
 
   if (!(await can('admin:all'))) return
 
-  const navLink = $('navAdminRbac')
-  if (navLink) navLink.hidden = false
-
-  $('adminRbacTabs')?.addEventListener('click', (e) => {
-    const btn = e.target.closest('.admin-b2b-tab')
-    if (btn) switchTab(btn.dataset.tab)
-  })
+  // Nav link (navAdminB2b) and tab switching are owned by admin-b2b.js --
+  // the RBAC tabs live on the same page/tab-nav now.
 
   // Tokens
   $('tokenAddBtn')?.addEventListener('click', () => openModal('tokenAddModal'))
@@ -446,7 +425,6 @@ export async function loadAdminRbac() {
   await loadTenantsForRbac()
   populateNewPartnerSenderTenantSelect()
   populatePartnerSenderTenantFilter()
-  if (_activeTab === 'tokens') await loadTokens()
-  if (_activeTab === 'partnerSenders') await loadPartnerSenders()
-  if (_activeTab === 'skillAccess') await loadSkillList()
+  // Per-tab data loads (loadTokens/loadPartnerSenders/loadSkillList) are
+  // triggered by admin-b2b.js's switchTab, which owns the active tab now.
 }

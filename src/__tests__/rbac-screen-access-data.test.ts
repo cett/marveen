@@ -8,12 +8,15 @@
 // possible for those rows without first doing the frontend nav-gate work this
 // task deliberately does NOT include.
 //
-// What IS checkable, and checked here: the five screens the spec called out
+// What IS checkable, and checked here: the four screens the spec called out
 // as "existing frontend gates, reference, unchanged" (vault, auditLog,
-// adminB2b, adminRbac, profile) have real, stable nav-hide conditions in
-// source. This test greps for those exact conditions so a future rename or
-// removal of the guard is caught, even though the bulk of the matrix remains a
-// plain, manually-kept data table.
+// adminB2b, profile) have real, stable nav-hide conditions in source. This
+// test greps for those exact conditions so a future rename or removal of the
+// guard is caught, even though the bulk of the matrix remains a plain,
+// manually-kept data table. adminRbac used to be its own row/screen; it
+// merged into adminB2b as three tabs and the
+// revealAdminRbacNav() reveal function (still checked below) now targets
+// navAdminB2b instead of its own nav link.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -29,7 +32,7 @@ const APP_JS = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 const PROFILE_JS = readFileSync(join(__dirname, '../../web/modules/profile.js'), 'utf-8')
 
 const VALID_LEVELS = new Set(['full', 'ro', 'gap', 'none'])
-const EXPECTED_SCREEN_COUNT = 25
+const EXPECTED_SCREEN_COUNT = 24
 
 describe('rbac-screen-access-data shape', () => {
   it('has the expected number of screens, each with a unique key', () => {
@@ -76,8 +79,8 @@ describe('rbac-screen-access-data vs the actual (reference, unchanged) frontend 
     expect(PROFILE_JS).toMatch(/nav\.hidden = false/)
   })
 
-  it('the matrix marks all four of these screens as none for every non-admin role', () => {
-    for (const key of ['vault', 'auditLog', 'adminB2b', 'adminRbac']) {
+  it('the matrix marks all three of these screens as none for every non-admin role', () => {
+    for (const key of ['vault', 'auditLog', 'adminB2b']) {
       const row = SCREEN_ACCESS_ROWS.find((r) => r.key === key)
       expect(row).toBeTruthy()
       expect(row!.roles.agent).toBe('none')

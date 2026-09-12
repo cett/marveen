@@ -336,7 +336,8 @@ export function boot() {
   window.addEventListener('hashchange', routeFromHash)
 
   // SPA fallback: convert /admin or /profile path to hash routing.
-  // 'admin' has no page of its own -- it points at the RBAC admin screen.
+  // 'admin' has no page of its own -- it points at the 'adminRbac' alias
+  // (registered in app.js), which lands on the B2B admin page's Tokenek tab.
   const PATH_PAGE_MAP = { admin: 'adminRbac', profile: 'profile' }
   if (!location.hash && PATH_PAGE_MAP[location.pathname.slice(1)]) {
     location.hash = PATH_PAGE_MAP[location.pathname.slice(1)]

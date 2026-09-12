@@ -177,10 +177,6 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="sb-label" data-i18n="nav.adminB2b">Felhasználók</span>
           </a>
-          <a href="#" class="sb-link" data-page="adminRbac" id="navAdminRbac" hidden>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/><path d="M12 7v0"/></svg>
-            <span class="sb-label" data-i18n="nav.adminRbac">RBAC admin</span>
-          </a>
         </div>
       </div>
       <div class="sb-group" data-group="connections">
@@ -2378,7 +2374,7 @@
         <div class="page-header-row">
           <div>
             <h1 data-i18n="nav.adminB2b">Felhasználók</h1>
-            <p class="subtitle" data-i18n="admin.b2b.subtitle">Tenantok, B2B felhasználók és eszközkulcsok kezelése</p>
+            <p class="subtitle" data-i18n="admin.b2b.subtitle">Tenantok, B2B felhasználók, eszközkulcsok, API tokenek, partner-küldők és skill-hozzáférések kezelése</p>
           </div>
         </div>
       </div>
@@ -2386,6 +2382,9 @@
         <button class="admin-b2b-tab tab-btn active" role="tab" data-tab="tenants" data-i18n="admin.b2b.tab.tenants">Tenantok</button>
         <button class="admin-b2b-tab tab-btn" role="tab" data-tab="users" data-i18n="admin.b2b.tab.users">Felhasználók</button>
         <button class="admin-b2b-tab tab-btn" role="tab" data-tab="deviceKeys" data-i18n="admin.b2b.tab.device_keys">Eszközkulcsok</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="tokens" data-i18n="admin.rbac.tab.tokens">Tokenek</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="partnerSenders" data-i18n="admin.rbac.tab.partner_senders">Partner-küldők</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="skillAccess" data-i18n="admin.rbac.tab.skill_access">Skill-hozzáférés</button>
       </div>
 
       <!-- Tenantok fül -->
@@ -2424,27 +2423,9 @@
       <div class="card" id="adminPanelDeviceKeys" hidden>
         <div id="deviceKeyList" class="admin-b2b-list"></div>
       </div>
-    </div>
-    <!-- /B2B Admin Page -->
 
-    <!-- RBAC Admin Page (global admin only): tokens / partner-senders / skill access (722-B) -->
-    <div class="page" id="page-admin-rbac" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="nav.adminRbac">RBAC admin</h1>
-            <p class="subtitle" data-i18n="admin.rbac.subtitle">API tokenek, partner-küldők és skill-hozzáférések kezelése</p>
-          </div>
-        </div>
-      </div>
-      <div class="admin-b2b-tabs tab-nav" role="tablist" id="adminRbacTabs">
-        <button class="admin-b2b-tab tab-btn active" role="tab" data-tab="tokens" data-i18n="admin.rbac.tab.tokens">Tokenek</button>
-        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="partnerSenders" data-i18n="admin.rbac.tab.partner_senders">Partner-küldők</button>
-        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="skillAccess" data-i18n="admin.rbac.tab.skill_access">Skill-hozzáférés</button>
-      </div>
-
-      <!-- Tokenek fül -->
-      <div class="card" id="adminRbacPanelTokens">
+      <!-- Tokenek fül (beolvasztva a korábbi önálló RBAC admin oldalról, 722-B) -->
+      <div class="card" id="adminRbacPanelTokens" hidden>
         <div class="admin-b2b-toolbar">
           <button class="btn" data-variant="primary" data-size="compact" id="tokenAddBtn" data-i18n="admin.rbac.token.add">+ Token</button>
         </div>
@@ -2475,7 +2456,7 @@
         </div>
       </div>
     </div>
-    <!-- /RBAC Admin Page -->
+    <!-- /B2B Admin Page -->
 
     <!-- Tenant add modal -->
     <div class="modal-overlay" id="tenantAddModal" hidden>
