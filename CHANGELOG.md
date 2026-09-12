@@ -9,7 +9,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: 3a660f5860f0b8bb7cad07a1644be5e55f5943d1 -->
+<!-- changelog-auto-sha: 102c98fedc9637e18b2a168716607f75aa7dca3e -->
 
 ### Removed
 
@@ -20,6 +20,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- remove the "Koltseg ma" KPI card
 - remove the Docs page (read-only docs/ folder viewer)
 - merge Status page into Overview as the Rendszer section
 - merge RBAC admin page into the B2B admin (Felhasznalok) page
@@ -769,6 +770,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- update CHANGELOG per API deprecation policy CI gate
 - point Ütemezések references at the merged Feladatok page
 - update fork-diff SHA for daily-log route coverage step
 - update fork-diff SHA for voice route coverage step
@@ -928,6 +930,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- trim docs/ to the still-referenced files (#875 ST4, Jonas: opt. c)
 - cover daily-log.ts route surface (#751 step 14)
 - cover voice.ts route surface (#751 step 13)
 - cover connectors.ts full route surface (#751 step 12)
