@@ -9,7 +9,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: 81cf0615de4f79a96a4b8bf3e64755fa3def38cd -->
+<!-- changelog-auto-sha: 3a660f5860f0b8bb7cad07a1644be5e55f5943d1 -->
 
 ### Removed
 
@@ -20,6 +20,48 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- remove the Docs page (read-only docs/ folder viewer)
+- merge Status page into Overview as the Rendszer section
+- merge RBAC admin page into the B2B admin (Felhasznalok) page
+- merge Migration and Import pages into Import & Migráció
+- merge Schedules and Background Tasks pages into one Feladatok page
+- row-click detail modals + audit export
+- add complete:true flag to close the sender's blackboard row
+- client-side pagination for the archive page via shared paginator
+- server-side pagination for the plain listing via shared paginator
+- server-side pagination via shared paginator component
+- wire scripts/statusline-ratelimit.sh as the statusLine command
+- admin-only subscription quota strip
+- default-recall workspace_docs in GET /api/memories?q=
+- tenant main-agent badge + tenant visibility chip
+- mirror input_summary into new otel_spans attributes
+- add per-agent history view for the Fleet Blackboard widget
+- hybrid FTS+vector search (P3)
+- backfill embeddings for existing docs (P2)
+- generate embeddings on save/patch (P1)
+- poll pending-approvals badge at boot, mirroring updates badge
+- surface P1-P4 fleet-migration sections in the dashboard (ST5)
+- export/import vault_ssh_keys/vault_ssh_servers (P4)
+- export/import store/*.json configs, WIP (P3)
+- export/import the import_sources table (P2)
+- export/import the DB-based schedules table (P1)
+- add Confluence import source UI (ST4)
+- crawlConfluenceSource() connector
+- token-precondition validation for sources
+- add confluence source type + vault columns
+- bring workspace_docs into memory search (kanban 9156e583)
+- dashboard UI for budgets (Settings CRUD + status widget)
+- add tenant scope to budgets
+- enrich GET /api/costops/budgets with live status
+- budget CRUD API + fix shared-array config bug
+- token-volume budget-plafon alert
+- legacy store/*.md -> workspace_docs backfill migration script (#815)
+- OTel F4 -- mcp_tool attribute on the tool.call span
+- OTel F3 -- agent.turn + model.call spans from context-watchdog
+- OTel F2 -- tool-call span from the tool-log hook
+- OTel F1 -- OTLP push exporter for traces + token-usage metrics
+- fleet-wide rule -- delegate/QA only through the coordinator, never peer-to-peer
+- add trigger_source to hook_audit_log for context-protection coverage audits
 - The Teljes audit trail and Jóváhagyások pages get a click-through detail view: clicking an audit-trail row opens a modal with that entry's full data (pretty-printed JSON), and clicking an approval row opens a modal with its complete description plus id/category/timeout/resolved-by fields, previously only shown truncated to 80 characters in the table cell. The audit trail page also gains an Export button that downloads the current filtered result set (up to 10,000 rows) as a JSON file from the browser. Purely additive frontend work on top of the existing `GET /api/audit-log` and `GET /api/approvals` endpoints -- no backend changes.
 - **[API]** `POST /api/messages` gains a `complete: true` flag, symmetric with the existing `assign: true` delivery hook: instead of opening an `assigned` row for the recipient, it closes the SENDER's own `fleet_blackboard` row (`assigned` or `active`) to `done`, preserving its existing `summary`/`task_ref`. A `stale`/`done`/missing row is a no-op -- no error, since the row was either already reclaimed by the stale-sweeper or never opened. This lets an agent report completion and close its own blackboard row in the same call, instead of a separate `POST /api/blackboard` write; the existing TTL/stale sweep (#854) is unchanged and remains the safety net for agents that don't set the flag.
 - The Archivált kártyák (kanban archive) page now paginates its results with the shared `web/modules/paginator.js` component, matching the audit trail and memories pages. Client-side pagination, not server-side: `GET /api/kanban/archived` is unchanged (still returns the whole filtered result in one request, capped by the existing `KANBAN_ARCHIVED_MAX_ROWS` setting) -- a search/filter change still triggers one fetch, but the result is now sliced into pages in the browser instead of rendered as one long list, the same model the Approvals page's own hand-rolled pager already used.
@@ -304,6 +346,29 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- wire conversation_log and agent_messages into the daily prune sweep
+- wire otel_spans into the daily prune sweep
+- wire hook_audit_log into the daily prune sweep
+- sweep stale 'assigned' rows, not just 'active'
+- show admin-only tenant chip on org-chart nodes too
+- skip main agent in grid card loop to stop duplicate card
+- renumber tenant_main_agent to 0043
+- restore two shared-resource regressions from QA
+- never let a broken audit-log write masquerade as a crawl error
+- base_url is per-source, never hardcoded
+- stale Költöztetés branding in nav label + RBAC screen list
+- DB-mode schedules missing name field breaks delete/toggle/run
+- stop context-watchdog leaking fleet-agent state into sub-agent context
+- align budget modal with the dashboard's dominant modal pattern
+- hash trace/span ids to valid OTLP hex
+- block real Telegram network calls during vitest runs
+- child-check fallback + persistent-block force-restart
+- triage #816's Semgrep findings -- GCM tag-length hardening, 2 false positives suppressed (#817)
+- CI-only false failure in the store-coverage skip guard (#815)
+- cover the isolated main-agent config in vault-inject-http-mcp
+- **[API]** scope memory graph/timeline endpoints to the caller's tenant
+- exclude agents/** and .channels-config/** from vitest glob (#807)
+- forward stdin through vault-file-materializer to the wrapped command
 - `otel_spans` (one row per inter-agent trace span, written on every message-router hop and tool call) had no automatic sweep -- it grew unbounded since the table's introduction. A new `pruneOtelSpans()` deletes rows past a retention window and is now called from the daily `pruneAuditLogs()` sweep alongside the other audit tables, gated by a new `OTEL_SPAN_RETENTION_DAYS` setting (default 30 days, a shorter window than the audit tables' 90 days since spans are a much higher-volume, shorter-lived trace record) rather than reusing `AUDIT_LOG_RETENTION_DAYS`. The cutoff is computed in milliseconds, not seconds -- `otel_spans.start_ms` is the one audit-adjacent timestamp column stored as epoch-ms rather than epoch-seconds, so a naive `Math.floor(Date.now()/1000)` cutoff would have pruned the entire table on every sweep.
 - `conversation_log` (raw in/out channel message log) and `agent_messages` (the inter-agent message queue, regardless of status) had no automatic sweep and grew unbounded. New `pruneConversationLog()`/`pruneAgentMessages()` functions, gated by a new `MESSAGE_LOG_RETENTION_DAYS` setting (default 90 days, shared between the two tables since they are the two halves of the same raw-message-history concern), now run from the daily decay sweep (`runDecaySweep()`) alongside the existing `pruneBlackboardHistory()` call. No status carve-out: a message still `pending` past the window is pruned the same as a `done`/`delivered`/`failed` one, matching every other age-only prune function in the codebase.
 - `hook_audit_log` (one row per PreToolUse/PostToolUse/PreCompact/Stop verdict, ~1000+ rows/day on a busy fleet) had no automatic sweep at all -- `pruneHookAuditLog()` existed but only ever ran when `POST /api/hook-audit/prune` was called by hand, so the table grew unbounded. The daily `pruneAuditLogs()` sweep (already covering `config_change_log`/`idea_status_log`/`store_file_audit`/`agent_audit_log`) now also prunes it, reusing the existing `AUDIT_LOG_RETENTION_DAYS` setting (default 90 days) rather than adding a second retention knob -- filtered on the table's own `ts` column, since `hook_audit_log` has no `created_at`.
@@ -660,6 +725,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- consolidate tool.call span writing into logToolCall
+- remove Napló page nav/#naploPage/app.js IIFE/app-core mapping/rbac-screen row (i18n+CSS still TODO)
+- retire Költöztetés legacy-workspace scan/import feature (#825)
 - fix fleet blackboard stale-sweeper never aging out "assigned" (delegated but never picked up) rows: it now also sweeps them, using a new flat threshold instead of the tier-based active thresholds, transitioning them to "stale" (not "done") once stuck past it
 - split agent-scaffold.ts into hooks + templates (779)
 - split agents.js into 5 files (776)
@@ -701,6 +769,33 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- point Ütemezések references at the merged Feladatok page
+- update fork-diff SHA for daily-log route coverage step
+- update fork-diff SHA for voice route coverage step
+- update fork-diff SHA for connectors route coverage step
+- update fork-diff SHA for updates route coverage step
+- update fork-diff SHA for route coverage step
+- update fork-diff for audit+approvals detail modal
+- assess token_usage pagination need, close ST4 with no-op finding
+- fix fork-diff status line SHA for assigned-stale commit
+- fix fork-diff status line SHA for statusLine-wiring commit
+- fix fork-diff status line SHA for quota-strip commit
+- update fork-diff status line
+- update fork-diff status line
+- add Added entry for blackboard history UI
+- fix stale Napló page reference in fork-diff
+- add Removed entry for Napló page removal
+- update fork-diff for workspace_docs hybrid search
+- note workspace_docs hybrid search (P1-P3)
+- document approvals nav badge in fork-diff and CHANGELOG
+- document fleet-migration P1-P4 coverage in README and CHANGELOG
+- document Confluence Cloud import source in fork feature list
+- add CHANGELOG entry for Confluence import connector (ST5)
+- add entry for schedules name-field/tenant_id fix
+- document OTLP push exporter, hook trigger_source, delegation rule, materializer stdin fix
+- changelog entry for OTel F2 tool-call span (CI changelog gate)
+- changelog entry for vault-file-materializer stdin fix
+- update for tenant-delete vault cleanup (CI CHANGELOG gate)
 - update fork-diff for fleet-only agents MCP tenant gate
 - update fork-diff for HTTP MCP header vault injection
 - update fork-diff for fleet-audit trail #764
@@ -828,8 +923,40 @@ Extract a version for release: `npm run release-notes -- <version>`
 - add contributions summary and fork-diff sections
 - mark repo as independent fork with fork-point baseline
 
+
+- `token_usage` pagination assessment (#863, closing the #859 pagination epic): no dashboard view needs offset-based pagination. The three summary views (`GET /api/token-usage/summary`, `/model-dist`, `/tool-stats`) are already `GROUP BY` aggregates that don't grow with the underlying table. The one raw-row view -- the Token Monitor's "Részletek" table (`web/modules/token-usage.js`, backed by `GET /api/token-usage`/`getTokenDetails()`) -- lists individual `token_usage` rows, but is hard-capped at `limit=200` (server caps at 500 regardless) and defaults to a `min_tokens=50000` filter; it's a "show me the biggest calls" diagnostic view, not a browsable audit trail, so it never grows past its cap regardless of how large `token_usage` itself gets (already 60k+ rows, kept in check separately by the existing daily/monthly rollup + purge sweep). No code change.
+
 ### Infrastructure
 
+- cover daily-log.ts route surface (#751 step 14)
+- cover voice.ts route surface (#751 step 13)
+- cover connectors.ts full route surface (#751 step 12)
+- cover updates.ts GET/status/diagnose/apply routes (#751 step 11)
+- cover tool-log GET routes + skill-usage POST/GET routes (#751 step 10)
+- background-tasks.ts route + sweep coverage (#751 step 9)
+- cover onboarding wizard routes, ratchet floor (#751 step 8)
+- retire tool_call_log table in favor of otel_spans
+- remove Napló i18n keys and CSS, update screen-count test
+- remove Fleet Health bar strip
+- cover agent-conversation and agents-skills routes, ratchet floor (#751 step 7)
+- bump coverage ratchet floor for ideas/profiles/connectors-hu routes (#751 step 6)
+- cover ideas/profiles/connectors-hu routes (#751 step 6, WIP)
+- round-trip coverage for store/*.json config export/import (P3)
+- strip internal kanban card IDs from code comments
+- cover spans/status/backups routes, ratchet floor comment (#751 step 5)
+- cover fleet export/import routes, ratchet floor comment (#751 step 4)
+- cover agent-taskstate routes, ratchet floor comment (#751 step 3)
+- cover docs routes, ratchet coverage floor comment (#751 step 2)
+- cover fleet-q routes, ratchet coverage floor up (#751 step 1)
+- run scripts/__tests__/*.test.sh in CI (#813)
+- add report-only Semgrep JS/TS scan + blocking pip-audit step (#816)
+- merge heartbeat contract/unit files into heartbeat-unit.test.ts
+- remove duplicate submitLanded/parkedInputRowCount coverage from stuck-input-action.test.ts
+- merge reranker-flag/vector-search-rerank/hybrid-postfusion-rerank into hybrid-search-reranker-integration.test.ts
+- merge migration 0032/0033/0034 test files into db-migrations.test.ts
+- merge model-fallback-runner-streak/write into model-fallback-runner.test.ts
+- merge 3 admin-b2b UI contract files into admin-b2b-ui-contracts.test.ts
+- merge 4 of 6 micro-test-files into their parent files
 - cover agent-scaffold-hooks.ts in the removed-heartbeat-scaffold guard
 - drop orphan comment in agent-process-spawn.ts
 - bump vitest + @vitest/coverage-v8 to 5.0.0 (combined)
@@ -925,10 +1052,6 @@ Extract a version for release: `npm run release-notes -- <version>`
 - add GitHub Actions build/typecheck/test workflow
 - governance files (CODEOWNERS, LICENSE, README fork-rationale) -- Refs #4
 - restore classify security comment + drop orphan import (#705 follow-up) (#706)
-
-### Documentation
-
-- `token_usage` pagination assessment (#863, closing the #859 pagination epic): no dashboard view needs offset-based pagination. The three summary views (`GET /api/token-usage/summary`, `/model-dist`, `/tool-stats`) are already `GROUP BY` aggregates that don't grow with the underlying table. The one raw-row view -- the Token Monitor's "Részletek" table (`web/modules/token-usage.js`, backed by `GET /api/token-usage`/`getTokenDetails()`) -- lists individual `token_usage` rows, but is hard-capped at `limit=200` (server caps at 500 regardless) and defaults to a `min_tokens=50000` filter; it's a "show me the biggest calls" diagnostic view, not a browsable audit trail, so it never grows past its cap regardless of how large `token_usage` itself gets (already 60k+ rows, kept in check separately by the existing daily/monthly rollup + purge sweep). No code change.
 
 ## [1.33.0] - 2026-08-18
 
