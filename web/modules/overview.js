@@ -258,7 +258,7 @@ export async function loadOverview() {
     // === Zone 5: KPI strip ===
     // kpiMemories is tenant-scoped (always shown); fleet KPIs are admin-only.
     document.getElementById('kpiMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
-    ;['kpiTasks', 'kpiCost', 'kpiArtifacts', 'kpiSkills', 'kpiTokens'].forEach(function(id) {
+    ;['kpiTasks', 'kpiArtifacts', 'kpiSkills', 'kpiTokens'].forEach(function(id) {
       const el = document.getElementById(id)
       if (el && el.closest('.kpi-item')) el.closest('.kpi-item').hidden = !isAdminView
     })
@@ -271,7 +271,6 @@ export async function loadOverview() {
         else if (taskDiff < 0) { trendEl.textContent = String(taskDiff); trendEl.className = 'kpi-trend down' }
         else { trendEl.textContent = ''; trendEl.className = 'kpi-trend' }
       }
-      document.getElementById('kpiCost').textContent = d.costTodayUsd > 0 ? '$' + d.costTodayUsd.toFixed(2) : '—'
       document.getElementById('kpiArtifacts').textContent = (d.artifacts?.count ?? 0).toLocaleString('hu-HU').replace(/,/g, ' ')
       document.getElementById('kpiSkills').textContent = d.skills.count
       document.getElementById('kpiTokens').textContent = fmtTokensShort(d.tokensToday)

@@ -186,6 +186,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -4194,11 +4195,6 @@ paths:
                     x-admin-only: true
                     description: Admin-only. Omitted for non-admin callers.
                     type: integer
-                  costTodayUsd:
-                    x-admin-only: true
-                    description: Admin-only. Omitted for non-admin callers.
-                    type: number
-                    format: double
                   pendingApprovals:
                     x-admin-only: true
                     description: Admin-only. Omitted for non-admin callers.

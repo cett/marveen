@@ -72,14 +72,11 @@ window._i18n.en = {
   'nav.agents':       'Agents',
   'nav.team':         'Team',
   'nav.messages':     'Messages',
-  'nav.tasks':        'Schedules',
+  'nav.tasks':        'Tasks',
   'nav.memories':     'Memory',
   'nav.recall':       'Diary',
-  'nav.bgTasks':      'Background',
   'nav.skills':       'Skills',
   'nav.connectors':   'MCP',
-  'nav.docs':         'Documentation',
-  'nav.status':       'Status',
   'nav.approvals':    'Approvals',
   'nav.settings':     'Settings',
   'nav.vault':        'Vault',
@@ -325,8 +322,10 @@ window._i18n.en = {
   'agents.toast.avatar_error':   'Error saving avatar',
 
   // --- Tasks (Schedules) ---
-  'tasks.page_title':            'Schedules',
-  'tasks.page_subtitle':         'Manage scheduled tasks',
+  'tasks.page_title':            'Tasks',
+  'tasks.page_subtitle':         'Manage scheduled and one-off tasks',
+  'tasks.tab.scheduled':         'Scheduled',
+  'tasks.tab.once':              'Once',
   'tasks.btn.new':               'New schedule',
   'tasks.btn.refresh':           'Refresh',
   'tasks.toast.run_error':       'Error running task',
@@ -455,8 +454,6 @@ window._i18n.en = {
   'recall.sort.asc':             'Ascending (oldest first)',
 
   // --- Background Tasks ---
-  'bgTasks.page_title':          'Background tasks',
-  'bgTasks.page_subtitle':       'Start and track background tasks',
   'bgTasks.btn.start':           'Start',
   'bgTasks.agent_placeholder':   'Agent',
   'bgTasks.prompt_placeholder':  'Task description...',
@@ -566,22 +563,7 @@ window._i18n.en = {
   'channel.toast.remove_error':   'Removal error',
 
 
-  // --- Docs ---
-  'docs.page_title':             'Documentation',
-  'docs.page_subtitle':          "The project's docs/ folder in readable form",
-  'docs.loading':                'Loading...',
-  'docs.select_hint':            'Select a document from the list on the left.',
-  'docs.error':                  'Error loading document',
-  'docs.list_load_error':        'Failed to load the list',
-  'docs.empty_list':             'No documents found in docs/ folder.',
-  'docs.empty_content':          'No documents to display.',
-  'docs.download_btn':           '⬇ Download .md',
-  'docs.open_error':             'Failed to open',
-
-  // --- Research ---
-  // --- Status ---
-  'status.page_title':           'Status',
-  'status.page_subtitle':        'Claude service status',
+  // --- Status (Rendszer section on Overview) ---
   'status.loading':              'Loading...',
   'status.overall.operational':  'All systems operational',
   'status.overall.degraded':     'Active incident',
@@ -1678,7 +1660,6 @@ window._i18n.en = {
   'channel.btn.slack_manifest': 'Create Slack App (manifest)',
 
   // --- Fleet Migration ---
-  'fleet.section_title':          'Full fleet migration',
   'fleet.section_desc':           'All agents, memories, kanban and settings in a single JSON.',
   'fleet.warning':                'Import is for empty/fresh installations only, not merge. Google/Gmail OAuth and dashboard-token are not included: re-auth required on the target machine.',
   'fleet.vault_password_label':   'Vault password (optional)',
@@ -1855,7 +1836,10 @@ window._i18n.en = {
   'import.form.confluence_email': 'Atlassian account email',
   'import.form.vault_token_ref':  'Vault token id',
   'import.confluence.hint':       'Confluence: the Path field takes a space key (e.g. MYSPACE), or \'*\' for every visible space. Add the token on the Vault page first -- the field below only takes the vault entry\'s id, not the token itself.',
-  'import.page.title':            'Import Memories',
+  'import.page.title':            'Import & Migration',
+  'import.page.subtitle':         'Manage import sources and full-fleet export/import.',
+  'import.tab.sources':           'Import',
+  'import.tab.migrate':           'Migration',
   'import.page.desc':             'Automatically ingest files from local folders, Google Drive, or SharePoint into the memory system.',
   'import.page.info':             'Accepted extensions: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql, plus xlsx, xls, docx (binary formats with content extraction). Skipped: files with extensions .env, .key, .pem, .p12 and similar key/certificate types; files named id_rsa or id_ed25519; and by content: Bearer tokens, private keys, password values, and IBAN-like patterns.',
   'import.sources.title':         'Import sources',
@@ -1921,7 +1905,7 @@ window._i18n.en = {
 
   // B2B Admin page
   'nav.adminB2b':                    'Users',
-  'admin.b2b.subtitle':              'Manage tenants, B2B users and device keys',
+  'admin.b2b.subtitle':              'Manage tenants, B2B users, device keys, API tokens, partner senders and skill access',
   'admin.b2b.tab.tenants':           'Tenants',
   'admin.b2b.tab.users':             'Users',
   'admin.b2b.tab.device_keys':       'Device keys',
@@ -2000,8 +1984,7 @@ window._i18n.en = {
   'admin.b2b.screen_access.screen.federation':    'Federation',
   'admin.b2b.screen_access.screen.docs':          'Documentation',
   'admin.b2b.screen_access.screen.messages':      'Messages',
-  'admin.b2b.screen_access.screen.tasks':         'Schedules',
-  'admin.b2b.screen_access.screen.bgTasks':       'Background tasks',
+  'admin.b2b.screen_access.screen.tasks':         'Tasks',
   'admin.b2b.screen_access.screen.skills':        'Skills',
   'admin.b2b.screen_access.screen.ideas':         'Idea box',
   'admin.b2b.screen_access.screen.artifacts':     'Artifacts',
@@ -2011,12 +1994,10 @@ window._i18n.en = {
   'admin.b2b.screen_access.screen.settings':      'Settings',
   'admin.b2b.screen_access.screen.backups':       'Backups',
   'admin.b2b.screen_access.screen.connectors':    'MCP',
-  'admin.b2b.screen_access.screen.migrate':       'Full fleet migration',
-  'admin.b2b.screen_access.screen.import':        'Import',
+  'admin.b2b.screen_access.screen.import':        'Import & Migration',
   'admin.b2b.screen_access.screen.vault':         'Vault',
   'admin.b2b.screen_access.screen.auditLog':      'Full audit trail',
   'admin.b2b.screen_access.screen.adminB2b':      'Users admin',
-  'admin.b2b.screen_access.screen.adminRbac':     'RBAC admin',
   'admin.b2b.screen_access.screen.profile':       'Profile',
 
   // Profile page
@@ -2063,9 +2044,7 @@ window._i18n.en = {
   // Connectors env-var modal (pre-existing key, was never added to either lang file)
   'connectors.env_modal.desc':       'This MCP server requires the following env variables. Values are encrypted into the Vault.',
 
-  // RBAC Admin page
-  'nav.adminRbac':                              'RBAC Admin',
-  'admin.rbac.subtitle':                        'Manage API tokens, partner senders and skill access',
+  // RBAC Admin tabs (merged into the B2B admin / Users page)
   'admin.rbac.tab.tokens':                      'Tokens',
   'admin.rbac.tab.partner_senders':             'Partner Senders',
   'admin.rbac.tab.skill_access':                'Skill Access',

@@ -72,14 +72,11 @@ window._i18n.hu = {
   'nav.agents':       'Ügynökök',
   'nav.team':         'Csapat',
   'nav.messages':     'Üzenetek',
-  'nav.tasks':        'Ütemezések',
+  'nav.tasks':        'Feladatok',
   'nav.memories':     'Memória',
   'nav.recall':       'Napló',
-  'nav.bgTasks':      'Háttér',
   'nav.skills':       'Skillek',
   'nav.connectors':   'MCP',
-  'nav.docs':         'Dokumentáció',
-  'nav.status':       'Státusz',
   'nav.approvals':    'Jóváhagyások',
   'nav.settings':     'Beállítások',
   'nav.vault':        'Vault',
@@ -483,8 +480,10 @@ window._i18n.hu = {
   'agents.btn.reconnect':          'Újracsatlakozás...',
   'agents.btn.running':            'Futtatás...',
   // --- Tasks (Schedules) ---
-  'tasks.page_title':            'Ütemezések',
-  'tasks.page_subtitle':         'Időzített feladatok kezelése',
+  'tasks.page_title':            'Feladatok',
+  'tasks.page_subtitle':         'Ütemezett és egyszeri feladatok kezelése',
+  'tasks.tab.scheduled':         'Ütemezett',
+  'tasks.tab.once':              'Egyszeri',
   'tasks.modal.new_title':       'Új ütemezett feladat',
   'tasks.modal.edit_title':      'Feladat szerkesztése',
   'tasks.modal.run_history_title': 'Futtatási előzmények',
@@ -678,8 +677,6 @@ window._i18n.hu = {
   'recall.sort.asc':             'Növekvő sorrend (legrégebbi elöl)',
 
   // --- Background Tasks ---
-  'bgTasks.page_title':          'Háttérfeladatok',
-  'bgTasks.page_subtitle':       'Háttérben futó feladatok indítása és követése',
   'bgTasks.empty':               'Nincs háttérfeladat.',
   'bgTasks.error':               'Hiba a betöltésnél',
   'bgTasks.load_error':          'Nem sikerült betölteni',
@@ -825,21 +822,7 @@ window._i18n.hu = {
   'channel.toast.remove_error':   'Eltávolítási hiba',
 
 
-  // --- Docs ---
-  'docs.page_title':             'Dokumentáció',
-  'docs.page_subtitle':          'A projekt docs/ mappája, olvasható formában',
-  'docs.loading':                'Betöltés...',
-  'docs.select_hint':            'Válassz egy dokumentumot a bal oldali listából.',
-  'docs.error':                  'Hiba a dokumentum betöltésekor',
-  'docs.list_load_error':        'Nem sikerült betölteni a listát',
-  'docs.empty_list':             'Nincs dokumentum a docs/ mappában.',
-  'docs.empty_content':          'Nincs megjeleníthető dokumentum.',
-  'docs.download_btn':           '⬇ .md letöltés',
-  'docs.open_error':             'Nem sikerült megnyitni',
-
-  // --- Status ---
-  'status.page_title':           'Státusz',
-  'status.page_subtitle':        'Claude szolgáltatások állapota',
+  // --- Status (Rendszer szekció az Áttekintésben) ---
   'status.loading':              'Betöltés...',
   'status.overall.operational':  'Minden szolgáltatás működik',
   'status.overall.degraded':     'Aktiv incidens',
@@ -1677,7 +1660,6 @@ window._i18n.hu = {
   'channel.btn.slack_manifest': 'Slack App létrehozása (manifest)',
 
   // --- Fleet Migration ---
-  'fleet.section_title':          'Teljes flotta migráció',
   'fleet.section_desc':           'Az összes ügynök, memória, kanban és beállítás egyetlen JSON-ban.',
   'fleet.warning':                'Az import kizárólag üres/friss telepítésre való, nem merge-re. Google/Gmail OAuth és a dashboard-token nem utazik: a célgépen re-auth szükséges.',
   'fleet.vault_password_label':   'Vault jelszó (opcionális)',
@@ -1854,7 +1836,10 @@ window._i18n.hu = {
   'import.form.confluence_email': 'Atlassian fiók email',
   'import.form.vault_token_ref':  'Vault token azonosító',
   'import.confluence.hint':       'Confluence: az Útvonal mező a space-kulcsot veszi fel (pl. MYSPACE), vagy \'*\' az összes látható space-hez. A tokent előbb a Vault oldalon kell felvenni -- a lenti mezőben csak a vault-bejegyzés azonosítóját add meg, ne magát a tokent.',
-  'import.page.title':            'Import emlékek',
+  'import.page.title':            'Import & Migráció',
+  'import.page.subtitle':         'Emlék-importforrások kezelése és teljes flotta export/import.',
+  'import.tab.sources':           'Import',
+  'import.tab.migrate':           'Migráció',
   'import.page.desc':             'Fájlrendszer, Google Drive és SharePoint tartalmak automatikus beolvasása a memória rendszerbe.',
   'import.page.info':             'Elfogadott kiterjesztések: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql, valamint xlsx, xls, docx (bináris fájlok, tartalom-kinyeréssel). Kihagyva: .env, .key, .pem, .p12 és hasonló kulcs/tanúsítvány fájlok; id_rsa, id_ed25519 nevű fájlok; tartalom alapján Bearer tokenek, privát kulcsok, jelszó-értékek és IBAN-szerű minták.',
   'import.sources.title':         'Importforrások',
@@ -1920,7 +1905,7 @@ window._i18n.hu = {
 
   // B2B Admin page
   'nav.adminB2b':                    'Felhasználók',
-  'admin.b2b.subtitle':              'Tenantok, B2B felhasználók és eszközkulcsok kezelése',
+  'admin.b2b.subtitle':              'Tenantok, B2B felhasználók, eszközkulcsok, API tokenek, partner-küldők és skill-hozzáférések kezelése',
   'admin.b2b.tab.tenants':           'Tenantok',
   'admin.b2b.tab.users':             'Felhasználók',
   'admin.b2b.tab.device_keys':       'Eszközkulcsok',
@@ -1999,8 +1984,7 @@ window._i18n.hu = {
   'admin.b2b.screen_access.screen.federation':    'Föderáció',
   'admin.b2b.screen_access.screen.docs':          'Dokumentáció',
   'admin.b2b.screen_access.screen.messages':      'Üzenetek',
-  'admin.b2b.screen_access.screen.tasks':         'Ütemezések',
-  'admin.b2b.screen_access.screen.bgTasks':       'Háttérfeladatok',
+  'admin.b2b.screen_access.screen.tasks':         'Feladatok',
   'admin.b2b.screen_access.screen.skills':        'Skillek',
   'admin.b2b.screen_access.screen.ideas':         'Ötletláda',
   'admin.b2b.screen_access.screen.artifacts':     'Artifaktek',
@@ -2010,12 +1994,10 @@ window._i18n.hu = {
   'admin.b2b.screen_access.screen.settings':      'Beállítások',
   'admin.b2b.screen_access.screen.backups':       'Adatmentés',
   'admin.b2b.screen_access.screen.connectors':    'MCP',
-  'admin.b2b.screen_access.screen.migrate':       'Teljes flotta migráció',
-  'admin.b2b.screen_access.screen.import':        'Importálás',
+  'admin.b2b.screen_access.screen.import':        'Import & Migráció',
   'admin.b2b.screen_access.screen.vault':         'Vault',
   'admin.b2b.screen_access.screen.auditLog':      'Teljes audit trail',
   'admin.b2b.screen_access.screen.adminB2b':      'Felhasználók admin',
-  'admin.b2b.screen_access.screen.adminRbac':     'RBAC admin',
   'admin.b2b.screen_access.screen.profile':       'Profil',
 
   // Profile page
@@ -2062,9 +2044,7 @@ window._i18n.hu = {
   // Connectors env-var modal (pre-existing key, was never added to either lang file)
   'connectors.env_modal.desc':       'Ez az MCP szerver az alábbi env változókat igényli. Az értékek titkosítva kerülnek a Vault-ba.',
 
-  // RBAC Admin page
-  'nav.adminRbac':                              'RBAC admin',
-  'admin.rbac.subtitle':                        'API tokenek, partner-küldők és skill-hozzáférések kezelése',
+  // RBAC Admin tabs (merged into the B2B admin / "Felhasználók" page)
   'admin.rbac.tab.tokens':                      'Tokenek',
   'admin.rbac.tab.partner_senders':             'Partner-küldők',
   'admin.rbac.tab.skill_access':                'Skill-hozzáférés',

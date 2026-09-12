@@ -1,8 +1,11 @@
-// B2B Admin UI: Tenantok / Felhasználók / Eszközkulcsok
+// B2B Admin UI: Tenantok / Felhasználók / Eszközkulcsok / Tokenek /
+// Partner-küldők / Skill-hozzáférés (the last three merged in from the
+// former standalone RBAC admin page).
 // Global admin only (role=admin, tenant_id=null).
 
 import { PERMISSION_MATRIX_ROLES, PERMISSION_MATRIX_CATEGORIES, permissionI18nKeyPart } from './rbac-permission-matrix-data.js'
 import { SCREEN_ACCESS_ROLES, SCREEN_ACCESS_ROWS } from './rbac-screen-access-data.js'
+import { initAdminRbac, loadAdminRbac, loadTokens, loadPartnerSenders, loadSkillList } from './admin-rbac.js'
 
 const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 const $ = (id) => document.getElementById(id)
@@ -51,18 +54,34 @@ document.addEventListener('click', (e) => {
 
 let _activeTab = 'tenants'
 
-function switchTab(tab) {
+// tab name -> panel DOM id. The last three panels still carry their
+// original 'adminRbacPanel*' ids from the standalone RBAC admin page this
+// tab-nav absorbed -- left as-is, only the container page
+// and tab-nav changed.
+const TAB_PANELS = {
+  tenants: 'adminPanelTenants',
+  users: 'adminPanelUsers',
+  deviceKeys: 'adminPanelDeviceKeys',
+  tokens: 'adminRbacPanelTokens',
+  partnerSenders: 'adminRbacPanelPartnerSenders',
+  skillAccess: 'adminRbacPanelSkillAccess',
+}
+
+export function switchTab(tab) {
   _activeTab = tab
   document.querySelectorAll('.admin-b2b-tab').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tab)
   })
-  ;['tenants', 'users', 'deviceKeys'].forEach(p => {
-    const panel = $('adminPanel' + p.charAt(0).toUpperCase() + p.slice(1))
-    if (panel) panel.hidden = p !== tab
+  Object.entries(TAB_PANELS).forEach(([name, id]) => {
+    const panel = $(id)
+    if (panel) panel.hidden = name !== tab
   })
   if (tab === 'tenants') loadTenants()
   if (tab === 'users') { loadUsers(); renderPermissionMatrix(); renderScreenAccessMatrix() }
   if (tab === 'deviceKeys') loadDeviceKeys()
+  if (tab === 'tokens') loadTokens()
+  if (tab === 'partnerSenders') loadPartnerSenders()
+  if (tab === 'skillAccess') loadSkillList()
 }
 
 // ── RBAC matrices (read-only, Users tab) ────────────────────────────────────
@@ -575,69 +594,88 @@ export async function initAdminB2b() {
   _inited = true
 
   const auth = await fetchAuth()
-  if (!isGlobalAdmin(auth)) return
+  const isB2bAdmin = isGlobalAdmin(auth)
 
-  const navLink = $('navAdminB2b')
-  if (navLink) navLink.hidden = false
-
-  // Tab switching
+  // Tab switching is wired unconditionally -- the RBAC tabs (below) use a
+  // separate, broader gate (can('admin:all')) than the strict role==='admin'
+  // check here, so a caller who fails isB2bAdmin but passes that other gate
+  // (the legacy store/.dashboard-token bearer, whose session role is null)
+  // must still be able to switch onto the Tokenek/Partner-küldők/
+  // Skill-hozzáférés tabs. Each loadX() self-gates or fails safe on 401/403.
   $('adminB2bTabs')?.addEventListener('click', (e) => {
     const btn = e.target.closest('.admin-b2b-tab')
     if (btn) switchTab(btn.dataset.tab)
   })
 
-  // Tenant actions (event delegation on the list + matrix)
-  $('tenantList')?.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-action]')
-    if (!btn) return
-    const id = btn.dataset.id
-    if (btn.dataset.action === 'toggle-tenant') await toggleTenant(id, btn.dataset.disabled === '1')
-    if (btn.dataset.action === 'show-agents') await showAgentMatrix(id)
-    if (btn.dataset.action === 'delete-tenant') await deleteTenant(id)
-  })
+  if (isB2bAdmin) {
+    const navLink = $('navAdminB2b')
+    if (navLink) navLink.hidden = false
 
-  $('agentMatrix')?.addEventListener('change', async (e) => {
-    const cb = e.target.closest('.admin-b2b-matrix-check')
-    if (!cb) return
-    await setAgentAvailability(cb.dataset.tenant, cb.dataset.agent, cb.checked)
-  })
+    // Tenant actions (event delegation on the list + matrix)
+    $('tenantList')?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-action]')
+      if (!btn) return
+      const id = btn.dataset.id
+      if (btn.dataset.action === 'toggle-tenant') await toggleTenant(id, btn.dataset.disabled === '1')
+      if (btn.dataset.action === 'show-agents') await showAgentMatrix(id)
+      if (btn.dataset.action === 'delete-tenant') await deleteTenant(id)
+    })
 
-  // Tenant add modal
-  $('tenantAddBtn')?.addEventListener('click', () => openModal('tenantAddModal'))
-  $('tenantAddConfirmBtn')?.addEventListener('click', addTenant)
+    $('agentMatrix')?.addEventListener('change', async (e) => {
+      const cb = e.target.closest('.admin-b2b-matrix-check')
+      if (!cb) return
+      await setAgentAvailability(cb.dataset.tenant, cb.dataset.agent, cb.checked)
+    })
 
-  // Users
-  $('userList')?.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-action]')
-    if (!btn) return
-    if (btn.dataset.action === 'toggle-user') await toggleUser(Number(btn.dataset.id), btn.dataset.disabled === '1')
-    if (btn.dataset.action === 'edit-user') openUserEditModal(btn)
-    if (btn.dataset.action === 'delete-user') await deleteUser(Number(btn.dataset.id), btn.dataset.username)
-  })
-  $('userTenantFilter')?.addEventListener('change', (e) => loadUsers(e.target.value || undefined))
-  $('userAddBtn')?.addEventListener('click', () => openModal('userAddModal'))
-  $('userAddConfirmBtn')?.addEventListener('click', addUser)
-  $('userEditConfirmBtn')?.addEventListener('click', saveUserEdit)
-  $('editUserRole')?.addEventListener('change', (e) => {
-    const tenantGroup = $('editUserTenantGroup')
-    if (tenantGroup) tenantGroup.hidden = e.target.value === 'admin'
-  })
+    // Tenant add modal
+    $('tenantAddBtn')?.addEventListener('click', () => openModal('tenantAddModal'))
+    $('tenantAddConfirmBtn')?.addEventListener('click', addTenant)
 
-  // Device keys: event delegation for tenant assign select
-  $('deviceKeyList')?.addEventListener('change', async (e) => {
-    const sel = e.target.closest('[data-action="assign-tenant"]')
-    if (!sel) return
-    await assignDeviceKeyTenant(Number(sel.dataset.keyId), sel.value)
-  })
+    // Users
+    $('userList')?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-action]')
+      if (!btn) return
+      if (btn.dataset.action === 'toggle-user') await toggleUser(Number(btn.dataset.id), btn.dataset.disabled === '1')
+      if (btn.dataset.action === 'edit-user') openUserEditModal(btn)
+      if (btn.dataset.action === 'delete-user') await deleteUser(Number(btn.dataset.id), btn.dataset.username)
+    })
+    $('userTenantFilter')?.addEventListener('change', (e) => loadUsers(e.target.value || undefined))
+    $('userAddBtn')?.addEventListener('click', () => openModal('userAddModal'))
+    $('userAddConfirmBtn')?.addEventListener('click', addUser)
+    $('userEditConfirmBtn')?.addEventListener('click', saveUserEdit)
+    $('editUserRole')?.addEventListener('change', (e) => {
+      const tenantGroup = $('editUserTenantGroup')
+      if (tenantGroup) tenantGroup.hidden = e.target.value === 'admin'
+    })
 
-  wireNewUserRoleChange()
+    // Device keys: event delegation for tenant assign select
+    $('deviceKeyList')?.addEventListener('change', async (e) => {
+      const sel = e.target.closest('[data-action="assign-tenant"]')
+      if (!sel) return
+      await assignDeviceKeyTenant(Number(sel.dataset.keyId), sel.value)
+    })
+
+    wireNewUserRoleChange()
+  }
+
+  // RBAC tabs (Tokenek / Partner-küldők / Skill-hozzáférés), merged in from
+  // the former standalone RBAC admin page -- own gate (can('admin:all')),
+  // own event wiring, unaffected by the tab-nav/panel move above.
+  await initAdminRbac()
 }
 
 export async function loadAdminB2b() {
   const auth = await fetchAuth()
-  if (!isGlobalAdmin(auth)) return
-  // Ensure tenants are loaded first (device keys and user filter need them).
-  await loadTenants()
-  if (_activeTab === 'users') { await loadUsers(); renderPermissionMatrix(); renderScreenAccessMatrix() }
-  if (_activeTab === 'deviceKeys') await loadDeviceKeys()
+  if (isGlobalAdmin(auth)) {
+    // Ensure tenants are loaded first (device keys and user filter need them).
+    await loadTenants()
+    if (_activeTab === 'users') { await loadUsers(); renderPermissionMatrix(); renderScreenAccessMatrix() }
+    if (_activeTab === 'deviceKeys') await loadDeviceKeys()
+  }
+  // loadAdminRbac() has its own can('admin:all') gate, independent of
+  // isGlobalAdmin above (see initAdminB2b comment).
+  await loadAdminRbac()
+  if (_activeTab === 'tokens') await loadTokens()
+  if (_activeTab === 'partnerSenders') await loadPartnerSenders()
+  if (_activeTab === 'skillAccess') await loadSkillList()
 }

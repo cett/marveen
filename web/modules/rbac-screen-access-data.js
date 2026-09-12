@@ -28,25 +28,20 @@ export const SCREEN_ACCESS_ROWS = [
   { key: 'agents', backend: 'GET: agents:read; write: admin:all', roles: { admin: 'full', agent: 'ro', read_only: 'ro', viewer: 'ro' } },
   { key: 'memories', backend: 'memories:read/write', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
   { key: 'federation', backend: 'federation:read/write; read_only/viewer have neither', roles: { admin: 'full', agent: 'full', read_only: 'gap', viewer: 'gap' } },
-  { key: 'docs', backend: 'static', roles: { admin: 'full', agent: 'full', read_only: 'full', viewer: 'full' } },
   { key: 'messages', backend: 'GET: admin:all; POST: messages:write (agent)', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'tasks', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
-  { key: 'bgTasks', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'skills', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'ideas', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'artifacts', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'tokenUsage', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
-  { key: 'status', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'updates', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'settings', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'backups', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'connectors', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
-  { key: 'migrate', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'import', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'vault', backend: 'page guard (admin+global) + nav hidden', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
   { key: 'auditLog', backend: 'page guard (admin+global) + nav hidden', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
-  { key: 'adminB2b', backend: 'nav hidden (admin+global)', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
-  { key: 'adminRbac', backend: "nav hidden (can(admin:all))", roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
+  { key: 'adminB2b', backend: 'nav hidden (admin+global, also can(admin:all) for the merged-in RBAC tabs)', roles: { admin: 'full', agent: 'none', read_only: 'none', viewer: 'none' } },
   { key: 'profile', backend: 'nav hidden (session-only); /api/me -> memories:read', roles: { admin: 'full', agent: 'none', read_only: 'full', viewer: 'full' } },
 ]
 
@@ -54,7 +49,7 @@ export const SCREEN_ACCESS_ROWS = [
 // truth above (the 'gap' cells) -- tracked for the later RBAC-enforce nav-gate
 // work, not implemented by this display-only matrix.
 export const SCREEN_ACCESS_GAPS = [
-  'messages', 'tasks', 'bgTasks', 'skills', 'ideas', 'artifacts', 'tokenUsage',
-  'status', 'updates', 'settings', 'backups', 'connectors', 'migrate', 'import',
+  'messages', 'tasks', 'skills', 'ideas', 'artifacts', 'tokenUsage',
+  'updates', 'settings', 'backups', 'connectors', 'import',
   'federation',
 ]

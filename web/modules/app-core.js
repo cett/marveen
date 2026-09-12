@@ -154,10 +154,9 @@ const NAV_I18N = {
   overview: 'nav.overview', kanban: 'nav.kanban', archived: 'nav.archived',
   agents: 'nav.agents', team: 'nav.team',
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
-  recall: 'nav.recall', bgTasks: 'nav.bgTasks',
-  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'fleet.section_title',
+  recall: 'nav.recall',
+  skills: 'nav.skills', connectors: 'nav.connectors',
   approvals: 'nav.approvals',
-  docs: 'nav.docs', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates',
 }
@@ -177,11 +176,7 @@ const PAGE_HEADER_I18N = {
   skillsPage:     { title: 'skills.page_title',      sub: 'skills.page_subtitle' },
   memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
   recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
-  bgTasksPage:    { title: 'bgTasks.page_title',     sub: 'bgTasks.page_subtitle' },
   connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
-  migratePage:    { title: 'fleet.section_title',    sub: 'fleet.section_desc' },
-  docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
-  statusPage:     { title: 'status.page_title',      sub: 'status.page_subtitle' },
   teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
   messagesPage:   { title: 'messages.page_title',    sub: 'messages.page_subtitle' },
   settingsPage:   { title: 'settings.page_title',    sub: 'settings.page_subtitle' },
@@ -214,11 +209,6 @@ export function renderStaticI18n() {
       if (idx !== -1) el.textContent = t(statusKeys[idx])
     }
   })
-  // Docs hints
-  const docsHint = document.getElementById('docsContent')
-  if (docsHint && docsHint.querySelector('p.muted')) {
-    docsHint.querySelector('p.muted').textContent = t('docs.select_hint')
-  }
   // Messages empty state
   const chatEmpty = document.querySelector('.chat-thread-empty p')
   if (chatEmpty) chatEmpty.textContent = t('messages.select_agent')
@@ -338,7 +328,8 @@ export function boot() {
   window.addEventListener('hashchange', routeFromHash)
 
   // SPA fallback: convert /admin or /profile path to hash routing.
-  // 'admin' has no page of its own -- it points at the RBAC admin screen.
+  // 'admin' has no page of its own -- it points at the 'adminRbac' alias
+  // (registered in app.js), which lands on the B2B admin page's Tokenek tab.
   const PATH_PAGE_MAP = { admin: 'adminRbac', profile: 'profile' }
   if (!location.hash && PATH_PAGE_MAP[location.pathname.slice(1)]) {
     location.hash = PATH_PAGE_MAP[location.pathname.slice(1)]

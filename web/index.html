@@ -98,11 +98,7 @@
           </a>
           <a href="#" class="sb-link" data-page="tasks">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
-            <span class="sb-label">Ütemezések</span>
-          </a>
-          <a href="#" class="sb-link" data-page="bgTasks">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-            <span class="sb-label">Háttér</span>
+            <span class="sb-label">Feladatok</span>
           </a>
         </div>
       </div>
@@ -152,10 +148,6 @@
           <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </button>
         <div class="sb-group-items" id="sbGroupSystem">
-          <a href="#" class="sb-link" data-page="status">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-            <span class="sb-label">Státusz</span>
-          </a>
           <a href="#" class="sb-link" data-page="updates">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             <span class="sb-label">Frissítések</span>
@@ -181,10 +173,6 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="sb-label" data-i18n="nav.adminB2b">Felhasználók</span>
           </a>
-          <a href="#" class="sb-link" data-page="adminRbac" id="navAdminRbac" hidden>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/><path d="M12 7v0"/></svg>
-            <span class="sb-label" data-i18n="nav.adminRbac">RBAC admin</span>
-          </a>
         </div>
       </div>
       <div class="sb-group" data-group="connections">
@@ -201,10 +189,6 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><path d="M8 12h8"/><path d="M12 9v-3"/><path d="M12 15v3"/></svg>
             <span class="sb-label">Föderáció</span>
           </a>
-          <a href="#" class="sb-link" data-page="migrate">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
-            <span class="sb-label" data-i18n="fleet.section_title">Teljes flotta migráció</span>
-          </a>
           <a href="#" class="sb-link" data-page="import">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             <span class="sb-label" data-i18n="import.page.title">Import emlékek</span>
@@ -212,12 +196,6 @@
         </div>
       </div>
     </nav>
-    <div class="sidebar-docs">
-      <a href="#" class="sb-link" data-page="docs">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        <span class="sb-label">Dokumentáció</span>
-      </a>
-    </div>
     <!-- Bejelentkezett felhasználó blokk (session-auth esetén jelenik meg) -->
     <a href="#" class="sb-user" id="navProfile" data-page="profile" hidden>
       <div class="sb-user-avatar" id="sbUserAvatar"></div>
@@ -301,10 +279,6 @@
           <span class="kpi-label">Feladatok ma</span>
           <span class="kpi-trend" id="kpiTasksTrend"></span>
         </a>
-        <a class="kpi-item" href="#tokenUsage" title="Flotta-szintű, nem tenant-szűrt -- a token-használat ma nem tenant-hozzárendelt">
-          <span class="kpi-value" id="kpiCost">—</span>
-          <span class="kpi-label">Költség ma</span>
-        </a>
         <a class="kpi-item" href="#memories">
           <span class="kpi-value" id="kpiMemories">—</span>
           <span class="kpi-label">Memóriák</span>
@@ -364,6 +338,26 @@
       </div>
       <div class="ov-activity-feed" id="ovActivityFeed">
         <div class="ov-activity-empty">Nincs aktivitás az elmúlt 4 órában.</div>
+      </div>
+
+      <!-- Zone 7: Rendszer (korábban önálló Státusz oldal, Claude szolgáltatások állapota) -->
+      <div class="ov-activity-header" style="margin-top:18px;">
+        <span class="ov-section-title" title="Claude szolgáltatások állapota">Rendszer</span>
+        <button class="btn" data-variant="secondary" data-size="compact" id="refreshStatusBtn" data-i18n="common.btn.refresh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          Frissítés
+        </button>
+      </div>
+      <div class="status-overall" id="statusOverall"></div>
+      <div class="status-services" id="statusServices">
+        <h3 data-i18n="status.services_title">Szolgáltatások</h3>
+        <div class="status-service-grid" id="statusServiceGrid"></div>
+      </div>
+      <div class="status-incidents">
+        <h3 data-i18n="status.incidents_title">Incidensek</h3>
+        <div class="status-incident-list" id="statusIncidentList"></div>
       </div>
 
     </div>
@@ -533,64 +527,92 @@
       <div class="page-header">
         <div class="page-header-row">
           <div>
-            <h1 data-i18n="tasks.page_title">Ütemezések</h1>
-            <p class="subtitle" data-i18n="tasks.page_subtitle">Időzített feladatok kezelése</p>
-            <div id="schedulesTenantSelectorContainer" hidden></div>
+            <h1 data-i18n="tasks.page_title">Feladatok</h1>
+            <p class="subtitle" data-i18n="tasks.page_subtitle">Ütemezett és egyszeri feladatok kezelése</p>
           </div>
-          <div class="schedule-view-toggle">
-            <button class="view-btn active" data-view="list" title="Lista nézet">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-                <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-              </svg>
-            </button>
-            <button class="view-btn" data-view="timeline" title="Napi idővonal">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        </div>
+      </div>
+
+      <nav class="tab-nav" id="tasksTabNav">
+        <button class="tab-btn active" data-tab="scheduled" data-i18n="tasks.tab.scheduled">Ütemezett</button>
+        <button class="tab-btn" data-tab="once" data-i18n="tasks.tab.once">Egyszeri</button>
+      </nav>
+
+      <div id="tasksTabPanels">
+        <!-- Scheduled tab: recurring cron-based tasks (was the whole Tasks page). -->
+        <div class="tab-panel" id="tasks-panel-scheduled">
+          <div class="page-header-row" style="margin-bottom:16px;">
+            <div id="schedulesTenantSelectorContainer" hidden></div>
+            <div class="schedule-view-toggle">
+              <button class="view-btn active" data-view="list" title="Lista nézet">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                  <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                </svg>
+              </button>
+              <button class="view-btn" data-view="timeline" title="Napi idővonal">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                </svg>
+              </button>
+              <button class="view-btn" data-view="week" title="Heti nézet">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+              </button>
+              <button class="btn" data-variant="primary" data-size="compact" id="addScheduleBtn" data-i18n="tasks.btn.new_task">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                Új feladat
+              </button>
+            </div>
+          </div>
+
+          <!-- Pending retries banner (rendered only when the persistent retry
+               queue has entries; the scheduler adds a row for any busy-skipped
+               task so the operator can see and cancel stuck items). -->
+          <div id="pendingRetriesSection" hidden></div>
+
+          <!-- List view -->
+          <div class="schedule-view" id="scheduleListView">
+            <div class="schedule-list" id="scheduleList"></div>
+            <div class="schedule-empty" id="scheduleEmpty" hidden>
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
               </svg>
-            </button>
-            <button class="view-btn" data-view="week" title="Heti nézet">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
-              </svg>
-            </button>
-            <button class="btn" data-variant="primary" data-size="compact" id="addScheduleBtn" data-i18n="tasks.btn.new_task">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-              Új feladat
-            </button>
+              <p data-i18n="tasks.schedule_empty">Nincsenek ütemezett feladatok</p>
+            </div>
+          </div>
+
+          <!-- Timeline view (daily) -->
+          <div class="schedule-view" id="scheduleTimelineView" hidden>
+            <div class="timeline-header">
+              <div class="timeline-hours" id="timelineHours"></div>
+            </div>
+            <div class="timeline-body" id="timelineBody"></div>
+          </div>
+
+          <!-- Week view -->
+          <div class="schedule-view" id="scheduleWeekView" hidden>
+            <div class="week-grid" id="weekGrid"></div>
           </div>
         </div>
-      </div>
 
-      <!-- Pending retries banner (rendered only when the persistent retry
-           queue has entries; the scheduler adds a row for any busy-skipped
-           task so the operator can see and cancel stuck items). -->
-      <div id="pendingRetriesSection" hidden></div>
-
-      <!-- List view -->
-      <div class="schedule-view" id="scheduleListView">
-        <div class="schedule-list" id="scheduleList"></div>
-        <div class="schedule-empty" id="scheduleEmpty" hidden>
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-          </svg>
-          <p data-i18n="tasks.schedule_empty">Nincsenek ütemezett feladatok</p>
+        <!-- Once tab: ad-hoc one-off task launch (was the separate Background Tasks page). -->
+        <div class="tab-panel" id="tasks-panel-once" hidden>
+          <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
+            <select id="bgAgent" class="input" style="width:150px;">
+              <option value="" data-i18n="bgTasks.agent_placeholder">Ágens</option>
+            </select>
+            <input type="text" id="bgPrompt" class="input" placeholder="Feladat leírása..." data-i18n-placeholder="bgTasks.prompt_placeholder" style="flex:1;min-width:300px;">
+            <button class="btn" data-variant="primary" id="bgStartBtn" data-i18n="bgTasks.btn.start">Indítás</button>
+            <label style="font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:4px;">
+              <input type="checkbox" id="bgShowAll"> <span data-i18n="bgTasks.show_finished">Befejezettek is</span>
+            </label>
+          </div>
+          <div id="bgTasksList"></div>
         </div>
-      </div>
-
-      <!-- Timeline view (daily) -->
-      <div class="schedule-view" id="scheduleTimelineView" hidden>
-        <div class="timeline-header">
-          <div class="timeline-hours" id="timelineHours"></div>
-        </div>
-        <div class="timeline-body" id="timelineBody"></div>
-      </div>
-
-      <!-- Week view -->
-      <div class="schedule-view" id="scheduleWeekView" hidden>
-        <div class="week-grid" id="weekGrid"></div>
       </div>
     </div>
 
@@ -809,28 +831,6 @@
       <div class="recall-timeline" id="recallTimeline"></div>
     </div>
 
-    <!-- === Background Tasks Page === -->
-    <div class="page" id="bgTasksPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="bgTasks.page_title">Háttérfeladatok</h1>
-            <p class="subtitle" data-i18n="bgTasks.page_subtitle">Háttérben futó feladatok indítása és követése</p>
-          </div>
-        </div>
-      </div>
-      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
-        <select id="bgAgent" class="input" style="width:150px;">
-          <option value="" data-i18n="bgTasks.agent_placeholder">Ágens</option>
-        </select>
-        <input type="text" id="bgPrompt" class="input" placeholder="Feladat leírása..." data-i18n-placeholder="bgTasks.prompt_placeholder" style="flex:1;min-width:300px;">
-        <button class="btn" data-variant="primary" id="bgStartBtn" data-i18n="bgTasks.btn.start">Indítás</button>
-        <label style="font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:4px;">
-          <input type="checkbox" id="bgShowAll"> <span data-i18n="bgTasks.show_finished">Befejezettek is</span>
-        </label>
-      </div>
-      <div id="bgTasksList"></div>
-    </div>
 
     <!-- === Connectors Page === -->
     <div class="page" id="connectorsPage" hidden>
@@ -1035,226 +1035,191 @@
       </div>
     </div>
     <!-- === Migration Page === -->
-    <div class="page" id="migratePage" hidden>
-      <div class="page-header">
-        <h1 data-i18n="fleet.section_title">Teljes flotta migráció</h1>
-        <p class="subtitle" data-i18n="fleet.section_desc">Az összes ügynök, memória, kanban és beállítás egyetlen JSON-ban.</p>
-      </div>
-
-      <div class="fleet-section">
-        <div class="fleet-warning">
-          <span class="fleet-warning-icon">⚠️</span>
-          <span data-i18n="fleet.warning">Az import kizárólag üres/friss telepítésre való, nem merge-re. Google/Gmail OAuth és a dashboard-token nem utazik: a célgépen re-auth szükséges.</span>
-        </div>
-        <div class="fleet-warning">
-          <span class="fleet-warning-icon">ℹ️</span>
-          <span data-i18n="fleet.import.new_sections_note">Ütemezések és import-források letiltva érkeznek (kézi átvizsgálás szükséges); az SSH kulcsok publikus adatai importálódnak, a privát kulcs csak titkosított (jelszavas) exportban. A store-beállítások közül a legtöbb felülíródik, az engedélyezett domain-lista viszont egyesül a célgép saját listájával, nem íródik felül.</span>
-        </div>
-
-        <div class="fleet-cards">
-          <!-- Export -->
-          <div class="fleet-card">
-            <h3 class="fleet-card-title" data-i18n="fleet.export.title">Export</h3>
-            <p class="fleet-card-desc" data-i18n="fleet.export.desc">A teljes flotta egy JSON-ban. Jelszó megadásával a vault-titkok is (titkosítva).</p>
-            <div class="form-group" style="margin-bottom:12px">
-              <label for="fleetExportPassword" data-i18n="fleet.vault_password_label">Vault jelszó (opcionális)</label>
-              <input type="password" id="fleetExportPassword" data-i18n-ph="fleet.vault_password_ph" placeholder="Ha üresen hagyod, titkok nélkül exportál">
-            </div>
-            <button class="btn" data-variant="primary" data-size="compact" id="fleetExportBtn">
-              <span class="btn-text" data-i18n="fleet.export.btn">Letöltés (JSON)</span>
-              <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.export.loading">Exportálás...</span></span>
-            </button>
-          </div>
-
-          <!-- Import -->
-          <div class="fleet-card">
-            <h3 class="fleet-card-title" data-i18n="fleet.import.title">Import</h3>
-            <p class="fleet-card-desc" data-i18n="fleet.import.desc">Tallózz egy korábban exportált fleet-export-*.json fájlt.</p>
-            <div class="form-group" style="margin-bottom:12px">
-              <label for="fleetImportFile" data-i18n="fleet.import.file_label">Fleet JSON fájl</label>
-              <input type="file" id="fleetImportFile" accept="application/json,.json" class="fleet-file-input">
-            </div>
-            <div class="form-group" style="margin-bottom:12px">
-              <label for="fleetImportPassword" data-i18n="fleet.vault_password_label">Vault jelszó (opcionális)</label>
-              <input type="password" id="fleetImportPassword" data-i18n-ph="fleet.import_vault_password_ph" placeholder="Ha üresen hagyod, titkok nélkül importál">
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn" data-variant="secondary" data-size="compact" id="fleetDryRunBtn">
-                <span class="btn-text" data-i18n="fleet.import.dryrun_btn">Ellenőrzés (dry-run)</span>
-                <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.import.dryrun_loading">Ellenőrzés...</span></span>
-              </button>
-              <button class="btn" data-variant="primary" data-size="compact" id="fleetApplyBtn" disabled>
-                <span class="btn-text" data-i18n="fleet.import.apply_btn">Végrehajtás (apply)</span>
-                <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.import.apply_loading">Importálás...</span></span>
-              </button>
-            </div>
-
-            <!-- Dry-run result -->
-            <div id="fleetDryRunResult" hidden></div>
-          </div>
-        </div>
-
-      </div>
-    </div>
-
-    <!-- === Import Memories Page === -->
+    <!-- === Import & Migráció Page === -->
     <div class="page" id="importPage" hidden>
-      <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
-      <div id="importTenantSelectorContainer" hidden></div>
       <div class="page-header">
-        <h1 data-i18n="import.page.title">Import emlékek</h1>
-        <p class="subtitle" data-i18n="import.page.desc">Fájlrendszer, Google Drive és SharePoint tartalmak automatikus beolvasása a memória rendszerbe.</p>
-        <p class="page-info-text" data-i18n="import.page.info">Elfogadott kiterjesztések: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql, valamint xlsx, xls, docx (bináris fájlok, tartalom-kinyeréssel). Kihagyva: .env, .key, .pem, .p12 és hasonló kulcs/tanúsítvány fájlok; id_rsa, id_ed25519 nevű fájlok; tartalom alapján Bearer tokenek, privát kulcsok, jelszó-értékek és IBAN-szerű minták.</p>
+        <h1 data-i18n="import.page.title">Import &amp; Migráció</h1>
+        <p class="subtitle" data-i18n="import.page.subtitle">Emlék-importforrások kezelése és teljes flotta export/import.</p>
       </div>
 
-      <div class="import-layout">
-        <!-- Add source form -->
-        <section class="import-section">
-          <div class="section-header">
-            <h2 data-i18n="import.add.title">Új forrás</h2>
-          </div>
-          <form id="importAddSourceForm" class="import-add-form">
-            <div class="form-row">
-              <div class="form-group" style="flex:0 0 160px">
-                <label for="importSourceType" data-i18n="import.form.type">Forrás típusa</label>
-                <select id="importSourceType">
-                  <option value="local" data-i18n="import.type.local">Helyi mappa</option>
-                  <option value="gdrive" data-i18n="import.type.gdrive">Google Drive</option>
-                  <option value="sharepoint" data-i18n="import.type.sharepoint">SharePoint</option>
-                  <option value="confluence" data-i18n="import.type.confluence">Confluence</option>
-                </select>
+      <nav class="tab-nav" id="importTabNav">
+        <button class="tab-btn active" data-tab="sources" data-i18n="import.tab.sources">Import</button>
+        <button class="tab-btn" data-tab="migrate" data-i18n="import.tab.migrate">Migráció</button>
+      </nav>
+
+      <div id="importTabPanels">
+        <!-- Import tab: recurring import sources (was the whole Import Memories page). -->
+        <div class="tab-panel" id="import-panel-sources">
+          <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
+          <div id="importTenantSelectorContainer" hidden></div>
+          <p class="page-info-text" data-i18n="import.page.desc">Fájlrendszer, Google Drive és SharePoint tartalmak automatikus beolvasása a memória rendszerbe.</p>
+          <p class="page-info-text" data-i18n="import.page.info">Elfogadott kiterjesztések: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql, valamint xlsx, xls, docx (bináris fájlok, tartalom-kinyeréssel). Kihagyva: .env, .key, .pem, .p12 és hasonló kulcs/tanúsítvány fájlok; id_rsa, id_ed25519 nevű fájlok; tartalom alapján Bearer tokenek, privát kulcsok, jelszó-értékek és IBAN-szerű minták.</p>
+
+          <div class="import-layout">
+            <!-- Add source form -->
+            <section class="import-section">
+              <div class="section-header">
+                <h2 data-i18n="import.add.title">Új forrás</h2>
               </div>
-              <div class="form-group" style="flex:1">
-                <label for="importSourcePath" data-i18n="import.form.path">Útvonal / mappa-azonosító</label>
-                <input type="text" id="importSourcePath" placeholder="/Users/you/Documents">
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group" style="flex:1">
-                <label for="importSourceLabel" data-i18n="import.form.label">Megnevezés (opcionális)</label>
-                <input type="text" id="importSourceLabel" placeholder="Dokumentumok">
-              </div>
-              <div class="form-group" style="flex:0 0 130px">
-                <label for="importSourceInterval" data-i18n="import.form.interval">Ciklus</label>
-                <select id="importSourceInterval">
-                  <option value="1">1 h</option>
-                  <option value="2">2 h</option>
-                  <option value="4" selected>4 h</option>
-                  <option value="24">24 h</option>
-                </select>
-              </div>
-            </div>
-            <!-- Admin-only: assign the new source to a tenant. Hidden for non-admins. -->
-            <div id="importSourceTenantGroup" hidden>
-              <div class="form-row">
-                <div class="form-group" style="flex:1">
-                  <label for="importSourceTenant" data-i18n="import.form.tenant">Tenant</label>
-                  <select id="importSourceTenant"></select>
+              <form id="importAddSourceForm" class="import-add-form">
+                <div class="form-row">
+                  <div class="form-group" style="flex:0 0 160px">
+                    <label for="importSourceType" data-i18n="import.form.type">Forrás típusa</label>
+                    <select id="importSourceType">
+                      <option value="local" data-i18n="import.type.local">Helyi mappa</option>
+                      <option value="gdrive" data-i18n="import.type.gdrive">Google Drive</option>
+                      <option value="sharepoint" data-i18n="import.type.sharepoint">SharePoint</option>
+                      <option value="confluence" data-i18n="import.type.confluence">Confluence</option>
+                    </select>
+                  </div>
+                  <div class="form-group" style="flex:1">
+                    <label for="importSourcePath" data-i18n="import.form.path">Útvonal / mappa-azonosító</label>
+                    <input type="text" id="importSourcePath" placeholder="/Users/you/Documents">
+                  </div>
                 </div>
+                <div class="form-row">
+                  <div class="form-group" style="flex:1">
+                    <label for="importSourceLabel" data-i18n="import.form.label">Megnevezés (opcionális)</label>
+                    <input type="text" id="importSourceLabel" placeholder="Dokumentumok">
+                  </div>
+                  <div class="form-group" style="flex:0 0 130px">
+                    <label for="importSourceInterval" data-i18n="import.form.interval">Ciklus</label>
+                    <select id="importSourceInterval">
+                      <option value="1">1 h</option>
+                      <option value="2">2 h</option>
+                      <option value="4" selected>4 h</option>
+                      <option value="24">24 h</option>
+                    </select>
+                  </div>
+                </div>
+                <!-- Admin-only: assign the new source to a tenant. Hidden for non-admins. -->
+                <div id="importSourceTenantGroup" hidden>
+                  <div class="form-row">
+                    <div class="form-group" style="flex:1">
+                      <label for="importSourceTenant" data-i18n="import.form.tenant">Tenant</label>
+                      <select id="importSourceTenant"></select>
+                    </div>
+                  </div>
+                </div>
+                <!-- SharePoint disclaimer (shown only when type=sharepoint) -->
+                <div id="importSharePointInfo" class="import-disclaimer" hidden>
+                  <span data-i18n="import.sharepoint.warning">SharePoint: Ellenőrizd, hogy a szervezeted IT/adatvédelmi szabályzata engedélyezi-e a tartalom személyes AI rendszerbe másolását. Szükséges Graph scope: Sites.Read.All.</span>
+                </div>
+                <!-- Confluence-specific fields (shown only when type=confluence).
+                     Nothing here defaults to any particular Confluence instance --
+                     base_url/vault_token_ref/confluence_email are always supplied
+                     by whoever adds the source. -->
+                <div id="importConfluenceInfo" hidden>
+                  <div class="import-disclaimer" data-i18n="import.confluence.hint">Confluence: az Útvonal mező a space-kulcsot veszi fel (pl. MYSPACE), vagy '*' az összes látható space-hez. A tokent előbb a Vault oldalon kell felvenni -- a lenti mezőben csak a vault-bejegyzés azonosítóját add meg, ne magát a tokent.</div>
+                  <div class="form-row">
+                    <div class="form-group" style="flex:1">
+                      <label for="importSourceBaseUrl" data-i18n="import.form.base_url">Confluence-instance URL</label>
+                      <input type="text" id="importSourceBaseUrl" placeholder="https://yourorg.atlassian.net">
+                    </div>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group" style="flex:1">
+                      <label for="importSourceConfluenceEmail" data-i18n="import.form.confluence_email">Atlassian fiók email</label>
+                      <input type="email" id="importSourceConfluenceEmail" placeholder="you@example.com">
+                    </div>
+                    <div class="form-group" style="flex:1">
+                      <label for="importSourceVaultTokenRef" data-i18n="import.form.vault_token_ref">Vault token azonosító</label>
+                      <input type="text" id="importSourceVaultTokenRef" placeholder="my-confluence-token">
+                    </div>
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button type="submit" class="btn" data-variant="primary" data-size="compact" data-i18n="import.btn.add">Forrás hozzáadása</button>
+                </div>
+              </form>
+            </section>
+
+            <!-- Sources list -->
+            <section class="import-section">
+              <div class="section-header">
+                <h2 data-i18n="import.sources.title">Importforrások</h2>
+              </div>
+              <div id="importSourcesList" class="import-sources-list"></div>
+            </section>
+
+            <!-- Run log -->
+            <section class="import-section">
+              <div class="section-header">
+                <h2 data-i18n="import.log.title">Futási napló</h2>
+              </div>
+              <div id="importLog" class="import-log-area"></div>
+            </section>
+
+            <!-- Danger zone -->
+            <section class="import-section import-danger-zone">
+              <button class="btn" data-variant="danger" data-size="compact" id="importWipeAllBtn" data-i18n="import.btn.wipe_all">Összes import törlése</button>
+            </section>
+          </div>
+        </div>
+
+        <!-- Migráció tab: full-fleet JSON export/import (was the separate Migration page). -->
+        <div class="tab-panel" id="import-panel-migrate" hidden>
+          <p class="subtitle" data-i18n="fleet.section_desc">Az összes ügynök, memória, kanban és beállítás egyetlen JSON-ban.</p>
+
+          <div class="fleet-section">
+            <div class="fleet-warning">
+              <span class="fleet-warning-icon">⚠️</span>
+              <span data-i18n="fleet.warning">Az import kizárólag üres/friss telepítésre való, nem merge-re. Google/Gmail OAuth és a dashboard-token nem utazik: a célgépen re-auth szükséges.</span>
+            </div>
+            <div class="fleet-warning">
+              <span class="fleet-warning-icon">ℹ️</span>
+              <span data-i18n="fleet.import.new_sections_note">Ütemezések és import-források letiltva érkeznek (kézi átvizsgálás szükséges); az SSH kulcsok publikus adatai importálódnak, a privát kulcs csak titkosított (jelszavas) exportban. A store-beállítások közül a legtöbb felülíródik, az engedélyezett domain-lista viszont egyesül a célgép saját listájával, nem íródik felül.</span>
+            </div>
+
+            <div class="fleet-cards">
+              <!-- Export -->
+              <div class="fleet-card">
+                <h3 class="fleet-card-title" data-i18n="fleet.export.title">Export</h3>
+                <p class="fleet-card-desc" data-i18n="fleet.export.desc">A teljes flotta egy JSON-ban. Jelszó megadásával a vault-titkok is (titkosítva).</p>
+                <div class="form-group" style="margin-bottom:12px">
+                  <label for="fleetExportPassword" data-i18n="fleet.vault_password_label">Vault jelszó (opcionális)</label>
+                  <input type="password" id="fleetExportPassword" data-i18n-ph="fleet.vault_password_ph" placeholder="Ha üresen hagyod, titkok nélkül exportál">
+                </div>
+                <button class="btn" data-variant="primary" data-size="compact" id="fleetExportBtn">
+                  <span class="btn-text" data-i18n="fleet.export.btn">Letöltés (JSON)</span>
+                  <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.export.loading">Exportálás...</span></span>
+                </button>
+              </div>
+
+              <!-- Import -->
+              <div class="fleet-card">
+                <h3 class="fleet-card-title" data-i18n="fleet.import.title">Import</h3>
+                <p class="fleet-card-desc" data-i18n="fleet.import.desc">Tallózz egy korábban exportált fleet-export-*.json fájlt.</p>
+                <div class="form-group" style="margin-bottom:12px">
+                  <label for="fleetImportFile" data-i18n="fleet.import.file_label">Fleet JSON fájl</label>
+                  <input type="file" id="fleetImportFile" accept="application/json,.json" class="fleet-file-input">
+                </div>
+                <div class="form-group" style="margin-bottom:12px">
+                  <label for="fleetImportPassword" data-i18n="fleet.vault_password_label">Vault jelszó (opcionális)</label>
+                  <input type="password" id="fleetImportPassword" data-i18n-ph="fleet.import_vault_password_ph" placeholder="Ha üresen hagyod, titkok nélkül importál">
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn" data-variant="secondary" data-size="compact" id="fleetDryRunBtn">
+                    <span class="btn-text" data-i18n="fleet.import.dryrun_btn">Ellenőrzés (dry-run)</span>
+                    <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.import.dryrun_loading">Ellenőrzés...</span></span>
+                  </button>
+                  <button class="btn" data-variant="primary" data-size="compact" id="fleetApplyBtn" disabled>
+                    <span class="btn-text" data-i18n="fleet.import.apply_btn">Végrehajtás (apply)</span>
+                    <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.import.apply_loading">Importálás...</span></span>
+                  </button>
+                </div>
+
+                <!-- Dry-run result -->
+                <div id="fleetDryRunResult" hidden></div>
               </div>
             </div>
-            <!-- SharePoint disclaimer (shown only when type=sharepoint) -->
-            <div id="importSharePointInfo" class="import-disclaimer" hidden>
-              <span data-i18n="import.sharepoint.warning">SharePoint: Ellenőrizd, hogy a szervezeted IT/adatvédelmi szabályzata engedélyezi-e a tartalom személyes AI rendszerbe másolását. Szükséges Graph scope: Sites.Read.All.</span>
-            </div>
-            <!-- Confluence-specific fields (shown only when type=confluence).
-                 Nothing here defaults to any particular Confluence instance --
-                 base_url/vault_token_ref/confluence_email are always supplied
-                 by whoever adds the source. -->
-            <div id="importConfluenceInfo" hidden>
-              <div class="import-disclaimer" data-i18n="import.confluence.hint">Confluence: az Útvonal mező a space-kulcsot veszi fel (pl. MYSPACE), vagy '*' az összes látható space-hez. A tokent előbb a Vault oldalon kell felvenni -- a lenti mezőben csak a vault-bejegyzés azonosítóját add meg, ne magát a tokent.</div>
-              <div class="form-row">
-                <div class="form-group" style="flex:1">
-                  <label for="importSourceBaseUrl" data-i18n="import.form.base_url">Confluence-instance URL</label>
-                  <input type="text" id="importSourceBaseUrl" placeholder="https://yourorg.atlassian.net">
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group" style="flex:1">
-                  <label for="importSourceConfluenceEmail" data-i18n="import.form.confluence_email">Atlassian fiók email</label>
-                  <input type="email" id="importSourceConfluenceEmail" placeholder="you@example.com">
-                </div>
-                <div class="form-group" style="flex:1">
-                  <label for="importSourceVaultTokenRef" data-i18n="import.form.vault_token_ref">Vault token azonosító</label>
-                  <input type="text" id="importSourceVaultTokenRef" placeholder="my-confluence-token">
-                </div>
-              </div>
-            </div>
-            <div class="form-actions">
-              <button type="submit" class="btn" data-variant="primary" data-size="compact" data-i18n="import.btn.add">Forrás hozzáadása</button>
-            </div>
-          </form>
-        </section>
-
-        <!-- Sources list -->
-        <section class="import-section">
-          <div class="section-header">
-            <h2 data-i18n="import.sources.title">Importforrások</h2>
           </div>
-          <div id="importSourcesList" class="import-sources-list"></div>
-        </section>
-
-        <!-- Run log -->
-        <section class="import-section">
-          <div class="section-header">
-            <h2 data-i18n="import.log.title">Futási napló</h2>
-          </div>
-          <div id="importLog" class="import-log-area"></div>
-        </section>
-
-        <!-- Danger zone -->
-        <section class="import-section import-danger-zone">
-          <button class="btn" data-variant="danger" data-size="compact" id="importWipeAllBtn" data-i18n="import.btn.wipe_all">Összes import törlése</button>
-        </section>
-      </div>
-    </div>
-
-    <!-- === Docs Page === -->
-    <div class="page" id="docsPage" hidden>
-      <div class="page-header">
-        <h1 data-i18n="docs.page_title">Dokumentáció</h1>
-        <p class="subtitle" data-i18n="docs.page_subtitle">A projekt docs/ mappája, olvasható formában</p>
-      </div>
-      <div class="docs-layout">
-        <aside class="docs-list" id="docsList">
-          <p class="muted" data-i18n="docs.loading">Betöltés...</p>
-        </aside>
-        <article class="docs-content markdown-body" id="docsContent">
-          <p class="muted" data-i18n="docs.select_hint">Válassz egy dokumentumot a bal oldali listából.</p>
-        </article>
-      </div>
-    </div>
-
-    <!-- === Research Page === -->
-    <!-- === Status Page === -->
-    <div class="page" id="statusPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="status.page_title">Státusz</h1>
-            <p class="subtitle" data-i18n="status.page_subtitle">Claude szolgáltatások állapota</p>
-          </div>
-          <button class="btn" data-variant="secondary" data-size="compact" id="refreshStatusBtn" data-i18n="common.btn.refresh">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            Frissítés
-          </button>
         </div>
       </div>
-
-      <div class="status-overall" id="statusOverall"></div>
-
-      <div class="status-services" id="statusServices">
-        <h3 data-i18n="status.services_title">Szolgáltatások</h3>
-        <div class="status-service-grid" id="statusServiceGrid"></div>
-      </div>
-
-      <div class="status-incidents">
-        <h3>Incidensek</h3>
-        <div class="status-incident-list" id="statusIncidentList"></div>
-      </div>
     </div>
+
+    <!-- Docs page (repo docs/ viewer) removed -- docs are read from the IDE/GitHub now. -->
+    <!-- Status page merged into the Overview page as the "Rendszer" section below. -->
 
     <!-- Team page merged into Agents page (view toggle: grid / org-chart) -->
 
@@ -2371,7 +2336,7 @@
         <div class="page-header-row">
           <div>
             <h1 data-i18n="nav.adminB2b">Felhasználók</h1>
-            <p class="subtitle" data-i18n="admin.b2b.subtitle">Tenantok, B2B felhasználók és eszközkulcsok kezelése</p>
+            <p class="subtitle" data-i18n="admin.b2b.subtitle">Tenantok, B2B felhasználók, eszközkulcsok, API tokenek, partner-küldők és skill-hozzáférések kezelése</p>
           </div>
         </div>
       </div>
@@ -2379,6 +2344,9 @@
         <button class="admin-b2b-tab tab-btn active" role="tab" data-tab="tenants" data-i18n="admin.b2b.tab.tenants">Tenantok</button>
         <button class="admin-b2b-tab tab-btn" role="tab" data-tab="users" data-i18n="admin.b2b.tab.users">Felhasználók</button>
         <button class="admin-b2b-tab tab-btn" role="tab" data-tab="deviceKeys" data-i18n="admin.b2b.tab.device_keys">Eszközkulcsok</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="tokens" data-i18n="admin.rbac.tab.tokens">Tokenek</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="partnerSenders" data-i18n="admin.rbac.tab.partner_senders">Partner-küldők</button>
+        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="skillAccess" data-i18n="admin.rbac.tab.skill_access">Skill-hozzáférés</button>
       </div>
 
       <!-- Tenantok fül -->
@@ -2417,27 +2385,9 @@
       <div class="card" id="adminPanelDeviceKeys" hidden>
         <div id="deviceKeyList" class="admin-b2b-list"></div>
       </div>
-    </div>
-    <!-- /B2B Admin Page -->
 
-    <!-- RBAC Admin Page (global admin only): tokens / partner-senders / skill access (722-B) -->
-    <div class="page" id="page-admin-rbac" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="nav.adminRbac">RBAC admin</h1>
-            <p class="subtitle" data-i18n="admin.rbac.subtitle">API tokenek, partner-küldők és skill-hozzáférések kezelése</p>
-          </div>
-        </div>
-      </div>
-      <div class="admin-b2b-tabs tab-nav" role="tablist" id="adminRbacTabs">
-        <button class="admin-b2b-tab tab-btn active" role="tab" data-tab="tokens" data-i18n="admin.rbac.tab.tokens">Tokenek</button>
-        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="partnerSenders" data-i18n="admin.rbac.tab.partner_senders">Partner-küldők</button>
-        <button class="admin-b2b-tab tab-btn" role="tab" data-tab="skillAccess" data-i18n="admin.rbac.tab.skill_access">Skill-hozzáférés</button>
-      </div>
-
-      <!-- Tokenek fül -->
-      <div class="card" id="adminRbacPanelTokens">
+      <!-- Tokenek fül (beolvasztva a korábbi önálló RBAC admin oldalról, 722-B) -->
+      <div class="card" id="adminRbacPanelTokens" hidden>
         <div class="admin-b2b-toolbar">
           <button class="btn" data-variant="primary" data-size="compact" id="tokenAddBtn" data-i18n="admin.rbac.token.add">+ Token</button>
         </div>
@@ -2468,7 +2418,7 @@
         </div>
       </div>
     </div>
-    <!-- /RBAC Admin Page -->
+    <!-- /B2B Admin Page -->
 
     <!-- Tenant add modal -->
     <div class="modal-overlay" id="tenantAddModal" hidden>

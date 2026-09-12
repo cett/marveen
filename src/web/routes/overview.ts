@@ -68,23 +68,6 @@ function agentsForTenant(tenantId: string): string[] {
   return allAgentIds.filter((id) => resolveAgentTenant(id) === tenantId)
 }
 
-// Estimate AI token cost in USD from token counts and model name.
-// Uses approximate Anthropic public pricing; returns 0 for unknown models.
-function estimateTokenCostUsd(inputTokens: number, outputTokens: number, model: string | null): number {
-  const m = (model ?? '').toLowerCase()
-  let inRate: number
-  let outRate: number
-  if (m.includes('opus')) {
-    inRate = 15 / 1_000_000; outRate = 75 / 1_000_000
-  } else if (m.includes('haiku')) {
-    inRate = 0.25 / 1_000_000; outRate = 1.25 / 1_000_000
-  } else {
-    // sonnet and unknown models
-    inRate = 3 / 1_000_000; outRate = 15 / 1_000_000
-  }
-  return inputTokens * inRate + outputTokens * outRate
-}
-
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -174,15 +157,13 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // intentionally excluded from every real tenant's view (see
     // resolveAgentTenant() in db.ts), only admin's unfiltered view sees them.
     let tokensToday = 0
-    let costTodayUsd = 0
     try {
       const startSec = Math.floor(startTs / 1000)
       const tokenRows = db0.prepare(
-        `SELECT input_tokens, output_tokens, model FROM token_usage WHERE timestamp >= ?${tc}`
-      ).all(startSec, ...tp) as { input_tokens: number; output_tokens: number; model: string | null }[]
+        `SELECT input_tokens, output_tokens FROM token_usage WHERE timestamp >= ?${tc}`
+      ).all(startSec, ...tp) as { input_tokens: number; output_tokens: number }[]
       for (const r of tokenRows) {
         tokensToday += r.input_tokens + r.output_tokens
-        costTodayUsd += estimateTokenCostUsd(r.input_tokens, r.output_tokens, r.model)
       }
     } catch { /* ignore */ }
 
@@ -324,7 +305,6 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         artifacts: { count: artifactCount },
         skills: { count: skillCount, today: skillsToday },
         tokensToday,
-        costTodayUsd: Math.round(costTodayUsd * 10000) / 10000,
         pendingApprovals,
         errors4h,
         stuckTasks,

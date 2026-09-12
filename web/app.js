@@ -330,11 +330,11 @@ const SIDEBAR_GROUPS_LS_KEY = 'marveen.sidebarGroups'
 // into their group containers per this map, so regrouping a page (say, moving
 // naplo under system) or relabeling a group is a one-line change right here.
 const SIDEBAR_GROUPS = [
-  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks', 'bgTasks'] },
+  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks'] },
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'ideas', 'artifacts'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['tokenUsage'] },
-  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'updates', 'settings', 'vault'] },
-  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate', 'import'] },
+  { key: 'system',      labelKey: 'nav.group.system',      pages: ['updates', 'settings', 'vault'] },
+  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'import'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
 // data-page -> group key, derived from the map (not the DOM) so the map wins.
@@ -520,13 +520,15 @@ initSidebarBrand()
   } catch {}
 })()
 
-// Reveal the RBAC admin nav link (tokens/partner-senders/skill access, kanban
-// 722-B) as soon as the client can() check resolves -- mirrors revealAdminNav
-// above but goes through rbac-client so it also unhides for the legacy
-// store/.dashboard-token bearer caller (null role resolves can() to true).
+// Reveal the B2B admin nav link the same way for the RBAC tabs it now also
+// carries (tokens/partner-senders/skill access, kanban 722-B, folded in by
+// reveal below) -- mirrors revealAdminNav above but goes through rbac-client so
+// it also unhides for the legacy store/.dashboard-token bearer caller (null
+// role resolves can() to true), which revealAdminNav's strict role check
+// above does not cover.
 ;(async function revealAdminRbacNav() {
   if (await can('admin:all')) {
-    const navLink = document.getElementById('navAdminRbac')
+    const navLink = document.getElementById('navAdminB2b')
     if (navLink) navLink.hidden = false
   }
 })()
@@ -558,7 +560,11 @@ if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.
 
 // === Init ===
 populateAvatarGrid()
-loadOverview()
+// Overview is the default-visible page (no `hidden` in index.html), so it never
+// goes through switchPage()'s registerPage('overview').enter() on a fresh load
+// with no hash -- call the same enter function (loadOverviewPage, hoisted below)
+// directly here so the merged-in Rendszer/status section loads on first paint too.
+loadOverviewPage()
 loadAvailableModels()
 {
   const onbClose = document.getElementById('onboardingClose')
@@ -686,8 +692,24 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
 // so the alias is available when routeFromHash() resolves the initial URL.
 registerAlias('team', 'agents', () => setAgentsActiveView('tree'))
 
+// The Status page (Claude service status) merged into Overview as its
+// "Rendszer" section. 'status' stays as an alias so old #status links still
+// land on the overview page (same pattern as the 'team' -> 'agents' alias
+// above and the 'bgTasks'/'migrate' aliases below).
+registerAlias('status', 'overview')
+
+async function loadOverviewPage() {
+  loadOverview()
+  const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js'))
+  if (!_moduleCache.get('status_inited')) {
+    m.initStatus()
+    _moduleCache.set('status_inited', true)
+  }
+  m.loadStatus()
+}
+
 // Static pages (modules loaded at boot).
-registerPage('overview',  { enter: loadOverview })
+registerPage('overview',  { enter: loadOverviewPage })
 registerPage('kanban',    { enter: () => { window._initGanttViewSwitcher?.(); loadKanban(); startKanbanRefresh() }, leave: stopKanbanRefresh })
 registerPage('agents',    { enter: () => { loadAgents().then(() => setAgentsView(getAgentsActiveView() || 'grid')); startAgentsBusyPoll() }, leave: stopAgentsBusyPoll })
 registerPage('skills',    { enter: loadGlobalSkills })
@@ -708,6 +730,30 @@ registerPage('memories', {
     m.loadMemAgents(); m.loadMemStats(); m.loadMemories()
   }
 })
+// The 'Feladatok' page merges the old separate Schedules and Background Tasks
+// pages into two tabs. 'bgTasks' stays as an alias so old #bgTasks links still
+// land on the right tab (mirrors the 'team' -> 'agents' alias above).
+let _tasksPendingTab = null
+registerAlias('bgTasks', 'tasks', () => { _tasksPendingTab = 'once' })
+
+async function loadTasksOnceTab() {
+  const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js'))
+  if (!_moduleCache.get('recall_inited')) {
+    m.initRecallBgTasks()
+    _moduleCache.set('recall_inited', true)
+  }
+  m.loadBgTasksPage()
+}
+
+function activateTasksTab(tabName) {
+  document.querySelectorAll('#tasksTabNav .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName)
+  })
+  document.querySelectorAll('#tasksTabPanels .tab-panel').forEach(panel => {
+    panel.hidden = panel.id !== `tasks-panel-${tabName}`
+  })
+}
+
 registerPage('tasks', {
   lazy: true,
   enter: async () => {
@@ -717,6 +763,22 @@ registerPage('tasks', {
       _moduleCache.set('schedules_inited', true)
     }
     m.loadSchedules()
+
+    if (!_moduleCache.get('tasksTabs_wired')) {
+      document.querySelectorAll('#tasksTabNav .tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab
+          activateTasksTab(tab)
+          if (tab === 'once') loadTasksOnceTab()
+        })
+      })
+      _moduleCache.set('tasksTabs_wired', true)
+    }
+
+    const targetTab = _tasksPendingTab || 'scheduled'
+    _tasksPendingTab = null
+    activateTasksTab(targetTab)
+    if (targetTab === 'once') await loadTasksOnceTab()
   }
 })
 registerPage('connectors', {
@@ -776,12 +838,57 @@ registerPage('auditLog', {
     m.loadAuditLogPage()
   }
 })
-registerPage('migrate',   { lazy: true, enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) } } })
-registerPage('import',    { lazy: true, enter: async () => { const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js')); if (!_moduleCache.get('import_inited')) { m.initImportMemories(); _moduleCache.set('import_inited', true) }; m.loadImportSources() } })
-registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
-registerPage('status',    { lazy: true, enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })
+// Import & Migráció merge: two tabs on the 'import' page. 'migrate' stays as
+// an alias so old #migrate links still land on the right tab (same pattern
+// as the 'team' -> 'agents' and 'bgTasks' -> 'tasks' aliases above).
+let _importPendingTab = null
+registerAlias('migrate', 'import', () => { _importPendingTab = 'migrate' })
+
+async function loadMigrateTab() {
+  const m = await lazyLoad('migrate', () => import('./modules/migrate.js'))
+  if (!_moduleCache.get('migrate_inited')) {
+    m.initMigrate()
+    _moduleCache.set('migrate_inited', true)
+  }
+}
+
+function activateImportTab(tabName) {
+  document.querySelectorAll('#importTabNav .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName)
+  })
+  document.querySelectorAll('#importTabPanels .tab-panel').forEach(panel => {
+    panel.hidden = panel.id !== `import-panel-${tabName}`
+  })
+}
+
+registerPage('import', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js'))
+    if (!_moduleCache.get('import_inited')) {
+      m.initImportMemories()
+      _moduleCache.set('import_inited', true)
+    }
+    m.loadImportSources()
+
+    if (!_moduleCache.get('importTabs_wired')) {
+      document.querySelectorAll('#importTabNav .tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab
+          activateImportTab(tab)
+          if (tab === 'migrate') loadMigrateTab()
+        })
+      })
+      _moduleCache.set('importTabs_wired', true)
+    }
+
+    const targetTab = _importPendingTab || 'sources'
+    _importPendingTab = null
+    activateImportTab(targetTab)
+    if (targetTab === 'migrate') await loadMigrateTab()
+  }
+})
 registerPage('recall',    { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })
-registerPage('bgTasks',   { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadBgTasksPage() } })
 registerPage('approvals', { lazy: true, enter: async () => { const m = await lazyLoad('approvals', () => import('./modules/approvals.js')); if (!_moduleCache.get('approvals_inited')) { m.initApprovals(); _moduleCache.set('approvals_inited', true) }; m.loadApprovalsPage() } })
 registerPage('settings',  {
   lazy: true,
@@ -844,6 +951,14 @@ registerPage('backups', {
   }
 })
 
+// The former standalone RBAC admin page (tokens/partner-senders/skill
+// access) merged into the B2B admin page ("Felhasználók") as three more
+// tabs. 'adminRbac' stays as an alias so old #adminRbac deep links and the
+// '/admin' path (see PATH_PAGE_MAP in app-core.js) still land on the right
+// tab, mirroring the bgTasks/migrate aliases above.
+let _adminB2bPendingTab = null
+registerAlias('adminRbac', 'adminB2b', () => { _adminB2bPendingTab = 'tokens' })
+
 registerPage('adminB2b', {
   lazy: true,
   domId: 'page-admin-b2b',
@@ -854,19 +969,10 @@ registerPage('adminB2b', {
       _moduleCache.set('admin-b2b_inited', true)
     }
     await m.loadAdminB2b()
-  }
-})
-
-registerPage('adminRbac', {
-  lazy: true,
-  domId: 'page-admin-rbac',
-  enter: async () => {
-    const m = await lazyLoad('admin-rbac', () => import('./modules/admin-rbac.js'))
-    if (!_moduleCache.get('admin-rbac_inited')) {
-      await m.initAdminRbac()
-      _moduleCache.set('admin-rbac_inited', true)
+    if (_adminB2bPendingTab) {
+      m.switchTab(_adminB2bPendingTab)
+      _adminB2bPendingTab = null
     }
-    await m.loadAdminRbac()
   }
 })
 

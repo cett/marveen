@@ -1,14 +1,10 @@
 import { escapeHtml, escapeAttr } from './util.js'
-import { t } from './i18n.js'
-import { showToast } from './toast.js'
 
-
-
-// Minimal, dependency-free Markdown -> HTML renderer. Inputs come from the
-// repo's own docs/ folder (trusted), but we HTML-escape everything anyway and
-// only emit a fixed set of tags. Covers the constructs our docs use: fenced
-// code, headings, hr, tables, ordered/unordered lists, blockquotes, paragraphs,
-// and inline code/bold/italic/links.
+// Minimal, dependency-free Markdown -> HTML renderer. Inputs are usually
+// trusted (skill/artifact/workspace-doc content this fleet wrote itself), but
+// we HTML-escape everything anyway and only emit a fixed set of tags. Covers
+// the constructs our docs use: fenced code, headings, hr, tables,
+// ordered/unordered lists, blockquotes, paragraphs, and inline code/bold/italic/links.
 function mdInline(text) {
   let s = escapeHtml(text)
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>')
@@ -84,87 +80,12 @@ function renderMarkdown(md) {
   return out.join('\n')
 }
 
-// Shared with the Skills modal (skills.js) so both render markdown identically.
-// Exported as a separate statement to keep the `function renderMarkdown`
-// definition line intact (guarded by md-rendering-unify.test.ts).
+// Shared with the Skills modal (skills.js), the Artifacts/Workspace-docs
+// preview panels, and the Memories module, so all of them render markdown
+// identically. Exported as a separate statement to keep the `function
+// renderMarkdown` definition line intact (guarded by md-rendering-unify.test.ts).
+// The docs/ folder viewer this module originally also backed (loadDocs/openDoc,
+// reading from `/api/docs`) was removed -- project docs are read from the
+// IDE/GitHub now -- leaving this file as the shared markdown renderer only.
 export { renderMarkdown }
-
-// Download a doc's raw markdown as a .md file (client-side Blob, no server).
-function downloadMarkdown(name, content) {
-  try {
-    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = /\.md$/.test(name) ? name : (name + '.md')
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-  } catch (e) {
-    showToast(t('common.toast.download_failed', { msg: String(e && e.message || e) }))
-  }
-}
-
-// ============================================================
-// === Docs (read-only viewer for the project's docs/ folder) ===
-// ============================================================
-
-export async function loadDocs() {
-  const listEl = document.getElementById('docsList')
-  const contentEl = document.getElementById('docsContent')
-  if (!listEl) return
-  listEl.innerHTML = '<p class="muted">' + t('docs.loading') + '</p>'
-  let docs = []
-  try {
-    const res = await fetch('/api/docs')
-    docs = await res.json()
-    if (!Array.isArray(docs)) docs = []
-  } catch (e) {
-    listEl.innerHTML = '<p class="muted">' + t('docs.list_load_error') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
-    return
-  }
-  if (!docs.length) {
-    listEl.innerHTML = '<p class="muted">' + t('docs.empty_list') + '</p>'
-    if (contentEl) contentEl.innerHTML = '<p class="muted">' + t('docs.empty_content') + '</p>'
-    return
-  }
-  listEl.innerHTML = docs.map(d =>
-    '<a href="#" class="docs-list-item" data-doc="' + escapeAttr(d.name) + '">' +
-      '<span class="docs-list-title">' + escapeHtml(d.title || d.name) + '</span>' +
-      (d.created ? '<span class="docs-list-date">' + escapeHtml(d.created) + '</span>' : '') +
-    '</a>'
-  ).join('')
-  listEl.querySelectorAll('.docs-list-item').forEach(a => {
-    a.addEventListener('click', (e) => {
-      e.preventDefault()
-      listEl.querySelectorAll('.docs-list-item').forEach(x => x.classList.remove('active'))
-      a.classList.add('active')
-      openDoc(a.dataset.doc)
-    })
-  })
-  const first = listEl.querySelector('.docs-list-item')
-  if (first) { first.classList.add('active'); openDoc(first.dataset.doc) }
-}
-
-async function openDoc(name) {
-  const contentEl = document.getElementById('docsContent')
-  if (!contentEl) return
-  contentEl.innerHTML = '<p class="muted">' + t('docs.loading') + '</p>'
-  try {
-    const res = await fetch('/api/docs/' + encodeURIComponent(name))
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    const doc = await res.json()
-    const content = doc.content || ''
-    contentEl.innerHTML =
-      '<div class="docs-content-toolbar">' +
-        '<button class="btn" data-variant="secondary" data-size="compact" id="docsDownloadBtn">' + t('docs.download_btn') + '</button>' +
-      '</div>' +
-      '<div class="docs-rendered markdown-body md-rendered">' + renderMarkdown(content) + '</div>'
-    const dl = document.getElementById('docsDownloadBtn')
-    if (dl) dl.addEventListener('click', () => downloadMarkdown(name, content))
-  } catch (e) {
-    contentEl.innerHTML = '<p class="muted">' + t('docs.open_error') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
-  }
-}
 
