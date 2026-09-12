@@ -74,7 +74,6 @@ describe('GET /api/overview — response shape', () => {
     expect(out.body).toHaveProperty('artifacts')
     expect(out.body).toHaveProperty('skills')
     expect(out.body).toHaveProperty('tokensToday')
-    expect(out.body).toHaveProperty('costTodayUsd')
     expect(out.body).toHaveProperty('pendingApprovals')
     expect(out.body).toHaveProperty('errors4h')
     expect(out.body).toHaveProperty('unreadMessages')
@@ -141,15 +140,14 @@ describe('GET /api/overview — response shape', () => {
 })
 
 // ---------------------------------------------------------------------------
-// tokensToday and costTodayUsd
+// tokensToday
 // ---------------------------------------------------------------------------
 
-describe('GET /api/overview — tokensToday and costTodayUsd', () => {
+describe('GET /api/overview — tokensToday', () => {
   it('returns 0 when no token_usage rows exist', async () => {
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(out.body.tokensToday).toBe(0)
-    expect(out.body.costTodayUsd).toBe(0)
   })
 
   it('counts tokens from today\'s token_usage rows', async () => {
@@ -179,47 +177,6 @@ describe('GET /api/overview — tokensToday and costTodayUsd', () => {
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(out.body.tokensToday).toBe(0)
-  })
-
-  it('estimates costTodayUsd > 0 when tokens are present today', async () => {
-    const startOfDay = new Date()
-    startOfDay.setHours(0, 0, 0, 0)
-    const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600
-
-    getDb().prepare(
-      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, model) VALUES ('agent-a','s1',?,100000,5000,0,0,'claude-sonnet-4')"
-    ).run(todaySec)
-
-    const { ctx, out } = fakeCtx('/api/overview')
-    await tryHandleOverview(ctx)
-    // Fix-revert proof: removing estimateTokenCostUsd call returns 0.
-    expect(out.body.costTodayUsd).toBeGreaterThan(0)
-  })
-
-  it('assigns higher cost to opus than sonnet for the same token count', async () => {
-    const startOfDay = new Date()
-    startOfDay.setHours(0, 0, 0, 0)
-    const base = Math.floor(startOfDay.getTime() / 1000) + 7200
-
-    const db = getDb()
-    db.prepare(
-      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, model) VALUES ('agent-a','s1',?,10000,1000,0,0,'claude-sonnet-4')"
-    ).run(base)
-    const { ctx: ctx1, out: out1 } = fakeCtx('/api/overview')
-    await tryHandleOverview(ctx1)
-    const costSonnet = out1.body.costTodayUsd
-
-    // Reset DB and use opus model
-    initDatabase(':memory:')
-    getDb().prepare(
-      "INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, model) VALUES ('agent-a','s2',?,10000,1000,0,0,'claude-opus-4')"
-    ).run(base)
-    const { ctx: ctx2, out: out2 } = fakeCtx('/api/overview')
-    await tryHandleOverview(ctx2)
-    const costOpus = out2.body.costTodayUsd
-
-    // Fix-revert proof: without model-based pricing both costs would be equal.
-    expect(costOpus).toBeGreaterThan(costSonnet)
   })
 })
 
@@ -607,10 +564,10 @@ describe('GET /api/overview — tenant isolation', () => {
 describe('GET /api/overview — non-admin response omits fleet-level fields', () => {
   const FLEET_FIELDS = [
     'agents', 'tasksToday', 'tasksYesterday', 'artifacts', 'skills',
-    'tokensToday', 'costTodayUsd', 'pendingApprovals', 'errors4h', 'stuckTasks',
+    'tokensToday', 'pendingApprovals', 'errors4h', 'stuckTasks',
   ] as const
 
-  it('viewer role: all ten fleet-level fields are absent', async () => {
+  it('viewer role: all nine fleet-level fields are absent', async () => {
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'viewer' })
     await tryHandleOverview(ctx)
     for (const field of FLEET_FIELDS) {
@@ -626,7 +583,7 @@ describe('GET /api/overview — non-admin response omits fleet-level fields', ()
     expect(out.body).toHaveProperty('activity')
   })
 
-  it('admin role: all ten fleet-level fields are present', async () => {
+  it('admin role: all nine fleet-level fields are present', async () => {
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
     for (const field of FLEET_FIELDS) {
