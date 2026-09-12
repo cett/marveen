@@ -10,6 +10,8 @@ import {
   pruneAuditLogs,
   pruneTokenUsage,
   pruneBlackboardHistory,
+  pruneConversationLog,
+  pruneAgentMessages,
   getMemoriesForChat,
   listKanbanCardsSummary,
   hybridSearch,
@@ -165,7 +167,12 @@ export function runDecaySweep(): void {
   pruneAuditLogs()
   const tokenPruneResult = pruneTokenUsage()
   const blackboardHistoryPruned = pruneBlackboardHistory()
-  logger.info({ ...tokenPruneResult, blackboardHistoryPruned }, 'Memoria leepulesi sopres vegrehajtva')
+  const conversationLogPruned = pruneConversationLog()
+  const agentMessagesPruned = pruneAgentMessages()
+  logger.info(
+    { ...tokenPruneResult, blackboardHistoryPruned, conversationLogPruned, agentMessagesPruned },
+    'Memoria leepulesi sopres vegrehajtva',
+  )
 }
 
 // --- Daily digest ---

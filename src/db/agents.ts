@@ -6,6 +6,7 @@ import { writeAgentAuditLog } from './audit.js'
 import { db } from './connection.js'
 import { KanbanCard } from './kanban.js'
 import { Tenant } from './observability.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 
 export interface HeartbeatKanbanSummary {
   urgent: KanbanCard[]
@@ -477,6 +478,26 @@ export function listBlackboardHistory(opts: {
 export function pruneBlackboardHistory(ttlDays = 30): number {
   const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
   return db.prepare('DELETE FROM fleet_blackboard_history WHERE created_at < ?').run(cutoff).changes
+}
+
+// Both conversation_log (raw in/out Telegram/channel message log) and
+// agent_messages (the inter-agent queue, including already-delivered/done/
+// failed rows) had no automatic sweep -- unlike fleet_blackboard_history
+// above they grew unbounded. Both use the shared MESSAGE_LOG_RETENTION_DAYS
+// setting (default 90 days) since they are the two halves of the same
+// "raw message history" concern; a message still 'pending' past the window
+// is treated the same as a delivered one, matching every other prune
+// function's age-only cutoff (no status carve-out).
+export function pruneConversationLog(): number {
+  const retentionDays = Number(getEffectiveSettingValue('MESSAGE_LOG_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  return db.prepare('DELETE FROM conversation_log WHERE created_at < ?').run(cutoff).changes
+}
+
+export function pruneAgentMessages(): number {
+  const retentionDays = Number(getEffectiveSettingValue('MESSAGE_LOG_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  return db.prepare('DELETE FROM agent_messages WHERE created_at < ?').run(cutoff).changes
 }
 
 // Mark fleet_blackboard 'active'/'assigned' rows as 'stale' when they have
