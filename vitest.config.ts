@@ -115,9 +115,19 @@ export default defineConfig({
       // this step: statements 67.11%, branches 66.18%, functions 66.29%,
       // lines 68.65%. Floor left UNCHANGED this step: voice.ts is only 321
       // lines, a small increment against ~24.5k total statements -- the
-      // existing buffer comfortably covers it. Raise only once the level
-      // actually reached clearly supports it, never round up ahead of the
-      // measurement. Ratchet up further as more steps land in this branch.
+      // existing buffer comfortably covers it. And (this step)
+      // src/web/routes/daily-log.ts (45% -> 100% statements / 18.18% ->
+      // 100% branches -- the route handler itself had zero direct tests;
+      // the partial baseline came from other suites exercising it
+      // indirectly through db.js. Now covers the POST content-validation
+      // 400, the agent_id-omitted fallback to MAIN_AGENT_ID on both verbs,
+      // GET's date-omitted default-to-today, and GET /dates for an
+      // agent with no entries). Local baseline after this step: statements
+      // 67.16%, branches 66.28%, functions 66.29%, lines 68.7%. Floor left
+      // UNCHANGED: daily-log.ts is only 18 lines, negligible against the
+      // ~24.5k total. Raise only once the level actually reached clearly
+      // supports it, never round up ahead of the measurement. Ratchet up
+      // further as more steps land in this branch.
       thresholds: {
         statements: 64,
         branches: 63,
