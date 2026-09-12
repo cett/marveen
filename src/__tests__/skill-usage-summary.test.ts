@@ -142,23 +142,26 @@ import { describe as descRoute, it as itRoute, expect as expectRoute, vi, before
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
-const { mockGetSkillUsageSummary } = vi.hoisted(() => ({
+const { mockGetSkillUsageSummary, mockGetSkillUsageRows, mockLogSkillUsage } = vi.hoisted(() => ({
   mockGetSkillUsageSummary: vi.fn(),
+  mockGetSkillUsageRows: vi.fn().mockReturnValue([]),
+  mockLogSkillUsage: vi.fn(),
 }))
 vi.mock('../db.js', () => ({
-  logSkillUsage: vi.fn(),
-  getSkillUsageRows: vi.fn().mockReturnValue([]),
+  logSkillUsage: mockLogSkillUsage,
+  getSkillUsageRows: mockGetSkillUsageRows,
   getSkillUsageStats: vi.fn().mockReturnValue([]),
   getSkillUsageSummary: mockGetSkillUsageSummary,
 }))
 
 import { tryHandleSkillUsage } from '../web/routes/skill-usage.js'
 
-function makeCtx(method: string, path: string): { ctx: RouteContext; out: { status: number; body: unknown } } {
+function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: unknown } } {
   const req = new EventEmitter() as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
   req.method = method
   req.headers = {}
-  setImmediate(() => { req.emit('data', Buffer.alloc(0)); req.emit('end') })
+  const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
+  setImmediate(() => { req.emit('data', buf); req.emit('end') })
   const out = { status: 200, body: null as unknown }
   const res = {
     writeHead(s: number) { out.status = s },
@@ -194,5 +197,72 @@ descRoute('GET /api/skill-usage/summary route', () => {
     const handled = await tryHandleSkillUsage(ctx)
     expectRoute(handled).toBe(true)
     expectRoute(mockGetSkillUsageSummary).not.toHaveBeenCalled()
+  })
+})
+
+descRoute('POST /api/skill-usage route', () => {
+  routeBeforeEach(() => vi.clearAllMocks())
+
+  itRoute('records a valid usage event', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/skill-usage', {
+      agent_id: 'agent-a', skill_name: 'fleet-helper', trigger_type: 'tool_call', session_id: 'sess-1',
+    })
+    const handled = await tryHandleSkillUsage(ctx)
+    expectRoute(handled).toBe(true)
+    expectRoute(out.status).toBe(200)
+    expectRoute(out.body).toEqual({ ok: true })
+    expectRoute(mockLogSkillUsage).toHaveBeenCalledWith('agent-a', 'fleet-helper', 'tool_call', 'sess-1')
+  })
+
+  itRoute('records a valid usage event without a session_id', async () => {
+    const { ctx } = makeCtx('POST', '/api/skill-usage', {
+      agent_id: 'agent-a', skill_name: 'fleet-helper', trigger_type: 'skill_read',
+    })
+    await tryHandleSkillUsage(ctx)
+    expectRoute(mockLogSkillUsage).toHaveBeenCalledWith('agent-a', 'fleet-helper', 'skill_read', undefined)
+  })
+
+  itRoute('rejects a body missing agent_id/skill_name/trigger_type', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/skill-usage', { agent_id: 'agent-a' })
+    await tryHandleSkillUsage(ctx)
+    expectRoute(out.status).toBe(400)
+    expectRoute(mockLogSkillUsage).not.toHaveBeenCalled()
+  })
+
+  itRoute('rejects an invalid trigger_type', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/skill-usage', {
+      agent_id: 'agent-a', skill_name: 'fleet-helper', trigger_type: 'bogus',
+    })
+    await tryHandleSkillUsage(ctx)
+    expectRoute(out.status).toBe(400)
+    expectRoute(mockLogSkillUsage).not.toHaveBeenCalled()
+  })
+})
+
+descRoute('GET /api/skill-usage route (recent rows)', () => {
+  routeBeforeEach(() => vi.clearAllMocks())
+
+  itRoute('returns rows from db with no filters, using the default limit', async () => {
+    const fixture = [{ id: 1, agent_id: 'agent-a', skill_name: 'fleet-helper', trigger_type: 'tool_call', session_id: null, created_at: 1700000000 }]
+    mockGetSkillUsageRows.mockReturnValue(fixture)
+    const { ctx, out } = makeCtx('GET', '/api/skill-usage')
+    const handled = await tryHandleSkillUsage(ctx)
+    expectRoute(handled).toBe(true)
+    expectRoute(out.body).toEqual(fixture)
+    expectRoute(mockGetSkillUsageRows).toHaveBeenCalledWith({ since: undefined, agentId: undefined, skillName: undefined, limit: 500 })
+  })
+
+  itRoute('passes since/agent_id/skill_name/limit query params through', async () => {
+    mockGetSkillUsageRows.mockReturnValue([])
+    const { ctx } = makeCtx('GET', '/api/skill-usage?since=3600&agent_id=agent-a&skill_name=fleet-helper&limit=10')
+    await tryHandleSkillUsage(ctx)
+    expectRoute(mockGetSkillUsageRows).toHaveBeenCalledWith({ since: 3600, agentId: 'agent-a', skillName: 'fleet-helper', limit: 10 })
+  })
+})
+
+descRoute('unrelated path', () => {
+  itRoute('falls through (returns false)', async () => {
+    const { ctx } = makeCtx('GET', '/api/something-else')
+    expectRoute(await tryHandleSkillUsage(ctx)).toBe(false)
   })
 })

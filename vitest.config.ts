@@ -56,14 +56,21 @@ export default defineConfig({
       // src/web/routes/backups.ts, src/web/routes/ideas.ts,
       // src/web/routes/profiles.ts, src/web/routes/connectors-hu.ts,
       // src/web/routes/agent-conversation.ts, src/web/routes/agents-skills.ts,
-      // src/web/routes/onboarding.ts (18% -> ~93%), and (this step)
+      // src/web/routes/onboarding.ts (18% -> ~93%),
       // src/web/routes/background-tasks.ts (22.76% -> 72.35% statements,
       // covering the GET list/by-id, DELETE, validation, and
       // sweepOrphanedBackgroundTasks paths that only had 2 POST-error tests
-      // before). Local baseline after this step: statements 64.69%,
-      // branches 64.02%, functions 65.41%, lines 66.06%. Floor left
-      // UNCHANGED this step: the existing buffer (1.4-2.4 points) already
-      // comfortably covers this small an increment (~0.2-0.25 points) --
+      // before), and (this step) src/web/routes/tool-log.ts (40.74% -> 100%,
+      // the GET recent-calls and GET analyze routes had zero route-level
+      // tests -- only the POST/OTel-span write path was covered) and
+      // src/web/routes/skill-usage.ts (58.36% file-level per the prior
+      // measurement, but its own POST and GET-recent-rows routes had zero
+      // route-level tests -- only summary/stats were covered plus
+      // standalone schema tests that never call the handler; now 100%
+      // statements / 97.14% branches). Local baseline after this step:
+      // statements 64.83%, branches 64.28%, functions 65.52%, lines 66.22%.
+      // Floor left UNCHANGED this step: the existing buffer already
+      // comfortably covers this small an increment (~0.14-0.26 points) --
       // raise only once the level actually reached clearly supports it, never round up ahead
       // of the measurement. Ratchet up further as more steps land in this
       // branch.
