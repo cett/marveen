@@ -196,4 +196,90 @@ describe('POST /api/tool-log -- OTel span side effect', () => {
     const rows = getDb().prepare('SELECT * FROM otel_spans WHERE trace_id = ?').all('session-otel-8')
     expect(rows).toHaveLength(0)
   })
+
+  it('falls through (returns false) for an unrelated path', async () => {
+    const { ctx } = makeCtx('GET', '/api/something-else')
+    expect(await tryHandleToolLog(ctx)).toBe(false)
+  })
+})
+
+describe('GET /api/tool-log -- recent tool calls (reads back from otel_spans)', () => {
+  it('returns calls logged within the "since" window, oldest first', async () => {
+    await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
+      session_id: 'session-recent-1',
+      tool_name: 'Read',
+      success: true,
+      agent_id: 'agent-a',
+      trace_id: 'tooluse-recent-1a',
+    }).ctx)
+    await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
+      session_id: 'session-recent-1',
+      tool_name: 'Bash',
+      success: true,
+      agent_id: 'agent-a',
+      trace_id: 'tooluse-recent-1b',
+    }).ctx)
+
+    const { ctx, out } = makeCtx('GET', '/api/tool-log?since=3600')
+    const handled = await tryHandleToolLog(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect(Array.isArray(out.body)).toBe(true)
+    const rows = out.body.filter((r: any) => r.session_id === 'session-recent-1')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].tool_name).toBe('Read')
+    expect(rows[1].tool_name).toBe('Bash')
+  })
+
+  it('defaults "since" to 3600 seconds when the query param is absent', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/tool-log')
+    await tryHandleToolLog(ctx)
+    expect(out.status).toBe(200)
+    expect(Array.isArray(out.body)).toBe(true)
+  })
+})
+
+describe('GET /api/tool-log/analyze -- workflow candidate summaries', () => {
+  it('groups same-session calls into one candidate with a de-duplicated tools list and a steps preview', async () => {
+    const sessionId = 'session-analyze-1'
+    for (const [tool, traceSuffix] of [['Read', 'a'], ['Read', 'b'], ['Bash', 'c'], ['Bash', 'd'], ['Write', 'e']] as const) {
+      await tryHandleToolLog(makeCtx('POST', '/api/tool-log', {
+        session_id: sessionId,
+        tool_name: tool,
+        input_summary: `${tool} call ${traceSuffix}`,
+        success: true,
+        agent_id: 'agent-a',
+        trace_id: `tooluse-analyze-1${traceSuffix}`,
+      }).ctx)
+    }
+
+    const { ctx, out } = makeCtx('GET', '/api/tool-log/analyze?since=3600&min_calls=1&gap=300')
+    const handled = await tryHandleToolLog(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect(Array.isArray(out.body)).toBe(true)
+
+    const candidate = out.body.find((c: any) => c.session_id === sessionId)
+    expect(candidate).toBeDefined()
+    expect(candidate.tool_count).toBe(5)
+    expect(candidate.tools.sort()).toEqual(['Bash', 'Read', 'Write'])
+    expect(candidate.steps_preview).toHaveLength(5)
+    expect(candidate.steps_preview[0]).toEqual({ tool: 'Read', description: 'Read call a' })
+    // Summary form omits the raw tool_calls array to keep the response small.
+    expect(candidate.tool_calls).toBeUndefined()
+  })
+
+  it('applies default since/min_calls/gap when the query params are absent', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/tool-log/analyze')
+    const handled = await tryHandleToolLog(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect(Array.isArray(out.body)).toBe(true)
+  })
+
+  it('returns an empty array when no chunk meets the min_calls threshold', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/tool-log/analyze?min_calls=999')
+    await tryHandleToolLog(ctx)
+    expect(out.body).toEqual([])
+  })
 })
