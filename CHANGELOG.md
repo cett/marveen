@@ -924,6 +924,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 - governance files (CODEOWNERS, LICENSE, README fork-rationale) -- Refs #4
 - restore classify security comment + drop orphan import (#705 follow-up) (#706)
 
+### Documentation
+
+- `token_usage` pagination assessment (#863, closing the #859 pagination epic): no dashboard view needs offset-based pagination. The three summary views (`GET /api/token-usage/summary`, `/model-dist`, `/tool-stats`) are already `GROUP BY` aggregates that don't grow with the underlying table. The one raw-row view -- the Token Monitor's "Részletek" table (`web/modules/token-usage.js`, backed by `GET /api/token-usage`/`getTokenDetails()`) -- lists individual `token_usage` rows, but is hard-capped at `limit=200` (server caps at 500 regardless) and defaults to a `min_tokens=50000` filter; it's a "show me the biggest calls" diagnostic view, not a browsable audit trail, so it never grows past its cap regardless of how large `token_usage` itself gets (already 60k+ rows, kept in check separately by the existing daily/monthly rollup + purge sweep). No code change.
+
 ## [1.33.0] - 2026-08-18
 
 ### Added
