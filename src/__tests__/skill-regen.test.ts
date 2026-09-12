@@ -19,7 +19,11 @@ vi.mock('node:os', async (importOriginal) => {
 })
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
-  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen' }
+  // SKILL_SQL_REGEN also needs pinning: it resolves from this repo's real
+  // .env (SKILL_SQL_REGEN=1 on this fleet's install, a deliberate ops
+  // setting -- see config.ts), which otherwise leaks into the "kill-switch
+  // is off" test below and makes it always-on instead.
+  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen', SKILL_SQL_REGEN: false }
 })
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: join(FAKE_PROJECT, 'agents'),

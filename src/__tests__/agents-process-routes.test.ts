@@ -7,6 +7,19 @@ import type { RouteContext } from '../web/routes/types.js'
 // The tests only exercise the routing guard logic; the underlying
 // process-management functions are never reached.
 
+// Pin MAIN_AGENT_ID to the literal 'marveen' every path below hardcodes --
+// config.js resolves it from this install's real .env, which need not be
+// the literal string "marveen" the tests below use, and every main-agent-
+// vs-regular-agent branch in agents-process.ts keys off it. Without this
+// the "marveen" test agent is treated as an ordinary sub-agent (existence-
+// checked against agentDir(), routed through the real start/stop path
+// instead of the service-managed 400 guard), breaking these tests on any
+// install whose .env MAIN_AGENT_ID isn't literally "marveen" (same pattern
+// as skill-regen.test.ts's mock).
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>()
+  return { ...actual, MAIN_AGENT_ID: 'marveen' }
+})
 vi.mock('../web/channel-monitor.js', () => ({
   hardRestartMarveenChannels: vi.fn().mockReturnValue({ ok: true }),
 }))
