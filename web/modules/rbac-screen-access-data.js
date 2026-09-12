@@ -31,7 +31,6 @@ export const SCREEN_ACCESS_ROWS = [
   { key: 'docs', backend: 'static', roles: { admin: 'full', agent: 'full', read_only: 'full', viewer: 'full' } },
   { key: 'messages', backend: 'GET: admin:all; POST: messages:write (agent)', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'tasks', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
-  { key: 'bgTasks', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'skills', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'ideas', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'artifacts', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
@@ -54,7 +53,7 @@ export const SCREEN_ACCESS_ROWS = [
 // truth above (the 'gap' cells) -- tracked for the later RBAC-enforce nav-gate
 // work, not implemented by this display-only matrix.
 export const SCREEN_ACCESS_GAPS = [
-  'messages', 'tasks', 'bgTasks', 'skills', 'ideas', 'artifacts', 'tokenUsage',
+  'messages', 'tasks', 'skills', 'ideas', 'artifacts', 'tokenUsage',
   'status', 'updates', 'settings', 'backups', 'connectors', 'migrate', 'import',
   'federation',
 ]

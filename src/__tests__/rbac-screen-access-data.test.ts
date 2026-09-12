@@ -29,7 +29,7 @@ const APP_JS = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 const PROFILE_JS = readFileSync(join(__dirname, '../../web/modules/profile.js'), 'utf-8')
 
 const VALID_LEVELS = new Set(['full', 'ro', 'gap', 'none'])
-const EXPECTED_SCREEN_COUNT = 27
+const EXPECTED_SCREEN_COUNT = 26
 
 describe('rbac-screen-access-data shape', () => {
   it('has the expected number of screens, each with a unique key', () => {

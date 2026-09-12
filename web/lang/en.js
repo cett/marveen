@@ -72,10 +72,9 @@ window._i18n.en = {
   'nav.agents':       'Agents',
   'nav.team':         'Team',
   'nav.messages':     'Messages',
-  'nav.tasks':        'Schedules',
+  'nav.tasks':        'Tasks',
   'nav.memories':     'Memory',
   'nav.recall':       'Diary',
-  'nav.bgTasks':      'Background',
   'nav.skills':       'Skills',
   'nav.connectors':   'MCP',
   'nav.docs':         'Documentation',
@@ -325,8 +324,10 @@ window._i18n.en = {
   'agents.toast.avatar_error':   'Error saving avatar',
 
   // --- Tasks (Schedules) ---
-  'tasks.page_title':            'Schedules',
-  'tasks.page_subtitle':         'Manage scheduled tasks',
+  'tasks.page_title':            'Tasks',
+  'tasks.page_subtitle':         'Manage scheduled and one-off tasks',
+  'tasks.tab.scheduled':         'Scheduled',
+  'tasks.tab.once':              'Once',
   'tasks.btn.new':               'New schedule',
   'tasks.btn.refresh':           'Refresh',
   'tasks.toast.run_error':       'Error running task',
@@ -455,8 +456,6 @@ window._i18n.en = {
   'recall.sort.asc':             'Ascending (oldest first)',
 
   // --- Background Tasks ---
-  'bgTasks.page_title':          'Background tasks',
-  'bgTasks.page_subtitle':       'Start and track background tasks',
   'bgTasks.btn.start':           'Start',
   'bgTasks.agent_placeholder':   'Agent',
   'bgTasks.prompt_placeholder':  'Task description...',
@@ -2000,8 +1999,7 @@ window._i18n.en = {
   'admin.b2b.screen_access.screen.federation':    'Federation',
   'admin.b2b.screen_access.screen.docs':          'Documentation',
   'admin.b2b.screen_access.screen.messages':      'Messages',
-  'admin.b2b.screen_access.screen.tasks':         'Schedules',
-  'admin.b2b.screen_access.screen.bgTasks':       'Background tasks',
+  'admin.b2b.screen_access.screen.tasks':         'Tasks',
   'admin.b2b.screen_access.screen.skills':        'Skills',
   'admin.b2b.screen_access.screen.ideas':         'Idea box',
   'admin.b2b.screen_access.screen.artifacts':     'Artifacts',

@@ -330,7 +330,7 @@ const SIDEBAR_GROUPS_LS_KEY = 'marveen.sidebarGroups'
 // into their group containers per this map, so regrouping a page (say, moving
 // naplo under system) or relabeling a group is a one-line change right here.
 const SIDEBAR_GROUPS = [
-  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks', 'bgTasks'] },
+  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks'] },
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'ideas', 'artifacts'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'updates', 'settings', 'vault'] },
@@ -708,6 +708,30 @@ registerPage('memories', {
     m.loadMemAgents(); m.loadMemStats(); m.loadMemories()
   }
 })
+// The 'Feladatok' page merges the old separate Schedules and Background Tasks
+// pages into two tabs. 'bgTasks' stays as an alias so old #bgTasks links still
+// land on the right tab (mirrors the 'team' -> 'agents' alias above).
+let _tasksPendingTab = null
+registerAlias('bgTasks', 'tasks', () => { _tasksPendingTab = 'once' })
+
+async function loadTasksOnceTab() {
+  const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js'))
+  if (!_moduleCache.get('recall_inited')) {
+    m.initRecallBgTasks()
+    _moduleCache.set('recall_inited', true)
+  }
+  m.loadBgTasksPage()
+}
+
+function activateTasksTab(tabName) {
+  document.querySelectorAll('#tasksTabNav .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName)
+  })
+  document.querySelectorAll('#tasksTabPanels .tab-panel').forEach(panel => {
+    panel.hidden = panel.id !== `tasks-panel-${tabName}`
+  })
+}
+
 registerPage('tasks', {
   lazy: true,
   enter: async () => {
@@ -717,6 +741,22 @@ registerPage('tasks', {
       _moduleCache.set('schedules_inited', true)
     }
     m.loadSchedules()
+
+    if (!_moduleCache.get('tasksTabs_wired')) {
+      document.querySelectorAll('#tasksTabNav .tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab
+          activateTasksTab(tab)
+          if (tab === 'once') loadTasksOnceTab()
+        })
+      })
+      _moduleCache.set('tasksTabs_wired', true)
+    }
+
+    const targetTab = _tasksPendingTab || 'scheduled'
+    _tasksPendingTab = null
+    activateTasksTab(targetTab)
+    if (targetTab === 'once') await loadTasksOnceTab()
   }
 })
 registerPage('connectors', {
@@ -781,7 +821,6 @@ registerPage('import',    { lazy: true, enter: async () => { const m = await laz
 registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
 registerPage('status',    { lazy: true, enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })
 registerPage('recall',    { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })
-registerPage('bgTasks',   { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadBgTasksPage() } })
 registerPage('approvals', { lazy: true, enter: async () => { const m = await lazyLoad('approvals', () => import('./modules/approvals.js')); if (!_moduleCache.get('approvals_inited')) { m.initApprovals(); _moduleCache.set('approvals_inited', true) }; m.loadApprovalsPage() } })
 registerPage('settings',  {
   lazy: true,
