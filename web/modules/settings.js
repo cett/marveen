@@ -1,4 +1,4 @@
-import { escapeHtml } from './util.js'
+import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { switchPage } from './app-core.js'
@@ -791,11 +791,13 @@ function activateSettingsTab(mod) {
 
 // Claude Plans tab (PR2b): plan-list + add-form widget over
 // store/claude-plans.json, plus GET /api/claude-plans/state for the
-// active-plan / last-known-usage badges (state stays empty -- {activePlanId:
-// null, plans:{}} -- until PR2c's rotation wiring actually writes it).
-// Rotation itself is NOT wired here: this tab only lets the operator view and
-// hand-edit the registry, same as the dashboard already lets them do for
-// store/claude-plans.json by hand.
+// active-plan / last-known-usage badges. The "active" dot reflects the MAIN
+// agent's entry in activePlanByAgent (PR2c, design decision #1: the state is
+// per-agent, but this tab only shows the one that also drives the dashboard
+// header). There is still no manual rotate button here: this tab lets the
+// operator view and hand-edit the registry, the same way it already lets
+// them for store/claude-plans.json by hand; actual rotation is triggered by
+// the heartbeat script or POST /api/claude-plans/rotate directly.
 async function renderClaudePlansPanel(body) {
   body.innerHTML = `
     <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
@@ -895,7 +897,7 @@ async function loadClaudePlansList() {
       fetch('/api/claude-plans/state'),
     ])
     const plans = plansRes.ok ? await plansRes.json() : []
-    const state = stateRes.ok ? await stateRes.json() : { activePlanId: null, plans: {} }
+    const state = stateRes.ok ? await stateRes.json() : { activePlanByAgent: {}, plans: {} }
 
     if (!plans.length) {
       list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('settings.claude_plans.empty')}</p>`
@@ -906,7 +908,7 @@ async function loadClaudePlansList() {
     for (const plan of plans) {
       const observed = state.plans?.[plan.id]
       const fiveHour = observed?.windows?.five_hour
-      const isActive = state.activePlanId === plan.id
+      const isActive = state.activePlanByAgent?.[mainAgentId()] === plan.id
 
       const row = document.createElement('div')
       row.className = 'claude-plan-row'

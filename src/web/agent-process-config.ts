@@ -7,6 +7,8 @@ import { notifyChannel } from '../notify.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { readClaudePlans, getClaudePlan } from './claude-plans.js'
+import { readClaudePlansState } from './claude-plans-state.js'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 export { CHANNEL_PLUGIN_IDS }
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -300,6 +302,35 @@ export function resolveMainAgentConfigDir(): string | null {
     return null
   }
   return dir
+}
+
+// The main agent's CLAUDE_CONFIG_DIR when the rotation side-car
+// (store/claude-plans-state.json, PR2c) has recorded an active plan for it.
+//
+// Unlike the isolated credential-less dir above, a plan's configDir carries
+// its OWN real login -- the operator ran `claude setup-token` into it
+// directly (design 6.5/4, same as the per-agent resolveAgentConfigDir path).
+// So this behaves like an EXPLICIT dir, not an isolated one: the caller
+// (main-agent-isolated-config.mjs) must NOT inject the fleet token here,
+// exactly as it would not for resolveMainAgentConfigDir()'s result.
+//
+// Gated the same way rotation itself is gated (design 6.2): only applies
+// when MAIN_AGENT_ISOLATED_CONFIG=1 AND 2+ plans are registered. Below
+// either threshold this returns null even if a stale activePlanByAgent entry
+// exists on disk, so turning rotation off (or dropping back to one plan)
+// cannot strand the main agent on a dir nobody is maintaining anymore.
+export function resolveMainAgentRotatedConfigDir(): string | null {
+  let isolationEnabled = false
+  try { isolationEnabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return null }
+  if (!isolationEnabled) return null
+
+  if (readClaudePlans().length < 2) return null
+
+  const activeId = readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID]
+  if (!activeId) return null
+
+  const plan = getClaudePlan(activeId)
+  return plan ? plan.configDir : null
 }
 
 // Shared provisioning core for BOTH the sub-agents (ensureIsolatedChannelConfigDir)
