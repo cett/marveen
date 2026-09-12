@@ -888,7 +888,6 @@ registerPage('import', {
     if (targetTab === 'migrate') await loadMigrateTab()
   }
 })
-registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
 registerPage('recall',    { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })
 registerPage('approvals', { lazy: true, enter: async () => { const m = await lazyLoad('approvals', () => import('./modules/approvals.js')); if (!_moduleCache.get('approvals_inited')) { m.initApprovals(); _moduleCache.set('approvals_inited', true) }; m.loadApprovalsPage() } })
 registerPage('settings',  {

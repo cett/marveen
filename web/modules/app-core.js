@@ -157,7 +157,6 @@ const NAV_I18N = {
   recall: 'nav.recall',
   skills: 'nav.skills', connectors: 'nav.connectors',
   approvals: 'nav.approvals',
-  docs: 'nav.docs',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates',
 }
@@ -178,7 +177,6 @@ const PAGE_HEADER_I18N = {
   memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
   recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
   connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
-  docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
   teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
   messagesPage:   { title: 'messages.page_title',    sub: 'messages.page_subtitle' },
   settingsPage:   { title: 'settings.page_title',    sub: 'settings.page_subtitle' },
@@ -211,11 +209,6 @@ export function renderStaticI18n() {
       if (idx !== -1) el.textContent = t(statusKeys[idx])
     }
   })
-  // Docs hints
-  const docsHint = document.getElementById('docsContent')
-  if (docsHint && docsHint.querySelector('p.muted')) {
-    docsHint.querySelector('p.muted').textContent = t('docs.select_hint')
-  }
   // Messages empty state
   const chatEmpty = document.querySelector('.chat-thread-empty p')
   if (chatEmpty) chatEmpty.textContent = t('messages.select_agent')

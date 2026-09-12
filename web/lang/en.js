@@ -77,7 +77,6 @@ window._i18n.en = {
   'nav.recall':       'Diary',
   'nav.skills':       'Skills',
   'nav.connectors':   'MCP',
-  'nav.docs':         'Documentation',
   'nav.approvals':    'Approvals',
   'nav.settings':     'Settings',
   'nav.vault':        'Vault',
@@ -564,19 +563,6 @@ window._i18n.en = {
   'channel.toast.remove_error':   'Removal error',
 
 
-  // --- Docs ---
-  'docs.page_title':             'Documentation',
-  'docs.page_subtitle':          "The project's docs/ folder in readable form",
-  'docs.loading':                'Loading...',
-  'docs.select_hint':            'Select a document from the list on the left.',
-  'docs.error':                  'Error loading document',
-  'docs.list_load_error':        'Failed to load the list',
-  'docs.empty_list':             'No documents found in docs/ folder.',
-  'docs.empty_content':          'No documents to display.',
-  'docs.download_btn':           '⬇ Download .md',
-  'docs.open_error':             'Failed to open',
-
-  // --- Research ---
   // --- Status (Rendszer section on Overview) ---
   'status.loading':              'Loading...',
   'status.overall.operational':  'All systems operational',

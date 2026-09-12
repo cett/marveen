@@ -77,7 +77,6 @@ window._i18n.hu = {
   'nav.recall':       'Napló',
   'nav.skills':       'Skillek',
   'nav.connectors':   'MCP',
-  'nav.docs':         'Dokumentáció',
   'nav.approvals':    'Jóváhagyások',
   'nav.settings':     'Beállítások',
   'nav.vault':        'Vault',
@@ -822,18 +821,6 @@ window._i18n.hu = {
   'channel.toast.approve_error':  'Jóváhagyási hiba',
   'channel.toast.remove_error':   'Eltávolítási hiba',
 
-
-  // --- Docs ---
-  'docs.page_title':             'Dokumentáció',
-  'docs.page_subtitle':          'A projekt docs/ mappája, olvasható formában',
-  'docs.loading':                'Betöltés...',
-  'docs.select_hint':            'Válassz egy dokumentumot a bal oldali listából.',
-  'docs.error':                  'Hiba a dokumentum betöltésekor',
-  'docs.list_load_error':        'Nem sikerült betölteni a listát',
-  'docs.empty_list':             'Nincs dokumentum a docs/ mappában.',
-  'docs.empty_content':          'Nincs megjeleníthető dokumentum.',
-  'docs.download_btn':           '⬇ .md letöltés',
-  'docs.open_error':             'Nem sikerült megnyitni',
 
   // --- Status (Rendszer szekció az Áttekintésben) ---
   'status.loading':              'Betöltés...',

@@ -1,8 +1,9 @@
 // String-contract guard for MD rendering unification (house idiom: reads
 // frontend files as strings and asserts short, formatting-proof fragments).
 // Guards: (a) single renderMarkdown definition, (b) language class on fenced
-// code blocks, (c) unified md-rendered class on both skill modal and docs page,
-// (d) mdInline URL hardening against javascript:/data:/vbscript: schemes.
+// code blocks, (c) md-rendered class on the skill modal (the docs page that
+// used to be the other half of this parity check was removed -- see ST4 of
+// #875), (d) mdInline URL hardening against javascript:/data:/vbscript: schemes.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -34,7 +35,9 @@ function mdInlineLocal(text: string): string {
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP          = readFileSync(join(__dirname, '../../web/app.js'),                   'utf-8')
-// Docs + research viewer extracted to docs-research.js in S-14b modularization.
+// renderMarkdown/mdInline extracted to docs-research.js in S-14b modularization;
+// the docs-page viewer that originally lived alongside them was removed in
+// #875 ST4, leaving this file as the shared markdown renderer only.
 const DOCS_MOD     = readFileSync(join(__dirname, '../../web/modules/docs-research.js'), 'utf-8')
 const SKILLS_MOD   = readFileSync(join(__dirname, '../../web/modules/skills.js'),        'utf-8')
 const HTML         = readFileSync(join(__dirname, '../../web/index.html'),               'utf-8')
@@ -69,11 +72,6 @@ describe('md rendering unification', () => {
   it('skill detail container has md-rendered class', () => {
     expect(HTML).toContain('id="skillDetailContent"')
     expect(HTML).toMatch(/class="[^"]*md-rendered[^"]*"\s+id="skillDetailContent"/)
-  })
-
-  it('docs page container gets md-rendered class', () => {
-    // openDoc lives in docs-research.js after S-14b
-    expect(DOCS_MOD).toContain('"docs-rendered markdown-body md-rendered"')
   })
 
   it('style.css defines .md-rendered with code/pre rules', () => {

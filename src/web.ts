@@ -55,7 +55,6 @@ import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
-import { tryHandleDocs } from './web/routes/docs.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
@@ -122,7 +121,6 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleSchedules)
   .add(tryHandleConnectorsHu)
   .add(tryHandleConnectors)
-  .add(tryHandleDocs)
   .add(tryHandleAgentsSkills)
   .add(tryHandleSkills)
   .add(tryHandleAgentTerminal)

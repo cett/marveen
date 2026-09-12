@@ -22,7 +22,6 @@ const LAZY_MODULES = [
   'federation.js',
   'ideas.js',
   'status-costs.js',
-  'docs-research.js',
   'recall-bgtasks.js',
   'approvals.js',
   'migrate.js',
