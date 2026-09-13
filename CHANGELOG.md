@@ -9,7 +9,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: 102c98fedc9637e18b2a168716607f75aa7dca3e -->
+<!-- changelog-auto-sha: d078a785f6a9cf0571552fd813dc71d1c507d05f -->
 
 ### Removed
 
@@ -770,6 +770,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- update CHANGELOG for the cost-today KPI removal
+- update fork-diff SHA for vault-ssh-keys coverage step
+- update fork-diff SHA for vault-ssh-keys route coverage step
 - update CHANGELOG per API deprecation policy CI gate
 - point Ütemezések references at the merged Feladatok page
 - update fork-diff SHA for daily-log route coverage step
@@ -930,6 +933,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- pin MAIN_AGENT_ID/SKILL_SQL_REGEN in tests that hardcode their defaults
+- cover vault-ssh-keys.ts route surface (#751 step 15)
 - trim docs/ to the still-referenced files (#875 ST4, Jonas: opt. c)
 - cover daily-log.ts route surface (#751 step 14)
 - cover voice.ts route surface (#751 step 13)
