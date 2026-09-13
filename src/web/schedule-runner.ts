@@ -995,45 +995,29 @@ function resolveSchedulerAlertToken(): string | undefined {
 }
 
 // One line about what the scheduler missed while it was down: which tasks it
-// caught up, and which were too stale to be worth running. Sent once per tick
-// that produced any such entry -- in normal operation that is never, so the
-// channel stays quiet. This is the reporting half of the catch-up policy: a
-// missed occurrence either runs or gets named, never both and never neither.
+// caught up, and which were too stale to be worth running. Logged once per
+// tick that produced any such entry -- in normal operation that is never.
+// Deliberately log-only, NOT a Telegram alert: the user does not want to be
+// pinged about downtime/catch-up housekeeping, only about things that need
+// their attention (pending-retry stuck alerts, task-timeout alerts, and the
+// task's own result notifications keep going through Telegram as before).
+// The per-occurrence 'missed'/caught-up history is already recorded via
+// appendTaskRun before this is called -- this is purely a human-readable
+// summary line for the log/dashboard, not the source of truth.
 function sendCatchUpSummary(
   caughtUp: Array<{ task: string; ageMs: number }>,
   stale: Array<{ task: string; ageMs: number }>,
   gapMs: number,
 ): void {
-  const token = resolveSchedulerAlertToken()
-  if (!token) {
-    logger.warn('catch-up summary suppressed: no TELEGRAM_BOT_TOKEN (config error)')
-    return
-  }
-  if (!ALLOWED_CHAT_ID.trim()) {
-    logger.warn('catch-up summary suppressed: empty ALLOWED_CHAT_ID (config error)')
-    return
-  }
   const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
-  const lines = [`[${BOT_NAME} scheduler] Kimaradt ütemezés (${mins(gapMs)} kiesés).`]
-  if (caughtUp.length) {
-    // "elindítva", not "lefutott": a catch-up injection can still land in the
-    // pending-retry queue if the target session is busy. It will run; it may
-    // not have run yet at the moment this line is sent.
-    lines.push(`Pótlás elindítva: ${caughtUp.map(e => `${e.task} (${mins(e.ageMs)} késés)`).join(', ')}`)
-  }
-  if (stale.length) {
-    lines.push(`Nem pótolva, mert elavult: ${stale.map(e => `${e.task} (${mins(e.ageMs)})`).join(', ')}`)
-    lines.push('Ezek a dashboard /Ütemezések oldalán kézzel indíthatók.')
-  }
-  const text = lines.join('\n')
-  ;(async () => {
-    try {
-      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
-      logger.info({ caughtUp: caughtUp.length, stale: stale.length }, 'catch-up summary Telegram alert sent')
-    } catch (err) {
-      logger.warn({ err }, 'catch-up summary delivery failed')
-    }
-  })()
+  logger.info(
+    {
+      gapMinutes: Math.round(gapMs / 60000),
+      caughtUp: caughtUp.map(e => ({ task: e.task, ageMinutes: Math.round(e.ageMs / 60000) })),
+      stale: stale.map(e => ({ task: e.task, ageMinutes: Math.round(e.ageMs / 60000) })),
+    },
+    `catch-up summary: ${mins(gapMs)} gap, ${caughtUp.length} caught up, ${stale.length} stale (dashboard-only, no Telegram alert)`,
+  )
 }
 
 function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
