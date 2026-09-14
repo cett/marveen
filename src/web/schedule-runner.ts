@@ -1,5 +1,4 @@
 import { join, isAbsolute } from 'node:path'
-import { homedir } from 'node:os'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -8,8 +7,6 @@ import { logger } from '../logger.js'
 import {
   PROJECT_ROOT, STORE_DIR,
   MAIN_AGENT_ID,
-  ALLOWED_CHAT_ID,
-  BOT_NAME,
   APP_TZ_INVALID,
 } from '../config.js'
 import {
@@ -19,13 +16,12 @@ import {
   updatePendingTaskRetry,
   insertPendingTaskRetryIfNew,
   markPendingTaskRetryAlert,
-  clearPendingTaskRetryAlert,
   markScheduledTaskKanbanWaiting,
   upsertBlackboard,
   findActiveKanbanCardByTitle,
   findBlackboardRowByAgent,
 } from '../db.js'
-import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
+import { toPendingRetryView, type PendingRetryView } from '../pending-retries.js'
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
@@ -36,7 +32,7 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { channelStateDir } from '../channel-provider.js'
 import {
@@ -51,7 +47,6 @@ import {
   clearStaleParkedInput,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
@@ -306,10 +301,9 @@ export const SCHEDULE_JANITOR_PARKED_MIN_AGE_MS = 120_000
 // them from the UI. The previous design kept them in an in-memory Map
 // and abandoned them after an hour -- which silently dropped business-
 // critical schedules. The new policy never abandons; once the age
-// crosses ALERT_THRESHOLD_MS the alerting layer stamps alert_sent_at
-// before each Telegram send and clears the stamp on delivery failure,
-// giving exactly-one stamp per attempt and at-least-once delivery until
-// success. See sendPendingRetryAlert below.
+// crosses ALERT_THRESHOLD_MS the alerting layer stamps alert_sent_at and
+// logs the occurrence once (dashboard-only, no Telegram alert). See
+// sendPendingRetryAlert below.
 
 // When a task fires we record its time here so the catch-up window (30 min on
 // the first tick after a restart) does not re-run it. This map is in-memory, so
@@ -973,34 +967,14 @@ export async function runScheduledTaskNow(
   return { ok: true, result: summary.join(', ') }
 }
 
-// Fire a Telegram alert when a pending retry has been stuck past the
-// threshold. Stamps `alert_sent_at` BEFORE the network call so concurrent
-// ticks and crash-restarts cannot race into double-alerting on the same
-// attempt. If the send fails, the stamp is cleared so the next tick can
-// retry -- that way a transient Telegram outage or a bad token doesn't
-// silently suppress every future alert on this row. Net semantics:
-// exactly-one stamp per delivery attempt, at-least-once delivery with a
-// 60s retry cadence until success.
-// Bot token for the system-level scheduler alerts (pending-retry, task-timeout,
-// catch-up summary). Since the channels migration the token lives in the
-// telegram plugin's env, not marveen/.env (2026-07-08: every scheduler alert
-// was silently suppressed on such hosts), so both locations are tried -- same
-// fallback order as scripts/notify.sh.
-function resolveSchedulerAlertToken(): string | undefined {
-  const envContent = readFileOr(join(PROJECT_ROOT, '.env'), '')
-  const token = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
-  if (token) return token
-  const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
-  return channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
-}
-
 // One line about what the scheduler missed while it was down: which tasks it
 // caught up, and which were too stale to be worth running. Logged once per
 // tick that produced any such entry -- in normal operation that is never.
 // Deliberately log-only, NOT a Telegram alert: the user does not want to be
-// pinged about downtime/catch-up housekeeping, only about things that need
-// their attention (pending-retry stuck alerts, task-timeout alerts, and the
-// task's own result notifications keep going through Telegram as before).
+// pinged about downtime/catch-up housekeeping. Same policy now covers the
+// pending-retry and task-timeout alerts below (see sendPendingRetryAlert /
+// sendTaskTimeoutAlert) -- only the task's own result notifications keep
+// going through Telegram as before.
 // The per-occurrence 'missed'/caught-up history is already recorded via
 // appendTaskRun before this is called -- this is purely a human-readable
 // summary line for the log/dashboard, not the source of truth.
@@ -1020,34 +994,18 @@ function sendCatchUpSummary(
   )
 }
 
+// Dashboard-only, same policy as sendCatchUpSummary above: the user does not
+// want to be pinged over Telegram about a scheduler-internal retry loop, only
+// about things that need their attention. The stamp/claim and reason
+// classification stay exactly as before; only the delivery channel changed.
 function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   // Stamp first. If another tick raced us, markPendingTaskRetryAlert
   // returns false (the WHERE alert_sent_at IS NULL guards it) and we
-  // skip the send entirely.
+  // skip the log entirely -- one line per stuck occurrence, not one per tick.
   const claimed = markPendingTaskRetryAlert(view.taskName, view.agentName, nowMs)
   if (!claimed) return
 
-  // Validate the delivery config BEFORE building/sending. A missing token
-  // or chat_id is a permanent configuration problem -- it will fail
-  // identically on every 60s tick. Earlier this path (token only) cleared
-  // the stamp on failure, so the alert re-fired every minute forever and
-  // spammed the log; and chat_id was never validated at all, so an empty
-  // ALLOWED_CHAT_ID guaranteed a 400 from Telegram on every attempt. Leave
-  // the stamp in place (it acts as the throttle) and log once so the
-  // operator sees the config gap without the spin. The scheduled task
-  // itself keeps retrying regardless -- only this alert is suppressed.
-  const token = resolveSchedulerAlertToken()
-  if (!token) {
-    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no TELEGRAM_BOT_TOKEN (config error, stamp kept to avoid 60s spin)')
-    return
-  }
-  if (!ALLOWED_CHAT_ID.trim()) {
-    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: empty ALLOWED_CHAT_ID (config error, stamp kept to avoid 60s spin)')
-    return
-  }
-
   const ageMinutes = Math.floor(view.ageMs / 60000)
-  const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
   // A retry stuck on a dead required MCP names the server(s): the operator's
   // fix is restarting an MCP, not freeing up a busy session.
   const mcpMissing = view.lastReason?.startsWith('mcp-missing')
@@ -1058,59 +1016,18 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   // one-time login/consent on the agent session, not waiting for a busy
   // session to free up.
   const firstRunStuck = view.lastReason === 'first-run'
-  const text = (mcpMissing
-    ? [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szükséges MCP szerver(ek) nem futnak a cél-sessionben: ${mcpMissing}.`,
-        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
-        'Amint az MCP szerver újra elérhető, a feladat magától lefut; a dashboard /Ütemezések oldalán visszavonható.',
-      ]
-    : firstRunStuck
-    ? [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: az agent session a Claude Code első-indítási képernyőjén áll (mappa-jóváhagyás vagy belépés szükséges).`,
-        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
-        `A rendszer a jóváhagyás-dialogokat magától továbblépteti; ha belépés kell: tmux attach -t agent-${view.agentName}, majd válaszd ki a belépési módot. Utána a feladat magától lefut.`,
-      ]
-    : [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) ütemezett feladat ${ageMinutes} perce várakozik.`,
-        `Első próbálkozás: ${firstAttempt}.`,
-        'A rendszer tovább próbálkozik; a dashboard /Ütemezések oldalán visszavonható.',
-      ]).join('\n')
-  ;(async () => {
-    try {
-      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
-      logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry Telegram alert sent')
-    } catch (err) {
-      // Distinguish a transient failure (network blip, 429, 5xx) from a
-      // permanent one (4xx: bad chat_id / revoked token). Transient ->
-      // clear the per-attempt stamp so the next tick retries. Permanent
-      // -> KEEP the stamp; retrying every 60s would just repeat the same
-      // rejection and spam the log until the config is fixed.
-      const kind = classifyTelegramSendError(err instanceof Error ? err.message : String(err))
-      if (kind === 'transient') {
-        logger.warn({ err, task: view.taskName, agent: view.agentName }, 'Pending-retry alert delivery failed (transient), clearing stamp for retry')
-        clearPendingTaskRetryAlert(view.taskName, view.agentName)
-      } else {
-        logger.warn({ err, task: view.taskName, agent: view.agentName }, 'Pending-retry alert delivery failed (permanent), stamp kept to avoid 60s spin')
-      }
-    }
-  })()
+  const reason = mcpMissing ? `mcp-missing:${mcpMissing}` : firstRunStuck ? 'first-run' : 'pending-retry'
+  logger.info(
+    { task: view.taskName, agent: view.agentName, ageMinutes, reason },
+    `pending-retry alert: "${view.taskName}" (${view.agentName}) ${ageMinutes} perce varakozik, ok: ${reason} (dashboard-only, no Telegram alert)`,
+  )
 }
 
-// One-shot Telegram alert when a fired task/heartbeat has been continuously
-// busy past TASK_FIRE_TIMEOUT_MS. Follows the same token-resolution and
-// ALLOWED_CHAT_ID path as sendPendingRetryAlert: this is a system-level
-// scheduler alert, not a per-agent channel notification.
+// One-shot dashboard log when a fired task/heartbeat has been continuously
+// busy past TASK_FIRE_TIMEOUT_MS. Dashboard-only, same policy as
+// sendPendingRetryAlert/sendCatchUpSummary above.
 function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
-  const token = resolveSchedulerAlertToken()
-  if (!token) {
-    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no TELEGRAM_BOT_TOKEN (config error)')
-    return
-  }
-  if (!ALLOWED_CHAT_ID.trim()) {
-    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: empty ALLOWED_CHAT_ID (config error)')
-    return
-  }
   // If there is an active kanban card whose title matches the task name, move it
   // to 'waiting' so the board reflects the stuck state. No-op when no matching
   // card exists (the task was never on the board, or has already been archived).
@@ -1123,19 +1040,10 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   // judge: a long-running analysis task that legitimately needs more time is
   // then one config line away, instead of a recurring 3am mystery.
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
-  const text = [
-    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás.`,
-    `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
-    'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
-  ].join('\n')
-  ;(async () => {
-    try {
-      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
-      logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout Telegram alert sent')
-    } catch (err) {
-      logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout alert delivery failed')
-    }
-  })()
+  logger.info(
+    { task: entry.taskName, agent: entry.agentName, ageMinutes, thresholdMinutes },
+    `task-timeout alert: "${entry.taskName}" (${entry.agentName}) ${ageMinutes} perce fut, kuszob ${thresholdMinutes} perc (dashboard-only, no Telegram alert)`,
+  )
 }
 
 // Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
