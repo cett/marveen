@@ -1,7 +1,7 @@
 ---
 name: memory-link-maintenance
 description: Nightly memory link-graph maintenance via POST /api/memories/links/maintain
-last_synced: 2026-08-28
+last_synced: 2026-09-14
 # last_synced konvenció: lásd scheduled-tasks/reggeli-napindito/SKILL.md
 ---
 
@@ -55,3 +55,4 @@ cp -r scheduled-tasks/memory-link-maintenance ~/.claude/scheduled-tasks/
 - Ha Ollama nem fut, a reembedded es linksCreated nulla lesz -- ez normalis, nem hiba
 - A pruning visszafordithatatlan; az alacsony kuszobot (0.05) ovatosan allisd
 - Orphan szam > 50 azt jelzi, hogy az Ollama hosszan nem futott -- backfill kell
+- **500 internal_error ("Link maintenance failed") a nulla-eredmenytol KULONBOZO hiba** (2026-09-14, 02:4x): ez NEM az Ollama-hianyzik esetet jelenti (az {"ok":true, reembedded:0,...}-t adna, nem 500-at). Konzisztens 500-at adott 2 egymas utani probalkozasra hajnalban, resztletesebb hibauzenet nelkul a valaszban. Ha ismet elofordul: nezd a szerver-logot (nincs a HTTP valaszban leirva a root cause), es NE probald ujra vak ismetlessel tobb mint 1-2x -- naplozd hot memoriaba es varj a kovetkezo napi futasra / kerdezz ra reggel.
