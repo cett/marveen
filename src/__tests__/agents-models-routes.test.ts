@@ -12,10 +12,6 @@ vi.mock('../web/openrouter-models.js', () => ({
   addCuratedManual: vi.fn().mockReturnValue([{ id: 'openai/gpt-4', name: 'GPT-4' }]),
   removeCuratedManual: vi.fn().mockReturnValue([]),
 }))
-vi.mock('../web/claude-plans.js', () => ({
-  readClaudePlans: vi.fn().mockReturnValue([]),
-}))
-
 import { tryHandleAgentsModels } from '../web/routes/agents-models.js'
 
 function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -111,13 +107,6 @@ describe('tryHandleAgentsModels', () => {
     await tryHandleAgentsModels(ctx)
     expect(out.status).toBe(403)
     expect((out.body as { error: string }).error).toBe('forbidden')
-  })
-
-  it('GET /api/claude-plans returns plan list', async () => {
-    const { ctx, out } = makeCtx('GET', '/api/claude-plans')
-    const handled = await tryHandleAgentsModels(ctx)
-    expect(handled).toBe(true)
-    expect(out.status).toBe(200)
   })
 
   it('returns false for unmatched route', async () => {

@@ -1,7 +1,6 @@
 import { logger } from '../../logger.js'
 import { getSecret } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
-import { readClaudePlans } from '../claude-plans.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -104,15 +103,6 @@ export async function tryHandleAgentsModels(ctx: RouteContext): Promise<boolean>
       logger.warn({ err }, 'openrouter models list fetch failed')
       json(res, { error: 'internal_error', hint: 'Could not fetch OpenRouter models' }, 502)
     }
-    return true
-  }
-
-  // Named Claude subscription registry (store/claude-plans.json), resolved +
-  // validated. Feeds the per-agent plan dropdown; empty array when no registry
-  // file exists (opt-in feature). Read-only in PR1 -- editing the registry is a
-  // separate surface.
-  if (path === '/api/claude-plans' && method === 'GET') {
-    json(res, readClaudePlans())
     return true
   }
 
