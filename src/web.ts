@@ -59,6 +59,7 @@ import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
 import { tryHandleAgents } from './web/routes/agents.js'
+import { tryHandleClaudePlans } from './web/routes/claude-plans.js'
 import { tryHandleMarveen } from './web/routes/marveen.js'
 import { tryHandleRecall } from './web/routes/recall.js'
 import { tryHandleBackgroundTasks, sweepOrphanedBackgroundTasks } from './web/routes/background-tasks.js'
@@ -127,6 +128,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleAgentConversation)
   .add(tryHandleAgentTaskState)
   .add(ctx => tryHandleAgents(ctx, WEB_DIR))
+  .add(tryHandleClaudePlans)
   .add(ctx => tryHandleMarveen(ctx, WEB_DIR))
   .add(tryHandleBackgroundTasks)
   .add(tryHandleRecall)
