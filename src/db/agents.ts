@@ -3,6 +3,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { writeAgentAuditLog } from './audit.js'
+import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
 import { KanbanCard } from './kanban.js'
 import { Tenant } from './observability.js'
@@ -524,6 +525,10 @@ export function markBlackboardStale(
         `UPDATE fleet_blackboard SET status = 'stale', updated_at = ? WHERE id = ?`,
       ).run(nowSec, row.id)
       insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: 'stale', summary: row.summary })
+      // #886: a blackboard row going stale means the agent behind it is
+      // presumed dead -- drop any plan binding with it (design section 3A),
+      // rather than let it look "active" forever.
+      try { deactivatePlanForAgent(row.agent_id) } catch { /* best-effort, never blocks the sweep */ }
       marked++
     }
   }
@@ -601,6 +606,13 @@ export function upsertBlackboard(
     (existing.task_ref ?? null) !== (row.task_ref ?? null)
   if (changed) {
     insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary })
+  }
+  // #886: an agent reporting itself 'done' no longer has a live claim on its
+  // plan binding either (design section 3A). Only on an actual transition,
+  // same as the history write above -- a repeated no-op 'done' upsert must
+  // not matter here.
+  if (changed && row.status === 'done') {
+    try { deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
   }
   return row
 }

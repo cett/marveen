@@ -24,7 +24,17 @@ import { readClaudePlansState, writeClaudePlansState, applyRotation } from '../c
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import { restartAgentProcess } from '../agent-process.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { activatePlanForAgent } from '../../db.js'
 import type { RouteContext } from './types.js'
+
+// Best-effort DB mirror write (#886): a rotation's real effect is the file
+// write above (writeClaudePlansState/applyRotation, which the DB-less
+// main-agent boot path reads) -- the agent_active_plans row is only for the
+// blackboard badge / dashboard / handoff-recovery, so a mirror failure must
+// never fail the rotation itself.
+function mirrorActivation(agentId: string, planId: string): void {
+  try { activatePlanForAgent(agentId, planId, 'rotation') } catch { /* see comment above */ }
+}
 
 function isRotationEnabled(): boolean {
   try { return String(getEffectiveSettingValue('CLAUDE_ROTATION_ENABLED')) === '1' } catch { return false }
@@ -154,6 +164,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       // so the state has to be on disk before the process that will read it
       // comes up.
       writeClaudePlansState(applyRotation(readClaudePlansState(), MAIN_AGENT_ID, targetPlanId))
+      mirrorActivation(MAIN_AGENT_ID, targetPlanId)
 
       const result = hardRestartMarveenChannels()
       if (!result.ok) {
@@ -174,11 +185,16 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     }
     writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
     writeAgentClaudePlan(agentId, targetPlanId)
+    // restartAgentProcess stops the agent first (which drops any
+    // agent_active_plans row via deactivatePlanForAgent, see
+    // agent-process-spawn.ts) -- so the mirror activation MUST happen after
+    // the restart succeeds, not before, or it would be wiped immediately.
     const result = await restartAgentProcess(agentId)
     if (!result.ok) {
       json(res, { error: 'internal_error', hint: result.error || `Restart failed for agent ${agentId}` }, 500)
       return true
     }
+    mirrorActivation(agentId, targetPlanId)
     logger.info({ agentId, targetPlanId }, 'Claude plan rotation: agent restarted')
     json(res, { ok: true, agentId, activePlanId: targetPlanId })
     return true

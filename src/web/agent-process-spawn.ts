@@ -11,6 +11,8 @@ import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
+import { recoverActivePlanFromHandoff } from './claude-plan-handoff-marker.js'
+import { deactivatePlanForAgent } from '../db.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { loadProfileTemplate } from './profiles.js'
@@ -112,6 +114,12 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
 
 
   if (isAgentRunning(name)) return { ok: false, error: 'conflict', hint: 'Agent is already running' }
+
+  // #886: restore the agent_active_plans binding a preceding stop dropped, if
+  // the just-restarted agent's HANDOFF.md carries a plan marker (context-guard
+  // restarts write one, see claude-plan-handoff-marker.ts). Best-effort,
+  // never blocks launch; a manual/first start with no marker is a no-op.
+  recoverActivePlanFromHandoff(name)
 
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
@@ -521,6 +529,12 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string; h
         logger.warn({ err, name }, 'post-stop channel-poller reap failed')
       }
     }
+    // #886: a clean stop means this agent no longer has a live claim on its
+    // plan binding -- the next launch either recovers it from HANDOFF.md
+    // (recoverActivePlanFromHandoff, a context-guard restart) or the agent
+    // starts unbound until explicitly reassigned (a manual stop). Best-effort:
+    // must never fail the stop itself.
+    try { deactivatePlanForAgent(name) } catch (err) { logger.warn({ err, name }, 'deactivatePlanForAgent failed (non-fatal)') }
     logger.info({ name, session, host }, 'Agent tmux session stopped')
     return { ok: true }
   } catch (err) {

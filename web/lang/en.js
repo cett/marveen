@@ -1891,6 +1891,7 @@ window._i18n.en = {
   'bb.signal.b.tooltip': 'Active row has not changed for a long time — the completion signal was likely lost.',
   'bb.signal.ab.label':  'Both signals',
   'bb.signal.ab.tooltip':'Agent was active in messages but the row was not updated; additionally the row has been active and unchanged for a long time.',
+  'bb.plan.unresolved.tooltip': 'This agent\'s active plan binding points at a plan id that no longer exists in the registry.',
   'bb.history.row_hint': 'Click for this agent\'s status history',
   'bb.history.title':    '{agent} history',
   'bb.history.empty':    'No history for this agent yet.',

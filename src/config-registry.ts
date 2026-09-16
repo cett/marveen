@@ -701,6 +701,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'PLAN_STALE_MIN',
+    type: 'int',
+    default: 90,
+    min: 15,
+    max: 1440,
+    description: 'agent_active_plans (#886) stale-határ percben: ennyi ideig frissítetlen last_heartbeat után a plan-sweeper törli az ágens plan-kötését. A blackboard sweeper 5 percenként fut, 90 perc ~18 kihagyott ciklus -- csak valóban holt ágenseknél aktiválódik.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

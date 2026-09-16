@@ -1891,6 +1891,7 @@ window._i18n.hu = {
   'bb.signal.b.tooltip': 'Aktív sor régóta változatlanul áll -- a befejezés jele valószínűleg elveszett.',
   'bb.signal.ab.label':  'Mindkét jel',
   'bb.signal.ab.tooltip':'Az ágens aktív volt üzenetküldésben, de a sor nem frissült; emellett a sor már régóta változatlanul active állapotban áll.',
+  'bb.plan.unresolved.tooltip': 'Ennek az ágensnek a plan-kötése egy olyan plan id-re mutat, ami már nem létezik a registry-ben.',
   'bb.history.row_hint': 'Kattints az ágens állapot-előzményeihez',
   'bb.history.title':    '{agent} előzményei',
   'bb.history.empty':    'Nincs előzmény ehhez az ágenshez.',

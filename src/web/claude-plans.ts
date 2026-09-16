@@ -29,6 +29,8 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { replaceClaudePlanRows } from '../db.js'
+import { logger } from '../logger.js'
 import {
   expandAndValidateConfigDir,
   readAgentClaudeConfigDir,
@@ -164,6 +166,17 @@ export function writeClaudePlans(plans: ClaudePlan[]): void {
   mkdirSync(dirname(CLAUDE_PLANS_PATH), { recursive: true })
   atomicWriteFileSync(CLAUDE_PLANS_PATH, JSON.stringify(plans, null, 2) + '\n')
   plansCache = null
+  // Best-effort DB mirror (#886) for the dashboard/blackboard badge. The file
+  // above stays authoritative for launch-time resolution (see db/claude-plans.ts
+  // header) -- a mirror-write failure must never block the real write.
+  try {
+    replaceClaudePlanRows(plans.map((p) => ({
+      id: p.id, label: p.label, configDir: p.configDir, planType: p.planType,
+      channelsAllowed: p.channelsAllowed, expectedOrgType: p.expectedOrgType, expectedEmail: p.expectedEmail,
+    })))
+  } catch (err) {
+    logger.warn({ err }, 'claude-plans-registry mirror write failed (file write already succeeded)')
+  }
 }
 
 // Resolve a single plan id to its plan, or null when the id is blank/unknown.
