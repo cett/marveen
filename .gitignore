@@ -1,6 +1,7 @@
 # Dependencies & build
 node_modules
 dist/
+.tsbuildinfo
 
 # Python bytecode cache (e.g. scripts/hooks/__pycache__/*.pyc)
 __pycache__/
