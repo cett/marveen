@@ -242,4 +242,37 @@ tr.audit-log-row-clickable:hover, tr.approvals-row-clickable:hover {
 }
 .graph-empty[hidden] { display: none; }
 
+/* === Memory Detail Modal (kanban 87076b19) === */
+.mem-detail-tier-strip {
+  width: 4px;
+  border-radius: 2px;
+  align-self: stretch;
+  flex-shrink: 0;
+}
+.mem-detail-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.mem-detail-content {
+  font-size: 14px;
+  line-height: 1.7;
+  margin-bottom: 14px;
+  overflow-wrap: break-word;
+}
+.mem-detail-content mark.kw-highlight {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--text);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+.mem-keyword-tag.kw-matched {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* === Graph Detail Panel === */
