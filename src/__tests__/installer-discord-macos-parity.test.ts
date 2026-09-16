@@ -76,16 +76,9 @@ describe('macOS installer offers Discord with Linux parity', () => {
   })
 })
 
-describe('the docs stop hiding the Discord provider', () => {
-  it('docs/channels.md names it in the title and has a specifics section', () => {
-    const doc = readFileSync(join(ROOT, 'docs', 'channels.md'), 'utf-8')
-    expect(doc).toMatch(/^# Channels \(.*Discord.*\)/)
-    expect(doc).toContain('### Discord-specifikum')
-  })
-
-  it('README offers Discord next to Telegram and Slack', () => {
-    const readme = readFileSync(join(ROOT, 'README.md'), 'utf-8')
-    expect(readme).toContain('#### Discord (alternatív)')
-    expect(readme).toContain('CHANNEL_PROVIDER=discord')
-  })
-})
+// The upstream doc assertions (docs/channels.md, a README feature-list
+// section) are intentionally NOT ported: this fork trimmed docs/ to the
+// still-referenced files (9a437e41, Jónás-approved) and rewrote README.md as
+// a fork-diff narrative rather than a feature list, so neither file exists in
+// the shape these checks assume. The functional parity (installer script,
+// lang file) above is what actually matters and is fully covered.
