@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/taskstate-replay.py",
+            "command": "python3 {{SCRIPTS_DIR}}/scripts/hooks/taskstate-replay.py",
             "timeout": 15
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/skill-usage-capture.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/skill-usage-capture.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/tool-log-capture.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress_reply_clear.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress_reply_clear.py; exit 0'",
             "timeout": 15
           }
         ]
@@ -69,22 +69,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/staleness-guard.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/staleness-guard.py; exit 0'",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/channel-inbox-drain.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/voice-reply-directive.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/voice-reply-directive.py; exit 0'",
             "timeout": 60
           }
           ,{
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress.py; exit 0'",
             "timeout": 15
           }
         ]
@@ -96,7 +96,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/channel-image-resize.sh ] && exec bash {{SCRIPTS_DIR}}/scripts/hooks/channel-image-resize.sh; exit 0'",
             "timeout": 15
           }
         ]
@@ -107,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py; exit 0'",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress_clear.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress_clear.py; exit 0'",
             "timeout": 15
           }
         ]

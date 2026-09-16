@@ -13,7 +13,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, STORE_DIR, SCRIPTS_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { channelStateDir } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -23,11 +23,14 @@ import { MCP_TOOL_REGISTRY, parseMcpScope, buildMcpDenyList } from './mcp-tool-r
 import { resolveTemplatePlaceholders } from './agent-scaffold-templates.js'
 
 
-// When vitest runs from a git worktree under /tmp, PROJECT_ROOT resolves to
-// /tmp/wt-*/ which isUnsafeHookCommand() blocks. MARVEEN_SCRIPTS_DIR lets the
-// test environment point hook-script lookups at the real repo root without
-// moving PROJECT_ROOT (which is also the agents/ and templates/ base).
-const SCRIPTS_DIR = process.env['MARVEEN_SCRIPTS_DIR'] ?? PROJECT_ROOT
+// SCRIPTS_DIR (config.js): when vitest runs from a git worktree under /tmp,
+// PROJECT_ROOT resolves to /tmp/wt-*/ which isUnsafeHookCommand() below
+// blocks. MARVEEN_SCRIPTS_DIR lets the test environment point hook-script
+// lookups at the real repo root without moving PROJECT_ROOT (which is also
+// the agents/ and templates/ base). Also used by resolveTemplatePlaceholders
+// (agent-scaffold-templates.ts) via the same config.js export, so the
+// template-sourced hook commands (settings.json.template) get the same
+// worktree-safe resolution as the ones built directly in this file.
 
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which
