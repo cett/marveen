@@ -161,6 +161,7 @@ describe('checkConfigPutFields', () => {
       'enabled', 'saturationRestart', 'actPct', 'hardPct',
       'limitTokens', 'cooldownMinutes', 'handoffTimeoutMinutes',
       'idleFlushEnabled', 'idleFlushTokens', 'idleMinutes',
+      'dailyHandoffEnabled', 'dailyHandoffTime',
     ])
   })
 })

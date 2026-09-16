@@ -7,6 +7,8 @@ import { notifyChannel } from '../notify.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { readClaudePlans, getClaudePlan } from './claude-plans.js'
+import { readClaudePlansState } from './claude-plans-state.js'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 export { CHANNEL_PLUGIN_IDS }
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -302,6 +304,35 @@ export function resolveMainAgentConfigDir(): string | null {
   return dir
 }
 
+// The main agent's CLAUDE_CONFIG_DIR when the rotation side-car
+// (store/claude-plans-state.json, PR2c) has recorded an active plan for it.
+//
+// Unlike the isolated credential-less dir above, a plan's configDir carries
+// its OWN real login -- the operator ran `claude setup-token` into it
+// directly (design 6.5/4, same as the per-agent resolveAgentConfigDir path).
+// So this behaves like an EXPLICIT dir, not an isolated one: the caller
+// (main-agent-isolated-config.mjs) must NOT inject the fleet token here,
+// exactly as it would not for resolveMainAgentConfigDir()'s result.
+//
+// Gated the same way rotation itself is gated (design 6.2): only applies
+// when MAIN_AGENT_ISOLATED_CONFIG=1 AND 2+ plans are registered. Below
+// either threshold this returns null even if a stale activePlanByAgent entry
+// exists on disk, so turning rotation off (or dropping back to one plan)
+// cannot strand the main agent on a dir nobody is maintaining anymore.
+export function resolveMainAgentRotatedConfigDir(): string | null {
+  let isolationEnabled = false
+  try { isolationEnabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return null }
+  if (!isolationEnabled) return null
+
+  if (readClaudePlans().length < 2) return null
+
+  const activeId = readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID]
+  if (!activeId) return null
+
+  const plan = getClaudePlan(activeId)
+  return plan ? plan.configDir : null
+}
+
 // Shared provisioning core for BOTH the sub-agents (ensureIsolatedChannelConfigDir)
 // and the main agent (ensureMainAgentIsolatedConfigDir) -- one code path so the
 // two can never diverge. `cfg` is the isolated CLAUDE_CONFIG_DIR to create; `cwd`
@@ -425,6 +456,15 @@ function provisionIsolatedConfigDir(
       try { settings = JSON.parse(readFileSync(sharedSettings, 'utf-8')) as Record<string, unknown> }
       catch { settings = {} }
     }
+    // #1305: hooks never ride the clone. Fleet hooks live in the PROJECT scope
+    // (tracked <root>/.claude/settings.json for the main agent, agents/<n>/
+    // .claude/ for sub-agents), which Claude Code loads by cwd regardless of
+    // CLAUDE_CONFIG_DIR. Copying the shared file's hooks here is what made the
+    // isolated dirs carry a second, derived copy of the user-global entries --
+    // it double-fired every gate (measured 2026-09-04: two identical
+    // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
+    // bearing when it was not.
+    delete settings.hooks
     const scopedPlugins = scopeChannelPlugins(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
@@ -460,7 +500,11 @@ function provisionIsolatedConfigDir(
         if (isPlainObject(own)) {
           const inherited: string[] = []
           for (const [key, value] of Object.entries(own)) {
-            if (key !== 'enabledPlugins' && !(key in settings)) {
+            // 'hooks' is excluded here too: the shared copy just dropped it
+            // (#1305), so without this exclusion an isolated dir that already
+            // carries the old derived hooks would inherit them right back as a
+            // "target-only" key on every re-provision.
+            if (key !== 'enabledPlugins' && key !== 'hooks' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
             }

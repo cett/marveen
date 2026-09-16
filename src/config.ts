@@ -13,6 +13,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export const PROJECT_ROOT = join(__dirname, '..')
 export const STORE_DIR = process.env['MARVEEN_STORE_DIR'] ?? join(PROJECT_ROOT, 'store')
+// When vitest runs from a git worktree under /tmp, PROJECT_ROOT resolves to
+// /tmp/wt-*/ which isUnsafeHookCommand() (agent-scaffold-hooks.ts) blocks as a
+// volatile tmpfs path. MARVEEN_SCRIPTS_DIR lets the test environment point
+// hook-script lookups at the real repo root without moving PROJECT_ROOT
+// (which is also the agents/ and templates/ base).
+export const SCRIPTS_DIR = process.env['MARVEEN_SCRIPTS_DIR'] ?? PROJECT_ROOT
 // Isolated mode: MARVEEN_STORE_DIR is set to a non-default path.
 // In this mode the instance skips takeover/reaper/reconciliation so it
 // can run alongside the production dashboard without interfering.

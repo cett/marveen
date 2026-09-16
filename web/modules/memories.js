@@ -170,6 +170,13 @@ document.getElementById('memAddBtn')?.addEventListener('click', () => {
 document.getElementById('memModalClose')?.addEventListener('click', () => _closeModal?.(memModalOverlay))
 memModalOverlay?.addEventListener('click', (e) => { if (e.target === memModalOverlay) _closeModal?.(memModalOverlay) })
 
+// Memory detail modal (kanban 87076b19): read-only view opened on card click
+const memDetailOverlay = document.getElementById('memDetailOverlay')
+const memDetailEditBtn = document.getElementById('memDetailEditBtn')
+document.getElementById('memDetailClose')?.addEventListener('click', () => _closeModal?.(memDetailOverlay))
+document.getElementById('memDetailCloseBtn')?.addEventListener('click', () => _closeModal?.(memDetailOverlay))
+memDetailOverlay?.addEventListener('click', (e) => { if (e.target === memDetailOverlay) _closeModal?.(memDetailOverlay) })
+
 // Save memory (create or edit)
 document.getElementById('saveMemBtn')?.addEventListener('click', async () => {
   const content = document.getElementById('memContent').value.trim()
@@ -357,10 +364,10 @@ function renderMemories(memories, staleIds = new Set(), workspaceDocs = []) {
       </div>
     `
 
-    // Toggle expand
+    // Open detail modal (kanban 87076b19)
     item.addEventListener('click', (e) => {
       if (e.target.closest('[data-variant="danger"]') || e.target.closest('[data-variant="secondary"]')) return
-      item.classList.toggle('expanded')
+      openMemDetailModal(mem, tier, memSearchInput.value)
     })
 
     // Edit
@@ -432,6 +439,94 @@ document.getElementById('memModalTabNav').addEventListener('click', (e) => {
     if (editId) loadMemVersions(parseInt(editId, 10))
   }
 })
+
+// Wraps every case-insensitive match of a whitespace-split query in
+// <mark class="kw-highlight">, walking TEXT_NODEs of an already-rendered DOM
+// subtree rather than the markdown source string. renderMarkdown() escapes
+// its input internally (mdInline -> escapeHtml), so feeding it text that
+// already contains a <mark> tag would escape the tag into literal text
+// instead of rendering it -- this must run AFTER renderMarkdown, on its
+// output, never before.
+function highlightTextNodes(root, query) {
+  const tokens = query.trim().split(/\s+/).filter(Boolean)
+    .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  if (!tokens.length) return
+  const re = new RegExp(tokens.join('|'), 'gi')
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const textNodes = []
+  let node
+  while ((node = walker.nextNode())) textNodes.push(node)
+  for (const textNode of textNodes) {
+    const text = textNode.nodeValue
+    re.lastIndex = 0
+    if (!re.test(text)) continue
+    re.lastIndex = 0
+    const frag = document.createDocumentFragment()
+    let lastIndex = 0
+    let m
+    while ((m = re.exec(text))) {
+      if (m.index > lastIndex) frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)))
+      const mark = document.createElement('mark')
+      mark.className = 'kw-highlight'
+      mark.textContent = m[0]
+      frag.appendChild(mark)
+      lastIndex = m.index + m[0].length
+      if (m[0].length === 0) re.lastIndex++ // guard against a zero-width match looping forever
+    }
+    if (lastIndex < text.length) frag.appendChild(document.createTextNode(text.slice(lastIndex)))
+    textNode.parentNode.replaceChild(frag, textNode)
+  }
+}
+
+function openMemDetailModal(mem, tier, searchQuery = '') {
+  const strip = document.getElementById('memDetailTierStrip')
+  if (strip) strip.style.background = tierColors[tier] || 'transparent'
+
+  const tierBadge = document.getElementById('memDetailTierBadge')
+  if (tierBadge) {
+    tierBadge.textContent = tierLabels[tier] || tier
+    tierBadge.dataset.variant = TIER_TO_VARIANT[tier] || 'neutral'
+  }
+  const agentEl = document.getElementById('memDetailAgent')
+  if (agentEl) agentEl.textContent = mem.agent_id || mainAgentId()
+
+  const dateEl = document.getElementById('memDetailDate')
+  if (dateEl) dateEl.textContent = mem.created_label || ''
+
+  const salienceEl = document.getElementById('memDetailSalience')
+  if (salienceEl) {
+    const hasSalience = typeof mem.salience === 'number'
+    salienceEl.hidden = !hasSalience
+    if (hasSalience) salienceEl.textContent = `S: ${mem.salience.toFixed(2)}`
+  }
+
+  const contentEl = document.getElementById('memDetailContent')
+  if (contentEl) {
+    contentEl.innerHTML = renderMarkdown(mem.content)
+    if (searchQuery.trim()) highlightTextNodes(contentEl, searchQuery)
+  }
+
+  const kwEl = document.getElementById('memDetailKeywords')
+  if (kwEl) {
+    const kws = mem.keywords
+      ? (typeof mem.keywords === 'string' ? mem.keywords.split(',').map(k => k.trim()).filter(Boolean) : mem.keywords)
+      : []
+    const queryTokens = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean)
+    kwEl.innerHTML = kws.map(kw => {
+      const matched = queryTokens.some(t => kw.toLowerCase().includes(t))
+      return `<span class="mem-keyword-tag${matched ? ' kw-matched' : ''}">${escapeHtml(kw)}</span>`
+    }).join('')
+  }
+
+  if (memDetailEditBtn) {
+    memDetailEditBtn.onclick = () => {
+      _closeModal?.(memDetailOverlay)
+      openMemEditModal(mem, tier)
+    }
+  }
+
+  _openModal?.(memDetailOverlay)
+}
 
 function openMemEditModal(mem, tier) {
   document.getElementById('memModalTitle').textContent = t('memories.modal.title_edit')

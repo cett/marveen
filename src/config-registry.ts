@@ -685,6 +685,33 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Claude plans module (PR2b/PR2c) ---
+  // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
+  // heartbeat script's decision to call it (scripts/claude-plan-rotate-check.ts)
+  // -- see docs/superpowers/specs/2026-09-11-claude-key-rotation-design.md
+  // sections 6-7. Default OFF: staging verification (live session-restart,
+  // the riskiest part of this feature) happens before an operator ever flips
+  // this to '1'.
+  {
+    key: 'CLAUDE_ROTATION_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'PLAN_STALE_MIN',
+    type: 'int',
+    default: 90,
+    min: 15,
+    max: 1440,
+    description: 'agent_active_plans (#886) stale-határ percben: ennyi ideig frissítetlen last_heartbeat után a plan-sweeper törli az ágens plan-kötését. A blackboard sweeper 5 percenként fut, 90 perc ~18 kihagyott ciklus -- csak valóban holt ágenseknél aktiválódik.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

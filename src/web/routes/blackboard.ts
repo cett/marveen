@@ -1,4 +1,4 @@
-import { getDb, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, type BlackboardRow } from '../../db.js'
+import { getDb, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, deactivatePlanForAgent, listActivePlansForAgents, type BlackboardRow, type ActivePlanForAgent } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -12,6 +12,10 @@ export type BlackboardSignal = 'a' | 'b' | 'ab' | null
 
 export interface BlackboardRowWithSignal extends BlackboardRow {
   signal: BlackboardSignal
+  /** #886: the agent's current Claude Plan binding, when one exists. Omitted
+   *  (not null) when the agent has no active binding, so old dashboard
+   *  clients that don't know the field simply never see it. */
+  activePlan?: ActivePlanForAgent
 }
 
 // Pure function: compute the stale signal for one blackboard row.
@@ -98,6 +102,7 @@ function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): 
   const lastChangedMap = new Map(histRows.map((r) => [r.agent_id, r.last_changed_at]))
 
   const nowSec = Math.floor(Date.now() / 1000)
+  const activePlanMap = listActivePlansForAgents(agentIds)
 
   return rows.map((row) => ({
     ...row,
@@ -108,6 +113,7 @@ function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): 
       nowSec,
       thresholds,
     ),
+    ...(activePlanMap.has(row.agent_id) ? { activePlan: activePlanMap.get(row.agent_id) } : {}),
   }))
 }
 
@@ -135,6 +141,11 @@ function patchBlackboard(id: string, data: { status?: string; summary?: string; 
     (updated.task_ref ?? null) !== (row.task_ref ?? null)
   if (changed) {
     insertBlackboardHistory({ agent_id: updated.agent_id, task_ref: updated.task_ref, status: updated.status, summary: updated.summary })
+  }
+  // #886: same "done means no live plan claim" rule as upsertBlackboard --
+  // PATCH is the other write path that can flip a row to 'done'.
+  if (changed && updated.status === 'done') {
+    try { deactivatePlanForAgent(updated.agent_id) } catch { /* best-effort */ }
   }
   return updated
 }
