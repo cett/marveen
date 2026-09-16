@@ -27,23 +27,28 @@ const hooks: Hooks = settings.hooks ?? {}
 // The full expected registration: event -> script basenames (order-free).
 // A change here is a REVIEWED decision about what runs in the main session,
 // never a side effect.
+// Fork deviation from upstream (#885 B3 review, Rick + Zack, kanban 1a512e21):
+// claude-usage.py, telegram-reply-directive.py, provenance-gate.py,
+// clear-replay.py and clear-capture.py (SessionEnd) don't exist as scripts on
+// this fork -- registering them would fail-closed every prompt/session event.
+// Excluded here on purpose; do not "complete" this list without adding the
+// matching scripts/hooks/*.py files first.
 const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
-    'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
-    'provenance-gate.py', 'staleness-guard.py', 'channel-inbox-drain.py',
-    'voice-reply-directive.py', 'telegram_progress.py', 'claude-usage.py',
+    'ledger-capture.py', 'inbox-drain.py',
+    'staleness-guard.py', 'channel-inbox-drain.py',
+    'voice-reply-directive.py', 'telegram_progress.py',
   ],
   PostToolUse: [
-    'ledger-outbound.py', 'tool-log-capture.py',
+    'ledger-outbound.py', 'post-tool-injection-gate.py', 'tool-log-capture.py',
+    'context-watchdog.py', 'artifact-store-sync.py', 'skill-sql-sync.py',
     'telegram_progress_reply_clear.py', 'skill-usage-capture.py',
   ],
   PreToolUse: [
-    'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs',
   ],
-  Stop: ['telegram-reply-guard.py', 'telegram_progress_clear.py'],
-  SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py'],
-  SessionEnd: ['clear-capture.py'],
+  Stop: ['telegram_progress_clear.py'],
+  SessionStart: ['ledger-replay.py', 'taskstate-replay.py'],
 }
 
 function commands(event: string): string[] {

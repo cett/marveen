@@ -21,7 +21,6 @@ import { join } from 'node:path'
 import {
   ensureAgentHooks,
   ensureAgentStalenessHook,
-  ensureAgentProvenanceHook,
   ensureEgressGate,
   agentSettingsPath,
 } from '../web/agent-scaffold.js'
@@ -93,14 +92,6 @@ describe('#1305: scaffold hook writers refuse the main agent', () => {
     mainFileUntouched()
   })
 
-  it('ensureAgentProvenanceHook: main is a no-op, a sub-agent still gets the gate', () => {
-    expect(ensureAgentProvenanceHook(MAIN_AGENT_ID)).toBe(false)
-    mainFileUntouched()
-    expect(ensureAgentProvenanceHook(PROBE)).toBe(true)
-    expect(probeHookCommands().some((c) => c.includes('provenance-gate.py'))).toBe(true)
-    mainFileUntouched()
-  })
-
   it('ensureEgressGate: main is a no-op, a sub-agent still gets the gate', () => {
     expect(ensureEgressGate(MAIN_AGENT_ID)).toBe(false)
     mainFileUntouched()
@@ -113,7 +104,6 @@ describe('#1305: scaffold hook writers refuse the main agent', () => {
     rmSync(mainSettings, { force: true })
     ensureAgentHooks(MAIN_AGENT_ID)
     ensureAgentStalenessHook(MAIN_AGENT_ID)
-    ensureAgentProvenanceHook(MAIN_AGENT_ID)
     ensureEgressGate(MAIN_AGENT_ID)
     expect(existsSync(mainSettings)).toBe(false)
   })
