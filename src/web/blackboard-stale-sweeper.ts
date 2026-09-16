@@ -1,4 +1,4 @@
-import { getActiveBlackboardAgentIds, getAgentTier, markBlackboardStale } from '../db.js'
+import { getActiveBlackboardAgentIds, getAgentTier, markBlackboardStale, sweepStaleActivePlans } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { logger } from '../logger.js'
 
@@ -32,6 +32,15 @@ export function startBlackboardStaleSweeper(): NodeJS.Timeout {
       const marked = markBlackboardStale(thresholdsByAgent, defaultSec, assignedSec)
       if (marked > 0) {
         logger.info({ marked }, 'blackboard-stale-sweeper: marked stale rows')
+      }
+      // #886 plan-sweeper, runs alongside the BB sweep (design section 4):
+      // drop agent_active_plans bindings whose last_heartbeat has gone
+      // quiet for longer than PLAN_STALE_MIN, independent of blackboard
+      // per-tier thresholds above.
+      const planStaleMin = getEffectiveSettingValue('PLAN_STALE_MIN') as number
+      const plansSwept = sweepStaleActivePlans(planStaleMin)
+      if (plansSwept > 0) {
+        logger.info({ plansSwept }, 'blackboard-stale-sweeper: swept stale active-plan bindings')
       }
     } catch (err) {
       logger.error({ err }, 'blackboard-stale-sweeper: sweep failed')

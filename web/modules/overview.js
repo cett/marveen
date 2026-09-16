@@ -306,6 +306,20 @@ function bbSignalBadge(signal) {
     + '</span>'
 }
 
+// #886: inline chip for the agent's active Claude Plan binding, next to the
+// agent id -- not a separate view, see design section 3B.
+function bbPlanChip(activePlan) {
+  if (!activePlan) return ''
+  if (activePlan.planUnresolved) {
+    return '<span class="bb-plan-chip bb-plan-unresolved" title="' + escapeHtml(t('bb.plan.unresolved.tooltip')) + '">'
+      + escapeHtml('⚠ ' + activePlan.id) + '</span>'
+  }
+  const cls = activePlan.planType === 'team' ? 'bb-plan-team' : 'bb-plan-personal'
+  return '<span class="bb-plan-chip ' + cls + '" title="' + escapeHtml(activePlan.label) + '">'
+    + escapeHtml(activePlan.label)
+    + '</span>'
+}
+
 async function loadBlackboard() {
   const tbody = document.getElementById('ovBlackboardBody')
   if (!tbody) return
@@ -327,7 +341,7 @@ async function loadBlackboard() {
       const statusCls = BB_STATUS_CLASS[r.status] || ''
       const signalHtml = bbSignalBadge(r.signal)
       if (signalHtml) tr.classList.add('bb-row-flagged')
-      tr.innerHTML = '<td class="bb-agent">' + escapeHtml(r.agent_id) + '</td>'
+      tr.innerHTML = '<td class="bb-agent">' + escapeHtml(r.agent_id) + bbPlanChip(r.activePlan) + '</td>'
         + '<td><span class="bb-status ' + statusCls + '">' + escapeHtml(statusLabel) + '</span>'
         + (signalHtml ? ' ' + signalHtml : '') + '</td>'
         + '<td class="bb-summary">' + escapeHtml(r.summary) + '</td>'

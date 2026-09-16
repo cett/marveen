@@ -469,6 +469,21 @@
 .bb-signal.bb-signal-b  { background: var(--danger-bg, #ffeaea); color: var(--danger, #cc2222); } /* red -- stuck/lost */
 .bb-signal.bb-signal-ab { background: #ffeaea; color: #cc2222; }
 
+/* #886: active Claude Plan chip, shown after the agent id */
+.bb-plan-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+}
+.bb-plan-chip.bb-plan-personal   { background: var(--muted-bg, #f0f0f4); color: var(--muted, #666); }
+.bb-plan-chip.bb-plan-team       { background: var(--info-bg, #e0f0ff); color: var(--info, #0066cc); }
+.bb-plan-chip.bb-plan-unresolved { background: var(--warning-bg, #fff8e0); color: var(--warning, #a06000); }
+
 /* Row-level highlight so flagged rows catch the eye even before the badge */
 tr.bb-row-flagged { background: color-mix(in srgb, var(--warning, #f0ad4e) 8%, transparent); }
 
@@ -489,11 +504,13 @@ tr.bb-row-clickable:hover { background: var(--bg-hover, color-mix(in srgb, var(-
   :root:not([data-theme="light"]) .bb-signal.bb-signal-b  { background: #3d0000; color: #ff8080; }
   :root:not([data-theme="light"]) .bb-signal.bb-signal-ab { background: #3d0000; color: #ff8080; }
   :root:not([data-theme="light"]) tr.bb-row-flagged { background: color-mix(in srgb, #f0ad4e 6%, transparent); }
+  :root:not([data-theme="light"]) .bb-plan-chip.bb-plan-unresolved { background: #3d2f00; color: #ffd06a; }
 }
 :root[data-theme="dark"] .bb-signal.bb-signal-a  { background: #3d2f00; color: #ffd06a; }
 :root[data-theme="dark"] .bb-signal.bb-signal-b  { background: #3d0000; color: #ff8080; }
 :root[data-theme="dark"] .bb-signal.bb-signal-ab { background: #3d0000; color: #ff8080; }
 :root[data-theme="dark"] tr.bb-row-flagged { background: color-mix(in srgb, #f0ad4e 6%, transparent); }
+:root[data-theme="dark"] .bb-plan-chip.bb-plan-unresolved { background: #3d2f00; color: #ffd06a; }
 
 /* Subscription quota strip (overview page, above the stat cards). Deliberately
    flat and narrow: it is a glance, not a card, and must not compete with the

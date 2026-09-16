@@ -19,6 +19,7 @@ import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTra
 import { readContextGuardConfig } from './context-guard-store.js'
 import { createAgentMessage } from '../db.js'
 import { getWorkspaceDocUpdatedAtMs } from '../workspace-store.js'
+import { appendActivePlanMarkerToHandoff } from './claude-plan-handoff-marker.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -408,6 +409,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
+        // #886: carry the active Claude Plan binding across the restart --
+        // restartAgentProcess's stop step drops it from the DB, so it has to
+        // ride in the just-written HANDOFF.md to be recovered on the next
+        // launch (see claude-plan-handoff-marker.ts). Must run before
+        // performRestart, while the DB row this reads still exists.
+        appendActivePlanMarkerToHandoff(name)
         performRestart(name)
         try {
           createAgentMessage(

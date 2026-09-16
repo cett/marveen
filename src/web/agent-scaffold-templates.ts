@@ -6,7 +6,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, WEB_PORT,
-  OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR,
+  OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR, SCRIPTS_DIR,
 } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { agentDir, listAgentNames, readAgentCapabilities } from './agent-config.js'
@@ -40,17 +40,21 @@ export interface TemplateIdentity {
   botName: string
   ownerName: string
   webPort: number | string
+  scriptsDir?: string
 }
 
 // Pure substitution of the identity placeholders into a template body. Kept in
 // sync with the install scripts' (install-macos.sh / install-linux.sh) sed
 // substitutions, so a shipped template never seeds a foreign absolute path or
 // name into a user's tree. {{INSTALL_DIR}} and {{PROJECT_ROOT}} both denote the
-// install location.
+// install location. {{SCRIPTS_DIR}} defaults to the same value as
+// {{PROJECT_ROOT}} when scriptsDir is omitted, so existing callers (install
+// scripts, other TemplateIdentity literals) keep working unchanged.
 export function substituteTemplatePlaceholders(content: string, id: TemplateIdentity): string {
   return content
     .replaceAll('{{PROJECT_ROOT}}', id.projectRoot)
     .replaceAll('{{INSTALL_DIR}}', id.projectRoot)
+    .replaceAll('{{SCRIPTS_DIR}}', id.scriptsDir ?? id.projectRoot)
     .replaceAll('{{MAIN_AGENT_ID}}', id.mainAgentId)
     .replaceAll('{{BOT_NAME}}', id.botName)
     .replaceAll('{{OWNER_NAME}}', id.ownerName)
@@ -64,6 +68,7 @@ export function resolveTemplatePlaceholders(content: string): string {
     botName: BOT_NAME,
     ownerName: OWNER_NAME,
     webPort: WEB_PORT,
+    scriptsDir: SCRIPTS_DIR,
   })
 }
 

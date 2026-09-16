@@ -29,6 +29,10 @@ const mockUpsertBlackboard = vi.fn<(agent_id: unknown, data: unknown) => object>
 // tenant_agent_availability rows) -- matches the untouched-ctx.tenantId tests below.
 const mockResolveAgentTenant = vi.fn<(agent_id: unknown) => string>(() => 'default')
 const mockWriteAgentAuditLog = vi.fn()
+// #886: default to "no agent has an active plan binding" -- tests that care
+// about the activePlan field override this per-test.
+const mockListActivePlansForAgents = vi.fn<(agentIds: string[]) => Map<string, object>>(() => new Map())
+const mockDeactivatePlanForAgent = vi.fn()
 vi.mock('../db.js', () => ({
   getDb: vi.fn(() => ({ prepare: mockPrepare })),
   insertBlackboardHistory: (a: unknown) => mockInsertBlackboardHistory(a),
@@ -36,6 +40,8 @@ vi.mock('../db.js', () => ({
   upsertBlackboard: (agent_id: unknown, data: unknown) => mockUpsertBlackboard(agent_id, data),
   resolveAgentTenant: (agent_id: unknown) => mockResolveAgentTenant(agent_id),
   writeAgentAuditLog: (opts: unknown) => mockWriteAgentAuditLog(opts),
+  listActivePlansForAgents: (agentIds: string[]) => mockListActivePlansForAgents(agentIds),
+  deactivatePlanForAgent: (agentId: string) => mockDeactivatePlanForAgent(agentId),
 }))
 
 // ---------- settings-store mock (default thresholds) ----------
@@ -100,6 +106,21 @@ describe('GET /api/blackboard', () => {
     // ROW_A: active + updated_at 1700000000 far in the past (>24h) -> signal 'b'
     // ROW_B: done -> no signal
     expect(out.body).toEqual([{ ...ROW_A, signal: 'b' }, { ...ROW_B, signal: null }])
+  })
+
+  it('#886: includes activePlan for a row with a binding, omits it for a row without one', async () => {
+    mockPrepare
+      .mockReturnValueOnce(makeStmt([ROW_A, ROW_B]))
+      .mockReturnValueOnce(makeStmt([]))
+      .mockReturnValueOnce(makeStmt([]))
+    mockListActivePlansForAgents.mockReturnValueOnce(new Map([
+      ['agent-a', { id: 'team-x', label: 'Team X', planType: 'team', channelsAllowed: true, source: 'rotation', activatedAt: 1, lastHeartbeat: 1, planUnresolved: false }],
+    ]))
+    const { ctx, out } = makeCtx('GET', '/api/blackboard')
+    await tryHandleBlackboard(ctx)
+    const rows = out.body as { agent_id: string; activePlan?: unknown }[]
+    expect(rows.find((r) => r.agent_id === 'agent-a')?.activePlan).toMatchObject({ id: 'team-x', label: 'Team X' })
+    expect(rows.find((r) => r.agent_id === 'agent-b')).not.toHaveProperty('activePlan')
   })
 
   it('returns empty array when table is empty', async () => {
