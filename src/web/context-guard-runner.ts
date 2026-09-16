@@ -20,12 +20,14 @@ import { readContextGuardConfig } from './context-guard-store.js'
 import { createAgentMessage } from '../db.js'
 import { getWorkspaceDocUpdatedAtMs } from '../workspace-store.js'
 import { appendActivePlanMarkerToHandoff } from './claude-plan-handoff-marker.js'
+import { parseHHMM, dailyDueAtMs, restartDue } from '../auto-restart.js'
 import {
   decideGuard,
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
   IDLE_FLUSH_REASON_PREFIX,
+  DAILY_HANDOFF_REASON_PREFIX,
   INITIAL_GUARD_STATE,
   STALE_REFRESH_REASON_PREFIX,
   type GuardState,
@@ -53,6 +55,25 @@ const INTERVAL_MS = 300_000
 // request, and cooldown prevents restart loops within a run.
 const guardStates = new Map<string, GuardState>()
 const remoteSkipLogged = new Set<string>()
+
+// Per-agent "daily-handoff already fired today" timestamp (ms), in-memory. A
+// dashboard restart re-arms every agent at "never fired today", which is
+// safe -- the worst case is one extra daily-handoff cycle that day.
+const lastDailyHandoffAt = new Map<string, number>()
+
+/**
+ * Is agent `name`'s daily-handoff tier due at `nowMs`? Mirrors auto-restart's
+ * own daily-schedule check (parseHHMM + dailyDueAtMs + restartDue) so the two
+ * "fires once per day at HH:MM" mechanisms cannot silently drift apart.
+ */
+function isDailyHandoffDue(name: string, dailyTime: string, nowMs: number): boolean {
+  const minutes = parseHHMM(dailyTime)
+  if (minutes === null) return false
+  const d = new Date(nowMs)
+  const localMidnightMs = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const dueAtMs = dailyDueAtMs(localMidnightMs, minutes)
+  return restartDue(lastDailyHandoffAt.get(name) ?? null, nowMs, dueAtMs)
+}
 
 // Per-agent observed-context high-water mark, persisted across dashboard
 // restarts. calibrateLimit alone is memoryless: the moment the guard
@@ -158,6 +179,23 @@ export function staleRefreshHandoffPrompt(staleMinutes: number, handoffPath: str
     `tehát a mostani állapotot MÁR NEM fedi (döntések, verdiktek, üzenetváltások hiányoznak belőle). ` +
     `EGYETLEN dolgod ebben a körben: frissítsd a HANDOFF.md-t itt: ${handoffPath} úgy, hogy a legutóbbi munkát is tartalmazza ` +
     `(mi dőlt el, mi került leadásra, mi a következő lépés). Utána ÁLLJ MEG -- a rendszer friss kontextussal újraindít és ebből folytatod.`
+  )
+}
+
+/**
+ * Handoff request for the daily-handoff tier: a scheduled, predictable
+ * lifecycle restart, not a context emergency. Separate wording from
+ * handoffPrompt for the same reason as idleFlushHandoffPrompt -- "critical"
+ * would be false and would provoke a panicked mid-task abandonment this tier
+ * is not meant to cause.
+ */
+export function dailyHandoffPrompt(dailyTime: string, handoffPath: string): string {
+  return (
+    `[CONTEXT-GUARD] Napi rutin handoff (${dailyTime}). Nincs vészhelyzet. ` +
+    `EGYETLEN dolgod: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG -- a rendszer friss kontextussal újraindít.`
   )
 }
 
@@ -317,6 +355,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
+    dailyHandoffDue: cfg.dailyHandoffEnabled && cfg.dailyHandoffTime !== null
+      ? isDailyHandoffDue(name, cfg.dailyHandoffTime, nowMs)
+      : false,
   }
 
   const decision = decideGuard(state, inputs, cfg)
@@ -378,6 +419,17 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   try {
     switch (decision.action) {
       case 'request-handoff':
+        if (decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)) {
+          // Stamp at the decision, not at the eventual restart: by the time
+          // await-handoff resolves to a restart its reason is always a
+          // generic string (handoff written / handoff timeout / pane
+          // saturated -- see decideGuard), so DAILY_HANDOFF_REASON_PREFIX
+          // never reaches a 'restart' action to stamp from there. Stamping
+          // here also means a second sweep before the first one's I/O
+          // completes (e.g. sendPromptToSession failing below) still sees
+          // "already fired today" rather than issuing a second request.
+          lastDailyHandoffAt.set(name, nowMs)
+        }
         await sendPromptToSession(
           session,
           decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
@@ -389,7 +441,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
               // tiers, so the alarming percentage-based prompt would read "~0%
               // -- critical". The idle tier states the token count it measured.
               ? idleFlushHandoffPrompt(inputs.contextTokens ?? 0, cfg.idleMinutes, handoffPathFor(name))
-              : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+              : decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)
+                ? dailyHandoffPrompt(cfg.dailyHandoffTime ?? '', handoffPathFor(name))
+                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
         )
         break
       case 'restart': {

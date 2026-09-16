@@ -11,6 +11,7 @@ import {
   READY_TIMEOUT_MS,
   SATURATION_CONFIRM_SWEEPS,
   STALE_REFRESH_REASON_PREFIX,
+  DAILY_HANDOFF_REASON_PREFIX,
   type ContextGuardConfig,
   type GuardInputs,
   type GuardState,
@@ -36,6 +37,9 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     // helper's change from silently arming a new tier under the old tests.
     contextTokens: null,
     idleMs: null,
+    // Daily-handoff defaults to "not due", so every pre-existing case below
+    // describes an agent the daily-handoff tier cannot act on.
+    dailyHandoffDue: false,
     ...overrides,
   }
 }
@@ -623,6 +627,91 @@ describe('decideGuard -- idle-flush tier', () => {
   })
 })
 
+describe('decideGuard -- daily-handoff tier', () => {
+  // The daily tier alone: `enabled` false proves it does not lean on the
+  // proactive tiers, matching an operator who only wants a predictable daily
+  // restart, not the context-driven ones.
+  const DAILY_CFG: ContextGuardConfig = {
+    ...DEFAULT_CONTEXT_GUARD,
+    enabled: false,
+    dailyHandoffEnabled: true,
+    dailyHandoffTime: '04:00',
+  }
+
+  it('requests a handoff when due and the pane is idle', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: true, paneIdle: true }), DAILY_CFG)
+    expect(d.action).toBe('request-handoff')
+    expect(d.nextState.phase).toBe('await-handoff')
+    expect(d.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)).toBe(true)
+    expect(d.reason).toContain('04:00')
+  })
+
+  it('defers instead of acting when due but the pane is not idle', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: true, paneIdle: false }), DAILY_CFG)
+    expect(d.action).toBe('none')
+    expect(d.nextState.phase).toBe('idle')
+    expect(d.reason).toContain('daily-handoff')
+    // and the pane is the only reason: flip it and the same tick fires
+    expect(decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: true, paneIdle: true }), DAILY_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('does not act when not due', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: false, paneIdle: true }), DAILY_CFG)
+    expect(d.action).toBe('none')
+  })
+
+  it('never acts while switched off, even when the runner reports it due', () => {
+    const due = inputs({ dailyHandoffDue: true, paneIdle: true })
+    const off: ContextGuardConfig = { ...DAILY_CFG, dailyHandoffEnabled: false }
+    expect(decideGuard(INITIAL_GUARD_STATE, due, off).action).toBe('none')
+    // The switch is the only difference between silence and action here.
+    expect(decideGuard(INITIAL_GUARD_STATE, due, DAILY_CFG).action).toBe('request-handoff')
+  })
+
+  it('never acts when the schedule time is unset, even if dailyHandoffEnabled is true', () => {
+    const noTime: ContextGuardConfig = { ...DAILY_CFG, dailyHandoffTime: null }
+    expect(decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: true, paneIdle: true }), noTime).action)
+      .toBe('none')
+  })
+
+  it('yields to the wedge tiers when both would fire', () => {
+    const both: ContextGuardConfig = { ...DAILY_CFG, enabled: true }
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ pct: 0.95, dailyHandoffDue: true, paneIdle: true }),
+      both,
+    )
+    expect(d.action).toBe('request-handoff')
+    expect(d.reason).toContain('act threshold')
+    expect(d.reason).not.toContain(DAILY_HANDOFF_REASON_PREFIX)
+  })
+
+  it('sees the handoff sequence through even with the proactive tiers off', () => {
+    // Mirrors the idle-flush regression: await-handoff must not stand down
+    // just because `enabled` is false when a different tier (here,
+    // daily-handoff) is the one that started the sequence.
+    const awaiting: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: null,
+      deadlineMs: NOW + 60_000,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+      handoffStaleMinutes: null,
+    }
+    const d = decideGuard(awaiting, inputs({ handoffMtime: NOW, paneIdle: true }), DAILY_CFG)
+    expect(d.action).toBe('restart')
+    expect(d.nextState.phase).toBe('await-ready')
+  })
+
+  it('stands down when BOTH tiers and the saturation net are off', () => {
+    const allOff: ContextGuardConfig = { ...DAILY_CFG, enabled: false, saturationRestart: false }
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: true, paneIdle: true }), allOff)
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe('disabled')
+  })
+})
+
 describe('normalizeContextGuardConfig -- idle-flush fields', () => {
   it('defaults the tier OFF, so an existing store entry cannot switch it on', () => {
     // Every agent in store/context-guard.json predates these fields. Reading
@@ -651,5 +740,28 @@ describe('normalizeContextGuardConfig -- idle-flush fields', () => {
     expect(normalizeContextGuardConfig({ idleMinutes: 0 }).idleMinutes).toBe(20)
     expect(normalizeContextGuardConfig({ idleMinutes: -5 }).idleMinutes).toBe(20)
     expect(normalizeContextGuardConfig({ idleMinutes: 45 }).idleMinutes).toBe(45)
+  })
+})
+
+describe('normalizeContextGuardConfig -- daily-handoff fields', () => {
+  it('defaults the tier OFF and unset, so an existing store entry cannot switch it on', () => {
+    // Every agent in store/context-guard.json predates these fields.
+    const cfg = normalizeContextGuardConfig({ enabled: true, saturationRestart: true, actPct: 0.9 })
+    expect(cfg.dailyHandoffEnabled).toBe(false)
+    expect(cfg.dailyHandoffTime).toBeNull()
+  })
+
+  it('only an explicit true arms it', () => {
+    expect(normalizeContextGuardConfig({ dailyHandoffEnabled: 'yes' }).dailyHandoffEnabled).toBe(false)
+    expect(normalizeContextGuardConfig({ dailyHandoffEnabled: 1 }).dailyHandoffEnabled).toBe(false)
+    expect(normalizeContextGuardConfig({ dailyHandoffEnabled: true }).dailyHandoffEnabled).toBe(true)
+  })
+
+  it('parses a valid HH:MM and rejects garbage the same way auto-restart does', () => {
+    expect(normalizeContextGuardConfig({ dailyHandoffTime: '04:00' }).dailyHandoffTime).toBe('04:00')
+    expect(normalizeContextGuardConfig({ dailyHandoffTime: '23:59' }).dailyHandoffTime).toBe('23:59')
+    expect(normalizeContextGuardConfig({ dailyHandoffTime: '24:00' }).dailyHandoffTime).toBeNull()
+    expect(normalizeContextGuardConfig({ dailyHandoffTime: 'nope' }).dailyHandoffTime).toBeNull()
+    expect(normalizeContextGuardConfig({ dailyHandoffTime: 4 }).dailyHandoffTime).toBeNull()
   })
 })
