@@ -27,7 +27,7 @@ const hooks: Hooks = settings.hooks ?? {}
 // The full expected registration: event -> script basenames (order-free).
 // A change here is a REVIEWED decision about what runs in the main session,
 // never a side effect.
-// Fork deviation from upstream (#885 B3 review, Rick + Zack, kanban 1a512e21):
+// Fork deviation from upstream (#885 B3, reviewed and confirmed):
 // claude-usage.py, telegram-reply-directive.py, provenance-gate.py,
 // clear-replay.py and clear-capture.py (SessionEnd) don't exist as scripts on
 // this fork -- registering them would fail-closed every prompt/session event.

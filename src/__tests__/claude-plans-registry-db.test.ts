@@ -56,30 +56,30 @@ describe('claude_plans_registry mirror', () => {
 describe('agent_active_plans lifecycle', () => {
   it('activatePlanForAgent then getActivePlanForAgent round-trips label/type/channelsAllowed', () => {
     seedPlans('team-a')
-    activatePlanForAgent('zack', 'team-a', 'rotation')
-    const plan = getActivePlanForAgent('zack')
+    activatePlanForAgent('agent-a', 'team-a', 'rotation')
+    const plan = getActivePlanForAgent('agent-a')
     expect(plan).toMatchObject({ id: 'team-a', label: 'Team team-a', planType: 'team', channelsAllowed: true, source: 'rotation', planUnresolved: false })
   })
 
   it('re-activating the same agent replaces (not duplicates) its binding', () => {
     seedPlans('p1', 'p2')
-    activatePlanForAgent('zack', 'p1', 'manual')
-    activatePlanForAgent('zack', 'p2', 'rotation')
-    const plan = getActivePlanForAgent('zack')
+    activatePlanForAgent('agent-a', 'p1', 'manual')
+    activatePlanForAgent('agent-a', 'p2', 'rotation')
+    const plan = getActivePlanForAgent('agent-a')
     expect(plan?.id).toBe('p2')
     expect(plan?.source).toBe('rotation')
   })
 
   it('deactivatePlanForAgent removes the binding; a second call is a safe no-op', () => {
     seedPlans('p1')
-    activatePlanForAgent('zack', 'p1', 'manual')
-    deactivatePlanForAgent('zack')
-    expect(getActivePlanForAgent('zack')).toBeNull()
-    expect(() => deactivatePlanForAgent('zack')).not.toThrow()
+    activatePlanForAgent('agent-a', 'p1', 'manual')
+    deactivatePlanForAgent('agent-a')
+    expect(getActivePlanForAgent('agent-a')).toBeNull()
+    expect(() => deactivatePlanForAgent('agent-a')).not.toThrow()
   })
 
   it('activatePlanForAgent rejects an unknown plan id (this connection enforces PRAGMA foreign_keys)', () => {
-    expect(() => activatePlanForAgent('zack', 'ghost-plan', 'manual')).toThrow()
+    expect(() => activatePlanForAgent('agent-a', 'ghost-plan', 'manual')).toThrow()
   })
 
   // getActivePlanForAgent's planUnresolved fallback (LEFT JOIN, not INNER) is
@@ -92,12 +92,12 @@ describe('agent_active_plans lifecycle', () => {
 
   it('listActivePlansForAgents bulk-resolves several agents in one call, and skips agents with no binding', () => {
     seedPlans('p1')
-    activatePlanForAgent('zack', 'p1', 'manual')
-    activatePlanForAgent('boo', 'p1', 'rotation')
-    const map = listActivePlansForAgents(['zack', 'boo', 'jarvis'])
-    expect(map.has('zack')).toBe(true)
-    expect(map.has('boo')).toBe(true)
-    expect(map.has('jarvis')).toBe(false)
+    activatePlanForAgent('agent-a', 'p1', 'manual')
+    activatePlanForAgent('agent-b', 'p1', 'rotation')
+    const map = listActivePlansForAgents(['agent-a', 'agent-b', 'agent-c'])
+    expect(map.has('agent-a')).toBe(true)
+    expect(map.has('agent-b')).toBe(true)
+    expect(map.has('agent-c')).toBe(false)
   })
 
   it('listActivePlansForAgents returns an empty map for an empty input without querying', () => {
@@ -107,24 +107,24 @@ describe('agent_active_plans lifecycle', () => {
   it('sweepStaleActivePlans drops only bindings whose last_heartbeat exceeds the ttl', () => {
     seedPlans('p1')
     const nowSec = 1_000_000
-    activatePlanForAgent('zack', 'p1', 'manual')
-    // Backdate zack's heartbeat directly (activatePlanForAgent always stamps "now").
-    getDb().prepare('UPDATE agent_active_plans SET last_heartbeat = ? WHERE agent_id = ?').run(nowSec - 200 * 60, 'zack')
-    activatePlanForAgent('boo', 'p1', 'manual')
-    getDb().prepare('UPDATE agent_active_plans SET last_heartbeat = ? WHERE agent_id = ?').run(nowSec - 10 * 60, 'boo')
+    activatePlanForAgent('agent-a', 'p1', 'manual')
+    // Backdate agent-a's heartbeat directly (activatePlanForAgent always stamps "now").
+    getDb().prepare('UPDATE agent_active_plans SET last_heartbeat = ? WHERE agent_id = ?').run(nowSec - 200 * 60, 'agent-a')
+    activatePlanForAgent('agent-b', 'p1', 'manual')
+    getDb().prepare('UPDATE agent_active_plans SET last_heartbeat = ? WHERE agent_id = ?').run(nowSec - 10 * 60, 'agent-b')
 
     const swept = sweepStaleActivePlans(90, nowSec)
     expect(swept).toBe(1)
-    expect(getActivePlanForAgent('zack')).toBeNull()
-    expect(getActivePlanForAgent('boo')).not.toBeNull()
+    expect(getActivePlanForAgent('agent-a')).toBeNull()
+    expect(getActivePlanForAgent('agent-b')).not.toBeNull()
   })
 
   it('touchActivePlanHeartbeat refreshes last_heartbeat without touching source/activated_at', () => {
     seedPlans('p1')
-    activatePlanForAgent('zack', 'p1', 'rotation')
-    const before = getActivePlanForAgent('zack')!
-    touchActivePlanHeartbeat('zack')
-    const after = getActivePlanForAgent('zack')!
+    activatePlanForAgent('agent-a', 'p1', 'rotation')
+    const before = getActivePlanForAgent('agent-a')!
+    touchActivePlanHeartbeat('agent-a')
+    const after = getActivePlanForAgent('agent-a')!
     expect(after.source).toBe('rotation')
     expect(after.activatedAt).toBe(before.activatedAt)
   })
@@ -133,28 +133,28 @@ describe('agent_active_plans lifecycle', () => {
 describe('blackboard integration (design section 3A)', () => {
   it('upsertBlackboard status=done deactivates the agent plan binding', () => {
     seedPlans('p1')
-    activatePlanForAgent('zack', 'p1', 'manual')
-    upsertBlackboard('zack', { status: 'active', summary: 'working' })
-    expect(getActivePlanForAgent('zack')).not.toBeNull() // still active, not done yet
-    upsertBlackboard('zack', { status: 'done', summary: 'finished' })
-    expect(getActivePlanForAgent('zack')).toBeNull()
+    activatePlanForAgent('agent-a', 'p1', 'manual')
+    upsertBlackboard('agent-a', { status: 'active', summary: 'working' })
+    expect(getActivePlanForAgent('agent-a')).not.toBeNull() // still active, not done yet
+    upsertBlackboard('agent-a', { status: 'done', summary: 'finished' })
+    expect(getActivePlanForAgent('agent-a')).toBeNull()
   })
 
   it('a no-op done->done upsert does not error and stays deactivated', () => {
     seedPlans('p1')
-    activatePlanForAgent('zack', 'p1', 'manual')
-    upsertBlackboard('zack', { status: 'done', summary: 'finished' })
-    expect(() => upsertBlackboard('zack', { status: 'done', summary: 'finished' })).not.toThrow()
-    expect(getActivePlanForAgent('zack')).toBeNull()
+    activatePlanForAgent('agent-a', 'p1', 'manual')
+    upsertBlackboard('agent-a', { status: 'done', summary: 'finished' })
+    expect(() => upsertBlackboard('agent-a', { status: 'done', summary: 'finished' })).not.toThrow()
+    expect(getActivePlanForAgent('agent-a')).toBeNull()
   })
 
   it('markBlackboardStale deactivates the plan binding of every row it marks stale', () => {
     seedPlans('p1')
-    activatePlanForAgent('zack', 'p1', 'manual')
-    upsertBlackboard('zack', { status: 'active', summary: 'working' })
+    activatePlanForAgent('agent-a', 'p1', 'manual')
+    upsertBlackboard('agent-a', { status: 'active', summary: 'working' })
     const nowSec = Math.floor(Date.now() / 1000)
     markBlackboardStale({}, 60, 120, nowSec + 4000)
-    expect(findBlackboardRowByAgent('zack')?.status).toBe('stale')
-    expect(getActivePlanForAgent('zack')).toBeNull()
+    expect(findBlackboardRowByAgent('agent-a')?.status).toBe('stale')
+    expect(getActivePlanForAgent('agent-a')).toBeNull()
   })
 })
