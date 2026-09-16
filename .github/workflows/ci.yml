@@ -113,9 +113,16 @@ jobs:
         run: bash scripts/css-guard.sh
 
       - name: Cache TypeScript incremental build info
+        # dist/ must be cached together with .tsbuildinfo: a fresh runner has no
+        # dist/ at all, and if tsc's incremental state (restored from cache)
+        # believes the sources are already compiled, it emits nothing -- the
+        # later `cp -r src/migrations dist/migrations` then fails because dist/
+        # was never created. Caching both under the same key keeps them in sync.
         uses: actions/cache@v4
         with:
-          path: .tsbuildinfo
+          path: |
+            .tsbuildinfo
+            dist
           key: tsbuildinfo-${{ hashFiles('src/**/*.ts', 'tsconfig.json') }}
 
       - name: Build
