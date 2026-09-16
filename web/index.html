@@ -3846,6 +3846,30 @@
     </div>
   </div>
 
+  <!-- Modal: Memory Detail (read-only, opens on card click) -->
+  <div class="modal-overlay" id="memDetailOverlay">
+    <div class="modal" data-variant="wide" id="memDetailModal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div id="memDetailTierStrip" class="mem-detail-tier-strip"></div>
+        <div class="mem-detail-badges">
+          <span id="memDetailTierBadge" class="badge"></span>
+          <span id="memDetailAgent" class="mem-agent-badge"></span>
+          <span id="memDetailDate" class="mem-date"></span>
+          <span id="memDetailSalience" class="mem-salience" hidden></span>
+        </div>
+        <button class="modal-close" id="memDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="memDetailContent" class="mem-detail-content"></div>
+        <div id="memDetailKeywords" class="mem-keywords"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" data-variant="secondary" id="memDetailCloseBtn" data-i18n="common.btn.close">Bezár</button>
+        <button class="btn" data-variant="primary" id="memDetailEditBtn">&#9998; <span data-i18n="common.btn.edit">Szerkesztés</span></button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Memory Import -->
   <div class="modal-overlay" id="memImportOverlay">
     <div class="modal" data-variant="wide">
