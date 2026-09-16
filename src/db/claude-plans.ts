@@ -46,9 +46,11 @@ export interface ActivePlanForAgent {
   activatedAt: number
   lastHeartbeat: number
   /** True when plan_id no longer resolves in claude_plans_registry (the
-   *  registry mirror and the binding fell out of sync -- should be rare,
-   *  since deleteClaudePlanRow cascades explicitly, but a direct DB edit or
-   *  a missed mirror write could still produce it). */
+   *  registry mirror and the binding fell out of sync). Unreachable through
+   *  this module's own write paths -- this connection enforces `PRAGMA
+   *  foreign_keys`, so activatePlanForAgent() itself rejects an unknown
+   *  plan_id -- kept as a defensive read-time fallback for a row created by
+   *  a direct DB edit bypassing this module. */
   planUnresolved: boolean
 }
 
@@ -84,16 +86,17 @@ export function upsertClaudePlanRow(plan: {
 // Replace the whole registry mirror in one transaction -- mirrors the file
 // side's read-modify-write-full-array shape (writeClaudePlans), so the two
 // never partially diverge mid-write.
-// Explicit cascade (foreign_keys enforcement is off for this connection, as
-// elsewhere in this schema -- see 0041_confluence_source_type.sql): whatever
-// this leaves out of claude_plans_registry, agent_active_plans cannot keep
-// pointing at either -- run on every replace, not just an explicit
-// single-id delete, so a plan dropped by any write path (dashboard delete,
-// a future bulk import) can never leave a dangling binding.
-function cascadeDropOrphanedActivePlans(): void {
-  db.prepare('DELETE FROM agent_active_plans WHERE plan_id NOT IN (SELECT id FROM claude_plans_registry)').run()
-}
-
+// Explicit cascade, children-before-parent: this better-sqlite3 build
+// enforces `PRAGMA foreign_keys` ON by default (verified empirically -- the
+// "foreign_keys is off for this connection, as elsewhere in this schema"
+// comment on other tables, e.g. 0041_confluence_source_type.sql, predates
+// whatever dependency bump changed that default, or those tables simply
+// never hit an order that would surface it). Deleting the registry row
+// before its agent_active_plans children would throw SQLITE_CONSTRAINT_
+// FOREIGNKEY here, so -- unlike the older tables' comments suggest -- this
+// table's cascade has to run in FK-safe order for real, not just for
+// documentation. Whatever a replace leaves out of claude_plans_registry,
+// agent_active_plans cannot keep pointing at either.
 export function replaceClaudePlanRows(plans: {
   id: string
   label: string
@@ -104,17 +107,28 @@ export function replaceClaudePlanRows(plans: {
   expectedEmail?: string
 }[]): void {
   const tx = db.transaction((rows: typeof plans) => {
-    db.prepare('DELETE FROM claude_plans_registry').run()
+    // Upsert-in-place for rows that persist (never a delete+reinsert of the
+    // SAME id -- a persisting parent's transient absence within this
+    // transaction would itself violate FK for a still-valid child, since
+    // SQLite checks foreign keys per-statement, not deferred to COMMIT).
+    // Only rows genuinely dropped from the incoming list get deleted.
+    const incomingIds = new Set(rows.map((p) => p.id))
+    const existingIds = (db.prepare('SELECT id FROM claude_plans_registry').all() as { id: string }[]).map((r) => r.id)
+    const removedIds = existingIds.filter((id) => !incomingIds.has(id))
+    if (removedIds.length > 0) {
+      const placeholders = removedIds.map(() => '?').join(',')
+      db.prepare(`DELETE FROM agent_active_plans WHERE plan_id IN (${placeholders})`).run(...removedIds)
+      db.prepare(`DELETE FROM claude_plans_registry WHERE id IN (${placeholders})`).run(...removedIds)
+    }
     for (const plan of rows) upsertClaudePlanRow(plan)
-    cascadeDropOrphanedActivePlans()
   })
   tx(plans)
 }
 
 export function deleteClaudePlanRow(id: string): void {
   const tx = db.transaction((planId: string) => {
+    db.prepare('DELETE FROM agent_active_plans WHERE plan_id = ?').run(planId)
     db.prepare('DELETE FROM claude_plans_registry WHERE id = ?').run(planId)
-    cascadeDropOrphanedActivePlans()
   })
   tx(id)
 }
@@ -128,7 +142,11 @@ export function listClaudePlanRows(): ClaudePlanRegistryRow[] {
 // INSERT OR REPLACE, source-tagged (design section 4: manual / rotation /
 // handoff-recovery). Also refreshes activated_at + last_heartbeat, so an
 // agent re-activating the SAME plan it was already on still counts as a
-// fresh binding for staleness purposes.
+// fresh binding for staleness purposes. Throws if planId does not exist in
+// claude_plans_registry (this connection enforces `PRAGMA foreign_keys`) --
+// every call site in this codebase wraps this best-effort (try/catch), since
+// a mirror-write failure must never break the real operation it rides along
+// with (rotation, blackboard write, handoff recovery).
 export function activatePlanForAgent(agentId: string, planId: string, source: ActivePlanSource): void {
   db.prepare(`
     INSERT INTO agent_active_plans (agent_id, plan_id, activated_at, last_heartbeat, source)

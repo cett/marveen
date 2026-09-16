@@ -102,7 +102,15 @@ function seedClaudePlansRegistryMirror(): void {
         const activePlanByAgent = raw && typeof raw === 'object' ? raw.activePlanByAgent : null
         if (activePlanByAgent && typeof activePlanByAgent === 'object') {
           for (const [agentId, planId] of Object.entries(activePlanByAgent as Record<string, unknown>)) {
-            if (isNonEmptyString(planId)) activatePlanForAgent(agentId, planId, 'manual')
+            if (!isNonEmptyString(planId)) continue
+            // This connection enforces `PRAGMA foreign_keys` (see
+            // db/claude-plans.ts header) -- a plan id in the state file that
+            // no longer exists in the just-seeded registry (removed from
+            // claude-plans.json since the state file was last written) throws
+            // here. Per-entry try/catch so one stale reference cannot abort
+            // the whole seed (and therefore initDatabase()) on upgrade.
+            try { activatePlanForAgent(agentId, planId, 'manual') }
+            catch (err) { logger.warn({ err, agentId, planId }, 'claude-plans-registry mirror seed: skipping stale activePlanByAgent entry') }
           }
         }
       } catch (err) {
