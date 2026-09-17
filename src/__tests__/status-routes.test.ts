@@ -131,6 +131,25 @@ describe('GET /api/status', () => {
     expect(body().components).toEqual([{ name: 'Leaf', status: 'operational' }])
   })
 
+  it('de-duplicates leaf components that share a name across parent groups', async () => {
+    mockFetchSequence(
+      rssWith(''),
+      {
+        ok: true,
+        body: {
+          components: [
+            { name: 'API', status: 'operational', group: false },
+            { name: 'API', status: 'operational', group: false },
+            { name: 'API', status: 'degraded_performance', group: false },
+          ],
+        },
+      },
+    )
+    const { ctx, body } = makeCtx('GET', '/api/status')
+    await tryHandleStatus(ctx)
+    expect(body().components).toEqual([{ name: 'API', status: 'operational' }])
+  })
+
   it('returns empty components (not a failure) when the components fetch response is not ok', async () => {
     mockFetchSequence(rssWith(''), { ok: false })
     const { ctx, status, body } = makeCtx('GET', '/api/status')

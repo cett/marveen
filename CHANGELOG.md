@@ -20,6 +20,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- **[API]** `GET /api/status` no longer returns duplicate tiles for a service that Statuspage lists under more than one parent group -- leaf components are now de-duplicated by name (first occurrence wins) after group containers are dropped, so the Overview status grid shows each service once instead of repeating it.
 - The scheduler's downtime catch-up summary (`sendCatchUpSummary` in `src/web/schedule-runner.ts`) no longer sends a Telegram alert when the scheduler catches up or gives up on missed occurrences after downtime -- it now only logs the same information (task, gap, caught-up vs. stale) for the operator to check in the logs/dashboard.
 - The pending-retry-stuck alert (`sendPendingRetryAlert`, a task waiting past the retry threshold, e.g. because a target session is busy or a required MCP is down) and the task-timeout alert (`sendTaskTimeoutAlert`, a fired task/heartbeat running past its configured timeout) no longer send a Telegram message either -- both now only log the same information (task, agent, age, and the specific reason/threshold) for the operator to check in the logs/dashboard, following the same dashboard-only pattern as the catch-up summary above. The kanban-card-to-waiting side effect of the task-timeout alert is unchanged. Scheduled tasks' own result notifications are unaffected and keep going through Telegram as before.
 

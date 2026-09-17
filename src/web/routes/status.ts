@@ -48,8 +48,17 @@ export async function tryHandleStatus(ctx: RouteContext): Promise<boolean> {
         const compResp = await fetch('https://status.claude.com/api/v2/components.json', { signal: AbortSignal.timeout(10000) })
         if (compResp.ok) {
           const compData = await compResp.json() as { components?: Array<{ name: string; status: string; group?: boolean }> }
+          const seenNames = new Set<string>()
           components = (compData.components || [])
             .filter(c => !c.group) // drop group containers, keep leaf services
+            .filter(c => {
+              // the same service name can appear under multiple regional/parent
+              // groups (e.g. "API" listed once per group), which duplicated
+              // tiles in the status grid -- keep only the first occurrence.
+              if (seenNames.has(c.name)) return false
+              seenNames.add(c.name)
+              return true
+            })
             .map(c => ({ name: c.name, status: c.status }))
         }
       } catch (err) {
