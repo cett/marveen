@@ -15,7 +15,20 @@ const STATUS_COMPONENT_LABELS = {
   under_maintenance: () => t('status.comp.maintenance'),
 }
 
-export async function loadStatus() {
+// loadStatus() can be triggered more than once in quick succession at boot
+// (the overview page's enter handler firing multiple times before the first
+// fetch resolves) -- without a guard, each concurrent call independently
+// clears and re-appends the grid, so overlapping completions produced
+// duplicate service tiles. Share a single in-flight request instead.
+let inFlightStatusLoad = null
+
+export function loadStatus() {
+  if (inFlightStatusLoad) return inFlightStatusLoad
+  inFlightStatusLoad = loadStatusOnce().finally(() => { inFlightStatusLoad = null })
+  return inFlightStatusLoad
+}
+
+async function loadStatusOnce() {
   const overallEl = document.getElementById('statusOverall')
   const gridEl = document.getElementById('statusServiceGrid')
   const listEl = document.getElementById('statusIncidentList')
