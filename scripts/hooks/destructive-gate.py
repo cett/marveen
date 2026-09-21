@@ -61,6 +61,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -439,6 +440,29 @@ def _sub_scripts(toks, idx):
     return []
 
 
+def _is_coordinator_tmux_session():
+    """True only when THIS process is running inside the main agent's own
+    channels tmux session (e.g. "jarvis-channels"), never a sub-agent's
+    ("agent-<name>"). Deliberately NOT cwd-based: agent_id_from_cwd() falls
+    back to the last path component for any cwd outside <install> and
+    <install>/agents/<id> (e.g. a shared worktree under ~/worktrees/, which
+    the coordinator AND sub-agents both operate in for delegated dev work),
+    so cwd cannot tell the two apart there. The tmux session name is set once
+    at process launch and is invariant to `cd`, including into a worktree.
+    Fails closed (False) on any error -- no positive proof, no exemption.
+    """
+    try:
+        out = subprocess.run(
+            ['tmux', 'display-message', '-p', '#S'],
+            capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode != 0:
+            return False
+        return out.stdout.strip() == '%s-channels' % ledger_lib.main_agent_id()
+    except Exception:
+        return False
+
+
 def check_bash(cmd, agent_id=None, _depth=0):
     text = scannable(cmd)
     for seg in segments(text):
@@ -460,7 +484,7 @@ def check_bash(cmd, agent_id=None, _depth=0):
             if base in BANNED_CMDS:
                 block('A tiltott parancs: "%s" (a teljes szegmens: %s)' % (base, seg[:160]),
                       agent_id, 'Bash')
-            if base == 'git' and second == 'push':
+            if base == 'git' and second == 'push' and not _is_coordinator_tmux_session():
                 block('git push: a kozos repoba valo iras kifele mutato, visszafordithatatlan '
                       'muvelet. Commitolni szabad, pusholni nem.', agent_id, 'Bash')
 

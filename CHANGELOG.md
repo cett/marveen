@@ -9,6 +9,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/hooks/destructive-gate.py`: `git push` is now allowed from the coordinator's own tmux channels session (identified by tmux session name, not cwd -- a shared worktree cwd cannot tell the coordinator and a sub-agent apart), so the coordinator can still push a verified branch after the fleet-wide activation started blocking every agent's push, itself included, with no exception. All other agents, and every other banned operation for the coordinator too, remain blocked exactly as before; fails closed (still blocked) whenever tmux itself is unavailable or returns anything but the exact expected session name.
+
 <!-- changelog-auto-sha: d078a785f6a9cf0571552fd813dc71d1c507d05f -->
 
 ### Removed
