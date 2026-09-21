@@ -26,6 +26,7 @@ import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
 import { startChannelRequestWatcher, stopChannelRequestWatcher } from './web/channel-request-watcher.js'
 import { startStoreWatcher, stopStoreWatcher } from './store-watcher.js'
+import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { AGENTS_BASE_DIR } from './web/agent-config.js'
 import {
   acquirePortLock,
@@ -399,6 +400,7 @@ function releaseLock(): void {
 let decayInterval: NodeJS.Timeout | null = null
 let digestTimer: NodeJS.Timeout | null = null
 let digestInterval: NodeJS.Timeout | null = null
+let scheduledRunSnapshotSweepInterval: NodeJS.Timeout | null = null
 let heartbeatStarted = false
 let webServer: HttpServer | null = null
 let shuttingDown = false
@@ -418,6 +420,7 @@ const shutdown = (): void => {
     if (decayInterval) clearInterval(decayInterval)
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
+    if (scheduledRunSnapshotSweepInterval) clearInterval(scheduledRunSnapshotSweepInterval)
 
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
@@ -502,6 +505,12 @@ async function main(): Promise<void> {
   // Memory decay (24h cycle)
   runDecaySweep()
   decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
+
+  // Scheduled-task run snapshot retention: hourly cadence, 7-day age
+  // cutoff with a per-task floor of the most recent 20 (see
+  // web/scheduled-run-snapshot.ts).
+  sweepScheduledRunSnapshots()
+  scheduledRunSnapshotSweepInterval = setInterval(() => sweepScheduledRunSnapshots(), 60 * 60 * 1000)
   logger.info('Memoria leepulesi ciklus beallitva (24 oras)')
 
   // Daily digest at 23:00. Timer handles kept so shutdown can drop them.

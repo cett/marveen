@@ -15,8 +15,23 @@ export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 // or accidentally-huge POST body from exhausting the target agent's
 // token budget (and wedging the tmux send-keys paste detector). 50,000
 // characters is ~12k tokens of English, which is already far beyond any
-// legitimate schedule prompt -- real ones are usually <1k chars.
+// legitimate schedule prompt -- real ones are usually <1k chars. Doubles
+// as the scheduled-task size-guard ALERT threshold: past this point
+// delivery is fine (reference-based, see below), but the task itself is
+// large enough to warrant a direct owner notice.
 export const MAX_SCHEDULED_TASK_PROMPT_LEN = 50_000
+
+// Above this length the runner snapshots the full task body to disk
+// (scheduled-run-snapshot.ts) and sends only a short reference through tmux,
+// instead of pasting the whole body via send-keys -- the send-keys path is a
+// known source of size-driven corruption on large fires. Below it, the
+// existing inline path is unchanged.
+export const SCHEDULED_TASK_INLINE_MAX_CHARS = 1_500
+
+// Below this, no size-guard notice. At/above it: a one-per-task-per-day
+// logger.warn (the operator sees the growth trend before it reaches the
+// alert tier at MAX_SCHEDULED_TASK_PROMPT_LEN above).
+export const SCHEDULED_TASK_BODY_WARN_CHARS = 20_000
 
 export interface ScheduledTask {
   name: string
