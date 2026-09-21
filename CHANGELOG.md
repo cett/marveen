@@ -20,6 +20,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- `DELETE /api/mcp-catalog/:id/uninstall` now purges the removed connector from the in-memory MCP list cache instead of leaving it there until the 30s background refresh caught up, so the dashboard stops briefly showing an uninstalled connector as still installed.
 - **[API]** `GET /api/status` no longer returns duplicate tiles for a service that Statuspage lists under more than one parent group -- leaf components are now de-duplicated by name (first occurrence wins) after group containers are dropped, so the Overview status grid shows each service once instead of repeating it.
 - The Overview status grid could also duplicate its tiles client-side when `loadStatus()` (`web/modules/status-costs.js`) was triggered more than once in quick succession at boot -- each overlapping call independently cleared and re-appended the grid, so an interleaved completion order left extra copies on screen. Concurrent calls now share a single in-flight request instead of each starting their own fetch and render.
 - The scheduler's downtime catch-up summary (`sendCatchUpSummary` in `src/web/schedule-runner.ts`) no longer sends a Telegram alert when the scheduler catches up or gives up on missed occurrences after downtime -- it now only logs the same information (task, gap, caught-up vs. stale) for the operator to check in the logs/dashboard.

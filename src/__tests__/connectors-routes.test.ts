@@ -599,6 +599,12 @@ describe('DELETE /api/mcp-catalog/:id/uninstall', () => {
     await tryHandleConnectors(ctx)
     expect(out.body).toEqual({ ok: true, message: 'Eltávolítva' })
   })
+
+  it('purges the removed entry from the in-memory MCP list cache', async () => {
+    const { ctx } = makeCtx('DELETE', '/api/mcp-catalog/local-tool/uninstall')
+    await tryHandleConnectors(ctx)
+    expect(purgeFromMcpListCache).toHaveBeenCalledWith('local-tool')
+  })
 })
 
 // ── Vault ────────────────────────────────────────────────────────────────────
