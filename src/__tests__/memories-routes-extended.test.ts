@@ -219,6 +219,14 @@ describe('tryHandleMemories - extended paths', () => {
       expect(mockTouchMemoriesAccessed).toHaveBeenCalled()
     })
 
+    it('GET with q and read_only=1 does NOT stamp accessed memories', async () => {
+      mockTouchMemoriesAccessed.mockClear()
+      mockHybridSearch.mockResolvedValueOnce([{ id: 7, content: 'x', category: 'warm', agent_id: 'agent-a' }])
+      const { ctx } = makeCtx('GET', '/api/memories', undefined, { q: 'stamp test', agent: 'agent-a', read_only: '1' })
+      await tryHandleMemories(ctx)
+      expect(mockTouchMemoriesAccessed).not.toHaveBeenCalled()
+    })
+
     it('GET with deprecated agent_id param still works', async () => {
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { agent_id: 'agent-a' })
       const handled = await tryHandleMemories(ctx)

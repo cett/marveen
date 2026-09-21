@@ -111,6 +111,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'offset', hint: 'Invalid "offset" parameter' }, 400)
       return true
     }
+    // Explicit opt-out of the accessed_at side effect: an audit
+    // or inspection read still passes q for a real search, but must not count
+    // as usage for hot/warm/cold tier promotion. Plain listing (no q) never
+    // touches accessed_at anyway, so this flag only matters for search calls.
+    const readOnlyParam = url.searchParams.get('read_only')
+    const readOnly = readOnlyParam === '1' || readOnlyParam === 'true'
     // SQL-level category filter for the plain-listing branches, pushed down so
     // OFFSET/LIMIT paginate the already-filtered set. 'import' is a pseudo-tier
     // (agent_id = 'import', not a real category) handled separately below via
@@ -180,13 +186,14 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // just-accessed so accessed_at reflects real usage. Plain listing (no q,
     // e.g. the dashboard browsing all memories) is NOT a recall and must not
     // refresh accessed_at -- otherwise every poll would keep everything "fresh"
-    // and defeat staleness detection.
+    // and defeat staleness detection. read_only=1 opts a search out of this
+    // too, for audit/inspection tooling that queries without "using" results.
     //
     // Span reads are NOT auto-recorded here: fuzzy search results are noisy
     // (many matches, not all actually consumed). Callers that genuinely process
     // a memory -- heartbeats, direct fetches -- call POST /api/memories/read-event
     // explicitly with the ids they actually used.
-    if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
+    if (q && results.length && !readOnly) touchMemoriesAccessed(results.map(m => m.id))
 
     // Smart context injection (F2): when searching with a known agent, annotate
     // results with is_stale and surface updated-but-unread memories first.

@@ -188,6 +188,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -764,6 +765,17 @@ paths:
             `{ memories, workspace_docs }` -- see the two response schemas
             below. Omitting this param (the default) leaves every existing
             caller's response shape exactly as it was before this feature.
+        - name: read_only
+          in: query
+          schema:
+            type: string
+            enum: ["1", "true"]
+          description: >
+            Opt out of the accessed_at side effect a search (`q`) normally
+            has. Set to "1" or "true" for audit/inspection reads (e.g. a
+            dashboard browsing memories) that should not count as recall
+            usage for hot/warm/cold tier promotion. Has no effect on a plain
+            listing (no `q`), which never touches accessed_at anyway.
       responses:
         "200":
           description: >
