@@ -205,11 +205,24 @@ export default defineConfig({
       // negligible against the ~24.8k total. Raise only once the level
       // actually reached clearly supports it, never round up ahead of the
       // measurement. Ratchet up further as more steps land in this branch.
+      // And (this step) src/web/routes/agent-terminal.ts (68.61% -> 97.81%
+      // statements / 88.88% branches -- the SSE stream handler (pane/stream),
+      // keystroke-injection (/keys), and login-sequence (/login) endpoints had
+      // only error-shape tests previously; this step adds all success-path
+      // coverage for: terminal-input toggle GET/POST, SSE stream initiation
+      // and data transmission with close-handling, keystroke injection with
+      // literal and special keys and long-paste truncation, and login sequence
+      // stepping through multiple phases with the loginSequence mock and
+      // tmux-integration test). The stream-close and write-error paths remain
+      // uncovered by design -- fragile to deterministically mock without race
+      // conditions. Local baseline after this step: statements 69.46%, branches
+      // 68.17%, functions 67.71%, lines 70.81%. Floor raised to match the
+      // measured value minus a modest ~1.5pt buffer.
       thresholds: {
-        statements: 67,
-        branches: 66,
-        functions: 66,
-        lines: 68,
+        statements: 68,
+        branches: 67,
+        functions: 67,
+        lines: 69,
       },
     },
   },
