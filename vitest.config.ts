@@ -189,10 +189,22 @@ export default defineConfig({
       // 68.58%, branches 67.3%, functions 67.39%, lines 70.08%. Floor left
       // UNCHANGED: vault-ssh.ts is only 146 statements, a small increment
       // against the ~24.8k total -- the existing buffer (widened by the
-      // schedules.ts step above) comfortably covers it. Raise only once the
-      // level actually reached clearly supports it, never round up ahead of
-      // the measurement. Ratchet up further as more steps land in this
-      // branch.
+      // schedules.ts step above) comfortably covers it. And (this step)
+      // src/web/routes/settings.ts (60% -> 100% statements / 75% -> 100%
+      // branches -- a small (40-statement) generic settings-registry
+      // route. settings-routes-b12.test.ts already covered POST's three
+      // error shapes (setOverride-fails 500, missing-key 400, invalid-value
+      // 400) as mutation-guard tests; this step adds GET (including the
+      // secret:true row-filtering), POST's not_found (unknown key) and
+      // forbidden (secret key) guards, the success path (old-value lookup,
+      // setStoreWriteActor/logConfigChange side effects, actor defaulting to
+      // "dashboard" vs an explicit actor, requiresRestart passthrough), and
+      // the outer try/catch's malformed-JSON 500). Local baseline after this
+      // step: statements 68.65%, branches 67.34%, functions 67.46%, lines
+      // 70.15%. Floor left UNCHANGED: settings.ts is only 40 statements,
+      // negligible against the ~24.8k total. Raise only once the level
+      // actually reached clearly supports it, never round up ahead of the
+      // measurement. Ratchet up further as more steps land in this branch.
       thresholds: {
         statements: 67,
         branches: 66,
