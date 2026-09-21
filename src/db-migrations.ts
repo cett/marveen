@@ -87,13 +87,69 @@ function bootstrapLegacyInstall(db: Database.Database, baseline: MigrationFile):
   `).run(baseline.version, Math.floor(Date.now() / 1000), baseline.description, sha256(baseline.sql))
 }
 
+// ── pure add-column repair migrations ────────────────────────────────────────
+//
+// SQLite has no `ADD COLUMN IF NOT EXISTS` (unlike its own CREATE TABLE/INDEX
+// IF NOT EXISTS) -- re-adding a column that already exists raises "duplicate
+// column name" and aborts the whole script. A repair-style migration (e.g.
+// 0048, written to fix a column a table may or may not already have,
+// depending on how that particular install's table was first created) needs
+// to tolerate that. Re-running an ADD COLUMN statement is always safe to skip
+// on conflict -- it either adds the column or the column is already there,
+// never a data mutation -- so this tolerance is restricted to migration files
+// that consist ENTIRELY of ADD COLUMN statements, never applied to a mixed
+// migration where skipping a failed statement could silently skip something
+// that was not an idempotent no-op.
+
+const ADD_COLUMN_STATEMENT = /^ALTER TABLE\s+\w+\s+ADD COLUMN\s+/i
+
+// Strips `-- ...` line comments first -- a naive split on literal `;` would
+// otherwise treat a semicolon inside a comment sentence (migration file
+// headers here are prose, not code) as a statement boundary and corrupt the
+// next real statement. Safe for both the classification check below and the
+// actual exec calls in applyAddColumnsTolerantly: comments carry no
+// execution semantics.
+function splitStatements(sql: string): string[] {
+  const withoutComments = sql
+    .split('\n')
+    .map((line) => line.replace(/--.*$/, ''))
+    .join('\n')
+  return withoutComments
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+function isDuplicateColumnError(err: unknown): boolean {
+  return err instanceof Error && /duplicate column name/i.test(err.message)
+}
+
+function isPureAddColumnMigration(sql: string): boolean {
+  const statements = splitStatements(sql)
+  return statements.length > 0 && statements.every((s) => ADD_COLUMN_STATEMENT.test(s))
+}
+
+function applyAddColumnsTolerantly(db: Database.Database, sql: string): void {
+  for (const stmt of splitStatements(sql)) {
+    try {
+      db.exec(stmt)
+    } catch (err) {
+      if (!isDuplicateColumnError(err)) throw err
+    }
+  }
+}
+
 // ── apply a single migration ─────────────────────────────────────────────────
 
 function applyMigration(db: Database.Database, m: MigrationFile): void {
   // Wrap SQL + schema_version INSERT in one transaction. If the SQL throws, the
   // version row is never written; the error propagates to the caller.
   const tx = db.transaction(() => {
-    db.exec(m.sql)
+    if (isPureAddColumnMigration(m.sql)) {
+      applyAddColumnsTolerantly(db, m.sql)
+    } else {
+      db.exec(m.sql)
+    }
     db.prepare(`
       INSERT INTO schema_version (version, applied_at, description, checksum)
       VALUES (?, ?, ?, ?)
