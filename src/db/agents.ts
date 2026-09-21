@@ -124,6 +124,12 @@ export interface AgentMessage {
   // First time the router found the target session
   // absent for this (still-pending) row. Not a status change.
   no_session_at: number | null
+  // Free-form JSON text a delegator can attach to an assign:true
+  // message to carry config/context the recipient needs to actually pick the
+  // task up (no fixed schema enforced yet). Null for every caller that
+  // doesn't pass one -- see the assign:true-without-envelope warn in
+  // tryHandleMessages.
+  envelope: string | null
 }
 
 export function createAgentMessage(
@@ -133,11 +139,12 @@ export function createAgentMessage(
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
   tenantId: string = 'default',
+  envelope?: string | null,
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null)
   const id = Number(info.lastInsertRowid)
   try {
     writeAgentAuditLog({ agent_id: from, entity: 'message', action: 'create', entity_id: id, detail: { to, preview: content.slice(0, 80) } })
@@ -153,6 +160,7 @@ export function createAgentMessage(
     tenant_id: tenantId ?? null,
     refused_reason: null,
     no_session_at: null,
+    envelope: envelope ?? null,
   }
 }
 

@@ -190,6 +190,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -352,6 +353,13 @@ components:
         no_session_at:
           type: [integer, "null"]
           description: Unix timestamp (seconds) of the first time the router found the target session absent for this row, while it was still pending. Not a status change.
+        envelope:
+          type: [string, "null"]
+          description: >-
+            Free-form JSON text a delegator can attach (typically alongside
+            assign=true) to carry config/context the recipient needs to pick
+            the task up. No fixed schema enforced yet. Missing on an
+            assign=true message only logs a server-side warning, never blocks.
       example:
         id: 3715
         from_agent: "agent-b"
@@ -1517,6 +1525,11 @@ paths:
                     When true, opens an "assigned" blackboard row for the local recipient
                     if they have no active or blocked row. Use for deliberate task
                     delegation; omit for replies, notifications, and acknowledgements.
+                envelope:
+                  description: >-
+                    Optional handoff envelope: a string is stored verbatim, any other
+                    JSON value is stringified. No fixed schema enforced yet. Sending
+                    assign=true with no envelope only logs a server-side warning.
             example:
               from: "agent-b"
               to: "agent-a"

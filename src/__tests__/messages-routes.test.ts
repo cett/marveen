@@ -348,6 +348,89 @@ describe('POST /api/messages: assign:true delivery hook', () => {
   })
 })
 
+describe('POST /api/messages: handoff envelope', () => {
+  beforeEach(async () => {
+    const db = await import('../db.js')
+    const { isKnownAgent } = await import('../web/agent-config.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue(undefined)
+    vi.mocked(db.upsertBlackboard).mockClear()
+    vi.mocked(db.createAgentMessage).mockClear()
+    vi.mocked(isKnownAgent).mockReset()
+    vi.mocked(isKnownAgent).mockReturnValue(true)
+  })
+
+  it('a string envelope is passed through to createAgentMessage verbatim', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 60, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true, envelope: '{"branch":"feat/x"}',
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.createAgentMessage)).toHaveBeenCalledWith(
+      'agent-b', 'agent-c', 'handoff', null, null, 'default', '{"branch":"feat/x"}',
+    )
+  })
+
+  it('an object envelope is JSON.stringify-d before being passed through', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 61, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true, envelope: { branch: 'feat/x' },
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.createAgentMessage)).toHaveBeenCalledWith(
+      'agent-b', 'agent-c', 'handoff', null, null, 'default', JSON.stringify({ branch: 'feat/x' }),
+    )
+  })
+
+  it('assign:true with no envelope logs a warning but does not block the send', async () => {
+    const db = await import('../db.js')
+    const { logger } = await import('../logger.js')
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 62, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 62, from: 'agent-b', to: 'agent-c' }),
+      'assign:true message sent without an envelope',
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('assign:true with an envelope does not log the missing-envelope warning', async () => {
+    const db = await import('../db.js')
+    const { logger } = await import('../logger.js')
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 63, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true, envelope: 'branch=feat/x',
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.anything(), 'assign:true message sent without an envelope')
+    warnSpy.mockRestore()
+  })
+
+  it('assign omitted with no envelope does not log the missing-envelope warning', async () => {
+    const db = await import('../db.js')
+    const { logger } = await import('../logger.js')
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 64, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b', to: 'agent-c', content: 'just a note',
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.anything(), 'assign:true message sent without an envelope')
+    warnSpy.mockRestore()
+  })
+})
+
 describe('POST /api/messages: complete:true delivery hook', () => {
   beforeEach(async () => {
     const db = await import('../db.js')

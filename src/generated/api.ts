@@ -113,6 +113,8 @@ export interface AgentMessage {
   refused_reason?: string | null;
   /** Unix timestamp (seconds) of the first time the router found the target session absent for this row, while it was still pending. Not a status change. */
   no_session_at?: number | null;
+  /** Free-form JSON text a delegator can attach (typically alongside assign=true) to carry config/context the recipient needs to pick the task up. No fixed schema enforced yet. Missing on an assign=true message only logs a server-side warning, never blocks. */
+  envelope?: string | null;
 }
 
 export interface KanbanCard {
