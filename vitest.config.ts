@@ -143,14 +143,36 @@ export default defineConfig({
       // baseline after this step: statements 67.38%, branches 66.47%,
       // functions 66.32%, lines 68.95%. Floor left UNCHANGED:
       // vault-ssh-keys.ts is only 219 lines, a small increment against the
-      // ~24.5k total. Raise only once the level actually reached clearly
-      // supports it, never round up ahead of the measurement. Ratchet up
-      // further as more steps land in this branch.
+      // ~24.5k total. And (this step) src/web/routes/schedules.ts
+      // (56.8% -> 88.71% statements / 64.35% -> 83.33% branches -- the
+      // lowest-coverage route file left after step 15, and a decent-sized
+      // one (357 lines): GET /api/schedules/agents (main + sub-agent
+      // avatar-URL shape), the two AI-backed routes expand-questions and
+      // expand-prompt (missing-prompt 400, success parse/code-fence-strip,
+      // and the runAgent-throws 500 path for each), GET /api/schedules'
+      // file-mode branch (listScheduledTasksFromFiles when countSchedules
+      // is 0 -- previously only the DB-mode branch had tests), POST's
+      // request-body-too-large 413, PUT's full file-mode success/413/
+      // invalid-cron paths (previously only its not_found shape was
+      // tested) plus a DB-mode cross-tenant-blocked case, POST /toggle's
+      // file-mode on-disk-config branch (previously only DB-mode), POST
+      // /run's success path (previously only its failure shapes), and the
+      // previously fully-untested GET /pending, GET /:name/runs success,
+      // and DELETE /pending/:id success routes. Five accumulated steps
+      // (12-15) left the floor unchanged citing small file size each time,
+      // widening the gap between the enforced floor and the real
+      // measurement well past the usual ~1.5pt buffer -- ratchet it back
+      // down to a normal buffer now that a sizeable file closed most of
+      // that gap. Local baseline after this step: statements 68.35%,
+      // branches 67.03%, functions 67.35%, lines 69.89%. Raise only once
+      // the level actually reached clearly supports it, never round up
+      // ahead of the measurement. Ratchet up further as more steps land in
+      // this branch.
       thresholds: {
-        statements: 64,
-        branches: 63,
-        functions: 64,
-        lines: 65,
+        statements: 67,
+        branches: 66,
+        functions: 66,
+        lines: 68,
       },
     },
   },
