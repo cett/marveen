@@ -668,6 +668,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         } catch { /* ignore if not found anywhere */ }
       }
 
+      purgeFromMcpListCache(cliName)
       json(res, { ok: true, message: 'Eltávolítva' })
     } catch (err: any) {
       logger.error({ err }, 'Failed to uninstall MCP from catalog')
