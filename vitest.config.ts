@@ -167,7 +167,32 @@ export default defineConfig({
       // branches 67.03%, functions 67.35%, lines 69.89%. Raise only once
       // the level actually reached clearly supports it, never round up
       // ahead of the measurement. Ratchet up further as more steps land in
-      // this branch.
+      // this branch. And (this step, branched independently off develop at
+      // the same commit as the schedules.ts step above -- rebased here after
+      // that step merged first) src/web/routes/vault-ssh.ts (56.84% ->
+      // 95.89% statements / 55.31% -> 90.07% branches -- the SSH *server*
+      // inventory route, distinct from vault-ssh-keys.ts's key pool
+      // (step 15); previously untouched by any route-level test. Now covers
+      // GET's tenant scoping (non-admin own-tenant-only, admin global vs
+      // ?tenant= narrowed) and API shape, POST's required-field 400,
+      // slugify-derived id, the invalid_value 400 when no valid id can be
+      // derived from name or host, the id conflict 409, and the non-admin
+      // spoof-ignored / admin explicit tenant_id cases, PUT's cross-tenant
+      // 404, field patching, sshKeyId assign/unassign (including the
+      // not-found 404 for an unknown key), DELETE's cross-tenant 404 and
+      // success path, POST /generate-key's full flow (key generation,
+      // assignment, vault storage under the server's own tenant, username
+      // override, malformed-body fallback to the default username, and the
+      // ssh-keygen-failure 500), and GET /public-key's no-key-assigned 404,
+      // cross-tenant 404, and success path. Combined local baseline after
+      // both this step and the schedules.ts step above: statements
+      // 68.58%, branches 67.3%, functions 67.39%, lines 70.08%. Floor left
+      // UNCHANGED: vault-ssh.ts is only 146 statements, a small increment
+      // against the ~24.8k total -- the existing buffer (widened by the
+      // schedules.ts step above) comfortably covers it. Raise only once the
+      // level actually reached clearly supports it, never round up ahead of
+      // the measurement. Ratchet up further as more steps land in this
+      // branch.
       thresholds: {
         statements: 67,
         branches: 66,
