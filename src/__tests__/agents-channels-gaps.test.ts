@@ -302,7 +302,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
     it('POST approve channel request with requireMention=true and allowFromAll=false', async () => {
       const db = await import('../db.js')
       vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
-        { id: 1, channel_id: 'C123', channel_name: 'test-channel', user_id: 'U456', status: 'pending' },
+        { id: 1, agent: 'test-agent', channel_id: 'C123', channel_name: 'test-channel', user_id: 'U456', requested_at: Date.now(), status: 'pending' },
       ])
       const config = await import('../web/agent-config.js')
       vi.mocked(config.readAgentChannelProvider).mockReturnValueOnce('slack')
@@ -319,7 +319,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
     it('POST approve channel request with allowFromAll=true skips user filter', async () => {
       const db = await import('../db.js')
       vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
-        { id: 2, channel_id: 'C456', channel_name: 'public-channel', user_id: undefined, status: 'pending' },
+        { id: 2, agent: 'test-agent', channel_id: 'C456', channel_name: 'public-channel', user_id: null, requested_at: Date.now(), status: 'pending' },
       ])
       const config = await import('../web/agent-config.js')
       vi.mocked(config.readAgentChannelProvider).mockReturnValueOnce('slack')
@@ -336,7 +336,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
     it('POST approve channel request returns 400 when not slack provider', async () => {
       const db = await import('../db.js')
       vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
-        { id: 4, channel_id: 'C999', channel_name: 'test', user_id: 'U999', status: 'pending' },
+        { id: 4, agent: 'test-agent', channel_id: 'C999', channel_name: 'test', user_id: 'U999', requested_at: Date.now(), status: 'pending' },
       ])
       const config = await import('../web/agent-config.js')
       vi.mocked(config.readAgentChannelProvider).mockReturnValueOnce('telegram')
@@ -480,7 +480,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
     it('GET channel-requests for main agent (marveen) returns list', async () => {
       const db = await import('../db.js')
       vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
-        { id: 1, channel_id: 'C1', channel_name: 'ch1', user_id: 'U1', status: 'pending' },
+        { id: 1, agent: 'marveen', channel_id: 'C1', channel_name: 'ch1', user_id: 'U1', requested_at: Date.now(), status: 'pending' },
       ])
       const { ctx, out } = makeCtx('GET', '/api/agents/marveen/channel-requests')
       expect(await tryHandleAgentsChannels(ctx)).toBe(true)
