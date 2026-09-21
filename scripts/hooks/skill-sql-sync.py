@@ -86,6 +86,7 @@ def _upsert_skill(skill_id: str, name: str, content: str) -> None:
     is_global = 1 if skill_id.startswith("global/") else 0
     conn = sqlite3.connect(DB_PATH, timeout=5)
     try:
+        conn.execute("PRAGMA busy_timeout=5000")
         cur = conn.execute("SELECT id FROM skills WHERE id = ?", (skill_id,))
         if cur.fetchone():
             conn.execute(

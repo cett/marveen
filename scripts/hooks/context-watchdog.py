@@ -254,7 +254,6 @@ def write_token_row(conn, agent_id, session_id, ev, tool_name) -> bool:
             tenant_id,
         ),
     )
-    conn.commit()
     return True
 
 
@@ -616,6 +615,7 @@ def main():
 
     try:
         conn = sqlite3.connect(ledger_lib.db_path(), timeout=5)
+        conn.execute("PRAGMA busy_timeout=5000")
     except Exception:
         sys.exit(0)
 

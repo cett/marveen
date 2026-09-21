@@ -70,8 +70,15 @@ export function initIngestDb(dbPath = join(STORE_DIR, DB_FILENAME)): Database.Da
   // launchd units). The dashboard owns agent_messages, but if the coordinator
   // wins the race and tries to hand off before the dashboard's initDatabase
   // runs, the INSERT would fail. CREATE IF NOT EXISTS with the identical schema
-  // (db.ts) is a no-op when the dashboard already made it, and prevents the
-  // boot-race failure otherwise.
+  // (src/migrations/0001_baseline.sql plus every later ALTER TABLE on this
+  // table) is a no-op when the dashboard already made it, and prevents the
+  // boot-race failure otherwise. IMPORTANT: because this is IF NOT EXISTS, a
+  // coordinator-created table is never revisited by the dashboard's own
+  // CREATE TABLE migration -- only its later ALTER TABLE migrations still
+  // apply. Keep this column list byte-for-byte in sync with the canonical
+  // schema, or a coordinator-first boot permanently drops whatever column was
+  // only ever added via the baseline CREATE TABLE (see migration 0048, which
+  // repairs a DB that already drifted before this comment existed).
   handle.exec(`
     CREATE TABLE IF NOT EXISTS agent_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +89,15 @@ export function initIngestDb(dbPath = join(STORE_DIR, DB_FILENAME)): Database.Da
       result TEXT,
       created_at INTEGER NOT NULL,
       delivered_at INTEGER,
-      completed_at INTEGER
+      completed_at INTEGER,
+      origin_note TEXT,
+      trace_id TEXT,
+      span_id TEXT,
+      parent_span_id TEXT,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      refused_reason TEXT,
+      no_session_at INTEGER,
+      envelope TEXT
     )
   `)
 
