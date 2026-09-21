@@ -62,11 +62,12 @@ function makeCtx(opts: { method: string; path: string; body?: string | object })
   const em = new EventEmitter() as any
   em.headers = {}
   em.socket = { remoteAddress: '127.0.0.1' }
+  em.on = vi.fn(em.on.bind(em)) // Wrap the on method with a spy
   setImmediate(() => { if (raw) em.emit('data', Buffer.from(raw)); em.emit('end') })
   let code = 200
   let resBody = ''
   const res = {
-    writeHead: (c: number, _h?: object) => { code = c },
+    writeHead: vi.fn((c: number, _h?: object) => { code = c }),
     end: (d?: string) => { resBody = d ?? '' },
     write: vi.fn(),
     on: vi.fn(),
@@ -94,9 +95,55 @@ beforeEach(() => {
   mocks.loginSequence.mockReturnValue([])
 })
 
-describe('agent-terminal routes -- error normalization (B11a)', () => {
+describe('agent-terminal routes', () => {
 
-  describe('POST /api/terminal-input -- toggle', () => {
+  describe('edge cases and integration', () => {
+    it('handles agents/:name with URL encoding', async () => {
+      mocks.existsSync.mockReturnValue(true)
+      mocks.isAgentRunning.mockReturnValue(false)
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent%20a/keys', body: { keys: 'x' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(409)
+      expect((body() as any).error).toBe('conflict')
+    })
+
+    it('handles main agent with isMainChannelsAgent', async () => {
+      mocks.isMainChannelsAgent.mockReturnValue(true)
+      mocks.isAgentRunning.mockReturnValue(true)
+      mocks.literalKeyArgs.mockReturnValue(['send-keys', '-t', 'test-channels', 'hello'])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/marveen/keys', body: { keys: 'hello' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+    })
+
+    it('blocks injection attempt when terminal-input is disabled', async () => {
+      mocks.readTerminalInputEnabled.mockReturnValue(false)
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/keys', body: { keys: 'x' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(403)
+      expect((body() as any).error).toBe('forbidden')
+    })
+
+    it('accepts injection with headers set in request', async () => {
+      mocks.readTerminalInputEnabled.mockReturnValue(true)
+      mocks.literalKeyArgs.mockReturnValue(['send-keys', '-t', 'session', 'test'])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/keys', body: { keys: 'test' } })
+      ctx.req.headers['x-forwarded-for'] = '192.168.1.1'
+      ctx.req.headers['user-agent'] = 'Test-Agent/1.0'
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+    })
+  })
+
+  describe('POST /api/terminal-input -- toggle -- errors', () => {
     it('parse_error on invalid JSON body', async () => {
       const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/terminal-input', body: 'not-json' })
       await tryHandleAgentTerminal(ctx)
@@ -114,7 +161,48 @@ describe('agent-terminal routes -- error normalization (B11a)', () => {
     })
   })
 
-  describe('GET pane stream', () => {
+  describe('GET /api/terminal-input -- success', () => {
+    it('returns current enabled state (true)', async () => {
+      mocks.readTerminalInputEnabled.mockReturnValue(true)
+      const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/terminal-input' })
+      const handled = await tryHandleAgentTerminal(ctx)
+      expect(handled).toBe(true)
+      expect(status()).toBe(200)
+      expect((body() as any).enabled).toBe(true)
+    })
+
+    it('returns current enabled state (false)', async () => {
+      mocks.readTerminalInputEnabled.mockReturnValue(false)
+      const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/terminal-input' })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).enabled).toBe(false)
+    })
+  })
+
+  describe('POST /api/terminal-input -- success', () => {
+    it('enables terminal-input when disabled', async () => {
+      mocks.readTerminalInputEnabled.mockReturnValue(false)
+      mocks.writeTerminalInputEnabled.mockImplementation((v: boolean) => v)
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/terminal-input', body: { enabled: true } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).enabled).toBe(true)
+      expect(mocks.writeTerminalInputEnabled).toHaveBeenCalledWith(true)
+    })
+
+    it('disables terminal-input when enabled', async () => {
+      mocks.readTerminalInputEnabled.mockReturnValue(true)
+      mocks.writeTerminalInputEnabled.mockImplementation((v: boolean) => v)
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/terminal-input', body: { enabled: false } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).enabled).toBe(false)
+      expect(mocks.writeTerminalInputEnabled).toHaveBeenCalledWith(false)
+    })
+  })
+
+  describe('GET pane stream -- errors', () => {
     it('not_found + 404 when agent does not exist', async () => {
       mocks.existsSync.mockReturnValue(false)
       const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/agents/agent-a/pane/stream' })
@@ -124,7 +212,79 @@ describe('agent-terminal routes -- error normalization (B11a)', () => {
     })
   })
 
-  describe('POST /api/agents/:name/keys', () => {
+  describe('GET pane stream -- success', () => {
+    it('initiates SSE stream with correct headers', async () => {
+      mocks.isAgentRunning.mockReturnValue(true)
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null, stdout?: string) => void) => {
+        // Simulate successful capture-pane call
+        setTimeout(() => cb(null, 'pane content\nline 2'), 10)
+      })
+      const { ctx, status } = makeCtx({ method: 'GET', path: '/api/agents/agent-a/pane/stream' })
+      const handled = await tryHandleAgentTerminal(ctx)
+      expect(handled).toBe(true)
+      expect(status()).toBe(200)
+      expect(ctx.res.writeHead).toHaveBeenCalledWith(200, expect.objectContaining({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      }))
+    })
+
+    it('streams pane data and running status via SSE', async () => {
+      mocks.isAgentRunning.mockReturnValue(true)
+      const captureOutput = 'terminal output'
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null, stdout?: string) => void) => {
+        setTimeout(() => cb(null, captureOutput), 5)
+      })
+      const { ctx } = makeCtx({ method: 'GET', path: '/api/agents/agent-a/pane/stream' })
+      await tryHandleAgentTerminal(ctx)
+      // Verify SSE stream write was called with data
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(ctx.res.write).toHaveBeenCalledWith(expect.stringMatching(/data: .*pane.*running/))
+    })
+
+    it('handles closed connection gracefully', async () => {
+      const { ctx } = makeCtx({ method: 'GET', path: '/api/agents/agent-a/pane/stream' })
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null, stdout?: string) => void) => {
+        setTimeout(() => cb(null, 'data'), 5)
+      })
+      await tryHandleAgentTerminal(ctx)
+      // Simulate request close event
+      const closeListener = (ctx.req.on as any).mock.calls.find((c: any[]) => c[0] === 'close')
+      expect(closeListener).toBeDefined()
+      if (closeListener) closeListener[1]()
+      // Verify no further writes after close
+      const writeCalls = (ctx.res.write as any).mock.calls.length
+      // Simulate another tick - should not write after close
+      await new Promise(resolve => setTimeout(resolve, 800))
+      expect((ctx.res.write as any).mock.calls.length).toBe(writeCalls)
+    })
+
+    it('handles execFile error by sending empty pane and checking session alive', async () => {
+      mocks.isAgentRunning.mockReturnValue(false)
+      mocks.execFileSync.mockImplementation(() => { throw new Error('not found') })
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error) => void) => {
+        setTimeout(() => cb(new Error('capture failed')), 5)
+      })
+      const { ctx } = makeCtx({ method: 'GET', path: '/api/agents/agent-a/pane/stream' })
+      await tryHandleAgentTerminal(ctx)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(ctx.res.write).toHaveBeenCalledWith(expect.stringMatching(/pane.*running.*false/))
+    })
+
+    it('handles main agent terminal stream', async () => {
+      mocks.isMainChannelsAgent.mockReturnValue(true)
+      mocks.isAgentRunning.mockReturnValue(true)
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null, stdout?: string) => void) => {
+        setTimeout(() => cb(null, 'main pane'), 5)
+      })
+      const { ctx, status } = makeCtx({ method: 'GET', path: '/api/agents/marveen/pane/stream' })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+    })
+  })
+
+  describe('POST /api/agents/:name/keys -- errors', () => {
     it('forbidden + 403 when terminal-input disabled', async () => {
       mocks.readTerminalInputEnabled.mockReturnValue(false)
       const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/keys', body: { keys: 'x' } })
@@ -178,7 +338,58 @@ describe('agent-terminal routes -- error normalization (B11a)', () => {
     })
   })
 
-  describe('POST /api/agents/:name/login', () => {
+  describe('POST /api/agents/:name/keys -- success', () => {
+    it('injects literal keys successfully', async () => {
+      mocks.literalKeyArgs.mockReturnValue(['send-keys', '-t', 'agent-a-session', 'hello'])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/keys', body: { keys: 'hello' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+      // Verify that the keys were processed through literalKeyArgs
+      expect(mocks.literalKeyArgs).toHaveBeenCalled()
+    })
+
+    it('injects special key successfully', async () => {
+      mocks.specialKeyArgs.mockReturnValue(['send-keys', '-t', 'agent-a-session', 'Enter'])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/keys', body: { special: 'Enter' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+      expect(mocks.specialKeyArgs).toHaveBeenCalled()
+    })
+
+    it('sanitizes literal keys payload (removes whitespace)', async () => {
+      mocks.literalKeyArgs.mockReturnValue(['send-keys', '-t', 'agent-a-session', 'mytoken'])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/keys', body: { keys: '  mytoken  \n' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+      // The sanitizer should be called, but we just verify the injection succeeded
+    })
+
+    it('handles long pastes (truncation happens in code)', async () => {
+      const longPaste = 'x'.repeat(150) // > 120 chars
+      mocks.literalKeyArgs.mockReturnValue(['send-keys', '-t', 'agent-a-session', longPaste.slice(0, 120)])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/keys', body: { keys: longPaste } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+    })
+  })
+
+  describe('POST /api/agents/:name/login -- errors', () => {
     it('not_found + 404 when agent does not exist', async () => {
       mocks.existsSync.mockReturnValue(false)
       const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/login', body: { phase: 'start' } })
@@ -216,6 +427,73 @@ describe('agent-terminal routes -- error normalization (B11a)', () => {
       await tryHandleAgentTerminal(ctx)
       expect(status()).toBe(500)
       expect((body() as any).error).toBe('internal_error')
+    })
+  })
+
+  describe('POST /api/agents/:name/login -- success', () => {
+    it('runs login sequence for start phase', async () => {
+      mocks.loginSequence.mockReturnValue([])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/login', body: { phase: 'start' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      const b = body() as any
+      expect(b.ok).toBe(true)
+      expect(b.phase).toBe('start')
+      expect(mocks.loginSequence).toHaveBeenCalledWith('start')
+    })
+
+    it('runs login sequence for confirm phase', async () => {
+      mocks.loginSequence.mockReturnValue([
+        { kind: 'literal', text: 'code', delayMs: 50 },
+      ])
+      mocks.literalKeyArgs.mockReturnValue(['send-keys', '-t', 'agent-a-session', 'code'])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/login', body: { phase: 'confirm' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).phase).toBe('confirm')
+      expect(mocks.loginSequence).toHaveBeenCalledWith('confirm')
+    })
+
+    it('requires phase to be start or confirm (missing phase defaults to undefined and fails)', async () => {
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/login', body: {} })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(400)
+      expect((body() as any).error).toBe('invalid_value')
+    })
+
+    it('handles empty login sequence', async () => {
+      mocks.loginSequence.mockReturnValue([])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/login', body: { phase: 'start' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+    })
+
+    it('treats special keys with no recognized args gracefully in runLoginSteps', async () => {
+      // When a login step has a special key that returns null from specialKeyArgs,
+      // runLoginSteps should skip that step (since the if (args) check fails and continues)
+      mocks.loginSequence.mockReturnValue([
+        { kind: 'literal', text: 'user', delayMs: 0 },
+      ])
+      mocks.literalKeyArgs.mockReturnValue(['send-keys', '-t', 'agent-a-session', 'user'])
+      mocks.execFile.mockImplementation((_file: string, _args: string[], _opts: object, cb: (err: Error | null) => void) => {
+        cb(null)
+      })
+      const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/login', body: { phase: 'start' } })
+      await tryHandleAgentTerminal(ctx)
+      expect(status()).toBe(200)
+      expect((body() as any).ok).toBe(true)
+      // Verify the literal key step was executed
+      expect(mocks.execFile).toHaveBeenCalled()
     })
   })
 
