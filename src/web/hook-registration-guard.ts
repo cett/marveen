@@ -38,6 +38,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'channel-inbox-drain.py',
   'ledger-capture.py',
   'context-watchdog.py',
+  'destructive-gate.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

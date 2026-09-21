@@ -392,15 +392,19 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // through the main agent. (b) self-pace block -- no ScheduleWakeup/Cron*/Bash
   // self-injection. (c) egress gate -- WebFetch calls that are not on the known
   // API allowlist are hard-blocked and logged; arbitrary web content must go
-  // through the quarantine-reader sub-agent. The MAIN_AGENT_ID is exempt from
-  // (a) and (b) but NOT from (c) -- every agent can be hijacked via an injected
-  // WebFetch call, including the main one. Merge/deploy is NOT gated: the operator
+  // through the quarantine-reader sub-agent. (d) destructive-command gate --
+  // genuinely irreversible Bash commands (rm/mv/shred/sudo/mkfs/dd) and
+  // credential-path access are hard-blocked regardless of permission mode.
+  // The MAIN_AGENT_ID is exempt from (a) and (b) but NOT from (c) or (d) --
+  // every agent can be hijacked via an injected WebFetch call or a destructive
+  // command, including the main one. Merge/deploy is NOT gated: the operator
   // authorizes those autonomously (so test/deploy runs are never blocked); the
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
+  injectDestructiveGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -495,6 +499,76 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('egress-gate.mjs')),
     entry,
   ]
+}
+
+// Fail-closed python3 preamble for the destructive-command gate. Mirrors
+// hookCommand()'s node preamble, but destructive-gate.py runs under python3,
+// looked up on PATH rather than pinned to HOOK_NODE_BIN -- python3 is not a
+// bundled Node binary tied to this server's own process.execPath, so a
+// `command -v` PATH lookup (same form as the tracked project settings'
+// WebFetch/node preamble) is the portable equivalent. No interpreter -> BLOCK
+// (exit 2), never fail-open silence. Exported for unit tests.
+export function destructiveGateCommand(scriptPath: string): string {
+  const miss = 'destructive-gate: python3 not found -- DENY'
+  return `command -v python3 >/dev/null 2>&1 || { echo '${miss}' >&2; exit 2; }; python3 "${scriptPath}"`
+}
+
+// Idempotently wire the destructive-gate PreToolUse hook (hard-blocks
+// genuinely destructive Bash commands -- rm/mv/shred/sudo/mkfs/dd -- and
+// credential-path reads/writes). Applied to ALL agents including
+// MAIN_AGENT_ID -- same rationale as the egress gate: prompt injection or a
+// plain mistake can steer any agent into a destructive command, not only a
+// sub-agent's. Same dedupe shape as the other gate injectors.
+export function injectDestructiveGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = destructiveGateCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'destructive-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  // Drop any prior destructive-gate entry (respawn re-runs this) before
+  // re-adding, so the hook never accumulates duplicates; other PreToolUse
+  // entries are kept.
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('destructive-gate.py')),
+    entry,
+  ]
+}
+
+// Idempotent migration: ensure every agent's settings.json carries the
+// destructive-gate hook. Called at server startup (alongside
+// ensureAgentStalenessHook/ensureEgressGate) so the hook is applied to both
+// existing and newly-created agents without a full respawn. Returns true if
+// the file was updated, false if already wired. Same main-agent-exempt
+// rationale as ensureEgressGate: the main agent's copy is repo-shipped in
+// the tracked project .claude/settings.json (portable, fail-CLOSED
+// `command -v python3` form), not written here.
+export function ensureDestructiveGate(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureDestructiveGate')) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = destructiveGateCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'destructive-gate.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  // Idempotency: already wired only if an entry references the
+  // destructive-gate script AND already matches the current command form.
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('destructive-gate.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectDestructiveGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotent migration: ensure every agent's settings.json carries the egress
