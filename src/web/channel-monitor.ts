@@ -1050,21 +1050,35 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string; hin
   // The previous unconditional launchctl call was a silent no-op: launchctl
   // accepts a non-existent plist with exit 0, leaving the session untouched.
   if (process.platform !== 'linux' && existsSync(MAIN_CHANNELS_PLIST)) {
+    const label = `com.${SERVICE_ID}.channels`
+    // Probe: is the job actually registered in the launchd bootstrap, or did
+    // the plist survive on disk while launchd itself lost track of it
+    // (orphaned)? `launchctl list <label>` exits 0 only
+    // when registered (running or stopped); non-destructive, sub-second.
+    let isRegistered = false
     try {
-      execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-      execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
-      execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-      logger.warn(`Hard restart: launchctl reload of com.${SERVICE_ID}.channels`)
-      marveenLastHardRestart = Date.now()
-      writeRespawnStamp() // coordinate with the systemd-timer watchdog
-      return { ok: true }
-    } catch (err) {
-      logger.error({ err }, 'Hard restart failed (launchctl)')
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  }
+      execFileSync('/bin/launchctl', ['list', label], { timeout: 2000 })
+      isRegistered = true
+    } catch { /* orphaned -- not found in the launchd bootstrap */ }
 
-  if (process.platform !== 'linux') {
+    if (isRegistered) {
+      try {
+        execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
+        execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
+        execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
+        logger.warn(`Hard restart: launchctl reload of ${label}`)
+        marveenLastHardRestart = Date.now()
+        writeRespawnStamp() // coordinate with the systemd-timer watchdog
+        return { ok: true }
+      } catch (err) {
+        // Registered but the reload itself failed (e.g. ETIMEDOUT) -- fall
+        // through to respawn-pane below instead of giving up.
+        logger.warn({ err }, 'Hard restart: launchctl reload failed -- falling back to respawn-pane')
+      }
+    } else {
+      logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd service orphaned (plist exists but not registered in the bootstrap) -- skipping launchctl, respawn-pane directly')
+    }
+  } else if (process.platform !== 'linux') {
     logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd channels plist absent -- falling back to respawn-pane')
   }
 
