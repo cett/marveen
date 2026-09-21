@@ -85,6 +85,20 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out
 }
 
+// Optional caller-identity signal, adapted from upstream's agent-caller-ID
+// work: a fleet agent MAY send its own id in this header so a route can warn
+// (never block) when it doesn't match the identity a write claims to act as
+// (see memories.ts's ownerMismatch()). Never itself a source of truth for
+// auth/role/tenant -- those still come entirely from resolveAuth() above.
+export const AGENT_ID_HEADER = 'x-agent-id'
+
+export function resolveAgentIdHeader(req: http.IncomingMessage): string | undefined {
+  const raw = req.headers[AGENT_ID_HEADER]
+  const value = Array.isArray(raw) ? raw[0] : raw
+  const trimmed = value?.trim()
+  return trimmed ? trimmed.toLowerCase() : undefined
+}
+
 function isSsePaneStream(path: string, method: string): boolean {
   return method === 'GET' && /^\/api\/agents\/[^/]+\/pane\/stream$/.test(path)
 }

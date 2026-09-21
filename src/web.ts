@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
-import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
@@ -15,7 +15,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureGovernanceGateCommands, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureDestructiveGate, ensureGovernanceGateCommands, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -292,7 +292,8 @@ export function startWebServer(port = 3420): http.Server {
     try {
       if (deprecated) applyDeprecationHeaders(res)
 
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion, role, tenantId }
+      const agentId = resolveAgentIdHeader(req)
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion, role, tenantId, agentId }
 
       if (await dispatcher.dispatch(routeCtx)) return
 
@@ -605,6 +606,7 @@ export function startWebServer(port = 3420): http.Server {
       const patched: string[] = []
       const stalePatched: string[] = []
       const egressPatched: string[] = []
+      const destructivePatched: string[] = []
       const govPatched: string[] = []
       const watchdogPatched: string[] = []
       const pruned: string[] = []
@@ -618,6 +620,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureAgentHooks(agentName)) patched.push(agentName)
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
+        if (ensureDestructiveGate(agentName)) destructivePatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         // No-op for MAIN_AGENT_ID (already covered via the project-tracked
         // .claude/settings.json) -- see ensureContextWatchdogHook's own comment.
@@ -628,6 +631,7 @@ export function startWebServer(port = 3420): http.Server {
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
+      if (destructivePatched.length) logger.info({ patched: destructivePatched }, 'destructive-gate Bash hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
       if (watchdogPatched.length) logger.info({ patched: watchdogPatched }, 'context-watchdog PostToolUse hook backfilled into sub-agent settings.json')
     } catch (err) {

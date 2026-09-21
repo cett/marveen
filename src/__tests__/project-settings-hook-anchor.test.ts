@@ -45,7 +45,7 @@ const EXPECTED: Record<string, string[]> = {
     'telegram_progress_reply_clear.py', 'skill-usage-capture.py',
   ],
   PreToolUse: [
-    'channel-image-resize.sh', 'egress-gate.mjs',
+    'channel-image-resize.sh', 'egress-gate.mjs', 'destructive-gate.py',
   ],
   Stop: ['telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py'],
