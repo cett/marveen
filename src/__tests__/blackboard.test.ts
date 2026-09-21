@@ -439,6 +439,44 @@ describe('PATCH /api/blackboard/:id', () => {
     expect(out.status).toBe(200)
     expect(mockInsertBlackboardHistory).not.toHaveBeenCalled()
   })
+
+  it('PATCH to status=blocked persists blocked_by/blocked_reason on the row and in history', async () => {
+    const stmtGet1 = makeStmt({ ...ROW_A })
+    const stmtUpdate = makeStmt(undefined)
+    const blockedRow = { ...ROW_A, status: 'blocked', blocked_by: 'agent-c', blocked_reason: 'waiting on review' }
+    const stmtGet2 = makeStmt(blockedRow)
+    mockPrepare
+      .mockReturnValueOnce(stmtGet1)
+      .mockReturnValueOnce(stmtUpdate)
+      .mockReturnValueOnce(stmtGet2)
+    const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', {
+      status: 'blocked', blocked_by: 'agent-c', blocked_reason: 'waiting on review',
+    })
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(200)
+    expect((out.body as { row: typeof blockedRow }).row.blocked_by).toBe('agent-c')
+    expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'blocked', blocked_by: 'agent-c', blocked_reason: 'waiting on review', resolved_by: null })
+    )
+  })
+
+  it('PATCH moving a row out of blocked clears blocked_by/blocked_reason and records resolved_by', async () => {
+    const blockedRow = { ...ROW_A, status: 'blocked', blocked_by: 'agent-c', blocked_reason: 'waiting on review' }
+    const stmtGet1 = makeStmt(blockedRow)
+    const stmtUpdate = makeStmt(undefined)
+    const stmtGet2 = makeStmt({ ...ROW_A, status: 'active', blocked_by: null, blocked_reason: null })
+    mockPrepare
+      .mockReturnValueOnce(stmtGet1)
+      .mockReturnValueOnce(stmtUpdate)
+      .mockReturnValueOnce(stmtGet2)
+    const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'active', resolved_by: 'agent-d' })
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(200)
+    expect((out.body as { row: { blocked_by: string | null } }).row.blocked_by).toBeNull()
+    expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'active', blocked_by: null, blocked_reason: null, resolved_by: 'agent-d' })
+    )
+  })
 })
 
 describe('GET /api/blackboard/history', () => {

@@ -1180,6 +1180,12 @@ async function showCardDetail(card) {
       <span class="meta-label">${t('kanban.meta.deadline')}</span>
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString(getLang() === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
     </div>
+    ${card.status === 'waiting' && card.waiting_for ? `
+    <div class="meta-item">
+      <span class="meta-label">${t('kanban.meta.waiting_for')}</span>
+      <span class="meta-value">${escapeHtml(card.waiting_for)}</span>
+    </div>
+    ` : ''}
   `
 
   // Inline edit for status on detail view. HTML5 drag & drop is the only way to

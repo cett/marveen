@@ -314,7 +314,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
   it('assign:true skipped when recipient already has an active row', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'agent-c', task_ref: null, status: 'active', summary: 'already working', updated_at: 0, tenant_id: 'default',
+      id: 'abc', agent_id: 'agent-c', task_ref: null, status: 'active', summary: 'already working', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 45, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
@@ -361,7 +361,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
   it('complete:true closes the sender\'s assigned row to done', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'agent-b', task_ref: '#867', status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default',
+      id: 'abc', agent_id: 'agent-b', task_ref: '#867', status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 50, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
@@ -384,7 +384,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
   it('complete:true closes the sender\'s active row to done', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'active', summary: 'Working on it', updated_at: 0, tenant_id: 'default',
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'active', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 51, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
@@ -406,7 +406,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
   it('complete:true is a no-op when the sender row is already stale', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'stale', summary: 'Old task', updated_at: 0, tenant_id: 'default',
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'stale', summary: 'Old task', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 52, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
@@ -423,7 +423,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
   it('complete:true is a no-op when the sender row is already done', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'done', summary: 'Old task', updated_at: 0, tenant_id: 'default',
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'done', summary: 'Old task', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 53, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
@@ -455,7 +455,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
   it('complete omitted: no blackboard row touched', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default',
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 55, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {

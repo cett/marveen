@@ -341,8 +341,14 @@ async function loadBlackboard() {
       const statusCls = BB_STATUS_CLASS[r.status] || ''
       const signalHtml = bbSignalBadge(r.signal)
       if (signalHtml) tr.classList.add('bb-row-flagged')
+      // "blokkolt" badge carries blocked_by/blocked_reason as a tooltip
+      // when set -- the row's own title (bb.history.row_hint) stays on <tr>,
+      // this one is scoped to just the status badge.
+      const blockedTitle = r.status === 'blocked' && (r.blocked_by || r.blocked_reason)
+        ? ' title="' + escapeHtml([r.blocked_by, r.blocked_reason].filter(Boolean).join(': ')) + '"'
+        : ''
       tr.innerHTML = '<td class="bb-agent">' + escapeHtml(r.agent_id) + bbPlanChip(r.activePlan) + '</td>'
-        + '<td><span class="bb-status ' + statusCls + '">' + escapeHtml(statusLabel) + '</span>'
+        + '<td><span class="bb-status ' + statusCls + '"' + blockedTitle + '>' + escapeHtml(statusLabel) + '</span>'
         + (signalHtml ? ' ' + signalHtml : '') + '</td>'
         + '<td class="bb-summary">' + escapeHtml(r.summary) + '</td>'
         + '<td class="bb-ref">' + escapeHtml(r.task_ref || '') + '</td>'
@@ -392,12 +398,25 @@ async function openBlackboardHistory(agentId) {
       const statusCls = BB_STATUS_CLASS[r.status] || ''
       const item = document.createElement('div')
       item.className = 'bb-history-item'
+      // blocked_by/blocked_reason on the entry that recorded the block,
+      // resolved_by on whichever later entry actually closed it out.
+      const blockedText = (r.blocked_by || r.blocked_reason)
+        ? t('bb.history.blocked_by', { by: r.blocked_by || '?' }) + (r.blocked_reason ? ': ' + r.blocked_reason : '')
+        : ''
+      const blockedLine = blockedText
+        ? '<div class="bb-ref">' + escapeHtml(blockedText) + '</div>'
+        : ''
+      const resolvedLine = r.resolved_by
+        ? '<div class="bb-ref">' + escapeHtml(t('bb.history.resolved_by', { by: r.resolved_by })) + '</div>'
+        : ''
       item.innerHTML = '<div class="bb-history-item-head">'
         + '<span class="bb-status ' + statusCls + '">' + escapeHtml(statusLabel) + '</span>'
         + '<span class="bb-time">' + formatRelative(r.created_at * 1000) + '</span>'
         + '</div>'
         + '<div class="bb-summary">' + escapeHtml(r.summary) + '</div>'
         + (r.task_ref ? '<div class="bb-ref">' + escapeHtml(r.task_ref) + '</div>' : '')
+        + blockedLine
+        + resolvedLine
       listEl.appendChild(item)
     }
   } catch (_err) {

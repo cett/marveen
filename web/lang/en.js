@@ -1585,6 +1585,7 @@ window._i18n.en = {
   'kanban.meta.project':         'Project',
   'kanban.meta.deadline':        'Deadline',
   'kanban.meta.none':            '-- none --',
+  'kanban.meta.waiting_for':     'Waiting on',
   'kanban.meta.id_tooltip':      'Sequential number · hex identifier',
   'kanban.meta.edit_tooltip':    'Click to edit',
   'kanban.btn.breakdown':        'AI breakdown',
@@ -1896,6 +1897,8 @@ window._i18n.en = {
   'bb.history.title':    '{agent} history',
   'bb.history.empty':    'No history for this agent yet.',
   'bb.history.error':    'Error loading history.',
+  'bb.history.blocked_by': 'Blocked by {by}',
+  'bb.history.resolved_by': 'Resolved by {by}',
 
   // Error token translations
   'errors.not_found':                'Not found',

@@ -130,6 +130,13 @@ export interface KanbanCard {
   created_at?: number;
   updated_at?: number;
   dispatched_at?: number | null;
+  /** Who/why a status="waiting" card stalled getting here, when known. Mirrors the blackboard's blocked_by. */
+  blocked_by?: string | null;
+  blocked_reason?: string | null;
+  /** Free-text description of what the card is currently waiting on (e.g. "PR review"). Only meaningful while status="waiting". */
+  waiting_for?: string | null;
+  /** Who closed out a waiting card (moved it off "waiting"), for audit. Not cleared automatically. */
+  resolved_by?: string | null;
 }
 
 export interface KanbanComment {
@@ -166,6 +173,9 @@ export interface BlackboardRow {
   updated_at: number;
   /** Tenant this row is scoped to, derived from the agent's tenant_agent_availability assignment. "default" for fleet agents with no tenant assignment, "_multi_" for agents shared across 2+ tenants (visible to admin only). */
   tenant_id: string;
+  /** Who/why this row is stuck. Only ever non-null while status="blocked" -- cleared automatically the moment status moves away from "blocked". */
+  blocked_by?: string | null;
+  blocked_reason?: string | null;
 }
 
 export type BlackboardRowWithSignal = BlackboardRow & {
@@ -190,6 +200,11 @@ export interface BlackboardHistoryRow {
   created_at: number;
   /** Tenant this row is scoped to (see BlackboardRow.tenant_id). */
   tenant_id: string;
+  /** Snapshot of the live row's blocked_by at the time this transition was recorded. */
+  blocked_by?: string | null;
+  blocked_reason?: string | null;
+  /** Set only on the transition entry that actually resolved a blocked row (blocked -> non-blocked); null on every other entry. */
+  resolved_by?: string | null;
 }
 
 export interface SkillUsageSummaryRow {

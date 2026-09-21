@@ -478,6 +478,9 @@ export interface BlackboardHistoryRow {
   summary: string
   created_at: number
   tenant_id: string
+  blocked_by: string | null
+  blocked_reason: string | null
+  resolved_by: string | null
 }
 
 export function insertBlackboardHistory(entry: {
@@ -485,10 +488,16 @@ export function insertBlackboardHistory(entry: {
   task_ref: string | null
   status: string
   summary: string
+  blocked_by?: string | null
+  blocked_reason?: string | null
+  resolved_by?: string | null
 }): void {
   db.prepare(
-    'INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id) VALUES (?, ?, ?, ?, ?)'
-  ).run(entry.agent_id, entry.task_ref, entry.status, entry.summary, resolveAgentTenant(entry.agent_id))
+    'INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id, blocked_by, blocked_reason, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    entry.agent_id, entry.task_ref, entry.status, entry.summary, resolveAgentTenant(entry.agent_id),
+    entry.blocked_by ?? null, entry.blocked_reason ?? null, entry.resolved_by ?? null,
+  )
 }
 
 export function listBlackboardHistory(opts: {
@@ -506,7 +515,7 @@ export function listBlackboardHistory(opts: {
   const where = parts.length ? 'WHERE ' + parts.join(' AND ') : ''
   params.push(limit)
   return db.prepare(
-    `SELECT id, agent_id, task_ref, status, summary, created_at, tenant_id
+    `SELECT id, agent_id, task_ref, status, summary, created_at, tenant_id, blocked_by, blocked_reason, resolved_by
      FROM fleet_blackboard_history ${where}
      ORDER BY created_at DESC LIMIT ?`
   ).all(...params) as BlackboardHistoryRow[]
@@ -593,6 +602,8 @@ export interface BlackboardRow {
   summary: string
   updated_at: number
   tenant_id: string
+  blocked_by: string | null
+  blocked_reason: string | null
 }
 
 export function findBlackboardRowByAgent(agent_id: string): BlackboardRow | undefined {
@@ -618,30 +629,57 @@ export function resolveAgentTenant(agent_id: string): string {
 
 // Upsert a fleet blackboard row for agent_id, writing a history entry only
 // when the status, summary, or task_ref actually changes.
+//
+// blocked_by/blocked_reason are live-state fields: they only ever end up
+// non-null on the row when the resulting status is 'blocked' (falling back
+// to the previous value when the caller doesn't pass a new one while staying
+// blocked), and are force-cleared to null the moment status moves away from
+// 'blocked' -- a done/active row has no live block to describe. resolved_by
+// is never stored on the live row; it is only carried into the history
+// entry, and only on the actual blocked -> non-blocked transition.
 export function upsertBlackboard(
   agent_id: string,
-  data: { task_ref?: string | null; status?: string; summary: string },
+  data: {
+    task_ref?: string | null
+    status?: string
+    summary: string
+    blocked_by?: string | null
+    blocked_reason?: string | null
+    resolved_by?: string | null
+  },
 ): BlackboardRow {
   const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
   const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
   const tenant_id = resolveAgentTenant(agent_id)
+  const status = data.status ?? 'active'
+  const blockedBy = status === 'blocked' ? (data.blocked_by ?? existing?.blocked_by ?? null) : null
+  const blockedReason = status === 'blocked' ? (data.blocked_reason ?? existing?.blocked_reason ?? null) : null
   db.prepare(`
-    INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at, tenant_id)
-    VALUES (?, ?, ?, ?, ?, unixepoch(), ?)
+    INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at, tenant_id, blocked_by, blocked_reason)
+    VALUES (?, ?, ?, ?, ?, unixepoch(), ?, ?, ?)
     ON CONFLICT(agent_id) DO UPDATE SET
-      task_ref   = excluded.task_ref,
-      status     = excluded.status,
-      summary    = excluded.summary,
-      updated_at = unixepoch(),
-      tenant_id  = excluded.tenant_id
-  `).run(id, agent_id, data.task_ref ?? null, data.status ?? 'active', data.summary, tenant_id)
+      task_ref       = excluded.task_ref,
+      status         = excluded.status,
+      summary        = excluded.summary,
+      updated_at     = unixepoch(),
+      tenant_id      = excluded.tenant_id,
+      blocked_by     = excluded.blocked_by,
+      blocked_reason = excluded.blocked_reason
+  `).run(id, agent_id, data.task_ref ?? null, status, data.summary, tenant_id, blockedBy, blockedReason)
   const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
   const changed = !existing ||
     existing.status !== row.status ||
     existing.summary !== row.summary ||
-    (existing.task_ref ?? null) !== (row.task_ref ?? null)
+    (existing.task_ref ?? null) !== (row.task_ref ?? null) ||
+    (existing.blocked_by ?? null) !== (row.blocked_by ?? null) ||
+    (existing.blocked_reason ?? null) !== (row.blocked_reason ?? null)
   if (changed) {
-    insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary })
+    const resolving = existing?.status === 'blocked' && row.status !== 'blocked'
+    insertBlackboardHistory({
+      agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary,
+      blocked_by: row.blocked_by, blocked_reason: row.blocked_reason,
+      resolved_by: resolving ? (data.resolved_by ?? null) : null,
+    })
   }
   // #886: an agent reporting itself 'done' no longer has a live claim on its
   // plan binding either (design section 3A). Only on an actual transition,
