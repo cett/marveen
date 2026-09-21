@@ -7,6 +7,7 @@ import {
   markMessageDelivered,
   markMessageDone,
   markMessageFailed,
+  markMessageNoSession,
   markPendingFederatedFailed,
   setMessageResult,
   createAgentMessage,
@@ -57,6 +58,14 @@ const routerLoggedMisses: Set<number> = new Set()
 // the orchestrator, so a handoff failure is never silent.
 const routerInjectFailures: Map<number, number> = new Map()
 const MAX_INJECT_FAILURES = 3
+// Which pending messages already got their
+// no_session_at stamped for the CURRENT absence streak. Avoids a redundant
+// UPDATE every 5s tick while the target session stays absent (mirrors
+// routerLoggedMisses' log-once role, just for the DB write instead of the
+// log line). Cleared the moment the session is found again, so a later
+// absence streak stamps again -- markMessageNoSession's own COALESCE keeps
+// the first-ever timestamp regardless.
+const routerNoSessionStamped: Set<number> = new Set()
 
 /**
  * Pure decision: has a message exhausted its tmux-inject retries?
@@ -555,6 +564,7 @@ export async function runMessageRouterTick(): Promise<void> {
         notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
+        routerNoSessionStamped.delete(msg.id)
         continue
       }
 
@@ -563,8 +573,17 @@ export async function runMessageRouterTick(): Promise<void> {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session not running, will retry')
           routerLoggedMisses.add(msg.id)
         }
+        if (!routerNoSessionStamped.has(msg.id)) {
+          if (!markMessageNoSession(msg.id)) {
+            logger.warn({ id: msg.id }, 'markMessageNoSession affected 0 rows (status changed concurrently?)')
+          }
+          routerNoSessionStamped.add(msg.id)
+        }
         continue
       }
+      // Session found: end of any no_session absence streak for this row --
+      // let a future absence stamp again (see routerNoSessionStamped comment).
+      routerNoSessionStamped.delete(msg.id)
 
       if (!(await isSessionReadyForPrompt(session, host))) {
         // ---- session-stuck detection (card 2922e380 thread a) ----

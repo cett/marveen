@@ -2,7 +2,7 @@ import {
   createAgentMessage, getPendingMessages, listAgentMessages,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
-  markMessageDone, markMessageFailed, getAgentMessage,
+  markMessageDone, markMessageFailed, markMessageRefused, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
   COMPLETION_REPORT_PREFIX,
@@ -308,6 +308,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     let ok = false
     if (newStatus === 'done') ok = markMessageDone(id, result)
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
+    // An explicit executor refusal. Persisted as
+    // status='failed' + refused_reason (markMessageRefused), so `newStatus`
+    // here stays 'refused' only for the closeOtelSpan/notification branches
+    // below -- the stored row's status is 'failed' like any other terminal
+    // failure once getAgentMessage(id) re-reads it.
+    else if (newStatus === 'refused') ok = markMessageRefused(id, result)
 
     if (ok) {
       const done = getAgentMessage(id)

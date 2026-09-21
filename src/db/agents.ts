@@ -118,6 +118,12 @@ export interface AgentMessage {
   span_id: string | null
   parent_span_id: string | null
   tenant_id: string | null
+  // Set alongside status='failed' when the executor
+  // explicitly declined the task, rather than a delivery/execution error.
+  refused_reason: string | null
+  // First time the router found the target session
+  // absent for this (still-pending) row. Not a status change.
+  no_session_at: number | null
 }
 
 export function createAgentMessage(
@@ -145,6 +151,8 @@ export function createAgentMessage(
     span_id: traceCtx?.span_id ?? null,
     parent_span_id: traceCtx?.parent_span_id ?? null,
     tenant_id: tenantId ?? null,
+    refused_reason: null,
+    no_session_at: null,
   }
 }
 
@@ -284,6 +292,34 @@ export function markMessageDone(id: number, result?: string): boolean {
 export function markMessageFailed(id: number, error?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
+}
+
+// The executor's explicit "I won't do this" callback
+// (PUT .../messages/:id status="refused"). Stored as status='failed' (the
+// CHECK constraint is untouched) PLUS refused_reason, so a refusal reads as a
+// distinct case from a delivery/execution error without a schema-breaking
+// status rename or a client-side migration for every existing status='failed'
+// consumer.
+export function markMessageRefused(id: number, reason?: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(
+    "UPDATE agent_messages SET status = 'failed', refused_reason = ?, result = ?, completed_at = ? WHERE id = ?",
+  ).run(reason ?? null, reason ?? null, now, id).changes > 0
+}
+
+// Stamp the FIRST time the router finds the target
+// session absent for a still-pending row -- not a status change (the row can
+// still be delivered the moment the session reappears). COALESCE keeps the
+// earliest timestamp even if this is called again after an intervening
+// present period; the caller (message-router's routerNoSessionStamped Set)
+// also avoids redundant calls while a single absence streak continues.
+// status='pending' guard mirrors markMessageDelivered: a row a concurrent
+// path already closed must not be touched.
+export function markMessageNoSession(id: number): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(
+    "UPDATE agent_messages SET no_session_at = COALESCE(no_session_at, ?) WHERE id = ? AND status = 'pending'",
+  ).run(now, id).changes > 0
 }
 
 // Status-guarded fail for the federation bridge's terminal branches: it must
