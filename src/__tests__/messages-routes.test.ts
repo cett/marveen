@@ -11,6 +11,7 @@ vi.mock('../db.js', () => ({
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   markMessageDone: vi.fn().mockReturnValue(true),
   markMessageFailed: vi.fn().mockReturnValue(true),
+  markMessageRefused: vi.fn().mockReturnValue(true),
   getAgentMessage: vi.fn().mockReturnValue(null),
   closeOtelSpan: vi.fn(),
   findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
@@ -218,6 +219,20 @@ describe('POST /api/messages: error codes are snake_case machine tokens', () => 
     expect(out.body.error).toBe('not_found')
     expect(out.body.field).toBe('messageId')
     expect(out.body.hint).toContain('not found')
+  })
+
+  // PUT status="refused" is the executor's explicit
+  // decline callback -- routed through markMessageRefused, not markMessageFailed.
+  it('PUT /api/messages/:id status=refused calls markMessageRefused, not markMessageFailed', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.markMessageRefused).mockClear()
+    vi.mocked(db.markMessageFailed).mockClear()
+    const { ctx, out } = makeCtx('PUT', '/api/messages/42', { status: 'refused', result: 'not my job' })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.ok).toBe(true)
+    expect(db.markMessageRefused).toHaveBeenCalledWith(42, 'not my job')
+    expect(db.markMessageFailed).not.toHaveBeenCalled()
   })
 
   // Regression guard for the GET /api/messages unknown-param guard.

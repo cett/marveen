@@ -109,6 +109,10 @@ export interface AgentMessage {
   completed_at?: number | null;
   trace_id?: string | null;
   span_id?: string | null;
+  /** Set when status="failed" resulted from an explicit executor refusal (PUT status="refused"), not a delivery/execution error. */
+  refused_reason?: string | null;
+  /** Unix timestamp (seconds) of the first time the router found the target session absent for this row, while it was still pending. Not a status change. */
+  no_session_at?: number | null;
 }
 
 export interface KanbanCard {

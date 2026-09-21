@@ -187,6 +187,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -343,6 +344,12 @@ components:
           type: [string, "null"]
         span_id:
           type: [string, "null"]
+        refused_reason:
+          type: [string, "null"]
+          description: Set when status="failed" resulted from an explicit executor refusal (PUT status="refused"), not a delivery/execution error.
+        no_session_at:
+          type: [integer, "null"]
+          description: Unix timestamp (seconds) of the first time the router found the target session absent for this row, while it was still pending. Not a status change.
       example:
         id: 3715
         from_agent: "agent-b"
@@ -1545,7 +1552,7 @@ paths:
     put:
       tags: [messages]
       operationId: updateMessageStatus
-      summary: Mark a message done or failed (executor callback)
+      summary: Mark a message done, failed, or refused (executor callback)
       requestBody:
         required: true
         content:
@@ -1556,7 +1563,14 @@ paths:
               properties:
                 status:
                   type: string
-                  enum: [done, failed]
+                  enum: [done, failed, refused]
+                  description: >-
+                    "refused" is an explicit executor decline, stored as
+                    status="failed" plus refused_reason (result's text) --
+                    the underlying agent_messages.status CHECK constraint
+                    only allows pending/delivered/done/failed, so a
+                    refused row still reads as "failed" to any consumer
+                    filtering on status, distinguished by refused_reason.
                 result:
                   type: string
                   description: Short result summary (first 500 chars stored)
