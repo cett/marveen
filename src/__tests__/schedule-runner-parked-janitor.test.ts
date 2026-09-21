@@ -69,6 +69,14 @@ vi.mock('../web/telegram.js', () => ({
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   listScheduledTasks: () => mockListScheduledTasks(),
   SCHEDULED_TASKS_DIR: '/tmp/marveen-parked-janitor-no-tasks-dir',
+  // Size-guard constants: PARKED_TASK's prompt ('Do the thing.') is far
+  // below every threshold, so these values never actually gate anything in
+  // this suite -- they just need to exist so the real sizeGuardLevel/
+  // shouldSnapshotTaskBody default-parameter reads don't throw against this
+  // partial mock.
+  SCHEDULED_TASK_INLINE_MAX_CHARS: 1_500,
+  SCHEDULED_TASK_BODY_WARN_CHARS: 20_000,
+  MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
 }))
 
 vi.mock('../web/agent-process.js', () => ({
