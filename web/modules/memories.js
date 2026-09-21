@@ -278,6 +278,9 @@ export async function loadMemories() {
   if (currentMemTier) params.set('tier', currentMemTier)
   params.set('limit', String(MEM_LIMIT))
   params.set('offset', String(memOffset))
+  // This view is a human browsing/inspecting memories (including via its own
+  // search box), not a live recall -- never let it perturb accessed_at.
+  params.set('read_only', '1')
   const tenant = _memTenantGetter?.()
   if (tenant) params.set('tenant', tenant)
 

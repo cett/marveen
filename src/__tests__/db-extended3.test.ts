@@ -225,6 +225,27 @@ describe('updateKanbanCard branches', () => {
     const ok = updateKanbanCard(childId, { parent_id: null })
     expect(ok).toBe(true)
   })
+
+  it('round-trips blocked_by/blocked_reason/waiting_for/resolved_by', () => {
+    const cid = 'upd-wait-' + Date.now().toString(16)
+    createKanbanCard({ id: cid, title: 'Waiting card', status: 'planned' })
+    const ok = updateKanbanCard(cid, {
+      status: 'waiting', blocked_by: 'agent-a', blocked_reason: 'stuck on deploy', waiting_for: 'PR review',
+    })
+    expect(ok).toBe(true)
+    const card = getKanbanCard(cid)!
+    expect(card.status).toBe('waiting')
+    expect(card.blocked_by).toBe('agent-a')
+    expect(card.blocked_reason).toBe('stuck on deploy')
+    expect(card.waiting_for).toBe('PR review')
+    expect(card.resolved_by).toBeNull()
+
+    const closed = updateKanbanCard(cid, { status: 'done', resolved_by: 'agent-b' })
+    expect(closed).toBe(true)
+    const closedCard = getKanbanCard(cid)!
+    expect(closedCard.status).toBe('done')
+    expect(closedCard.resolved_by).toBe('agent-b')
+  })
 })
 
 // ---------------------------------------------------------------------------

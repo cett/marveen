@@ -188,6 +188,9 @@ components:
 
 
 
+
+
+
         hint:
           type: string
           description: >-
@@ -350,6 +353,13 @@ components:
         no_session_at:
           type: [integer, "null"]
           description: Unix timestamp (seconds) of the first time the router found the target session absent for this row, while it was still pending. Not a status change.
+        envelope:
+          type: [string, "null"]
+          description: >-
+            Free-form JSON text a delegator can attach (typically alongside
+            assign=true) to carry config/context the recipient needs to pick
+            the task up. No fixed schema enforced yet. Missing on an
+            assign=true message only logs a server-side warning, never blocks.
       example:
         id: 3715
         from_agent: "agent-b"
@@ -392,6 +402,17 @@ components:
           type: integer
         dispatched_at:
           type: [integer, "null"]
+        blocked_by:
+          type: [string, "null"]
+          description: Who/why a status="waiting" card stalled getting here, when known. Mirrors the blackboard's blocked_by.
+        blocked_reason:
+          type: [string, "null"]
+        waiting_for:
+          type: [string, "null"]
+          description: Free-text description of what the card is currently waiting on (e.g. "PR review"). Only meaningful while status="waiting".
+        resolved_by:
+          type: [string, "null"]
+          description: Who closed out a waiting card (moved it off "waiting"), for audit. Not cleared automatically.
       example:
         id: "6df6d262"
         seq: 201
@@ -478,6 +499,11 @@ components:
             tenant_agent_availability assignment. "default" for fleet agents
             with no tenant assignment, "_multi_" for agents shared across
             2+ tenants (visible to admin only).
+        blocked_by:
+          type: [string, "null"]
+          description: Who/why this row is stuck. Only ever non-null while status="blocked" -- cleared automatically the moment status moves away from "blocked".
+        blocked_reason:
+          type: [string, "null"]
       example:
         id: "b4cda374"
         agent_id: "agent-b"
@@ -536,6 +562,14 @@ components:
           type: string
           description: >-
             Tenant this row is scoped to (see BlackboardRow.tenant_id).
+        blocked_by:
+          type: [string, "null"]
+          description: Snapshot of the live row's blocked_by at the time this transition was recorded.
+        blocked_reason:
+          type: [string, "null"]
+        resolved_by:
+          type: [string, "null"]
+          description: Set only on the transition entry that actually resolved a blocked row (blocked -> non-blocked); null on every other entry.
       example:
         id: 1
         agent_id: "agent-a"
@@ -764,6 +798,17 @@ paths:
             `{ memories, workspace_docs }` -- see the two response schemas
             below. Omitting this param (the default) leaves every existing
             caller's response shape exactly as it was before this feature.
+        - name: read_only
+          in: query
+          schema:
+            type: string
+            enum: ["1", "true"]
+          description: >
+            Opt out of the accessed_at side effect a search (`q`) normally
+            has. Set to "1" or "true" for audit/inspection reads (e.g. a
+            dashboard browsing memories) that should not count as recall
+            usage for hot/warm/cold tier promotion. Has no effect on a plain
+            listing (no `q`), which never touches accessed_at anyway.
       responses:
         "200":
           description: >
@@ -1480,6 +1525,11 @@ paths:
                     When true, opens an "assigned" blackboard row for the local recipient
                     if they have no active or blocked row. Use for deliberate task
                     delegation; omit for replies, notifications, and acknowledgements.
+                envelope:
+                  description: >-
+                    Optional handoff envelope: a string is stored verbatim, any other
+                    JSON value is stringified. No fixed schema enforced yet. Sending
+                    assign=true with no envelope only logs a server-side warning.
             example:
               from: "agent-b"
               to: "agent-a"
@@ -1732,6 +1782,15 @@ paths:
                   type: string
                 project:
                   type: string
+                blocked_by:
+                  type: [string, "null"]
+                blocked_reason:
+                  type: [string, "null"]
+                waiting_for:
+                  type: [string, "null"]
+                  description: What the card is waiting on, meaningful while status="waiting" (see KanbanCard schema).
+                resolved_by:
+                  type: [string, "null"]
       responses:
         "200":
           description: Updated
@@ -2171,6 +2230,14 @@ paths:
                 task_ref:
                   type: [string, "null"]
                   description: Kanban card id (optional)
+                blocked_by:
+                  type: [string, "null"]
+                  description: Who/why the row is blocked. Only takes effect when status="blocked"; ignored (row's value stays null) otherwise.
+                blocked_reason:
+                  type: [string, "null"]
+                resolved_by:
+                  type: [string, "null"]
+                  description: Recorded into blackboard/history only on an actual blocked -> non-blocked transition; ignored otherwise.
             example:
               agent_id: "agent-b"
               task_ref: "6df6d262"
@@ -2227,6 +2294,13 @@ paths:
                   type: string
                   maxLength: 500
                 task_ref:
+                  type: [string, "null"]
+                blocked_by:
+                  type: [string, "null"]
+                  description: Same status="blocked"-only semantics as POST /blackboard.
+                blocked_reason:
+                  type: [string, "null"]
+                resolved_by:
                   type: [string, "null"]
       responses:
         "200":

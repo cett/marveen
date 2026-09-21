@@ -224,6 +224,14 @@ export function getDb(): Database.Database {
   return db
 }
 
+// Flushes the WAL and closes the handle cleanly on process shutdown
+// (SIGTERM/SIGINT), so a systemd/launchd stop or container stop doesn't
+// leave the WAL/journal in a torn state. Safe to call when no handle was
+// ever opened (early-shutdown-before-initDatabase path) or already closed.
+export function closeDatabase(): void {
+  try { db?.close() } catch { /* already closed, or never opened */ }
+}
+
 export function tryLoadVecExtension(): void {
   vecExtensionAttempted = true
   try {

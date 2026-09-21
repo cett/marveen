@@ -54,3 +54,19 @@ describe('markMessageNoSession', () => {
     expect(getAgentMessage(msg.id)?.no_session_at).toBeNull()
   })
 })
+
+// envelope is a plain additive column, same shape as
+// refused_reason/no_session_at above -- round-trip it against the real db.
+describe('createAgentMessage envelope', () => {
+  it('is null when not passed', () => {
+    const msg = createAgentMessage('agent-a', 'agent-b', 'no envelope here')
+    expect(msg.envelope).toBeNull()
+    expect(getAgentMessage(msg.id)?.envelope).toBeNull()
+  })
+
+  it('persists a passed envelope string on both the return value and the live row', () => {
+    const msg = createAgentMessage('agent-a', 'agent-b', 'with envelope', null, null, 'default', '{"branch":"feat/x"}')
+    expect(msg.envelope).toBe('{"branch":"feat/x"}')
+    expect(getAgentMessage(msg.id)?.envelope).toBe('{"branch":"feat/x"}')
+  })
+})

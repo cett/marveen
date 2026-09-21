@@ -31,6 +31,19 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // Live-state provenance for a status='waiting' card, mirroring
+  // fleet_blackboard's blocked_by/blocked_reason: who/why it stalled getting
+  // here, when known (kanban has no 'blocked' status, only 'waiting').
+  blocked_by: string | null
+  blocked_reason: string | null
+  // Free-text description of what the card is actually waiting on right now
+  // (e.g. "PR review", "external API access") -- distinct from blocked_by/
+  // blocked_reason above. Only meaningful while status === 'waiting'.
+  waiting_for: string | null
+  // Who closed out a waiting card (moved it off 'waiting'), for audit --
+  // mirrors fleet_blackboard_history.resolved_by. Not cleared automatically;
+  // a caller sets it explicitly on the transition, same as the blackboard.
+  resolved_by: string | null
 }
 
 export interface KanbanComment {
@@ -128,9 +141,13 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
 
   const f = { ...card, ...fields, depth: newDepth, updated_at: now }
   const ok = db.prepare(
-    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?
      WHERE id=?`
-  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  ).run(
+    f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
+    f.blocked_by, f.blocked_reason, f.waiting_for, f.resolved_by,
+    id,
+  ).changes > 0
 
   if (ok) {
     if (parentChanging) cascadeDepth(id, newDepth)

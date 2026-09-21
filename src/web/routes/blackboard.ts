@@ -123,24 +123,43 @@ function listBlackboard(limit = 10): BlackboardRow[] {
     .all(limit) as BlackboardRow[]
 }
 
-function patchBlackboard(id: string, data: { status?: string; summary?: string; task_ref?: string | null }): BlackboardRow | undefined {
+function patchBlackboard(id: string, data: {
+  status?: string
+  summary?: string
+  task_ref?: string | null
+  blocked_by?: string | null
+  blocked_reason?: string | null
+  resolved_by?: string | null
+}): BlackboardRow | undefined {
   const db = getDb()
   const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow | undefined
   if (!row) return undefined
   const status = data.status ?? row.status
   const summary = data.summary ?? row.summary
   const task_ref = Object.prototype.hasOwnProperty.call(data, 'task_ref') ? data.task_ref : row.task_ref
+  // Same live/history split as upsertBlackboard: blocked_by/blocked_reason
+  // only ever stick when the resulting status is 'blocked', and are cleared
+  // the moment it moves away from 'blocked'.
+  const blocked_by = status === 'blocked' ? (data.blocked_by ?? row.blocked_by ?? null) : null
+  const blocked_reason = status === 'blocked' ? (data.blocked_reason ?? row.blocked_reason ?? null) : null
   db.prepare(`
-    UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, updated_at = unixepoch() WHERE id = ?
-  `).run(status, summary, task_ref, id)
+    UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, blocked_by = ?, blocked_reason = ?, updated_at = unixepoch() WHERE id = ?
+  `).run(status, summary, task_ref, blocked_by, blocked_reason, id)
   const updated = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
   // Only record history when the patch actually changed something.
   const changed =
     updated.status !== row.status ||
     updated.summary !== row.summary ||
-    (updated.task_ref ?? null) !== (row.task_ref ?? null)
+    (updated.task_ref ?? null) !== (row.task_ref ?? null) ||
+    (updated.blocked_by ?? null) !== (row.blocked_by ?? null) ||
+    (updated.blocked_reason ?? null) !== (row.blocked_reason ?? null)
   if (changed) {
-    insertBlackboardHistory({ agent_id: updated.agent_id, task_ref: updated.task_ref, status: updated.status, summary: updated.summary })
+    const resolving = row.status === 'blocked' && updated.status !== 'blocked'
+    insertBlackboardHistory({
+      agent_id: updated.agent_id, task_ref: updated.task_ref, status: updated.status, summary: updated.summary,
+      blocked_by: updated.blocked_by, blocked_reason: updated.blocked_reason,
+      resolved_by: resolving ? (data.resolved_by ?? null) : null,
+    })
   }
   // #886: same "done means no live plan claim" rule as upsertBlackboard --
   // PATCH is the other write path that can flip a row to 'done'.
@@ -198,6 +217,9 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     const status = body.status ? String(body.status) : 'active'
     if (!VALID_STATUS.has(status)) { json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked|stale|assigned' }, 400); return true }
     const task_ref = body.task_ref ? String(body.task_ref) : null
+    const blocked_by = body.blocked_by ? String(body.blocked_by) : null
+    const blocked_reason = body.blocked_reason ? String(body.blocked_reason) : null
+    const resolved_by = body.resolved_by ? String(body.resolved_by) : null
     // Cross-tenant write guard: a non-admin caller may only post on behalf of
     // an agent that resolves to their own tenant. '_multi_' (shared) agents
     // can never be written by a non-admin caller either, since the sentinel
@@ -212,7 +234,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     }
     try {
       const hadExisting = !!getDb().prepare('SELECT 1 FROM fleet_blackboard WHERE agent_id = ?').get(agent_id)
-      const row = upsertBlackboard(agent_id, { task_ref, status, summary })
+      const row = upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by })
       try {
         writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })
       } catch { /* audit failure must not abort the write */ }
@@ -246,6 +268,9 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       status: body.status !== undefined ? String(body.status) : undefined,
       summary: body.summary !== undefined ? String(body.summary) : undefined,
       task_ref: Object.prototype.hasOwnProperty.call(body, 'task_ref') ? (body.task_ref as string | null) : undefined,
+      blocked_by: body.blocked_by !== undefined ? (body.blocked_by as string | null) : undefined,
+      blocked_reason: body.blocked_reason !== undefined ? (body.blocked_reason as string | null) : undefined,
+      resolved_by: body.resolved_by !== undefined ? (body.resolved_by as string | null) : undefined,
     })
     if (!updated) { json(res, { error: 'not_found', hint: 'not found' }, 404); return true }
     try {

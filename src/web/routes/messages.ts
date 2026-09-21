@@ -61,8 +61,15 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note, assign, complete } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string; assign?: boolean; complete?: boolean }
+    const { from, to, content, origin_note, assign, complete, envelope: envelopeRaw } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; assign?: boolean; complete?: boolean; envelope?: unknown }
+    // Free-form handoff envelope -- a string is stored verbatim
+    // (caller already serialized it), anything else is JSON.stringify'd so a
+    // plain object body still round-trips through the TEXT column.
+    const envelope: string | null =
+      envelopeRaw === undefined || envelopeRaw === null
+        ? null
+        : typeof envelopeRaw === 'string' ? envelopeRaw : JSON.stringify(envelopeRaw)
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'required', hint: 'from, to, and content are required' }, 400)
       return true
@@ -194,7 +201,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, effectiveTenantId)
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, effectiveTenantId, envelope)
+    // Warn-only (never blocking) signal for the config-loss bug
+    // class this closes -- an explicit assign:true delegation with no
+    // envelope attached is not an error, just worth noticing in the logs.
+    if (assign === true && envelope === null) {
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'assign:true message sent without an envelope')
+    }
     if (isPartnerTenant) {
       writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from), entity: 'message', action: 'create', entity_id: msg.id,
         detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist' } })

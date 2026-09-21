@@ -1586,6 +1586,7 @@ window._i18n.hu = {
   'kanban.meta.project':         'Projekt',
   'kanban.meta.deadline':        'Határidő',
   'kanban.meta.none':            '-- nincs --',
+  'kanban.meta.waiting_for':     'Mire vár?',
   'kanban.meta.id_tooltip':      'Futó sorszám · hex azonosító',
   'kanban.meta.edit_tooltip':    'Kattints a módosításhoz',
   'kanban.btn.breakdown':        'AI szétbont',
@@ -1896,6 +1897,8 @@ window._i18n.hu = {
   'bb.history.title':    '{agent} előzményei',
   'bb.history.empty':    'Nincs előzmény ehhez az ágenshez.',
   'bb.history.error':    'Hiba az előzmények betöltésekor.',
+  'bb.history.blocked_by': 'Blokkolta: {by}',
+  'bb.history.resolved_by': 'Feloldotta: {by}',
 
   // Error token translations
   'errors.not_found':                'Nem található',

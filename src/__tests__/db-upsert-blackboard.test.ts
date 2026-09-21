@@ -119,3 +119,47 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
   })
 })
 
+describe('upsertBlackboard blocked_by/blocked_reason/resolved_by', () => {
+  it('persists blocked_by/blocked_reason on the live row while status=blocked', () => {
+    const row = upsertBlackboard('agent-c', {
+      status: 'blocked', summary: 'stuck', task_ref: null, blocked_by: 'agent-d', blocked_reason: 'waiting on PR review',
+    })
+    expect(row.blocked_by).toBe('agent-d')
+    expect(row.blocked_reason).toBe('waiting on PR review')
+    const cur = findBlackboardRowByAgent('agent-c')!
+    expect(cur.blocked_by).toBe('agent-d')
+    expect(cur.blocked_reason).toBe('waiting on PR review')
+  })
+
+  it('ignores blocked_by/blocked_reason when status is not blocked', () => {
+    const row = upsertBlackboard('agent-c', {
+      status: 'active', summary: 'working', task_ref: null, blocked_by: 'agent-d', blocked_reason: 'should not stick',
+    })
+    expect(row.blocked_by).toBeNull()
+    expect(row.blocked_reason).toBeNull()
+  })
+
+  it('clears blocked_by/blocked_reason on the live row when moving out of blocked, and stamps resolved_by in history', () => {
+    upsertBlackboard('agent-c', { status: 'blocked', summary: 'stuck', task_ref: null, blocked_by: 'agent-d', blocked_reason: 'waiting on review' })
+    const resolved = upsertBlackboard('agent-c', { status: 'active', summary: 'unstuck', task_ref: null, resolved_by: 'agent-e' })
+
+    expect(resolved.blocked_by).toBeNull()
+    expect(resolved.blocked_reason).toBeNull()
+
+    const history = listBlackboardHistory({ agent_id: 'agent-c' }) as { status: string; blocked_by: string | null; resolved_by: string | null }[]
+    const blockedEntry = history.find(h => h.status === 'blocked')!
+    const activeEntry = history.find(h => h.status === 'active')!
+    expect(blockedEntry.blocked_by).toBe('agent-d')
+    expect(blockedEntry.resolved_by).toBeNull()
+    expect(activeEntry.resolved_by).toBe('agent-e')
+  })
+
+  it('does not stamp resolved_by when the row was never blocked to begin with', () => {
+    upsertBlackboard('agent-c', { status: 'active', summary: 'task-x', task_ref: null })
+    upsertBlackboard('agent-c', { status: 'done', summary: 'task-x', task_ref: null, resolved_by: 'agent-e' })
+
+    const history = listBlackboardHistory({ agent_id: 'agent-c' }) as { status: string; resolved_by: string | null }[]
+    expect(history.every(h => h.resolved_by === null)).toBe(true)
+  })
+})
+
