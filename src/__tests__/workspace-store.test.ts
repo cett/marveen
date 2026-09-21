@@ -237,7 +237,7 @@ describe('vectorSearchDocs', () => {
   })
 })
 
-describe('vectorSearchDocs -- tenant isolation (critical, #910)', () => {
+describe('vectorSearchDocs -- tenant isolation (critical)', () => {
   // Same 768-dim vector for every doc/query: cosine distance is irrelevant
   // here, this test only proves the ANN hit set's join back to
   // workspace_docs is scoped by tenant_id at the SQL level, not post-filter.
