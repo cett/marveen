@@ -399,6 +399,31 @@ describe('channel-monitor.ts -- restart-parity contract', () => {
     expect(src).not.toMatch(/bridge-enroll/)
   })
 
+  // A plist that survives on disk but fell out of the launchd bootstrap
+  // (orphaned) used to hang on `launchctl unload` until ETIMEDOUT, then give
+  // up entirely (`return { ok: false }`) instead of falling back to
+  // respawn-pane -- the same fallback a genuinely-absent plist already gets.
+  it('probes the launchd bootstrap (launchctl list) before unload/load, to tell orphaned from registered', () => {
+    const code = stripComments(readMonitorSrc())
+    expect(code).toMatch(/execFileSync\('\/bin\/launchctl',\s*\['list',\s*label\]/)
+  })
+
+  it('falls through to respawn-pane on a failed launchctl reload instead of returning ok:false', () => {
+    const code = stripComments(readMonitorSrc())
+    // Isolate hardRestartMarveenChannels's body up to its final return so a
+    // match against another function can never make this pass by accident.
+    const start = code.indexOf('export function hardRestartMarveenChannels')
+    expect(start).toBeGreaterThan(-1)
+    const body = code.slice(start, code.indexOf('\nfunction maybeRestartWedgedMainChannel', start))
+    // The registered-but-failed-reload catch block must not return early --
+    // it must fall through to the respawn-pane call below it.
+    const reloadCatch = body.slice(body.indexOf("execFileSync('/bin/launchctl', ['load'"))
+    const catchBlockEnd = reloadCatch.indexOf('} else {')
+    expect(catchBlockEnd).toBeGreaterThan(-1)
+    expect(reloadCatch.slice(0, catchBlockEnd)).not.toMatch(/return\s*\{\s*ok:\s*false/)
+    expect(body).toMatch(/respawnMarveenSessionFresh\(\)/)
+  })
+
   it('launchctl calls are gated on process.platform !== linux (not unconditional)', () => {
     const code = stripComments(readMonitorSrc())
     // All launchctl uses must appear after a platform check
