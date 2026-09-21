@@ -14,6 +14,7 @@ import {
   stampMessageTrace,
   upsertOtelSpan,
   type AgentMessage,
+  type InterAgentSpanAttributes,
 } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
@@ -256,7 +257,11 @@ function stampTraceOnMessage(msg: AgentMessage, nowMs: number): { trace_id: stri
   const stamped = stampMessageTrace(msg.id, trace_id, span_id, parent_span_id)
   if (stamped) {
     const operation = `${msg.from_agent}->${msg.to_agent}`
-    upsertOtelSpan({ trace_id, span_id, parent_span_id, agent_id: msg.from_agent, operation, start_ms: nowMs, attributes: null })
+    // Fill attributes so the Grafana/Tempo export
+    // (spansToOtelJson -> parseAttributes) carries which message this span
+    // belongs to, instead of every inter-agent span exporting bare.
+    const attributes: InterAgentSpanAttributes = { msg_id: msg.id, from: msg.from_agent, to: msg.to_agent }
+    upsertOtelSpan({ trace_id, span_id, parent_span_id, agent_id: msg.from_agent, operation, start_ms: nowMs, attributes: JSON.stringify(attributes) })
   }
   return { trace_id, span_id, parent_span_id }
 }

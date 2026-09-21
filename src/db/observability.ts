@@ -185,6 +185,18 @@ export interface OtelSpan {
   attributes: string | null
 }
 
+// The shape message-router's stampTraceOnMessage
+// JSON.stringify()s into an otel_spans row's `attributes` column for an
+// inter-agent-message span. Flat and string/number-only on purpose --
+// src/otel-exporter.ts's parseAttributes() only round-trips a flat
+// Record<string, string | number | boolean> into OTLP attributes, so a
+// nested value here would silently vanish from the Grafana/Tempo export.
+export interface InterAgentSpanAttributes {
+  msg_id: number
+  from: string
+  to: string
+}
+
 export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): void {
   db.prepare(`
     INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
