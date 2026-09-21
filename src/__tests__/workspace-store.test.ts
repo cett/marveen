@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { initDatabase, getDb } from '../db.js'
+import { generateEmbedding } from '../db/vector.js'
 import {
   saveWorkspaceDoc,
   getWorkspaceDocUpdatedAtMs,
@@ -10,6 +11,15 @@ import {
   hybridSearchDocs,
 } from '../workspace-store.js'
 
+// Wraps the real generateEmbedding so every existing test keeps hitting the
+// real (Ollama-less, always-null-in-CI) implementation by default -- only
+// tests that explicitly queue a mockResolvedValueOnce below get a fake
+// vector, to exercise the ANN path without a live Ollama.
+vi.mock('../db/vector.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../db/vector.js')>()
+  return { ...orig, generateEmbedding: vi.fn(orig.generateEmbedding) }
+})
+
 beforeAll(() => {
   initDatabase(':memory:')
 })
@@ -17,6 +27,7 @@ beforeAll(() => {
 beforeEach(() => {
   getDb().prepare('DELETE FROM workspace_docs').run()
   getDb().prepare('DELETE FROM kanban_cards').run()
+  getDb().prepare('DELETE FROM vec_workspace_docs').run()
 })
 
 // ---------------------------------------------------------------------------
@@ -223,6 +234,43 @@ describe('backfillWorkspaceDocs', () => {
 describe('vectorSearchDocs', () => {
   it('resolves to an empty array when no embedding can be generated (Ollama unavailable)', async () => {
     await expect(vectorSearchDocs('anything', { limit: 5 })).resolves.toEqual([])
+  })
+})
+
+describe('vectorSearchDocs -- tenant isolation (critical, #910)', () => {
+  // Same 768-dim vector for every doc/query: cosine distance is irrelevant
+  // here, this test only proves the ANN hit set's join back to
+  // workspace_docs is scoped by tenant_id at the SQL level, not post-filter.
+  const FAKE_EMBEDDING = new Array(768).fill(0).map((_, i) => Math.sin(i))
+
+  it('an ANN hit never crosses a tenant boundary even when both tenants embed identical content', async () => {
+    vi.mocked(generateEmbedding).mockResolvedValueOnce(FAKE_EMBEDDING)
+    const docA = saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'tenant-vec-a',
+      title: 'Vec doc A', content: 'vectorisolationprobe shared content', content_type: 'text', type: 'notes',
+    })
+    await storeWorkspaceDocEmbedding(docA.id, 'agent-a', 'tenant-vec-a', 'vectorisolationprobe shared content')
+
+    vi.mocked(generateEmbedding).mockResolvedValueOnce(FAKE_EMBEDDING)
+    const docB = saveWorkspaceDoc({
+      agent_id: 'agent-b', tenant_id: 'tenant-vec-b',
+      title: 'Vec doc B', content: 'vectorisolationprobe shared content', content_type: 'text', type: 'notes',
+    })
+    await storeWorkspaceDocEmbedding(docB.id, 'agent-b', 'tenant-vec-b', 'vectorisolationprobe shared content')
+
+    vi.mocked(generateEmbedding).mockResolvedValueOnce(FAKE_EMBEDDING)
+    const resultsA = await vectorSearchDocs('vectorisolationprobe', { tenantId: 'tenant-vec-a', limit: 10 })
+    expect(resultsA.map(r => r.id)).toEqual([docA.id])
+    expect(resultsA.every(r => r.tenant_id === 'tenant-vec-a')).toBe(true)
+
+    vi.mocked(generateEmbedding).mockResolvedValueOnce(FAKE_EMBEDDING)
+    const resultsB = await vectorSearchDocs('vectorisolationprobe', { tenantId: 'tenant-vec-b', limit: 10 })
+    expect(resultsB.map(r => r.id)).toEqual([docB.id])
+
+    // Admin (no tenantId) sees both -- by design, same contract as searchWorkspaceDocs.
+    vi.mocked(generateEmbedding).mockResolvedValueOnce(FAKE_EMBEDDING)
+    const resultsAdmin = await vectorSearchDocs('vectorisolationprobe', { limit: 10 })
+    expect(resultsAdmin.map(r => r.id).sort()).toEqual([docA.id, docB.id].sort())
   })
 })
 
