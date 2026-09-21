@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import type http from 'node:http'
 import { initDatabase, createDashboardUser } from '../db.js'
-import { resolveAuth, requiresAuth, parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
+import { resolveAuth, requiresAuth, parseCookies, SESSION_COOKIE_NAME, resolveAgentIdHeader } from '../web/auth-gate.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 
 // CRITICAL FLEET-REGRESSION SUITE.
@@ -29,6 +29,19 @@ beforeAll(() => {
 
 beforeEach(() => {
   _clearSessionCacheForTest()
+})
+
+describe('resolveAgentIdHeader (optional caller-identity signal, never auth-bearing)', () => {
+  it('returns the lowercased, trimmed header value', () => {
+    expect(resolveAgentIdHeader(mkReq({ 'x-agent-id': ' Zack ' }))).toBe('zack')
+  })
+  it('returns undefined when absent or empty', () => {
+    expect(resolveAgentIdHeader(mkReq({}))).toBeUndefined()
+    expect(resolveAgentIdHeader(mkReq({ 'x-agent-id': '   ' }))).toBeUndefined()
+  })
+  it('takes the first value when duplicated (Node folds repeated headers into an array)', () => {
+    expect(resolveAgentIdHeader(mkReq({ 'x-agent-id': ['jarvis', 'zack'] as unknown as string }))).toBe('jarvis')
+  })
 })
 
 describe('requiresAuth (gated-path predicate)', () => {

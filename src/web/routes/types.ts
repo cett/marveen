@@ -39,6 +39,11 @@ export interface RouteContext {
    *  Routes MUST check role === 'admin' for the bypass, not tenantId === null,
    *  because null is also the initial default for viewer users before assignment. */
   tenantId?: string | null
+  /** Optional self-reported caller identity from the `X-Agent-Id` request
+   *  header (see auth-gate.ts's resolveAgentIdHeader). Never a source of
+   *  auth/role/tenant truth -- a route may use it only to WARN (never block)
+   *  when a write's claimed owner doesn't match who actually sent it. */
+  agentId?: string
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

@@ -133,6 +133,33 @@ describe('tryHandleMemories', () => {
     expect(out.status).toBe(200)
   })
 
+  // Agent caller identity (X-Agent-Id, warn-only): never blocks, only flags.
+  describe('owner_mismatch (X-Agent-Id vs. claimed agent_id)', () => {
+    it('flags owner_mismatch when the header disagrees with the claimed agent_id, but still saves (200)', async () => {
+      const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'zack', content: 'note' })
+      ctx.agentId = 'jarvis'
+      await tryHandleMemories(ctx)
+      expect(out.status).toBe(200)
+      expect(out.body.ok).toBe(true)
+      expect(out.body.owner_mismatch).toBe(true)
+    })
+
+    it('does not flag owner_mismatch when the header agrees (case-insensitive)', async () => {
+      const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'Zack', content: 'note' })
+      ctx.agentId = 'zack'
+      await tryHandleMemories(ctx)
+      expect(out.status).toBe(200)
+      expect(out.body.owner_mismatch).toBeUndefined()
+    })
+
+    it('does not flag owner_mismatch when the header is absent (most fleet callers today)', async () => {
+      const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'zack', content: 'note' })
+      await tryHandleMemories(ctx)
+      expect(out.status).toBe(200)
+      expect(out.body.owner_mismatch).toBeUndefined()
+    })
+  })
+
   it('POST /api/memories returns 400 for invalid category', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories', { content: 'valid content', category: 'invalid_tier' })
     const handled = await tryHandleMemories(ctx)

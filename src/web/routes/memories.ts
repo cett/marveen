@@ -34,6 +34,14 @@ function containsSuspiciousContent(content: string): boolean {
   return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content))
 }
 
+// Warn-only signal (never blocking): true when the caller's self-reported
+// X-Agent-Id header (ctx.agentId) disagrees with the agent_id a write claims
+// to act as. A caller that omits the header (most fleet callers today) never
+// triggers this -- absence of the signal is not evidence of anything.
+function ownerMismatch(ctx: RouteContext, claimedAgentId: string): boolean {
+  return !!ctx.agentId && ctx.agentId !== claimedAgentId.toLowerCase()
+}
+
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -62,8 +70,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'category', hint: `Invalid category "${category}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
       return true
     }
+    const claimedAgentId = data.agent_id || MAIN_AGENT_ID
     const result = saveAgentMemory(
-      data.agent_id || MAIN_AGENT_ID,
+      claimedAgentId,
       data.content.trim(),
       category,
       data.keywords || undefined,
@@ -75,7 +84,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'memory', action: 'create', entity_id: result.id })
       }
     } catch { /* audit failure must not abort the save */ }
-    json(res, { ok: true, id: result.id })
+    const mismatch = ownerMismatch(ctx, claimedAgentId)
+    if (mismatch) {
+      logger.warn({ headerAgentId: ctx.agentId, claimedAgentId }, 'memories: X-Agent-Id header disagrees with claimed owner')
+    }
+    json(res, { ok: true, id: result.id, ...(mismatch ? { owner_mismatch: true } : {}) })
     return true
   }
 
