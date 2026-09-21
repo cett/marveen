@@ -56,8 +56,14 @@ function makeCtx(method: string = 'GET', path: string = '/api/test', auth?: { ki
 }
 
 describe('security routes (bridge enrollment)', () => {
+  // resetAllMocks (not clearAllMocks): clearAllMocks only wipes call history,
+  // it leaves queued mockResolvedValueOnce() values in place. The two 403
+  // tests below queue a readBody() value that the route never consumes (it
+  // short-circuits on the auth check before reaching readBody), so with
+  // clearAllMocks that leftover value silently rolled into the NEXT test's
+  // readBody() call, drifting every subsequent test's queue by one.
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
   })
 
   it('returns false for non-POST requests', async () => {
