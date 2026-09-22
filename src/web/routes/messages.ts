@@ -68,12 +68,14 @@ function isHumanAdmin(ctx: RouteContext): boolean {
 // GATE (never the body), so a row can tell "agent X really did this" apart
 // from "someone used agent X's name". `user` is set only for a 'session'
 // (human dashboard login), `peer` only for a verified 'federation' inbound
-// token, `device` only for an enrolled device key -- a plain shared 'token'
-// caller (the common fleet-agent case) resolves to null here, which is the
-// honest answer: the shared token alone cannot distinguish which agent held
-// it for this call.
+// token, `device` only for an enrolled device key, `tokenName` only for a
+// 'token' caller that resolved through the registered api_tokens DB lookup
+// (see auth-gate.ts's resolveApiToken) -- the legacy shared file-token
+// (store/.dashboard-token) still resolves to null here, which is the honest
+// answer: that token alone cannot distinguish which agent held it for this
+// call, since it has no api_tokens row/name to attribute to.
 function authPrincipal(ctx: RouteContext): string | null {
-  return ctx.auth?.user ?? ctx.auth?.peer ?? ctx.auth?.device ?? null
+  return ctx.auth?.user ?? ctx.auth?.peer ?? ctx.auth?.device ?? ctx.auth?.tokenName ?? null
 }
 
 

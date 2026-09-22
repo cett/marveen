@@ -113,6 +113,17 @@ describe('token creation', () => {
       expect(result.role).toBe('admin')
     }
   })
+
+  it('resolves the token row name alongside role/tenant', () => {
+    const db = openDb()
+    const raw = 'named-tok-123'
+    insertToken(db, { hash: sha256(raw), name: 'example-service-token', role: 'agent', tenantId: 'default' })
+    const result = resolveApiToken(raw, db)
+    expect(result.found).toBe(true)
+    if (result.found) {
+      expect(result.name).toBe('example-service-token')
+    }
+  })
 })
 
 // ── 3. Expiry ─────────────────────────────────────────────────────────────────
