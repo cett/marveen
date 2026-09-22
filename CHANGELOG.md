@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- unit test coverage for `claude-credentials-guard.ts`'s previously-untested token-lifecycle functions (`liveTestToken`/`liveProbeAuth`'s live `claude -p` probe including the inherited-env-token stripping and ENOENT/auth-rejected classification, `syncFleetTokenFromSharedCredentials`'s terminal-pasted setup-token backfill, `quarantineFleetToken`/`quarantineFleetTokenIfDead`'s dead-token demotion, and `fleetTokenBootPass`'s cached/live/quarantine boot-time lifecycle pass), raising the file from ~19% to ~81% statement coverage
 - unit test coverage for `google-api.ts`, `src/memory.ts`, and `agent-process-identity.ts` (the Google Calendar token cache/refresh + 401-retry flow, the kanban-context renderer / auto-save-a-turn heuristics / decay sweep / daily-digest pipeline, and the post-respawn modal-dismissal helpers plus the first-run gate walker and identity-setup scheduler)
 
 - unit test coverage for `stuck-input-watcher.ts` and `update-checker.ts` (the swallowed-Enter recovery backstop's delivery-intent gate and sweep orchestration across local/remote sub-agents, and the update-checker's GitHub-remote parsing, release grouping, and `refreshUpdateStatus` branches including the customised-fork compare fallback)
