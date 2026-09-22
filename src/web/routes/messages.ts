@@ -14,7 +14,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
-import { sanitizeAgentIdent } from '../../prompt-safety.js'
+import { sanitizeAgentIdent, scrubPiiFromContent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -61,8 +61,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note, assign, complete, envelope: envelopeRaw } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string; assign?: boolean; complete?: boolean; envelope?: unknown }
+    const { from, to, content, origin_note, assign, complete, envelope: envelopeRaw, no_pii_scrub } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; assign?: boolean; complete?: boolean; envelope?: unknown; no_pii_scrub?: boolean }
     // Free-form handoff envelope -- a string is stored verbatim
     // (caller already serialized it), anything else is JSON.stringify'd so a
     // plain object body still round-trips through the TEXT column.
@@ -197,7 +197,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // human-facing `#<seq>` form before persistence, so the dashboard and
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
-    const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    let normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    // PII scrub-before-persist: health/calendar/email
+    // data moves between agents through this table with no redaction today.
+    // Skipped for completion reports (COMPLETION_REPORT_PREFIX) and any
+    // caller that explicitly opts out via no_pii_scrub -- e.g. the Garmin
+    // health-report chain, where carrying real metrics agent-to-agent is the
+    // deliberate point of the message, not an accidental leak.
+    if (no_pii_scrub !== true && !normalizedContent.startsWith(COMPLETION_REPORT_PREFIX)) {
+      normalizedContent = scrubPiiFromContent(normalizedContent)
+    }
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null

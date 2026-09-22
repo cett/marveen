@@ -163,11 +163,14 @@ components:
             - not_supported
             - timeout
             - disabled
+            - not_live
             - managed_settings_missing
             - upstream_error
             - sender_not_in_allowlist
             - federation_disabled
             - unknown_query_parameter
+
+
 
 
 

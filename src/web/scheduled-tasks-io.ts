@@ -92,6 +92,18 @@ export interface ScheduledTask {
   // target session before injecting the prompt; a dead server defers the task
   // with a reasoned alert instead of a silent runtime failure.
   requires?: { mcp_servers?: string[] }
+  // Review-gate. Undefined/absent is treated as
+  // 'live' everywhere this is read (backward compat for pre-migration file
+  // tasks and any caller that doesn't set it) -- see isTaskLive() below.
+  status?: 'draft' | 'pending_review' | 'live'
+}
+
+// True when the runner is allowed to fire this task. A task with no status
+// at all (legacy file-based task, or a caller that never set one) is treated
+// as live -- the review-gate only restricts tasks that were explicitly
+// created in a non-live state.
+export function isTaskLive(task: Pick<ScheduledTask, 'status'>): boolean {
+  return task.status === undefined || task.status === 'live'
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -124,7 +136,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; status?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -148,7 +160,15 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     catchUpMaxAgeMinutes: parseCatchUpMaxAge(config.catchUpMaxAgeMinutes),
     stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
     requires: parseRequires(config.requires),
+    status: parseTaskStatus(config.status),
   }
+}
+
+// Accept only the three known status values; anything else (missing,
+// malformed, hand-edited garbage) is treated as absent, which isTaskLive()
+// then reads as 'live' -- backward compat, never fail-closed on a config typo.
+function parseTaskStatus(raw: unknown): 'draft' | 'pending_review' | 'live' | undefined {
+  return raw === 'draft' || raw === 'pending_review' || raw === 'live' ? raw : undefined
 }
 
 // Only a finite number is a policy; anything else (string, null, NaN) is
@@ -193,6 +213,7 @@ export function seedSchedulesFromFilesIfEmpty(): number {
       skip_if_busy:             task.skipIfBusy ?? false,
       force_send:               task.forceSend ?? false,
       target_session:           task.targetSession ?? null,
+      status:                   task.status ?? 'live',
       command:                  task.command ?? null,
       timeout_ms:               task.timeoutMs ?? null,
       fail_threshold:           task.failThreshold ?? null,
@@ -256,6 +277,7 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
     catchUpMaxAgeMinutes: row.catch_up_max_age_minutes ?? undefined,
     stuckAfterMinutes: row.stuck_after_minutes ?? undefined,
     requires: parseRequires(row.requires ? (() => { try { return JSON.parse(row.requires!) } catch { return undefined } })() : undefined),
+    status: row.status,
   }
 }
 
@@ -267,6 +289,7 @@ export function writeScheduledTask(
     targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number;
     preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number;
     tenantId?: string | null; requires?: { mcp_servers?: string[] };
+    status?: 'draft' | 'pending_review' | 'live';
   },
 ): void {
   const dbRow = countSchedules() > 0 ? getScheduleFromDb(taskName) : null
@@ -298,6 +321,7 @@ export function writeScheduledTask(
     // call, the PUT edit handler) would silently reset a tenant-owned
     // schedule's tenant_id to NULL (fleet scope) on next edit/toggle.
     tenant_id:                data.tenantId !== undefined ? (data.tenantId ?? null) : (dbRow?.tenant_id ?? null),
+    status:                   data.status ?? existing?.status ?? 'live',
   }
 
   upsertSchedule(taskName, merged)
@@ -315,6 +339,7 @@ function _writeScheduledTaskFiles(
     timeout_ms: number | null | undefined; fail_threshold: number | null | undefined;
     pre_check: string | null | undefined; catch_up_max_age_minutes: number | null | undefined;
     stuck_after_minutes: number | null | undefined;
+    status?: 'draft' | 'pending_review' | 'live';
   },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
@@ -329,6 +354,7 @@ function _writeScheduledTaskFiles(
     skipIfBusy:            merged.skip_if_busy,
     forceSend:             merged.force_send,
     description:           merged.description,
+    status:                merged.status ?? 'live',
     createdAt:             Math.floor(Date.now() / 1000),
   }
   if (merged.target_session)           config.targetSession           = merged.target_session

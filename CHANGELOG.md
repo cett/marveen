@@ -9,8 +9,32 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+<!-- changelog-auto-sha: ca2706b76f3f82c17d378907e44fcded5285fda1 -->
+
 ### Added
 
+- scheduled-task review-gate UI (draft badge, activate button)
+- close review-gate fire-loop/retry-queue holes, add item-3 tests
+- PII scrub-before-persist for agent_messages
+- SQL-ify agent-skills read path, retire dual-write on create
+- add optional handoff envelope to agent_messages
+- add blocked/waiting provenance columns
+- close SQLite handle cleanly on shutdown
+- add read_only opt-out for the accessed_at recall stamp
+- allow git push from the coordinator's own tmux session
+- fill inter-agent span attributes
+- **[API]** agent_messages refused_reason/no_session_at status markers
+- wire destructive-command gate into the fleet scaffold (fail-closed, Bash matcher)
+- agent caller identification + new destructive-command gate
+- reference-based delivery + size-guard for large task bodies
+- opt-in browser/search untrusted-content envelope
+- add detail modal for memory search results
+- add daily-handoff trigger tier
+- DB registry mirror + agent_active_plans lifecycle (#886 steps 12-16)
+- rotate endpoint + channels.sh dynamic configDir + heartbeat wiring (PR2c) (CLAUDEROTATEPR2C912) (#1298)
+- write API + dashboard UI for the plan registry (PR2b port)
+- pure rotation decision logic (PR2a) (#1293)
+- macOS offers Discord with Linux parity, docs stop hiding it (DISCORDLATHATO913) (#1306)
 - **[API]** `GET /api/agents/:name/skills` now reads from the `skills` SQL table (via new `listAgentOwnedSkills`/`listGlobalFleetSkills` helpers in `src/db/tasks.ts`) instead of scanning the filesystem, completing the skill file→SQL migration. The response shape is unchanged. Behavior change (intentional): a skill directory that has no matching SQL row (e.g. a stray empty or sync-artifact folder) no longer appears in the listing, since SQL is now the source of truth rather than the directory scan. The create handlers (`agents-skills.ts` and `/api/skills`) also retire their dual file-write, materializing the file via `regenSingleSkillFile()` (the SQL-first path) rather than an atomic file write that could roll back the row.
 - `scripts/hooks/destructive-gate.py`: `git push` is now allowed from the coordinator's own tmux channels session (identified by tmux session name, not cwd -- a shared worktree cwd cannot tell the coordinator and a sub-agent apart), so the coordinator can still push a verified branch after the fleet-wide activation started blocking every agent's push, itself included, with no exception. All other agents, and every other banned operation for the coordinator too, remain blocked exactly as before; fails closed (still blocked) whenever tmux itself is unavailable or returns anything but the exact expected session name.
 - **[API]** `GET /api/memories` gains an opt-in `read_only` query param (`1` or `true`). A search (`q` set) normally stamps every surfaced memory's `accessed_at` via `touchMemoriesAccessed()`, treating the query as a genuine recall for hot/warm/cold tier promotion; `read_only=1` skips that side effect for a query that is inspecting memories rather than using them, such as an audit tool or the dashboard's own memory browser. Has no effect on a plain listing (no `q`), which already never touches `accessed_at`. The Memories page's browser view (`web/modules/memories.js`, `loadMemories()`) now always sends `read_only=1`, since it is a human browsing/searching for inspection, not a live recall.
@@ -18,28 +42,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 - **[API]** Blocked/waiting provenance: `fleet_blackboard` and `fleet_blackboard_history` gain `blocked_by`/`blocked_reason` (plus `resolved_by` on the history table only), and `kanban_cards` gains `blocked_by`/`blocked_reason`/`waiting_for`/`resolved_by` -- all nullable, no backward-compat break. On the blackboard, `blocked_by`/`blocked_reason` only ever stick to the live row while `status="blocked"` and are force-cleared the moment it moves away, and `resolved_by` is recorded into the history entry only on an actual blocked -> non-blocked transition (both `POST /api/blackboard` and `PATCH /api/blackboard/:id` accept all three as optional body fields). On kanban, `waiting_for` is a free-text description of what a `status="waiting"` card is actually waiting on, separate from the `blocked_by`/`blocked_reason` pair describing who/why it stalled getting there; all four are plain optional fields on the existing generic `PUT /api/kanban/:id` update. Surfaced in the UI: the Overview blackboard table's "blokkolt" badge gets a `blocked_by`/`blocked_reason` tooltip, the blackboard history modal shows a blocked-by/resolved-by line per entry, and a kanban card's detail view shows a "Mire vár?" field whenever `status="waiting"` and `waiting_for` is set.
 - **[API]** `agent_messages` gains an optional `envelope` TEXT column: a free-form handoff payload (no fixed schema enforced yet) a delegator can attach to an `assign: true` `POST /api/messages` call to carry config/context the recipient needs to actually pick the task up -- the config-loss bug class this targets is Microsoft Agent Framework issue #8329, where handoff-time agent-cloning silently forgot to copy config fields. A string is stored verbatim; any other JSON value in the request body is `JSON.stringify`'d first. Sending `assign: true` with no `envelope` is never blocked -- it only logs a `logger.warn` (`"assign:true message sent without an envelope"`) so a missing handoff payload is visible in the logs without failing the send. No UI surface yet, by design (machine/JSON data, deferred to a later sprint if one turns out to be needed).
 
-<!-- changelog-auto-sha: d078a785f6a9cf0571552fd813dc71d1c507d05f -->
 
-### Removed
-
-- The `tool_call_log` table and its two indexes, retired in favor of `otel_spans` as the single tool-call audit store (a migration drops the table outright, so its historical rows are gone -- accepted as dead data since the two GET endpoints that ever read it, `GET /api/tool-log` and `GET /api/tool-log/analyze`, have no known consumer). The now-pointless `POST /api/tool-log/prune` endpoint and its backing function are removed alongside it. **BREAKING** on the internal tool-call audit-writer contract: a call missing `trace_id` or `agent_id` used to still get stored with a null column; it is now dropped entirely (logged as a warning) instead, because `otel_spans` requires a non-null `agent_id` and treats `trace_id` as part of its primary key. `POST /api/tool-log` itself (the write path PostToolUse hooks use) and `GET /api/tool-log`/`GET /api/tool-log/analyze` (now reading from `otel_spans`) keep their existing shape and behavior otherwise.
-- The Napló audit-timeline dashboard page (nav link, `#naploPage`, its `loadNaplo()`/`doNaplo()` IIFE in `web/app.js`, the `naplo.*` i18n keys, and its `.naplo-*` CSS rules) -- a pure UI removal of a screen that duplicated the separate "Audit trail" admin page. The shared backend it read from, `GET /api/audit-log` and `queryAuditLog()`, is untouched and keeps serving the Audit trail page (its `agent`/`hook` sources). The `.naplo-empty`/`.naplo-empty.error` CSS rules stay, since the unrelated Archívum (archived cards) feature also uses them.
-- The Overview page's Fleet Health strip (the `agens / jóváhagyás / cost ma / hiba (4h)` bar above the agent grid) -- a pure UI removal. `web/index.html`'s `#fleetHealthBar` block, `web/modules/overview.js`'s DOM wiring for it (the underlying counters it read stay, since the Attention Required panel already depends on the same ones), and the `.fh-*` CSS rules are gone. `GET /api/overview`'s response shape is unchanged -- every field the bar used is still returned and still feeds other parts of the page (agent counts -> the compact agent grid, pending approvals/errors -> the Attention panel, cost-today -> the KPI strip), so nothing backend-side or test-side needed to move.
-- The "Költöztetés" legacy-workspace scan/import feature (`src/web/routes/migrate.ts`, `POST /api/migrate/scan`, `POST /api/migrate/run`): scanned a filesystem path for another AI assistant's memory/config files and bulk-imported them via Ollama categorization. Removed the backend route, the corresponding `web/modules/migrate.js` scan/run UI (the module's other half, Fleet Export/Import, is untouched -- both lived in the same file and `initMigrate()`, so the split was done carefully), the `#migrateStep1/2/3` HTML blocks, the now-unused `loadMigrateAgents()` call, and ~30 `migrate.*` i18n keys in both language files. The `/migrate` page nav entry and route stay (Fleet Export/Import still lives there); its header now reads "Teljes flotta migráció" instead of "Költöztetés", matching what's actually on the page. No test coverage was lost beyond the two tests that only exercised the removed route. `POST /api/memories/import` (a separate, unrelated file-upload memory importer on the Memories page) is untouched -- out of scope for this removal.
-
-### Fixed
-
-- `hardRestartMarveenChannels()` (macOS, `POST /api/marveen/restart`) no longer gives up when the channels `launchd` job's plist survives on disk but the job itself fell out of the launchd bootstrap (orphaned) -- previously the `launchctl unload`/`load` reload attempt would hang until its 5s timeout (`ETIMEDOUT`) and the function returned `{ ok: false }` instead of falling back to the `respawn-pane` recovery a genuinely-missing plist already got. A new `launchctl list <label>` probe (non-destructive, sub-second) tells "orphaned" apart from "registered", and a registered-but-failed reload now falls through to `respawn-pane` too, rather than returning early.
-- `DELETE /api/mcp-catalog/:id/uninstall` now purges the removed connector from the in-memory MCP list cache instead of leaving it there until the 30s background refresh caught up, so the dashboard stops briefly showing an uninstalled connector as still installed.
-- **[API]** `GET /api/status` no longer returns duplicate tiles for a service that Statuspage lists under more than one parent group -- leaf components are now de-duplicated by name (first occurrence wins) after group containers are dropped, so the Overview status grid shows each service once instead of repeating it.
-- The Overview status grid could also duplicate its tiles client-side when `loadStatus()` (`web/modules/status-costs.js`) was triggered more than once in quick succession at boot -- each overlapping call independently cleared and re-appended the grid, so an interleaved completion order left extra copies on screen. Concurrent calls now share a single in-flight request instead of each starting their own fetch and render.
-- The scheduler's downtime catch-up summary (`sendCatchUpSummary` in `src/web/schedule-runner.ts`) no longer sends a Telegram alert when the scheduler catches up or gives up on missed occurrences after downtime -- it now only logs the same information (task, gap, caught-up vs. stale) for the operator to check in the logs/dashboard.
-- The pending-retry-stuck alert (`sendPendingRetryAlert`, a task waiting past the retry threshold, e.g. because a target session is busy or a required MCP is down) and the task-timeout alert (`sendTaskTimeoutAlert`, a fired task/heartbeat running past its configured timeout) no longer send a Telegram message either -- both now only log the same information (task, agent, age, and the specific reason/threshold) for the operator to check in the logs/dashboard, following the same dashboard-only pattern as the catch-up summary above. The kanban-card-to-waiting side effect of the task-timeout alert is unchanged. Scheduled tasks' own result notifications are unaffected and keep going through Telegram as before.
-- `src/channel-coordinator/ingest.ts`'s defensive `agent_messages` table creation (used only if the channel-coordinator wins the boot race against the dashboard) was missing every column added to the table since the original baseline (`origin_note`, `trace_id`, `span_id`, `parent_span_id`, `tenant_id`, `refused_reason`, `no_session_at`, `envelope`) -- because the statement is `CREATE TABLE IF NOT EXISTS`, a coordinator-created table was never revisited by the dashboard's own migration, so those columns stayed permanently missing on an install that ever hit that race. The column list now matches the canonical schema exactly, and a new migration 0048 repairs any table that already drifted before this fix. Since SQLite has no `ADD COLUMN IF NOT EXISTS`, `db-migrations.ts`'s `applyMigration()` now recognizes a migration file that consists entirely of `ALTER TABLE ... ADD COLUMN` statements and applies them one at a time, tolerating (and skipping) a "duplicate column name" error on any column the table already has -- verified against a copy of the running production database (already fully migrated, no-op) and a simulated drifted table (repairs cleanly, existing rows intact).
-- `scripts/hooks/context-watchdog.py`'s `write_token_row()` no longer commits its own `token_usage` insert -- it shared a connection with the span writes (`agent.turn`/`model.call` into `otel_spans`) that follow it in the same hook invocation, and the early commit broke the intended atomicity: if a span write later failed, the token row would already be permanently persisted on its own. The whole write now lands in the single transaction `main()` already commits after all of the hook's writes complete.
-- `scripts/hooks/context-watchdog.py` and `scripts/hooks/skill-sql-sync.py` now set `PRAGMA busy_timeout` explicitly on their SQLite connections (matching the pattern already used by `scripts/hooks/ledger_lib.py`), for defense-in-depth alongside the `timeout=` constructor argument they already pass.
-
-### Added
 
 - **[API]** `agent_messages` gains `refused_reason` and `no_session_at` columns (the existing `status` CHECK constraint -- `pending`/`delivered`/`done`/`failed` -- is untouched). `PUT /api/messages/:id` now accepts `status="refused"` for an executor's explicit decline callback, persisted as `status="failed"` plus `refused_reason` so any consumer filtering on `status` still sees a normal failure. The message-router now stamps `no_session_at` on a still-pending row the first time it finds the target tmux session absent, via a new `markMessageNoSession()` (`src/db/agents.ts`) guarded by an in-memory `routerNoSessionStamped` Set so a continuous absence streak only writes once instead of every 5s tick.
 - Inter-agent `otel_spans` rows now carry attributes: `message-router`'s `stampTraceOnMessage` used to upsert every span with `attributes: null`; it now fills a new, exported `InterAgentSpanAttributes` shape (`{ msg_id, from, to }`, `src/db/observability.ts`) as the span's JSON attributes, so the Grafana/Tempo push export (`spansToOtelJson` -> `parseAttributes`) can tell inter-agent spans apart by the message that produced them.
@@ -377,7 +380,45 @@ Extract a version for release: `npm run release-notes -- <version>`
 - add ask-fable.sh -- Fable one-shot CLI with anti-fallback guard (#688)
 - Microsoft Graph mail module for a single scoped M365 mailbox (#668)
 
+### Removed
+
+- The `tool_call_log` table and its two indexes, retired in favor of `otel_spans` as the single tool-call audit store (a migration drops the table outright, so its historical rows are gone -- accepted as dead data since the two GET endpoints that ever read it, `GET /api/tool-log` and `GET /api/tool-log/analyze`, have no known consumer). The now-pointless `POST /api/tool-log/prune` endpoint and its backing function are removed alongside it. **BREAKING** on the internal tool-call audit-writer contract: a call missing `trace_id` or `agent_id` used to still get stored with a null column; it is now dropped entirely (logged as a warning) instead, because `otel_spans` requires a non-null `agent_id` and treats `trace_id` as part of its primary key. `POST /api/tool-log` itself (the write path PostToolUse hooks use) and `GET /api/tool-log`/`GET /api/tool-log/analyze` (now reading from `otel_spans`) keep their existing shape and behavior otherwise.
+- The Napló audit-timeline dashboard page (nav link, `#naploPage`, its `loadNaplo()`/`doNaplo()` IIFE in `web/app.js`, the `naplo.*` i18n keys, and its `.naplo-*` CSS rules) -- a pure UI removal of a screen that duplicated the separate "Audit trail" admin page. The shared backend it read from, `GET /api/audit-log` and `queryAuditLog()`, is untouched and keeps serving the Audit trail page (its `agent`/`hook` sources). The `.naplo-empty`/`.naplo-empty.error` CSS rules stay, since the unrelated Archívum (archived cards) feature also uses them.
+- The Overview page's Fleet Health strip (the `agens / jóváhagyás / cost ma / hiba (4h)` bar above the agent grid) -- a pure UI removal. `web/index.html`'s `#fleetHealthBar` block, `web/modules/overview.js`'s DOM wiring for it (the underlying counters it read stay, since the Attention Required panel already depends on the same ones), and the `.fh-*` CSS rules are gone. `GET /api/overview`'s response shape is unchanged -- every field the bar used is still returned and still feeds other parts of the page (agent counts -> the compact agent grid, pending approvals/errors -> the Attention panel, cost-today -> the KPI strip), so nothing backend-side or test-side needed to move.
+- The "Költöztetés" legacy-workspace scan/import feature (`src/web/routes/migrate.ts`, `POST /api/migrate/scan`, `POST /api/migrate/run`): scanned a filesystem path for another AI assistant's memory/config files and bulk-imported them via Ollama categorization. Removed the backend route, the corresponding `web/modules/migrate.js` scan/run UI (the module's other half, Fleet Export/Import, is untouched -- both lived in the same file and `initMigrate()`, so the split was done carefully), the `#migrateStep1/2/3` HTML blocks, the now-unused `loadMigrateAgents()` call, and ~30 `migrate.*` i18n keys in both language files. The `/migrate` page nav entry and route stay (Fleet Export/Import still lives there); its header now reads "Teljes flotta migráció" instead of "Költöztetés", matching what's actually on the page. No test coverage was lost beyond the two tests that only exercised the removed route. `POST /api/memories/import` (a separate, unrelated file-upload memory importer on the Memories page) is untouched -- out of scope for this removal.
+
 ### Fixed
+
+- tenant-scope daily-log, ideas, and otel spans (IDOR)
+- declare snapshot sha256/chars over full file content
+- repair agent_messages boot-race drift, hook write atomicity, busy_timeout
+- security-routes bridge-enroll mock queue drift
+- fall back to respawn-pane on an orphaned launchd job
+- purge MCP list cache entry on catalog uninstall
+- add missing agent and requested_at fields to PendingChannelRequest mocks
+- dedupe concurrent loadStatus() calls in the status grid
+- de-duplicate service names in the status grid
+- cache dist/ together with .tsbuildinfo
+- route template hook commands through SCRIPTS_DIR, not PROJECT_ROOT
+- FK-safe cascade ordering + tests for #886 lifecycle
+- a fo munkamenet atirata a TENYLEGES config-gyokerbol olvasodik (#1312)
+- the progress sentry self-locates its fleet root, instead of the non-existent ~/marveen (TGWDOGVAK913) (#1311)
+- a negy csatorna-hook a template-be, mielott a #1307 strip elveszi a csatornas sub-agentekrol (HOOKSTRIPFLEET913) (#1309)
+- adjust ported #1307 tests for the fork's missing-script exclusions
+- fleet hooks leave the user-global settings.json -- repo-shipped project scope + write-refusal (#1305, ISSUE1305HOOKSCOPE resz 2) (#1307)
+- slack-agi managed-settings iras atomikus, es soha nem epiti ujra az org-policyt (SLACKMGDATOM913) (#1308)
+- stop Telegram alerts for pending-retry and task-timeout
+- stop Telegram alerts for downtime catch-up/stale summary
+- `hardRestartMarveenChannels()` (macOS, `POST /api/marveen/restart`) no longer gives up when the channels `launchd` job's plist survives on disk but the job itself fell out of the launchd bootstrap (orphaned) -- previously the `launchctl unload`/`load` reload attempt would hang until its 5s timeout (`ETIMEDOUT`) and the function returned `{ ok: false }` instead of falling back to the `respawn-pane` recovery a genuinely-missing plist already got. A new `launchctl list <label>` probe (non-destructive, sub-second) tells "orphaned" apart from "registered", and a registered-but-failed reload now falls through to `respawn-pane` too, rather than returning early.
+- `DELETE /api/mcp-catalog/:id/uninstall` now purges the removed connector from the in-memory MCP list cache instead of leaving it there until the 30s background refresh caught up, so the dashboard stops briefly showing an uninstalled connector as still installed.
+- **[API]** `GET /api/status` no longer returns duplicate tiles for a service that Statuspage lists under more than one parent group -- leaf components are now de-duplicated by name (first occurrence wins) after group containers are dropped, so the Overview status grid shows each service once instead of repeating it.
+- The Overview status grid could also duplicate its tiles client-side when `loadStatus()` (`web/modules/status-costs.js`) was triggered more than once in quick succession at boot -- each overlapping call independently cleared and re-appended the grid, so an interleaved completion order left extra copies on screen. Concurrent calls now share a single in-flight request instead of each starting their own fetch and render.
+- The scheduler's downtime catch-up summary (`sendCatchUpSummary` in `src/web/schedule-runner.ts`) no longer sends a Telegram alert when the scheduler catches up or gives up on missed occurrences after downtime -- it now only logs the same information (task, gap, caught-up vs. stale) for the operator to check in the logs/dashboard.
+- The pending-retry-stuck alert (`sendPendingRetryAlert`, a task waiting past the retry threshold, e.g. because a target session is busy or a required MCP is down) and the task-timeout alert (`sendTaskTimeoutAlert`, a fired task/heartbeat running past its configured timeout) no longer send a Telegram message either -- both now only log the same information (task, agent, age, and the specific reason/threshold) for the operator to check in the logs/dashboard, following the same dashboard-only pattern as the catch-up summary above. The kanban-card-to-waiting side effect of the task-timeout alert is unchanged. Scheduled tasks' own result notifications are unaffected and keep going through Telegram as before.
+- `src/channel-coordinator/ingest.ts`'s defensive `agent_messages` table creation (used only if the channel-coordinator wins the boot race against the dashboard) was missing every column added to the table since the original baseline (`origin_note`, `trace_id`, `span_id`, `parent_span_id`, `tenant_id`, `refused_reason`, `no_session_at`, `envelope`) -- because the statement is `CREATE TABLE IF NOT EXISTS`, a coordinator-created table was never revisited by the dashboard's own migration, so those columns stayed permanently missing on an install that ever hit that race. The column list now matches the canonical schema exactly, and a new migration 0048 repairs any table that already drifted before this fix. Since SQLite has no `ADD COLUMN IF NOT EXISTS`, `db-migrations.ts`'s `applyMigration()` now recognizes a migration file that consists entirely of `ALTER TABLE ... ADD COLUMN` statements and applies them one at a time, tolerating (and skipping) a "duplicate column name" error on any column the table already has -- verified against a copy of the running production database (already fully migrated, no-op) and a simulated drifted table (repairs cleanly, existing rows intact).
+- `scripts/hooks/context-watchdog.py`'s `write_token_row()` no longer commits its own `token_usage` insert -- it shared a connection with the span writes (`agent.turn`/`model.call` into `otel_spans`) that follow it in the same hook invocation, and the early commit broke the intended atomicity: if a span write later failed, the token row would already be permanently persisted on its own. The whole write now lands in the single transaction `main()` already commits after all of the hook's writes complete.
+- `scripts/hooks/context-watchdog.py` and `scripts/hooks/skill-sql-sync.py` now set `PRAGMA busy_timeout` explicitly on their SQLite connections (matching the pattern already used by `scripts/hooks/ledger_lib.py`), for defense-in-depth alongside the `timeout=` constructor argument they already pass.
+
 
 - wire conversation_log and agent_messages into the daily prune sweep
 - wire otel_spans into the daily prune sweep
@@ -758,6 +799,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- scheduled-task review-gate backend (draft/live status)
+- speed up GitHub Actions pipeline (#894, A-F)
 - consolidate tool.call span writing into logToolCall
 - remove Napló page nav/#naploPage/app.js IIFE/app-core mapping/rbac-screen row (i18n+CSS still TODO)
 - retire Költöztetés legacy-workspace scan/import feature (#825)
@@ -802,6 +845,16 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- note agent-skills SQL read path + dual-write retirement
+- fill inter-agent span attributes
+- agent_messages refused/no_session markers
+- strip internal kanban card id from #910 entry and test description
+- note MCP list cache purge on catalog uninstall
+- README fork-diff -- status grid de-duplikálás bejegyzés
+- CHANGELOG + README fork-diff SHA for the upstream backport + claude-plans DB migration
+- note memory-link-maintenance 500 error mode
+- update fork-diff SHA for scheduler dashboard-only alerts step
+- update fork-diff SHA for scheduler catch-up notify removal
 - update CHANGELOG for the cost-today KPI removal
 - update fork-diff SHA for vault-ssh-keys coverage step
 - update fork-diff SHA for vault-ssh-keys route coverage step
@@ -965,6 +1018,26 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- add unit tests for voice-directive.ts (#751)
+- auto-restart-runner coverage (0% -> 95.16% statements)
+- channel-request-watcher coverage (0% -> 98.66% statements)
+- cover dashboard-settings.ts (external paths + GitHub repo CRUD)
+- verify tenant-IDOR closed on the vector search ANN path (#910)
+- workspace-docs-ttl-sweeper interval coverage
+- security routes coverage (68.18% -> improved)
+- agents dispatcher route coverage (66.66% -> 100%)
+- comprehensive success-path coverage (97.81% statements)
+- SQL endpoint coverage for step #751 backend series
+- agents-channels route coverage (60.47% -> 77.35% statements)
+- cover settings.ts route surface (#751 step 18)
+- bump the minor-and-patch group across 1 directory with 9 updates
+- bump hono from 4.13.3 to 4.13.8
+- cover vault-ssh.ts route surface (#751 step 17)
+- cover schedules.ts route surface (#751 step 16)
+- bump adm-zip from 0.6.0 to 0.6.1
+- neutralize fleet-internal names before PR (pr-privacy-hygiene)
+- drop doc-shape assertions this fork's docs policy doesn't match
+- pin MAIN_AGENT_ID/SKILL_SQL_REGEN in tests that hardcode their defaults
 - pin MAIN_AGENT_ID/SKILL_SQL_REGEN in tests that hardcode their defaults
 - cover vault-ssh-keys.ts route surface (#751 step 15)
 - trim docs/ to the still-referenced files (#875 ST4, Jonas: opt. c)

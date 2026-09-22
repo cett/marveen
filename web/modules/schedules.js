@@ -26,6 +26,17 @@ function playIcon() {
 function trashIcon() {
   return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>'
 }
+function checkIcon() {
+  return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+}
+
+// Review-gate: mirrors src/web/scheduled-tasks-io.ts's isTaskLive() -- a task
+// with no status at all (legacy pre-migration task) is live; only an explicit
+// 'draft'/'pending_review' status means the runner (and this UI) must treat
+// it as not-yet-approved.
+function taskIsLive(task) {
+  return task.status === undefined || task.status === 'live'
+}
 
 // ─── DI callbacks (injected by initSchedules) ─────────────────────────────────
 let _openModal = null
@@ -430,6 +441,7 @@ function makeScheduleRow(task) {
     const row = document.createElement('div')
     row.className = 'schedule-row'
     const agent = scheduleAgents.find(a => a.name === task.agent) || { name: task.agent || mainAgentId(), avatar: '/api/marveen/avatar', label: task.agent || mainAgentId() }
+    const isLive = taskIsLive(task)
 
     row.innerHTML = `
       <div class="schedule-agent-avatar">
@@ -440,6 +452,7 @@ function makeScheduleRow(task) {
           ${escapeHtml(task.description || task.name)}
           ${task.type === 'heartbeat' ? '<span class="badge" data-variant="info">💓 heartbeat</span>' : ''}
           <span class="badge" data-variant="${task.enabled ? 'success' : 'accent'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
+          ${!isLive ? `<span class="badge" data-variant="warning">${t('tasks.status.draft')}</span>` : ''}
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
@@ -448,10 +461,14 @@ function makeScheduleRow(task) {
         </div>
       </div>
       <div class="schedule-actions">
-        <button class="btn" data-variant="icon" data-action="run" title="${t('tasks.btn.run_now')}">
+        ${!isLive ? `
+        <button class="btn" data-variant="icon" data-action="activate" title="${t('tasks.btn.activate')}">
+          ${checkIcon()}
+        </button>` : ''}
+        <button class="btn" data-variant="icon" data-action="run" title="${t('tasks.btn.run_now')}" ${!isLive ? 'disabled' : ''}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
         </button>
-        <button class="btn" data-variant="icon" data-action="toggle" title="${task.enabled ? t('tasks.btn.toggle_pause') : t('tasks.btn.toggle_resume')}">
+        <button class="btn" data-variant="icon" data-action="toggle" title="${task.enabled ? t('tasks.btn.toggle_pause') : t('tasks.btn.toggle_resume')}" ${!isLive ? 'disabled' : ''}>
           ${task.enabled ? pauseIcon() : playIcon()}
         </button>
         <button class="btn" data-variant="icon" data-action="history" title="${t('tasks.btn.history')}">
@@ -470,14 +487,28 @@ function makeScheduleRow(task) {
     })
 
     if (!_canWriteSchedules) {
-      for (const action of ['run', 'toggle', 'delete']) {
+      for (const action of ['activate', 'run', 'toggle', 'delete']) {
         const btn = row.querySelector(`[data-action="${action}"]`)
+        if (!btn) continue
         btn.disabled = true
         btn.setAttribute('data-rbac-disabled', '')
       }
     }
 
     // Action buttons
+    if (!isLive) {
+      row.querySelector('[data-action="activate"]').addEventListener('click', async (e) => {
+        e.stopPropagation()
+        try {
+          const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/activate`, { method: 'POST' })
+          const data = await r.json().catch(() => ({}))
+          if (r.ok) showToast(t('tasks.toast.activated'))
+          else showToast('Hiba: ' + getErrorMessage(data, String(r.status)))
+          loadSchedules()
+        } catch { showToast(t('tasks.toast.activate_error')) }
+      })
+    }
+
     row.querySelector('[data-action="run"]').addEventListener('click', async (e) => {
       e.stopPropagation()
       try {
@@ -643,7 +674,7 @@ function renderTimeline(tasks) {
       for (const h of hours) {
         const pct = ((h * 60 + minute) / (24 * 60)) * 100
         const marker = document.createElement('div')
-        marker.className = 'timeline-marker' + (task.enabled ? '' : ' disabled')
+        marker.className = 'timeline-marker' + (task.enabled && taskIsLive(task) ? '' : ' disabled')
         marker.style.left = `calc(${pct}% - 16px)`
         marker.innerHTML = `
           <img src="${agent.avatar}${avatarBust()}" alt="" onerror="this.style.display='none'">
@@ -712,7 +743,7 @@ function renderWeekView(data) {
     header.dataset.full = dayNamesFull[i]
     dayCol.appendChild(header)
 
-    const tasksForDay = data.filter(t => t.enabled && cronMatchesDay(t.schedule, dayDow))
+    const tasksForDay = data.filter(t => t.enabled && taskIsLive(t) && cronMatchesDay(t.schedule, dayDow))
 
     // Collapsed count badge
     const countDiv = document.createElement('div')

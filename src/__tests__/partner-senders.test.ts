@@ -59,6 +59,7 @@ vi.mock('../channel-coordinator/ingest.js', () => ({
 
 vi.mock('../prompt-safety.js', () => ({
   sanitizeAgentIdent: vi.fn().mockImplementation((s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '')),
+  scrubPiiFromContent: vi.fn().mockImplementation((s: string) => s),
 }))
 
 vi.mock('../web/agent-config.js', () => ({

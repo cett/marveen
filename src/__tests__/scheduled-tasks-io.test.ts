@@ -52,7 +52,12 @@ import {
   readScheduledTask,
   listScheduledTasks,
   writeScheduledTask,
+  isTaskLive,
+  rowToTask,
 } from '../web/scheduled-tasks-io.js'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { ScheduleRow } from '../db.js'
 
 describe('scheduled-tasks-io', () => {
   describe('parseSkillMdFrontmatter', () => {
@@ -190,6 +195,123 @@ describe('scheduled-tasks-io', () => {
 
       vi.mocked(db.countSchedules).mockReturnValue(0)
       vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+    })
+  })
+
+  // Review-gate: isTaskLive() and the status field
+  // round-trip through the file-based read/write path.
+  describe('isTaskLive', () => {
+    it('treats an undefined status as live (legacy pre-migration tasks)', () => {
+      expect(isTaskLive({ status: undefined })).toBe(true)
+    })
+
+    it('treats status "live" as live', () => {
+      expect(isTaskLive({ status: 'live' })).toBe(true)
+    })
+
+    it('treats status "draft" as not live', () => {
+      expect(isTaskLive({ status: 'draft' })).toBe(false)
+    })
+
+    it('treats status "pending_review" as not live', () => {
+      expect(isTaskLive({ status: 'pending_review' })).toBe(false)
+    })
+  })
+
+  describe('readScheduledTask -- status field', () => {
+    it('a task-config.json with no status key at all reads back status: undefined, live', () => {
+      // The 'test-task' fixture (set up in vi.hoisted above) predates the
+      // review-gate migration and has no `status` key.
+      const task = readScheduledTask('test-task')
+      expect(task!.status).toBeUndefined()
+      expect(isTaskLive(task!)).toBe(true)
+    })
+
+    it('reads each of the three known status values back verbatim', () => {
+      for (const status of ['draft', 'pending_review', 'live'] as const) {
+        const name = `status-fixture-${status}`
+        const dir = join(FAKE_HOME, '.claude', 'scheduled-tasks', name)
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: fixture\n---\n\nBody\n`)
+        writeFileSync(join(dir, 'task-config.json'), JSON.stringify({
+          schedule: '0 9 * * *', agent: 'marveen', enabled: true, createdAt: 1700000000, type: 'task', status,
+        }))
+        const task = readScheduledTask(name)
+        expect(task!.status).toBe(status)
+        expect(isTaskLive(task!)).toBe(status === 'live')
+      }
+    })
+
+    it('an unrecognized status value in task-config.json is treated as absent (live), not fail-closed', () => {
+      const name = 'status-fixture-garbage'
+      const dir = join(FAKE_HOME, '.claude', 'scheduled-tasks', name)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: fixture\n---\n\nBody\n`)
+      writeFileSync(join(dir, 'task-config.json'), JSON.stringify({
+        schedule: '0 9 * * *', agent: 'marveen', enabled: true, createdAt: 1700000000, type: 'task', status: 'hand-edited-garbage',
+      }))
+      const task = readScheduledTask(name)
+      expect(task!.status).toBeUndefined()
+      expect(isTaskLive(task!)).toBe(true)
+    })
+  })
+
+  describe('writeScheduledTask -- status round-trip (file-mode)', () => {
+    it('writes and reads back a draft status', () => {
+      writeScheduledTask('roundtrip-draft', {
+        description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
+        enabled: true, type: 'task', status: 'draft',
+      })
+      const task = readScheduledTask('roundtrip-draft')
+      expect(task!.status).toBe('draft')
+      expect(isTaskLive(task!)).toBe(false)
+    })
+
+    it('writes and reads back a pending_review status', () => {
+      writeScheduledTask('roundtrip-pending', {
+        description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
+        enabled: true, type: 'task', status: 'pending_review',
+      })
+      const task = readScheduledTask('roundtrip-pending')
+      expect(task!.status).toBe('pending_review')
+      expect(isTaskLive(task!)).toBe(false)
+    })
+
+    it('omitting status on create defaults to live', () => {
+      writeScheduledTask('roundtrip-default', {
+        description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen', enabled: true, type: 'task',
+      })
+      const task = readScheduledTask('roundtrip-default')
+      expect(task!.status).toBe('live')
+      expect(isTaskLive(task!)).toBe(true)
+    })
+
+    it('an edit that omits status preserves the existing draft status (does not silently activate)', () => {
+      writeScheduledTask('roundtrip-preserve', {
+        description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
+        enabled: true, type: 'task', status: 'draft',
+      })
+      // Simulate an unrelated edit (e.g. the toggle route) that never mentions status.
+      writeScheduledTask('roundtrip-preserve', { enabled: false })
+      const task = readScheduledTask('roundtrip-preserve')
+      expect(task!.status).toBe('draft')
+      expect(isTaskLive(task!)).toBe(false)
+    })
+  })
+
+  describe('rowToTask -- status pass-through', () => {
+    it('maps a DB row status straight onto the ScheduledTask shape', () => {
+      const row = {
+        id: 'db-task', prompt: 'p', description: 'd', schedule: '0 9 * * *',
+        agent: 'marveen', type: 'task', enabled: 1, tenant_id: null,
+        skip_if_busy: 0, force_send: 0, target_session: null, command: null,
+        timeout_ms: null, fail_threshold: null, pre_check: null,
+        catch_up_max_age_minutes: null, stuck_after_minutes: null, requires: null,
+        status: 'draft', created_at: 1700000000, updated_at: 1700000000,
+      } satisfies ScheduleRow
+      const task = rowToTask(row)
+      expect(task.status).toBe('draft')
+      expect(isTaskLive(task)).toBe(false)
     })
   })
 })

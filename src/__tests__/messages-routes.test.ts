@@ -16,12 +16,14 @@ vi.mock('../db.js', () => ({
   closeOtelSpan: vi.fn(),
   findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
   upsertBlackboard: vi.fn(),
+  COMPLETION_REPORT_PREFIX: '[Eredmény]',
 }))
 vi.mock('../channel-coordinator/ingest.js', () => ({
   COORDINATOR_AGENT_ID: 'telegram-coordinator',
 }))
 vi.mock('../prompt-safety.js', () => ({
   sanitizeAgentIdent: vi.fn().mockImplementation((s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '')),
+  scrubPiiFromContent: vi.fn().mockImplementation((s: string) => s),
 }))
 vi.mock('../web/agent-config.js', () => ({
   isKnownAgent: vi.fn().mockReturnValue(true),

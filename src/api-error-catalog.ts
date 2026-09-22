@@ -14,6 +14,7 @@ export const ERROR_TOKENS = [
   'not_supported',
   'timeout',
   'disabled',
+  'not_live',
   'managed_settings_missing',
   'upstream_error',
   // Domain tokens (canonicalized; a distinct token is justified):
@@ -39,9 +40,11 @@ export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = 
   403: ['forbidden', 'sender_not_in_allowlist'],
   404: ['not_found'],
   // disabled = operation-state conflict (entity exists but is in disabled state);
+  // not_live = review-gate conflict (entity exists but is draft/pending_review,
+  // distinct from disabled -- the fix is activation by an admin, not re-enabling);
   // managed_settings_missing = precondition unmet (entity exists, external config missing);
-  // both are state conflicts, not malformed requests.
-  409: ['conflict', 'disabled', 'managed_settings_missing'],
+  // all three are state conflicts, not malformed requests.
+  409: ['conflict', 'disabled', 'not_live', 'managed_settings_missing'],
   429: ['limit_exceeded'],
   500: ['internal_error'],
   502: ['upstream_error'],

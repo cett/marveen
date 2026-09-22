@@ -3,10 +3,12 @@ import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { kanbanState, showBreakdownModal } from './kanban.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 
 let _openModal = null
 let _closeModal = null
+let _ideaTenantGetter = null
 
 let ideas = []
 let ideasPromoteId = null
@@ -21,6 +23,8 @@ export async function loadIdeasPage() {
   const params = new URLSearchParams()
   if (statusFilter && statusFilter !== 'active') params.set('status', statusFilter)
   if (categoryFilter) params.set('category', categoryFilter)
+  const ideaTenant = _ideaTenantGetter?.()
+  if (ideaTenant) params.set('tenant', ideaTenant)
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
   ideas = await ideasRes.json()
   if (statusFilter === 'active') ideas = ideas.filter(i => i.status === 'new' || i.status === 'reviewed')
@@ -258,6 +262,9 @@ async function openIdeaBreakdown(id) {
 export function initIdeas({ openModal, closeModal }) {
   _openModal = openModal
   _closeModal = closeModal
+
+  initTenantSelector('ideaTenantSelectorContainer', () => loadIdeasPage())
+    .then(getter => { _ideaTenantGetter = getter })
 
   // Expose inline onclick handlers on window (used in template strings)
   window.openIdeaDetail = openIdeaDetail

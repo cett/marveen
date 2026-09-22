@@ -62,6 +62,7 @@ vi.mock('../db.js', () => ({
   reparentKanbanCard: vi.fn().mockReturnValue({ ok: true }),
   propagateStatus: vi.fn(),
   createAgentMessage: vi.fn().mockReturnValue({ id: 1, from_agent: 'jane.doe', to_agent: 'marveen', origin_note: null }),
+  COMPLETION_REPORT_PREFIX: '[Eredmény]',
   markKanbanCardDispatched: vi.fn(),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   listLabels: vi.fn().mockReturnValue([]),
@@ -89,7 +90,6 @@ vi.mock('../db.js', () => ({
   getAgentMessage: vi.fn().mockReturnValue(null),
   closeOtelSpan: vi.fn(),
   getPendingBacklogByAgent: vi.fn().mockReturnValue([]),
-  COMPLETION_REPORT_PREFIX: '[Eredmény]',
   isAuthorizedPartnerSender: vi.fn().mockReturnValue(true),
   findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
   upsertBlackboard: vi.fn(),
@@ -140,6 +140,7 @@ vi.mock('../channel-coordinator/ingest.js', () => ({
 }))
 vi.mock('../prompt-safety.js', () => ({
   sanitizeAgentIdent: vi.fn().mockImplementation((s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '')),
+  scrubPiiFromContent: vi.fn().mockImplementation((s: string) => s),
 }))
 vi.mock('../web/federation/address.js', () => ({
   parseQualifiedId: vi.fn().mockReturnValue(null),
