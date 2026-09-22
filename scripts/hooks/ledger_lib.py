@@ -13,6 +13,7 @@ chat. Pure stdlib (sqlite3) -- no node startup, no jq.
 """
 import os
 import sqlite3
+import sys
 import time
 
 # Canonical schema. MUST stay identical to the db.ts initDatabase() migration
@@ -64,6 +65,16 @@ def main_agent_id():
                     return line.split("=", 1)[1].strip()
     except Exception:
         pass
+    # #927: this third arm used to be silent. On a renamed install (main
+    # agent id != "marveen") running from an environment where MAIN_AGENT_ID
+    # is unset AND .env is unreadable (e.g. a worktree without the install's
+    # .env alongside it), this fallback quietly resolves to the wrong id --
+    # a caller like the destructive-gate coordinator-allowlist then compares
+    # against the wrong name and can misjudge who the coordinator is, with
+    # nothing in the logs to explain why. The fallback direction itself stays
+    # safe and unchanged; this only makes the silent branch visible. Never
+    # raise here -- hooks rely on this fallback firing cleanly.
+    sys.stderr.write("ledger_lib: MAIN_AGENT_ID nem talalhato (env es .env sem), fallback: marveen\n")
     return "marveen"
 
 
