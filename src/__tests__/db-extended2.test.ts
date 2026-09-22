@@ -484,7 +484,7 @@ describe('telegram history functions', () => {
 
 describe('idea box functions', () => {
   it('createIdea + listIdeas roundtrip', () => {
-    createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2 })
+    createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2, tenant_id: 'default' })
     const ideas = listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
@@ -530,7 +530,7 @@ describe('idea box functions', () => {
   })
 
   it('revertIdeaFromKanban reverts a kanban idea to reviewed', () => {
-    createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null })
+    createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null, tenant_id: 'default' })
     const reverted = revertIdeaFromKanban('db2-card-k1')
     expect(reverted).toBe('db2-idea-2')
     const ideas = listIdeas()

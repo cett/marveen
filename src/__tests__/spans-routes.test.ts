@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, getDb, createTenant, setTenantAgentAvailability } from '../db.js'
 import { tryHandleSpans } from '../web/routes/spans.js'
 
-function makeCtx(opts: { method: string; path: string; body?: object; query?: Record<string, string> }): {
+function makeCtx(opts: {
+  method: string; path: string; body?: object; query?: Record<string, string>
+  role?: RouteContext['role']; tenantId?: string | null
+}): {
   ctx: RouteContext; status: () => number; body: () => any
 } {
   const raw = opts.body ? JSON.stringify(opts.body) : ''
@@ -28,6 +31,8 @@ function makeCtx(opts: { method: string; path: string; body?: object; query?: Re
       method: opts.method,
       url,
       auth: { kind: 'token' },
+      role: opts.role,
+      tenantId: opts.tenantId,
     } as RouteContext,
     status: () => code,
     body: () => { try { return JSON.parse(resBody) } catch { return resBody } },
@@ -219,5 +224,94 @@ describe('GET /api/otel-export', () => {
     const { ctx, status } = makeCtx({ method: 'GET', path: '/api/otel-export', query: { limit: '999999' } })
     await tryHandleSpans(ctx)
     expect(status()).toBe(200)
+  })
+})
+
+// Tenant-IDOR guard (kanban 45d7a63a item 1C): otel_spans has no tenant_id
+// column; a tenant-scoped caller must not read or open/close a span for an
+// agent belonging to a different tenant.
+describe('spans route: tenant-IDOR guard', () => {
+  beforeEach(() => {
+    createTenant('tenant-spans-a', 'Tenant Spans A')
+    createTenant('tenant-spans-b', 'Tenant Spans B')
+    setTenantAgentAvailability('tenant-spans-a', 'tenant-a-agent', true)
+    setTenantAgentAvailability('tenant-spans-b', 'tenant-b-agent', true)
+  })
+
+  it('POST open is blocked (403) for an agent in a different tenant', async () => {
+    const { ctx, status, body } = makeCtx({
+      method: 'POST', path: '/api/spans',
+      body: { trace_id: 't1', span_id: 's1', agent_id: 'tenant-b-agent', operation: 'tool.call', start_ms: 1000 },
+      role: 'agent', tenantId: 'tenant-spans-a',
+    })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(403)
+    expect(body()).toEqual({ error: 'forbidden', hint: 'agent not in your tenant' })
+  })
+
+  it('POST open succeeds for an agent in the caller\'s own tenant', async () => {
+    const { ctx, status } = makeCtx({
+      method: 'POST', path: '/api/spans',
+      body: { trace_id: 't1', span_id: 's1', agent_id: 'tenant-a-agent', operation: 'tool.call', start_ms: 1000 },
+      role: 'agent', tenantId: 'tenant-spans-a',
+    })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(200)
+  })
+
+  it('GET /api/traces excludes another tenant\'s traces for a non-admin caller', async () => {
+    getDb().prepare(`
+      INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+      VALUES ('t-a', 's1', NULL, 'tenant-a-agent', 'op-a', 1000, 2000, 'ok', NULL),
+             ('t-b', 's2', NULL, 'tenant-b-agent', 'op-b', 1000, 2000, 'ok', NULL)
+    `).run()
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/traces', role: 'agent', tenantId: 'tenant-spans-a' })
+    await tryHandleSpans(ctx)
+    const traceIds = body().map((t: any) => t.trace_id)
+    expect(traceIds).toEqual(['t-a'])
+  })
+
+  it('GET /api/traces returns everything for admin', async () => {
+    getDb().prepare(`
+      INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+      VALUES ('t-a', 's1', NULL, 'tenant-a-agent', 'op-a', 1000, 2000, 'ok', NULL),
+             ('t-b', 's2', NULL, 'tenant-b-agent', 'op-b', 1000, 2000, 'ok', NULL)
+    `).run()
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/traces', role: 'admin' })
+    await tryHandleSpans(ctx)
+    expect(body()).toHaveLength(2)
+  })
+
+  it('GET /api/traces/:id 404s (not 403, to avoid confirming existence) for another tenant\'s trace', async () => {
+    getDb().prepare(`
+      INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+      VALUES ('t-b', 's2', NULL, 'tenant-b-agent', 'op-b', 1000, 2000, 'ok', NULL)
+    `).run()
+    const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/traces/t-b', role: 'agent', tenantId: 'tenant-spans-a' })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(404)
+    expect(body().error).toBe('not_found')
+  })
+
+  it('GET /api/otel-export with an explicit agent param is blocked (403) cross-tenant', async () => {
+    const { ctx, status } = makeCtx({
+      method: 'GET', path: '/api/otel-export', query: { agent: 'tenant-b-agent' },
+      role: 'agent', tenantId: 'tenant-spans-a',
+    })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(403)
+  })
+
+  it('GET /api/otel-export with no agent param is scoped to the caller\'s own tenant', async () => {
+    getDb().prepare(`
+      INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+      VALUES ('t-a', 's1', NULL, 'tenant-a-agent', 'op-a', 1000, 2000, 'ok', NULL),
+             ('t-b', 's2', NULL, 'tenant-b-agent', 'op-b', 1000, 2000, 'ok', NULL)
+    `).run()
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/otel-export', role: 'agent', tenantId: 'tenant-spans-a' })
+    await tryHandleSpans(ctx)
+    const spans = body().resourceSpans.flatMap((r: any) => r.scopeSpans[0].spans)
+    expect(spans).toHaveLength(1)
+    expect(spans[0].name).toBe('op-a')
   })
 })

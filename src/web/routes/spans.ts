@@ -1,10 +1,23 @@
-import { upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces, queryOtelSpans } from '../../db.js'
+import { upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces, queryOtelSpans, resolveAgentTenant } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import { spansToOtelJson } from '../../otel-exporter.js'
 import type { RouteContext } from './types.js'
 
+// Tenant-IDOR guard (kanban 45d7a63a item 1C): otel_spans is agent_id-keyed
+// with no tenant_id column of its own, same shape as daily_logs -- scope it
+// the same way (resolveAgentTenant against the tenant_agent_availability
+// opt-in matrix). Admin (including every fleet agent on the shared
+// dashboard-token bearer) is unrestricted.
+function tenantBlocked(ctx: RouteContext, agentId: string): boolean {
+  if (ctx.role === 'admin') return false
+  const callerTenant = ctx.tenantId ?? 'default'
+  return resolveAgentTenant(agentId) !== callerTenant
+}
+
 export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
+  const isAdmin = ctx.role === 'admin'
+  const callerTenant = ctx.tenantId ?? 'default'
 
   // POST /api/spans -- open or close a span
   // Open: { trace_id, span_id, parent_span_id?, agent_id, operation, start_ms, attributes? }
@@ -24,6 +37,14 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     }
     if (!data.trace_id || !data.span_id) {
       json(res, { error: 'required', hint: 'trace_id and span_id required' }, 400)
+      return true
+    }
+    // Only checked when agent_id is present on the request (the open path and
+    // the create-on-close upsert path both require it) -- a bare close of an
+    // already-existing span carries no agent_id and was already tenant-checked
+    // when it was opened.
+    if (data.agent_id && tenantBlocked(ctx, data.agent_id)) {
+      json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
       return true
     }
     if (data.end_ms !== undefined) {
@@ -66,7 +87,9 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
   // GET /api/traces -- list recent traces
   if (path === '/api/traces' && method === 'GET') {
     const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 200)
-    json(res, listOtelTraces(limit))
+    let traces = listOtelTraces(limit)
+    if (!isAdmin) traces = traces.filter(t => resolveAgentTenant(t.root_agent) === callerTenant)
+    json(res, traces)
     return true
   }
 
@@ -76,6 +99,12 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     const traceId = traceMatch[1]
     const spans = getOtelTrace(traceId)
     if (!spans.length) { json(res, { error: 'not_found', hint: 'trace not found' }, 404); return true }
+    // Tenant check against the root span's agent (spans are ordered by
+    // start_ms ASC, so spans[0] is the trace's origin).
+    if (!isAdmin && resolveAgentTenant(spans[0].agent_id) !== callerTenant) {
+      json(res, { error: 'not_found', hint: 'trace not found' }, 404)
+      return true
+    }
     json(res, { trace_id: traceId, spans })
     return true
   }
@@ -94,7 +123,14 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', hint: 'from and to must be unix timestamps in milliseconds' }, 400)
       return true
     }
-    const spans = queryOtelSpans({ agent: agentParam, fromMs, toMs, limit })
+    if (agentParam && tenantBlocked(ctx, agentParam)) {
+      json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
+      return true
+    }
+    let spans = queryOtelSpans({ agent: agentParam, fromMs, toMs, limit })
+    // No agent filter supplied: a non-admin caller gets their own tenant's
+    // spans only, never the whole fleet's.
+    if (!agentParam && !isAdmin) spans = spans.filter(s => resolveAgentTenant(s.agent_id) === callerTenant)
     const payload = spansToOtelJson(spans)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(payload))
