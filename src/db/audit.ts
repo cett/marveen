@@ -451,7 +451,7 @@ export interface AgentAuditLogRow {
 export function writeAgentAuditLog(opts: {
   agent_id: string
   entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval'
-  action: 'create' | 'update' | 'delete'
+  action: 'create' | 'update' | 'delete' | 'pii_scrub_bypass'
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
 }): void {

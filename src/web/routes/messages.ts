@@ -50,6 +50,16 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
 // Frozen at module load, like the config constant it derives from.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 
+// Review-gate for the no_pii_scrub bypass flag below: the shared fleet
+// dashboard-token bearer resolves to ctx.role === 'admin' for every agent
+// (src/web/authz.ts backward-compat), so role alone cannot tell "a human
+// browser session" from "any fleet agent's API call". Copied from
+// schedules.ts's isHumanAdmin (not imported -- kept local so this route's
+// authorization logic doesn't depend on an unrelated route module).
+function isHumanAdmin(ctx: RouteContext): boolean {
+  return ctx.role === 'admin' && ctx.auth?.kind === 'session'
+}
+
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -200,11 +210,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     let normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
     // PII scrub-before-persist: health/calendar/email
     // data moves between agents through this table with no redaction today.
-    // Skipped for completion reports (COMPLETION_REPORT_PREFIX) and any
-    // caller that explicitly opts out via no_pii_scrub -- e.g. the Garmin
-    // health-report chain, where carrying real metrics agent-to-agent is the
-    // deliberate point of the message, not an accidental leak.
-    if (no_pii_scrub !== true && !normalizedContent.startsWith(COMPLETION_REPORT_PREFIX)) {
+    // Skipped for completion reports (COMPLETION_REPORT_PREFIX) and, since
+    // this is a scrub BYPASS, only for a human dashboard session with
+    // no_pii_scrub -- e.g. the Garmin health-report chain, where carrying
+    // real metrics agent-to-agent is the deliberate point of the message,
+    // not an accidental leak. Every other caller with no_pii_scrub=true
+    // (any bearer-token fleet agent, or a non-admin session) is logged and
+    // still scrubbed -- default-deny, not a hard 403, so an existing caller
+    // that sets the flag without authorization is not broken, just ignored.
+    const piiScrubBypassed = no_pii_scrub === true && isHumanAdmin(ctx)
+    if (no_pii_scrub === true && !piiScrubBypassed) {
+      logger.warn({ from: from.trim(), authKind: ctx.auth?.kind }, 'no_pii_scrub ignored: requires human admin session')
+    }
+    if (!piiScrubBypassed && !normalizedContent.startsWith(COMPLETION_REPORT_PREFIX)) {
       normalizedContent = scrubPiiFromContent(normalizedContent)
     }
     // Card 06f062e4: optional attributability tag, self-declared like `from`
@@ -223,6 +241,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     } else if (ctx.auth?.kind === 'session' && ctx.auth.user) {
       try {
         writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'message', action: 'create', entity_id: msg.id })
+      } catch { /* audit failure must not abort message creation */ }
+    }
+    if (piiScrubBypassed) {
+      try {
+        writeAgentAuditLog({ agent_id: ctx.auth?.user || from.trim(), entity: 'message', action: 'pii_scrub_bypass',
+          entity_id: msg.id, detail: { from: from.trim(), to: storedTo } })
       } catch { /* audit failure must not abort message creation */ }
     }
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')

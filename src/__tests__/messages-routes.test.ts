@@ -16,6 +16,8 @@ vi.mock('../db.js', () => ({
   closeOtelSpan: vi.fn(),
   findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
   upsertBlackboard: vi.fn(),
+  writeAgentAuditLog: vi.fn(),
+  isAuthorizedPartnerSender: vi.fn().mockReturnValue(false),
   COMPLETION_REPORT_PREFIX: '[Eredmény]',
 }))
 vi.mock('../channel-coordinator/ingest.js', () => ({
@@ -45,7 +47,12 @@ vi.mock('../config.js', async (importOriginal) => {
 
 import { tryHandleMessages } from '../web/routes/messages.js'
 
-function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
+function makeCtx(
+  method: string,
+  path: string,
+  body?: object,
+  opts: { role?: string; auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string }; tenantId?: string | null } = {},
+): { ctx: RouteContext; out: { status: number; body: any } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
   const req = new EventEmitter() as any
   req.method = method
@@ -57,7 +64,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
     end(b?: string) { try { out.body = JSON.parse(b || '{}') } catch { out.body = b } },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, role: opts.role, auth: opts.auth, tenantId: opts.tenantId } as RouteContext, out }
 }
 
 describe('tryHandleMessages', () => {
@@ -551,5 +558,73 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     await tryHandleMessages(ctx)
     expect(out.status).toBe(200)
     expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+})
+
+// no_pii_scrub review-gate: the shared fleet dashboard-token bearer resolves
+// to ctx.role === 'admin' for every agent, so only a real browser session
+// (ctx.auth.kind === 'session') may bypass the PII scrub -- default-deny for
+// everything else (warn + scrub still runs), never a hard 403.
+describe('POST /api/messages: no_pii_scrub review-gate', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('bearer-token caller (no session auth): scrub still runs, warning logged, no audit entry', async () => {
+    const { scrubPiiFromContent } = await import('../prompt-safety.js')
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 101, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'admin' }) // role=admin from the shared bearer token, but no ctx.auth at all
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(scrubPiiFromContent)).toHaveBeenCalled()
+    expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'pii_scrub_bypass' }),
+    )
+  })
+
+  it('human admin session: scrub is bypassed and a pii_scrub_bypass audit entry is written', async () => {
+    const { scrubPiiFromContent } = await import('../prompt-safety.js')
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 102, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'test-owner', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'admin', auth: { kind: 'session', user: 'jonas' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(scrubPiiFromContent)).not.toHaveBeenCalled()
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'jonas', entity: 'message', action: 'pii_scrub_bypass', entity_id: 102 }),
+    )
+  })
+
+  it('session auth but non-admin role: scrub still runs, no bypass audit entry', async () => {
+    const { scrubPiiFromContent } = await import('../prompt-safety.js')
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 103, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'viewer', auth: { kind: 'session', user: 'someone' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(scrubPiiFromContent)).toHaveBeenCalled()
+    expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'pii_scrub_bypass' }),
+    )
+  })
+
+  it('no_pii_scrub omitted: scrub runs regardless of auth, no bypass audit entry (baseline unchanged)', async () => {
+    const { scrubPiiFromContent } = await import('../prompt-safety.js')
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 104, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'test-owner', to: 'agent-b', content: 'ordinary message',
+    }, { role: 'admin', auth: { kind: 'session', user: 'jonas' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(scrubPiiFromContent)).toHaveBeenCalled()
+    expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'pii_scrub_bypass' }),
+    )
   })
 })
