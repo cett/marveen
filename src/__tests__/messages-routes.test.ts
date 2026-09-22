@@ -568,7 +568,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 describe('POST /api/messages: no_pii_scrub review-gate', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('bearer-token caller (no session auth): scrub still runs, warning logged, no audit entry', async () => {
+  it('bearer-token caller (no session auth): scrub still runs, warning logged, denied-attempt audit entry written (not the bypass action)', async () => {
     const { scrubPiiFromContent } = await import('../prompt-safety.js')
     const db = await import('../db.js')
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 101, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
@@ -580,6 +580,9 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
     expect(vi.mocked(scrubPiiFromContent)).toHaveBeenCalled()
     expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'pii_scrub_bypass' }),
+    )
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'agent-a', entity: 'message', action: 'pii_scrub_attempt_denied' }),
     )
   })
 
@@ -598,7 +601,7 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
     )
   })
 
-  it('session auth but non-admin role: scrub still runs, no bypass audit entry', async () => {
+  it('session auth but non-admin role: scrub still runs, no bypass audit entry, denied-attempt audit entry written', async () => {
     const { scrubPiiFromContent } = await import('../prompt-safety.js')
     const db = await import('../db.js')
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 103, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
@@ -610,6 +613,9 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
     expect(vi.mocked(scrubPiiFromContent)).toHaveBeenCalled()
     expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'pii_scrub_bypass' }),
+    )
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'agent-a', entity: 'message', action: 'pii_scrub_attempt_denied', detail: { from: 'agent-a', authKind: 'session' } }),
     )
   })
 

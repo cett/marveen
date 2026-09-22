@@ -46,7 +46,7 @@ vi.mock('../db.js', () => ({
   writeAgentAuditLog: vi.fn(),
 }))
 
-import { tryHandleApprovals } from '../web/routes/approvals.js'
+import { tryHandleApprovals, startApprovalTimeoutSweeper } from '../web/routes/approvals.js'
 
 function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
@@ -204,5 +204,35 @@ describe('tryHandleApprovals', () => {
   it('returns false for unmatched route', async () => {
     const { ctx } = makeCtx('GET', '/api/other')
     expect(await tryHandleApprovals(ctx)).toBe(false)
+  })
+})
+
+describe('startApprovalTimeoutSweeper', () => {
+  it('writes a timeout_sweep audit entry when the sweep expires approvals', async () => {
+    vi.useFakeTimers()
+    const db = await import('../db.js')
+    vi.mocked(db.writeAgentAuditLog).mockClear()
+    vi.mocked(db.expireTimedOutApprovals).mockReturnValueOnce(2)
+    const handle = startApprovalTimeoutSweeper()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'system', entity: 'approval', action: 'timeout_sweep', detail: { expired: 2 } }),
+    )
+    clearInterval(handle)
+    vi.useRealTimers()
+  })
+
+  it('writes no audit entry when nothing expired', async () => {
+    vi.useFakeTimers()
+    const db = await import('../db.js')
+    vi.mocked(db.writeAgentAuditLog).mockClear()
+    vi.mocked(db.expireTimedOutApprovals).mockReturnValueOnce(0)
+    const handle = startApprovalTimeoutSweeper()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'timeout_sweep' }),
+    )
+    clearInterval(handle)
+    vi.useRealTimers()
   })
 })

@@ -152,10 +152,22 @@ function _entityCell(entry) {
   return escapeHtml(entry.entity ?? '')
 }
 
+// Gated/rejected agent-source actions worth calling out visually: a denied
+// or auto-timed-out attempt is easy to miss among routine create/update rows
+// otherwise, since they all render as the same plain text today.
+const _dangerActions = new Set(['pii_scrub_bypass', 'pii_scrub_attempt_denied'])
+const _warnActions = new Set(['skip_not_live', 'timeout_sweep'])
+
 function _actionCell(entry) {
   if (entry.source === 'hook') {
     const verdictColor = entry.verdict === 'deny' ? 'var(--danger)' : entry.verdict === 'defer' ? 'var(--warning)' : 'var(--success)'
     return `<span style="color:${verdictColor}">${escapeHtml(entry.verdict ?? '')}</span>`
+  }
+  if (_dangerActions.has(entry.action)) {
+    return `<span style="color:var(--danger);font-weight:600">${escapeHtml(entry.action)}</span>`
+  }
+  if (_warnActions.has(entry.action)) {
+    return `<span style="color:var(--warning);font-weight:600">${escapeHtml(entry.action)}</span>`
   }
   return escapeHtml(entry.action ?? '')
 }

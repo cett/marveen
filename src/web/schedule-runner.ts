@@ -21,6 +21,7 @@ import {
   findActiveKanbanCardByTitle,
   findBlackboardRowByAgent,
   createAgentMessage,
+  writeAgentAuditLog,
 } from '../db.js'
 import { toPendingRetryView, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -319,6 +320,20 @@ export const SCHEDULE_JANITOR_PARKED_MIN_AGE_MS = 120_000
 // it to disk and reload on startup so the skip-check survives restarts.
 const SCHEDULE_LAST_RUN_PATH = join(STORE_DIR, 'schedule-last-run.json')
 const scheduleLastRun: Map<string, number> = new Map()
+
+// Dedup for the not-live skip audit log: the fire-loop scans every enabled
+// task once per tick (60s), so a draft/disabled task would otherwise write an
+// agent_audit_log row on every tick -- 1440/day per task. In-memory only
+// (cleared on restart), so at most one row per task per scheduler lifetime,
+// not per calendar day. Same shape as shouldSendSizeGuardNotice above:
+// exported as a pure claim-check so the dedup itself is unit-testable
+// without driving the whole (unexported) tick loop.
+export function shouldAlertNotLive(seen: Set<string>, taskName: string): boolean {
+  if (seen.has(taskName)) return false
+  seen.add(taskName)
+  return true
+}
+const notLiveAlerted = new Set<string>()
 
 function loadScheduleLastRun(): void {
   try {
@@ -1367,6 +1382,10 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // while the retry sat in the queue, drop the retry so a long-stuck
       // task doesn't surprise-fire the moment the session frees up.
       if (!taskDef.enabled || !isTaskLive(taskDef)) {
+        try {
+          writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: 'skip_not_live',
+            entity_id: row.task_name, detail: { reason: 'retry_dropped', cause: !taskDef.enabled ? 'disabled' : 'not_live' } })
+        } catch { /* audit failure must not block the tick */ }
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
@@ -1446,7 +1465,15 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const quotaSnapshot = readQuotaSnapshot()
 
     for (const task of tasks) {
-      if (!task.enabled || !isTaskLive(task)) continue
+      if (!task.enabled || !isTaskLive(task)) {
+        if (shouldAlertNotLive(notLiveAlerted, task.name)) {
+          try {
+            writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: 'skip_not_live',
+              entity_id: task.name, detail: { reason: !task.enabled ? 'disabled' : 'not_live' } })
+          } catch { /* audit failure must not block the tick */ }
+        }
+        continue
+      }
       const occurrenceMs = cronPrevOccurrence(task.schedule, fromMs, now)
       if (occurrenceMs == null) continue
 
