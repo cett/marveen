@@ -390,7 +390,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
-- widen the destructive-command gate's coordinator git-push exemption: it recognized only the main-agent channels tmux session, so the coordinator's own background task workers would have been blocked from pushing; now matches all of the coordinator's own session names plus an opt-in env var the sub-agent spawn path never sets, while sub-agent sessions remain blocked
+- widen the destructive-command gate's coordinator git-push exemption: it recognized only the main-agent channels tmux session, so the coordinator's own background task workers (and, on installs that run their coordinator under the generic sub-agent session template with the main agent's own id) would have been blocked from pushing; now matches all of the coordinator's own session names plus an opt-in env var the sub-agent spawn path never sets, while every other sub-agent session remains blocked
 - gate no_pii_scrub bypass behind human admin session
 - add missing not_live entry to ERROR_I18N + both locales
 - tenant-scope daily-log, ideas, and otel spans (IDOR)

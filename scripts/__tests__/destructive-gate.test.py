@@ -244,19 +244,18 @@ class TestMainExitCodes(unittest.TestCase):
         )
         self.assertEqual(code, 0)
 
-    def test_git_push_blocks_from_agent_prefixed_session_even_matching_main_id(self):
-        # "agent-<name>" is the sub-agent session template everywhere else in
-        # the codebase (agentSessionName() in agent-process-session.ts) --
-        # the main agent never runs under it, even when <name> happens to
-        # equal the main agent's own id. This must stay blocked: a sub-agent
-        # can never legitimately produce this exact string for itself since
-        # its own agentSessionName() call uses ITS OWN name, but the
-        # coordinator's real session templates must not be confused with it.
+    def test_git_push_allows_from_agent_prefixed_session_matching_main_id(self):
+        # "agent-<name>" is the generic sub-agent session template
+        # (agentSessionName() in agent-process-session.ts), but at least one
+        # install runs its actual coordinator under "agent-<main_id>"
+        # (independently confirmed live via tmux, 2026-09-15-). Allowing this
+        # ONE exact string is safe: only the main agent's own id can produce
+        # it, so "agent-<any-other-name>" (every real sub-agent) is untouched.
         code, _ = self._run_hook_with_fake_tmux(
             self._payload(tool_input={"command": "git push origin main"}),
             session_name="agent-coord",
         )
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 0)
 
     def test_git_push_allows_via_env_var_from_a_subagent_shaped_session(self):
         # Documented accepted limit: MARVEEN_COORDINATOR_PUSH_ALLOWED=1 grants
@@ -396,14 +395,17 @@ class TestCoordinatorPushAllowedUnit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=False)
     @patch.object(hook, "subprocess")
     @patch.object(hook.ledger_lib, "main_agent_id", return_value="coord")
-    def test_rejects_agent_prefixed_session_even_when_name_matches_main_id(self, _main_id, mock_subprocess):
-        # "agent-coord" is the sub-agent template, not a coordinator session,
-        # even though "coord" here is literally the main agent's own id --
-        # the allowlist is an exact-match set, not a prefix/suffix check.
+    def test_matches_agent_prefixed_session_when_name_equals_main_id(self, _main_id, mock_subprocess):
+        # "agent-coord" is the generic sub-agent template, but at least one
+        # install runs its real coordinator under exactly this session
+        # (independently confirmed live). Allowed because "coord" here is
+        # literally the main agent's own id -- the set is an exact-match
+        # allowlist, not a prefix/suffix check, so "agent-<anything-else>"
+        # is a completely different string and stays blocked (see below).
         os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
         mock_subprocess.run.return_value.returncode = 0
         mock_subprocess.run.return_value.stdout = "agent-coord\n"
-        self.assertFalse(hook._is_coordinator_push_allowed())
+        self.assertTrue(hook._is_coordinator_push_allowed())
 
     @patch.dict(os.environ, {}, clear=False)
     @patch.object(hook, "subprocess")

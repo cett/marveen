@@ -459,12 +459,16 @@ def _is_coordinator_push_allowed():
          session templates: "<main_id>-channels" (the long-lived channels
          session, main-agent.ts channelsSessionName()), "<main_id>-worker"
          and "<main_id>-worker-fast" (the background task workers,
-         agent-worker.ts ctxSlow/ctxFast). Deliberately excludes the
-         "agent-<name>" template (agentSessionName() in
-         agent-process-session.ts) even for name == main_id: that template
-         is reserved for sub-agent sessions everywhere else in the codebase
-         (see main-agent.ts's own comment), and the main agent never runs
-         under it.
+         agent-worker.ts ctxSlow/ctxFast), or "agent-<main_id>" (the generic
+         agentSessionName() template in agent-process-session.ts, which is
+         reserved for sub-agents everywhere ELSE in the codebase -- but this
+         install has run its actual coordinator under exactly that session
+         since 2026-09-15, independently confirmed live via tmux
+         list-sessions + capture-pane). The security cost of including it is
+         zero: "agent-<main_id>" is a single specific string only the main
+         agent's own id can produce, so it grants no additional session --
+         "agent-<sub-agent-name>" for any other name is untouched and still
+         blocked below.
 
     Both checks are spoofable by a sub-agent that renames its own tmux
     session or forges the env var into its own process -- this governs
@@ -479,6 +483,7 @@ def _is_coordinator_push_allowed():
             '%s-channels' % main_id,
             '%s-worker' % main_id,
             '%s-worker-fast' % main_id,
+            'agent-%s' % main_id,
         }
         out = subprocess.run(
             ['tmux', 'display-message', '-p', '#S'],
