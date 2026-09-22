@@ -102,7 +102,7 @@ A DB migration runner checksum-ellenőrzéssel és per-migrációs tranzakciókk
 
 Állapot: upstream `b3f6574a` vs fork `37d218e9`, 2026-09-22
 
-<!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
+<!-- ONGOING: Minden jövőbeli fork-PR leadásakor (fejlesztő -> koordinátor) frissítsd ezt a szakaszt
      a friss git log alapján:
        git fetch upstream && git fetch origin
        git log upstream/develop..origin/develop --oneline   # fork többlet
