@@ -1917,6 +1917,7 @@ window._i18n.en = {
   'errors.not_supported':            'Not supported',
   'errors.timeout':                  'Timeout',
   'errors.disabled':                 'Feature disabled',
+  'errors.not_live':                 'This task is not live yet -- an admin must activate it',
   'errors.managed_settings_missing': 'Managed settings missing',
   'errors.upstream_error':           'Upstream service unavailable',
   'errors.sender_not_in_allowlist':  'Sender is not in the allowlist',

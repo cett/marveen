@@ -1917,6 +1917,7 @@ window._i18n.hu = {
   'errors.not_supported':            'Nem támogatott',
   'errors.timeout':                  'Időtúllépés',
   'errors.disabled':                 'A funkció le van tiltva',
+  'errors.not_live':                 'A feladat nincs élesítve -- egy adminnak aktiválnia kell',
   'errors.managed_settings_missing': 'Hiányzó menedzselt beállítás',
   'errors.upstream_error':           'Külső szolgáltatás nem elérhető',
   'errors.sender_not_in_allowlist':  'A küldő nincs az engedélyezett listán',

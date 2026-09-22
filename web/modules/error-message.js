@@ -13,6 +13,7 @@ const ERROR_I18N = {
   not_supported:            'errors.not_supported',
   timeout:                  'errors.timeout',
   disabled:                 'errors.disabled',
+  not_live:                 'errors.not_live',
   managed_settings_missing: 'errors.managed_settings_missing',
   upstream_error:           'errors.upstream_error',
   sender_not_in_allowlist:  'errors.sender_not_in_allowlist',
