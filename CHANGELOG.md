@@ -9,7 +9,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: ca2706b76f3f82c17d378907e44fcded5285fda1 -->
+<!-- changelog-auto-sha: faa7161432f353efcfa98c43c16ba16daa0be4aa -->
 
 ### Added
 
@@ -389,6 +389,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- gate no_pii_scrub bypass behind human admin session
+- add missing not_live entry to ERROR_I18N + both locales
 - tenant-scope daily-log, ideas, and otel spans (IDOR)
 - declare snapshot sha256/chars over full file content
 - repair agent_messages boot-race drift, hook write atomicity, busy_timeout
@@ -845,6 +847,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- sync Unreleased section (item-3 entries + stale catch-up)
 - note agent-skills SQL read path + dual-write retirement
 - fill inter-agent span attributes
 - agent_messages refused/no_session markers
