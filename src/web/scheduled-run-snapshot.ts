@@ -108,7 +108,7 @@ export function writeScheduledRunSnapshot(
   const skillSource = opts.skillPath ? readSkillSourceInfo(opts.skillPath) : null
   const scrubbedBody = scrubSecurityTags(body)
   const content = buildSnapshotHeader(taskName, firedAt, skillSource) + scrubbedBody
-  const sha256 = createHash('sha256').update(scrubbedBody).digest('hex')
+  const sha256 = createHash('sha256').update(content).digest('hex')
 
   for (let attempt = 0; attempt < SNAPSHOT_WRITE_MAX_ATTEMPTS; attempt++) {
     const rand4 = randomBytes(2).toString('hex')
@@ -126,7 +126,7 @@ export function writeScheduledRunSnapshot(
         continue
       }
       renameSync(tmp, target)
-      return { filePath: target, sha256, chars: scrubbedBody.length }
+      return { filePath: target, sha256, chars: content.length }
     } catch (err) {
       try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* best-effort cleanup */ }
       logger.warn({ err, taskName, attempt }, 'scheduled-run-snapshot: write attempt failed')
