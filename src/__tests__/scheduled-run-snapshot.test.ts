@@ -4,6 +4,7 @@
 // STORE_DIR itself).
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, utimesSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -103,7 +104,13 @@ describe('writeScheduledRunSnapshot / sweepScheduledRunSnapshots (real fs, scrat
     const content = readFileSync(snap!.filePath, 'utf-8')
     expect(content).toContain('hello world body')
     expect(content).toContain('scheduled-run task=my-task')
-    expect(snap!.chars).toBe('hello world body'.length)
+    // Regression guard: declared sha256/chars must describe the FULL written
+    // file (header + body), not just the body -- a header-only delta here
+    // means a consumer verifying file integrity against the declared values
+    // will always see a mismatch.
+    expect(snap!.chars).toBe(content.length)
+    expect(snap!.chars).not.toBe('hello world body'.length)
+    expect(snap!.sha256).toBe(createHash('sha256').update(content).digest('hex'))
   })
 
   it('writes the file with 0600 permissions', () => {
