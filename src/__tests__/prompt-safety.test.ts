@@ -9,7 +9,52 @@ import {
   sanitizeAgentIdent,
   sanitizeAgentSource,
   sanitizeCapabilityTag,
+  scrubPiiFromContent,
 } from '../prompt-safety.js'
+
+describe('scrubPiiFromContent', () => {
+  it('redacts an email address', () => {
+    expect(scrubPiiFromContent('reach me at jonas.gergo@gmail.com please')).toBe('reach me at [PII_REMOVED] please')
+  })
+
+  it('redacts a +36-prefixed Hungarian phone number', () => {
+    expect(scrubPiiFromContent('hivj fel: +36301234567')).toBe('hivj fel: [PII_REMOVED]')
+  })
+
+  it('redacts a 06-prefixed Hungarian phone number with separators', () => {
+    expect(scrubPiiFromContent('szam: 06 30 123 4567')).toBe('szam: [PII_REMOVED]')
+  })
+
+  it('redacts a TAJ-shaped number (3-3-3 digit groups)', () => {
+    expect(scrubPiiFromContent('TAJ: 123-456-789')).toBe('TAJ: [PII_REMOVED]')
+  })
+
+  it('does not redact an unrelated bare 9-digit number', () => {
+    expect(scrubPiiFromContent('order id 123456789')).toBe('order id 123456789')
+  })
+
+  it('redacts a labelled VO2max reading, keeping surrounding text', () => {
+    expect(scrubPiiFromContent('mai edzes: VO2max: 52 ml/kg/min, jol ment')).toBe('mai edzes: [PII_REMOVED], jol ment')
+  })
+
+  it('redacts a labelled HR reading', () => {
+    expect(scrubPiiFromContent('atlag HR: 142 bpm a futason')).toBe('atlag [PII_REMOVED] a futason')
+  })
+
+  it('redacts a labelled HRV reading', () => {
+    expect(scrubPiiFromContent('HRV=45ms ma reggel')).toBe('[PII_REMOVED] ma reggel')
+  })
+
+  it('leaves plain operational text with no PII shapes untouched', () => {
+    const text = 'a #442 PR kesz, tsc clean, 25/25 teszt zold'
+    expect(scrubPiiFromContent(text)).toBe(text)
+  })
+
+  it('redacts multiple distinct PII shapes in one message', () => {
+    const text = 'email: a@b.com, tel: +36201112233, TAJ: 111-222-333'
+    expect(scrubPiiFromContent(text)).toBe('email: [PII_REMOVED], tel: [PII_REMOVED], TAJ: [PII_REMOVED]')
+  })
+})
 
 describe('wrapUntrusted', () => {
   it('wraps plain content in untrusted tags with the source', () => {

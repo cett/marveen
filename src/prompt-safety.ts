@@ -56,6 +56,43 @@ export function scrubSecurityTags(raw: string): string {
   return raw.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
 }
 
+// ── PII scrub-before-persist (kanban 45d7a63a item 2) ──────────────────────
+//
+// Calendar summaries, email excerpts, and Garmin/health metrics all move
+// between agents through agent_messages and land in SQLite verbatim today --
+// there is no scrubbing layer at all. This is a lightweight, best-effort
+// regex redactor for the shapes of real user data most likely to leak this
+// way: email addresses, Hungarian phone numbers, TAJ (social security)
+// numbers, and labelled health metric readings. It is NOT a general DLP
+// scanner -- it exists to reduce the blast radius of a stray literal
+// copy-paste landing in a shared, multi-tenant table, not to guarantee zero
+// PII ever reaches it.
+const PII_SENTINEL = '[PII_REMOVED]'
+
+// Email addresses.
+const PII_EMAIL_RX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
+// Hungarian mobile/landline numbers: +36 or 06 prefix, optional separators
+// (e.g. "+36301234567", "06 30 123 4567", "06-1-234-5678").
+const PII_HU_PHONE_RX = /(?:\+36|06)[\s-]?\d{1,2}[\s-]?\d{3}[\s-]?\d{3,4}\b/g
+// TAJ (Hungarian social security) number, displayed form only (3-3-3 digit
+// groups with a separator) -- deliberately NOT a bare \d{9} pattern, which
+// would false-positive on every unrelated 9-digit number in a message.
+const PII_TAJ_RX = /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g
+// Labelled health/fitness metric readings (Garmin-style summaries): the
+// label plus its numeric value, not the whole surrounding sentence.
+const PII_HEALTH_METRIC_RX = /\b(?:VO2\s?max|HRV|HR)\s*[:=]?\s*\d+(?:\.\d+)?\s*(?:ms|bpm|ml\/kg\/min)?\b/gi
+
+/** Redact PII-shaped substrings from free text before it is persisted to a
+ *  shared table. Matched spans only, not whole lines/messages -- keeps
+ *  legitimate operational chatter around the redacted value intact. */
+export function scrubPiiFromContent(text: string): string {
+  return text
+    .replace(PII_EMAIL_RX, PII_SENTINEL)
+    .replace(PII_HU_PHONE_RX, PII_SENTINEL)
+    .replace(PII_TAJ_RX, PII_SENTINEL)
+    .replace(PII_HEALTH_METRIC_RX, PII_SENTINEL)
+}
+
 // Raw agent identifier: no ':' allowed (the router builds "agent:NAME" itself).
 export function sanitizeAgentIdent(raw: string): string {
   return String(raw ?? '').replace(/[^a-zA-Z0-9_-]/g, '')
