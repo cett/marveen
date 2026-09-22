@@ -20,9 +20,14 @@ export interface RouteContext {
    *  the request carried no valid credential (only possible on ungated public
    *  paths, which are reached without a principal). `user` is set for the
    *  'session' kind; `peer` mirrors fedPeer for the 'federation' kind;
-   *  `device` is the key name for the 'device' kind. Lets routes distinguish
-   *  a human session from a token/fleet caller or an enrolled device. */
-  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string }
+   *  `device` is the key name for the 'device' kind; `tokenName` is the
+   *  api_tokens row's human label for the 'token' kind, set only when the
+   *  bearer resolved through the registered-token DB lookup -- the legacy
+   *  file-based dashboard token (store/.dashboard-token) has no api_tokens
+   *  row, so it stays undefined there (honest "no named principal", not a
+   *  fabricated one). Lets routes distinguish a human session from a
+   *  token/fleet caller or an enrolled device. */
+  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; tokenName?: string }
   /**
    * API version the caller addressed. 'v1' when the request used /api/v1/*,
    * null for the legacy /api/* alias, undefined for non-API paths.

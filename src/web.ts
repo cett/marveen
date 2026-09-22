@@ -274,7 +274,7 @@ export function startWebServer(port = 3420): http.Server {
 
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
-      auth.kind === 'token' ? { kind: 'token' as const }
+      auth.kind === 'token' ? { kind: 'token' as const, tokenName: auth.tokenName }
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }

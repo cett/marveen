@@ -663,6 +663,22 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     )
   })
 
+  it('registered api-token caller (has a name in api_tokens): principal resolves to the token name', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 207, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'admin', auth: { kind: 'token', tokenName: 'example-service-token' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
+        detail: { from: 'agent-a', authKind: 'token', principal: 'example-service-token' },
+      }),
+    )
+  })
+
   it('a forged from is recorded verbatim, but the real authenticated session user rides along as principal', async () => {
     // Impersonation shape: `from` claims to be "agent-x" (self-declared,
     // unverifiable), but the request actually came from a real human session

@@ -7,7 +7,7 @@
 // unaffected by the session-priority ordering below.
 //
 // Precedence (first match wins):
-//   1. Authorization: Bearer <api_tokens DB entry, valid>  -> { kind: 'token', role, tenantId }
+//   1. Authorization: Bearer <api_tokens DB entry, valid>  -> { kind: 'token', role, tenantId, tokenName }
 //   1b. Authorization: Bearer <api_tokens DB entry, expired/revoked> -> { kind: 'none' } (no fallback)
 //   2. mv_session cookie (valid session)                   -> { kind: 'session', user, role?, tenantId? }
 //   3. Authorization: Bearer <file-based dashboard token>  -> { kind: 'token' } (admin+default, legacy)
@@ -31,7 +31,7 @@ import { resolveDeviceKey } from './auth-device-keys.js'
 import type { Role } from './rbac.js'
 
 export type AuthResult =
-  | { kind: 'token'; role?: Role; tenantId?: string }
+  | { kind: 'token'; role?: Role; tenantId?: string; tokenName?: string }
   | { kind: 'device'; device: string; deviceId: number }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string; role?: Role; tenantId?: string | null }
@@ -45,7 +45,7 @@ export type AuthResult =
 // would re-grant admin and bypass revocation).
 
 type ApiTokenResult =
-  | { found: true; role: Role; tenantId: string }
+  | { found: true; role: Role; tenantId: string; name: string }
   | { found: false; registeredButInvalid: boolean }
 
 export function resolveApiToken(bearer: string, db: Database.Database): ApiTokenResult {
@@ -54,13 +54,13 @@ export function resolveApiToken(bearer: string, db: Database.Database): ApiToken
 
   const validRow = db
     .prepare(
-      `SELECT role, tenant_id FROM api_tokens
+      `SELECT role, tenant_id, name FROM api_tokens
        WHERE token_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
     )
-    .get(hash, now) as { role: string; tenant_id: string } | undefined
+    .get(hash, now) as { role: string; tenant_id: string; name: string } | undefined
 
   if (validRow) {
-    return { found: true, role: validRow.role as Role, tenantId: validRow.tenant_id }
+    return { found: true, role: validRow.role as Role, tenantId: validRow.tenant_id, name: validRow.name }
   }
 
   const anyRow = db.prepare('SELECT id FROM api_tokens WHERE token_hash = ?').get(hash)
@@ -144,7 +144,7 @@ export function resolveAuth(
   if (bearerValue && db) {
     const result = resolveApiToken(bearerValue, db)
     if (result.found) {
-      return { kind: 'token', role: result.role, tenantId: result.tenantId }
+      return { kind: 'token', role: result.role, tenantId: result.tenantId, tokenName: result.name }
     }
     if (result.registeredButInvalid) {
       return { kind: 'none' }
