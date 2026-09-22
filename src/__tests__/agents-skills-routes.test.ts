@@ -32,7 +32,9 @@ vi.mock('node:os', async (importOriginal) => {
 })
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
-  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen' }
+  // SKILL_SQL_REGEN: true matches the live server (Phase 1-3 shipped,
+  // kanban 918) -- regenSingleSkillFile() actually writes in these tests.
+  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen', SKILL_SQL_REGEN: true }
 })
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-scaffold.js', () => ({ generateSkillMd: vi.fn() }))
@@ -108,24 +110,30 @@ describe('GET /api/agents/:name/skills', () => {
     expect(status()).toBe(404)
   })
 
-  it('lists the main agent\'s skills from the global dir as source=global, deletable=true', async () => {
-    writeSkillDir(GLOBAL_SKILLS_DIR, 'skill-a', { skillMd: '---\nname: skill-a\ndescription: "does A"\n---\nbody' })
-    writeSkillDir(GLOBAL_SKILLS_DIR, 'skill-no-md') // no SKILL.md -> hasSkillMd false, description ''
+  it('lists the main agent\'s skills from SQL as source=global, deletable=true', async () => {
+    const { createSkill } = await import('../db.js')
+    createSkill({ id: 'global/skill-a', name: 'skill-a', description: 'does A', content: '---\nname: skill-a\ndescription: "does A"\n---\nbody', tenant_id: 'fleet', is_global: true })
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/marveen/skills' })
     await tryHandleAgentsSkills(ctx)
     const skills = body() as any[]
-    expect(skills).toHaveLength(2)
+    expect(skills).toHaveLength(1)
     const a = skills.find((s) => s.name === 'skill-a')
     expect(a).toMatchObject({ hasSkillMd: true, description: 'does A', source: 'global', deletable: true })
-    const noMd = skills.find((s) => s.name === 'skill-no-md')
-    expect(noMd).toMatchObject({ hasSkillMd: false, description: '', source: 'global', deletable: true })
+  })
+
+  it('a directory with no matching SQL row does not surface (SQL is now the source of truth, not the directory scan)', async () => {
+    writeSkillDir(GLOBAL_SKILLS_DIR, 'skill-no-row') // on disk, but never materialized into SQL
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/marveen/skills' })
+    await tryHandleAgentsSkills(ctx)
+    expect(body()).toEqual([])
   })
 
   it('lists a sub-agent\'s local skills plus non-shadowed inherited global skills', async () => {
-    writeSkillDir(agentSkillsDir('agent-b'), 'local-only', { skillMd: '---\nname: local-only\ndescription: local\n---\n' })
-    writeSkillDir(agentSkillsDir('agent-b'), 'shared-name', { skillMd: '---\nname: shared-name\ndescription: local version\n---\n' })
-    writeSkillDir(GLOBAL_SKILLS_DIR, 'shared-name', { skillMd: '---\nname: shared-name\ndescription: global version\n---\n' })
-    writeSkillDir(GLOBAL_SKILLS_DIR, 'inherited-only', { skillMd: '---\nname: inherited-only\ndescription: from global\n---\n' })
+    const { createSkill } = await import('../db.js')
+    createSkill({ id: 'agent/agent-b/local-only', name: 'local-only', description: 'local', content: 'x', tenant_id: 'fleet', is_global: false })
+    createSkill({ id: 'agent/agent-b/shared-name', name: 'shared-name', description: 'local version', content: 'x', tenant_id: 'fleet', is_global: false })
+    createSkill({ id: 'global/shared-name', name: 'shared-name', description: 'global version', content: 'x', tenant_id: 'fleet', is_global: true })
+    createSkill({ id: 'global/inherited-only', name: 'inherited-only', description: 'from global', content: 'x', tenant_id: 'fleet', is_global: true })
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/agent-b/skills' })
     await tryHandleAgentsSkills(ctx)
     const skills = body() as any[]
@@ -136,14 +144,6 @@ describe('GET /api/agents/:name/skills', () => {
     expect(shared).toMatchObject({ description: 'local version', source: 'agent', deletable: true })
     const inherited = skills.find((s) => s.name === 'inherited-only')
     expect(inherited).toMatchObject({ source: 'global', deletable: false })
-  })
-
-  it('readSkillDescription falls back to empty string for a malformed frontmatter block', async () => {
-    writeSkillDir(GLOBAL_SKILLS_DIR, 'weird', { skillMd: 'no frontmatter fences here at all' })
-    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/marveen/skills' })
-    await tryHandleAgentsSkills(ctx)
-    const weird = (body() as any[]).find((s) => s.name === 'weird')
-    expect(weird).toMatchObject({ hasSkillMd: true, description: '' })
   })
 })
 
@@ -246,14 +246,17 @@ describe('POST /api/agents/:name/skills (create)', () => {
     expect(getSkill('agent/agent-b/sub-skill')).toMatchObject({ is_global: 0 })
   })
 
-  it('rolls back the DB row and the freshly created dir when writing SKILL.md fails', async () => {
+  it('does not roll back the DB row when the post-create file regen fails (Phase 4, kanban 918: SQL is the source of truth, file regen is best-effort)', async () => {
     vi.mocked(generateSkillMd).mockResolvedValueOnce('# will fail to write')
     atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
-    const { ctx, status } = makeCtx({ method: 'POST', path: '/api/agents/marveen/skills', body: jsonBody({ name: 'rollback-me', description: 'y' }) })
+    const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/marveen/skills', body: jsonBody({ name: 'regen-fail', description: 'y' }) })
     await tryHandleAgentsSkills(ctx)
-    expect(status()).toBe(500)
-    expect(getSkill('global/rollback-me')).toBeUndefined()
-    expect(existsSync(join(GLOBAL_SKILLS_DIR, 'rollback-me'))).toBe(false)
+    expect(status()).toBe(200)
+    expect(body()).toEqual({ ok: true, name: 'regen-fail' })
+    expect(getSkill('global/regen-fail')).toMatchObject({ name: 'regen-fail' })
+    // writeSkillFileToDisk mkdir's the dir before the write attempt, so the
+    // dir can exist even though the write itself failed -- assert on the file.
+    expect(existsSync(join(GLOBAL_SKILLS_DIR, 'regen-fail', 'SKILL.md'))).toBe(false)
   })
 })
 

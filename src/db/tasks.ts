@@ -535,3 +535,17 @@ export function seedSkillIfAbsent(opts: {
 export function countSkills(): number {
   return (db.prepare('SELECT COUNT(*) AS n FROM skills').get() as { n: number }).n
 }
+
+/** Skills owned locally by one agent (id prefix 'agent/<agentId>/', per materialize-skills.ts's ID scheme). */
+export function listAgentOwnedSkills(agentId: string): SkillRow[] {
+  return db.prepare(`
+    SELECT * FROM skills WHERE id LIKE ? ORDER BY name
+  `).all(`agent/${agentId}/%`) as SkillRow[]
+}
+
+/** Global fleet skills (~/.claude/skills), inherited by every agent. */
+export function listGlobalFleetSkills(): SkillRow[] {
+  return db.prepare(`
+    SELECT * FROM skills WHERE is_global = 1 AND tenant_id = 'fleet' ORDER BY name
+  `).all() as SkillRow[]
+}

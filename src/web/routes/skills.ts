@@ -397,15 +397,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    try {
-      mkdirSync(skillDir, { recursive: true })
-      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
-    } catch (err) {
-      deleteSkill(sqlId)
-      rmSync(skillDir, { recursive: true, force: true })
-      json(res, { error: 'internal_error', hint: 'Failed to create skill file' }, 500)
-      return true
-    }
+    // SQL is the source of truth (Phase 4, kanban 918); no direct file write
+    // here, matches the /api/skills/sql POST precedent above.
+    regenSingleSkillFile(sqlId)
 
     json(res, { ok: true, name: skillName })
     return true

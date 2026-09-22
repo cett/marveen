@@ -5,14 +5,14 @@ import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
 import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin } from '../sanitize.js'
+import { regenSingleSkillFile } from '../skill-regen.js'
 import type { RouteContext } from './types.js'
-import { createSkill, deleteSkill, seedSkillIfAbsent } from '../../db.js'
+import { createSkill, deleteSkill, seedSkillIfAbsent, listAgentOwnedSkills, listGlobalFleetSkills, type SkillRow } from '../../db.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
 // the operator's Claude Code install); sub-agents under their own
@@ -51,20 +51,18 @@ type AgentSkill = {
   deletable: boolean
 }
 
-// List the skill directories under `dir`, tagging each with where it came from
-// and whether it can be deleted from this agent's view.
-function scanSkillDir(dir: string, source: 'agent' | 'global', deletable: boolean): AgentSkill[] {
-  if (!existsSync(dir)) return []
-  return readdirSync(dir)
-    .filter((f) => !f.startsWith('.'))
-    .filter((f) => { try { return statSync(join(dir, f)).isDirectory() } catch { return false } })
-    .map((f) => ({
-      name: f,
-      hasSkillMd: existsSync(join(dir, f, 'SKILL.md')),
-      description: readSkillDescription(join(dir, f)),
-      source,
-      deletable,
-    }))
+// Map a skills-table row to the dashboard's AgentSkill shape. Every row
+// reachable here has tenant_id 'fleet' (materialize-skills.ts / createSkill
+// only ever seed fleet rows for file-backed skills), and regen guarantees a
+// fleet row has a matching on-disk SKILL.md, so hasSkillMd is always true.
+function skillRowToAgentSkill(row: SkillRow, source: 'agent' | 'global', deletable: boolean): AgentSkill {
+  return {
+    name: row.name,
+    hasSkillMd: row.tenant_id === 'fleet',
+    description: row.description,
+    source,
+    deletable,
+  }
 }
 
 export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean> {
@@ -195,22 +193,21 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
   if (skillsMatch && method === 'GET') {
     const name = decodeURIComponent(skillsMatch[1])
     if (!agentExistsFor(name)) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    const globalRoot = join(homedir(), '.claude', 'skills')
     let skills: AgentSkill[]
     if (name === MAIN_AGENT_ID) {
       // The main agent's skill root IS the global ~/.claude/skills dir; these
-      // skills physically live there and are deletable from this view.
-      skills = scanSkillDir(skillsRootFor(name), 'global', true)
+      // skills are deletable from this view.
+      skills = listGlobalFleetSkills().map((row) => skillRowToAgentSkill(row, 'global', true))
     } else {
       // Sub-agents own a small agents/<name>/.claude/skills set (deletable) but
-      // at runtime ALSO inherit every global ~/.claude/skills entry. The old
-      // endpoint only scanned the agent-local dir, so the tab looked empty even
-      // though the agent had ~36 inherited skills available. List both; the
-      // inherited ones are not deletable from a single agent's view (they are
-      // shared) and a local skill shadows a global one of the same name.
-      const local = scanSkillDir(skillsRootFor(name), 'agent', true)
+      // at runtime ALSO inherit every global ~/.claude/skills entry. List both;
+      // the inherited ones are not deletable from a single agent's view (they
+      // are shared) and a local skill shadows a global one of the same name.
+      const local = listAgentOwnedSkills(name).map((row) => skillRowToAgentSkill(row, 'agent', true))
       const localNames = new Set(local.map((s) => s.name))
-      const inherited = scanSkillDir(globalRoot, 'global', false).filter((s) => !localNames.has(s.name))
+      const inherited = listGlobalFleetSkills()
+        .map((row) => skillRowToAgentSkill(row, 'global', false))
+        .filter((s) => !localNames.has(s.name))
       skills = [...local, ...inherited]
     }
     json(res, skills)
@@ -246,15 +243,11 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       return true
     }
 
-    try {
-      mkdirSync(skillDir, { recursive: true })
-      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
-    } catch (err) {
-      deleteSkill(agentSqlId)
-      rmSync(skillDir, { recursive: true, force: true })
-      json(res, { error: 'internal_error', hint: 'Failed to create skill file' }, 500)
-      return true
-    }
+    // SQL is the source of truth (Phase 4, kanban 918); no direct file write
+    // here. regenSingleSkillFile pushes the SQL row to disk immediately
+    // (a no-op, logged, while SKILL_SQL_REGEN is off) rather than the route
+    // writing the file itself -- matches the /api/skills/sql POST precedent.
+    regenSingleSkillFile(agentSqlId)
 
     json(res, { ok: true, name: skillName })
     return true
