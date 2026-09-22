@@ -152,7 +152,7 @@ export interface AgentSummary {
   /** The concrete model id this agent resolves to. Unchanged meaning: for a
    *  config that names a `model`, this is exactly what it always was. */
   model: string
-  /** Card c755f4b2 Block B: how `model` was arrived at. Metadata only -- it
+  /** How `model` was arrived at. Metadata only -- it
    *  reports the existing resolution, it does not change it. */
   modelProfile: string | null
   modelSource: 'explicit_model' | 'model_profile' | 'default'
@@ -241,7 +241,7 @@ export function getAgentSummary(name: string): AgentSummary {
   // no pane to inspect). One capture-pane per running agent on the list poll.
   const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
 
-  // Card c755f4b2 Block B: resolve once and report both the answer and how it
+  // Resolve once and report both the answer and how it
   // was reached, so "configured" and "resolved" are never conflated in the API.
   let agentModelConfig: { model?: unknown; modelProfile?: unknown } = {}
   try { agentModelConfig = JSON.parse(readFileOr(join(dir, 'agent-config.json'), '{}')) } catch { /* defaults */ }

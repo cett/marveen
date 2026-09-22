@@ -1,4 +1,4 @@
-// kanban 0664aadf: a raw SQL status write that only touches the `status`
+// A raw SQL status write that only touches the `status`
 // column (no updated_at) leaves the card's OLD updated_at in place. Since
 // listKanbanCards()'s auto-archive sweep archives 'done' cards purely by
 // comparing updated_at to a cutoff, a card that was just moved to 'done'

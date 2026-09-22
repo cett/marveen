@@ -242,7 +242,7 @@ tr.audit-log-row-clickable:hover, tr.approvals-row-clickable:hover {
 }
 .graph-empty[hidden] { display: none; }
 
-/* === Memory Detail Modal (kanban 87076b19) === */
+/* === Memory Detail Modal === */
 .mem-detail-tier-strip {
   width: 4px;
   border-radius: 2px;

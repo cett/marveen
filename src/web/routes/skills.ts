@@ -397,8 +397,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    // SQL is the source of truth (Phase 4, kanban 918); no direct file write
-    // here, matches the /api/skills/sql POST precedent above.
+    // SQL is the source of truth (Phase 4 of the file->SQL-only migration);
+    // no direct file write here, matches the /api/skills/sql POST precedent above.
     regenSingleSkillFile(sqlId)
 
     json(res, { ok: true, name: skillName })
@@ -649,7 +649,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const id = `${tenantId}-${slug}`
     if (getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
     const row = createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null })
-    // Phase 1 of the file->SQL-only migration (kanban 3f52d485): push this
+    // Phase 1 of the file->SQL-only migration: push this
     // write to disk immediately rather than waiting for the next startup
     // regen. No-op (skipped) for non-fleet skills and while SKILL_SQL_REGEN
     // is off.

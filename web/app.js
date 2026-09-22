@@ -521,7 +521,7 @@ initSidebarBrand()
 })()
 
 // Reveal the B2B admin nav link the same way for the RBAC tabs it now also
-// carries (tokens/partner-senders/skill access, kanban 722-B, folded in by
+// carries (tokens/partner-senders/skill access, folded in by
 // reveal below) -- mirrors revealAdminNav above but goes through rbac-client so
 // it also unhides for the legacy store/.dashboard-token bearer caller (null
 // role resolves can() to true), which revealAdminNav's strict role check

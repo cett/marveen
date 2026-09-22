@@ -77,7 +77,7 @@ describe('the writer chokepoint refuses a bad id before touching disk', () => {
     expect(() => writeAgentModel('nonexistent-agent', 'a $(id)')).toThrow(InvalidModelIdError)
   })
 
-  // Card 6610edff (Cybered 7139): writeMainModel is the MAIN-agent sibling of writeAgentModel and a
+  // writeMainModel is the MAIN-agent sibling of writeAgentModel and a
   // persisted-model writer that skipped the allowlist. It is a private, IO-side-effecting fn in the
   // heavy model-fallback-runner module (never imported by a test), so we pin the guard at the source:
   // it must call isValidModelId(model) BEFORE it ever writes .claude/settings.json.

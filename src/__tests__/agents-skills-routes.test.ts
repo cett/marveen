@@ -32,8 +32,8 @@ vi.mock('node:os', async (importOriginal) => {
 })
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
-  // SKILL_SQL_REGEN: true matches the live server (Phase 1-3 shipped,
-  // kanban 918) -- regenSingleSkillFile() actually writes in these tests.
+  // SKILL_SQL_REGEN: true matches the live server (Phase 1-3 of the
+  // file->SQL-only migration shipped) -- regenSingleSkillFile() actually writes in these tests.
   return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen', SKILL_SQL_REGEN: true }
 })
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
@@ -246,7 +246,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
     expect(getSkill('agent/agent-b/sub-skill')).toMatchObject({ is_global: 0 })
   })
 
-  it('does not roll back the DB row when the post-create file regen fails (Phase 4, kanban 918: SQL is the source of truth, file regen is best-effort)', async () => {
+  it('does not roll back the DB row when the post-create file regen fails (Phase 4 of the file->SQL-only migration: SQL is the source of truth, file regen is best-effort)', async () => {
     vi.mocked(generateSkillMd).mockResolvedValueOnce('# will fail to write')
     atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
     const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/agents/marveen/skills', body: jsonBody({ name: 'regen-fail', description: 'y' }) })

@@ -1,7 +1,6 @@
 /**
  * GET /api/memories?q=&include_docs=... -- workspace_docs search alongside
- * memories (kanban 9156e583, default-recall P4 of #842). The critical
- * contracts under test:
+ * memories. The critical contracts under test:
  * - An explicit include_docs=0/1 always wins, regardless of the
  *   WORKSPACE_DOC_RECALL_DEFAULT setting.
  * - Absent include_docs falls back to that setting: true (the shipped

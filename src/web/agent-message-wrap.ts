@@ -76,7 +76,7 @@ export function wrapAgentMessageForDelivery(
     return { wrapped: wrapChannelInbound(content), prefix: `${CHANNEL_INBOUND_PREAMBLE}\n` }
   }
   const idSuffix = msgId != null ? `, msg_id:${msgId}` : ''
-  // Card 06f062e4: surface the self-declared origin_note (if the sender set
+  // Surface the self-declared origin_note (if the sender set
   // one) so a recipient reading multiple messages from the same from_agent
   // has a chance to tell apart which sub-session sent which -- purely a
   // labeling aid, NOT a trust/authentication signal, hence "self-tagged"
