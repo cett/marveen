@@ -119,14 +119,23 @@ class TestMainExitCodes(unittest.TestCase):
         base.update(overrides)
         return json.dumps(base)
 
-    def _run_hook_with_fake_tmux(self, stdin_data: str, session_name, main_agent_id: str = "coord"):
+    def _run_hook_with_fake_tmux(self, stdin_data: str, session_name, main_agent_id: str = "coord",
+                                  push_env: str = None):
         """Runs the real hook via subprocess with a fake `tmux` on PATH so the
         coordinator-push-exemption can be exercised end-to-end without
         depending on (or colliding with) a real tmux server -- including when
         these tests themselves run inside the real coordinator's own tmux
         session, where the ambient environment would otherwise make the gate
         genuinely (and correctly) exempt the push. session_name=None makes the
-        fake tmux fail (returncode 1), simulating "no tmux server"."""
+        fake tmux fail (returncode 1), simulating "no tmux server".
+
+        push_env mirrors the same ambient-environment concern for the second
+        (env-var) exemption path: once channels.sh exports
+        MARVEEN_COORDINATOR_PUSH_ALLOWED=1, these tests may themselves be
+        running inside a process that inherited it, which would silently
+        make every "should block" case pass for the wrong reason. Default
+        (None) explicitly clears it so each test exercises exactly the path
+        it names; pass "1" to test the env-var grant itself."""
         with tempfile.TemporaryDirectory() as d:
             fake_tmux = os.path.join(d, "tmux")
             if session_name is None:
@@ -139,6 +148,10 @@ class TestMainExitCodes(unittest.TestCase):
             env = dict(os.environ)
             env["PATH"] = d + os.pathsep + env.get("PATH", "")
             env["MAIN_AGENT_ID"] = main_agent_id
+            if push_env is None:
+                env.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
+            else:
+                env["MARVEEN_COORDINATOR_PUSH_ALLOWED"] = push_env
             r = subprocess.run(
                 [sys.executable, _HOOK_PATH],
                 input=stdin_data,
@@ -213,6 +226,59 @@ class TestMainExitCodes(unittest.TestCase):
         )
         self.assertEqual(code, 2)
 
+    def test_git_push_allows_from_coordinator_worker_session(self):
+        # The coordinator's own background task worker (agent-worker.ts
+        # ctxSlow, "<main_id>-worker") is the same process as the channels
+        # session, not a sub-agent -- it must be exempt too.
+        code, _ = self._run_hook_with_fake_tmux(
+            self._payload(tool_input={"command": "git push origin main"}),
+            session_name="coord-worker",
+        )
+        self.assertEqual(code, 0)
+
+    def test_git_push_allows_from_coordinator_worker_fast_session(self):
+        # Same as above for the fast worker (ctxFast, "<main_id>-worker-fast").
+        code, _ = self._run_hook_with_fake_tmux(
+            self._payload(tool_input={"command": "git push origin main"}),
+            session_name="coord-worker-fast",
+        )
+        self.assertEqual(code, 0)
+
+    def test_git_push_allows_from_agent_prefixed_session_matching_main_id(self):
+        # "agent-<name>" is the generic sub-agent session template
+        # (agentSessionName() in agent-process-session.ts), but at least one
+        # install runs its actual coordinator under "agent-<main_id>"
+        # (independently confirmed live via tmux, 2026-09-15-). Allowing this
+        # ONE exact string is safe: only the main agent's own id can produce
+        # it, so "agent-<any-other-name>" (every real sub-agent) is untouched.
+        code, _ = self._run_hook_with_fake_tmux(
+            self._payload(tool_input={"command": "git push origin main"}),
+            session_name="agent-coord",
+        )
+        self.assertEqual(code, 0)
+
+    def test_git_push_allows_via_env_var_from_a_subagent_shaped_session(self):
+        # Documented accepted limit: MARVEEN_COORDINATOR_PUSH_ALLOWED=1 grants
+        # regardless of session name. In practice only channels.sh exports
+        # it, so a sub-agent would have to forge the env var into its own
+        # process to reach this -- same threat model as spoofing the tmux
+        # session name (governs cooperating agents, not a determined bypass).
+        code, _ = self._run_hook_with_fake_tmux(
+            self._payload(tool_input={"command": "git push origin main"}),
+            session_name="agent-zack",
+            push_env="1",
+        )
+        self.assertEqual(code, 0)
+
+    def test_git_push_blocks_when_env_var_is_not_exactly_the_string_one(self):
+        # Strict equality, not truthiness -- "true"/"yes"/"" must not grant.
+        code, _ = self._run_hook_with_fake_tmux(
+            self._payload(tool_input={"command": "git push origin main"}),
+            session_name="agent-zack",
+            push_env="true",
+        )
+        self.assertEqual(code, 2)
+
     def test_rm_inside_heredoc_body_written_to_file_allows(self):
         code, _ = self._run_hook(self._payload(
             tool_input={"command": "cat > /tmp/script.sh <<EOF\nrm -rf /\nEOF"},
@@ -282,34 +348,93 @@ class TestMainExitCodes(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
-class TestCoordinatorTmuxSessionUnit(unittest.TestCase):
-    """Direct unit coverage of _is_coordinator_tmux_session(), independent of
-    a real tmux binary."""
+class TestCoordinatorPushAllowedUnit(unittest.TestCase):
+    """Direct unit coverage of _is_coordinator_push_allowed(), independent of
+    a real tmux binary. os.environ is cleared of the grant var by default in
+    every test that doesn't explicitly set it, for the same ambient-
+    environment reason _run_hook_with_fake_tmux above clears it: the process
+    running these tests may itself be a coordinator session that inherited
+    MARVEEN_COORDINATOR_PUSH_ALLOWED=1 once channels.sh exports it."""
 
+    @patch.dict(os.environ, {}, clear=False)
     @patch.object(hook, "subprocess")
     @patch.object(hook.ledger_lib, "main_agent_id", return_value="coord")
     def test_matches_own_channels_session(self, _main_id, mock_subprocess):
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
         mock_subprocess.run.return_value.returncode = 0
         mock_subprocess.run.return_value.stdout = "coord-channels\n"
-        self.assertTrue(hook._is_coordinator_tmux_session())
+        self.assertTrue(hook._is_coordinator_push_allowed())
 
+    @patch.dict(os.environ, {}, clear=False)
+    @patch.object(hook, "subprocess")
+    @patch.object(hook.ledger_lib, "main_agent_id", return_value="coord")
+    def test_matches_worker_session(self, _main_id, mock_subprocess):
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
+        mock_subprocess.run.return_value.returncode = 0
+        mock_subprocess.run.return_value.stdout = "coord-worker\n"
+        self.assertTrue(hook._is_coordinator_push_allowed())
+
+    @patch.dict(os.environ, {}, clear=False)
+    @patch.object(hook, "subprocess")
+    @patch.object(hook.ledger_lib, "main_agent_id", return_value="coord")
+    def test_matches_worker_fast_session(self, _main_id, mock_subprocess):
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
+        mock_subprocess.run.return_value.returncode = 0
+        mock_subprocess.run.return_value.stdout = "coord-worker-fast\n"
+        self.assertTrue(hook._is_coordinator_push_allowed())
+
+    @patch.dict(os.environ, {}, clear=False)
     @patch.object(hook, "subprocess")
     @patch.object(hook.ledger_lib, "main_agent_id", return_value="coord")
     def test_rejects_subagent_session(self, _main_id, mock_subprocess):
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
         mock_subprocess.run.return_value.returncode = 0
         mock_subprocess.run.return_value.stdout = "agent-zack\n"
-        self.assertFalse(hook._is_coordinator_tmux_session())
+        self.assertFalse(hook._is_coordinator_push_allowed())
 
+    @patch.dict(os.environ, {}, clear=False)
+    @patch.object(hook, "subprocess")
+    @patch.object(hook.ledger_lib, "main_agent_id", return_value="coord")
+    def test_matches_agent_prefixed_session_when_name_equals_main_id(self, _main_id, mock_subprocess):
+        # "agent-coord" is the generic sub-agent template, but at least one
+        # install runs its real coordinator under exactly this session
+        # (independently confirmed live). Allowed because "coord" here is
+        # literally the main agent's own id -- the set is an exact-match
+        # allowlist, not a prefix/suffix check, so "agent-<anything-else>"
+        # is a completely different string and stays blocked (see below).
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
+        mock_subprocess.run.return_value.returncode = 0
+        mock_subprocess.run.return_value.stdout = "agent-coord\n"
+        self.assertTrue(hook._is_coordinator_push_allowed())
+
+    @patch.dict(os.environ, {}, clear=False)
     @patch.object(hook, "subprocess")
     def test_fails_closed_on_nonzero_returncode(self, mock_subprocess):
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
         mock_subprocess.run.return_value.returncode = 1
         mock_subprocess.run.return_value.stdout = ""
-        self.assertFalse(hook._is_coordinator_tmux_session())
+        self.assertFalse(hook._is_coordinator_push_allowed())
 
+    @patch.dict(os.environ, {}, clear=False)
     @patch.object(hook, "subprocess")
     def test_fails_closed_on_exception(self, mock_subprocess):
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
         mock_subprocess.run.side_effect = FileNotFoundError("no tmux binary")
-        self.assertFalse(hook._is_coordinator_tmux_session())
+        self.assertFalse(hook._is_coordinator_push_allowed())
+
+    @patch.dict(os.environ, {"MARVEEN_COORDINATOR_PUSH_ALLOWED": "1"}, clear=False)
+    @patch.object(hook, "subprocess")
+    def test_env_var_grants_without_even_checking_tmux(self, mock_subprocess):
+        self.assertTrue(hook._is_coordinator_push_allowed())
+        mock_subprocess.run.assert_not_called()
+
+    @patch.dict(os.environ, {"MARVEEN_COORDINATOR_PUSH_ALLOWED": "yes"}, clear=False)
+    @patch.object(hook, "subprocess")
+    @patch.object(hook.ledger_lib, "main_agent_id", return_value="coord")
+    def test_env_var_wrong_value_falls_through_to_session_check(self, _main_id, mock_subprocess):
+        mock_subprocess.run.return_value.returncode = 0
+        mock_subprocess.run.return_value.stdout = "agent-zack\n"
+        self.assertFalse(hook._is_coordinator_push_allowed())
 
 
 if __name__ == "__main__":
