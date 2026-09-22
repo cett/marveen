@@ -217,12 +217,34 @@ export default defineConfig({
       // uncovered by design -- fragile to deterministically mock without race
       // conditions. Local baseline after this step: statements 69.46%, branches
       // 68.17%, functions 67.71%, lines 70.81%. Floor raised to match the
-      // measured value minus a modest ~1.5pt buffer.
+      // measured value minus a modest ~1.5pt buffer. And (this step)
+      // src/web/vault-bindings.ts (2.33% -> 96.49% statements / 84.14% branches
+      // -- previously only exercised indirectly via connectors-routes.test.ts,
+      // which mocks the whole module, so none of its own binding CRUD, MCP-file
+      // path collection, sensitive-value scanning, or sync/unsync file-rewrite
+      // logic had a direct test. Now covers getBindings/addBinding (insert and
+      // update-in-place)/removeBinding, removeBindingsForSecret (per-target
+      // strip + conditional unwrap, missing-env-block skip, malformed-target
+      // swallow), collectAllMcpFilePaths (project/user/per-agent/per-agent-
+      // project/external sources), scanMcpConfigs (sensitive key+value
+      // matching, vault: passthrough, non-sensitive value patterns,
+      // already-in-vault detection, malformed-file skip), syncSecret
+      // (no-bindings/secret-not-found/success-with-wrap/url-server-no-wrap/
+      // server-not-found/per-target-failure), unsyncBinding, and syncAllBindings.
+      // A few narrow branches (statSync non-directory skip, unwrapCommand's
+      // already-unwrapped no-op, maskValue's <=6-char branch which
+      // looksLikeSensitiveValue's own length>=8 gate makes unreachable from any
+      // public entry point) are left uncovered by design. Steps 22-28 (this
+      // branch's predecessors, folded into develop without a comment entry
+      // each) had already widened the floor-to-measured gap; this step's own
+      // increment closes it further. Local baseline after this step:
+      // statements 71.36%, branches 69.77%, functions 70.44%, lines 72.73%.
+      // Floor raised to match the measured value minus a modest ~1.5pt buffer.
       thresholds: {
-        statements: 68,
-        branches: 67,
-        functions: 67,
-        lines: 69,
+        statements: 69,
+        branches: 68,
+        functions: 68,
+        lines: 71,
       },
     },
   },
