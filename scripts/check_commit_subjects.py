@@ -33,13 +33,17 @@ import urllib.request
 FORK_REPO = "cett/marveen"
 UPSTREAM_REPO = "Szotasz/marveen"
 
-# Whole-line skip patterns: git's own merge-commit subjects, and the
-# conventional "Closes #123" / "Fixes #123" trailer lines that reference a
-# PUBLIC GitHub issue/PR by design -- those are exactly what #NNN syntax is
-# FOR, not what this gate is trying to catch.
+# Whole-line skip patterns: lines a #NNN token can never be a leak candidate
+# on, by construction. Merge-commit subjects are GitHub-generated (always a
+# real PR). Co-Authored-By lines never carry a #NNN token in the first place.
+#
+# Closes/Fixes/Refs/Resolves/See/Part of trailers are deliberately NOT
+# skipped: skipping the whole line would let a kanban rowid hide behind the
+# trailer keyword ("Closes #751" bypassing the check entirely). Their #NNN
+# is validated the same way as a bare one below -- a real issue/PR reference
+# still passes ("Closes #451" is fine), only an unresolved rowid fails.
 SKIP_LINE_RE = re.compile(
-    r"^\s*(Merge (pull request|branch)\b|Closes\b|Fixes\b|Refs\b|Resolves\b"
-    r"|See\b|Part of\b|Co-Authored-By\b)",
+    r"^\s*(Merge (pull request|branch)\b|Co-Authored-By\b)",
     re.IGNORECASE,
 )
 

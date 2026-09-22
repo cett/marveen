@@ -4,8 +4,10 @@
 Covers the core distinction this gate exists for: a bare #NNN must resolve
 on the FORK (cett/marveen); an explicit "upstream #NNN" is checked against
 Szotasz/marveen instead; API errors (rate-limit/network/5xx) warn but never
-fail the build; skip patterns (merge commits, Closes/Fixes/etc trailers)
-are never checked at all.
+fail the build. Only merge-commit subjects and Co-Authored-By lines are
+skipped outright -- Closes/Fixes/Refs/Resolves/See/Part of trailers are
+still validated (a rowid must not be able to hide behind the trailer
+keyword), just like any other #NNN in the message.
 """
 import importlib.util
 import os
@@ -45,17 +47,21 @@ class TestCandidatesInMessage(unittest.TestCase):
         msg = "Merge branch 'develop' into feat/foo (#500 context)"
         self.assertEqual(list(gate.candidates_in_message(msg)), [])
 
-    def test_closes_trailer_line_skipped(self):
+    def test_closes_trailer_line_is_a_candidate_not_skipped(self):
+        # A kanban rowid must not be able to hide behind a "Closes" keyword.
         msg = "fix(auth): resolve principal from auth gate\n\nCloses #8003"
-        self.assertEqual(list(gate.candidates_in_message(msg)), [])
+        self.assertEqual(list(gate.candidates_in_message(msg)), [(8003, False)])
 
-    def test_fixes_refs_resolves_see_partof_coauthor_all_skipped(self):
+    def test_fixes_refs_resolves_see_partof_are_candidates_coauthor_skipped(self):
         msg = (
             "fix: x\n\n"
             "Fixes #100\nRefs #101\nResolves #102\nSee #103\nPart of #104\n"
             "Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
         )
-        self.assertEqual(list(gate.candidates_in_message(msg)), [])
+        self.assertEqual(
+            list(gate.candidates_in_message(msg)),
+            [(100, False), (101, False), (102, False), (103, False), (104, False)],
+        )
 
     def test_no_duplicate_yield_same_number_same_message(self):
         msg = "fix(#8001): mention #8001 twice in the subject"
@@ -150,13 +156,24 @@ class TestMain(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
 
-    def test_closes_trailer_never_checked(self):
+    def test_closes_real_fork_reference_passes(self):
+        rc = self._run_main(
+            {"BASE_SHA": "abc", "GITHUB_TOKEN": "tok"},
+            ["fix(security): resolve principal\n\nCloses #451"],
+            {("cett/marveen", 451): "exists"},
+        )
+        self.assertEqual(rc, 0)
+
+    def test_closes_rowid_no_longer_bypasses_the_check(self):
+        # This is the fix for the bypass Boo found: "Closes #NNN" used to be
+        # a whole-line skip, so a kanban rowid could hide behind the
+        # trailer keyword. It must now fail like any other unresolved #NNN.
         rc = self._run_main(
             {"BASE_SHA": "abc", "GITHUB_TOKEN": "tok"},
             ["fix(security): resolve principal\n\nCloses #8003"],
-            {},
+            {("cett/marveen", 8003): "missing"},
         )
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 1)
 
     def test_multiple_commits_mixed_pass_and_fail(self):
         rc = self._run_main(
