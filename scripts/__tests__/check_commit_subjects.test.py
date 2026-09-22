@@ -165,7 +165,7 @@ class TestMain(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     def test_closes_rowid_no_longer_bypasses_the_check(self):
-        # This is the fix for the bypass Boo found: "Closes #NNN" used to be
+        # This closes a bypass in the trailer exemption: "Closes #NNN" used to be
         # a whole-line skip, so a kanban rowid could hide behind the
         # trailer keyword. It must now fail like any other unresolved #NNN.
         rc = self._run_main(

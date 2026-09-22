@@ -39,7 +39,7 @@ UPSTREAM_REPO = "Szotasz/marveen"
 #
 # Closes/Fixes/Refs/Resolves/See/Part of trailers are deliberately NOT
 # skipped: skipping the whole line would let a kanban rowid hide behind the
-# trailer keyword ("Closes #751" bypassing the check entirely). Their #NNN
+# trailer keyword ("Closes #1234" bypassing the check entirely). Their #NNN
 # is validated the same way as a bare one below -- a real issue/PR reference
 # still passes ("Closes #451" is fine), only an unresolved rowid fails.
 SKIP_LINE_RE = re.compile(
