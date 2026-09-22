@@ -56,7 +56,7 @@ export function scrubSecurityTags(raw: string): string {
   return raw.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
 }
 
-// ── PII scrub-before-persist (kanban 45d7a63a item 2) ──────────────────────
+// ── PII scrub-before-persist ────────────────────────────────────────────────
 //
 // Calendar summaries, email excerpts, and Garmin/health metrics all move
 // between agents through agent_messages and land in SQLite verbatim today --

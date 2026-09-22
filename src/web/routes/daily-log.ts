@@ -3,7 +3,7 @@ import { MAIN_AGENT_ID } from '../../config.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
-// Tenant-IDOR guard (kanban 45d7a63a item 1A): daily_logs has no tenant_id
+// Tenant-IDOR guard: daily_logs has no tenant_id
 // column of its own (it's agent_id-keyed), so scope it the same way
 // blackboard.ts does -- resolve the target agent's tenant via the
 // tenant_agent_availability opt-in matrix and compare against the caller's.

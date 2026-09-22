@@ -2,8 +2,8 @@
 --
 -- idea_box has no tenant concept today; GET/POST/PUT/DELETE and the comment/
 -- promote/breakdown sub-routes are all open to every RBAC role, so any
--- tenant-scoped caller can read and mutate every other tenant's ideas
--- (kanban 45d7a63a item 1B). Unlike fleet_blackboard (agent_id-keyed,
+-- tenant-scoped caller can read and mutate every other tenant's ideas.
+-- Unlike fleet_blackboard (agent_id-keyed,
 -- backfilled via tenant_agent_availability -- see 0031), idea_box has no
 -- agent_id column to derive an owner tenant from: every idea in an existing
 -- install predates tenant isolation, so existing rows are simply stamped

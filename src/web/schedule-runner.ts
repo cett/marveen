@@ -1098,7 +1098,7 @@ export async function runScheduledTaskNow(
   // enabled:false so the cron never fires them, but a guarded endpoint can
   // still trigger them (e.g. the post-rollback diagnosis, PR-D).
   if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'disabled', hint: 'Schedule is disabled' }
-  // Review-gate (kanban 45d7a63a item 3): the route-level guard in
+  // Review-gate: the route-level guard in
   // schedules.ts is the primary enforcement point for the API and already
   // decided whether this specific caller (human admin previewing a draft,
   // vs. anyone else) may bypass it -- allowNotLive carries that decision
@@ -1366,7 +1366,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // Honor the operator's disable action: if the task was toggled off
       // while the retry sat in the queue, drop the retry so a long-stuck
       // task doesn't surprise-fire the moment the session frees up.
-      if (!taskDef.enabled) {
+      if (!taskDef.enabled || !isTaskLive(taskDef)) {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
@@ -1446,7 +1446,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const quotaSnapshot = readQuotaSnapshot()
 
     for (const task of tasks) {
-      if (!task.enabled) continue
+      if (!task.enabled || !isTaskLive(task)) continue
       const occurrenceMs = cronPrevOccurrence(task.schedule, fromMs, now)
       if (occurrenceMs == null) continue
 

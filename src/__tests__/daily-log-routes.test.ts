@@ -126,7 +126,7 @@ describe('tryHandleDailyLog', () => {
   })
 })
 
-// Tenant-IDOR guard (kanban 45d7a63a item 1A): a tenant-scoped caller must
+// Tenant-IDOR guard: a tenant-scoped caller must
 // not read or write another tenant's daily log. Regression coverage for the
 // bug as reported -- previously appendDailyLog/getDailyLog/getDailyLogDates
 // had zero tenant checks, so any token-holder could read or write any

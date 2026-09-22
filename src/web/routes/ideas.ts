@@ -15,7 +15,7 @@ function getIdea(id: string): IdeaRow | undefined {
 
 const VALID_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
 
-// Tenant-IDOR guard (kanban 45d7a63a item 1B, backend half; migration 0049
+// Tenant-IDOR guard (backend half; migration 0049
 // adds idea_box.tenant_id). Mirrors kanban.ts's effectiveTenantId: admin with
 // no ?tenant= sees every tenant, admin with ?tenant=<id> narrows to one,
 // every other role is locked to its own tenant.

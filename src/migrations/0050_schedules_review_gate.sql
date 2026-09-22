@@ -1,6 +1,6 @@
 -- Migration 0050: draft/pending_review/live review-gate for schedules.
 --
--- kanban 45d7a63a item 3: today ANY caller with schedule-write access can
+-- Today ANY caller with schedule-write access can
 -- create or edit a schedule and have it fire on the very next cron tick --
 -- there is no build-vs-publish separation (n8n's draft/review/live model).
 -- Concretely, every fleet agent shares the dashboard-token bearer, which

@@ -3,7 +3,7 @@ import { readBody, json } from '../http-helpers.js'
 import { spansToOtelJson } from '../../otel-exporter.js'
 import type { RouteContext } from './types.js'
 
-// Tenant-IDOR guard (kanban 45d7a63a item 1C): otel_spans is agent_id-keyed
+// Tenant-IDOR guard: otel_spans is agent_id-keyed
 // with no tenant_id column of its own, same shape as daily_logs -- scope it
 // the same way (resolveAgentTenant against the tenant_agent_availability
 // opt-in matrix). Admin (including every fleet agent on the shared

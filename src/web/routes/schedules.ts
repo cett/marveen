@@ -20,7 +20,7 @@ import {
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
 
-// Review-gate (kanban 45d7a63a item 3): every fleet agent authenticates with
+// Review-gate: every fleet agent authenticates with
 // the same shared dashboard-token bearer, which resolves to role='admin' for
 // backward-compat (src/web/authz.ts) -- so ctx.role==='admin' cannot tell
 // "a human approved this" from "an agent proposed this". A real dashboard
@@ -206,7 +206,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       ? (data.tenant_id?.trim() || null)
       : (ctx.tenantId ?? 'default')
 
-    // Review-gate (kanban 45d7a63a item 3): only a real human dashboard
+    // Review-gate: only a real human dashboard
     // login creates a task directly as 'live'. Every other caller -- which,
     // per the isHumanAdmin comment above, includes every fleet agent on the
     // shared bearer token -- gets 'draft' regardless of what it asks for;
@@ -232,7 +232,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     return true
   }
 
-  // Activation (kanban 45d7a63a item 3): the only way a draft/pending_review
+  // Activation: the only way a draft/pending_review
   // task becomes runnable. Human-admin-only (see isHumanAdmin) -- an agent
   // token, even though it otherwise carries role='admin', cannot self-approve
   // its own proposed schedule.

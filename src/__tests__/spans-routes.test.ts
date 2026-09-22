@@ -227,7 +227,7 @@ describe('GET /api/otel-export', () => {
   })
 })
 
-// Tenant-IDOR guard (kanban 45d7a63a item 1C): otel_spans has no tenant_id
+// Tenant-IDOR guard: otel_spans has no tenant_id
 // column; a tenant-scoped caller must not read or open/close a span for an
 // agent belonging to a different tenant.
 describe('spans route: tenant-IDOR guard', () => {

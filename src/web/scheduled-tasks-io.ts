@@ -92,7 +92,7 @@ export interface ScheduledTask {
   // target session before injecting the prompt; a dead server defers the task
   // with a reasoned alert instead of a silent runtime failure.
   requires?: { mcp_servers?: string[] }
-  // Review-gate (kanban 45d7a63a item 3). Undefined/absent is treated as
+  // Review-gate. Undefined/absent is treated as
   // 'live' everywhere this is read (backward compat for pre-migration file
   // tasks and any caller that doesn't set it) -- see isTaskLive() below.
   status?: 'draft' | 'pending_review' | 'live'

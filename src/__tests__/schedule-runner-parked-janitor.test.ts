@@ -77,6 +77,9 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASK_INLINE_MAX_CHARS: 1_500,
   SCHEDULED_TASK_BODY_WARN_CHARS: 20_000,
   MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
+  // Review-gate: PARKED_TASK carries no `status`,
+  // so the real semantics (undefined/'live' -> runnable) apply here too.
+  isTaskLive: (task: { status?: string }) => task.status === undefined || task.status === 'live',
 }))
 
 vi.mock('../web/agent-process.js', () => ({

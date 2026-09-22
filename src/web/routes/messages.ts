@@ -198,7 +198,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
     let normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
-    // PII scrub-before-persist (kanban 45d7a63a item 2): health/calendar/email
+    // PII scrub-before-persist: health/calendar/email
     // data moves between agents through this table with no redaction today.
     // Skipped for completion reports (COMPLETION_REPORT_PREFIX) and any
     // caller that explicitly opts out via no_pii_scrub -- e.g. the Garmin

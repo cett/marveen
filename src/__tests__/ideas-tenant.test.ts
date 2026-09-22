@@ -1,5 +1,5 @@
-// Tenant-IDOR guard tests for src/web/routes/ideas.ts (kanban 45d7a63a item
-// 1B; migration 0049 adds idea_box.tenant_id). Separate from
+// Tenant-IDOR guard tests for src/web/routes/ideas.ts (migration 0049 adds
+// idea_box.tenant_id). Separate from
 // ideas-routes.test.ts, whose makeCtx defaults to role: 'admin' throughout
 // and predates tenant scoping -- this file exercises the non-admin path.
 import { describe, it, expect, beforeEach } from 'vitest'
