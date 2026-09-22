@@ -258,6 +258,7 @@ export interface ScheduleRow {
   catch_up_max_age_minutes: number | null
   stuck_after_minutes: number | null
   requires: string | null   // JSON blob
+  status: 'draft' | 'pending_review' | 'live'
   created_at: number
   updated_at: number
 }
@@ -302,6 +303,7 @@ export interface UpsertScheduleOpts {
   catch_up_max_age_minutes?: number | null
   stuck_after_minutes?: number | null
   requires?: string | null
+  status?: 'draft' | 'pending_review' | 'live'
   created_at?: number
 }
 
@@ -311,12 +313,12 @@ export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRo
     INSERT INTO schedules (
       id, prompt, description, schedule, agent, type, enabled, tenant_id,
       skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
-      pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires,
+      pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires, status,
       created_at, updated_at
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
       ?, ?
     )
     ON CONFLICT(id) DO UPDATE SET
@@ -337,6 +339,7 @@ export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRo
       catch_up_max_age_minutes = excluded.catch_up_max_age_minutes,
       stuck_after_minutes      = excluded.stuck_after_minutes,
       requires                 = excluded.requires,
+      status                   = excluded.status,
       updated_at               = excluded.updated_at
   `).run(
     id, opts.prompt, opts.description, opts.schedule, opts.agent,
@@ -345,7 +348,7 @@ export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRo
     opts.target_session ?? null, opts.command ?? null,
     opts.timeout_ms ?? null, opts.fail_threshold ?? null,
     opts.pre_check ?? null, opts.catch_up_max_age_minutes ?? null,
-    opts.stuck_after_minutes ?? null, opts.requires ?? null,
+    opts.stuck_after_minutes ?? null, opts.requires ?? null, opts.status ?? 'live',
     opts.created_at ?? now, now,
   )
   return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow
@@ -355,7 +358,20 @@ const PATCH_SCHEDULE_ALLOWED_COLS = new Set([
   'prompt', 'description', 'schedule', 'agent', 'type', 'enabled', 'tenant_id',
   'skip_if_busy', 'force_send', 'target_session', 'command', 'timeout_ms',
   'fail_threshold', 'pre_check', 'catch_up_max_age_minutes', 'stuck_after_minutes', 'requires',
+  'status',
 ])
+
+// Move a schedule from draft/pending_review to live. The only mutation the
+// human-admin-only PUT /api/schedules/:name/activate route performs --
+// separate from patchSchedule so the activation path can never accidentally
+// touch any other column.
+export function activateSchedule(id: string): ScheduleRow | null {
+  const existing = getScheduleFromDb(id)
+  if (!existing) return null
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare("UPDATE schedules SET status = 'live', updated_at = ? WHERE id = ?").run(now, id)
+  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow
+}
 
 export function patchSchedule(id: string, patch: Partial<Omit<UpsertScheduleOpts, 'created_at'>>): ScheduleRow | null {
   const existing = getScheduleFromDb(id)
@@ -392,9 +408,9 @@ export function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): bool
     INSERT OR IGNORE INTO schedules (
       id, prompt, description, schedule, agent, type, enabled, tenant_id,
       skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
-      pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires,
+      pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires, status,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, opts.prompt, opts.description, opts.schedule, opts.agent,
     opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? null,
@@ -402,7 +418,7 @@ export function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): bool
     opts.target_session ?? null, opts.command ?? null,
     opts.timeout_ms ?? null, opts.fail_threshold ?? null,
     opts.pre_check ?? null, opts.catch_up_max_age_minutes ?? null,
-    opts.stuck_after_minutes ?? null, opts.requires ?? null,
+    opts.stuck_after_minutes ?? null, opts.requires ?? null, opts.status ?? 'live',
     now, now,
   )
   return result.changes > 0  // true = newly inserted, false = already existed (skipped)

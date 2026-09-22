@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import {
   listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
   getScheduleFromDb, listSchedulesFromDb, deleteSchedule, setScheduleEnabled, countSchedules,
+  activateSchedule,
 } from '../../db.js'
 import { MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { runAgent } from '../../agent.js'
@@ -18,6 +19,21 @@ import {
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
+
+// Review-gate (kanban 45d7a63a item 3): every fleet agent authenticates with
+// the same shared dashboard-token bearer, which resolves to role='admin' for
+// backward-compat (src/web/authz.ts) -- so ctx.role==='admin' cannot tell
+// "a human approved this" from "an agent proposed this". A real dashboard
+// login (auth.kind==='session') is the only signal that a human is actually
+// driving the request; that plus role==='admin' is what "admin" means for
+// every review-gate decision below (schedule creation status, activation,
+// running a non-live task). This deliberately makes agent-token callers
+// weaker here than they are for the rest of this route (which still treats
+// them as admin) -- that gap IS the governance boundary this feature exists
+// to create.
+function isHumanAdmin(ctx: RouteContext): boolean {
+  return ctx.role === 'admin' && ctx.auth?.kind === 'session'
+}
 
 // Tenant scope helpers (mirrors artifacts/kanban pattern):
 // - Admin with no ?tenant= filter sees all tenants (effectiveTenantId = null → all).
@@ -190,6 +206,14 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       ? (data.tenant_id?.trim() || null)
       : (ctx.tenantId ?? 'default')
 
+    // Review-gate (kanban 45d7a63a item 3): only a real human dashboard
+    // login creates a task directly as 'live'. Every other caller -- which,
+    // per the isHumanAdmin comment above, includes every fleet agent on the
+    // shared bearer token -- gets 'draft' regardless of what it asks for;
+    // an admin human must activate it (PUT .../activate) before the runner
+    // will ever fire it.
+    const status: 'draft' | 'live' = isHumanAdmin(ctx) ? 'live' : 'draft'
+
     writeScheduledTask(name, {
       description: data.description || '',
       prompt: data.prompt.trim(),
@@ -201,9 +225,30 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
       tenantId,
+      status,
     })
-    logger.info({ name, schedule: data.schedule, tenantId }, 'Scheduled task created')
-    json(res, { ok: true, name })
+    logger.info({ name, schedule: data.schedule, tenantId, status }, 'Scheduled task created')
+    json(res, { ok: true, name, status })
+    return true
+  }
+
+  // Activation (kanban 45d7a63a item 3): the only way a draft/pending_review
+  // task becomes runnable. Human-admin-only (see isHumanAdmin) -- an agent
+  // token, even though it otherwise carries role='admin', cannot self-approve
+  // its own proposed schedule.
+  const scheduleActivateMatch = path.match(/^\/api\/schedules\/([^/]+)\/activate$/)
+  if (scheduleActivateMatch && method === 'POST') {
+    if (!isHumanAdmin(ctx)) { json(res, { error: 'forbidden', hint: 'Only an authenticated admin can activate a schedule' }, 403); return true }
+    const resolved = resolveScheduleDir(scheduleActivateMatch[1])
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    const { name } = resolved
+    const row = activateSchedule(name)
+    if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    // Mirror to file (same pattern as toggle's file-mirror call) so a
+    // rollback to the file-based fallback keeps the activated state.
+    writeScheduledTask(name, { status: 'live' })
+    logger.info({ name }, 'Scheduled task activated')
+    json(res, { ok: true, status: 'live' })
     return true
   }
 
@@ -308,9 +353,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
-    const result = await runScheduledTaskNow(name)
+    // Review-gate bypass guard: run-now must not let an agent-token caller
+    // fire a draft task it just created, skipping activation entirely. A
+    // human admin may still run-now a draft to preview it before activating.
+    const result = await runScheduledTaskNow(name, { allowNotLive: isHumanAdmin(ctx) })
     if (!result.ok) {
-      const status = result.error === 'not_found' ? 404 : result.error === 'disabled' ? 409 : 400
+      const status = result.error === 'not_found' ? 404 : (result.error === 'disabled' || result.error === 'not_live') ? 409 : 400
       json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, status)
       return true
     }

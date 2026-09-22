@@ -90,7 +90,6 @@ vi.mock('../db.js', () => ({
   getAgentMessage: vi.fn().mockReturnValue(null),
   closeOtelSpan: vi.fn(),
   getPendingBacklogByAgent: vi.fn().mockReturnValue([]),
-  COMPLETION_REPORT_PREFIX: '[Eredmény]',
   isAuthorizedPartnerSender: vi.fn().mockReturnValue(true),
   findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
   upsertBlackboard: vi.fn(),

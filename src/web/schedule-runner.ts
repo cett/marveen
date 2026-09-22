@@ -36,6 +36,7 @@ import {
   SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
+  isTaskLive,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
@@ -1089,7 +1090,7 @@ export function taskInjectionRank(t: Pick<ScheduledTask, 'forceSend' | 'type'>):
 // per-target summary string for the API/UI.
 export async function runScheduledTaskNow(
   taskName: string,
-  opts: { allowDisabled?: boolean } = {},
+  opts: { allowDisabled?: boolean; allowNotLive?: boolean } = {},
 ): Promise<{ ok: boolean; result?: string; error?: string; hint?: string }> {
   const task = listScheduledTasks().find(t => t.name === taskName)
   if (!task) return { ok: false, error: 'not_found', hint: 'Schedule not found' }
@@ -1097,6 +1098,12 @@ export async function runScheduledTaskNow(
   // enabled:false so the cron never fires them, but a guarded endpoint can
   // still trigger them (e.g. the post-rollback diagnosis, PR-D).
   if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'disabled', hint: 'Schedule is disabled' }
+  // Review-gate (kanban 45d7a63a item 3): the route-level guard in
+  // schedules.ts is the primary enforcement point for the API and already
+  // decided whether this specific caller (human admin previewing a draft,
+  // vs. anyone else) may bypass it -- allowNotLive carries that decision
+  // through. This is the fail-closed backstop for any other caller.
+  if (!isTaskLive(task) && !opts.allowNotLive) return { ok: false, error: 'not_live', hint: 'Schedule is not live -- an admin must activate it first' }
 
   const now = Date.now()
   const targets = task.agent === 'all'
