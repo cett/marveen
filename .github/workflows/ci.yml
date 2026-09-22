@@ -182,6 +182,13 @@ jobs:
             fi
           fi
 
+      - name: Check commit subjects/bodies for internal kanban-rowid leaks
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_commit_subjects.py
+
   test:
     needs: build-checks
     runs-on: ubuntu-latest
