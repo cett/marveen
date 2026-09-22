@@ -440,25 +440,53 @@ def _sub_scripts(toks, idx):
     return []
 
 
-def _is_coordinator_tmux_session():
-    """True only when THIS process is running inside the main agent's own
-    channels tmux session (e.g. "jarvis-channels"), never a sub-agent's
-    ("agent-<name>"). Deliberately NOT cwd-based: agent_id_from_cwd() falls
-    back to the last path component for any cwd outside <install> and
-    <install>/agents/<id> (e.g. a shared worktree under ~/worktrees/, which
-    the coordinator AND sub-agents both operate in for delegated dev work),
-    so cwd cannot tell the two apart there. The tmux session name is set once
-    at process launch and is invariant to `cd`, including into a worktree.
-    Fails closed (False) on any error -- no positive proof, no exemption.
+def _is_coordinator_push_allowed():
+    """True only when THIS process is running inside one of the main agent's
+    OWN tmux sessions, never a sub-agent's ("agent-<name>"). Deliberately NOT
+    cwd-based: agent_id_from_cwd() falls back to the last path component for
+    any cwd outside <install> and <install>/agents/<id> (e.g. a shared
+    worktree under ~/worktrees/, which the coordinator AND sub-agents both
+    operate in for delegated dev work), so cwd cannot tell the two apart
+    there. The tmux session name is set once at process launch and is
+    invariant to `cd`, including into a worktree.
+
+    Two independent checks, either one grants:
+      1. MARVEEN_COORDINATOR_PUSH_ALLOWED=1 -- exported only by channels.sh
+         at coordinator-session startup, never by the sub-agent spawn path
+         (agent-process-spawn.ts). An env var survives `cd` and a tmux
+         rename, so this is the stronger of the two signals.
+      2. The live tmux session name matches one of the coordinator's own
+         session templates: "<main_id>-channels" (the long-lived channels
+         session, main-agent.ts channelsSessionName()), "<main_id>-worker"
+         and "<main_id>-worker-fast" (the background task workers,
+         agent-worker.ts ctxSlow/ctxFast). Deliberately excludes the
+         "agent-<name>" template (agentSessionName() in
+         agent-process-session.ts) even for name == main_id: that template
+         is reserved for sub-agent sessions everywhere else in the codebase
+         (see main-agent.ts's own comment), and the main agent never runs
+         under it.
+
+    Both checks are spoofable by a sub-agent that renames its own tmux
+    session or forges the env var into its own process -- this governs
+    cooperating agents, not a determined attempt to bypass. Fails closed
+    (False) on any error -- no positive proof, no exemption.
     """
+    if os.environ.get('MARVEEN_COORDINATOR_PUSH_ALLOWED') == '1':
+        return True
     try:
+        main_id = ledger_lib.main_agent_id()
+        allowed = {
+            '%s-channels' % main_id,
+            '%s-worker' % main_id,
+            '%s-worker-fast' % main_id,
+        }
         out = subprocess.run(
             ['tmux', 'display-message', '-p', '#S'],
             capture_output=True, text=True, timeout=3,
         )
         if out.returncode != 0:
             return False
-        return out.stdout.strip() == '%s-channels' % ledger_lib.main_agent_id()
+        return out.stdout.strip() in allowed
     except Exception:
         return False
 
@@ -484,7 +512,7 @@ def check_bash(cmd, agent_id=None, _depth=0):
             if base in BANNED_CMDS:
                 block('A tiltott parancs: "%s" (a teljes szegmens: %s)' % (base, seg[:160]),
                       agent_id, 'Bash')
-            if base == 'git' and second == 'push' and not _is_coordinator_tmux_session():
+            if base == 'git' and second == 'push' and not _is_coordinator_push_allowed():
                 block('git push: a kozos repoba valo iras kifele mutato, visszafordithatatlan '
                       'muvelet. Commitolni szabad, pusholni nem.', agent_id, 'Bash')
 

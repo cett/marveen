@@ -306,7 +306,14 @@ TMUX="$(command -v tmux)"
 # the one place the pane-scrape recovery could still misread it (the v1.15.0
 # dim-strip catches it on the recovery side, but killing it at the SOURCE on MAIN
 # too closes the gap end-to-end). Parity with the sub-agent launch.
-MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
+#
+# MARVEEN_COORDINATOR_PUSH_ALLOWED=1: the destructive-command gate
+# (scripts/hooks/destructive-gate.py, _is_coordinator_push_allowed()) reads
+# this to exempt the coordinator's own `git push` from the default block,
+# independent of the tmux session-name check. Set ONLY here -- never in the
+# sub-agent spawn path (agent-process-spawn.ts) -- so a sub-agent's process
+# environment never carries it.
+MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 MARVEEN_COORDINATOR_PUSH_ALLOWED=1 && "
 
 # Resolve the main agent's model so we can pass --model explicitly. Without
 # --model claude-code falls back to its built-in default, which can drift
