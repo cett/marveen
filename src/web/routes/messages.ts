@@ -80,8 +80,8 @@ function authPrincipal(ctx: RouteContext): string | null {
 
 // authPrincipal() returns a bare name, but that namespace is not
 // disjoint -- a session username and a registered api_tokens.name can
-// collide (a token literally named "jonas" would read identically to the
-// human session "jonas" in the audit trail). This records WHICH auth
+// collide (a token named the same as a human session username would read
+// identically to that session in the audit trail). This records WHICH auth
 // mechanism produced the principal alongside it, so a consumer can tell
 // the two apart without string-parsing the principal value itself.
 function authPrincipalSource(ctx: RouteContext): 'session' | 'token' | 'peer' | 'device' | 'unknown' {
