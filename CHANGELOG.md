@@ -13,6 +13,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- unit test coverage for `google-api.ts`, `src/memory.ts`, and `agent-process-identity.ts` (the Google Calendar token cache/refresh + 401-retry flow, the kanban-context renderer / auto-save-a-turn heuristics / decay sweep / daily-digest pipeline, and the post-respawn modal-dismissal helpers plus the first-run gate walker and identity-setup scheduler)
+
 - unit test coverage for `stuck-input-watcher.ts` and `update-checker.ts` (the swallowed-Enter recovery backstop's delivery-intent gate and sweep orchestration across local/remote sub-agents, and the update-checker's GitHub-remote parsing, release grouping, and `refreshUpdateStatus` branches including the customised-fork compare fallback)
 - unit test coverage for `command-task.ts` and `stuck-tool-call-watcher.ts` (command-type scheduled-task failure/recovery alerting, and the main-session stuck-tool-call wedge detector with its idle-pane/recent-respawn/CPU-active recovery guards)
 - unit test coverage for 5 more previously near-untested backend modules: `keychain.ts`, `voice-modality.ts`, `blackboard-stale-sweeper.ts`, `federation/local-catalog.ts`, and `channel-plugin-unlock.ts` (macOS Keychain wrapper, last-inbound-modality tracker, the blackboard/active-plan staleness sweeper, the federation local-agent/skill catalog, and the post-respawn `/mcp` channel-plugin unlock probe). The latter two already had a same-named contract/db-level test file, so the new behavioral tests were added as separate `-behavior.test.ts` files alongside the existing ones rather than replacing them
