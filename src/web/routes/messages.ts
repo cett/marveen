@@ -78,6 +78,20 @@ function authPrincipal(ctx: RouteContext): string | null {
   return ctx.auth?.user ?? ctx.auth?.peer ?? ctx.auth?.device ?? ctx.auth?.tokenName ?? null
 }
 
+// authPrincipal() returns a bare name, but that namespace is not
+// disjoint -- a session username and a registered api_tokens.name can
+// collide (a token named the same as a human session username would read
+// identically to that session in the audit trail). This records WHICH auth
+// mechanism produced the principal alongside it, so a consumer can tell
+// the two apart without string-parsing the principal value itself.
+function authPrincipalSource(ctx: RouteContext): 'session' | 'token' | 'peer' | 'device' | 'unknown' {
+  if (ctx.auth?.kind === 'session') return 'session'
+  if (ctx.auth?.kind === 'token' || ctx.auth?.tokenName != null) return 'token'
+  if (ctx.auth?.kind === 'federation' || ctx.auth?.peer != null) return 'peer'
+  if (ctx.auth?.kind === 'device' || ctx.auth?.device != null) return 'device'
+  return 'unknown'
+}
+
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -165,7 +179,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       const allowed = isAuthorizedPartnerSender(cleanFrom, ctx.tenantId!)
       if (!allowed) {
         writeAgentAuditLog({ agent_id: cleanFrom, entity: 'message', action: 'create',
-          detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist', principal: authPrincipal(ctx) } })
+          detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
         logger.warn({ from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId }, 'Rejected partner /api/messages POST: sender not in allowlist')
         json(res, { error: 'sender_not_in_allowlist', hint: `sender '${from.trim()}' is not in the allowlist for tenant '${ctx.tenantId}'` }, 403)
         return true
@@ -241,7 +255,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       logger.warn({ from: from.trim(), authKind: ctx.auth?.kind }, 'no_pii_scrub ignored: requires human admin session')
       try {
         writeAgentAuditLog({ agent_id: from.trim(), entity: 'message', action: 'pii_scrub_attempt_denied',
-          detail: { from: from.trim(), authKind: ctx.auth?.kind ?? 'unknown', principal: authPrincipal(ctx) } })
+          detail: { from: from.trim(), authKind: ctx.auth?.kind ?? 'unknown', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
     if (!piiScrubBypassed && !normalizedContent.startsWith(COMPLETION_REPORT_PREFIX)) {
@@ -259,7 +273,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     }
     if (isPartnerTenant) {
       writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from), entity: 'message', action: 'create', entity_id: msg.id,
-        detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist', principal: authPrincipal(ctx) } })
+        detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
     } else if (ctx.auth?.kind === 'session' && ctx.auth.user) {
       try {
         writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'message', action: 'create', entity_id: msg.id })
@@ -268,7 +282,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (piiScrubBypassed) {
       try {
         writeAgentAuditLog({ agent_id: ctx.auth?.user || from.trim(), entity: 'message', action: 'pii_scrub_bypass',
-          entity_id: msg.id, detail: { from: from.trim(), to: storedTo, principal: authPrincipal(ctx) } })
+          entity_id: msg.id, detail: { from: from.trim(), to: storedTo, principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')

@@ -617,7 +617,7 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'agent-a', entity: 'message', action: 'pii_scrub_attempt_denied',
-        detail: { from: 'agent-a', authKind: 'session', principal: 'someone' },
+        detail: { from: 'agent-a', authKind: 'session', principal: 'someone', principalSource: 'session' },
       }),
     )
   })
@@ -658,7 +658,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
-        detail: { from: 'agent-a', authKind: 'token', principal: null },
+        detail: { from: 'agent-a', authKind: 'token', principal: null, principalSource: 'token' },
       }),
     )
   })
@@ -674,7 +674,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
-        detail: { from: 'agent-a', authKind: 'token', principal: 'example-service-token' },
+        detail: { from: 'agent-a', authKind: 'token', principal: 'example-service-token', principalSource: 'token' },
       }),
     )
   })
@@ -695,7 +695,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'agent-x', action: 'pii_scrub_attempt_denied',
-        detail: { from: 'agent-x', authKind: 'session', principal: 'jonas' },
+        detail: { from: 'agent-x', authKind: 'session', principal: 'jonas', principalSource: 'session' },
       }),
     )
   })
@@ -711,7 +711,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
-        detail: { from: 'agent-a', authKind: 'federation', principal: 'teodor' },
+        detail: { from: 'agent-a', authKind: 'federation', principal: 'teodor', principalSource: 'peer' },
       }),
     )
   })
@@ -727,7 +727,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
-        detail: { from: 'agent-a', authKind: 'device', principal: 'iphone-jonas' },
+        detail: { from: 'agent-a', authKind: 'device', principal: 'iphone-jonas', principalSource: 'device' },
       }),
     )
   })
@@ -743,7 +743,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'jonas', action: 'pii_scrub_bypass', entity_id: 205,
-        detail: { from: 'test-owner', to: 'agent-b', principal: 'jonas' },
+        detail: { from: 'test-owner', to: 'agent-b', principal: 'jonas', principalSource: 'session' },
       }),
     )
   })
@@ -759,7 +759,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'unknown-partner-agent', action: 'create',
-        detail: expect.objectContaining({ reason: 'sender_not_in_allowlist', principal: null }),
+        detail: expect.objectContaining({ reason: 'sender_not_in_allowlist', principal: null, principalSource: 'token' }),
       }),
     )
   })
@@ -776,7 +776,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
       expect.objectContaining({
         agent_id: 'partner-agent', action: 'create', entity_id: 206,
-        detail: expect.objectContaining({ authorized_by: 'partner_sender_allowlist', principal: 'partner-system' }),
+        detail: expect.objectContaining({ authorized_by: 'partner_sender_allowlist', principal: 'partner-system', principalSource: 'peer' }),
       }),
     )
   })
