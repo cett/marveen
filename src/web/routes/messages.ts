@@ -60,6 +60,22 @@ function isHumanAdmin(ctx: RouteContext): boolean {
   return ctx.role === 'admin' && ctx.auth?.kind === 'session'
 }
 
+// #924: every writeAgentAuditLog call below records `from` (or a derivative
+// of it) as the audited agent_id, but `from` is a self-declared field in the
+// request BODY -- any bearer-token holder (the whole fleet shares one token)
+// can set it to any agent id and have the audit row read as if that agent
+// wrote it. This resolves the actually-authenticated caller from the auth
+// GATE (never the body), so a row can tell "agent X really did this" apart
+// from "someone used agent X's name". `user` is set only for a 'session'
+// (human dashboard login), `peer` only for a verified 'federation' inbound
+// token, `device` only for an enrolled device key -- a plain shared 'token'
+// caller (the common fleet-agent case) resolves to null here, which is the
+// honest answer: the shared token alone cannot distinguish which agent held
+// it for this call.
+function authPrincipal(ctx: RouteContext): string | null {
+  return ctx.auth?.user ?? ctx.auth?.peer ?? ctx.auth?.device ?? null
+}
+
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -147,7 +163,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       const allowed = isAuthorizedPartnerSender(cleanFrom, ctx.tenantId!)
       if (!allowed) {
         writeAgentAuditLog({ agent_id: cleanFrom, entity: 'message', action: 'create',
-          detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist' } })
+          detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist', principal: authPrincipal(ctx) } })
         logger.warn({ from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId }, 'Rejected partner /api/messages POST: sender not in allowlist')
         json(res, { error: 'sender_not_in_allowlist', hint: `sender '${from.trim()}' is not in the allowlist for tenant '${ctx.tenantId}'` }, 403)
         return true
@@ -223,7 +239,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       logger.warn({ from: from.trim(), authKind: ctx.auth?.kind }, 'no_pii_scrub ignored: requires human admin session')
       try {
         writeAgentAuditLog({ agent_id: from.trim(), entity: 'message', action: 'pii_scrub_attempt_denied',
-          detail: { from: from.trim(), authKind: ctx.auth?.kind ?? 'unknown' } })
+          detail: { from: from.trim(), authKind: ctx.auth?.kind ?? 'unknown', principal: authPrincipal(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
     if (!piiScrubBypassed && !normalizedContent.startsWith(COMPLETION_REPORT_PREFIX)) {
@@ -241,7 +257,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     }
     if (isPartnerTenant) {
       writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from), entity: 'message', action: 'create', entity_id: msg.id,
-        detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist' } })
+        detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist', principal: authPrincipal(ctx) } })
     } else if (ctx.auth?.kind === 'session' && ctx.auth.user) {
       try {
         writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'message', action: 'create', entity_id: msg.id })
@@ -250,7 +266,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (piiScrubBypassed) {
       try {
         writeAgentAuditLog({ agent_id: ctx.auth?.user || from.trim(), entity: 'message', action: 'pii_scrub_bypass',
-          entity_id: msg.id, detail: { from: from.trim(), to: storedTo } })
+          entity_id: msg.id, detail: { from: from.trim(), to: storedTo, principal: authPrincipal(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')

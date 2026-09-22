@@ -51,7 +51,7 @@ function makeCtx(
   method: string,
   path: string,
   body?: object,
-  opts: { role?: string; auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string }; tenantId?: string | null } = {},
+  opts: { role?: string; auth?: RouteContext['auth']; tenantId?: string | null } = {},
 ): { ctx: RouteContext; out: { status: number; body: any } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
   const req = new EventEmitter() as any
@@ -615,7 +615,10 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
       expect.objectContaining({ action: 'pii_scrub_bypass' }),
     )
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
-      expect.objectContaining({ agent_id: 'agent-a', entity: 'message', action: 'pii_scrub_attempt_denied', detail: { from: 'agent-a', authKind: 'session' } }),
+      expect.objectContaining({
+        agent_id: 'agent-a', entity: 'message', action: 'pii_scrub_attempt_denied',
+        detail: { from: 'agent-a', authKind: 'session', principal: 'someone' },
+      }),
     )
   })
 
@@ -631,6 +634,134 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
     expect(vi.mocked(scrubPiiFromContent)).toHaveBeenCalled()
     expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'pii_scrub_bypass' }),
+    )
+  })
+})
+
+// #924: `from` is a self-declared body field -- any bearer-token holder (the
+// whole fleet shares one token) could set it to any agent id and have the
+// audit row read as if that agent wrote it. These tests pin the fix: a
+// `principal` field resolved from the auth GATE (never the body) rides along
+// in the audit detail, so a row can tell "agent X really did this" apart
+// from "someone used agent X's name".
+describe('POST /api/messages: #924 audit principal resolves from the auth gate, not the self-declared from', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('plain bearer-token caller (shared fleet token, no user/peer/device): principal is null', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 201, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'admin', auth: { kind: 'token' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
+        detail: { from: 'agent-a', authKind: 'token', principal: null },
+      }),
+    )
+  })
+
+  it('a forged from is recorded verbatim, but the real authenticated session user rides along as principal', async () => {
+    // Impersonation shape: `from` claims to be "agent-x" (self-declared,
+    // unverifiable), but the request actually came from a real human session
+    // logged in as "jonas". Non-admin role so the no_pii_scrub bypass is
+    // denied and the attempt is audited -- the row must show BOTH: what was
+    // claimed (from) and who was actually authenticated (principal).
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 202, from_agent: 'agent-x', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-x', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'viewer', auth: { kind: 'session', user: 'jonas' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'agent-x', action: 'pii_scrub_attempt_denied',
+        detail: { from: 'agent-x', authKind: 'session', principal: 'jonas' },
+      }),
+    )
+  })
+
+  it('federation caller: principal resolves to the verified peer id', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 203, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'admin', auth: { kind: 'federation', peer: 'teodor' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
+        detail: { from: 'agent-a', authKind: 'federation', principal: 'teodor' },
+      }),
+    )
+  })
+
+  it('enrolled-device caller: principal resolves to the device key name', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 204, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'admin', auth: { kind: 'device', device: 'iphone-jonas' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'agent-a', action: 'pii_scrub_attempt_denied',
+        detail: { from: 'agent-a', authKind: 'device', principal: 'iphone-jonas' },
+      }),
+    )
+  })
+
+  it('pii_scrub_bypass entry also carries the session principal in its detail', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 205, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'test-owner', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
+    }, { role: 'admin', auth: { kind: 'session', user: 'jonas' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'jonas', action: 'pii_scrub_bypass', entity_id: 205,
+        detail: { from: 'test-owner', to: 'agent-b', principal: 'jonas' },
+      }),
+    )
+  })
+
+  it('partner-tenant rejected sender: audit entry carries the scoped-token principal (null for a plain tenant token)', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.isAuthorizedPartnerSender).mockReturnValueOnce(false)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'unknown-partner-agent', to: 'agent-b', content: 'hi',
+    }, { role: 'viewer', tenantId: 'partner-1', auth: { kind: 'token', tenantId: 'partner-1' } as any })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(403)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'unknown-partner-agent', action: 'create',
+        detail: expect.objectContaining({ reason: 'sender_not_in_allowlist', principal: null }),
+      }),
+    )
+  })
+
+  it('partner-tenant accepted create: audit entry carries the principal alongside the allowlist authorization', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.isAuthorizedPartnerSender).mockReturnValueOnce(true)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 206, from_agent: 'partner-agent', to_agent: 'agent-b', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'partner-agent', to: 'agent-b', content: 'hi',
+    }, { role: 'viewer', tenantId: 'partner-1', auth: { kind: 'federation', peer: 'partner-system' } })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent_id: 'partner-agent', action: 'create', entity_id: 206,
+        detail: expect.objectContaining({ authorized_by: 'partner_sender_allowlist', principal: 'partner-system' }),
+      }),
     )
   })
 })
