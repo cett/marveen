@@ -55,7 +55,10 @@ export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
   return setInterval(() => {
     try {
       const expired = expireTimedOutApprovals()
-      if (expired > 0) logger.info({ expired }, 'Approval timeout sweep: expired pending approvals')
+      if (expired > 0) {
+        logger.info({ expired }, 'Approval timeout sweep: expired pending approvals')
+        writeAgentAuditLog({ agent_id: 'system', entity: 'approval', action: 'timeout_sweep', detail: { expired } })
+      }
     } catch (err) {
       logger.warn({ err }, 'Approval timeout sweep failed')
     }

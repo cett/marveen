@@ -19,6 +19,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { shouldAlertNotLive } from '../web/schedule-runner.js'
 
 const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
 
@@ -41,13 +42,21 @@ describe('review-gate: isTaskLive is imported and wired into all three fire site
     const block = SRC.slice(idx, idx + 1500)
     expect(block).toMatch(/if \(!taskDef\.enabled \|\| !isTaskLive\(taskDef\)\)/)
     expect(block).toMatch(/deletePendingTaskRetry\(row\.task_name, row\.agent_name\)/)
+    // Every retry-drop is a discrete, already-bounded event (one per queued
+    // retry, not per tick) so it audit-logs unconditionally, unlike gate 3's
+    // per-restart-deduped fire-loop skip.
+    expect(block).toMatch(/action: 'skip_not_live'[\s\S]*reason: 'retry_dropped'/)
   })
 
   it('gate 3 -- the main cron fire loop skips a task that is enabled but not live', () => {
     const idx = SRC.indexOf('for (const task of tasks) {')
     expect(idx).toBeGreaterThan(0)
-    const loopHead = SRC.slice(idx, idx + 200)
-    expect(loopHead).toMatch(/if \(!task\.enabled \|\| !isTaskLive\(task\)\) continue/)
+    const loopHead = SRC.slice(idx, idx + 600)
+    expect(loopHead).toMatch(/if \(!task\.enabled \|\| !isTaskLive\(task\)\) \{/)
+    // The skip now also writes a dedup'd audit entry (see the skip_not_live
+    // describe block below) before falling through to `continue`.
+    expect(loopHead).toMatch(/action: 'skip_not_live'/)
+    expect(loopHead).toMatch(/\n\s*continue\s*\n\s*\}/)
   })
 
   it('gate 3 comes strictly after the retry-queue processing (both run every tick)', () => {
@@ -57,6 +66,27 @@ describe('review-gate: isTaskLive is imported and wired into all three fire site
     const retryIdx = SRC.indexOf('const pendingRows = listPendingTaskRetries()')
     const cronIdx = SRC.indexOf('for (const task of tasks) {')
     expect(cronIdx).toBeGreaterThan(retryIdx)
+  })
+})
+
+describe('shouldAlertNotLive', () => {
+  it('fires the first time a task is seen', () => {
+    const seen = new Set<string>()
+    expect(shouldAlertNotLive(seen, 'draft-task')).toBe(true)
+  })
+
+  it('does not fire again for the same task (second tick, same restart)', () => {
+    const seen = new Set<string>()
+    shouldAlertNotLive(seen, 'draft-task')
+    expect(shouldAlertNotLive(seen, 'draft-task')).toBe(false)
+    expect(shouldAlertNotLive(seen, 'draft-task')).toBe(false)
+  })
+
+  it('tracks independently per task name', () => {
+    const seen = new Set<string>()
+    expect(shouldAlertNotLive(seen, 'task-a')).toBe(true)
+    expect(shouldAlertNotLive(seen, 'task-b')).toBe(true)
+    expect(shouldAlertNotLive(seen, 'task-a')).toBe(false)
   })
 })
 

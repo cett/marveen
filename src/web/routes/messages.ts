@@ -221,6 +221,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const piiScrubBypassed = no_pii_scrub === true && isHumanAdmin(ctx)
     if (no_pii_scrub === true && !piiScrubBypassed) {
       logger.warn({ from: from.trim(), authKind: ctx.auth?.kind }, 'no_pii_scrub ignored: requires human admin session')
+      try {
+        writeAgentAuditLog({ agent_id: from.trim(), entity: 'message', action: 'pii_scrub_attempt_denied',
+          detail: { from: from.trim(), authKind: ctx.auth?.kind ?? 'unknown' } })
+      } catch { /* audit failure must not abort message creation */ }
     }
     if (!piiScrubBypassed && !normalizedContent.startsWith(COMPLETION_REPORT_PREFIX)) {
       normalizedContent = scrubPiiFromContent(normalizedContent)

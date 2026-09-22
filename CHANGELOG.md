@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- surface previously-silent gated/rejected events on the audit trail: a denied `no_pii_scrub` attempt, a scheduled task skipped because it is not live (fire-loop, deduped once per task per scheduler restart, and the retry-queue drop), and the automatic approval-timeout sweep now each write an `agent_audit_log` entry; the audit-log dashboard highlights these and the existing PII-bypass/approval-rejection entries with a colored action badge
 - scheduled-task review-gate UI (draft badge, activate button)
 - close review-gate fire-loop/retry-queue holes, add item-3 tests
 - PII scrub-before-persist for agent_messages
