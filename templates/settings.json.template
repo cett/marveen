@@ -100,6 +100,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo 'destructive-gate: python3 not found -- DENY' >&2; exit 2; }; python3 \"{{SCRIPTS_DIR}}/scripts/hooks/destructive-gate.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
