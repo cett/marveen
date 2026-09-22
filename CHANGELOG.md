@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- unit test coverage for `context-guard-runner.ts`'s prompt-builder exports (`handoffPrompt`, `idleFlushHandoffPrompt`, `staleRefreshHandoffPrompt`, `dailyHandoffPrompt`, `resumePrompt`) and `guardSweepAgentNames`'s dedup/main-first agent listing
 - unit test coverage for two previously-untested backend modules' pure decision logic: `context-restart-gate-runner.ts`'s infrastructure-vs-work child-process classifier (age-delta heuristic, direct/wrapper pane-shape claude-PID resolution, MCP-package-name extraction and matching) and `inbox-nudge-watcher.ts`'s nudge preflight/record state machine (debounce, stale-nudge cooldown and cap, rolling hourly budget, single-row nudge text length)
 
 - unit test coverage for `claude-credentials-guard.ts`'s previously-untested token-lifecycle functions (`liveTestToken`/`liveProbeAuth`'s live `claude -p` probe including the inherited-env-token stripping and ENOENT/auth-rejected classification, `syncFleetTokenFromSharedCredentials`'s terminal-pasted setup-token backfill, `quarantineFleetToken`/`quarantineFleetTokenIfDead`'s dead-token demotion, and `fleetTokenBootPass`'s cached/live/quarantine boot-time lifecycle pass), raising the file from ~19% to ~81% statement coverage
