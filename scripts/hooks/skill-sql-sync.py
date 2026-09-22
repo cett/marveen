@@ -21,7 +21,11 @@ import sqlite3
 import sys
 import time
 
-MARVEEN_ROOT = "/Users/jonasgergo/marveen"
+# Hooks live in <install>/scripts/hooks/; resolve the install root from THIS
+# file's location (same computation as ledger_lib.py's _install_dir()), so it
+# is correct regardless of the machine or the session's cwd.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MARVEEN_ROOT = os.path.dirname(os.path.dirname(_HERE))
 AGENTS_BASE_DIR = os.path.join(MARVEEN_ROOT, "agents")
 HOME = os.path.expanduser("~")
 DB_PATH = os.path.join(MARVEEN_ROOT, "store", "claudeclaw.db")
