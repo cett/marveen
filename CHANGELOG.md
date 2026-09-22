@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- CI gate (`scripts/check_commit_subjects.py`) that catches internal kanban-rowid `#NNN` tokens leaking into commit subjects/bodies on PRs, verifying bare references against this fork's GitHub API and explicit `upstream #NNN` references against the upstream repo, replacing a manual pre-push checklist
 - surface previously-silent gated/rejected events on the audit trail: a denied `no_pii_scrub` attempt, a scheduled task skipped because it is not live (fire-loop, deduped once per task per scheduler restart, and the retry-queue drop), and the automatic approval-timeout sweep now each write an `agent_audit_log` entry; the audit-log dashboard highlights these and the existing PII-bypass/approval-rejection entries with a colored action badge
 - scheduled-task review-gate UI (draft badge, activate button)
 - close review-gate fire-loop/retry-queue holes, add item-3 tests
