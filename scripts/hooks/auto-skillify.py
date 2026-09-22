@@ -22,7 +22,11 @@ import sys
 import urllib.request
 from datetime import datetime
 
-MARVEEN_ROOT = "/Users/jonasgergo/marveen"
+# Hooks live in <install>/scripts/hooks/; resolve the install root from THIS
+# file's location (same computation as ledger_lib.py's _install_dir()), so it
+# is correct regardless of the machine or the session's cwd.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MARVEEN_ROOT = os.path.dirname(os.path.dirname(_HERE))
 DASHBOARD_TOKEN_PATH = os.path.join(MARVEEN_ROOT, "store/.dashboard-token")
 DASHBOARD_URL = "http://localhost:3420"
 

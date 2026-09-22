@@ -9,7 +9,7 @@
 # Usage: fleet-heartbeat-sweep.sh [stagger_seconds]
 set -euo pipefail
 
-ROOT="/Users/jonasgergo/marveen"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOKEN="$(cat "$ROOT/store/.dashboard-token")"
 API="http://localhost:3420"
 
