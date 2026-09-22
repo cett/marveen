@@ -221,8 +221,8 @@ export interface WorkspaceDocSearchResult {
  * Full-text search over workspace_docs (title + content), joined back from
  * the workspace_docs_fts external-content index (migration 0040).
  *
- * Tenant isolation is the critical property here -- kanban 9156e583 exists
- * specifically to bring workspace_docs into memory search, and the explicit
+ * Tenant isolation is the critical property here -- this exists specifically
+ * to bring workspace_docs into memory search, and the explicit
  * requirement is: search is TENANT-scoped, and NO row may cross a
  * tenant boundary, ever. `tenantId` mirrors the GET /api/memories?q
  * `recallTenantId` semantics exactly: `undefined` means "no tenant filter"

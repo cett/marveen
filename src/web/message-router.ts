@@ -616,7 +616,7 @@ export async function runMessageRouterTick(): Promise<void> {
               pendingMsgCount,
               paneState,
             }, 'message-router: session STUCK — continuously not-ready past escalation threshold')
-            // Card 0a641b52: a log line nobody reads is not an alert. Surface the
+            // A log line nobody reads is not an alert. Surface the
             // stall to the main agent's inbox so it can run the delivery-stall
             // diagnosis (pane state, full context, restart). The escalation-window
             // reset below doubles as the notification cooldown.

@@ -121,7 +121,7 @@ export function readAgentModel(name: string): string {
   return resolveAgentModelDetailed(name).model
 }
 
-// Card c755f4b2 Block B. Passing null REMOVES the key rather than writing a
+// Passing null REMOVES the key rather than writing a
 // null: an absent field and an explicit null must not become two ways of
 // saying the same thing in a config a human also edits by hand.
 export function writeAgentModelProfile(name: string, profile: string | null): void {

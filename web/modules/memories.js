@@ -170,7 +170,7 @@ document.getElementById('memAddBtn')?.addEventListener('click', () => {
 document.getElementById('memModalClose')?.addEventListener('click', () => _closeModal?.(memModalOverlay))
 memModalOverlay?.addEventListener('click', (e) => { if (e.target === memModalOverlay) _closeModal?.(memModalOverlay) })
 
-// Memory detail modal (kanban 87076b19): read-only view opened on card click
+// Memory detail modal: read-only view opened on card click
 const memDetailOverlay = document.getElementById('memDetailOverlay')
 const memDetailEditBtn = document.getElementById('memDetailEditBtn')
 document.getElementById('memDetailClose')?.addEventListener('click', () => _closeModal?.(memDetailOverlay))
@@ -367,7 +367,7 @@ function renderMemories(memories, staleIds = new Set(), workspaceDocs = []) {
       </div>
     `
 
-    // Open detail modal (kanban 87076b19)
+    // Open detail modal
     item.addEventListener('click', (e) => {
       if (e.target.closest('[data-variant="danger"]') || e.target.closest('[data-variant="secondary"]')) return
       openMemDetailModal(mem, tier, memSearchInput.value)

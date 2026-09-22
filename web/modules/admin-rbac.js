@@ -1,4 +1,4 @@
-// RBAC admin UI (kanban 722-B): API tokens, partner-senders and skill
+// RBAC admin UI: API tokens, partner-senders and skill
 // grant/revoke management -- global admin only. All three are existing
 // backend endpoints (tokens.ts, admin-b2b.ts, skills.ts) that previously had
 // no UI. Entry is gated with rbac-client's can('admin:all'), consistent with

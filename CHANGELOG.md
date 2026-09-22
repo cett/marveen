@@ -852,6 +852,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 - fill inter-agent span attributes
 - agent_messages refused/no_session markers
 - strip internal kanban card id from #910 entry and test description
+- replace pre-existing internal kanban card/rowid references in source comments, JSDoc and test descriptions with plain functional descriptions (no behavior change)
 - note MCP list cache purge on catalog uninstall
 - README fork-diff -- status grid de-duplikálás bejegyzés
 - CHANGELOG + README fork-diff SHA for the upstream backport + claude-plans DB migration

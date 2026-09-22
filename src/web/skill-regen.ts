@@ -160,7 +160,7 @@ export interface SingleRegenResult {
 /**
  * Regenerate a single skill's on-disk SKILL.md from its current SQL row,
  * immediately after a dashboard write -- Phase 1 of the file->SQL-only
- * migration (kanban 3f52d485). Callers should invoke this right after every
+ * migration. Callers should invoke this right after every
  * createSkill()/updateSkill() so an edit reaches disk (and therefore the
  * Claude Code loader) without waiting for the next startup regen.
  *

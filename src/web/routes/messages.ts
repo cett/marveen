@@ -225,7 +225,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (!piiScrubBypassed && !normalizedContent.startsWith(COMPLETION_REPORT_PREFIX)) {
       normalizedContent = scrubPiiFromContent(normalizedContent)
     }
-    // Card 06f062e4: optional attributability tag, self-declared like `from`
+    // Optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, effectiveTenantId, envelope)

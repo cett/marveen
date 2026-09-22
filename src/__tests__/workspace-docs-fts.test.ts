@@ -1,5 +1,5 @@
 /**
- * FTS5 search over workspace_docs (migration 0040, kanban 9156e583).
+ * FTS5 search over workspace_docs (migration 0040).
  * Tenant isolation is the critical property under test here per the
  * explicit requirement: search is tenant-scoped, and no row may ever cross
  * a tenant boundary -- see searchWorkspaceDocs's own doc comment.

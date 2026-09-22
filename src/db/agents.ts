@@ -109,11 +109,11 @@ export interface AgentMessage {
   created_at: number
   delivered_at: number | null
   completed_at: number | null
-  // Card 06f062e4: optional, self-declared attributability tag (e.g. a
+  // Optional, self-declared attributability tag (e.g. a
   // sub-agent's own task/branch name) -- NOT an authentication mechanism,
   // see the table-creation comment. Null for every caller that doesn't pass one.
   origin_note: string | null
-  // Card def5a189: distributed trace context (message-router middleware).
+  // Distributed trace context (message-router middleware).
   trace_id: string | null
   span_id: string | null
   parent_span_id: string | null

@@ -243,8 +243,8 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       return true
     }
 
-    // SQL is the source of truth (Phase 4, kanban 918); no direct file write
-    // here. regenSingleSkillFile pushes the SQL row to disk immediately
+    // SQL is the source of truth (Phase 4 of the file->SQL-only migration);
+    // no direct file write here. regenSingleSkillFile pushes the SQL row to disk immediately
     // (a no-op, logged, while SKILL_SQL_REGEN is off) rather than the route
     // writing the file itself -- matches the /api/skills/sql POST precedent.
     regenSingleSkillFile(agentSqlId)

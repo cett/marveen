@@ -843,7 +843,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
-    // Card c755f4b2 Block B: optional generic capability tier. An unknown id
+    // Optional generic capability tier. An unknown id
     // is a 400, never a persisted value -- storing one would leave the UI
     // showing a profile while resolution silently fell back to the install
     // default, i.e. a model change nobody asked for. Empty string clears it.
