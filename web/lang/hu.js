@@ -954,6 +954,8 @@ window._i18n.hu = {
   'settings.empty':              'Nincs regisztrált beállítás.',
   'settings.error':              'Nem sikerült betölteni a beállításokat.',
   'settings.restart_badge':      'Újraindítást igényel',
+  'settings.secret_badge':       'Titkos',
+  'settings.secret_readonly_hint': 'Csak admin szerkesztheti',
   'settings.save_btn.saving':    'Mentés...',
   'settings.save_btn.save':      'Mentés',
   'settings.btn.refresh':        'Frissítés',

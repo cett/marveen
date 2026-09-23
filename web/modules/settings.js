@@ -528,9 +528,14 @@ export async function loadSettings() {
   renderAuthCard()
 
   try {
-    const res = await fetch('/api/settings')
+    const [res, authStatus] = await Promise.all([fetch('/api/settings'), fetchAuthStatus()])
     if (!res.ok) throw new Error('fetch failed')
     const { settings } = await res.json()
+    // Same "global admin" convention as admin-b2b.js/tenant-selector.js/
+    // workspace-docs.js: editing a secret:true row is gated to this, not just
+    // role==='admin', to match how every other fleet-wide-only control in
+    // this dashboard already decides visibility.
+    const isAdmin = authStatus?.role === 'admin' && authStatus?.tenant_id === null
 
     // A newer loadSettings() call started while we were fetching: bail out to
     // avoid clobbering the DOM that the newer call is building.
@@ -586,7 +591,7 @@ export async function loadSettings() {
       const group = document.createElement('div')
       group.className = 'settings-group'
       for (const def of defs) {
-        group.appendChild(buildSettingRow(def))
+        group.appendChild(buildSettingRow(def, isAdmin))
       }
       panel.appendChild(group)
       tabPanels.appendChild(panel)
@@ -619,7 +624,7 @@ export async function loadSettings() {
         const group = document.createElement('div')
         group.className = 'settings-group'
         for (const def of securityDefs) {
-          group.appendChild(buildSettingRow(def))
+          group.appendChild(buildSettingRow(def, isAdmin))
         }
         panel.appendChild(group)
       }
@@ -750,7 +755,7 @@ export async function loadSettings() {
         const group = document.createElement('div')
         group.className = 'settings-group'
         for (const def of claudePlansDefs) {
-          group.appendChild(buildSettingRow(def))
+          group.appendChild(buildSettingRow(def, isAdmin))
         }
         panel.appendChild(group)
       }
@@ -947,7 +952,7 @@ async function loadClaudePlansList() {
   }
 }
 
-function buildSettingRow(def) {
+function buildSettingRow(def, isAdmin) {
   const row = document.createElement('div')
   row.className = 'settings-row'
 
@@ -957,6 +962,12 @@ function buildSettingRow(def) {
   const title = document.createElement('div')
   title.className = 'settings-row-key'
   title.textContent = def.key
+  if (def.secret) {
+    const badge = document.createElement('span')
+    badge.className = 'settings-secret-badge'
+    badge.textContent = t('settings.secret_badge')
+    title.appendChild(badge)
+  }
   if (def.requiresRestart) {
     const badge = document.createElement('span')
     badge.className = 'settings-restart-badge'
@@ -1016,6 +1027,20 @@ function buildSettingRow(def) {
     if (def.min !== undefined) valueInput.min = def.min
     if (def.max !== undefined) valueInput.max = def.max
     valueInput.value = def.value
+  } else if (def.secret) {
+    // Masked global secret (SETTINGS_REGISTRY secret:true, e.g. the main
+    // agent's TELEGRAM_BOT_TOKEN/ALLOWED_CHAT_ID). The value from GET is
+    // always the literal '***' mask -- editing it types a real new value;
+    // leaving it untouched keeps the dirty-check no-op so it never re-posts
+    // the mask. Admin-only, same "global admin" gate as the rest of this
+    // dashboard (admin-b2b.js, tenant-selector.js, workspace-docs.js).
+    valueInput = document.createElement('input')
+    valueInput.type = 'password'
+    valueInput.autocomplete = 'new-password'
+    valueInput.className = 'input'
+    valueInput.value = def.value
+    valueInput.disabled = !isAdmin
+    if (!isAdmin) valueInput.title = t('settings.secret_readonly_hint')
   } else {
     valueInput = document.createElement('input')
     valueInput.type = 'text'

@@ -6,17 +6,19 @@ import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import type { RouteContext } from './types.js'
 
+const SECRET_MASK = '***'
+
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === '/api/settings' && method === 'GET') {
-    // secret:true entries are filtered out entirely -- not just the value,
-    // the whole row -- per spec: a secret's existence is exposed elsewhere
-    // (the vault page), not duplicated here.
-    const settings = SETTINGS_REGISTRY.filter((def) => !def.secret).map((def) => ({
+    // secret:true entries are included so the UI can show/edit them, but the
+    // real value never leaves this process -- getEffectiveSettingValue() is
+    // never called for a secret key, the row always reports the mask.
+    const settings = SETTINGS_REGISTRY.map((def) => ({
       key: def.key,
       type: def.type,
-      value: getEffectiveSettingValue(def.key),
+      value: def.secret ? SECRET_MASK : getEffectiveSettingValue(def.key),
       default: def.default,
       description: def.description,
       module: def.module,
@@ -24,6 +26,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       valueSet: def.valueSet,
       min: def.min,
       max: def.max,
+      secret: def.secret,
     }))
     json(res, { settings })
     return true
@@ -45,10 +48,21 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
       if (def.secret) {
-        // Defensive: v1 has no secret entries, but a future registry entry
-        // marked secret must never be settable through this generic route.
-        json(res, { error: 'forbidden', hint: 'Secret settings cannot be changed via this endpoint' }, 403)
-        return true
+        // Standalone admin check, independent of the fleet-wide RBAC_MODE
+        // shadow/enforce toggle: applyRbacGate() is a no-op in shadow mode,
+        // so relying on it alone would let any authenticated caller write a
+        // secret while RBAC_MODE stays 'shadow'.
+        if (ctx.role !== 'admin') {
+          json(res, { error: 'forbidden', hint: 'Only admin can change secret settings' }, 403)
+          return true
+        }
+        if (value === SECRET_MASK) {
+          // Mask-writeback: the UI re-submitted the masked placeholder
+          // unchanged (e.g. saved the form without editing the secret
+          // field). Treat as a no-op, never write the literal mask to DB.
+          json(res, { ok: true, key, value: SECRET_MASK, requiresRestart: def.requiresRestart })
+          return true
+        }
       }
 
       // Validate before touching anything. setOverride re-validates

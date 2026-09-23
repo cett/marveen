@@ -14,7 +14,7 @@ import { initDatabase, getSystemConfig } from '../db.js'
 import { existsSync } from 'node:fs'
 import { OVERRIDES_PATH } from '../settings-store.js'
 
-function makeCtx(opts: { method: string; path: string; body?: object }): {
+function makeCtx(opts: { method: string; path: string; body?: object; role?: string }): {
   ctx: RouteContext; status: () => number; body: () => unknown
 } {
   const raw = opts.body ? JSON.stringify(opts.body) : ''
@@ -29,7 +29,7 @@ function makeCtx(opts: { method: string; path: string; body?: object }): {
   }
   const url = new URL(`http://localhost${opts.path}`)
   return {
-    ctx: { req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: opts.method, url, auth: { kind: 'token' } } as RouteContext,
+    ctx: { req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: opts.method, url, auth: { kind: 'token' }, role: opts.role } as RouteContext,
     status: () => code,
     body: () => { try { return JSON.parse(resBody) } catch { return resBody } },
   }
@@ -79,8 +79,8 @@ describe('POST /api/settings: DB-only write for the new non-secret keys', () => 
   })
 })
 
-describe('POST /api/settings: secret keys stay closed after the DB-only write path change', () => {
-  it('TELEGRAM_BOT_TOKEN is still 403 (never gained a write path)', async () => {
+describe('POST /api/settings: secret keys require admin role (S6)', () => {
+  it('TELEGRAM_BOT_TOKEN: 403 for a non-admin caller, DB untouched', async () => {
     const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'TELEGRAM_BOT_TOKEN', value: 'x' } })
     expect(await tryHandleSettings(ctx)).toBe(true)
     expect(status()).toBe(403)
@@ -88,21 +88,55 @@ describe('POST /api/settings: secret keys stay closed after the DB-only write pa
     expect(getSystemConfig('TELEGRAM_BOT_TOKEN')).toBeUndefined()
   })
 
-  it('ALLOWED_CHAT_ID is still 403 (never gained a write path)', async () => {
+  it('ALLOWED_CHAT_ID: 403 for a non-admin caller, DB untouched', async () => {
     const { ctx, status } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'ALLOWED_CHAT_ID', value: '12345' } })
     expect(await tryHandleSettings(ctx)).toBe(true)
     expect(status()).toBe(403)
     expect(getSystemConfig('ALLOWED_CHAT_ID')).toBeUndefined()
   })
+
+  it('TELEGRAM_BOT_TOKEN: admin can write a real value, persisted to the DB', async () => {
+    const { ctx, status, body } = makeCtx({
+      method: 'POST', path: '/api/settings', body: { key: 'TELEGRAM_BOT_TOKEN', value: 'real-bot-token' }, role: 'admin',
+    })
+    expect(await tryHandleSettings(ctx)).toBe(true)
+    expect(status()).toBe(200)
+    expect((body() as any).value).toBe('real-bot-token')
+    expect(getSystemConfig('TELEGRAM_BOT_TOKEN')?.value).toBe('real-bot-token')
+  })
+
+  it('TELEGRAM_BOT_TOKEN: admin re-submitting the literal mask is a no-op, real value untouched', async () => {
+    const write = makeCtx({
+      method: 'POST', path: '/api/settings', body: { key: 'TELEGRAM_BOT_TOKEN', value: 'real-bot-token' }, role: 'admin',
+    })
+    await tryHandleSettings(write.ctx)
+
+    const maskWriteback = makeCtx({
+      method: 'POST', path: '/api/settings', body: { key: 'TELEGRAM_BOT_TOKEN', value: '***' }, role: 'admin',
+    })
+    expect(await tryHandleSettings(maskWriteback.ctx)).toBe(true)
+    expect(maskWriteback.status()).toBe(200)
+    expect(getSystemConfig('TELEGRAM_BOT_TOKEN')?.value).toBe('real-bot-token')
+  })
 })
 
-describe('GET /api/settings: secret keys stay excluded', () => {
-  it('does not list TELEGRAM_BOT_TOKEN or ALLOWED_CHAT_ID', async () => {
+describe('GET /api/settings: secret keys are listed masked (S6)', () => {
+  it('lists TELEGRAM_BOT_TOKEN/ALLOWED_CHAT_ID with the *** mask, never the real value', async () => {
+    const write = makeCtx({
+      method: 'POST', path: '/api/settings', body: { key: 'TELEGRAM_BOT_TOKEN', value: 'real-bot-token' }, role: 'admin',
+    })
+    await tryHandleSettings(write.ctx)
+
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/settings' })
     expect(await tryHandleSettings(ctx)).toBe(true)
-    const keys = ((body() as any).settings as { key: string }[]).map((s) => s.key)
-    expect(keys).not.toContain('TELEGRAM_BOT_TOKEN')
-    expect(keys).not.toContain('ALLOWED_CHAT_ID')
+    const settings = (body() as any).settings as { key: string; value: unknown; secret: boolean }[]
+    const token = settings.find((s) => s.key === 'TELEGRAM_BOT_TOKEN')
+    expect(token).toMatchObject({ value: '***', secret: true })
+    const chatId = settings.find((s) => s.key === 'ALLOWED_CHAT_ID')
+    expect(chatId).toMatchObject({ value: '***', secret: true })
+    expect(JSON.stringify(body())).not.toContain('real-bot-token')
+
+    const keys = settings.map((s) => s.key)
     expect(keys).toContain('MAIN_AGENT_ID')
     expect(keys).toContain('WEB_PORT')
     expect(keys).toContain('CHANNEL_PROVIDER')
