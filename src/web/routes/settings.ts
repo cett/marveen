@@ -83,8 +83,17 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
-      logConfigChange(key, oldValue, validation.value!, resolvedActor)
-      logger.info({ key, oldValue, newValue: validation.value }, 'Setting updated')
+      // secret:true keys: the audit trail (config_change_log DB rows + the
+      // pino log) must never carry the real value in plaintext, even though
+      // this same write path is fine to log verbatim for non-secret keys.
+      // Before S6 this branch was unreachable for a secret key (POST always
+      // 403'd), so the plaintext logging here was harmless dead code for
+      // them; S6 opens the write path, so this mask closes it in the same
+      // step that introduced the exposure.
+      const loggedOldValue = def.secret ? SECRET_MASK : oldValue
+      const loggedNewValue = def.secret ? SECRET_MASK : validation.value!
+      logConfigChange(key, loggedOldValue, loggedNewValue, resolvedActor)
+      logger.info({ key, oldValue: loggedOldValue, newValue: loggedNewValue }, 'Setting updated')
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {
       logger.error({ err }, 'Failed to update setting')

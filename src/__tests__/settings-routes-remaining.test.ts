@@ -146,6 +146,37 @@ describe('tryHandleSettings', () => {
       expect(mocks.setOverride).toHaveBeenCalledWith('test.hidden', 'new-real-secret')
     })
 
+    it('admin writing a real new secret value: the audit log (logConfigChange + logger.info) never receives the raw value', async () => {
+      mocks.getEffectiveSettingValue.mockReturnValueOnce('old-real-secret')
+      mocks.validateSettingValue.mockReturnValueOnce({ ok: true, value: 'new-real-secret' })
+      mocks.setOverride.mockReturnValueOnce({ ok: true })
+      const { ctx } = makeCtx({
+        method: 'POST', path: '/api/settings', body: { key: 'test.hidden', value: 'new-real-secret' }, role: 'admin',
+      })
+      await tryHandleSettings(ctx)
+
+      expect(mocks.logConfigChange).toHaveBeenCalledWith('test.hidden', '***', '***', 'dashboard')
+      expect(mocks.logger.info).toHaveBeenCalledWith(
+        { key: 'test.hidden', oldValue: '***', newValue: '***' },
+        'Setting updated'
+      )
+      // belt-and-braces: neither raw value appears anywhere in either call's arguments
+      const allLogArgs = JSON.stringify([...mocks.logConfigChange.mock.calls, ...mocks.logger.info.mock.calls])
+      expect(allLogArgs).not.toContain('old-real-secret')
+      expect(allLogArgs).not.toContain('new-real-secret')
+    })
+
+    it('non-secret key writes still log the real value (unchanged behavior)', async () => {
+      mocks.getEffectiveSettingValue.mockReturnValueOnce('0')
+      mocks.validateSettingValue.mockReturnValueOnce({ ok: true, value: '1' })
+      mocks.setOverride.mockReturnValueOnce({ ok: true })
+      const { ctx } = makeCtx({
+        method: 'POST', path: '/api/settings', body: { key: 'test.visible', value: true },
+      })
+      await tryHandleSettings(ctx)
+      expect(mocks.logConfigChange).toHaveBeenCalledWith('test.visible', '0', '1', 'dashboard')
+    })
+
     it('succeeds, logs the change with the old value, and defaults actor to "dashboard"', async () => {
       mocks.validateSettingValue.mockReturnValueOnce({ ok: true, value: '1' })
       mocks.getEffectiveSettingValue.mockReturnValueOnce('0')
