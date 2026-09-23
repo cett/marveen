@@ -2,16 +2,16 @@ import { existsSync, mkdirSync, readFileSync, watch, type FSWatcher } from 'node
 import { join } from 'node:path'
 import { STORE_DIR } from './config.js'
 import { readEnvFile } from './env.js'
-import { atomicWriteFileSync } from './web/atomic-write.js'
 import { getSettingDefinition, validateSettingValue, type SettingDefinition } from './config-registry.js'
+import { getSystemConfig, setSystemConfig } from './db/system-config.js'
 
-// Writable override layer for registry-backed settings. Resolution order for
-// any registered key is: config-overrides.json > .env > registry default.
-// Writes are atomic (tmp file + rename, via atomicWriteFileSync) so a crash
-// mid-write can never leave a half-written or zero-byte overrides file. A
-// directory watch keeps the in-memory cache in sync if the file is edited
-// outside this process (e.g. by hand over SSH); our own writes update the
-// cache directly without waiting for the watch event.
+// Read layer for registry-backed settings. Resolution order for any
+// registered key is: system_config DB > config-overrides.json > .env >
+// registry default. config-overrides.json is READ-ONLY here now (legacy
+// values from before the DB-only write path below shipped); a directory
+// watch keeps the in-memory cache of it in sync if the file is edited by
+// hand outside this process. Retained as a fallback until a later step
+// retires the file entirely.
 export const OVERRIDES_PATH = join(STORE_DIR, 'config-overrides.json')
 
 let cache: Record<string, string | number> = {}
@@ -57,14 +57,31 @@ function coerce(def: SettingDefinition, raw: string | number): string | number {
   return String(raw)
 }
 
-// Resolves the effective value for a registered key: override > .env >
-// registry default. Reads .env fresh (cheap, scoped to one key) rather than
-// relying on the boot-time config.ts constants, so this resolution stays
-// correct independent of when the process last restarted.
+// getSystemConfig() hits the real DB connection (src/db/connection.ts),
+// which is undefined until initDatabase() runs -- true in production well
+// before any request reaches here, but not guaranteed in a unit test that
+// exercises this module without booting the DB. Tolerate that the same way
+// config.ts's readSystemConfigTable() tolerates a missing DB file: fall
+// through to the next layer rather than throwing.
+function tryGetSystemConfigValue(key: string): string | undefined {
+  try {
+    return getSystemConfig(key)?.value
+  } catch {
+    return undefined
+  }
+}
+
+// Resolves the effective value for a registered key: system_config DB >
+// config-overrides.json > .env > registry default. Reads .env fresh (cheap,
+// scoped to one key) rather than relying on the boot-time config.ts
+// constants, so this resolution stays correct independent of when the
+// process last restarted.
 export function getEffectiveSettingValue(key: string): string | number {
   ensureWatching()
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
+  const dbValue = tryGetSystemConfigValue(key)
+  if (dbValue !== undefined) return coerce(def, dbValue)
   if (key in cache) return coerce(def, cache[key])
   const envValue = readEnvFile([key])[key]
   if (envValue !== undefined) return coerce(def, envValue)
@@ -76,11 +93,11 @@ export interface SetOverrideResult {
   error?: string
 }
 
-// Validates against the registry, then atomically persists the whole
-// overrides file and updates the in-memory cache. Validation happens before
-// any disk write, so an invalid value never reaches the file -- combined
-// with the atomic write, a failure at any point leaves the previous state
-// fully intact (no partial save).
+// Validates against the registry, then writes ONLY to the system_config DB
+// (source='db'). config-overrides.json is no longer written by this
+// function -- it stays a read-only legacy fallback (see getEffectiveSettingValue)
+// until a later step retires it. Validation happens before the write, so an
+// invalid value never reaches the DB.
 export function setOverride(key: string, rawValue: unknown): SetOverrideResult {
   const def = getSettingDefinition(key)
   if (!def) return { ok: false, error: `Ismeretlen kulcs: ${key}` }
@@ -88,11 +105,7 @@ export function setOverride(key: string, rawValue: unknown): SetOverrideResult {
   const validation = validateSettingValue(def, rawValue)
   if (!validation.ok) return { ok: false, error: validation.error }
 
-  ensureWatching()
-  mkdirSync(STORE_DIR, { recursive: true })
-  const next = { ...loadFromDisk(), [key]: validation.value! }
-  atomicWriteFileSync(OVERRIDES_PATH, JSON.stringify(next, null, 2))
-  cache = next
+  setSystemConfig(key, String(validation.value!), 'db')
   return { ok: true }
 }
 
