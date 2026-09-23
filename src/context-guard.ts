@@ -450,7 +450,7 @@ export function decideGuard(
   const none = (reason: string, next: GuardState = state): GuardDecision =>
     ({ action: 'none', reason, nextState: next })
 
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled) {
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
     return none('disabled', INITIAL_GUARD_STATE)
   }
 

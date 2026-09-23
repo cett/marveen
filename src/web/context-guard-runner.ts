@@ -302,10 +302,11 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
-  // Fully disarmed only when BOTH the proactive tiers and the always-on
-  // saturation net are off; the net alone keeps the sweep alive so a
-  // 100%-context pane (which dispatch refuses to prompt) still gets rescued.
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled) {
+  // Fully disarmed only when every tier that can act (proactive, idle-flush,
+  // daily-handoff) AND the always-on saturation net are off; the net alone
+  // keeps the sweep alive so a 100%-context pane (which dispatch refuses to
+  // prompt) still gets rescued.
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
     guardStates.delete(name)
     return
   }
