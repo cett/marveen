@@ -186,7 +186,12 @@ if command -v ollama &>/dev/null; then
     # Start Ollama if not running
     if ! curl -s http://localhost:11434/api/version &>/dev/null; then
         nohup ollama serve &>/dev/null &
-        sleep 3
+        # Fix sleep 3 nem garancia hidegindulasnal -- wait-probe (lasd install-macos.sh),
+        # egy soron tartva hogy a fajl CRLF sorvegei ne torjek a do/done kulcsszavakat
+        for i in \$(seq 1 30); do curl -s http://localhost:11434/api/version &>/dev/null && break; sleep 1; done
+        if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+            echo '  ⚠ Ollama nem valaszolt 30 mp utan -- folytatjuk, kesobb kezzel: ollama serve && ollama pull nomic-embed-text'
+        fi
     fi
 
     # Pull embedding model
