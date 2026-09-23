@@ -239,7 +239,8 @@ describe('exportFleet: channelEnvs not in VaultExport', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Identity takeover: source mainAgent.agentId preserved as-is; config-overrides written on apply
+// Identity takeover: source mainAgent.agentId preserved as-is; .env mirrored on apply
+// (S8B: config-overrides.json is retired -- .env is the only persistence path)
 // ---------------------------------------------------------------------------
 
 const FLEET_WITH_SOURCE_ID = JSON.stringify({
@@ -282,7 +283,12 @@ describe('importFleet: identity takeover', () => {
     expect((result as any).wouldCreate.memories).toBe(2)
   })
 
-  it('apply writes all identity keys to config-overrides.json and returns warning', async () => {
+  // S8B: config-overrides.json is retired. The identity-takeover block used
+  // to ALSO write a config-overrides.json alongside the .env mirror below --
+  // that write is now gone entirely. This is a mutation-verified regression
+  // guard: re-introducing the atomicWriteFileSync(overridesPath, ...) call
+  // makes this test fail, because it would show up in this mock's call log.
+  it('apply does NOT write config-overrides.json anymore (S8B retirement), but still returns the identity warning', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
     const { atomicWriteFileSync } = await import('../web/atomic-write.js')
 
@@ -290,16 +296,9 @@ describe('importFleet: identity takeover', () => {
     // ImportResult (not DiffReport)
     expect('ok' in result).toBe(true)
     const ir = result as any
-    // config-overrides.json written with full identity set
     const configOverrideCalls = (atomicWriteFileSync as any).mock.calls
       .filter((c: string[]) => c[0]?.includes('config-overrides.json'))
-    expect(configOverrideCalls.length).toBeGreaterThan(0)
-    const written = JSON.parse(configOverrideCalls[configOverrideCalls.length - 1][1])
-    expect(written['MAIN_AGENT_ID']).toBe('atlas')
-    expect(written['BOT_NAME']).toBe('Atlas')
-    expect(written['BRAND_NAME']).toBe('Atlas')
-    expect(written['OWNER_NAME']).toBe('Norbert')
-    expect(written['CHANNEL_PROVIDER']).toBe('telegram')
+    expect(configOverrideCalls.length).toBe(0)
     // Warning present in ImportResult
     expect(ir.warnings).toBeDefined()
     expect(ir.warnings.some((w: string) => w.includes('atlas'))).toBe(true)

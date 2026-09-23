@@ -1173,6 +1173,8 @@ window._i18n.en = {
   'settings.error':			'Failed to load settings.',
   'settings.loading':			'Loading...',
   'settings.restart_badge':			'Restart required',
+  'settings.secret_badge':			'Secret',
+  'settings.secret_readonly_hint':			'Only an admin can edit this',
   'settings.save_btn.save':			'Save',
   'settings.save_btn.saving':			'Saving...',
   'tasks.agent_all':			'All agents',

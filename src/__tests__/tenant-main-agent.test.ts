@@ -12,8 +12,9 @@ beforeEach(() => {
   createTenant('other-co', 'Other Co')
 })
 
-// tenants.main_agent_id has no dedicated setter (out of scope: no new
-// endpoint), so tests set it directly the same way the migration does.
+// updateTenant() also accepts main_agent_id (see 'updateTenant' describe
+// block below); these tests predate that and just set the column directly
+// to keep getTenantForMainAgent/getTenantsForAgent coverage independent of it.
 function setMainAgent(tenantId: string, agentId: string | null): void {
   getDb().prepare('UPDATE tenants SET main_agent_id = ? WHERE id = ?').run(agentId, tenantId)
 }
@@ -39,6 +40,27 @@ describe('getTenantForMainAgent', () => {
     setMainAgent('acme', 'agent-a')
     updateTenant('acme', { disabled: true })
     expect(getTenantForMainAgent('agent-a')).toBeUndefined()
+  })
+})
+
+describe('updateTenant main_agent_id patch', () => {
+  it('sets main_agent_id via the patch and getTenantForMainAgent then finds it', () => {
+    const updated = updateTenant('acme', { main_agent_id: 'agent-a' })
+    expect(updated?.main_agent_id).toBe('agent-a')
+    expect(getTenantForMainAgent('agent-a')?.id).toBe('acme')
+  })
+
+  it('leaves main_agent_id untouched when the patch omits it', () => {
+    updateTenant('acme', { main_agent_id: 'agent-a' })
+    const updated = updateTenant('acme', { display_name: 'Acme Renamed' })
+    expect(updated?.main_agent_id).toBe('agent-a')
+    expect(updated?.display_name).toBe('Acme Renamed')
+  })
+
+  it('can combine main_agent_id and display_name in a single patch (install-seed use case)', () => {
+    const updated = updateTenant('acme', { main_agent_id: 'agent-b', display_name: 'Main fleet' })
+    expect(updated?.main_agent_id).toBe('agent-b')
+    expect(updated?.display_name).toBe('Main fleet')
   })
 })
 

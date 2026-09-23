@@ -1,71 +1,38 @@
-import { existsSync, mkdirSync, readFileSync, watch, type FSWatcher } from 'node:fs'
-import { join } from 'node:path'
-import { STORE_DIR } from './config.js'
 import { readEnvFile } from './env.js'
-import { atomicWriteFileSync } from './web/atomic-write.js'
 import { getSettingDefinition, validateSettingValue, type SettingDefinition } from './config-registry.js'
+import { getSystemConfig, setSystemConfig } from './db/system-config.js'
 
-// Writable override layer for registry-backed settings. Resolution order for
-// any registered key is: config-overrides.json > .env > registry default.
-// Writes are atomic (tmp file + rename, via atomicWriteFileSync) so a crash
-// mid-write can never leave a half-written or zero-byte overrides file. A
-// directory watch keeps the in-memory cache in sync if the file is edited
-// outside this process (e.g. by hand over SSH); our own writes update the
-// cache directly without waiting for the watch event.
-export const OVERRIDES_PATH = join(STORE_DIR, 'config-overrides.json')
-
-let cache: Record<string, string | number> = {}
-let watcher: FSWatcher | undefined
-
-function loadFromDisk(): Record<string, string | number> {
-  try {
-    if (!existsSync(OVERRIDES_PATH)) return {}
-    const raw = readFileSync(OVERRIDES_PATH, 'utf-8')
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
-    return {}
-  } catch {
-    return {}
-  }
-}
-
-cache = loadFromDisk()
-
-// Lazily start the directory watch on first use rather than at import time,
-// so importing this module in a test (no STORE_DIR yet) does not throw.
-function ensureWatching(): void {
-  if (watcher) return
-  try {
-    mkdirSync(STORE_DIR, { recursive: true })
-    watcher = watch(STORE_DIR, { persistent: false }, (_event, filename) => {
-      if (filename === 'config-overrides.json') cache = loadFromDisk()
-    })
-  } catch {
-    // Best-effort: if the platform/FS doesn't support watching the
-    // directory, the cache simply stays as of the last read/write from this
-    // process -- still correct for the common single-process case.
-  }
-}
-
-export function getOverrides(): Record<string, string | number> {
-  ensureWatching()
-  return { ...cache }
-}
+// Read layer for registry-backed settings. Resolution order for any
+// registered key is: system_config DB > .env > registry default.
 
 function coerce(def: SettingDefinition, raw: string | number): string | number {
   if (def.type === 'int') return typeof raw === 'number' ? raw : parseInt(raw, 10)
   return String(raw)
 }
 
-// Resolves the effective value for a registered key: override > .env >
-// registry default. Reads .env fresh (cheap, scoped to one key) rather than
-// relying on the boot-time config.ts constants, so this resolution stays
-// correct independent of when the process last restarted.
+// getSystemConfig() hits the real DB connection (src/db/connection.ts),
+// which is undefined until initDatabase() runs -- true in production well
+// before any request reaches here, but not guaranteed in a unit test that
+// exercises this module without booting the DB. Tolerate that the same way
+// config.ts's readSystemConfigTable() tolerates a missing DB file: fall
+// through to the next layer rather than throwing.
+function tryGetSystemConfigValue(key: string): string | undefined {
+  try {
+    return getSystemConfig(key)?.value
+  } catch {
+    return undefined
+  }
+}
+
+// Resolves the effective value for a registered key: system_config DB >
+// .env > registry default. Reads .env fresh (cheap, scoped to one key)
+// rather than relying on the boot-time config.ts constants, so this
+// resolution stays correct independent of when the process last restarted.
 export function getEffectiveSettingValue(key: string): string | number {
-  ensureWatching()
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
-  if (key in cache) return coerce(def, cache[key])
+  const dbValue = tryGetSystemConfigValue(key)
+  if (dbValue !== undefined) return coerce(def, dbValue)
   const envValue = readEnvFile([key])[key]
   if (envValue !== undefined) return coerce(def, envValue)
   return def.default
@@ -76,11 +43,9 @@ export interface SetOverrideResult {
   error?: string
 }
 
-// Validates against the registry, then atomically persists the whole
-// overrides file and updates the in-memory cache. Validation happens before
-// any disk write, so an invalid value never reaches the file -- combined
-// with the atomic write, a failure at any point leaves the previous state
-// fully intact (no partial save).
+// Validates against the registry, then writes to the system_config DB
+// (source='db'). Validation happens before the write, so an invalid value
+// never reaches the DB.
 export function setOverride(key: string, rawValue: unknown): SetOverrideResult {
   const def = getSettingDefinition(key)
   if (!def) return { ok: false, error: `Ismeretlen kulcs: ${key}` }
@@ -88,16 +53,6 @@ export function setOverride(key: string, rawValue: unknown): SetOverrideResult {
   const validation = validateSettingValue(def, rawValue)
   if (!validation.ok) return { ok: false, error: validation.error }
 
-  ensureWatching()
-  mkdirSync(STORE_DIR, { recursive: true })
-  const next = { ...loadFromDisk(), [key]: validation.value! }
-  atomicWriteFileSync(OVERRIDES_PATH, JSON.stringify(next, null, 2))
-  cache = next
+  setSystemConfig(key, String(validation.value!), 'db')
   return { ok: true }
-}
-
-// Test-only escape hatch: forces the in-memory cache back to whatever is
-// currently on disk (or empty if absent), bypassing the watch debounce.
-export function reloadOverridesForTest(): void {
-  cache = loadFromDisk()
 }

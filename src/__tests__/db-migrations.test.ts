@@ -779,3 +779,62 @@ describe('Migration 0034 -- import_sources / import_audit_log tenant_id', () => 
     expect(auditIndexes.some(i => i.name === 'idx_import_audit_tenant')).toBe(true)
   })
 })
+
+// Verifies migration 0051: the schema-only system_config key/value table
+// (part of the wider zero-install work). No seed data and no app-level
+// read/write path yet (those land in later steps) -- this only has to prove
+// the table exists, is usable, and CREATE TABLE IF NOT EXISTS is safe to
+// re-run.
+describe('Migration 0051 -- system_config table', () => {
+  const MIGRATION_0051_PATH = join(__dirname, '../../src/migrations/0051_system_config.sql')
+
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  it('creates the system_config table', () => {
+    const db = getDb()
+    const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_config'").get()
+    expect(row).toBeTruthy()
+  })
+
+  it('supports CREATE, INSERT, SELECT, UPDATE with the documented defaults', () => {
+    const db = getDb()
+    db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run('feature.zero_install', 'true')
+
+    const inserted = db.prepare('SELECT * FROM system_config WHERE key = ?').get('feature.zero_install') as
+      | { key: string; value: string; updated_at: number; source: string }
+      | undefined
+    expect(inserted?.value).toBe('true')
+    expect(inserted?.source).toBe('db') // DEFAULT 'db' applied without specifying the column
+    expect(inserted?.updated_at).toBeGreaterThan(0) // DEFAULT (unixepoch())
+
+    db.prepare('UPDATE system_config SET value = ? WHERE key = ?').run('false', 'feature.zero_install')
+    const updated = db.prepare('SELECT value FROM system_config WHERE key = ?').get('feature.zero_install') as { value: string }
+    expect(updated.value).toBe('false')
+  })
+
+  it('accepts an explicit source of migrated_from_json', () => {
+    const db = getDb()
+    db.prepare("INSERT INTO system_config (key, value, source) VALUES (?, ?, 'migrated_from_json')").run('legacy.setting', '42')
+    const row = db.prepare('SELECT source FROM system_config WHERE key = ?').get('legacy.setting') as { source: string }
+    expect(row.source).toBe('migrated_from_json')
+  })
+
+  it('key is the primary key -- a duplicate insert without a conflict clause fails', () => {
+    const db = getDb()
+    db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run('dup.key', 'a')
+    expect(() => db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run('dup.key', 'b')).toThrow()
+  })
+
+  it('is idempotent -- re-running the migration SQL does not throw (CREATE TABLE IF NOT EXISTS)', () => {
+    const db = getDb()
+    db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run('survives.rerun', 'yes')
+
+    const sql = readFileSync(MIGRATION_0051_PATH, 'utf-8')
+    expect(() => db.exec(sql)).not.toThrow()
+
+    const row = db.prepare('SELECT value FROM system_config WHERE key = ?').get('survives.rerun') as { value: string }
+    expect(row.value).toBe('yes') // existing data untouched by the re-run
+  })
+})

@@ -58,6 +58,8 @@ _t() {
     hu:prompt_discord_user_id) echo "  A Te Discord user ID-d (operator): " ;;
     en:prompt_bot_name) echo "  What should your bot be named? [Marveen]: " ;;
     hu:prompt_bot_name) echo "  Mi legyen a botod neve? [Marveen]: " ;;
+    en:prompt_tenant_display_name) echo "  Fleet display name for the dashboard (optional, Enter to keep default): " ;;
+    hu:prompt_tenant_display_name) echo "  Flotta megjelenített neve a dashboardon (opcionális, Enter = marad az alapértelmezett): " ;;
     en:prompt_pair_code) echo "  Pairing code (or leave empty, do it later): " ;;
     hu:prompt_pair_code) echo "  Párosító kód (vagy hagyd üresen, ha később csinálod): " ;;
     en:prompt_migrate) echo "  Would you like to run the migration now? (y/n) [n]: " ;;
@@ -148,6 +150,12 @@ _t() {
     hu:macos.building) echo "  Forditas..." ;;
     en:macos.ts_built) echo "TypeScript compiled" ;;
     hu:macos.ts_built) echo "TypeScript leforditva" ;;
+    en:tenant_seed_running) echo "Seeding default tenant (main agent + display name)..." ;;
+    hu:tenant_seed_running) echo "Default tenant seedelese (fo agens + megjelenitett nev)..." ;;
+    en:tenant_seed_done) echo "Default tenant seeded" ;;
+    hu:tenant_seed_done) echo "Default tenant seedelve" ;;
+    en:tenant_seed_failed) echo "  Tenant seed failed (non-fatal) -- set it later on the Tenants admin screen." ;;
+    hu:tenant_seed_failed) echo "  Tenant seed nem sikerult (nem vegzetes) -- kesobb potolhato a Tenants admin kepernyon." ;;
     # ── Config files ──────────────────────────────────────────────────
     en:macos.env_created) echo "  .env created (chmod 600)" ;;
     hu:macos.env_created) echo "  .env létrehozva (chmod 600)" ;;

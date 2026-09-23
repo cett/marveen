@@ -46,7 +46,7 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
 // Update (or append) the given keys in .env, preserving every other line,
 // comment, and the original ordering. Used by fleet import to mirror the
 // main-agent identity takeover into .env: the dashboard resolves identity via
-// cfg() (config-overrides.json > .env), but the shell-side launchers -- most
+// cfg() (system_config DB > .env), but the shell-side launchers -- most
 // importantly scripts/channels.sh -- read MAIN_AGENT_ID / CHANNEL_PROVIDER
 // DIRECTLY from .env. Without this mirror the dashboard shows the taken-over
 // identity while channels.sh still launches `${old-id}-channels`, so the main

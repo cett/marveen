@@ -11,6 +11,7 @@
     "status": "tsx scripts/status.ts",
     "remote-enroll": "tsx scripts/remote-access-enroll.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",
+    "install-seed-tenant": "tsx scripts/install-seed-tenant.ts",
     "budget-alert-check": "tsx scripts/budget-alert-check.ts",
     "test": "vitest run",
     "coverage": "vitest run --coverage",

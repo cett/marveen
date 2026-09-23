@@ -451,6 +451,20 @@ fi
 ensure_in_rc 'BUN_INSTALL' 'export BUN_INSTALL="$HOME/.bun"'
 ensure_in_rc '.bun/bin' 'export PATH="$BUN_INSTALL/bin:$PATH"'
 
+# ensure_in_rc csak akkor ir, ha a .bashrc/.zshrc mar letezik -- friss/minimal
+# image-en egyik sem garantalt. Es meg ha letezik is: a legtobb disztro .bashrc-je
+# sajat "csak interaktiv shell" orzessel indul (case $- in *i*) ;; *) return;; esac),
+# ami egy login-de-nem-interaktiv shellben (pl. `su -l`, cron, systemd --user,
+# `bash -lc`) csendben kihagyja a fenti PATH-sorokat. A .profile-t ezert mindig
+# celba vesszuk (letrehozva, ha meg nincs), mert azt tobbnyire minden login shell
+# forrasolja fuggetlenul az interaktivitastol -- igy a kovetkezo lepesek altal
+# inditott gyerekshellek es a legkozelebbi bejelentkezes is biztosan latja a buntot.
+[ -f "$HOME/.profile" ] || touch "$HOME/.profile"
+if ! grep -qF 'BUN_INSTALL' "$HOME/.profile" 2>/dev/null; then
+  printf '\n%s\n%s\n' 'export BUN_INSTALL="$HOME/.bun"' 'export PATH="$BUN_INSTALL/bin:$PATH"' >>"$HOME/.profile"
+  warn "RC frissitve ($(basename "$HOME/.profile")): bun PATH"
+fi
+
 INSTALL_STEP="claude-auth"
 # ─────────────────────────────────────────────
 # [3/7] Claude bejelentkezes
@@ -781,6 +795,8 @@ if [ "$MAIN_AGENT_ID" != "marveen" ]; then
   echo -e "  ${DIM}$(_t macos.agent_id_info)${MAIN_AGENT_ID}${NC}"
 fi
 
+read -rp "$(_t prompt_tenant_display_name)" TENANT_DISPLAY_NAME
+
 # Product / system brand. Per Szabi's decision the installer does NOT prompt for
 # a brand -- the product is always named after the main agent. BRAND_NAME and
 # SERVICE_ID remain as fields (config.ts keeps the env support as a dormant
@@ -875,6 +891,23 @@ if [ -n "${OAUTH_TOKEN_INPUT:-}" ] && printf '%s' "$OAUTH_TOKEN_INPUT" | grep -E
   ok "Fleet setup-token eltarolva (store/.claude-oauth-token) -- per-agent izolacio aktiv"
 fi
 ok ".env letrehozva (chmod 600)"
+
+# Seed the default tenant's main_agent_id (+ optional display_name) so the
+# Agents screen shows the right tenant-main-agent badge from first boot,
+# instead of NULL until an operator sets it by hand (part of the zero-install
+# work). Runs the DB migrations itself (tsx -> initDatabase()), so it also doubles
+# as the install's DB bootstrap; the dashboard's own initDatabase() on first
+# systemd boot re-runs the same idempotent migrations regardless. Non-fatal:
+# a failure here does not abort the install, it can be fixed later via the
+# Tenants admin screen.
+echo -e "  $(_t tenant_seed_running)"
+if (cd "$INSTALL_DIR" && npx --no-install tsx scripts/install-seed-tenant.ts \
+      --main-agent-id "$MAIN_AGENT_ID" \
+      ${TENANT_DISPLAY_NAME:+--display-name "$TENANT_DISPLAY_NAME"}); then
+  ok "$(_t tenant_seed_done)"
+else
+  echo -e "  ${ORANGE}$(_t tenant_seed_failed)${NC}"
+fi
 
 # ── Fail-closed auth gate ────────────────────────────────────────────────────
 # Until now nothing verified that the AGENTS will actually be able to log in.

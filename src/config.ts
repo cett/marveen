@@ -1,7 +1,8 @@
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
 import { CronExpressionParser } from 'cron-parser'
+import Database from 'better-sqlite3'
 import { hostname } from 'node:os'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
@@ -28,34 +29,88 @@ export const PID_FILENAME = 'claudeclaw.pid'
 
 const env = readEnvFile()
 
-// Boot-time settings-override layer. The dashboard Settings page persists
-// changes to store/config-overrides.json. config.ts is imported too early to
-// use settings-store.ts (that module imports config.ts -> circular), so for
-// the boot-consumed registry keys we read that file directly here and layer it
-// over .env, matching the settings-store resolution order
-// (config-overrides.json > .env > registry default). This is what makes a
-// `requiresRestart` registry key (DASHBOARD_PUBLIC_URL, OLLAMA_URL,
-// HEARTBEAT_AGENT_ENABLED) actually take effect after a restart -- without it
-// the saved override would never be read by the boot-time consumers.
-function readConfigOverrides(): Record<string, unknown> {
+// Reads the whole system_config table (migration 0051) into a flat
+// key->value map, tolerant of the DB file or the table not existing yet
+// (pre-install, or an install that hasn't run its migrations yet) -- returns
+// {} rather than throwing. Exported so the tolerance behaviour is
+// unit-tested against real throwaway sqlite files without touching the
+// app's own store.
+//
+// This opens its OWN short-lived readonly connection rather than importing
+// db/connection.ts's shared `db` handle: db/connection.ts imports STORE_DIR
+// from THIS file, so a static import the other way would cycle back here.
+// A readonly better-sqlite3 handle needs no coordination with the app's own
+// read-write connection (opened later, in initDatabase()).
+export function readSystemConfigTable(dbPath: string): Record<string, string> {
+  let sqlite: InstanceType<typeof Database> | undefined
   try {
-    const p = join(STORE_DIR, 'config-overrides.json')
-    return existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>) : {}
+    if (!existsSync(dbPath)) return {}
+    sqlite = new Database(dbPath, { readonly: true, fileMustExist: true })
+    const rows = sqlite.prepare('SELECT key, value FROM system_config').all() as { key: string; value: string }[]
+    const out: Record<string, string> = {}
+    for (const row of rows) out[row.key] = row.value
+    return out
   } catch {
+    // File/table not migrated yet, or any other read failure (including an
+    // fs mock in a unit test that doesn't stub existsSync) -- treat as "no
+    // system_config overrides yet".
     return {}
+  } finally {
+    try { sqlite?.close() } catch { /* never opened, or already closed */ }
   }
 }
-const overrides = readConfigOverrides()
+
+let systemConfigCache: Record<string, string> | undefined
+// Lazy + cached: the table is read at most once per process (first cfg()
+// call that needs it), not on every cfg() call.
+function readSystemConfigCache(): Record<string, string> {
+  if (!systemConfigCache) systemConfigCache = readSystemConfigTable(join(STORE_DIR, DB_FILENAME))
+  return systemConfigCache
+}
+
+// Pure precedence resolver for cfg(), reporting WHICH layer won alongside the
+// value: first non-empty candidate wins, in system_config DB >
+// /run/secrets/<KEY> > .env order. Exported/pure so the resolution order
+// itself is unit-tested without a live DB or secret mount. /run/secrets/
+// sits above .env so a Docker/k8s secret-mount always wins over a local
+// developer .env without requiring a process.env override.
+export interface CfgResolution {
+  value: string | undefined
+  source: 'db' | 'secret' | 'env' | undefined
+}
+export function resolveCfgWithSource(candidates: {
+  db?: string
+  secret?: string
+  env?: string
+}): CfgResolution {
+  const layers: Array<[CfgResolution['source'], string | undefined]> = [
+    ['db', candidates.db],
+    ['secret', candidates.secret],
+    ['env', candidates.env],
+  ]
+  for (const [source, v] of layers) {
+    if (v !== undefined && v !== null && v.length > 0) return { value: v, source }
+  }
+  return { value: undefined, source: undefined }
+}
+
+// Value-only convenience wrapper, kept for existing callers that don't care
+// which layer won.
+export function resolveCfgPrecedence(candidates: {
+  db?: string
+  secret?: string
+  env?: string
+}): string | undefined {
+  return resolveCfgWithSource(candidates).value
+}
+
 // Effective raw value for a registry-backed key consumed at boot.
-// Resolution order: config-overrides.json > /run/secrets/<KEY> > .env > registry default.
-// /run/secrets/ sits above .env so a Docker/k8s secret-mount always wins over a
-// local developer .env without requiring a process.env override.
 function cfg(key: string): string | undefined {
-  const ov = overrides[key]
-  if (ov !== undefined && ov !== null && String(ov).length > 0) return String(ov)
-  const secret = resolveSecret(key)
-  if (secret !== undefined) return secret
-  return env[key]
+  return resolveCfgWithSource({
+    db: readSystemConfigCache()[key],
+    secret: resolveSecret(key),
+    env: env[key],
+  }).value
 }
 
 // The single timezone for this install -- drives BOTH cron scheduling (cron.ts)
@@ -66,8 +121,8 @@ function cfg(key: string): string | undefined {
 // re-introduces a hardcoded literal is caught by a single grep, not a full review.
 // Exported separately so the scheduler's startup reporter can tell "an operator
 // pinned this zone" apart from "we fell back to the host zone" -- reading
-// process.env there cannot distinguish the two, because cfg() layers
-// config-overrides.json over .env and neither lands in process.env. See
+// process.env there cannot distinguish the two, because cfg() layers the
+// system_config DB over .env and neither lands in process.env. See
 // resolveCronTz in web/cron.ts.
 //
 // A MISSPELLED zone is worse than an unset one. cron-parser throws on every
@@ -77,9 +132,9 @@ function cfg(key: string): string | undefined {
 // warning, and a startup report that still looks healthy (it would name the
 // configured-but-invalid zone as the winning source). The dashboard Settings
 // path is fenced -- SCHEDULER_TZ carries a valueSet that validateSettingValue
-// enforces -- but a hand-edited .env or a hand-written config-overrides.json
-// reaches here unchecked, and hand-editing .env is the documented way to set
-// the zone. So validate once at boot, keep scheduling on the process zone
+// enforces -- but a hand-edited .env reaches here unchecked, and hand-editing
+// .env is the documented way to set the zone. So validate once at boot, keep
+// scheduling on the process zone
 // (degraded but alive, exactly the unset-value behaviour) and hand the
 // rejected value to the startup report rather than scheduling into a void.
 function isUsableCronTz(tz: string): boolean {
@@ -321,8 +376,8 @@ export const KANBAN_AGING_CRITICAL_COLOR = env['KANBAN_AGING_CRITICAL_COLOR'] ??
 // NOTE: these constants are frozen at process start (this module reads .env
 // once at import time). The dashboard's Settings page and the /api/marveen
 // kanbanWip payload do NOT read these directly anymore -- they resolve
-// through settings-store.ts (config-overrides.json > .env > registry
-// default) so a value saved in the UI takes effect without a restart. These
+// through settings-store.ts (system_config DB > .env > registry default) so
+// a value saved in the UI takes effect without a restart. These
 // exports stay as the documented .env-only defaults / for any other code
 // that genuinely wants the boot-time value.
 export const KANBAN_WIP_PLANNED = parseInt(env['KANBAN_WIP_PLANNED'] ?? '0', 10)
@@ -432,8 +487,8 @@ export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
 // authenticated as, so no personal address is baked into the shipped
-// scaffold. Read through cfg() so a value saved from the Settings UI
-// (config-overrides.json) actually reaches these boot-time consts on the next
+// scaffold. Read through cfg() so a value saved from the Settings UI (the
+// system_config DB) actually reaches these boot-time consts on the next
 // restart -- with a bare env[] read the dashboard showed the saved value while
 // the heartbeat silently never saw it.
 export const HEARTBEAT_CALENDAR_ACCOUNT = (cfg('HEARTBEAT_CALENDAR_ACCOUNT') ?? '').trim()
@@ -458,4 +513,4 @@ export const SKILL_SQL_REGEN = (process.env['SKILL_SQL_REGEN'] ?? env['SKILL_SQL
 // Boot-time Zod validation: additive side-effect only.
 // Warns on recoverable format errors; throws on FATAL misconfiguration in prod.
 // Existing exports above are unchanged -- the parse result is not used.
-validateEnvConfig({ ...env, ...overrides }, process.env['NODE_ENV'] === 'production')
+validateEnvConfig(env, process.env['NODE_ENV'] === 'production')

@@ -46,7 +46,7 @@ describe('resolveCronTz source precedence', () => {
   // these two lock the fix.
 
   it('does not cry wolf when SCHEDULER_TZ comes from .env instead of process.env', () => {
-    // config-overrides.json / .env are read by cfg(), never exported into
+    // system_config DB / .env are read by cfg(), never exported into
     // process.env -- so a correctly configured install used to be told on every
     // boot that it had "fallen back to UTC" while CRON_TZ was already Budapest.
     expect(resolveCronTz('Europe/Budapest', {}, 'UTC')).toEqual({

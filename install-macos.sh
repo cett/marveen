@@ -688,6 +688,8 @@ if [ "$MAIN_AGENT_ID" != "marveen" ]; then
   echo -e "  ${DIM}$(_t macos.agent_id_info)${MAIN_AGENT_ID}${NC}"
 fi
 
+read -rp "$(_t prompt_tenant_display_name)" TENANT_DISPLAY_NAME
+
 # Product / system brand. Per Szabi's decision the installer does NOT prompt for
 # a brand -- the product is always named after the main agent. BRAND_NAME and
 # SERVICE_ID remain as fields (config.ts keeps the env support as a dormant
@@ -817,6 +819,23 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.env_created)"
 # Create store directory
 mkdir -p "$INSTALL_DIR/store"
 mkdir -p "$INSTALL_DIR/agents"
+
+# Seed the default tenant's main_agent_id (+ optional display_name) so the
+# Agents screen shows the right tenant-main-agent badge from first boot,
+# instead of NULL until an operator sets it by hand (part of the zero-install
+# work). Runs the DB migrations itself (tsx -> initDatabase()), so it also doubles
+# as the install's DB bootstrap; the dashboard's own initDatabase() on first
+# launchd boot re-runs the same idempotent migrations regardless. Non-fatal:
+# a failure here does not abort the install, it can be fixed later via the
+# Tenants admin screen.
+echo -e "  $(_t tenant_seed_running)"
+if (cd "$INSTALL_DIR" && PATH="$NODE_BIN_DIR:$PATH" npx --no-install tsx scripts/install-seed-tenant.ts \
+      --main-agent-id "$MAIN_AGENT_ID" \
+      ${TENANT_DISPLAY_NAME:+--display-name "$TENANT_DISPLAY_NAME"}); then
+  ok "$(_t tenant_seed_done)"
+else
+  echo -e "  ${ORANGE}$(_t tenant_seed_failed)${NC}"
+fi
 
 # Persist the service-side credential captured in the auth step. Both sinks are
 # needed: .env is what channels.sh exports for the MAIN agent, and the fleet
@@ -1152,7 +1171,17 @@ fi
 if ! curl -s http://localhost:11434/api/version &>/dev/null; then
   echo -e "$(_t macos.ollama_starting)"
   ollama serve &>/dev/null &
-  sleep 3
+  # A fix 3 mp-es sleep nem garantalja hogy a szerver kesz -- hidegindulasnal/
+  # lassabb gepen a kovetkezo model-pull "connection refused"-ra futhat. Wait-probe:
+  # varunk amig valaszol vagy max ~30 mp (1 mp-enkent probalva), utana best-effort
+  # tovabb (mint eddig, nem fatalis ha a modell-letoltes kesobb sem sikerul).
+  for i in $(seq 1 30); do
+    curl -s http://localhost:11434/api/version &>/dev/null && break
+    sleep 1
+  done
+  if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+    warn "Ollama nem valaszolt 30 mp utan -- folytatjuk, kesobb kezzel: ollama serve && ollama pull nomic-embed-text"
+  fi
 fi
 
 # Pull nomic-embed-text model

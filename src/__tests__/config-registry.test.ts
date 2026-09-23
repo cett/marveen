@@ -11,8 +11,13 @@ describe('config-registry', () => {
     // kanban WIP settings are user-tunable: never secret, hot-reloadable (no restart)
     expect(kanban.every((s) => s.secret === false)).toBe(true)
     expect(kanban.every((s) => s.requiresRestart === false)).toBe(true)
-    // registry-wide invariant: the Settings UI must never surface a secret key
-    expect(SETTINGS_REGISTRY.every((s) => s.secret === false)).toBe(true)
+    // registry-wide invariant: a secret:true entry must have no write path
+    // through this route (GET filters it out entirely, POST 403s it) -- only
+    // the known channel-credential keys are secret, nothing else.
+    expect(SETTINGS_REGISTRY.filter((s) => s.secret).map((s) => s.key).sort()).toEqual([
+      'ALLOWED_CHAT_ID',
+      'TELEGRAM_BOT_TOKEN',
+    ])
     expect(getSettingDefinition('KANBAN_WIP_PLANNED')?.module).toBe('kanban')
   })
 

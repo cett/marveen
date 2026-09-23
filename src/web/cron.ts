@@ -27,13 +27,13 @@ export type CronTzSource = 'SCHEDULER_TZ' | 'TZ' | 'system-default'
 // the very thing it exists to surface. The earlier env-only version read
 // process.env directly and so diverged in both directions:
 //
-//  - FALSE ALARM: SCHEDULER_TZ set in .env (or config-overrides.json) never
+//  - FALSE ALARM: SCHEDULER_TZ set in .env (or the system_config DB) never
 //    reaches process.env, so it reported system-default/UTC and fired the
 //    "fell back to UTC" warning while CRON_TZ was already the operator zone.
 //    An operator who had correctly configured the install was told, on every
 //    boot, that scheduling was broken.
 //  - MISSED ALARM: SCHEDULER_TZ exported into process.env is NOT read by
-//    cfg() (which layers config-overrides.json over .env), so APP_TZ stayed on
+//    cfg() (which layers the system_config DB over .env), so APP_TZ stayed on
 //    the host zone -- yet the reporter announced 'SCHEDULER_TZ' and suppressed
 //    the warning, hiding a real misconfiguration.
 //
@@ -53,7 +53,7 @@ export function resolveCronTz(
   return { tz: systemTz, source: 'system-default' }
 }
 
-// The effective zone is config.APP_TZ (SCHEDULER_TZ via config-overrides.json >
+// The effective zone is config.APP_TZ (SCHEDULER_TZ via the system_config DB >
 // .env > host zone), so a dashboard-set zone is honored and cron/display never
 // diverge; effectiveCronTz() below is the startup source-reporter (see
 // startScheduleRunner) so the operator sees which layer won.

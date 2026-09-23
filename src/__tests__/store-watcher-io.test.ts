@@ -141,6 +141,28 @@ describe('watch callback: event classification', () => {
     expect(mockLogStoreFileEvent).not.toHaveBeenCalled()
   })
 
+  // S8B retired config-overrides.json: it is no longer a Marveen-managed
+  // settings-write target, so an event for it is now audited like any other
+  // unknown file rather than silently denylisted.
+  it('no longer denylists config-overrides.json (S8B retirement -- audited like an unknown file)', async () => {
+    mockStatSync.mockReturnValue({ size: 10 })
+    const { startStoreWatcher } = await loadWatcher()
+    startStoreWatcher()
+    capturedCallback!('rename', 'config-overrides.json')
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('config-overrides.json', 'create', 0, 10, null)
+  })
+
+  // The S8B retirement migration renames the file to this suffix as its
+  // rollback net -- that rename must stay denylisted, not surface as a
+  // "new agent-created file".
+  it('skips config-overrides.json.deprecated via the .deprecated SYSTEM_RE suffix', async () => {
+    mockStatSync.mockReturnValue({ size: 10 })
+    const { startStoreWatcher } = await loadWatcher()
+    startStoreWatcher()
+    capturedCallback!('rename', 'config-overrides.json.deprecated')
+    expect(mockLogStoreFileEvent).not.toHaveBeenCalled()
+  })
+
   it('skips the whole scheduled-runs/ directory regardless of filename', async () => {
     mockStatSync.mockReturnValue({ size: 10 })
     const { startStoreWatcher } = await loadWatcher()

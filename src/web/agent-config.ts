@@ -15,7 +15,7 @@ import {
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
-// Install-wide default (DEFAULT_AGENT_MODEL: config-overrides.json > .env >
+// Install-wide default (DEFAULT_AGENT_MODEL: system_config DB > .env >
 // distribution default). Re-exported under the historical name so the many
 // call sites -- and the 'inherit' alias below -- keep working unchanged.
 export const DEFAULT_MODEL = DEFAULT_AGENT_MODEL
