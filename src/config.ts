@@ -1,5 +1,6 @@
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
 import { CronExpressionParser } from 'cron-parser'
+import Database from 'better-sqlite3'
 import { hostname } from 'node:os'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -46,16 +47,75 @@ function readConfigOverrides(): Record<string, unknown> {
   }
 }
 const overrides = readConfigOverrides()
+
+// Reads the whole system_config table (migration 0051) into a flat
+// key->value map, tolerant of the DB file or the table not existing yet
+// (pre-install, or an install that hasn't run its migrations yet) -- returns
+// {} rather than throwing, matching readConfigOverrides()'s empty-object
+// fallback above. Exported so the tolerance behaviour is unit-tested against
+// real throwaway sqlite files without touching the app's own store.
+//
+// This opens its OWN short-lived readonly connection rather than importing
+// db/connection.ts's shared `db` handle: db/connection.ts imports STORE_DIR
+// from THIS file, so a static import the other way would cycle back here
+// (same trap readConfigOverrides()'s comment above already documents for
+// settings-store.ts). A readonly better-sqlite3 handle needs no coordination
+// with the app's own read-write connection (opened later, in initDatabase()).
+export function readSystemConfigTable(dbPath: string): Record<string, string> {
+  let sqlite: InstanceType<typeof Database> | undefined
+  try {
+    if (!existsSync(dbPath)) return {}
+    sqlite = new Database(dbPath, { readonly: true, fileMustExist: true })
+    const rows = sqlite.prepare('SELECT key, value FROM system_config').all() as { key: string; value: string }[]
+    const out: Record<string, string> = {}
+    for (const row of rows) out[row.key] = row.value
+    return out
+  } catch {
+    // File/table not migrated yet, or any other read failure (including an
+    // fs mock in a unit test that doesn't stub existsSync) -- treat as "no
+    // system_config overrides yet", the same tolerant fallback
+    // readConfigOverrides() above uses for config-overrides.json.
+    return {}
+  } finally {
+    try { sqlite?.close() } catch { /* never opened, or already closed */ }
+  }
+}
+
+let systemConfigCache: Record<string, string> | undefined
+// Lazy + cached: the table is read at most once per process (first cfg()
+// call that needs it), not on every cfg() call.
+function readSystemConfigCache(): Record<string, string> {
+  if (!systemConfigCache) systemConfigCache = readSystemConfigTable(join(STORE_DIR, DB_FILENAME))
+  return systemConfigCache
+}
+
+// Pure precedence resolver for cfg(): first non-empty candidate wins, in
+// system_config DB > config-overrides.json > /run/secrets/<KEY> > .env order.
+// Exported/pure so the resolution order itself is unit-tested without a live
+// DB, config-overrides.json or secret mount. /run/secrets/ sits above .env so
+// a Docker/k8s secret-mount always wins over a local developer .env without
+// requiring a process.env override.
+export function resolveCfgPrecedence(candidates: {
+  db?: string
+  override?: string
+  secret?: string
+  env?: string
+}): string | undefined {
+  for (const v of [candidates.db, candidates.override, candidates.secret, candidates.env]) {
+    if (v !== undefined && v !== null && v.length > 0) return v
+  }
+  return undefined
+}
+
 // Effective raw value for a registry-backed key consumed at boot.
-// Resolution order: config-overrides.json > /run/secrets/<KEY> > .env > registry default.
-// /run/secrets/ sits above .env so a Docker/k8s secret-mount always wins over a
-// local developer .env without requiring a process.env override.
 function cfg(key: string): string | undefined {
   const ov = overrides[key]
-  if (ov !== undefined && ov !== null && String(ov).length > 0) return String(ov)
-  const secret = resolveSecret(key)
-  if (secret !== undefined) return secret
-  return env[key]
+  return resolveCfgPrecedence({
+    db: readSystemConfigCache()[key],
+    override: ov !== undefined && ov !== null ? String(ov) : undefined,
+    secret: resolveSecret(key),
+    env: env[key],
+  })
 }
 
 // The single timezone for this install -- drives BOTH cron scheduling (cron.ts)
