@@ -254,6 +254,14 @@ fi
 # Create directories
 mkdir -p store agents
 
+# Seed the default tenant's main_agent_id so the Agents screen shows the
+# right tenant-main-agent badge from first boot (part of the zero-install
+# work). This installer never sets MAIN_AGENT_ID in .env, so the app falls back to
+# the hardcoded default 'marveen' (src/config.ts) -- seed the same value here.
+# Non-fatal: a failure does not abort the install, it can be fixed later via
+# the Tenants admin screen.
+npx --no-install tsx scripts/install-seed-tenant.ts --main-agent-id marveen || echo '  Tenant seed nem sikerult (nem vegzetes).'
+
 # Setup channel state
 CHANNEL_DIR=~/.claude/channels/$channelProvider
 mkdir -p "\$CHANNEL_DIR"

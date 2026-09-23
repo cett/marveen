@@ -380,7 +380,7 @@ export function getTenantForMainAgent(agentId: string): Tenant | undefined {
   return db.prepare('SELECT * FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL').get(agentId) as Tenant | undefined
 }
 
-export function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean }): Tenant | null {
+export function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean; main_agent_id?: string }): Tenant | null {
   const existing = getTenant(id)
   if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
@@ -389,6 +389,10 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
   if (patch.display_name !== undefined) {
     fields.push('display_name = ?')
     params.push(patch.display_name)
+  }
+  if (patch.main_agent_id !== undefined) {
+    fields.push('main_agent_id = ?')
+    params.push(patch.main_agent_id)
   }
   if (patch.disabled === true) {
     fields.push('disabled_at = ?')
