@@ -16,6 +16,7 @@ export * from './memory.js'
 export * from './misc.js'
 export * from './observability.js'
 export * from './sessions.js'
+export * from './system-config.js'
 export * from './tasks.js'
 export * from './vault.js'
 export * from './vector.js'
@@ -26,6 +27,7 @@ import { STORE_DIR } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
+import { migrateConfigOverridesToSystemConfig } from './system-config.js'
 import { logger } from '../logger.js'
 
 export function initDatabase(dbPathOverride?: string): void {
@@ -57,6 +59,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // subsequent write goes through the mirror-write helpers below and in
   // src/web/routes/claude-plans.ts.
   seedClaudePlansRegistryMirror()
+
+  // Backfill system_config from store/config-overrides.json, same
+  // every-boot-but-effectively-once shape as the seed above (INSERT OR
+  // IGNORE makes repeat calls a no-op for keys already migrated).
+  migrateConfigOverridesToSystemConfig()
 }
 
 function isNonEmptyString(v: unknown): v is string {
