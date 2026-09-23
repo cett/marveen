@@ -89,33 +89,73 @@ function readSystemConfigCache(): Record<string, string> {
   return systemConfigCache
 }
 
-// Pure precedence resolver for cfg(): first non-empty candidate wins, in
-// system_config DB > config-overrides.json > /run/secrets/<KEY> > .env order.
-// Exported/pure so the resolution order itself is unit-tested without a live
-// DB, config-overrides.json or secret mount. /run/secrets/ sits above .env so
-// a Docker/k8s secret-mount always wins over a local developer .env without
+// Pure precedence resolver for cfg(), reporting WHICH layer won alongside the
+// value: first non-empty candidate wins, in system_config DB >
+// config-overrides.json > /run/secrets/<KEY> > .env order. Exported/pure so
+// the resolution order itself is unit-tested without a live DB,
+// config-overrides.json or secret mount. /run/secrets/ sits above .env so a
+// Docker/k8s secret-mount always wins over a local developer .env without
 // requiring a process.env override.
+//
+// The `source` is what lets cfg() below tell a DB-resolved key apart from a
+// config-overrides.json-resolved one (S8A deprecation warning) without
+// duplicating the precedence order in a second place.
+export interface CfgResolution {
+  value: string | undefined
+  source: 'db' | 'override' | 'secret' | 'env' | undefined
+}
+export function resolveCfgWithSource(candidates: {
+  db?: string
+  override?: string
+  secret?: string
+  env?: string
+}): CfgResolution {
+  const layers: Array<[CfgResolution['source'], string | undefined]> = [
+    ['db', candidates.db],
+    ['override', candidates.override],
+    ['secret', candidates.secret],
+    ['env', candidates.env],
+  ]
+  for (const [source, v] of layers) {
+    if (v !== undefined && v !== null && v.length > 0) return { value: v, source }
+  }
+  return { value: undefined, source: undefined }
+}
+
+// Value-only convenience wrapper, kept for existing callers that don't care
+// which layer won.
 export function resolveCfgPrecedence(candidates: {
   db?: string
   override?: string
   secret?: string
   env?: string
 }): string | undefined {
-  for (const v of [candidates.db, candidates.override, candidates.secret, candidates.env]) {
-    if (v !== undefined && v !== null && v.length > 0) return v
-  }
-  return undefined
+  return resolveCfgWithSource(candidates).value
 }
+
+// S8A (config-overrides.json deprecation): keys whose effective boot-time
+// value resolved from config-overrides.json rather than the system_config
+// DB. Populated as a side effect of cfg() below (called at module-eval time,
+// before initDatabase() runs later in the same boot -- see the comment above
+// readSystemConfigTable() for why this reads its own DB connection instead
+// of waiting for that). Exported so index.ts, which owns the logger
+// (config.ts can't -- see APP_TZ_INVALID above for the same circular-import
+// constraint), can warn about each one once boot logging is available. An
+// empty array on a live system, sustained across a restart, is the signal
+// that config-overrides.json is safe to retire (S8B).
+export const CFG_OVERRIDE_RESOLVED_KEYS: string[] = []
 
 // Effective raw value for a registry-backed key consumed at boot.
 function cfg(key: string): string | undefined {
   const ov = overrides[key]
-  return resolveCfgPrecedence({
+  const { value, source } = resolveCfgWithSource({
     db: readSystemConfigCache()[key],
     override: ov !== undefined && ov !== null ? String(ov) : undefined,
     secret: resolveSecret(key),
     env: env[key],
   })
+  if (source === 'override') CFG_OVERRIDE_RESOLVED_KEYS.push(key)
+  return value
 }
 
 // The single timezone for this install -- drives BOTH cron scheduling (cron.ts)

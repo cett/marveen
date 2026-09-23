@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { readSystemConfigTable, resolveCfgPrecedence } from '../config.js'
+import { readSystemConfigTable, resolveCfgPrecedence, resolveCfgWithSource } from '../config.js'
 
 describe('readSystemConfigTable', () => {
   it('returns {} when the DB file does not exist', () => {
@@ -72,5 +72,52 @@ describe('resolveCfgPrecedence', () => {
 
   it('treats an empty-string candidate as absent and falls through', () => {
     expect(resolveCfgPrecedence({ db: '', override: '', secret: '', env: 'from-env' })).toBe('from-env')
+  })
+})
+
+// S8A: resolveCfgWithSource is the decision logic cfg() uses to tell whether
+// an effective value came from the deprecated config-overrides.json (source
+// 'override') so it can warn -- this is that warn condition's actual
+// unit-under-test, since cfg()'s own trigger is a trivial one-line
+// `source === 'override'` check directly on this function's output.
+describe('resolveCfgWithSource', () => {
+  it('reports source "db" when the DB value wins', () => {
+    expect(
+      resolveCfgWithSource({ db: 'from-db', override: 'from-override', secret: 'from-secret', env: 'from-env' })
+    ).toEqual({ value: 'from-db', source: 'db' })
+  })
+
+  it('reports source "override" when config-overrides.json wins (no DB value) -- the S8A warn case', () => {
+    expect(resolveCfgWithSource({ override: 'from-override', secret: 'from-secret', env: 'from-env' })).toEqual({
+      value: 'from-override',
+      source: 'override',
+    })
+  })
+
+  it('reports source "secret" when /run/secrets wins', () => {
+    expect(resolveCfgWithSource({ secret: 'from-secret', env: 'from-env' })).toEqual({
+      value: 'from-secret',
+      source: 'secret',
+    })
+  })
+
+  it('reports source "env" when .env is the only candidate -- NOT the S8A warn case', () => {
+    expect(resolveCfgWithSource({ env: 'from-env' })).toEqual({ value: 'from-env', source: 'env' })
+  })
+
+  it('reports an undefined source when nothing is set', () => {
+    expect(resolveCfgWithSource({})).toEqual({ value: undefined, source: undefined })
+  })
+
+  it('treats an empty-string candidate as absent for source attribution too', () => {
+    expect(resolveCfgWithSource({ db: '', override: '', secret: '', env: 'from-env' })).toEqual({
+      value: 'from-env',
+      source: 'env',
+    })
+  })
+
+  it('resolveCfgPrecedence stays a pure value-only view of the same resolution', () => {
+    const candidates = { override: 'from-override', env: 'from-env' }
+    expect(resolveCfgPrecedence(candidates)).toBe(resolveCfgWithSource(candidates).value)
   })
 })
