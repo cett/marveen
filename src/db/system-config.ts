@@ -9,7 +9,7 @@
 // config.ts for why (importing this module there would cycle back through
 // connection.ts's config.ts import).
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
 import { STORE_DIR } from '../config.js'
@@ -47,9 +47,11 @@ export function setSystemConfig(key: string, value: string, source: string = 'db
 // is left untouched, never overwritten. That makes this safe to call on
 // every boot (see db/index.ts initDatabase()): the first run backfills
 // whatever is in the JSON side-car, every later run is a no-op for keys it
-// already migrated. The JSON file itself is left in place -- still the
-// active read/write target for config.ts / settings-store.ts until a later
-// step retires it.
+// already migrated. Kept running after S8B (config.ts / settings-store.ts no
+// longer read the JSON file at all) as the safety net for an install
+// upgrading straight from a pre-S4 version that still has un-migrated keys
+// sitting in the file -- reading a file that will usually not exist post-S8B
+// is a harmless no-op via the existsSync check below.
 export function migrateConfigOverridesToSystemConfig(): number {
   const overridesPath = join(STORE_DIR, 'config-overrides.json')
   if (!existsSync(overridesPath)) return 0
@@ -73,4 +75,36 @@ export function migrateConfigOverridesToSystemConfig(): number {
     if (result.changes > 0) migrated++
   }
   return migrated
+}
+
+// S8B: one-time retirement rename of store/config-overrides.json to
+// config-overrides.json.deprecated. Called from src/index.ts's real process
+// boot, always AFTER initDatabase() -> migrateConfigOverridesToSystemConfig()
+// has run, so by the time this runs every key the JSON file held is
+// guaranteed to already be a row in system_config (INSERT OR IGNORE never
+// skips a key that isn't already there). Idempotent: a missing source file
+// (already renamed, or never existed) is a no-op -- nothing to log, nothing
+// to do. Logged on an actual rename so a live system's boot log shows the
+// retirement happening. The renamed .deprecated file is the manual rollback
+// net (an operator can rename it back and re-run the migrator);
+// store-watcher.ts's SYSTEM_RE already denylists the .deprecated suffix so
+// the rename itself does not surface as an audited "new file".
+//
+// Deliberately NOT called from db/index.ts's initDatabase() itself (unlike
+// the migrator above): that function also runs from every test file's
+// beforeEach against the SAME real, shared worktree store/ directory (no
+// per-test STORE_DIR isolation in this codebase), and a rename there would
+// race other concurrently-running test files reading/writing the same
+// physical path. The migrator is read-only w.r.t. the filesystem (writes
+// only into its own process-local DB connection), so it doesn't share this
+// problem.
+export function retireConfigOverridesFile(): void {
+  const overridesPath = join(STORE_DIR, 'config-overrides.json')
+  if (!existsSync(overridesPath)) return
+  try {
+    renameSync(overridesPath, `${overridesPath}.deprecated`)
+    logger.info({ overridesPath }, 'config-overrides.json retired (renamed to .deprecated) -- system_config DB is now the only read source')
+  } catch (err) {
+    logger.warn({ err, overridesPath }, 'system_config migration: failed to rename config-overrides.json to .deprecated')
+  }
 }

@@ -32,7 +32,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
 
   // Configurable stale threshold -- ideas with status 'new' older than this many days
   // are flagged with stale:true in the list response. Read live through the settings
-  // layer (config-overrides.json > .env > default) so a Settings-page change applies
+  // layer (system_config DB > .env > default) so a Settings-page change applies
   // without a restart.
   const IDEA_STALE_DAYS = Math.max(1, Number(getEffectiveSettingValue('IDEA_STALE_DAYS')) || 7)
 

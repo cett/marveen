@@ -12,7 +12,14 @@ import type { RouteContext } from '../web/routes/types.js'
 import { tryHandleSettings } from '../web/routes/settings.js'
 import { initDatabase, getSystemConfig } from '../db.js'
 import { existsSync } from 'node:fs'
-import { OVERRIDES_PATH } from '../settings-store.js'
+import { join } from 'node:path'
+import { STORE_DIR } from '../config.js'
+
+// S8B retired config-overrides.json entirely -- settings-store.ts no longer
+// exports a path constant for it. This local path just proves the route
+// never (re-)creates the file, computed the same way db-system-config.test.ts
+// does for the same reason.
+const OVERRIDES_PATH = join(STORE_DIR, 'config-overrides.json')
 
 function makeCtx(opts: { method: string; path: string; body?: object; role?: string }): {
   ctx: RouteContext; status: () => number; body: () => unknown

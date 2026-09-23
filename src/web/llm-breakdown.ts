@@ -16,7 +16,7 @@ export interface BreakdownResult {
 }
 
 // Configurable via IDEA_BREAKDOWN_MAX_SUBTASKS (default 10, min 2, max 20).
-// Read live through the settings layer (config-overrides.json > .env > default)
+// Read live through the settings layer (system_config DB > .env > default)
 // so a change on the dashboard Settings page takes effect without a restart.
 function getMaxSubtasks(): number {
   const v = Number(getEffectiveSettingValue('IDEA_BREAKDOWN_MAX_SUBTASKS'))

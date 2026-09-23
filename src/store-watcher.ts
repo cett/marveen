@@ -15,7 +15,7 @@ const SYSTEM_FILES = new Set([
   'schedule-last-run.json', 'external-ops-last-run',
   'kanban-audit-state.json',
   // Settings and config overrides written by dashboard routes
-  'config-overrides.json', 'dashboard-settings.json',
+  'dashboard-settings.json',
   // Fleet and agent management
   'agents-desired.json', 'auto-restart.json', 'autonomy-config.json',
   // Auth and secrets
@@ -35,7 +35,10 @@ const SYSTEM_FILES = new Set([
 
 // Regex for system-generated filename patterns.
 // Also covers atomic-write temp files (keep in sync with settings-store.ts).
-const SYSTEM_RE = /\.pid$|\.tmp$|\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$|^\.DS_Store$/
+// \.deprecated$ covers config-overrides.json.deprecated (S8B): the file gets
+// renamed to this suffix as the one-time retirement migration runs, and that
+// rename must not surface as a "new agent-created file" audit row.
+const SYSTEM_RE = /\.pid$|\.tmp$|\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$|\.deprecated$|^\.DS_Store$/
 
 // Filenames whose presence is sensitive; the audit row is flagged so the UI
 // can show a sanitised label instead of hinting at secret values.

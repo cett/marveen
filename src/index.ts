@@ -12,8 +12,8 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
-import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED, CFG_OVERRIDE_RESOLVED_KEYS } from './config.js'
-import { initDatabase, backfillEmbeddings, closeDatabase } from './db.js'
+import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile } from './db.js'
 import { backfillWorkspaceDocs } from './workspace-store.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -481,14 +481,15 @@ async function main(): Promise<void> {
   initDatabase()
   logger.info('Adatbazis inicializalva')
 
-  // S8A (config-overrides.json deprecation): surface every boot-time key that
-  // still resolved from the JSON file instead of system_config, so it's
-  // visible in a live system's logs which keys still need to migrate before
-  // the file can be retired (S8B). CFG_OVERRIDE_RESOLVED_KEYS is populated at
-  // config.ts's module-eval time, i.e. before this line ever runs.
-  for (const key of CFG_OVERRIDE_RESOLVED_KEYS) {
-    logger.warn({ key }, `${key} resolved from deprecated config-overrides.json; migrate to system_config DB`)
-  }
+  // S8B: retire store/config-overrides.json (rename to .deprecated) now that
+  // initDatabase() above has guaranteed every key it held is a system_config
+  // row. Deliberately called HERE (real process boot) rather than from
+  // db/index.ts's initDatabase() itself: that function also runs from every
+  // test file's beforeEach against the same real, shared worktree store/
+  // dir, and a rename there would race other concurrently-running test
+  // files touching the same physical path. This call site only ever runs
+  // once, for a real dashboard process.
+  retireConfigOverridesFile()
 
   if (IS_ISOLATED_MODE) {
     // Isolated mode: serve the web dashboard only, no background tasks or agent management.

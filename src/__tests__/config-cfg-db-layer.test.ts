@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -47,18 +47,10 @@ describe('readSystemConfigTable', () => {
 
 describe('resolveCfgPrecedence', () => {
   it('prefers the DB value over every other layer', () => {
-    expect(
-      resolveCfgPrecedence({ db: 'from-db', override: 'from-override', secret: 'from-secret', env: 'from-env' })
-    ).toBe('from-db')
+    expect(resolveCfgPrecedence({ db: 'from-db', secret: 'from-secret', env: 'from-env' })).toBe('from-db')
   })
 
-  it('falls to config-overrides.json when there is no DB value', () => {
-    expect(resolveCfgPrecedence({ override: 'from-override', secret: 'from-secret', env: 'from-env' })).toBe(
-      'from-override'
-    )
-  })
-
-  it('falls to /run/secrets when there is no DB or override value', () => {
+  it('falls to /run/secrets when there is no DB value', () => {
     expect(resolveCfgPrecedence({ secret: 'from-secret', env: 'from-env' })).toBe('from-secret')
   })
 
@@ -71,37 +63,28 @@ describe('resolveCfgPrecedence', () => {
   })
 
   it('treats an empty-string candidate as absent and falls through', () => {
-    expect(resolveCfgPrecedence({ db: '', override: '', secret: '', env: 'from-env' })).toBe('from-env')
+    expect(resolveCfgPrecedence({ db: '', secret: '', env: 'from-env' })).toBe('from-env')
   })
 })
 
-// S8A: resolveCfgWithSource is the decision logic cfg() uses to tell whether
-// an effective value came from the deprecated config-overrides.json (source
-// 'override') so it can warn -- this is that warn condition's actual
-// unit-under-test, since cfg()'s own trigger is a trivial one-line
-// `source === 'override'` check directly on this function's output.
+// S8B: config-overrides.json (and the 'override' resolution layer/source) was
+// retired -- resolveCfgWithSource now only ever attributes to db/secret/env.
 describe('resolveCfgWithSource', () => {
   it('reports source "db" when the DB value wins', () => {
-    expect(
-      resolveCfgWithSource({ db: 'from-db', override: 'from-override', secret: 'from-secret', env: 'from-env' })
-    ).toEqual({ value: 'from-db', source: 'db' })
-  })
-
-  it('reports source "override" when config-overrides.json wins (no DB value) -- the S8A warn case', () => {
-    expect(resolveCfgWithSource({ override: 'from-override', secret: 'from-secret', env: 'from-env' })).toEqual({
-      value: 'from-override',
-      source: 'override',
+    expect(resolveCfgWithSource({ db: 'from-db', secret: 'from-secret', env: 'from-env' })).toEqual({
+      value: 'from-db',
+      source: 'db',
     })
   })
 
-  it('reports source "secret" when /run/secrets wins', () => {
+  it('reports source "secret" when /run/secrets wins (no DB value)', () => {
     expect(resolveCfgWithSource({ secret: 'from-secret', env: 'from-env' })).toEqual({
       value: 'from-secret',
       source: 'secret',
     })
   })
 
-  it('reports source "env" when .env is the only candidate -- NOT the S8A warn case', () => {
+  it('reports source "env" when .env is the only candidate', () => {
     expect(resolveCfgWithSource({ env: 'from-env' })).toEqual({ value: 'from-env', source: 'env' })
   })
 
@@ -110,14 +93,14 @@ describe('resolveCfgWithSource', () => {
   })
 
   it('treats an empty-string candidate as absent for source attribution too', () => {
-    expect(resolveCfgWithSource({ db: '', override: '', secret: '', env: 'from-env' })).toEqual({
+    expect(resolveCfgWithSource({ db: '', secret: '', env: 'from-env' })).toEqual({
       value: 'from-env',
       source: 'env',
     })
   })
 
   it('resolveCfgPrecedence stays a pure value-only view of the same resolution', () => {
-    const candidates = { override: 'from-override', env: 'from-env' }
+    const candidates = { secret: 'from-secret', env: 'from-env' }
     expect(resolveCfgPrecedence(candidates)).toBe(resolveCfgWithSource(candidates).value)
   })
 })

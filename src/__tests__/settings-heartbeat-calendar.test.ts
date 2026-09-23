@@ -65,7 +65,7 @@ describe('heartbeat calendar settings', () => {
 })
 
 // Wiring regression guard: the two calendar keys are consumed as boot-time
-// consts, so they MUST resolve through cfg() (config-overrides.json layer) --
+// consts, so they MUST resolve through cfg() (the system_config DB layer) --
 // a bare env[] read makes the Settings UI a dead control (the dashboard shows
 // the saved value while the heartbeat never sees it).
 describe('heartbeat calendar settings wiring (config.ts)', () => {

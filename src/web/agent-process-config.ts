@@ -254,8 +254,8 @@ export function ensureIsolatedChannelConfigDir(
 //     touch shouldAlertSharedConfigCollision's darwin early-return (a different,
 //     genuinely macOS-specific failure mode: plugin-slot collision).
 //   - gated on the MAIN_AGENT_ISOLATED_CONFIG setting via the settings-store, so
-//     BOTH the dashboard toggle (config-overrides.json) AND a hand-set .env key
-//     take effect (resolution: override > .env > default '0'). channels.sh no
+//     BOTH the dashboard toggle (system_config DB) AND a hand-set .env key
+//     take effect (resolution: db > .env > default '0'). channels.sh no
 //     longer parses the flag itself -- it always calls the helper and this
 //     function is the single gate.
 //   - gated on the fleet OAuth token (no token -> no isolation, since the

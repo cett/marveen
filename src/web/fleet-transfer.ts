@@ -1453,40 +1453,27 @@ export function importFleet(
     // M3: fire-and-forget re-embed imported memories (embedding was stripped at export)
     backfillEmbeddings().catch(err => logger.warn({ err: err?.message }, 'Fleet import: embedding backfill failed'))
 
-    // Identity takeover: write the source identity set into config-overrides.json so the
-    // target install adopts the source persona (name, brand, owner) on next restart.
-    // Preference: use identity object (full set) if present; fall back to agentId-only for
-    // exports produced before the identity field was added.
+    // Identity takeover: mirror the source identity set (name, brand, owner)
+    // into .env so the target install adopts the source persona on next
+    // restart. Preference: use identity object (full set) if present; fall
+    // back to agentId-only for exports produced before the identity field
+    // was added.
+    //
+    // .env (via updateEnvFile below) is the ONLY identity-persistence path
+    // here since S8B retired config-overrides.json -- this used to also
+    // write a config-overrides.json, but cfg()'s boot-time identity consumers
+    // (OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID) read env['KEY']
+    // directly, never cfg(), so that write was already redundant with this
+    // .env mirror for every field that matters at boot. Shell-side launchers
+    // -- above all scripts/channels.sh -- also read MAIN_AGENT_ID /
+    // CHANNEL_PROVIDER DIRECTLY from .env. Without this mirror the main
+    // agent would launch under the pre-import identity (`${old-id}-channels`)
+    // while the dashboard looks for `${new-id}-channels` and reports the
+    // main agent as down.
     const applyWarnings: string[] = []
     const sourceIdentity = fleet.mainAgent?.identity
     const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
     if (sourceAgentId && typeof sourceAgentId === 'string') {
-      const overridesPath = join(STORE_DIR, 'config-overrides.json')
-      let overrides: Record<string, unknown> = {}
-      try {
-        if (existsSync(overridesPath)) {
-          overrides = JSON.parse(readFileSync(overridesPath, 'utf-8')) as Record<string, unknown>
-        }
-      } catch { /* start fresh if file is corrupt */ }
-      if (sourceIdentity && typeof sourceIdentity === 'object') {
-        // Full identity takeover: iterate all keys generically (no hardcoded names)
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) {
-            overrides[key] = val
-          }
-        }
-      } else {
-        // Backward-compat: old export without identity -- only set MAIN_AGENT_ID
-        overrides['MAIN_AGENT_ID'] = sourceAgentId
-      }
-      atomicWriteFileSync(overridesPath, JSON.stringify(overrides, null, 2))
-
-      // Mirror the identity into .env as well. The dashboard reads identity via
-      // cfg() (config-overrides.json > .env), but shell-side launchers -- above
-      // all scripts/channels.sh -- read MAIN_AGENT_ID / CHANNEL_PROVIDER
-      // DIRECTLY from .env. Without this the main agent would launch under the
-      // pre-import identity (`${old-id}-channels`) while the dashboard looks for
-      // `${new-id}-channels` and reports the main agent as down.
       const envIdentity: Record<string, string> = {}
       if (sourceIdentity && typeof sourceIdentity === 'object') {
         for (const [key, val] of Object.entries(sourceIdentity)) {

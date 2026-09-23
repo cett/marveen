@@ -2,7 +2,7 @@
 //
 // Source of truth is store/federation.json (NOT the settings registry: a
 // registry entry would create a second, conflicting switch via the generic
-// /api/settings route writing config-overrides.json -- the terminal-input
+// /api/settings route writing to the system_config DB -- the terminal-input
 // toggle precedent applies: own store file + own endpoints).
 //
 // FAIL-CLOSED: any read/parse/validation error yields a disabled config with

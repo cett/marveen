@@ -1,32 +1,23 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
-import {
-  OVERRIDES_PATH,
-  getEffectiveSettingValue,
-  setOverride,
-  getOverrides,
-  reloadOverridesForTest,
-} from '../settings-store.js'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { getEffectiveSettingValue, setOverride } from '../settings-store.js'
 import { initDatabase, getSystemConfig } from '../db.js'
+import { STORE_DIR } from '../config.js'
 
-// This worktree's PROJECT_ROOT resolves under this checkout's own store/
-// directory (see config.ts: PROJECT_ROOT = join(__dirname, '..')), so
-// OVERRIDES_PATH here is isolated from any real fleet install -- safe to
-// write/delete.
+// S8B retired config-overrides.json entirely -- there is no OVERRIDES_PATH
+// export anymore. This local path is only used to prove a legacy file, if one
+// happens to still be on disk, is now IGNORED (the intentional behaviour
+// change this step introduces).
+const LEGACY_OVERRIDES_PATH = join(STORE_DIR, 'config-overrides.json')
+
 describe('settings-store', () => {
   beforeEach(() => {
     initDatabase(':memory:')
-    if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
-    reloadOverridesForTest()
+    if (existsSync(LEGACY_OVERRIDES_PATH)) rmSync(LEGACY_OVERRIDES_PATH)
   })
 
-  afterAll(() => {
-    if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
-    reloadOverridesForTest()
-  })
-
-  it('falls back to the registry default when no override and no .env value exist', () => {
+  it('falls back to the registry default when no DB and no .env value exist', () => {
     expect(getEffectiveSettingValue('KANBAN_WIP_WARN_PCT')).toBe(80)
     expect(getEffectiveSettingValue('KANBAN_WIP_OK_COLOR')).toBe('#6b7280')
   })
@@ -44,28 +35,28 @@ describe('settings-store', () => {
   it('writes ONLY to system_config -- config-overrides.json is never touched', () => {
     setOverride('KANBAN_WIP_OK_COLOR', '#112233')
 
-    expect(existsSync(OVERRIDES_PATH)).toBe(false)
+    expect(existsSync(LEGACY_OVERRIDES_PATH)).toBe(false)
 
     const row = getSystemConfig('KANBAN_WIP_OK_COLOR')
     expect(row?.value).toBe('#112233')
     expect(row?.source).toBe('db')
   })
 
-  it('a legacy config-overrides.json value is still readable as a fallback below the DB', () => {
-    // Simulate a value that was set before the DB-only write path shipped
-    // (no corresponding system_config row).
-    mkdirSync(dirname(OVERRIDES_PATH), { recursive: true })
-    writeFileSync(OVERRIDES_PATH, JSON.stringify({ KANBAN_WIP_OK_COLOR: '#legacy1' }))
-    reloadOverridesForTest()
+  // S8B intentional behaviour change: a key that only ever lived in
+  // config-overrides.json (never migrated into system_config) no longer
+  // resolves to the JSON value -- it now falls straight through to the
+  // registry default, because the JSON-cache read layer is gone.
+  it('a legacy config-overrides.json value with no matching DB row is NO LONGER read -- falls to the registry default', () => {
+    mkdirSync(dirname(LEGACY_OVERRIDES_PATH), { recursive: true })
+    writeFileSync(LEGACY_OVERRIDES_PATH, JSON.stringify({ KANBAN_WIP_OK_COLOR: '#legacy1' }))
 
     expect(getSystemConfig('KANBAN_WIP_OK_COLOR')).toBeUndefined()
-    expect(getEffectiveSettingValue('KANBAN_WIP_OK_COLOR')).toBe('#legacy1')
+    expect(getEffectiveSettingValue('KANBAN_WIP_OK_COLOR')).toBe('#6b7280')
   })
 
-  it('a DB value wins over a legacy config-overrides.json value for the same key', () => {
-    mkdirSync(dirname(OVERRIDES_PATH), { recursive: true })
-    writeFileSync(OVERRIDES_PATH, JSON.stringify({ KANBAN_WIP_OK_COLOR: '#111111' }))
-    reloadOverridesForTest()
+  it('a DB value resolves correctly even while an unrelated legacy config-overrides.json file exists on disk', () => {
+    mkdirSync(dirname(LEGACY_OVERRIDES_PATH), { recursive: true })
+    writeFileSync(LEGACY_OVERRIDES_PATH, JSON.stringify({ KANBAN_WIP_OK_COLOR: '#111111' }))
 
     setOverride('KANBAN_WIP_OK_COLOR', '#222222')
 
@@ -88,14 +79,12 @@ describe('settings-store', () => {
   })
 
   it('setOverride does not write to config-overrides.json even when an unrelated legacy file exists', () => {
-    mkdirSync(dirname(OVERRIDES_PATH), { recursive: true })
-    writeFileSync(OVERRIDES_PATH, JSON.stringify({ KANBAN_WIP_WARN_PCT: 33 }))
-    reloadOverridesForTest()
+    mkdirSync(dirname(LEGACY_OVERRIDES_PATH), { recursive: true })
+    writeFileSync(LEGACY_OVERRIDES_PATH, JSON.stringify({ KANBAN_WIP_WARN_PCT: 33 }))
 
     setOverride('KANBAN_WIP_OK_COLOR', '#abcdef')
 
-    const onDisk = JSON.parse(readFileSync(OVERRIDES_PATH, 'utf-8'))
+    const onDisk = JSON.parse(readFileSync(LEGACY_OVERRIDES_PATH, 'utf-8'))
     expect(onDisk).toEqual({ KANBAN_WIP_WARN_PCT: 33 })
-    expect(getOverrides()).toEqual({ KANBAN_WIP_WARN_PCT: 33 })
   })
 })

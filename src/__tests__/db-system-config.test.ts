@@ -108,3 +108,10 @@ describe('migrateConfigOverridesToSystemConfig', () => {
     expect(migrateConfigOverridesToSystemConfig()).toBe(0)
   })
 })
+
+// retireConfigOverridesFile() itself is covered in a separate, fully-mocked
+// file (retire-config-overrides.test.ts): it performs a real rename against
+// STORE_DIR, and this file's STORE_DIR is the real, shared worktree store/
+// directory that several OTHER test files also read/write the exact same
+// config-overrides.json path from concurrently-running worker processes. A
+// mocked node:fs eliminates that cross-file race entirely.

@@ -63,6 +63,16 @@ export function initDatabase(dbPathOverride?: string): void {
   // Backfill system_config from store/config-overrides.json, same
   // every-boot-but-effectively-once shape as the seed above (INSERT OR
   // IGNORE makes repeat calls a no-op for keys already migrated).
+  //
+  // S8B's file-retirement rename (retireConfigOverridesFile()) deliberately
+  // does NOT live here even though it must run right after this migrator:
+  // this initDatabase() is called from every test file's beforeEach against
+  // the SAME real, shared worktree store/ dir (no per-test STORE_DIR
+  // isolation in this codebase), so a rename here would race other
+  // concurrently-running test files that read/write the same physical path.
+  // The migrator above is read-only w.r.t. the filesystem (writes only to
+  // its own process-local DB connection), so it doesn't have this problem.
+  // See src/index.ts's real boot sequence for the rename call.
   migrateConfigOverridesToSystemConfig()
 }
 

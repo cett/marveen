@@ -99,7 +99,7 @@ const FATAL_PROD_FIELDS = new Set(['WEB_PORT', 'OLLAMA_URL'])
  *
  * Does NOT replace any existing exports -- purely additive side-effect validation.
  *
- * @param rawEnv  Merged env object: { ...readEnvFile(), ...readConfigOverrides() }
+ * @param rawEnv  The .env-backed env object (readEnvFile())
  * @param isProd  true when NODE_ENV === 'production'
  */
 export function validateEnvConfig(rawEnv: Record<string, unknown>, isProd: boolean): void {
