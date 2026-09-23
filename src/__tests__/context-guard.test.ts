@@ -704,11 +704,18 @@ describe('decideGuard -- daily-handoff tier', () => {
     expect(d.nextState.phase).toBe('await-ready')
   })
 
-  it('stands down when BOTH tiers and the saturation net are off', () => {
-    const allOff: ContextGuardConfig = { ...DAILY_CFG, enabled: false, saturationRestart: false }
+  it('stands down when every tier including daily-handoff is off', () => {
+    const allOff: ContextGuardConfig = { ...DAILY_CFG, enabled: false, saturationRestart: false, dailyHandoffEnabled: false }
     const d = decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: true, paneIdle: true }), allOff)
     expect(d.action).toBe('none')
     expect(d.reason).toBe('disabled')
+  })
+
+  it('does NOT stand down when daily-handoff alone is on (regression: the top gate must count dailyHandoffEnabled)', () => {
+    const dailyOnly: ContextGuardConfig = { ...DAILY_CFG, enabled: false, saturationRestart: false, idleFlushEnabled: false }
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ dailyHandoffDue: true, paneIdle: true }), dailyOnly)
+    expect(d.action).toBe('request-handoff')
+    expect(d.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)).toBe(true)
   })
 })
 

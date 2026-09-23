@@ -611,10 +611,6 @@ describe('checkAgent: request-handoff prompt selection', () => {
   it('daily-handoff tier sends the scheduled dailyHandoffPrompt', async () => {
     vi.setSystemTime(new Date(2026, 0, 15, 23, 50, 0))
     mockListAgentNames.mockReturnValue(['agent-daily'])
-    // saturationRestart:true only to clear checkAgent's top-level "all three
-    // tiers off" gate, which does not itself count dailyHandoffEnabled (see
-    // context-guard-runner.ts / context-guard.ts decideGuard); the pane is
-    // never armed saturated, so that tier stays inert here.
     setCfg('agent-daily', { saturationRestart: true, dailyHandoffEnabled: true, dailyHandoffTime: '00:00' })
     armSession(subSession('agent-daily'), { paneState: 'idle' })
     const { startContextGuardRunner, getHardGuardPhase } = await loadRunner()
@@ -625,6 +621,20 @@ describe('checkAgent: request-handoff prompt selection', () => {
     expect(prompt).toContain('Napi rutin')
     expect(prompt).toContain('00:00')
     expect(getHardGuardPhase('agent-daily')).toBe('await-handoff')
+  })
+
+  it('daily-handoff tier alone (no saturation net, no other tier) still runs the sweep and fires (regression: checkAgent\'s top gate must count dailyHandoffEnabled)', async () => {
+    vi.setSystemTime(new Date(2026, 0, 15, 23, 50, 0))
+    mockListAgentNames.mockReturnValue(['agent-daily-only'])
+    setCfg('agent-daily-only', { dailyHandoffEnabled: true, dailyHandoffTime: '00:00' })
+    armSession(subSession('agent-daily-only'), { paneState: 'idle' })
+    const { startContextGuardRunner, getHardGuardPhase } = await loadRunner()
+    handle = startContextGuardRunner()
+    await runNextSweep()
+    expect(mockSendPromptToSession).toHaveBeenCalledTimes(1)
+    const [, prompt] = mockSendPromptToSession.mock.calls[0]
+    expect(prompt).toContain('Napi rutin')
+    expect(getHardGuardPhase('agent-daily-only')).toBe('await-handoff')
   })
 
   it('daily-handoff tier defers instead of firing while the pane is not idle', async () => {
