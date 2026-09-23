@@ -451,6 +451,20 @@ fi
 ensure_in_rc 'BUN_INSTALL' 'export BUN_INSTALL="$HOME/.bun"'
 ensure_in_rc '.bun/bin' 'export PATH="$BUN_INSTALL/bin:$PATH"'
 
+# ensure_in_rc csak akkor ir, ha a .bashrc/.zshrc mar letezik -- friss/minimal
+# image-en egyik sem garantalt. Es meg ha letezik is: a legtobb disztro .bashrc-je
+# sajat "csak interaktiv shell" orzessel indul (case $- in *i*) ;; *) return;; esac),
+# ami egy login-de-nem-interaktiv shellben (pl. `su -l`, cron, systemd --user,
+# `bash -lc`) csendben kihagyja a fenti PATH-sorokat. A .profile-t ezert mindig
+# celba vesszuk (letrehozva, ha meg nincs), mert azt tobbnyire minden login shell
+# forrasolja fuggetlenul az interaktivitastol -- igy a kovetkezo lepesek altal
+# inditott gyerekshellek es a legkozelebbi bejelentkezes is biztosan latja a buntot.
+[ -f "$HOME/.profile" ] || touch "$HOME/.profile"
+if ! grep -qF 'BUN_INSTALL' "$HOME/.profile" 2>/dev/null; then
+  printf '\n%s\n%s\n' 'export BUN_INSTALL="$HOME/.bun"' 'export PATH="$BUN_INSTALL/bin:$PATH"' >>"$HOME/.profile"
+  warn "RC frissitve ($(basename "$HOME/.profile")): bun PATH"
+fi
+
 INSTALL_STEP="claude-auth"
 # ─────────────────────────────────────────────
 # [3/7] Claude bejelentkezes

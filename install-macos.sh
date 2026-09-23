@@ -1171,7 +1171,17 @@ fi
 if ! curl -s http://localhost:11434/api/version &>/dev/null; then
   echo -e "$(_t macos.ollama_starting)"
   ollama serve &>/dev/null &
-  sleep 3
+  # A fix 3 mp-es sleep nem garantalja hogy a szerver kesz -- hidegindulasnal/
+  # lassabb gepen a kovetkezo model-pull "connection refused"-ra futhat. Wait-probe:
+  # varunk amig valaszol vagy max ~30 mp (1 mp-enkent probalva), utana best-effort
+  # tovabb (mint eddig, nem fatalis ha a modell-letoltes kesobb sem sikerul).
+  for i in $(seq 1 30); do
+    curl -s http://localhost:11434/api/version &>/dev/null && break
+    sleep 1
+  done
+  if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+    warn "Ollama nem valaszolt 30 mp utan -- folytatjuk, kesobb kezzel: ollama serve && ollama pull nomic-embed-text"
+  fi
 fi
 
 # Pull nomic-embed-text model
