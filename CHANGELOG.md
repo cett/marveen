@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- unit test coverage for `context-guard-runner.ts`'s I/O orchestration (`checkAgent`, `performRestart`, `startContextGuardRunner`): sweep scheduling and per-agent error containment, the fully-disabled/remote-host gating, the saturation-net confirm-then-restart path (pane snapshot, restart notice, restart-notice-failure handling), the main-agent restart path (`hardRestartMarveenChannels` vs `restartAgentProcess`, a failed hard restart, and the post-respawn-grace defer), all four request-handoff prompt variants (act threshold, idle-flush, daily-handoff, stale-handoff-refresh), and the post-restart inject-resume/cooldown transition
 - unit test coverage for `context-guard-runner.ts`'s prompt-builder exports (`handoffPrompt`, `idleFlushHandoffPrompt`, `staleRefreshHandoffPrompt`, `dailyHandoffPrompt`, `resumePrompt`) and `guardSweepAgentNames`'s dedup/main-first agent listing
 - unit test coverage for two previously-untested backend modules' pure decision logic: `context-restart-gate-runner.ts`'s infrastructure-vs-work child-process classifier (age-delta heuristic, direct/wrapper pane-shape claude-PID resolution, MCP-package-name extraction and matching) and `inbox-nudge-watcher.ts`'s nudge preflight/record state machine (debounce, stale-nudge cooldown and cap, rolling hourly budget, single-row nudge text length)
 
