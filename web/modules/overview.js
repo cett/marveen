@@ -41,6 +41,12 @@ function formatDurationShort(sec) {
   return t('common.time.day_abbr', { n: Math.floor(hr / 24) })
 }
 
+// Window lengths in seconds, keyed the same way as the `windows` tuples below
+// (the second element of each tuple), used to compute the reference-line
+// elapsed-time proportion. Kept separate from the labelKey so the i18n key
+// naming can change without touching this lookup.
+const WINDOW_SECS = { five_hour: 18000, seven_day: 604800 }
+
 // Same thresholds as scripts/statusline-ratelimit.sh's own rl_pct() convention:
 // >=80 danger, >=60 caution. The dashboard palette has no yellow token, so the
 // accent stands in for it rather than adding a global token for one strip.
@@ -80,10 +86,10 @@ function renderQuotaStrip(isAdminView, q) {
   const stale = q.status === 'stale'
   const nowSec = Math.floor(Date.now() / 1000)
   const windows = [
-    ['overview.quota.five_hour', q.fiveHour],
-    ['overview.quota.seven_day', q.sevenDay],
+    ['overview.quota.five_hour', 'five_hour', q.fiveHour],
+    ['overview.quota.seven_day', 'seven_day', q.sevenDay],
   ]
-  for (const [labelKey, w] of windows) {
+  for (const [labelKey, winKey, w] of windows) {
     if (!w) continue
     const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
     const muted = stale || w.expired
@@ -95,9 +101,24 @@ function renderQuotaStrip(isAdminView, q) {
     } else if (typeof w.resetsAt === 'number' && w.resetsAt > nowSec) {
       tail = ' · ' + t('overview.quota.resets_in', { d: formatDurationShort(w.resetsAt - nowSec) })
     }
+
+    // Additive reference line: where usage "should" be if it were spent evenly
+    // across the window, based on elapsed time since the last reset. Purely a
+    // visual overlay on top of the existing fill -- it never changes pct or
+    // the fill width, only adds a marker at the proportional elapsed-time point.
+    const winSec = WINDOW_SECS[winKey]
+    let referencePct = null
+    if (!muted && winSec && typeof w.resetsAt === 'number') {
+      referencePct = Math.min(100, Math.max(0, Math.round(100 * (1 - (w.resetsAt - nowSec) / winSec))))
+    }
+    const overPace = referencePct !== null && pct > referencePct
+    const refLine = referencePct !== null
+      ? `<div class="quota-bar-ref-line${overPace ? ' over-pace' : ''}" style="left:${referencePct}%" title="${escapeHtml(t(overPace ? 'overview.quota.ref_line_over' : 'overview.quota.ref_line', { pct, ref: referencePct }))}"></div>`
+      : ''
+
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
-      <div class="quota-bar-track"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>
+      <div class="quota-bar-track"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div>${refLine}</div>
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
     bars.appendChild(row)
