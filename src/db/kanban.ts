@@ -329,6 +329,44 @@ export function unarchiveKanbanCard(id: string): boolean {
   return db.prepare('UPDATE kanban_cards SET archived_at=NULL, updated_at=? WHERE id=? AND archived_at IS NOT NULL').run(now, id).changes > 0
 }
 
+// Unified search across active AND archived cards -- the single dual-ID text
+// search used by both the global sidebar search and the archived view's q
+// field. Three match modes, tried in order:
+//   1. "#NNN" -> exact rowid match (the human-facing running number).
+//   2. 4-8 hex chars -> id prefix match (the stable hex id shown in the UI).
+//   3. otherwise -> title/project/assignee substring match.
+// Active cards rank before archived ones (archived_at IS NOT NULL ASC), then
+// by recency, so a noisy archive (the common case) never buries a live card.
+export function searchKanbanCards(opts: {
+  q: string
+  limit?: number
+  // null/undefined = no tenant restriction (admin, unscoped).
+  tenantId?: string | null
+}): (KanbanCard & { seq: number; archived: boolean })[] {
+  const { q, limit = 50, tenantId } = opts
+  const like = `%${q}%`
+  let sql = `
+    SELECT rowid AS seq, *
+    FROM kanban_cards
+    WHERE (
+      (? GLOB '#[0-9]*' AND CAST(rowid AS TEXT) = LTRIM(?, '#'))
+      OR (LENGTH(?) >= 4 AND ? GLOB '[0-9a-fA-F]*' AND id LIKE ? || '%')
+      OR title LIKE ?
+      OR project LIKE ?
+      OR assignee LIKE ?
+    )
+  `
+  const params: unknown[] = [q, q, q, q, q, like, like, like]
+  if (tenantId != null) {
+    sql += ' AND tenant_id = ?'
+    params.push(tenantId)
+  }
+  sql += ' ORDER BY (archived_at IS NOT NULL) ASC, updated_at DESC LIMIT ?'
+  params.push(limit)
+  const rows = db.prepare(sql).all(...params) as (KanbanCard & { seq: number })[]
+  return rows.map((r) => ({ ...r, archived: r.archived_at != null }))
+}
+
 export interface ArchivedKanbanCard {
   id: string
   title: string
@@ -341,14 +379,13 @@ export interface ArchivedKanbanCard {
 }
 
 export function listArchivedKanbanCards(opts: {
-  q?: string
   project?: string
   label?: string
   from?: number
   to?: number
   limit: number
 }): ArchivedKanbanCard[] {
-  const { q, project, label, from, to, limit } = opts
+  const { project, label, from, to, limit } = opts
   let sql = `
     SELECT DISTINCT kc.id, kc.title, kc.status, kc.project, kc.priority, kc.assignee, kc.archived_at, kc.updated_at
     FROM kanban_cards kc
@@ -365,11 +402,6 @@ export function listArchivedKanbanCards(opts: {
   if (project) { sql += ' AND kc.project = ?'; params.push(project) }
   if (from)    { sql += ' AND kc.archived_at >= ?'; params.push(from) }
   if (to)      { sql += ' AND kc.archived_at <= ?'; params.push(to) }
-  if (q) {
-    sql += ' AND (kc.title LIKE ? OR kc.project LIKE ? OR kc.assignee LIKE ?)'
-    const like = `%${q}%`
-    params.push(like, like, like)
-  }
   sql += ' ORDER BY kc.archived_at DESC LIMIT ?'
   params.push(limit)
   return db.prepare(sql).all(...params) as ArchivedKanbanCard[]

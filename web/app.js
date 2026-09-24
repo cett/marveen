@@ -22,6 +22,7 @@ import { wireBranchDriftBanner, initUpdates, loadUpdates } from './modules/updat
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
 import { can } from './modules/rbac-client.js'
 import { renderPaginator } from './modules/paginator.js'
+import { initGlobalKanbanSearch } from './modules/kanban-search.js'
 
 // ── Lazy-load helper ──────────────────────────────────────────────────────────
 // Deduplicates module loads: the Promise is stored on first call, subsequent calls
@@ -560,6 +561,7 @@ if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.
 
 // === Init ===
 populateAvatarGrid()
+initGlobalKanbanSearch()
 // Overview is the default-visible page (no `hidden` in index.html), so it never
 // goes through switchPage()'s registerPage('overview').enter() on a fresh load
 // with no hash -- call the same enter function (loadOverviewPage, hoisted below)
@@ -1070,6 +1072,11 @@ if (document.readyState !== 'loading') boot();
 // === Archivalt kartyak ===
 ;(() => {
   let archivedInit = false
+  // Bumped on every doArchivedSearch() call so an in-flight fetch that
+  // resolves after a newer one started (e.g. the page's own enter-hook
+  // search racing openArchivedCard's id-specific search) discards its
+  // stale result instead of overwriting the newer render.
+  let archivedSearchSeq = 0
   // Client-side pagination (#862): the backend still returns the whole
   // filtered result in one shot (capped by KANBAN_ARCHIVED_MAX_ROWS, same as
   // before), a fetch per filter/search change, not per page turn -- the same
@@ -1279,6 +1286,7 @@ if (document.readyState !== 'loading') boot();
   }
 
   async function doArchivedSearch() {
+    const seq = ++archivedSearchSeq
     const list = document.getElementById('archivedList')
     const summary = document.getElementById('archivedSummary')
     list.className = ''
@@ -1286,25 +1294,44 @@ if (document.readyState !== 'loading') boot();
     summary.textContent = ''
     document.getElementById('archivedPagination')?.replaceChildren()
 
-    const params = new URLSearchParams()
     const q = document.getElementById('archivedQ').value.trim()
     const project = document.getElementById('archivedProject').value
     const from = document.getElementById('archivedFrom').value
     const to = document.getElementById('archivedTo').value
-    if (q) params.set('q', q)
-    if (project) params.set('project', project)
-    if (from) params.set('from', Math.floor(new Date(from).getTime() / 1000))
-    if (to) params.set('to', Math.floor(new Date(to + 'T23:59:59').getTime() / 1000))
 
     try {
-      const r = await fetch('/api/kanban/archived?' + params.toString())
-      if (!r.ok) { list.innerHTML = '<p class="naplo-empty error">' + t('archived.error.http', {status: r.status}) + '</p>'; return }
-      const data = await r.json()
-      archivedCards = data.cards || []
-      archivedFetchLimit = data.limit
+      let cards, limit
+      if (q) {
+        // Free-text/ID search now goes through the unified search endpoint
+        // (shared with the sidebar global search) instead of the old
+        // archived-only text search -- project/date filters do not combine
+        // with q, the unified endpoint has no such filters.
+        const r = await fetch('/api/kanban/search?' + new URLSearchParams({ q, limit: '200' }))
+        if (seq !== archivedSearchSeq) return
+        if (!r.ok) { list.innerHTML = '<p class="naplo-empty error">' + t('archived.error.http', {status: r.status}) + '</p>'; return }
+        const data = await r.json()
+        if (seq !== archivedSearchSeq) return
+        cards = (data.cards || []).filter(c => c.archived)
+        limit = cards.length
+      } else {
+        const params = new URLSearchParams()
+        if (project) params.set('project', project)
+        if (from) params.set('from', Math.floor(new Date(from).getTime() / 1000))
+        if (to) params.set('to', Math.floor(new Date(to + 'T23:59:59').getTime() / 1000))
+        const r = await fetch('/api/kanban/archived?' + params.toString())
+        if (seq !== archivedSearchSeq) return
+        if (!r.ok) { list.innerHTML = '<p class="naplo-empty error">' + t('archived.error.http', {status: r.status}) + '</p>'; return }
+        const data = await r.json()
+        if (seq !== archivedSearchSeq) return
+        cards = data.cards || []
+        limit = data.limit
+      }
+      archivedCards = cards
+      archivedFetchLimit = limit
       archivedOffset = 0
       renderArchivedPage()
     } catch (err) {
+      if (seq !== archivedSearchSeq) return
       list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: err.message}) + '</p>'
     }
   }
@@ -1328,6 +1355,21 @@ if (document.readyState !== 'loading') boot();
   }
 
   window.loadArchivedPage = loadArchivedPage
+
+  // Entry point from the global sidebar search (kanban-search.js): jump to
+  // the archived view pre-filtered to one card and highlight it, mirroring
+  // window.loadArchivedPage's cross-module wiring style.
+  window.openArchivedCard = async function openArchivedCard(id) {
+    if (!archivedInit) loadArchivedPage()
+    document.getElementById('archivedQ').value = id
+    await doArchivedSearch()
+    const el = document.querySelector(`.archived-card[data-id="${CSS.escape(id)}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('archived-card-highlight')
+      setTimeout(() => el.classList.remove('archived-card-highlight'), 2500)
+    }
+  }
 })()
 
 // === Kanban Gantt / timeline view ===

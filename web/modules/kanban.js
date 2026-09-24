@@ -1138,7 +1138,7 @@ async function renderCardLabelsSection(card) {
 }
 
 // === Card detail ===
-async function showCardDetail(card) {
+export async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
   document.getElementById('cardDetailTitle').textContent = `${seqPrefix}${card.title}`

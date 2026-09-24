@@ -1611,6 +1611,11 @@ window._i18n.hu = {
   'kanban.filter.group_assignee':'Felelős szerint',
   'kanban.filter.group_priority':'Prioritás szerint',
 
+  // --- Kanban unified search (sidebar) ---
+  'kanban.search.placeholder':    '#NNN, hash vagy szöveg...',
+  'kanban.search.archived_badge': 'Archivált',
+  'kanban.search.empty':          'Nincs találat',
+
   // --- Kanban Gantt/idővonal nézet ---
   'kanban.view.board':              'Tábla',
   'kanban.view.gantt':              'Idővonal',
