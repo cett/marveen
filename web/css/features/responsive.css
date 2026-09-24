@@ -13,6 +13,9 @@
 
 @media (max-width: 640px) {
   main { padding: 20px 16px 48px; }
+  .kanban-search-wrap { flex-basis: 100%; order: 3; margin-left: 0; }
+  .kanban-search-input { max-width: 100%; }
+  .kanban-search-results { width: 100%; max-width: 100%; }
   .agents-grid { grid-template-columns: 1fr; gap: 12px; }
   .agent-card { padding: 20px 14px; min-height: auto; }
   .agent-avatar { width: 44px; height: 44px; font-size: 18px; }

@@ -1,9 +1,10 @@
-// Global sidebar kanban search (unified active + archived card lookup).
+// Kanban page card search (unified active + archived card lookup).
 //
-// Lives at the top of the sidebar, independent of the currently active page.
-// Debounced text/ID search against GET /api/kanban/search; clicking a result
-// navigates to the kanban board (active card, opens the detail panel) or the
-// archived view (archived card, highlighted in place).
+// Lives in the kanban page's view-switcher row (Tábla/Idővonal ... search ...
+// Archiváltak), visible in all three kanban views. Debounced text/ID search
+// against GET /api/kanban/search; clicking a result navigates to the kanban
+// board (active card, opens the detail panel) or the archived view (archived
+// card, highlighted in place).
 import { t } from './i18n.js'
 import { escapeHtml } from './util.js'
 import { switchPage } from './app-core.js'
@@ -22,26 +23,26 @@ function statusLabel(status) {
 function renderResults(cards) {
   if (!results) return
   if (cards.length === 0) {
-    results.innerHTML = `<div class="sidebar-search-empty">${escapeHtml(t('kanban.search.empty'))}</div>`
+    results.innerHTML = `<div class="kanban-search-empty">${escapeHtml(t('kanban.search.empty'))}</div>`
     results.hidden = false
     return
   }
   results.innerHTML = cards.map((card) => {
     const title = card.title.length > 60 ? card.title.slice(0, 60) + '…' : card.title
     const archivedBadge = card.archived
-      ? `<span class="sidebar-search-badge sidebar-search-badge-archived">${escapeHtml(t('kanban.search.archived_badge'))}</span>`
+      ? `<span class="kanban-search-badge kanban-search-badge-archived">${escapeHtml(t('kanban.search.archived_badge'))}</span>`
       : ''
-    return `<div class="sidebar-search-result" data-id="${escapeHtml(card.id)}" data-archived="${card.archived ? '1' : '0'}">
-      <span class="sidebar-search-result-seq">#${card.seq}</span>
-      <span class="sidebar-search-result-title">${escapeHtml(title)}</span>
-      <span class="sidebar-search-result-status">${escapeHtml(statusLabel(card.status))}</span>
+    return `<div class="kanban-search-result" data-id="${escapeHtml(card.id)}" data-archived="${card.archived ? '1' : '0'}">
+      <span class="kanban-search-result-seq">#${card.seq}</span>
+      <span class="kanban-search-result-title">${escapeHtml(title)}</span>
+      <span class="kanban-search-result-status">${escapeHtml(statusLabel(card.status))}</span>
       ${archivedBadge}
     </div>`
   }).join('')
   results.hidden = false
 
   const byId = new Map(cards.map((c) => [c.id, c]))
-  results.querySelectorAll('.sidebar-search-result').forEach((el) => {
+  results.querySelectorAll('.kanban-search-result').forEach((el) => {
     el.addEventListener('click', () => {
       const card = byId.get(el.dataset.id)
       if (card) selectResult(card)
@@ -94,14 +95,27 @@ function onKeydown(e) {
   }
 }
 
+// "/" focuses the kanban search when the kanban page is visible and focus
+// isn't already in a text field (matches the hint shown in the input).
+function onGlobalKeydown(e) {
+  if (e.key !== '/') return
+  const active = document.activeElement
+  const tag = active?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || active?.isContentEditable) return
+  if (document.getElementById('kanbanPage')?.hidden) return
+  e.preventDefault()
+  input?.focus()
+}
+
 export function initGlobalKanbanSearch() {
-  input = document.getElementById('globalKanbanSearch')
-  results = document.getElementById('globalKanbanSearchResults')
+  input = document.getElementById('kanbanSearchInput')
+  results = document.getElementById('kanbanSearchResults')
   if (!input || !results) return
 
   input.addEventListener('input', onInput)
   input.addEventListener('keydown', onKeydown)
   document.addEventListener('click', (e) => {
-    if (!results.hidden && !e.target.closest('.sidebar-search-wrap')) closeResults()
+    if (!results.hidden && !e.target.closest('.kanban-search-wrap')) closeResults()
   })
+  document.addEventListener('keydown', onGlobalKeydown)
 }
