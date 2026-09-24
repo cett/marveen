@@ -792,6 +792,16 @@ window._i18n.en = {
   'settings.desc.OTEL_EXPORT_ENABLED':          'OTLP push exporter on/off. When on, the 30-second background loop pushes closed traces and token-usage metrics to the OTLP endpoint. Default: off.',
   'settings.desc.OTEL_EXPORTER_OTLP_ENDPOINT':  'OTLP/HTTP collector base URL (e.g. http://localhost:4318). Left empty, the push exporter sends nothing even when enabled.',
   'settings.desc.OTEL_SERVICE_NAME':            'OTLP resource service.namespace attribute value. Default: "marveen".',
+  'settings.desc.ALLOWED_CHAT_ID':               'The channel identifier the bot accepts commands from. Read as a frozen boot-time constant, so a change only takes effect on the next channels session restart. Secret value: reads back masked as ***, writable only with admin role.',
+  'settings.desc.BB_STALE_ASSIGNED_MIN':         'Blackboard stale threshold (minutes) for "assigned" rows (delegated but not yet picked up). Not tier-based -- an unclaimed task has no tier.',
+  'settings.desc.CHANNEL_PROVIDER':              'Which channel provider the main agent uses (Telegram, Slack, Discord, Google Chat, Teams). Takes effect on the next channels session restart.',
+  'settings.desc.MAIN_AGENT_ID':                 'The main agent\'s canonical identifier (DB rows, tmux sessions, launchd/systemd labels, API routing). Takes effect on the next service restart -- a live rename does NOT migrate existing sessions/units.',
+  'settings.desc.MESSAGE_LOG_RETENTION_DAYS':    'Retention period, in days, for the channel in/out message log and the inter-agent message queue. Older entries are removed by the daily sweep.',
+  'settings.desc.OTEL_SPAN_RETENTION_DAYS':      'Retention period, in days, for OpenTelemetry trace spans. Older entries are removed by the daily sweep.',
+  'settings.desc.PLAN_STALE_MIN':                'Stale threshold in minutes: once last_heartbeat is older than this, the plan sweeper drops the agent\'s plan binding. Only fires for genuinely dead agents.',
+  'settings.desc.TELEGRAM_BOT_TOKEN':            'The channel bot\'s API token. Read as a frozen boot-time constant, so a change only takes effect on the next channels session restart. Secret value: reads back masked as ***, writable only with admin role.',
+  'settings.desc.WEB_PORT':                      'The dashboard/API HTTP server port. Takes effect on the next service restart.',
+  'settings.desc.WORKSPACE_DOC_RECALL_DEFAULT':  'Memory search returns workspace documents alongside memories by default (without needing opt-in). Turned off, the old behavior remains, where they are only included with an explicit opt-in.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

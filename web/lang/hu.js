@@ -1097,6 +1097,16 @@ window._i18n.hu = {
   'settings.desc.OTEL_EXPORT_ENABLED':          'OTLP push exportőr be/ki. Bekapcsolva a 30 másodperces háttérciklus lezárt trace-eket és token-usage metrikát küld az OTLP endpointra. Alapértelmezetten kikapcsolva.',
   'settings.desc.OTEL_EXPORTER_OTLP_ENDPOINT':  'OTLP/HTTP collector bázis-URL (pl. http://localhost:4318). Üresen hagyva a push exportőr nem küld semmit még bekapcsolt állapotban sem.',
   'settings.desc.OTEL_SERVICE_NAME':            'OTLP resource service.namespace attribútum értéke. Alapértelmezetten "marveen".',
+  'settings.desc.ALLOWED_CHAT_ID':               'A csatorna azonosítója, amelyből a bot parancsokat fogad. Frozen boot-time konstansként olvasódik be, a módosítás csak a channels session újraindításakor lép életbe. Titkos érték: a lekérdezés *** maszkot ad vissza, csak admin role-lal írható.',
+  'settings.desc.BB_STALE_ASSIGNED_MIN':         'Blackboard stale-határ (perc) az "assigned" (delegált, de még el nem kezdett) soroknak. Nem tier-alapú -- egy fel nem vett feladatnak nincs tier-je.',
+  'settings.desc.CHANNEL_PROVIDER':              'Melyik csatorna-szolgáltatót használja a fő agent (Telegram, Slack, Discord, Google Chat, Teams). A módosítás a channels session újraindításakor lép életbe.',
+  'settings.desc.MAIN_AGENT_ID':                 'A fő agent kanonikus azonosítója (DB-sorok, tmux session-ek, launchd/systemd label-ek, API-routing). A módosítás a szolgáltatás újraindításakor lép életbe -- élő átnevezés a meglévő session-eket/unit-okat NEM migrálja.',
+  'settings.desc.MESSAGE_LOG_RETENTION_DAYS':    'A csatorna be/kimenő üzenetnapló és az inter-agent üzenetsor megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
+  'settings.desc.OTEL_SPAN_RETENTION_DAYS':      'Az OpenTelemetry trace-spanok megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
+  'settings.desc.PLAN_STALE_MIN':                'Stale-határ percben: ennyi ideig frissítetlen last_heartbeat után a plan-sweeper törli az ágens plan-kötését. Csak valóban holt ágenseknél aktiválódik.',
+  'settings.desc.TELEGRAM_BOT_TOKEN':            'A csatorna bot API-tokenje. Frozen boot-time konstansként olvasódik be, a módosítás csak a channels session újraindításakor lép életbe. Titkos érték: a lekérdezés *** maszkot ad vissza, csak admin role-lal írható.',
+  'settings.desc.WEB_PORT':                      'A dashboard/API HTTP szerver portja. A módosítás a szolgáltatás újraindításakor lép életbe.',
+  'settings.desc.WORKSPACE_DOC_RECALL_DEFAULT':  'A memória-keresés alapból (opt-in nélkül is) visszaadja a munkadokumentumokat is a memóriák mellett. Kikapcsolva a régi, csak explicit opt-innél bővülő viselkedés marad.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
