@@ -194,6 +194,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -2000,6 +2001,55 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/KanbanCard"
+
+  /kanban/search:
+    get:
+      tags: [kanban]
+      operationId: searchKanbanCards
+      summary: Unified text/ID search across active and archived kanban cards
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: >-
+            Search text. "#NNN" matches the exact running number, a 4-8 char
+            hex string matches an id prefix, anything else matches a
+            title/project/assignee substring. Below 2 characters returns an
+            empty result (still HTTP 200).
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: >-
+            Matching cards, active ones ranked before archived ones, most
+            recently updated first within each group.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cards:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/KanbanCard"
+                        - type: object
+                          properties:
+                            archived:
+                              type: boolean
+                  total:
+                    type: integer
+                  active_count:
+                    type: integer
+                  archived_count:
+                    type: integer
+                  q:
+                    type: string
 
   /kanban/heartbeat-summary:
     get:

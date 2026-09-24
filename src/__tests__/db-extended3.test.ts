@@ -165,10 +165,8 @@ describe('listArchivedKanbanCards with filters', () => {
     expect(Array.isArray(result)).toBe(true)
   })
 
-  it('filters by query string', () => {
-    const result = listArchivedKanbanCards({ limit: 50, q: 'Test Archived Card Filter' })
-    expect(result.some(c => c.id === archivedCardId)).toBe(true)
-  })
+  // Query-string filtering moved to searchKanbanCards (unified active+archived
+  // text search) -- see kanban-search.test.ts.
 })
 
 // ---------------------------------------------------------------------------

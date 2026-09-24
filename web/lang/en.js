@@ -1610,6 +1610,11 @@ window._i18n.en = {
   'kanban.filter.group_assignee':'By assignee',
   'kanban.filter.group_priority':'By priority',
 
+  // --- Kanban unified search (sidebar) ---
+  'kanban.search.placeholder':    '#NNN, hash or text...',
+  'kanban.search.archived_badge': 'Archived',
+  'kanban.search.empty':          'No results',
+
   // --- Kanban Gantt/timeline view ---
   'kanban.view.board':              'Board',
   'kanban.view.gantt':              'Timeline',

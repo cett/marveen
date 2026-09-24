@@ -36,6 +36,7 @@ vi.mock('../db.js', () => ({
   getLabelsForAllCards: vi.fn().mockReturnValue(new Map()),
   getLabelsForCard: vi.fn().mockReturnValue([]),
   listArchivedKanbanCards: vi.fn().mockReturnValue([]),
+  searchKanbanCards: vi.fn().mockReturnValue([]),
   revertIdeaFromKanban: vi.fn(),
 }))
 vi.mock('../web/kanban-ref-normalize.js', () => ({
@@ -176,6 +177,32 @@ describe('tryHandleKanban', () => {
     const { ctx, out } = makeCtx('GET', '/api/kanban/archived')
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.body.cards).toBeDefined()
+  })
+
+  it('GET /api/kanban/search returns an empty result below the 2-char minimum', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/kanban/search?q=a')
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.body).toEqual({ cards: [], total: 0, active_count: 0, archived_count: 0, q: 'a' })
+  })
+
+  it('GET /api/kanban/search delegates to searchKanbanCards and shapes the counts', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.searchKanbanCards).mockReturnValueOnce([
+      { id: 'card1', seq: 1, archived: false } as any,
+      { id: 'card2', seq: 2, archived: true } as any,
+    ])
+    const { ctx, out } = makeCtx('GET', '/api/kanban/search?q=test')
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.body).toEqual({
+      cards: [
+        { id: 'card1', seq: 1, archived: false },
+        { id: 'card2', seq: 2, archived: true },
+      ],
+      total: 2,
+      active_count: 1,
+      archived_count: 1,
+      q: 'test',
+    })
   })
 
   it('POST /api/kanban/:id/unarchive unarchives card', async () => {

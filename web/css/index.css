@@ -30,6 +30,7 @@
 @import url("features/kanban.css")            layer(features);
 @import url("features/kanban-cards.css")      layer(features);
 @import url("features/kanban-detail.css")     layer(features);
+@import url("features/kanban-search.css")     layer(features);
 
 /* Agents */
 @import url("features/agents.css")            layer(features);

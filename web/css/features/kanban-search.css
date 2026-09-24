@@ -1,0 +1,83 @@
+/* === Global sidebar kanban search === */
+.sidebar-search-wrap {
+  position: relative;
+  margin: 0 0 14px;
+}
+.sidebar-search-input {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  color: var(--text);
+  min-height: 34px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.sidebar-search-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-focus);
+}
+.sidebar-search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+}
+.sidebar-search-result {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.sidebar-search-result:last-child { border-bottom: none; }
+.sidebar-search-result:hover { background: var(--accent-soft); }
+.sidebar-search-result-seq {
+  font-family: monospace;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.sidebar-search-result-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.sidebar-search-result-status {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.sidebar-search-badge-archived {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted, var(--border));
+  color: var(--text-muted);
+}
+.sidebar-search-empty {
+  padding: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Highlight for a card jumped to from the global search. */
+.archived-card.archived-card-highlight {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

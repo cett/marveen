@@ -10,6 +10,7 @@ import {
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   listArchivedKanbanCards,
+  searchKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
   countNewHotMemories,
@@ -404,16 +405,38 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban/archived' && method === 'GET') {
     const sp      = ctx.url.searchParams
-    const q       = sp.get('q')?.trim() || undefined
     const project = sp.get('project')?.trim() || undefined
     const label   = sp.get('label')?.trim() || undefined
     const from    = sp.get('from')  ? Number(sp.get('from'))  : undefined
     const to      = sp.get('to')    ? Number(sp.get('to'))    : undefined
     const limit   = Math.min(Number(sp.get('limit') ?? 0) || Number(getEffectiveSettingValue('KANBAN_ARCHIVED_MAX_ROWS')), 5000)
     const labelsByCard = getLabelsForAllCards()
-    const cards = listArchivedKanbanCards({ q, project, label, from, to, limit })
+    const cards = listArchivedKanbanCards({ project, label, from, to, limit })
       .map(card => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
     json(res, { cards, total: cards.length, limit })
+    return true
+  }
+
+  // Unified text search across active + archived cards. Supersedes the old
+  // GET /api/kanban/archived?q= text search (retired above); that endpoint's
+  // project/from/to/limit filters are unaffected and remain.
+  if (path === '/api/kanban/search' && method === 'GET') {
+    const sp    = ctx.url.searchParams
+    const q     = sp.get('q')?.trim() || ''
+    const limit = Math.min(Number(sp.get('limit') ?? 0) || 50, 200)
+    if (q.length < 2) {
+      json(res, { cards: [], total: 0, active_count: 0, archived_count: 0, q })
+      return true
+    }
+    const cards = searchKanbanCards({ q, limit, tenantId: effectiveTenantId })
+    const activeCount = cards.filter((c) => !c.archived).length
+    json(res, {
+      cards,
+      total: cards.length,
+      active_count: activeCount,
+      archived_count: cards.length - activeCount,
+      q,
+    })
     return true
   }
 
