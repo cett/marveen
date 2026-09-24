@@ -39,7 +39,27 @@ vi.mock('../db.js', () => ({
   listAllSkills: listAllSkillsMock,
 }))
 
-import { regenSingleSkillFile } from '../web/skill-regen.js'
+const { atomicWriteMock } = vi.hoisted(() => ({ atomicWriteMock: vi.fn() }))
+vi.mock('../web/atomic-write.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/atomic-write.js')>()
+  atomicWriteMock.mockImplementation(actual.atomicWriteFileSync)
+  return { atomicWriteFileSync: atomicWriteMock }
+})
+
+const { loggerErrorMock, loggerWarnMock } = vi.hoisted(() => ({
+  loggerErrorMock: vi.fn(),
+  loggerWarnMock: vi.fn(),
+}))
+vi.mock('../logger.js', () => ({
+  logger: { error: loggerErrorMock, warn: loggerWarnMock, info: vi.fn(), debug: vi.fn() },
+}))
+
+import {
+  regenSingleSkillFile,
+  regenSkillFilesFromSQL,
+  findMissingSkillFiles,
+  listKnownSkillAgents,
+} from '../web/skill-regen.js'
 
 function fleetSkillRow(id: string, content: string) {
   return { id, name: id, description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 }
@@ -96,5 +116,146 @@ describe('regenSingleSkillFile', () => {
     getSkillMock.mockReturnValue(fleetSkillRow('not-a-known-pattern', 'x'))
     const result = regenSingleSkillFile('not-a-known-pattern', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
+  })
+
+  it('rejects a path-traversal id (..) as unrecognized rather than resolving it', () => {
+    // 'global/..' has exactly 2 parts (would otherwise pass the parts.length
+    // check for the 'global' pattern), so this only fails if the top-level
+    // '..' substring guard actually runs -- unlike a longer traversal id,
+    // which would already be rejected by the parts.length check alone.
+    getSkillMock.mockReturnValue(fleetSkillRow('global/..', 'x'))
+    const result = regenSingleSkillFile('global/..', true)
+    expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
+  })
+
+  it('rejects an absolute-path id as unrecognized', () => {
+    getSkillMock.mockReturnValue(fleetSkillRow('/etc/passwd', 'x'))
+    const result = regenSingleSkillFile('/etc/passwd', true)
+    expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
+  })
+
+  it('rejects an id with an empty path segment as unrecognized', () => {
+    getSkillMock.mockReturnValue(fleetSkillRow('global/', 'x'))
+    const result = regenSingleSkillFile('global/', true)
+    expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
+  })
+
+  it('writes to the project-root path (not the per-agent dir) for the main agent id', () => {
+    getSkillMock.mockReturnValue(fleetSkillRow('agent/marveen/main-skill', 'main content'))
+    const result = regenSingleSkillFile('agent/marveen/main-skill', true)
+    expect(result.written).toBe(true)
+    const path = join(FAKE_PROJECT, '.claude', 'skills', 'main-skill', 'SKILL.md')
+    expect(existsSync(path)).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toBe('main content')
+  })
+
+  it('reports a write_error when the underlying write throws', () => {
+    getSkillMock.mockReturnValue(fleetSkillRow('global/fails-to-write', 'x'))
+    atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
+    const result = regenSingleSkillFile('global/fails-to-write', true)
+    expect(result).toEqual({ written: false, skipped: false, reason: 'write_error' })
+    expect(loggerErrorMock).toHaveBeenCalled()
+  })
+})
+
+describe('regenSkillFilesFromSQL', () => {
+  beforeEach(() => {
+    listAllSkillsMock.mockReset()
+    loggerWarnMock.mockClear()
+  })
+
+  it('is a no-op when the kill-switch is off, not forced, and not a dry run', () => {
+    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/never-queried', 'x')])
+    const result = regenSkillFilesFromSQL(false, false)
+    expect(result).toEqual({ enabled: false, written: 0, skipped: 0, errors: 0 })
+    expect(listAllSkillsMock).not.toHaveBeenCalled()
+  })
+
+  it('runs a dry run even with the kill-switch off, without touching disk', () => {
+    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/dry-run-skill', '# dry')])
+    const result = regenSkillFilesFromSQL(true, false)
+    expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 0 })
+    const path = join(FAKE_HOME, '.claude', 'skills', 'dry-run-skill', 'SKILL.md')
+    expect(existsSync(path)).toBe(false)
+  })
+
+  it('bypasses the kill-switch when forceEnabled is set', () => {
+    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/forced-bulk', '# forced')])
+    const result = regenSkillFilesFromSQL(false, true)
+    expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 0 })
+    const path = join(FAKE_HOME, '.claude', 'skills', 'forced-bulk', 'SKILL.md')
+    expect(existsSync(path)).toBe(true)
+  })
+
+  it('returns errors:1 and does not throw when the skills query itself fails', () => {
+    listAllSkillsMock.mockImplementation(() => { throw new Error('db locked') })
+    const result = regenSkillFilesFromSQL(false, true)
+    expect(result).toEqual({ enabled: true, written: 0, skipped: 0, errors: 1 })
+    expect(loggerErrorMock).toHaveBeenCalled()
+  })
+
+  it('filters to fleet-tenant rows only, ignoring tenant-scoped B2B rows', () => {
+    listAllSkillsMock.mockReturnValue([
+      fleetSkillRow('global/fleet-only', '# fleet'),
+      { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+    ])
+    const result = regenSkillFilesFromSQL(false, true)
+    expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 0 })
+  })
+
+  it('counts an unrecognized row id as an error and logs a warning, without aborting the batch', () => {
+    listAllSkillsMock.mockReturnValue([
+      fleetSkillRow('not-a-known-pattern', 'x'),
+      fleetSkillRow('global/still-written', '# ok'),
+    ])
+    const result = regenSkillFilesFromSQL(false, true)
+    expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 1 })
+    expect(loggerWarnMock).toHaveBeenCalledWith({ id: 'not-a-known-pattern' }, expect.stringContaining('unrecognized ID pattern'))
+  })
+
+  it('skips content-equal rows on a repeat run (idempotent bulk regen)', () => {
+    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/repeat-me', '# same content')])
+    regenSkillFilesFromSQL(false, true)
+    const result = regenSkillFilesFromSQL(false, true)
+    expect(result).toEqual({ enabled: true, written: 0, skipped: 1, errors: 0 })
+  })
+
+  it('counts a per-row write failure as an error without aborting the rest of the batch', () => {
+    listAllSkillsMock.mockReturnValue([
+      fleetSkillRow('global/write-fails-in-bulk', '# will fail'),
+      fleetSkillRow('global/written-after-failure', '# ok'),
+    ])
+    atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
+    const result = regenSkillFilesFromSQL(false, true)
+    expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 1 })
+  })
+})
+
+describe('findMissingSkillFiles', () => {
+  beforeEach(() => { listAllSkillsMock.mockReset() })
+
+  it('returns an empty array when the skills query fails, rather than throwing', () => {
+    listAllSkillsMock.mockImplementation(() => { throw new Error('db locked') })
+    expect(findMissingSkillFiles()).toEqual([])
+  })
+
+  it('lists fleet skill ids that have no file on disk yet', () => {
+    listAllSkillsMock.mockReturnValue([
+      fleetSkillRow('global/not-yet-written', '# missing'),
+      { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+    ])
+    expect(findMissingSkillFiles()).toEqual(['global/not-yet-written'])
+  })
+
+  it('omits a skill once its file has been written to disk', () => {
+    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/now-present', '# present')])
+    regenSkillFilesFromSQL(false, true)
+    expect(findMissingSkillFiles()).toEqual([])
+  })
+})
+
+describe('listKnownSkillAgents', () => {
+  it('returns the main agent id followed by every other known agent name', () => {
+    expect(listKnownSkillAgents()).toEqual(['marveen', 'agent-b'])
   })
 })
