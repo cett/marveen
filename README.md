@@ -87,7 +87,7 @@ A dashboard teljes flotta export/import funkciója (`exportFleet`/`importFleet`,
 
 A `tenants` tábla új `main_agent_id` oszlopa jelöli, melyik ágens az adott tenant koordinátora; az Ügynökök képernyő ez alapján egy tenant-színezésű "{tenant} főügynök" badge-et jelenít meg a kártyán és az org-chart nézetben is -- minden nézetben, admin és tenant-user session esetén egyaránt, mert a saját koordinátor ismerete a tenant-usernek is hasznos. Emellett egy admin-only "tenant chip" mutatja, mely tenant(ok)ban látható az adott ágens (`tenant_agent_availability` alapján, egy chip tenantonként), a kártyán és az org-chart node-on egyaránt (előbbi a badge-vel egy időben készült el, utóbbi egy kis, később pótolt lefedettségi rés volt) -- ez a nem-admin nézetből mindkét helyen hiányzik, mert ott a lista már eleve a saját tenantra szűrt, a chip csak zajt jelentene. Az Overview lap Szolgáltatások rácsában (`statusServiceGrid`) a `status.claude.com/api/v2/components.json` API válaszában szereplő leaf-komponensek name-alapú de-duplikálásra kerültek (`src/web/routes/status.ts`): a Statuspage-hierarchia azonos nevű leaf-rekordokat több csoportban is közölhet, ami nélküle 3-szoros ismétlést okozott.
 
-A kanban tábla keresési felülete egységesítve lett: az aktív és archivált kártyák mostantól egyetlen globális sidebar-kereső mezőből kereshetők, a találatok aktív-előre (active first) sorrendben jelennek meg. A kereső dual-ID formátumot támogat: `#NNN` pontos rowid-illesztéssel és hexadecimális hash-prefixszel egyaránt megtalálható egy kártya, akár aktív, akár archivált. A korábbi, kizárólag az archívumhoz tartozó, külön keresőmező (`/api/kanban/archived?q=`) ezzel kivezetésre kerül -- a globális végpont mindkét halmazt egységes API-n adja vissza.
+A kanban tábla keresési felülete egységesítve lett: az aktív és archivált kártyák mostantól a kanban képernyő nézetváltó sorában (Tábla/Idővonal ... kereső ... Archiváltak) elhelyezett kereső mezőből kereshetők, a találatok aktív-előre (active first) sorrendben jelennek meg. A kereső dual-ID formátumot támogat: `#NNN` pontos rowid-illesztéssel és hexadecimális hash-prefixszel egyaránt megtalálható egy kártya, akár aktív, akár archivált. A korábbi, kizárólag az archívumhoz tartozó, külön keresőmező (`/api/kanban/archived?q=`) ezzel kivezetésre kerül -- a globális végpont mindkét halmazt egységes API-n adja vissza.
 
 **API és integrációs szerződés**
 
@@ -104,7 +104,7 @@ A konfigurációs réteg fájl-alapú `config-overrides.json` shim-je kivezetés
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `787e37e6` vs fork `54b43a81`, 2026-09-24
+Állapot: upstream `787e37e6` vs fork `09998c00`, 2026-09-24
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (fejlesztő -> koordinátor) frissítsd ezt a szakaszt
      a friss git log alapján:
