@@ -544,6 +544,7 @@ tr.bb-row-clickable:hover { background: var(--bg-hover, color-mix(in srgb, var(-
 }
 .quota-bar-label { font-size: 12px; color: var(--text-muted); }
 .quota-bar-track {
+  position: relative;
   height: 6px;
   border-radius: 3px;
   background: var(--bg-input);
@@ -557,6 +558,19 @@ tr.bb-row-clickable:hover { background: var(--bg-hover, color-mix(in srgb, var(-
 }
 .quota-bar-fill.warn { background: var(--accent); }
 .quota-bar-fill.danger { background: var(--danger); }
+/* Elapsed-time-proportional marker: where usage would sit if spent evenly
+   across the window. Purely additive over the existing fill/track markup --
+   the fill itself (colour, width) is never touched by pace, only the line. */
+.quota-bar-ref-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, .45);
+  pointer-events: none;
+  transition: left .3s;
+}
+.quota-bar-ref-line.over-pace { background: #f97316; }
 /* Stale or rolled over: the numbers stay visible but must not read as current. */
 .quota-bar.muted .quota-bar-fill { background: var(--text-muted); }
 .quota-bar.muted .quota-bar-value { color: var(--text-muted); }

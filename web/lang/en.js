@@ -1655,6 +1655,8 @@ window._i18n.en = {
   'overview.quota.seven_day':       'Weekly',
   'overview.quota.resets_in':       'resets in {d}',
   'overview.quota.expired':         'window already reset',
+  'overview.quota.ref_line':        'On expected pace: {pct}% (elapsed: {ref}%)',
+  'overview.quota.ref_line_over':   'Over expected pace: {pct}% (elapsed: {ref}%)',
   'overview.quota.measured':        'measured {age} ago',
   'overview.quota.stale':           'This reading is older than the freshness limit, so treat the numbers as out of date: the status line has not written a new one.',
   'overview.quota.none.no_file':    'No quota reading yet. The numbers arrive with the status line, after the first API response of a session.',

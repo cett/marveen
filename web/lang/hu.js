@@ -1656,6 +1656,8 @@ window._i18n.hu = {
   'overview.quota.seven_day':       'Heti',
   'overview.quota.resets_in':       'nullázódik {d} múlva',
   'overview.quota.expired':         'a keret azóta nullázódott',
+  'overview.quota.ref_line':        'Elvárt tempónál: {pct}% (eltelt: {ref}%)',
+  'overview.quota.ref_line_over':   'Elvárt tempó felett: {pct}% (eltelt: {ref}%)',
   'overview.quota.measured':        '{age} régi mérés',
   'overview.quota.stale':           'Ez a mérés régebbi a frissességi határnál, tehát a számok elavultak: a státuszsor nem írt újat.',
   'overview.quota.none.no_file':    'Még nincs keret-mérés. A számokat a státuszsor írja, a munkamenet első API-válasza után.',
