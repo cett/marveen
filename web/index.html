@@ -2281,7 +2281,7 @@
           <div class="stat-value" id="backupsCount">-</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label" data-i18n="backups.stat.retention">Megőrzési limit</div>
+          <div class="stat-label" data-i18n="backups.stat.retention">Megtartott archívumok</div>
           <div class="stat-value" id="backupsRetentionStat">-</div>
         </div>
       </div>
@@ -2325,14 +2325,14 @@
       <div class="section-card">
         <h2 class="section-card-header" data-i18n="backups.settings.title">Beállítások</h2>
         <div class="form-grid" style="max-width:400px">
-          <label class="form-label" for="backupsKeepSelect" data-i18n="backups.settings.keep_label">Megőrzési limit (BACKUP_KEEP)</label>
+          <label class="form-label" for="backupsKeepSelect" data-i18n="backups.settings.keep_label">Megtartott mentések száma (BACKUP_KEEP)</label>
           <select id="backupsKeepSelect" class="form-input" style="width:120px">
             <option value="10">10</option>
             <option value="30" selected>30</option>
             <option value="60">60</option>
             <option value="180">180</option>
           </select>
-          <p class="form-hint" style="margin:4px 0 12px;color:var(--text-muted);font-size:12px" data-i18n="backups.settings.keep_hint">A beállított határnál régebbi archívumok automatikusan törlődnek a következő mentéskor.</p>
+          <p class="form-hint" style="margin:4px 0 12px;color:var(--text-muted);font-size:12px" data-i18n="backups.settings.keep_hint">A legutóbbi N archívumot tartja meg; a fölöttieket a következő mentés törli.</p>
           <button class="btn" data-variant="primary" data-size="compact" id="backupsSaveSettingsBtn" data-i18n="backups.settings.save_btn">Mentés</button>
         </div>
       </div>
