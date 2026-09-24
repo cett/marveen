@@ -22,7 +22,7 @@
 #     Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist (launchd jobs)
 #
 # Output: backups/claudeclaw-YYYYmmdd-HHMMSS.tar.gz
-# Retention: keeps the most recent 14 archives, prunes the rest.
+# Retention: keeps the most recent BACKUP_KEEP archives (default 30), prunes the rest.
 #
 # Restore (preserve modes so the 0600 token files stay private):
 #   tar -xpzf <archive> -C /tmp/restore        # inspect first

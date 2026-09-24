@@ -133,7 +133,7 @@ async function loadRetentionSetting() {
   const data = await apiFetch('/api/settings?keys=BACKUP_KEEP')
   const val = data && data.BACKUP_KEEP ? String(data.BACKUP_KEEP) : '30'
   const stat = document.getElementById('backupsRetentionStat')
-  if (stat) stat.textContent = val
+  if (stat) stat.textContent = t('backups.stat.retention_value', { n: val })
   const sel = document.getElementById('backupsKeepSelect')
   if (sel) {
     for (const opt of sel.options) {
