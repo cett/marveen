@@ -563,14 +563,15 @@ tr.bb-row-clickable:hover { background: var(--bg-hover, color-mix(in srgb, var(-
    the fill itself (colour, width) is never touched by pace, only the line. */
 .quota-bar-ref-line {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: rgba(255, 255, 255, .45);
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  background: #2563eb;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .85);
   pointer-events: none;
   transition: left .3s;
 }
-.quota-bar-ref-line.over-pace { background: #f97316; }
+.quota-bar-ref-line.over-pace { background: #ef4444; box-shadow: 0 0 0 1px rgba(255, 255, 255, .85); }
 /* Stale or rolled over: the numbers stay visible but must not read as current. */
 .quota-bar.muted .quota-bar-fill { background: var(--text-muted); }
 .quota-bar.muted .quota-bar-value { color: var(--text-muted); }
