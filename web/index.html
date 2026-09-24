@@ -68,13 +68,6 @@
         <div class="sidebar-brand-sub">online</div>
       </div>
     </div>
-    <div class="sidebar-search-wrap">
-      <input type="text" id="globalKanbanSearch" class="sidebar-search-input"
-        data-i18n-placeholder="kanban.search.placeholder"
-        placeholder="#NNN, hash vagy szöveg..."
-        autocomplete="off" spellcheck="false">
-      <div class="sidebar-search-results" id="globalKanbanSearchResults" hidden></div>
-    </div>
     <nav class="sidebar-nav">
       <a href="#" class="sb-link active" data-page="overview">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
@@ -374,10 +367,17 @@
       <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
       <div id="kanbanTenantSelectorContainer" hidden></div>
       <!-- View switcher: board vs gantt (top, always visible) -->
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
         <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
         <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
-        <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:auto;" data-i18n="kanban.view.archived">Archiváltak</button>
+        <div class="kanban-search-wrap">
+          <input type="text" id="kanbanSearchInput" class="kanban-search-input"
+            data-i18n-placeholder="kanban.search.placeholder"
+            placeholder="#NNN, hash vagy szöveg..."
+            autocomplete="off" spellcheck="false">
+          <div class="kanban-search-results" id="kanbanSearchResults" hidden></div>
+        </div>
+        <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
 
       <!-- Board-specific filter row (hidden when gantt active) -->
