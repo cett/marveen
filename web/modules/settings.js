@@ -118,7 +118,11 @@ window.addEventListener('beforeunload', (e) => {
 // entry never requires a frontend change just to render a sane heading.
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
-  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, observability: true, costops: true, 'claude-plans': true }
+  const known = {
+    kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, observability: true, costops: true, 'claude-plans': true,
+    // #953 section-tab ids (frontend-only grouping -- see SECTION_ORDER)
+    rendszer: true, csatornak: true, agensek: true, memoria: true, 'fleet-monitor': true, adatmegorzs: true, 'budgetek-csomagok': true,
+  }
   return known[mod] ? t(key) : (mod.charAt(0).toUpperCase() + mod.slice(1))
 }
 
@@ -491,14 +495,132 @@ function wireAuthBanner() {
     banner.hidden = true
   })
   if (go) go.addEventListener('click', () => {
-    // Land on the Security tab, where the auth card lives now.
-    try { localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, 'security') } catch { /* storage blocked */ }
+    // Land on the Csatornák tab, where the auth card lives now (#953: the
+    // former standalone Security tab merged into it).
+    try { localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, 'csatornak') } catch { /* storage blocked */ }
     switchPage('settings')
     const link = document.querySelector('.sb-link[data-page="settings"]')
     if (link) { document.querySelectorAll('.sb-link').forEach((l) => l.classList.remove('active')); link.classList.add('active') }
   })
 }
 
+
+// === #953 settings UI grouping (frontend-only) ===
+// Registry `module` values (config-registry.ts) are the sole source of truth
+// for where a key lives and never change here. This table only decides which
+// section TAB a module's keys render under, and how a few overflow sections
+// split into labelled subgroups. A registry module this table doesn't know
+// about still renders -- see the "extraSections" fallback in loadSettings --
+// so extending the registry never silently drops a key from the UI.
+const SECTION_ORDER = ['rendszer', 'csatornak', 'agensek', 'kanban', 'memoria', 'fleet-monitor', 'adatmegorzs']
+
+const MODULE_TO_SECTION = {
+  system: 'rendszer',
+  channels: 'csatornak',
+  agents: 'agensek',
+  heartbeat: 'agensek',
+  kanban: 'kanban',
+  ideabox: 'kanban',
+  memory: 'memoria',
+  blackboard: 'fleet-monitor',
+  audit: 'adatmegorzs',
+  observability: 'adatmegorzs',
+  backup: 'adatmegorzs',
+}
+
+// A handful of 'system'-module keys read better next to a different section
+// than the rest of their module (OLLAMA_URL next to the other memory knobs,
+// the three TOKEN_USAGE_* retention windows next to the other retention
+// settings). Key-level, so it never touches the registry's module field.
+const KEY_SECTION_OVERRIDE = {
+  OLLAMA_URL: 'memoria',
+  TOKEN_USAGE_RETENTION_DAYS: 'adatmegorzs',
+  TOKEN_USAGE_DAILY_RETENTION_DAYS: 'adatmegorzs',
+  TOKEN_USAGE_MONTHLY_RETENTION_DAYS: 'adatmegorzs',
+}
+
+function sectionOf(def) {
+  return KEY_SECTION_OVERRIDE[def.key] ?? MODULE_TO_SECTION[def.module] ?? null
+}
+
+// Splits an oversized section into labelled subgroups. Rules run in order;
+// a def matching a rule is consumed (removed from the pool) before the next
+// rule runs, so later rules never re-claim an already-grouped key. Anything
+// no rule claims still renders, in an unlabelled trailing group -- see the
+// safety net in renderSectionGroups.
+const SECTION_SUBGROUPS = {
+  agensek: [
+    { labelKey: 'settings.subgroup.agent_model', modules: ['agents'] },
+    { labelKey: 'settings.subgroup.heartbeat', modules: ['heartbeat'] },
+  ],
+  kanban: [
+    { labelKey: 'settings.subgroup.wip_limits', modules: ['kanban'], keyPrefix: 'KANBAN_WIP_', keyExcludes: '_COLOR' },
+    { labelKey: 'settings.subgroup.wip_colors', modules: ['kanban'], keyPrefix: 'KANBAN_WIP_', keyContains: '_COLOR' },
+    { labelKey: 'settings.subgroup.archive', modules: ['kanban'], keys: ['KANBAN_ARCHIVE_DONE_DAYS', 'KANBAN_ARCHIVED_MAX_ROWS'] },
+    { labelKey: 'settings.subgroup.aging', modules: ['kanban'], keyPrefix: 'KANBAN_AGING_' },
+    { labelKey: 'settings.subgroup.display', modules: ['kanban'], keys: ['KANBAN_SWIMLANE_DEFAULT_GROUP', 'KANBAN_SWIMLANE_SEPARATOR_COLOR', 'KANBAN_LABEL_COLORS'] },
+    { labelKey: 'settings.subgroup.ideabox', modules: ['ideabox'] },
+  ],
+  'fleet-monitor': [
+    { labelKey: 'settings.subgroup.bb_signals', modules: ['blackboard'], keyPrefix: 'BB_SIGNAL_' },
+    { labelKey: 'settings.subgroup.bb_stale', modules: ['blackboard'], keyPrefix: 'BB_STALE_' },
+  ],
+  adatmegorzs: [
+    { labelKey: 'settings.subgroup.audit_logs', modules: ['audit'] },
+    { labelKey: 'settings.subgroup.token_usage', modules: ['system'], keys: ['TOKEN_USAGE_RETENTION_DAYS', 'TOKEN_USAGE_DAILY_RETENTION_DAYS', 'TOKEN_USAGE_MONTHLY_RETENTION_DAYS'] },
+    { labelKey: 'settings.subgroup.otel', modules: ['observability'] },
+    { labelKey: 'settings.subgroup.backups', modules: ['backup'] },
+  ],
+}
+
+function defMatchesRule(def, rule) {
+  if (rule.modules && !rule.modules.includes(def.module)) return false
+  if (rule.keys && !rule.keys.includes(def.key)) return false
+  if (rule.keyPrefix && !def.key.startsWith(rule.keyPrefix)) return false
+  if (rule.keyContains && !def.key.includes(rule.keyContains)) return false
+  if (rule.keyExcludes && def.key.includes(rule.keyExcludes)) return false
+  return true
+}
+
+// Appends defs to panel as one or more `.settings-group` blocks. Sections
+// with no SECTION_SUBGROUPS entry render as a single flat group, same as
+// before #953.
+function renderSectionGroups(panel, sectionId, defs, isAdmin) {
+  const rules = SECTION_SUBGROUPS[sectionId]
+  if (!rules) {
+    const group = document.createElement('div')
+    group.className = 'settings-group'
+    for (const def of defs) group.appendChild(buildSettingRow(def, isAdmin))
+    panel.appendChild(group)
+    return
+  }
+
+  const remaining = [...defs]
+  for (const rule of rules) {
+    const matched = []
+    for (let i = remaining.length - 1; i >= 0; i--) {
+      if (defMatchesRule(remaining[i], rule)) { matched.unshift(remaining[i]); remaining.splice(i, 1) }
+    }
+    if (!matched.length) continue
+    const group = document.createElement('div')
+    group.className = 'settings-group'
+    if (rule.labelKey) {
+      const title = document.createElement('div')
+      title.className = 'settings-group-title'
+      title.textContent = t(rule.labelKey)
+      group.appendChild(title)
+    }
+    for (const def of matched) group.appendChild(buildSettingRow(def, isAdmin))
+    panel.appendChild(group)
+  }
+
+  if (remaining.length) {
+    const group = document.createElement('div')
+    group.className = 'settings-group'
+    for (const def of remaining) group.appendChild(buildSettingRow(def, isAdmin))
+    panel.appendChild(group)
+  }
+}
 
 export async function loadSettings() {
   // Wire banner buttons once; refresh banner visibility on every settings open.
@@ -559,75 +681,76 @@ export async function loadSettings() {
       return
     }
 
-    // Registry keys declared with module:'security' render inside the synthetic
-    // Security tab (below the auth card) instead of getting their own tab.
+    // Registry keys declared with module:'security' render inside the
+    // Csatornák section (below the auth card) instead of getting their own
+    // tab (#953: folded the former standalone Security tab into it).
     const securityDefs = byModule.get('security') ?? []
     byModule.delete('security')
 
     // module:'claude-plans' is just the CLAUDE_ROTATION_ENABLED toggle (PR2b)
-    // -- it renders below the plan-list widget in the synthetic Claude Plans
-    // tab, same pattern as securityDefs above.
+    // -- it renders below the plan-list widget in the merged Budgetek &
+    // csomagok tab, same pattern as securityDefs above.
     const claudePlansDefs = byModule.get('claude-plans') ?? []
     byModule.delete('claude-plans')
 
-    const allModules = [...byModule.keys(), 'security', 'autonomy', 'costops', 'claude-plans']
+    // Fan every remaining registry key out into its section (SECTION_ORDER).
+    // A module this table doesn't know about yet (MODULE_TO_SECTION miss)
+    // falls back to its own standalone tab, keyed by the module name --
+    // same as the pre-#953 per-module tab behaviour -- so a future registry
+    // addition always renders instead of silently vanishing.
+    const sectionDefs = new Map(SECTION_ORDER.map((id) => [id, []]))
+    const extraSections = []
+    for (const [mod, defs] of byModule) {
+      for (const def of defs) {
+        let sectionId = sectionOf(def)
+        if (!sectionId) {
+          sectionId = mod
+          if (!sectionDefs.has(sectionId)) { sectionDefs.set(sectionId, []); extraSections.push(sectionId) }
+        }
+        sectionDefs.get(sectionId).push(def)
+      }
+    }
+
+    const allModules = [...SECTION_ORDER, ...extraSections, 'autonomy', 'budgetek-csomagok']
     const savedTab = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY) || allModules[0]
     const activeTab = allModules.includes(savedTab) ? savedTab : allModules[0]
 
-    // Build a tab button + panel for each settings module
-    for (const [mod, defs] of byModule) {
+    // Build a tab button + panel per section (fixed 7, plus any fallback
+    // per-module tab for an unmapped future module).
+    for (const sectionId of [...SECTION_ORDER, ...extraSections]) {
+      const defs = sectionDefs.get(sectionId) ?? []
       const btn = document.createElement('button')
-      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
-      btn.dataset.tab = mod
-      btn.textContent = settingsModuleLabel(mod)
-      btn.addEventListener('click', () => activateSettingsTab(mod))
+      btn.className = 'tab-btn' + (sectionId === activeTab ? ' active' : '')
+      btn.dataset.tab = sectionId
+      btn.textContent = settingsModuleLabel(sectionId)
+      btn.addEventListener('click', () => activateSettingsTab(sectionId))
       tabNav.appendChild(btn)
 
       const panel = document.createElement('div')
       panel.className = 'tab-panel'
-      panel.id = `settings-panel-${mod}`
-      panel.hidden = mod !== activeTab
+      panel.id = `settings-panel-${sectionId}`
+      panel.hidden = sectionId !== activeTab
 
-      const group = document.createElement('div')
-      group.className = 'settings-group'
-      for (const def of defs) {
-        group.appendChild(buildSettingRow(def, isAdmin))
-      }
-      panel.appendChild(group)
-      tabPanels.appendChild(panel)
-    }
-
-    // Security tab (synthetic, like autonomy: exists even with zero registry
-    // entries). Hosts the auth card -- browser login, password change, device
-    // keys -- plus any module:'security' registry keys.
-    {
-      const mod = 'security'
-      const btn = document.createElement('button')
-      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
-      btn.dataset.tab = mod
-      btn.textContent = settingsModuleLabel(mod)
-      btn.addEventListener('click', () => activateSettingsTab(mod))
-      tabNav.appendChild(btn)
-
-      const panel = document.createElement('div')
-      panel.className = 'tab-panel'
-      panel.id = `settings-panel-${mod}`
-      panel.hidden = mod !== activeTab
-
-      const authCard = document.getElementById('authCard')
-      if (authCard) {
-        panel.appendChild(authCard)
-        authCard.hidden = false
-      }
-
-      if (securityDefs.length) {
-        const group = document.createElement('div')
-        group.className = 'settings-group'
-        for (const def of securityDefs) {
-          group.appendChild(buildSettingRow(def, isAdmin))
+      // Csatornák hosts the auth card -- browser login, password change,
+      // device keys -- plus any module:'security' registry keys, at the top
+      // of the panel, above the channels registry rows below.
+      if (sectionId === 'csatornak') {
+        const authCard = document.getElementById('authCard')
+        if (authCard) {
+          panel.appendChild(authCard)
+          authCard.hidden = false
         }
-        panel.appendChild(group)
+        if (securityDefs.length) {
+          const group = document.createElement('div')
+          group.className = 'settings-group'
+          for (const def of securityDefs) {
+            group.appendChild(buildSettingRow(def, isAdmin))
+          }
+          panel.appendChild(group)
+        }
       }
+
+      renderSectionGroups(panel, sectionId, defs, isAdmin)
       tabPanels.appendChild(panel)
     }
 
@@ -680,9 +803,13 @@ export async function loadSettings() {
       }
     }
 
-    // CostOps budgets tab (synthetic, like security/autonomy)
+    // Budgetek & csomagok tab (synthetic, like autonomy): #953 merges the
+    // former standalone CostOps and Claude Plans tabs into one panel with two
+    // labelled subsections, reusing their existing settings.module.* labels
+    // as subsection headers. Same widgets, same DOM ids
+    // (costopsBudgetsTbody / claudePlansBody) -- only their location moved.
     {
-      const mod = 'costops'
+      const mod = 'budgetek-csomagok'
       const btn = document.createElement('button')
       btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
       btn.dataset.tab = mod
@@ -692,8 +819,14 @@ export async function loadSettings() {
 
       const panel = document.createElement('div')
       panel.className = 'tab-panel'
-      panel.id = 'settings-panel-costops'
+      panel.id = `settings-panel-${mod}`
       panel.hidden = mod !== activeTab
+
+      // --- CostOps budgets subsection ---
+      const costopsTitle = document.createElement('div')
+      costopsTitle.className = 'settings-group-title'
+      costopsTitle.textContent = t('settings.module.costops')
+      panel.appendChild(costopsTitle)
 
       const toolbar = document.createElement('div')
       toolbar.style.cssText = 'margin-bottom:12px'
@@ -708,6 +841,7 @@ export async function loadSettings() {
 
       const tableWrap = document.createElement('div')
       tableWrap.className = 'table-wrap'
+      tableWrap.style.cssText = 'margin-bottom:28px'
       tableWrap.innerHTML = `
         <table class="table" data-size="compact">
           <thead><tr>
@@ -721,30 +855,11 @@ export async function loadSettings() {
         </table>`
       panel.appendChild(tableWrap)
 
-      tabPanels.appendChild(panel)
-
-      if (mod === activeTab) {
-        loadCostopsBudgetsTable()
-      }
-    }
-
-    // Claude Plans tab (PR2b): synthetic like autonomy/security/costops -- a
-    // hand-built plan-list + add-form widget, with the CLAUDE_ROTATION_ENABLED
-    // toggle (claudePlansDefs) appended below it exactly like security appends
-    // its registry keys after the auth card.
-    {
-      const mod = 'claude-plans'
-      const btn = document.createElement('button')
-      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
-      btn.dataset.tab = mod
-      btn.textContent = settingsModuleLabel(mod)
-      btn.addEventListener('click', () => activateSettingsTab(mod))
-      tabNav.appendChild(btn)
-
-      const panel = document.createElement('div')
-      panel.className = 'tab-panel'
-      panel.id = `settings-panel-${mod}`
-      panel.hidden = mod !== activeTab
+      // --- Claude Plans subsection ---
+      const plansTitle = document.createElement('div')
+      plansTitle.className = 'settings-group-title'
+      plansTitle.textContent = t('settings.module.claude-plans')
+      panel.appendChild(plansTitle)
 
       const body = document.createElement('div')
       body.className = 'settings-group'
@@ -763,6 +878,7 @@ export async function loadSettings() {
       tabPanels.appendChild(panel)
 
       if (mod === activeTab) {
+        loadCostopsBudgetsTable()
         renderClaudePlansPanel(body)
       }
     }
@@ -785,10 +901,8 @@ function activateSettingsTab(mod) {
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
   }
-  if (mod === 'costops') {
+  if (mod === 'budgetek-csomagok') {
     loadCostopsBudgetsTable()
-  }
-  if (mod === 'claude-plans') {
     const body = document.getElementById('claudePlansBody')
     if (body && !body.innerHTML.trim()) renderClaudePlansPanel(body)
   }
