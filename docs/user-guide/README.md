@@ -17,7 +17,7 @@ This guide documents every view of the Marveen dashboard, in Hungarian and Engli
 | 06 | [Feladatok](hu/06-feladatok.md) | Ütemezett feladatok és heartbeat-ek |
 | 07 | [Memória](hu/07-memoria.md) | Ágens-memória keresése és kezelése |
 | 08 | [Készségek](hu/08-keszségek.md) | Skill-könyvtár |
-| 09 | [Ötletek](hu/09-otletek.md) | Ötletláda |
+| 09 | [Tudástár](hu/09-tudastar.md) | Ötletláda, Artifaktek, Munkadokumentumok |
 | 10 | [Munkaterület-dokumentumok](hu/10-munkaterulet-dok.md) | Megosztott workspace docs |
 | 11 | [Token-használat](hu/11-token-hasznalat.md) | API-kvóta és használati statisztikák |
 | 12 | [Frissítések](hu/12-frissitesek.md) | Verzióellenőrzés és changelog |
@@ -43,7 +43,7 @@ This guide documents every view of the Marveen dashboard, in Hungarian and Engli
 | 06 | [Tasks](en/06-tasks.md) | Scheduled tasks and heartbeats |
 | 07 | [Memories](en/07-memories.md) | Agent memory search and management |
 | 08 | [Skills](en/08-skills.md) | Skill library |
-| 09 | [Ideas](en/09-ideas.md) | Idea box |
+| 09 | [Knowledge Base](en/09-knowledge.md) | Ideas, Artifacts, Workspace Docs |
 | 10 | [Workspace Docs](en/10-workspace-docs.md) | Shared workspace documents |
 | 11 | [Token Usage](en/11-token-usage.md) | API quota and usage statistics |
 | 12 | [Updates](en/12-updates.md) | Version check and changelog |
