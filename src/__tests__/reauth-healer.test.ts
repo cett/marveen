@@ -1,5 +1,26 @@
-import { describe, it, expect } from 'vitest'
-import { decideReauthAction, NO_REAUTH_STATE, type ReauthHealerState } from '../web/reauth-healer.js'
+import { describe, it, expect, vi } from 'vitest'
+
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>()
+  return { ...actual, APP_TZ: 'UTC', RESPAWN_ENABLED: false }
+})
+vi.mock('../logger.js', () => ({
+  logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
+import {
+  decideReauthAction,
+  NO_REAUTH_STATE,
+  isQuietHour,
+  localHour,
+  buildEscalationMessage,
+  buildQuietSummaryMessage,
+  routeEscalation,
+  flushQuietSummary,
+  startReauthHealer,
+  type ReauthHealerState,
+  type QuietSuppressedEntry,
+} from '../web/reauth-healer.js'
 
 const T = { threshold: 3, cooldownMs: 30 * 60 * 1000 }
 const base = (over: Partial<Parameters<typeof decideReauthAction>[0]> = {}) => ({
@@ -185,5 +206,144 @@ describe('decideReauthAction: restartMain (main agent dead-token restart)', () =
     }), T)
     expect(d.restartMain).toBe(true)
     expect(d.escalate).toBe(true)
+  })
+})
+
+describe('isQuietHour', () => {
+  it('is quiet at the start boundary (23) and through midnight', () => {
+    expect(isQuietHour(23)).toBe(true)
+    expect(isQuietHour(0)).toBe(true)
+    expect(isQuietHour(5)).toBe(true)
+  })
+
+  it('is NOT quiet at the end boundary (6, exclusive) and during the day', () => {
+    expect(isQuietHour(6)).toBe(false)
+    expect(isQuietHour(12)).toBe(false)
+    expect(isQuietHour(22)).toBe(false)
+  })
+})
+
+describe('localHour', () => {
+  it('reads the wall-clock hour in the configured zone (mocked to UTC)', () => {
+    // 2026-01-01T14:30:00Z -> hour 14 in UTC.
+    expect(localHour(Date.parse('2026-01-01T14:30:00Z'))).toBe(14)
+  })
+
+  it('wraps correctly around midnight UTC', () => {
+    expect(localHour(Date.parse('2026-01-01T00:05:00Z'))).toBe(0)
+    expect(localHour(Date.parse('2026-01-01T23:55:00Z'))).toBe(23)
+  })
+})
+
+describe('buildEscalationMessage', () => {
+  it('computes the elapsed minutes from the probe count and interval', () => {
+    // 3 probes * 3 min/probe = 9 min.
+    const msg = buildEscalationMessage('zack', 'dead token (401)', 3)
+    expect(msg).toContain('zack')
+    expect(msg).toContain('dead token (401)')
+    expect(msg).toContain('~9 perce')
+  })
+
+  it('scales for a re-alert with a much higher probe count', () => {
+    const msg = buildEscalationMessage('boo', '401', 30)
+    expect(msg).toContain('~90 perce')
+  })
+})
+
+describe('buildQuietSummaryMessage', () => {
+  it('lists every still-dead entry with its own elapsed time', () => {
+    const entries: QuietSuppressedEntry[] = [
+      { session: 's1', label: 'zack', reason: '401', consecutiveDead: 3 },
+      { session: 's2', label: 'boo', reason: 'token expired', consecutiveDead: 6 },
+    ]
+    const msg = buildQuietSummaryMessage(entries)
+    expect(msg).toContain('zack')
+    expect(msg).toContain('~9 perce')
+    expect(msg).toContain('boo')
+    expect(msg).toContain('token expired')
+    expect(msg).toContain('~18 perce')
+  })
+
+  it('still returns the header+footer for an empty list', () => {
+    const msg = buildQuietSummaryMessage([])
+    expect(msg).toContain('Reggeli token-összegzés')
+    expect(msg).toContain('Bejelentkezés')
+  })
+})
+
+describe('routeEscalation', () => {
+  const entry: QuietSuppressedEntry = { session: 's1', label: 'zack', reason: '401', consecutiveDead: 3 }
+
+  it('notifies immediately outside quiet hours, without touching the suppressed map', () => {
+    const notify = vi.fn()
+    const suppressed = new Map<string, QuietSuppressedEntry>()
+    routeEscalation(entry, false, notify, suppressed)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toContain('zack')
+    expect(suppressed.size).toBe(0)
+  })
+
+  it('queues for the morning summary during quiet hours, without notifying', () => {
+    const notify = vi.fn()
+    const suppressed = new Map<string, QuietSuppressedEntry>()
+    routeEscalation(entry, true, notify, suppressed)
+    expect(notify).not.toHaveBeenCalled()
+    expect(suppressed.get('s1')).toEqual(entry)
+  })
+})
+
+describe('flushQuietSummary', () => {
+  it('is a no-op while still quiet, even with suppressed entries', () => {
+    const notify = vi.fn()
+    const stampAlert = vi.fn()
+    const suppressed = new Map<string, QuietSuppressedEntry>([
+      ['s1', { session: 's1', label: 'zack', reason: '401', consecutiveDead: 3 }],
+    ])
+    flushQuietSummary(true, () => 3, notify, stampAlert, suppressed)
+    expect(notify).not.toHaveBeenCalled()
+    expect(suppressed.size).toBe(1)
+  })
+
+  it('is a no-op once quiet hours end if nothing was suppressed', () => {
+    const notify = vi.fn()
+    flushQuietSummary(false, () => 0, notify, vi.fn(), new Map())
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('sends one summary for entries still dead, drops healed ones silently, clears the map', () => {
+    const notify = vi.fn()
+    const stampAlert = vi.fn()
+    const suppressed = new Map<string, QuietSuppressedEntry>([
+      ['s1', { session: 's1', label: 'zack', reason: '401', consecutiveDead: 3 }],
+      ['s2', { session: 's2', label: 'boo', reason: '401', consecutiveDead: 3 }],
+    ])
+    // s1 is still dead (recount 5), s2 healed overnight (recount 0).
+    const stillDeadCount = (session: string) => (session === 's1' ? 5 : 0)
+    flushQuietSummary(false, stillDeadCount, notify, stampAlert, suppressed)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toContain('zack')
+    expect(notify.mock.calls[0][0]).not.toContain('boo')
+    expect(stampAlert).toHaveBeenCalledTimes(1)
+    expect(stampAlert).toHaveBeenCalledWith('s1')
+    expect(suppressed.size).toBe(0)
+  })
+
+  it('sends nothing and stamps nothing when every suppressed agent healed overnight', () => {
+    const notify = vi.fn()
+    const stampAlert = vi.fn()
+    const suppressed = new Map<string, QuietSuppressedEntry>([
+      ['s1', { session: 's1', label: 'zack', reason: '401', consecutiveDead: 3 }],
+    ])
+    flushQuietSummary(false, () => 0, notify, stampAlert, suppressed)
+    expect(notify).not.toHaveBeenCalled()
+    expect(stampAlert).not.toHaveBeenCalled()
+  })
+})
+
+describe('startReauthHealer', () => {
+  it('is disabled on a non-production host (RESPAWN_ENABLED false): returns null, schedules nothing', () => {
+    // The module-level mock above fixes RESPAWN_ENABLED to false for this file.
+    const result = startReauthHealer()
+    expect(result).toBeNull()
   })
 })
