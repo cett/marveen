@@ -42,8 +42,9 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   }
 })
 
+import { readAgentSecurityProfile } from '../web/agent-config.js'
 import {
-  readAgentTeam, writeAgentTeam, resolveSecurityProfileId,
+  readAgentTeam, writeAgentTeam, resolveSecurityProfileId, resolveAgentSecurityProfile,
   sanitizeTeamConfig, reportsToCreatesCycle, cleanupTeamReferences,
   DEFAULT_TEAM,
 } from '../web/agent-team.js'
@@ -152,6 +153,38 @@ describe('resolveSecurityProfileId', () => {
 
   it('strips whitespace from stored profile', () => {
     expect(resolveSecurityProfileId('  ', { role: 'leader' })).toBe('applier')
+  })
+})
+
+describe('resolveAgentSecurityProfile', () => {
+  it('combines the stored profile with the on-disk team role (leader -> applier)', () => {
+    makeAgentDir('sec-leader')
+    writeFileSync(
+      join(AGENTS_BASE_DIR, 'sec-leader', 'agent-config.json'),
+      JSON.stringify({ team: { role: 'leader' } }),
+    )
+    vi.mocked(readAgentSecurityProfile).mockReturnValueOnce('')
+    expect(resolveAgentSecurityProfile('sec-leader')).toBe('applier')
+  })
+
+  it('combines the stored profile with the on-disk team role (member -> default)', () => {
+    makeAgentDir('sec-member')
+    writeFileSync(
+      join(AGENTS_BASE_DIR, 'sec-member', 'agent-config.json'),
+      JSON.stringify({ team: { role: 'member' } }),
+    )
+    vi.mocked(readAgentSecurityProfile).mockReturnValueOnce('')
+    expect(resolveAgentSecurityProfile('sec-member')).toBe('default')
+  })
+
+  it('an explicit non-default stored profile wins over the role', () => {
+    makeAgentDir('sec-explicit')
+    writeFileSync(
+      join(AGENTS_BASE_DIR, 'sec-explicit', 'agent-config.json'),
+      JSON.stringify({ team: { role: 'member' } }),
+    )
+    vi.mocked(readAgentSecurityProfile).mockReturnValueOnce('sub-dev')
+    expect(resolveAgentSecurityProfile('sec-explicit')).toBe('sub-dev')
   })
 })
 
