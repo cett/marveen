@@ -16,18 +16,17 @@ This guide documents every view of the Marveen dashboard, in Hungarian and Engli
 | 05 | [Üzenetek](hu/05-uzenetek.md) | Ágensek közötti üzenetváltások |
 | 06 | [Feladatok](hu/06-feladatok.md) | Ütemezett feladatok és heartbeat-ek |
 | 07 | [Memória](hu/07-memoria.md) | Ágens-memória keresése és kezelése |
-| 08 | [Készségek](hu/08-keszségek.md) | Skill-könyvtár |
+| 08 | [Készségek](hu/08-keszsegek.md) | Skill-könyvtár |
 | 09 | [Tudástár](hu/09-tudastar.md) | Ötletláda, Artifaktek, Munkadokumentumok |
-| 10 | [Munkaterület-dokumentumok](hu/10-munkaterulet-dok.md) | Megosztott workspace docs |
-| 11 | [Token-használat](hu/11-token-hasznalat.md) | API-kvóta és használati statisztikák |
-| 12 | [Frissítések](hu/12-frissitesek.md) | Verzióellenőrzés és changelog |
-| 13 | [Beállítások](hu/13-beallitasok.md) | Rendszerkonfiguráció |
-| 14 | [Adatmentések](hu/14-adatmentesek.md) | Biztonsági mentések |
-| 15 | [Kapcsolatok](hu/15-kapcsolatok.md) | Külső integrációk és MCP |
-| 16 | [Föderáció](hu/16-federacio.md) | Ágensek közötti föderáció |
-| 17 | [Importálás](hu/17-importalas.md) | Memória-import |
+| 10 | [Statisztikák](hu/10-statisztikak.md) | Token-használat, költségek, modell-eloszlás |
+| 11 | [Beállítások](hu/11-beallitasok.md) | Rendszerkonfiguráció (9 szekció) |
+| 12 | [Vault](hu/12-vault.md) `[ADMIN]` | Titkosított titkos kulcsok tárolása |
+| 13 | [Audit](hu/13-audit.md) `[ADMIN]` | Rendszer-eseménynapló |
+| 14 | [Adatmentés](hu/14-adatmentes.md) | Biztonsági mentések kezelése |
+| 15 | [Felhasználók](hu/15-felhasznalok.md) `[ADMIN]` | Felhasználók és szerepkörök |
+| 16 | [Kapcsolatok](hu/16-kapcsolatok.md) | MCP connectorok, föderáció, import |
+| 17 | [Frissítések](hu/17-frissitesek.md) | Verzióellenőrzés, changelog, auth-recovery |
 | 18 | [Profil](hu/18-profil.md) | Felhasználói profil és hozzáférés |
-| 19 | [Felhasználókezelés](hu/19-felhasznalok.md) `[ADMIN]` | Szerepkörök és jogosultságok |
 
 ---
 
@@ -44,16 +43,15 @@ This guide documents every view of the Marveen dashboard, in Hungarian and Engli
 | 07 | [Memories](en/07-memories.md) | Agent memory search and management |
 | 08 | [Skills](en/08-skills.md) | Skill library |
 | 09 | [Knowledge Base](en/09-knowledge.md) | Ideas, Artifacts, Workspace Docs |
-| 10 | [Workspace Docs](en/10-workspace-docs.md) | Shared workspace documents |
-| 11 | [Token Usage](en/11-token-usage.md) | API quota and usage statistics |
-| 12 | [Updates](en/12-updates.md) | Version check and changelog |
-| 13 | [Settings](en/13-settings.md) | System configuration |
+| 10 | [Statistics](en/10-statistics.md) | Token usage, costs, model distribution |
+| 11 | [Settings](en/11-settings.md) | System configuration (9 sections) |
+| 12 | [Vault](en/12-vault.md) `[ADMIN]` | Encrypted secret storage |
+| 13 | [Audit](en/13-audit.md) `[ADMIN]` | System event log |
 | 14 | [Backups](en/14-backups.md) | Backup management |
-| 15 | [Connectors](en/15-connectors.md) | External integrations and MCP |
-| 16 | [Federation](en/16-federation.md) | Agent federation |
-| 17 | [Import](en/17-import.md) | Memory import |
+| 15 | [Users](en/15-users.md) `[ADMIN]` | Users and roles |
+| 16 | [Connections](en/16-connections.md) | MCP connectors, federation, import |
+| 17 | [Updates](en/17-updates.md) | Version check, changelog, auth-recovery |
 | 18 | [Profile](en/18-profile.md) | User profile and access |
-| 19 | [User Management](en/19-users.md) `[ADMIN]` | Roles and permissions |
 
 ---
 
