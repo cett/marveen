@@ -1,6 +1,6 @@
 // Coverage for the two orchestration functions in
 // src/channel-coordinator/liveness.ts that were still untested after the
-// #751 batch-45 pass (which covered getClaudePidForSession,
+// previous liveness pass (which covered getClaudePidForSession,
 // readRespawnStampMs, readKeepaliveAgeMs): probeChannelPluginLiveness (the
 // tri-state ps-snapshot-plus-bot.pid liveness probe) and probeNativeChannelDown
 // (the full "should the coordinator backfill?" wiring). decideHasPluginAlive
