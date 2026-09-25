@@ -12,7 +12,7 @@ Telepítési és üzemeltetési útmutató saját Marveen-példány futtatásáh
 |---|--------|---------|
 | F00 | [Előfeltételek](hu/F00-elofeltetelek.md) | [Prerequisites](en/F00-prerequisites.md) |
 | F01 | [Telepítés](hu/F01-telepites.md) | [Installation](en/F01-installation.md) |
-| F02 | Üzemeltetés *(hamarosan)* | Operations *(coming soon)* |
+| F02 | [Konfiguráció](hu/F02-konfiguracio.md) | [Configuration](en/F02-configuration.md) |
 | F03 | Architektúra *(hamarosan)* | Architecture *(coming soon)* |
 | F04 | Csatornák konfigurálása *(hamarosan)* | Channel configuration *(coming soon)* |
 | F05 | MCP connectorok *(hamarosan)* | MCP connectors *(coming soon)* |
