@@ -1,11 +1,15 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterAll } from 'vitest'
 import https from 'node:https'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   getProvider,
   getProviderType,
   getChannelToken,
   getChannelChatId,
   channelStateDir,
+  readChannelToken,
   type ChannelProviderType,
 } from '../channel-provider.js'
 
@@ -152,8 +156,6 @@ describe('splitMessage per provider', () => {
 // running install already owns must be rejected at save time with a human
 // remedy, not die later as an opaque plugin -32000.
 import { checkTelegramTokenBusy } from '../channel-provider.js'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
 function fakeFetch(routes: Record<string, { status?: number; body?: unknown }>): typeof fetch {
   return (async (url: RequestInfo | URL) => {
@@ -235,5 +237,96 @@ describe('telegram sendMessage under vitest', () => {
     await provider.sendMessage('123456:REAL-LOOKING-TOKEN', '999999', 'test message', 'HTML')
     expect(requestSpy).not.toHaveBeenCalled()
     requestSpy.mockRestore()
+  })
+})
+
+describe('readChannelToken', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'channel-provider-test-'))
+
+  function envFile(name: string, content: string): string {
+    const path = join(tmpDir, name)
+    writeFileSync(path, content)
+    return path
+  }
+
+  it('returns null when the .env file does not exist', () => {
+    expect(readChannelToken('telegram', join(tmpDir, 'does-not-exist.env'))).toBeNull()
+  })
+
+  it('reads the telegram token key', () => {
+    const path = envFile('tg.env', 'TELEGRAM_BOT_TOKEN=abc123\n')
+    expect(readChannelToken('telegram', path)).toBe('abc123')
+  })
+
+  it('reads the provider-specific key for slack/discord/googlechat/teams', () => {
+    expect(readChannelToken('slack', envFile('slack.env', 'SLACK_BOT_TOKEN=xoxb-1\n'))).toBe('xoxb-1')
+    expect(readChannelToken('discord', envFile('discord.env', 'DISCORD_BOT_TOKEN=disc-1\n'))).toBe('disc-1')
+    expect(readChannelToken('googlechat', envFile('gc.env', 'GOOGLECHAT_PROJECT_ID=proj-1\n'))).toBe('proj-1')
+    expect(readChannelToken('teams', envFile('teams.env', 'TEAMS_BOT_APP_ID=app-1\n'))).toBe('app-1')
+  })
+
+  it('returns null when the key is absent from the file', () => {
+    const path = envFile('empty.env', 'SOME_OTHER_KEY=value\n')
+    expect(readChannelToken('telegram', path)).toBeNull()
+  })
+
+  it('trims trailing whitespace from the matched value', () => {
+    const path = envFile('trim.env', 'TELEGRAM_BOT_TOKEN=abc123   \n')
+    expect(readChannelToken('telegram', path)).toBe('abc123')
+  })
+
+  afterAll(() => rmSync(tmpDir, { recursive: true, force: true }))
+})
+
+// Google Chat and Teams have no bot-token dashboard-send path (delivery goes
+// through the plugin's own MCP tools) -- these stubs must fail loudly rather
+// than silently pretending to send, and validateToken must report ok since
+// there is no token to check.
+describe('googlechat/teams provider stubs (no direct-send path)', () => {
+  it('googlechat sendMessage rejects with an explanatory error', async () => {
+    const p = getProvider('googlechat')
+    await expect(p.sendMessage('tok', 'space/AAA', 'hi')).rejects.toThrow(/not supported/)
+  })
+
+  it('googlechat sendPhoto rejects with an explanatory error', async () => {
+    const p = getProvider('googlechat')
+    await expect(p.sendPhoto('tok', 'space/AAA', '/tmp/x.png', 'caption')).rejects.toThrow(/not supported/)
+  })
+
+  it('googlechat validateToken reports ok (no token model)', async () => {
+    const p = getProvider('googlechat')
+    await expect(p.validateToken('anything')).resolves.toEqual({ ok: true, botName: 'Google Chat' })
+  })
+
+  it('teams sendMessage rejects with an explanatory error', async () => {
+    const p = getProvider('teams')
+    await expect(p.sendMessage('tok', 'conv-1', 'hi')).rejects.toThrow(/not supported/)
+  })
+
+  it('teams sendPhoto rejects with an explanatory error', async () => {
+    const p = getProvider('teams')
+    await expect(p.sendPhoto('tok', 'conv-1', '/tmp/x.png', 'caption')).rejects.toThrow(/not supported/)
+  })
+
+  it('teams validateToken reports ok (no token model)', async () => {
+    const p = getProvider('teams')
+    await expect(p.validateToken('anything')).resolves.toEqual({ ok: true, botName: 'Microsoft Teams' })
+  })
+})
+
+describe('discord formatMessage (formatForDiscord)', () => {
+  it('leaves native GFM markdown untouched', () => {
+    const p = getProvider('discord')
+    expect(p.formatMessage('**bold** and _italic_')).toBe('**bold** and _italic_')
+  })
+
+  it('converts unchecked task-list checkboxes', () => {
+    const p = getProvider('discord')
+    expect(p.formatMessage('- [ ] todo')).toBe('☐ todo')
+  })
+
+  it('converts checked task-list checkboxes', () => {
+    const p = getProvider('discord')
+    expect(p.formatMessage('- [x] done')).toBe('☑ done')
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { cronMatchesNow, cronDueBetween, computeNextRun, resolveCronTz } from '../web/cron.js'
+import { cronMatchesNow, cronDueBetween, computeNextRun, resolveCronTz, isValidCronShape } from '../web/cron.js'
 
 // Regression for the 2026-07-13..15 silent scheduler outage: fixed-time cron
 // tasks (reggeli-napindito "30 7 * * *", dream-engine "7 2 * * *") stopped
@@ -193,5 +193,45 @@ describe('computeNextRun honours the passed timezone', () => {
     expect(computeNextRun('30 7 * * *', 'Europe/Budapest')).toBe(
       Math.floor(Date.parse('2026-07-16T05:30:00Z') / 1000),
     )
+  })
+})
+
+// isValidCronShape is mocked in every route test (schedules-*.test.ts) so the
+// real implementation -- type guard, length cap, shape regex, and the
+// cron-parser round-trip that catches out-of-range fields the regex alone
+// would accept -- was never actually exercised.
+describe('isValidCronShape', () => {
+  it('accepts a standard 5-field cron expression', () => {
+    expect(isValidCronShape('30 7 * * *')).toBe(true)
+  })
+
+  it('accepts a 6-field cron expression with seconds', () => {
+    expect(isValidCronShape('0 30 7 * * *')).toBe(true)
+  })
+
+  it('rejects non-string input', () => {
+    expect(isValidCronShape(42)).toBe(false)
+    expect(isValidCronShape(null)).toBe(false)
+    expect(isValidCronShape(undefined)).toBe(false)
+  })
+
+  it('rejects an empty or whitespace-only string', () => {
+    expect(isValidCronShape('')).toBe(false)
+    expect(isValidCronShape('   ')).toBe(false)
+  })
+
+  it('rejects a string longer than 100 characters', () => {
+    expect(isValidCronShape('* '.repeat(60))).toBe(false)
+  })
+
+  it('rejects a string that does not match the 5/6-field shape', () => {
+    expect(isValidCronShape('not a cron')).toBe(false)
+    expect(isValidCronShape('* * *')).toBe(false)
+  })
+
+  it('rejects a shape-valid expression the parser cannot actually parse', () => {
+    // 6 whitespace-separated tokens satisfy CRON_SHAPE_RX, but "99" is out of
+    // range for the minute field -- only cron-parser catches this.
+    expect(isValidCronShape('99 99 99 99 99 99')).toBe(false)
   })
 })
