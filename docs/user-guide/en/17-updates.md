@@ -1,6 +1,6 @@
 # 17 - Updates
 
-The Updates view covers system version tracking, the changelog, and authentication recovery tools.
+The Updates view covers system version tracking and the changelog.
 
 ---
 
@@ -34,46 +34,7 @@ The banner can be dismissed; the dismissal is stored in the browser per branch. 
 
 ---
 
-## Authentication recovery
-
-This section describes recovery paths for locked-out or compromised access. The core principle: whoever can run commands on the host machine is the root authenticator -- all recovery paths build on this.
-
-### `npm run dashboard-user` -- the break-glass tool
-
-The CLI writes directly to the database (no HTTP, no auth gate), so it works even when the web login is misconfigured or unreachable:
-
-```bash
-npm run dashboard-user -- list                           # list existing users
-npm run dashboard-user -- reset-password <user>          # reset a forgotten password
-npm run dashboard-user -- remove <user>                  # delete a user
-npm run dashboard-user -- sessions:clear [<user>]        # clear browser sessions
-npm run dashboard-user -- security:reset                 # emergency reset (see below)
-```
-
-`reset-password` does not require the old password -- every run produces an audit entry and a channel notification.
-
-### `security:reset` -- the panic button
-
-In one step:
-
-- **revokes all device keys** (Bridge, phone -- re-pairing required),
-- **clears all browser sessions** (everyone must log in again).
-
-What it does not touch: passwords and user accounts remain, and the dashboard-token continues to work. This is the "some issued credential has gone rogue, cut them all now" lever -- not a factory reset.
-
-The running server enforces the reset within 60 seconds; no restart is needed.
-
-### HTTP break-glass (with token)
-
-The holder of the dashboard-token can change a password via `POST /api/auth/password` without `current_password` by supplying a `username`. Only accessible with `token` authentication -- session, device key, or federation principal receives a 403.
-
-### Audit trail
-
-All recovery operations write to the `config_change_log` table (with `security.*` keys, metadata only: username and counts, never credentials). Events are searchable in the Audit Log view under the `config` source.
-
----
-
 ## Related sections
 
-- [13 - Audit Log](13-audit.md) -- searching recovery entries
-- [15 - Users](15-users.md) -- dashboard users and device keys
+- [18 - Profile](18-profile.md) -- password reset, break-glass, security:reset
+- [13 - Audit Log](13-audit.md) -- system event tracking
