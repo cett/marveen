@@ -115,7 +115,8 @@ export function formatStuckSessionAlert(
   return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
 }
 
-function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
+// Exported for tests.
+export function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
   try {
     const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState)
     if (!alert) return
@@ -126,7 +127,8 @@ function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckM
   }
 }
 
-function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
+// Exported for tests.
+export function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
   try {
     // A failed message to the main agent can't happen (pull model), but guard
     // anyway so we never loop a notification back onto itself.
@@ -156,7 +158,8 @@ const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
 // forever). The notice is always LOCAL (from_agent is slash-free -- bridge.ts
 // refuses to forward a qualified sender), so it can never cross the bridge or
 // loop. Fired only once, right after the terminal markMessageFailed.
-function notifyDelegationFailed(msg: AgentMessage, error: string): void {
+// Exported for tests.
+export function notifyDelegationFailed(msg: AgentMessage, error: string): void {
   try {
     createAgentMessage(
       'system',

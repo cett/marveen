@@ -260,7 +260,8 @@ export function extractMcpPackageNames(mcpServers: Record<string, unknown>): str
   return names
 }
 
-function getMcpJsonPatterns(workingDir: string): string[] {
+// Exported for tests.
+export function getMcpJsonPatterns(workingDir: string): string[] {
   try {
     const raw = JSON.parse(readFileSync(join(workingDir, '.mcp.json'), 'utf-8')) as Record<string, unknown>
     const servers = (raw['mcpServers'] ?? {}) as Record<string, unknown>
@@ -288,8 +289,10 @@ export function isMcpProcess(childArgs: string, mcpPatterns: string[]): boolean 
  * like in-flight work (Task-tool subagents, background Bash), false if only
  * infrastructure children are found, null if the check cannot be completed
  * (fail-closed → decideGate blocks).
+ *
+ * Exported for tests.
  */
-function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean | null {
+export function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean | null {
   const panePid = getPanePid(session)
   if (panePid === null) return null
 
@@ -334,7 +337,8 @@ function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean 
 // at the start of a task; anything older than that is a stale thread.
 export const TASKSTATE_FRESH_WINDOW_MS = 10 * 60 * 1000  // 10 min
 
-function hasLiveTaskStateFile(name: string, nowMs: number): boolean {
+// Exported for tests.
+export function hasLiveTaskStateFile(name: string, nowMs: number): boolean {
   const path = join(STORE_DIR, 'agent-taskstate', `${name}.json`)
   if (!existsSync(path)) return false
   try {
@@ -351,8 +355,10 @@ function hasLiveTaskStateFile(name: string, nowMs: number): boolean {
 /**
  * Collect args strings of live work children for diagnostic logging.
  * Called only on the alert path (infrequent) so the extra ps calls are fine.
+ *
+ * Exported for tests.
  */
-function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): string[] {
+export function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): string[] {
   try {
     const panePid = getPanePid(session)
     if (panePid === null) return []
