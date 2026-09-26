@@ -15,7 +15,7 @@ Telepítési és üzemeltetési útmutató saját Marveen-példány futtatásáh
 | F02 | [Konfiguráció](hu/F02-konfiguracio.md) | [Configuration](en/F02-configuration.md) |
 | F03 | [Üzemeltetés](hu/F03-uzemeltetes.md) | [Operations](en/F03-operations.md) |
 | F04 | [Architektúra](hu/F04-architektura.md) | [Architecture](en/F04-architecture.md) |
-| F05 | Csatornák konfigurálása *(hamarosan)* | Channel configuration *(coming soon)* |
+| F05 | [Csatornák konfigurálása](hu/F05-csatornak.md) | [Channel configuration](en/F05-channels.md) |
 | F06 | MCP connectorok *(hamarosan)* | MCP connectors *(coming soon)* |
 | F07 | Fleet és tenant-kezelés *(hamarosan)* | Fleet and tenant management *(coming soon)* |
 
