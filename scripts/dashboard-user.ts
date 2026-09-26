@@ -16,7 +16,7 @@
 // security:reset is the panic lever: it revokes EVERY device key and clears
 // EVERY browser session in one step (future login-enforcement toggles will be
 // cleared here too). Passwords and users are untouched; the bearer token keeps
-// working. See docs/dashboard-auth-recovery.md.
+// working. See docs/user-guide/en/18-profile.md ("Authentication recovery").
 //
 // Passwords are read interactively (twice, muted)
 // or from stdin with --password-stdin for automation. No new dependencies:

@@ -881,6 +881,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- retire dashboard-auth-recovery.md and rbac-multi-tenant.md now that their content lives in the user guide (chapters 18 and 15); every inbound reference (README.md, web/lang/en.js+hu.js, scripts/dashboard-user.ts, docs/openapi.yaml) repointed to the new location instead of left dangling
+- add language-aware "? Súgó"/"? Help" link on every dashboard view, pointing at the matching user-guide chapter on GitHub
 - sync Unreleased section (item-3 entries + stale catch-up)
 - note agent-skills SQL read path + dual-write retirement
 - fill inter-agent span attributes

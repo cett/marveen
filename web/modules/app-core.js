@@ -16,7 +16,7 @@
 //   - renderNav and renderStaticI18n are exported so app.js can call renderStaticI18n() directly
 //     after brand tokens are updated (initSidebarBrand fetch).
 
-import { t, onLangChange } from './i18n.js'
+import { t, onLangChange, getLang } from './i18n.js'
 
 // ── Page registry ─────────────────────────────────────────────────────────────
 
@@ -283,6 +283,87 @@ export function renderStaticI18n() {
   })
 }
 
+// ── Help links ───────────────────────────────────────────────────────────────
+//
+// Every dashboard view gets a small '? Súgó'/'? Help' link to its docs/user-guide
+// chapter. There is no local HTTP route for docs/, so the link opens the chapter's
+// GitHub page in a new tab. Two chapters (09-tudastar/knowledge, 16-kapcsolatok/
+// connections) cover three views each -- ideas/artifacts/workspaceDocs and
+// connectors/federation/import respectively.
+
+const HELP_CHAPTER_BY_PAGE = {
+  overviewPage: '01', kanbanPage: '02', approvalsPage: '03', agentsPage: '04',
+  messagesPage: '05', tasksPage: '06', memoriesPage: '07', skillsPage: '08',
+  ideasPage: '09', artifactsPage: '09', workspaceDocsPage: '09',
+  tokenUsagePage: '10', settingsPage: '11', vaultPage: '12', auditLogPage: '13',
+  backupsPage: '14', 'page-admin-b2b': '15',
+  connectorsPage: '16', federationPage: '16', importPage: '16',
+  updatesPage: '17', profilePage: '18',
+}
+
+const HELP_CHAPTER_SLUG = {
+  hu: {
+    '01': '01-attekintes', '02': '02-kanban', '03': '03-jovahagyasok', '04': '04-agensek',
+    '05': '05-uzenetek', '06': '06-feladatok', '07': '07-memoria', '08': '08-keszsegek',
+    '09': '09-tudastar', '10': '10-statisztikak', '11': '11-beallitasok', '12': '12-vault',
+    '13': '13-audit', '14': '14-adatmentes', '15': '15-felhasznalok', '16': '16-kapcsolatok',
+    '17': '17-frissitesek', '18': '18-profil',
+  },
+  en: {
+    '01': '01-overview', '02': '02-kanban', '03': '03-approvals', '04': '04-agents',
+    '05': '05-messages', '06': '06-tasks', '07': '07-memories', '08': '08-skills',
+    '09': '09-knowledge', '10': '10-statistics', '11': '11-settings', '12': '12-vault',
+    '13': '13-audit', '14': '14-backups', '15': '15-users', '16': '16-connections',
+    '17': '17-updates', '18': '18-profile',
+  },
+}
+
+const HELP_DOCS_BASE = 'https://github.com/cett/marveen/blob/develop/docs/user-guide'
+
+function _helpUrl(chapter, lang) {
+  const slug = HELP_CHAPTER_SLUG[lang]?.[chapter]
+  return slug ? `${HELP_DOCS_BASE}/${lang}/${slug}.md` : null
+}
+
+/** Insert or refresh the '? Súgó'/'? Help' link on every dashboard view (called on boot and lang change). */
+export function renderHelpLinks() {
+  const lang = getLang()
+  for (const [pageId, chapter] of Object.entries(HELP_CHAPTER_BY_PAGE)) {
+    const pageEl = document.getElementById(pageId)
+    if (!pageEl) continue
+    const url = _helpUrl(chapter, lang)
+    if (!url) continue
+
+    let link = pageEl.querySelector(':scope > .page-header .page-help-link, :scope > .page-help-bar .page-help-link')
+    if (!link) {
+      link = document.createElement('a')
+      link.className = 'page-help-link'
+      link.target = '_blank'
+      link.rel = 'noopener'
+      link.style.cssText = 'display:inline-flex;align-items:center;gap:4px;font-size:12px;' +
+        'color:var(--text-muted);text-decoration:none;margin:4px 0 8px'
+
+      const h1 = pageEl.querySelector(':scope > .page-header h1')
+      if (h1) {
+        h1.insertAdjacentElement('afterend', link)
+      } else {
+        // overviewPage/kanbanPage have no page-header h1 -- create a small bar for the link.
+        let bar = pageEl.querySelector(':scope > .page-help-bar')
+        if (!bar) {
+          bar = document.createElement('div')
+          bar.className = 'page-help-bar'
+          bar.style.cssText = 'margin-bottom:8px'
+          pageEl.insertBefore(bar, pageEl.firstChild)
+        }
+        bar.appendChild(link)
+      }
+    }
+    link.href = url
+    link.title = t('common.help_link_title')
+    link.textContent = '? ' + t('common.help_link_label')
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 export function boot() {
@@ -339,9 +420,11 @@ export function boot() {
   // i18n: translate on boot and whenever language changes.
   renderNav()
   renderStaticI18n()
+  renderHelpLinks()
   onLangChange(() => {
     renderNav()
     renderStaticI18n()
+    renderHelpLinks()
     // Re-enter the current page so page-specific translated content is refreshed.
     if (_currentPage) switchPage(_currentPage)
   })
