@@ -4093,7 +4093,8 @@ paths:
         with no tenant concept of its own (GitHub, GitLab, Hetzner,
         filesystem, or a GA4 instance) — resubmit with `confirm: true` to
         proceed once acknowledged. Disabling an agent, and assignments to
-        the `default` tenant, are never gated. See docs/rbac-multi-tenant.md.
+        the `default` tenant, are never gated. See
+        docs/user-guide/en/15-users.md.
       security:
         - bearerAuth: []
       requestBody:
