@@ -12,7 +12,11 @@ let yaml = readFileSync('docs/openapi.yaml', 'utf8')
 const enumBlock = tokens.map(t => `            - ${t}`).join('\n')
 yaml = yaml.replace(
   /(components:\n[\s\S]*?properties:\n\s+error:\n\s+type: string[\s\S]*?\n\s+enum:\n)([\s\S]*?)(\n\s+hint:)/,
-  `$1${enumBlock}\n$3`,
+  // $3 already carries the newline that separates the enum block from `hint:`
+  // (its leading \n\s+ is what the regex anchors on) -- prepending another \n
+  // here compounds by one blank line on every run, since the next run's lazy
+  // $2 match absorbs the previous blank line into $3 instead of $2.
+  `$1${enumBlock}$3`,
 )
 writeFileSync('docs/openapi.yaml', yaml)
 console.log(`Updated openapi.yaml Error enum: ${tokens.length} tokens`)
