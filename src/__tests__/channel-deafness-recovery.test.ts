@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   buildMainSessionRespawnCmd,
   shouldRespawnForStaleKeepalive,
@@ -7,6 +10,7 @@ import {
   lastMainRespawnAt,
   shouldEscalateAfterResume,
   POST_RESUME_GUARD_DELAY_MS,
+  readExtraChannelPluginIds,
 } from '../web/channel-monitor.js'
 
 // CONTRACT: the respawn command MUST carry the .bun/bin PATH export -- without
@@ -71,6 +75,63 @@ describe('buildMainSessionRespawnCmd', () => {
     const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
     expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
     expect(cmd).not.toContain('CLAUDE_CONFIG_DIR')
+  })
+
+  // extraPluginIds (readExtraChannelPluginIds()) co-listens secondary plugins
+  // alongside the primary one. Omitting them from --channels is exactly what
+  // silently half-mutes every non-primary channel after a recovery respawn --
+  // this was previously untested (the join(' ') branch never ran).
+  it('co-lists extraPluginIds alongside the primary plugin on --channels', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, extraPluginIds: ['slack', 'discord'] })
+    expect(cmd).toContain('--channels plugin:telegram@claude-plugins-official plugin:slack plugin:discord')
+  })
+
+  it('omits extra plugin ids when the array is empty or absent', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, extraPluginIds: [] })
+    expect(cmd).toContain('--channels plugin:telegram@claude-plugins-official')
+    expect(cmd).not.toContain('plugin:telegram@claude-plugins-official plugin:')
+  })
+})
+
+// The source of buildMainSessionRespawnCmd's extraPluginIds: parses
+// CHANNEL_PLUGINS_EXTRA from the project's .env so a recovery respawn
+// co-listens every secondary channel plugin, not just the primary one.
+describe('readExtraChannelPluginIds', () => {
+  let projectRoot: string
+
+  function withEnv(fn: () => void) {
+    try { fn() } finally { rmSync(projectRoot, { recursive: true, force: true }) }
+  }
+
+  it('no .env file at all -> []', () => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'extra-plugins-'))
+    withEnv(() => {
+      expect(readExtraChannelPluginIds(projectRoot)).toEqual([])
+    })
+  })
+
+  it('.env exists but has no CHANNEL_PLUGINS_EXTRA line -> []', () => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'extra-plugins-'))
+    writeFileSync(join(projectRoot, '.env'), 'SOME_OTHER_VAR=1\n')
+    withEnv(() => {
+      expect(readExtraChannelPluginIds(projectRoot)).toEqual([])
+    })
+  })
+
+  it('parses a single extra plugin id', () => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'extra-plugins-'))
+    writeFileSync(join(projectRoot, '.env'), 'CHANNEL_PLUGINS_EXTRA=slack\n')
+    withEnv(() => {
+      expect(readExtraChannelPluginIds(projectRoot)).toEqual(['slack'])
+    })
+  })
+
+  it('parses multiple whitespace-separated extra plugin ids, trimming trailing whitespace', () => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'extra-plugins-'))
+    writeFileSync(join(projectRoot, '.env'), 'CHANNEL_PLUGINS_EXTRA=slack   discord  \nOTHER=x\n')
+    withEnv(() => {
+      expect(readExtraChannelPluginIds(projectRoot)).toEqual(['slack', 'discord'])
+    })
   })
 })
 
