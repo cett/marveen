@@ -990,6 +990,18 @@ registerPage('profile', {
   }
 })
 
+registerPage('help', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('help', () => import('./modules/help.js'))
+    if (!_moduleCache.get('help_inited')) {
+      m.initHelp()
+      _moduleCache.set('help_inited', true)
+    }
+    await m.loadHelpPage()
+  }
+})
+
 registerPage('workspaceDocs', {
   lazy: true,
   enter: async () => {

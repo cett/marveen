@@ -24,6 +24,12 @@ const _pageRegistry = new Map()   // name -> { enter?, leave? }
 const _aliasRegistry = new Map()  // from -> { to, before? }
 let _currentPage = null
 
+// The help viewer's doc path travels inside the hash itself (#help/<doc-path>)
+// rather than as a registered page id, since one 'help' page renders whatever
+// chapter the trailing segment names. routeFromHash() below extracts it.
+let _helpDocPath = null
+export function getHelpDocPath() { return _helpDocPath }
+
 // DOM refs populated in boot().
 let _navLinks = null
 let _pages = null
@@ -286,10 +292,12 @@ export function renderStaticI18n() {
 // ── Help links ───────────────────────────────────────────────────────────────
 //
 // Every dashboard view gets a small '? Súgó'/'? Help' link to its docs/user-guide
-// chapter. There is no local HTTP route for docs/, so the link opens the chapter's
-// GitHub page in a new tab. Two chapters (09-tudastar/knowledge, 16-kapcsolatok/
-// connections) cover three views each -- ideas/artifacts/workspaceDocs and
-// connectors/federation/import respectively.
+// chapter. The link opens the dashboard's own help viewer (#help/<doc-path>) in
+// a new tab, which fetches the raw markdown from GET /api/docs/<doc-path> and
+// renders it with the shared renderMarkdown() -- no GitHub/repo access needed,
+// so a B2B tenant user can read the guide too. Two chapters (09-tudastar/
+// knowledge, 16-kapcsolatok/connections) cover three views each --
+// ideas/artifacts/workspaceDocs and connectors/federation/import respectively.
 
 const HELP_CHAPTER_BY_PAGE = {
   overviewPage: '01', kanbanPage: '02', approvalsPage: '03', agentsPage: '04',
@@ -318,11 +326,9 @@ const HELP_CHAPTER_SLUG = {
   },
 }
 
-const HELP_DOCS_BASE = 'https://github.com/cett/marveen/blob/develop/docs/user-guide'
-
 function _helpUrl(chapter, lang) {
   const slug = HELP_CHAPTER_SLUG[lang]?.[chapter]
-  return slug ? `${HELP_DOCS_BASE}/${lang}/${slug}.md` : null
+  return slug ? `#help/user-guide/${lang}/${slug}.md` : null
 }
 
 /** Insert or refresh the '? Súgó'/'? Help' link on every dashboard view (called on boot and lang change). */
@@ -400,6 +406,13 @@ export function boot() {
   function routeFromHash() {
     let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
     if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
+    // Help viewer: '#help/<doc-path>' -- the doc path rides along in the hash
+    // instead of being its own registered page id (see _helpDocPath above).
+    const helpMatch = pageId.match(/^help\/(.+)$/)
+    if (helpMatch) {
+      _helpDocPath = helpMatch[1]
+      pageId = 'help'
+    }
     // Can navigate to a registered alias even if there's no corresponding DOM page element.
     if (pageId && (document.getElementById(_domIdFor(pageId)) || _aliasRegistry.has(pageId))) {
       switchPage(pageId)
