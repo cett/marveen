@@ -412,6 +412,10 @@ export function boot() {
     if (helpMatch) {
       _helpDocPath = helpMatch[1]
       pageId = 'help'
+    } else if (pageId === 'help') {
+      // Bare '#help' (the sidebar nav link) -- clear any doc path left over
+      // from a previous #help/<path> visit so the chapter index shows.
+      _helpDocPath = null
     }
     // Can navigate to a registered alias even if there's no corresponding DOM page element.
     if (pageId && (document.getElementById(_domIdFor(pageId)) || _aliasRegistry.has(pageId))) {
