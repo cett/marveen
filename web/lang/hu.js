@@ -14,6 +14,8 @@ window._i18n.hu = {
   'common.migrating':         'Költöztetés...',
   'common.installing':        'Telepítés...',
   'common.searching':         'Keresés...',
+  'common.help_link_label':   'Súgó',
+  'common.help_link_title':   'Súgó ehhez a nézethez (új fülön nyílik)',
   'common.adding_loading':    'Hozzáadás...',
   'common.saved':             'Mentve',
   'common.cancel':            'Mégse',

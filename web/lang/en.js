@@ -14,6 +14,8 @@ window._i18n.en = {
   'common.migrating':         'Migrating...',
   'common.installing':        'Installing...',
   'common.searching':         'Searching...',
+  'common.help_link_label':   'Help',
+  'common.help_link_title':   'Help for this view (opens in a new tab)',
   'common.adding_loading':    'Adding...',
   'common.saved':             'Saved',
   'common.cancel':            'Cancel',
