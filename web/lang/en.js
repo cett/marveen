@@ -1820,7 +1820,7 @@ window._i18n.en = {
   'auth.devices.revoke_confirm':   'Revoke this device key? The device loses access immediately.',
   'auth.devices.err_name':         'Give the device a name.',
   'auth.devices.bridge_badge':     'Bridge',
-  'auth.devices.revoke_ssh_warning': 'Device key revoked, but the SSH entry could not be removed -- the device can still open the tunnel. Delete the matching marveen-remote line from ~/.ssh/authorized_keys manually (details: docs/dashboard-auth-recovery.md).',
+  'auth.devices.revoke_ssh_warning': 'Device key revoked, but the SSH entry could not be removed -- the device can still open the tunnel. Delete the matching marveen-remote line from ~/.ssh/authorized_keys manually (details: docs/user-guide/en/18-profile.md).',
 
   'auth.bridge.title':             'Bridge pairing',
   'auth.bridge.desc':              'Paste the key line shown by the Bridge app (ssh-ed25519 ... marveen-remote:...), name the device, then copy the returned bundle back into the Bridge. The device gets its own, individually revocable key.',

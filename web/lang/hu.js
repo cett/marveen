@@ -1820,7 +1820,7 @@ window._i18n.hu = {
   'auth.devices.revoke_confirm':   'Visszavonod ezt az eszközkulcsot? Az eszköz azonnal elveszti a hozzáférést.',
   'auth.devices.err_name':         'Adj nevet az eszköznek.',
   'auth.devices.bridge_badge':     'Bridge',
-  'auth.devices.revoke_ssh_warning': 'Az eszközkulcs visszavonva, de az SSH-bejegyzést nem sikerült törölni -- az eszköz az alagutat még ki tudja nyitni. Töröld kézzel az ~/.ssh/authorized_keys megfelelő marveen-remote sorát (részletek: docs/dashboard-auth-recovery.md).',
+  'auth.devices.revoke_ssh_warning': 'Az eszközkulcs visszavonva, de az SSH-bejegyzést nem sikerült törölni -- az eszköz az alagutat még ki tudja nyitni. Töröld kézzel az ~/.ssh/authorized_keys megfelelő marveen-remote sorát (részletek: docs/user-guide/hu/18-profil.md).',
 
   'auth.bridge.title':             'Bridge-párosítás',
   'auth.bridge.desc':              'Illeszd be a Bridge alkalmazásban megjelenő kulcs-sort (ssh-ed25519 ... marveen-remote:...), adj nevet az eszköznek, és a kapott csomagot másold vissza a Bridge-be. Az eszköz saját, külön visszavonható kulcsot kap.',
