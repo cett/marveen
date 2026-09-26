@@ -147,6 +147,11 @@ describe('checkPermission -- session login (viewer role)', () => {
     expect(result.allowed).toBe(false)
     if (!result.allowed) expect(result.status).toBe(403)
   })
+
+  it('allows GET /api/docs (a B2B tenant user reads the guide without repo access)', () => {
+    const result = checkPermission(SESSION, 'GET', '/api/docs/user-guide/en/01-overview.md')
+    expect(result.allowed).toBe(true)
+  })
 })
 
 // ── checkPermission: unrecognized path -> admin:all fallback ──────────────────

@@ -57,6 +57,9 @@ describe('requiresAuth (gated-path predicate)', () => {
     expect(requiresAuth('/api/auth/users', 'POST')).toBe(true)
     expect(requiresAuth('/.well-known/fleetq', 'GET')).toBe(true)
   })
+  it('gates the docs viewer -- not a public endpoint despite serving plain markdown', () => {
+    expect(requiresAuth('/api/docs/user-guide/en/01-overview.md', 'GET')).toBe(true)
+  })
   it('does not gate non-api static paths', () => {
     expect(requiresAuth('/', 'GET')).toBe(false)
     expect(requiresAuth('/app.js', 'GET')).toBe(false)

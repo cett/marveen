@@ -28,6 +28,7 @@ const LAZY_MODULES = [
   'import-memories.js',
   'artifacts.js',
   'backups.js',
+  'help.js',
 ]
 
 describe('lazy-load: module structure', () => {

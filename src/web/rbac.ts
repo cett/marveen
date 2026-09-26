@@ -185,6 +185,12 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'POST',  pathPattern: '/api/auth/logout-all', prefix: false, permission: 'memories:read' },
   { method: 'GET',   pathPattern: '/api/auth/sessions',   prefix: false, permission: 'memories:read' },
 
+  // User-guide docs viewer (read-only markdown) -- B2B tenant users read the
+  // guide from the dashboard without repo access; memories:read is the
+  // narrowest non-admin permission, same tier as the reads above.
+  { method: 'GET',   pathPattern: '/api/docs',            prefix: true,  permission: 'memories:read' },
+  { method: 'GET',   pathPattern: '/api/v1/docs',         prefix: true,  permission: 'memories:read' },
+
   // Workspace docs -- fleet-agent produced working documents.
   { method: 'GET',    pathPattern: '/api/workspace',    prefix: true,  permission: 'memories:read' },
   { method: 'POST',   pathPattern: '/api/workspace',    prefix: false, permission: 'memories:write' },
