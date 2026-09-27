@@ -62,11 +62,14 @@ vi.mock('../db.js', () => ({
   seedSkillIfAbsent: vi.fn().mockReturnValue(true),
   listAutonomyCategories: vi.fn().mockReturnValue([]),
   upsertAutonomyCategory: vi.fn(),
+  listModelProfileMap: vi.fn().mockReturnValue([]),
+  upsertModelProfileMapEntry: vi.fn(),
 }))
 
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
   listAgentNames: () => [],
+  invalidateModelProfileMapCache: vi.fn(),
 }))
 
 vi.mock('node:fs', async (importOriginal) => {

@@ -32,7 +32,7 @@ afterAll(() => {
 })
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
-vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [] }))
+vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [], invalidateModelProfileMapCache: () => {} }))
 vi.mock('../web/atomic-write.js', async (importOriginal) => {
   const { writeFileSync } = await import('node:fs')
   return {

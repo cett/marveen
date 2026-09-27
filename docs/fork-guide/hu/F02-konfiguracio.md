@@ -158,23 +158,20 @@ Az ágensek (a CLAUDE.md-instrukció szerint) a `GET /api/autonomy`-t hívják e
 
 ## Modell-profil térkép
 
-A `store/model-profile-map.json` fájl (sablon: `config-examples/model-profile-map.example.json`) lehetővé teszi, hogy az ágensek névleges profilokat (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) használjanak konkrét modell-nevek helyett.
+A `model_profile_map` DB-tábla lehetővé teszi, hogy az ágensek névleges profilokat (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) használjanak konkrét modell-nevek helyett. Az induláskori migráció (0054) a négy profilt a fleet ma is futó modelljeivel tölti fel -- ez a Phase 1 szándéka: absztrakció, nem újra-tierezés.
 
-```json
-{
-  "version": "1",
-  "profiles": {
-    "premium_reasoning": "claude-opus-5",
-    "build_strong": "claude-sonnet-5",
-    "analysis_efficient": "claude-sonnet-5",
-    "routine_lowcost": "claude-haiku-4-5-20251001"
-  }
-}
+Szerkesztés a dashboard Settings > Model profiles fülén (admin-only), vagy közvetlenül:
+
+```http
+GET /api/v1/model-profiles
+PATCH /api/v1/model-profiles
+{ "profileId": "build_strong", "modelId": "claude-sonnet-5" }
 ```
 
-- Mind a négy profil kötelező -- hiányos térkép esetén az indítás megtagadja
+- Mind a négy profil kötelező -- hiányos térkép esetén az adott profilt igénylő agent az install default modellre esik, hibajelzéssel
 - Egy ágens explicit `model` beállítása felülírja a profilját
-- A fájl a `store/` könyvtárban él (gitignored), így a konkrét modellmapping nem kerül a verziókezelőbe
+- A DB-olvasás 90 másodperces cache-elt; a PATCH azonnal invalidálja a cache-t
+- Nincs többé `store/model-profile-map.json` fájl vagy `config-examples/model-profile-map.example.json` sablon -- a régi kézi-másolós telepítés retirálva
 
 ## Vault -- titkos értékek kezelése
 

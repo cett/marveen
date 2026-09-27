@@ -18,7 +18,7 @@ const DEFAULT_MODEL = 'claude-opus-5';
 const ALIASES: Record<string, string> = { sonnet: 'claude-sonnet-5', 'sonnet-5': 'claude-sonnet-5' };
 const alias = (raw: string) => ALIASES[raw] ?? raw;
 
-// Mirrors the shape shipped in config-examples/model-profile-map.example.json.
+// Mirrors the shape seeded into the model_profile_map table by migration 0054.
 const GOOD_MAP_STATE = validateModelProfileMap({
   version: 'test-1',
   profiles: {

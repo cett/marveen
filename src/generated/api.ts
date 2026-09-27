@@ -474,6 +474,8 @@ export type ListRecallDatesResponse = string[]
 
 export type UpdateAutonomyLevelResponse = OkResponse
 
+export type UpdateModelProfileMapEntryResponse = OkResponse
+
 export type CreateTenantResponse = Tenant
 
 export type UpdateTenantResponse = Tenant

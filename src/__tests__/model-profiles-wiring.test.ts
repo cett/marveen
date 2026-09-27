@@ -2,33 +2,26 @@
 // selection, not a replacement for it (marveen acceptance criterion,
 // 2026-07-29). That additivity is also what makes it upstream-committable.
 //
-// Exercised through the real agent-config fs layer, not the pure resolver, so
-// this covers the part the unit tests cannot: that readAgentModel still answers
-// what it always answered.
+// Exercised through the real agent-config DB-backed layer (model_profile_map),
+// not the pure resolver, so this covers the part the unit tests
+// cannot: that readAgentModel still answers what it always answered. The map
+// used to live in a store/model-profile-map.json side-car written by this
+// test's beforeAll; it is now seeded into a real :memory: DB instead.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, rmSync, readFileSync, mkdtempSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  readAgentModel,
-  resolveAgentModelDetailed,
-  invalidateModelProfileMapCache,
-  AGENTS_BASE_DIR,
-} from '../web/agent-config.js';
+import { tmpdir } from 'node:os';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROJECT_ROOT = join(SRC, '..');
-const MAP_PATH = join(PROJECT_ROOT, 'store', 'model-profile-map.json');
 
-const MAP = {
-  version: 'wiring-test-1',
-  profiles: {
-    premium_reasoning: 'claude-opus-5',
-    build_strong: 'claude-sonnet-5',
-    analysis_efficient: 'deepseek-v4-pro',
-    routine_lowcost: 'deepseek-v4-pro',
-  },
+const MAP: Record<string, string> = {
+  premium_reasoning: 'claude-opus-5',
+  build_strong: 'claude-sonnet-5',
+  analysis_efficient: 'deepseek-v4-pro',
+  routine_lowcost: 'deepseek-v4-pro',
 };
 
 // Fixtures mirror the two real canary agents' post-reassignment configs.
@@ -40,23 +33,37 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
   'mp-bad-profile': { modelProfile: 'turbo' },
 };
 
-let createdStore = false;
+let readAgentModel: typeof import('../web/agent-config.js').readAgentModel;
+let resolveAgentModelDetailed: typeof import('../web/agent-config.js').resolveAgentModelDetailed;
+let invalidateModelProfileMapCache: typeof import('../web/agent-config.js').invalidateModelProfileMapCache;
+let AGENTS_BASE_DIR: string;
+let storeDir: string;
 
-beforeAll(() => {
-  createdStore = !existsSync(join(PROJECT_ROOT, 'store'));
-  mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true });
-  writeFileSync(MAP_PATH, JSON.stringify(MAP, null, 2));
+beforeAll(async () => {
+  storeDir = mkdtempSync(join(tmpdir(), 'model-profiles-wiring-test-'));
+  process.env['MARVEEN_STORE_DIR'] = storeDir;
+
+  const dbMod = await import('../db.js');
+  dbMod.initDatabase(':memory:');
+  for (const [profileId, modelId] of Object.entries(MAP)) {
+    dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
+  }
+
+  const agentConfigMod = await import('../web/agent-config.js');
+  ({ readAgentModel, resolveAgentModelDetailed, invalidateModelProfileMapCache, AGENTS_BASE_DIR } = agentConfigMod);
   invalidateModelProfileMapCache();
+
   for (const [name, cfg] of Object.entries(FIXTURES)) {
     mkdirSync(join(AGENTS_BASE_DIR, name), { recursive: true });
+    const { writeFileSync } = await import('node:fs');
     writeFileSync(join(AGENTS_BASE_DIR, name, 'agent-config.json'), JSON.stringify(cfg));
   }
 });
 
 afterAll(() => {
   for (const name of Object.keys(FIXTURES)) rmSync(join(AGENTS_BASE_DIR, name), { recursive: true, force: true });
-  rmSync(MAP_PATH, { force: true });
-  if (createdStore) rmSync(join(PROJECT_ROOT, 'store'), { recursive: true, force: true });
+  delete process.env['MARVEEN_STORE_DIR'];
+  rmSync(storeDir, { recursive: true, force: true });
   invalidateModelProfileMapCache();
 });
 
@@ -91,6 +98,26 @@ describe('additive over the existing selector', () => {
   it('an agent with no config at all still gets the install default', () => {
     expect(typeof readAgentModel('mp-does-not-exist')).toBe('string');
     expect(readAgentModel('mp-does-not-exist').length).toBeGreaterThan(0);
+  });
+});
+
+describe('fail-safe: DB miss never silently changes an agent already on an explicit model', () => {
+  it('an empty model_profile_map table resolves to null (not an error, not a crash)', async () => {
+    const { db } = await import('../db/connection.js');
+    db.exec('DELETE FROM model_profile_map');
+    invalidateModelProfileMapCache();
+    try {
+      expect(readAgentModel('mp-legacy-explicit')).toBe('claude-sonnet-5');
+      const r = resolveAgentModelDetailed('mp-profile-only');
+      expect(r.source).toBe('default');
+      expect(r.error).toBe('model_profile_map_missing');
+    } finally {
+      for (const [profileId, modelId] of Object.entries(MAP)) {
+        const dbMod = await import('../db.js');
+        dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
+      }
+      invalidateModelProfileMapCache();
+    }
   });
 });
 

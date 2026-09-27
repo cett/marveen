@@ -67,7 +67,6 @@ marveen/
     claudeclaw.db         -- SQLite adatbázis
     .dashboard-token      -- Bearer token (0600)
     .claude-oauth-token   -- Fleet OAuth token (0600)
-    model-profile-map.json
 
   agents/                 -- flotta-ágensek könyvtára
     <name>/
@@ -86,7 +85,7 @@ marveen/
   seed-config/            -- telepítő alapkonfigurációk
   seed-skills/            -- alapértelmezett skill könyvtár
   seed-scheduled-tasks/   -- alapértelmezett ütemezett feladatok
-  config-examples/        -- .env.example, model-profile-map.example.json
+  config-examples/        -- .env.example
 
   backups/                -- mentési archívumok (gitignored)
   scheduled-tasks/        -- projekt-szintű ütemezett feladatok
@@ -183,6 +182,7 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 | `system_config` | Dashboard-on tárolt konfiguráció (felülírja az .env-t) |
 | `config_change_log` | Konfigurációs változtatások naplója |
 | `autonomy_categories` | Ágensek autonómia-szintjei kategóriánként |
+| `model_profile_map` | Modell-profil azonosító -> konkrét modell-id térkép |
 
 **Skilletek és tenant-kezelés**
 

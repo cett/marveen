@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
@@ -12,6 +12,7 @@ import {
   type ModelProfileMapState,
   type ModelResolution,
 } from '../model-profiles.js'
+import { listModelProfileMap } from '../db/model-profile-map.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -71,30 +72,43 @@ export function resolveModelId(raw: string): string {
 
 // ---- model-profile map (deployment-local, card c755f4b2 Block B) -------------
 //
-// store/ is gitignored, so the concrete profile -> model mapping never leaves
-// the machine. config-examples/model-profile-map.example.json documents the
-// shape. A missing map is FINE: every agent that names a concrete `model`
-// keeps working untouched, which is every agent today.
-const MODEL_PROFILE_MAP_PATH = join(STORE_DIR, 'model-profile-map.json')
+// DB-backed (model_profile_map table, migration 0054) -- moved off the
+// store/model-profile-map.json side-car entirely, mirroring the
+// autonomy_categories DB migration. An empty table is FINE: every
+// agent that names a concrete `model` keeps working untouched, which is every
+// agent today.
+//
+// 90s TTL cache (product decision, see design doc): the table only has 4 rows
+// and every agent model-resolution call hits this, so a cache avoids a SELECT
+// per call, but the map only changes on rare deployment-level edits. The
+// dashboard PATCH endpoint calls invalidateModelProfileMapCache() explicitly
+// on every write, so the TTL is a safety net, not the only freshness
+// guarantee -- a stale read is at most 90s old even if invalidation is ever
+// missed.
+const MODEL_PROFILE_MAP_CACHE_TTL_MS = 90_000
 
-let cachedProfileMap: { state: ModelProfileMapState; mtimeMs: number } | null = null
+let cachedProfileMap: { state: ModelProfileMapState | null; fetchedAt: number } | null = null
 
 export function readModelProfileMap(): ModelProfileMapState | null {
-  try {
-    if (!existsSync(MODEL_PROFILE_MAP_PATH)) return null
-    const mtimeMs = statSync(MODEL_PROFILE_MAP_PATH).mtimeMs
-    if (cachedProfileMap && cachedProfileMap.mtimeMs === mtimeMs) return cachedProfileMap.state
-    let state: ModelProfileMapState
-    try {
-      state = validateModelProfileMap(JSON.parse(readFileSync(MODEL_PROFILE_MAP_PATH, 'utf-8')))
-    } catch {
-      state = { ok: false, error: 'profile_map_unparseable' }
-    }
-    cachedProfileMap = { state, mtimeMs }
-    return state
-  } catch {
-    return { ok: false, error: 'profile_map_read_error' }
+  const now = Date.now()
+  if (cachedProfileMap && now - cachedProfileMap.fetchedAt < MODEL_PROFILE_MAP_CACHE_TTL_MS) {
+    return cachedProfileMap.state
   }
+  let state: ModelProfileMapState | null
+  try {
+    const rows = listModelProfileMap()
+    if (rows.length === 0) {
+      state = null
+    } else {
+      const profiles: Record<string, string> = {}
+      for (const row of rows) profiles[row.profile_id] = row.model_id
+      state = validateModelProfileMap({ profiles })
+    }
+  } catch {
+    state = { ok: false, error: 'profile_map_read_error' }
+  }
+  cachedProfileMap = { state, fetchedAt: now }
+  return state
 }
 
 export function invalidateModelProfileMapCache(): void {
