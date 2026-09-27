@@ -73,7 +73,7 @@ export const MAX_NUDGES_PER_HOUR = 10
 const NUDGE_BUDGET_WINDOW_MS = 60 * 60_000
 // Rate limit for the "pending mail is waiting but the session stays busy"
 // visibility log -- distinguishes a long busy spell from a dead watcher.
-const BUSY_WAIT_LOG_INTERVAL_MS = 10 * 60_000
+export const BUSY_WAIT_LOG_INTERVAL_MS = 10 * 60_000
 
 // Single visual row on the 80-col headless channels pane (see header). Both
 // variants MUST stay <= NUDGE_MAX_CHARS (unit-tested). Conditional wording on
@@ -190,7 +190,8 @@ export function _resetNudgeStateForTest(): void {
   state = { ...INITIAL_NUDGE_STATE }
 }
 
-async function tick(): Promise<void> {
+// Exported for tests.
+export async function tick(): Promise<void> {
   // The whole body is fenced: sendPromptToSession/tmux helpers throw on tmux
   // failure, this is a setInterval callback (fired via a void wrapper), and an
   // escaped throw/rejection would otherwise reach the uncaughtException handler

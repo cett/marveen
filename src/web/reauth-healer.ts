@@ -140,7 +140,8 @@ export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThre
 // hosts can; a headless Linux fleet host (no display server) cannot -- and there
 // a /login both fails AND rotates the shared OAuth token into a fleet-wide 401
 // cascade, so we escalate-only instead (BUG #1.3 from the isapp06 report).
-function hostCanInteractiveLogin(): boolean {
+// Exported for tests.
+export function hostCanInteractiveLogin(): boolean {
   if (process.platform === 'darwin') return true
   return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
 }
@@ -275,7 +276,8 @@ function sendNotify(msg: string): void {
   })
 }
 
-function checkSession(label: string, session: string, isMain: boolean, quiet: boolean): void {
+// Exported for tests.
+export function checkSession(label: string, session: string, isMain: boolean, quiet: boolean): void {
   const pane = capturePane(session)
   const sessionAlive = pane != null
   const reauth = detectReauthNeeded(pane)
