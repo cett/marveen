@@ -22,7 +22,7 @@ import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
-import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent } from '../db.js'
+import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow } from '../db.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -140,7 +140,10 @@ export interface IdeaBoxExport {
 }
 
 export interface DashboardSettingsExport {
-  autonomy: Record<string, unknown>
+  // DB-backed (autonomy_categories), not the retired JSON side-car --
+  // exported/imported as the raw row array rather than the old {categories}
+  // wrapper shape.
+  autonomy: AutonomyCategoryRow[]
   autoRestart: Record<string, unknown>
   agentsDesired: Record<string, unknown>
   norbertPersonal: Record<string, unknown>
@@ -645,7 +648,7 @@ function exportScheduledTasks(): ScheduledTaskExport[] {
 function exportDashboardSettings(): DashboardSettingsExport {
   const read = (name: string) => safeReadJson(join(STORE_DIR, name))
   return {
-    autonomy: read('autonomy-config.json'),
+    autonomy: listAutonomyCategories(),
     autoRestart: read('auto-restart.json'),
     agentsDesired: read('agents-desired.json'),
     norbertPersonal: read('norbert-personal.json'),
@@ -1224,8 +1227,14 @@ export function importFleet(
 
     // 4. Dashboard settings
     const s = fleet.dashboardSettings ?? {}
-    if (s.autonomy && Object.keys(s.autonomy).length)
-      trackedWrite(join(STORE_DIR, 'autonomy-config.json'), JSON.stringify(s.autonomy, null, 2), tracker)
+    // DB-backed -- upsert each imported row into autonomy_categories
+    // (not a file write). Upsert rather than replace-all: a category that
+    // only exists on the target fleet (not in the imported snapshot) is left
+    // untouched, consistent with the identity-takeover model not being
+    // destructive beyond what the source snapshot actually describes.
+    if (Array.isArray(s.autonomy)) {
+      for (const row of s.autonomy) upsertAutonomyCategory(row)
+    }
     if (s.autoRestart && Object.keys(s.autoRestart).length)
       trackedWrite(join(STORE_DIR, 'auto-restart.json'), JSON.stringify(s.autoRestart, null, 2), tracker)
     if (s.agentsDesired && Object.keys(s.agentsDesired).length)

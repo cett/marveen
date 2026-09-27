@@ -10,6 +10,7 @@
 export * from './connection.js'
 export * from './agents.js'
 export * from './audit.js'
+export * from './autonomy.js'
 export * from './claude-plans.js'
 export * from './kanban.js'
 export * from './memory.js'
@@ -28,6 +29,7 @@ import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
 import { migrateConfigOverridesToSystemConfig } from './system-config.js'
+import { seedAutonomyCategoriesFromJson } from './autonomy.js'
 import { logger } from '../logger.js'
 
 export function initDatabase(dbPathOverride?: string): void {
@@ -74,6 +76,12 @@ export function initDatabase(dbPathOverride?: string): void {
   // its own process-local DB connection), so it doesn't have this problem.
   // See src/index.ts's real boot sequence for the rename call.
   migrateConfigOverridesToSystemConfig()
+
+  // One-time seed of autonomy_categories from store/autonomy-config.json
+  // same every-boot-but-effectively-once shape as the migrator
+  // above: a no-op once the table has rows, harmless if the JSON file is
+  // already gone.
+  seedAutonomyCategoriesFromJson()
 }
 
 function isNonEmptyString(v: unknown): v is string {

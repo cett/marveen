@@ -161,6 +161,50 @@ describe('importFleet apply -- merge field (egressAllowlist)', () => {
   })
 })
 
+// autonomy moved from a store/*.json file to the autonomy_categories DB
+// table -- round-tripped as a row array, not read/written through the file
+// helpers the rest of this suite exercises.
+describe('exportFleet/importFleet -- autonomy (DB-backed)', () => {
+  it('exports autonomy_categories rows as an array', async () => {
+    const { upsertAutonomyCategory } = await import('../db.js')
+    upsertAutonomyCategory({ key: 'deploy_retry', label: 'Deploy retry', level: 2, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse(exportFleet().data)
+    expect(fleet.dashboardSettings.autonomy).toEqual([
+      expect.objectContaining({ key: 'deploy_retry', label: 'Deploy retry', level: 2, max_level: 3 }),
+    ])
+  })
+
+  it('returns an empty array when no categories exist yet', async () => {
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse(exportFleet().data)
+    expect(fleet.dashboardSettings.autonomy).toEqual([])
+  })
+
+  it('import upserts each row into autonomy_categories without touching categories absent from the snapshot', async () => {
+    const { upsertAutonomyCategory, getAutonomyCategory } = await import('../db.js')
+    // Target-only category, not present in the imported snapshot.
+    upsertAutonomyCategory({ key: 'target_only', label: 'Target only', level: 1, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
+
+    const fleetJson = JSON.stringify(baseFleetWith({
+      autonomy: [{ key: 'deploy_retry', label: 'Deploy retry (source)', level: 3, locked: 0, max_level: 3, timeout_minutes: 15, updated_at: 1, updated_by: 'migrated_from_json' }],
+    }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+
+    expect(getAutonomyCategory('deploy_retry')).toEqual(expect.objectContaining({ label: 'Deploy retry (source)', level: 3, timeout_minutes: 15 }))
+    expect(getAutonomyCategory('target_only')).toEqual(expect.objectContaining({ label: 'Target only' }))
+  })
+
+  it('import does nothing when the source has no autonomy rows', async () => {
+    const fleetJson = JSON.stringify(baseFleetWith({ autonomy: [] }))
+    const { importFleet, exportFleet } = await import('../web/fleet-transfer.js')
+    importFleet(fleetJson, { apply: true })
+    expect(JSON.parse(exportFleet().data).dashboardSettings.autonomy).toEqual([])
+  })
+})
+
 function baseFleetWith(dashboardSettingsOverrides: Record<string, unknown>) {
   return {
     schemaVersion: 1,

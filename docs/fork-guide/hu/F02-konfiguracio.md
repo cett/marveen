@@ -126,7 +126,7 @@ A rendszer öt helyen keresi a hitelesítést, ebben a sorrendben (az első tal�
 
 ## Autonómia-konfiguráció
 
-Az `store/autonomy-config.json` fájl szabályozza, hogy az ágensek milyen mértékben cselekedhetnek emberi jóváhagyás nélkül.
+Az autonómia-kategóriák szabályozzák, hogy az ágensek milyen mértékben cselekedhetnek emberi jóváhagyás nélkül. Az adatok az `autonomy_categories` DB táblában élnek (nem egy szerkeszthető JSON fájlban) -- a szintet a **dashboard Beállítások > Autonómia** oldalán állítod, vagy a `POST /api/autonomy` végponton.
 
 ### Szintek
 
@@ -138,40 +138,23 @@ Az `store/autonomy-config.json` fájl szabályozza, hogy az ágensek milyen mér
 
 ### Kategóriák
 
+Egy kategória mezői (a `GET /api/autonomy` válasz `categories` tömbjének elemei):
+
 ```json
 {
-  "categories": [
-    {
-      "key": "kanban_archive_done",
-      "label": "7+ napos done kártya archiválás",
-      "level": 1,
-      "locked": false,
-      "maxLevel": 3
-    },
-    {
-      "key": "email_send",
-      "label": "Email küldés / válasz",
-      "level": 1,
-      "locked": false,
-      "maxLevel": 2,
-      "timeout_minutes": 30
-    },
-    {
-      "key": "data_delete",
-      "label": "Fájl / adat törlés",
-      "level": 1,
-      "locked": true,
-      "maxLevel": 1
-    }
-  ]
+  "key": "email_send",
+  "label": "Email küldés / válasz",
+  "level": 1,
+  "locked": false,
+  "maxLevel": 2
 }
 ```
 
 - `locked: true` -- a szint nem emelhető (biztonsági korlát)
 - `maxLevel` -- a maximálisan beállítható szint
-- `timeout_minutes` -- jóváhagyás-kérés timeout (csak level 2-nél)
+- `timeout_minutes` (DB-mező, a `GET /api/autonomy` válaszban nem szerepel) -- jóváhagyás-kérés timeout percben, csak level 2-nél
 
-A teljes kategórialistát és az aktuális szinteket a dashboard Beállítások > Autonómia oldalán is kezelheted.
+Az ágensek (a CLAUDE.md-instrukció szerint) a `GET /api/autonomy`-t hívják egy kategória aktuális szintjének lekérdezéséhez, nem fájlt olvasnak -- ha a dashboard nem elérhető, a biztonságos alapállapot level 1 (csak jelez).
 
 ## Modell-profil térkép
 

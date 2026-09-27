@@ -1,38 +1,19 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
-import { setStoreWriteActor } from '../../store-watcher.js'
+import { listAutonomyCategories, getAutonomyCategory, setAutonomyCategoryLevel, type AutonomyCategoryRow } from '../../db.js'
 import type { RouteContext } from './types.js'
 
-const CONFIG_PATH = join(STORE_DIR, 'autonomy-config.json')
-
-interface AutonomyCategory {
-  key: string
-  label: string
-  level: number
-  locked: boolean
-  maxLevel: number
-}
-
-interface AutonomyConfig {
-  version: number
-  updated_at: number
-  _doc?: string
-  categories: AutonomyCategory[]
-}
-
-function loadConfig(): AutonomyConfig {
-  if (!existsSync(CONFIG_PATH)) {
-    throw new Error('autonomy-config.json not found')
+// Wire shape kept identical to the retired JSON side-car so the dashboard
+// frontend (web/modules/settings.js) needs no changes: camelCase maxLevel,
+// boolean locked. Only the storage moved to autonomy_categories (DB).
+function toWireCategory(row: AutonomyCategoryRow) {
+  return {
+    key: row.key,
+    label: row.label,
+    level: row.level,
+    locked: row.locked === 1,
+    maxLevel: row.max_level,
   }
-  return JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
-}
-
-function saveConfig(config: AutonomyConfig): void {
-  config.updated_at = Math.floor(Date.now() / 1000)
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', 'utf-8')
 }
 
 export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
@@ -40,11 +21,12 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/autonomy' && method === 'GET') {
     try {
-      const config = loadConfig()
-      json(res, config)
+      const rows = listAutonomyCategories()
+      const updated_at = rows.reduce((max, r) => Math.max(max, r.updated_at), 0)
+      json(res, { updated_at, categories: rows.map(toWireCategory) })
     } catch (err) {
-      logger.error({ err }, 'Failed to load autonomy config')
-      json(res, { error: 'not_found', hint: 'Config not found' }, 404)
+      logger.error({ err }, 'Failed to load autonomy categories')
+      json(res, { error: 'internal_error', hint: 'Could not read autonomy categories' }, 503)
     }
     return true
   }
@@ -59,8 +41,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
-      const config = loadConfig()
-      const cat = config.categories.find(c => c.key === key)
+      const cat = getAutonomyCategory(key)
       if (!cat) {
         json(res, { error: 'not_found', hint: `Category "${key}" not found` }, 404)
         return true
@@ -71,16 +52,15 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
-      if (level > cat.maxLevel) {
-        json(res, { error: 'invalid_value', field: 'level', hint: `Category "${key}" max level is ${cat.maxLevel}` }, 400)
+      if (level > cat.max_level) {
+        json(res, { error: 'invalid_value', field: 'level', hint: `Category "${key}" max level is ${cat.max_level}` }, 400)
         return true
       }
 
-      cat.level = level
-      setStoreWriteActor('dashboard')
-      saveConfig(config)
+      setAutonomyCategoryLevel(key, level, 'dashboard')
+      const updated = getAutonomyCategory(key)
       logger.info({ key, level }, 'Autonomy level updated')
-      json(res, { ok: true, key, level, updated_at: config.updated_at })
+      json(res, { ok: true, key, level, updated_at: updated?.updated_at })
     } catch (err) {
       logger.error({ err }, 'Failed to update autonomy config')
       json(res, { error: 'internal_error', hint: 'Failed to update' }, 500)

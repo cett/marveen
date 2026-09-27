@@ -1,32 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage, writeAgentAuditLog,
+  createAgentMessage, writeAgentAuditLog, getAutonomyCategory,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
-const AUTONOMY_CONFIG_PATH = join(STORE_DIR, 'autonomy-config.json')
-
-interface AutonomyCategory {
-  key: string
-  timeout_minutes?: number | null
-}
-
-interface AutonomyConfig {
-  categories: AutonomyCategory[]
-}
-
+// DB unavailable (or category missing timeout_minutes) -> null, unchanged
+// behavior from the JSON side-car days (no timeout limit).
 function getTimeoutAt(category: string): number | null {
   try {
-    if (!existsSync(AUTONOMY_CONFIG_PATH)) return null
-    const config = JSON.parse(readFileSync(AUTONOMY_CONFIG_PATH, 'utf-8')) as AutonomyConfig
-    const cat = config.categories.find(c => c.key === category)
+    const cat = getAutonomyCategory(category)
     if (!cat || cat.timeout_minutes == null) return null
     return Math.floor(Date.now() / 1000) + cat.timeout_minutes * 60
   } catch {

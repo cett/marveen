@@ -26,8 +26,13 @@ describe('agent-scaffold.ts buildAutonomyBody: approval wiring content', () => {
     expect(AUTONOMY_FN).toContain('## Autonómia és jóváhagyás')
   })
 
-  it('references autonomy-config.json so agents know where to read the level', () => {
-    expect(AUTONOMY_FN).toContain('autonomy-config.json')
+  it('references /api/autonomy so agents know where to read the level (DB-backed, no file-cache)', () => {
+    expect(AUTONOMY_FN).toContain('/api/autonomy')
+    expect(AUTONOMY_FN).toContain('autonomy_categories')
+  })
+
+  it('documents the level-1 fail-safe fallback when the API is unavailable', () => {
+    expect(AUTONOMY_FN).toMatch(/level 1.*tekintsd/i)
   })
 
   it('level 1 rule says notify and stop -- not queue an approval', () => {
