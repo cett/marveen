@@ -94,6 +94,10 @@ Clicking a card opens the detail panel with **History** and **Edit** tabs. The h
 
 Use the **Import** button to bulk-load memories from a JSON file; useful when migrating data from an external system.
 
+### Searching imported content
+
+Content loaded through a recurring import source (local folder, Google Drive, SharePoint, Confluence -- see [16 - Connections](16-connections.md) for setting one up) is not shown as regular Hot/Warm/Cold memories. It has its own search box, next to the import-source list: enter a term and press **Search** or Enter to get a paginated list of matching files (filename, a short content preview, and last-updated time), ranked by most recently updated first. The search matches file content, keywords, and filename.
+
 ---
 
 ## Tips
