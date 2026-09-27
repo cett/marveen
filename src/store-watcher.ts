@@ -17,7 +17,7 @@ const SYSTEM_FILES = new Set([
   // Settings and config overrides written by dashboard routes
   'dashboard-settings.json',
   // Fleet and agent management
-  'agents-desired.json', 'auto-restart.json', 'autonomy-config.json',
+  'agents-desired.json', 'auto-restart.json',
   // Auth and secrets
   '.dashboard-token', '.vault-key', 'vault.json', '.claude-oauth-token',
   // Federation config + inbound peer token (written by /api/federation/peers)

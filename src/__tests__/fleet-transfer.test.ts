@@ -60,6 +60,8 @@ vi.mock('../db.js', () => ({
   initDatabase: () => {},
   listAllSkills: vi.fn().mockReturnValue([]),
   seedSkillIfAbsent: vi.fn().mockReturnValue(true),
+  listAutonomyCategories: vi.fn().mockReturnValue([]),
+  upsertAutonomyCategory: vi.fn(),
 }))
 
 vi.mock('../web/agent-config.js', () => ({

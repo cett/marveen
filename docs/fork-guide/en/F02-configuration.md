@@ -126,7 +126,7 @@ The system looks for credentials in five places, in this order (first match wins
 
 ## Autonomy configuration
 
-`store/autonomy-config.json` controls how much agents can act without human approval.
+Autonomy categories control how much agents can act without human approval. The data lives in the `autonomy_categories` DB table (not an editable JSON file) — you set a category's level on the **dashboard Settings > Autonomy** page, or via `POST /api/autonomy`.
 
 ### Levels
 
@@ -138,40 +138,23 @@ The system looks for credentials in five places, in this order (first match wins
 
 ### Categories
 
+A category's fields (as returned in the `categories` array of `GET /api/autonomy`):
+
 ```json
 {
-  "categories": [
-    {
-      "key": "kanban_archive_done",
-      "label": "Archive done cards older than 7 days",
-      "level": 1,
-      "locked": false,
-      "maxLevel": 3
-    },
-    {
-      "key": "email_send",
-      "label": "Send / reply to email",
-      "level": 1,
-      "locked": false,
-      "maxLevel": 2,
-      "timeout_minutes": 30
-    },
-    {
-      "key": "data_delete",
-      "label": "File / data deletion",
-      "level": 1,
-      "locked": true,
-      "maxLevel": 1
-    }
-  ]
+  "key": "email_send",
+  "label": "Send / reply to email",
+  "level": 1,
+  "locked": false,
+  "maxLevel": 2
 }
 ```
 
 - `locked: true` — level cannot be raised (safety constraint)
 - `maxLevel` — highest level that can be configured
-- `timeout_minutes` — approval request timeout (level 2 only)
+- `timeout_minutes` (DB field, not in the `GET /api/autonomy` response) — approval request timeout in minutes, level 2 only
 
-The full category list and current levels are also manageable on the dashboard Settings > Autonomy page.
+Agents (per the CLAUDE.md instruction) query a category's current level via `GET /api/autonomy` rather than reading a file — if the dashboard is unreachable, the safe default is level 1 (notify only).
 
 ## Model profile map
 

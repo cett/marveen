@@ -1,51 +1,53 @@
+// autonomy_categories moved from store/autonomy-config.json into the
+// autonomy_categories DB table (API-only reads, no file-cache). This test
+// mocks '../../db.js' with an in-memory row map instead of writing a JSON
+// side-car file, mirroring the route's actual read/write surface
+// (listAutonomyCategories/getAutonomyCategory/setAutonomyCategoryLevel).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { writeFileSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
 
-const { tmpRoot } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { join: j } = require('node:path') as typeof import('node:path')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { tmpdir } = require('node:os') as typeof import('node:os')
-  return { tmpRoot: mkdtempSync(j(tmpdir(), 'marveen-autonomy-routes-test-')) }
-})
+interface Row {
+  key: string
+  label: string
+  level: number
+  locked: number
+  max_level: number
+  timeout_minutes: number | null
+  updated_at: number
+  updated_by: string
+}
 
-vi.mock('../config.js', () => ({
-  PROJECT_ROOT: tmpRoot,
-  STORE_DIR: tmpRoot,
-  OWNER_NAME: 'TestOwner',
-  MAIN_AGENT_ID: 'agent-a',
-  BOT_NAME: 'agent-a',
-  CHANNEL_PROVIDER: 'telegram',
-  WEB_PORT: 3420,
-  OWNER_DRIVE_FOLDER: '',
-  DASHBOARD_PUBLIC_URL: '',
-  APP_TZ: 'Europe/Budapest',
+let rows: Map<string, Row>
+
+function seedRows(entries: Array<Partial<Row> & { key: string }>) {
+  rows = new Map(entries.map(e => [e.key, {
+    label: e.label ?? e.key,
+    level: e.level ?? 1,
+    locked: e.locked ?? 0,
+    max_level: e.max_level ?? 3,
+    timeout_minutes: e.timeout_minutes ?? null,
+    updated_at: e.updated_at ?? 0,
+    updated_by: e.updated_by ?? 'system',
+    ...e,
+  } as Row]))
+}
+
+let dbUnavailable = false
+
+vi.mock('../db.js', () => ({
+  listAutonomyCategories: () => {
+    if (dbUnavailable) throw new Error('database is not available')
+    return Array.from(rows.values())
+  },
+  getAutonomyCategory: (key: string) => rows.get(key),
+  setAutonomyCategoryLevel: (key: string, level: number, updatedBy: string) => {
+    const row = rows.get(key)
+    if (row) { row.level = level; row.updated_by = updatedBy; row.updated_at = 12345 }
+  },
 }))
 
-vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: vi.fn() }))
-
 import { tryHandleAutonomy } from '../web/routes/autonomy.js'
-
-const configPath = join(tmpRoot, 'autonomy-config.json')
-
-const sampleConfig = {
-  version: 1,
-  updated_at: 0,
-  categories: [
-    { key: 'deploy', label: 'Deploy', level: 1, locked: false, maxLevel: 3 },
-    { key: 'safety', label: 'Safety', level: 1, locked: true, maxLevel: 1 },
-    { key: 'limited', label: 'Limited', level: 1, locked: false, maxLevel: 2 },
-  ],
-}
-
-function writeConfig(cfg = sampleConfig) {
-  writeFileSync(configPath, JSON.stringify(cfg))
-}
 
 function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
@@ -62,15 +64,32 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
   return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
 }
 
-describe('tryHandleAutonomy error normalization', () => {
-  beforeEach(() => writeConfig())
+describe('tryHandleAutonomy', () => {
+  beforeEach(() => {
+    dbUnavailable = false
+    seedRows([
+      { key: 'deploy', label: 'Deploy', level: 1, locked: 0, max_level: 3 },
+      { key: 'safety', label: 'Safety', level: 1, locked: 1, max_level: 1 },
+      { key: 'limited', label: 'Limited', level: 1, locked: 0, max_level: 2 },
+    ])
+  })
 
-  it('GET returns not_found when config file absent', async () => {
-    unlinkSync(configPath)
+  it('GET returns 503 internal_error when the DB is unreachable (fail-safe: no file fallback)', async () => {
+    dbUnavailable = true
     const { ctx, out } = makeCtx('GET', '/api/autonomy')
     await tryHandleAutonomy(ctx)
-    expect(out.status).toBe(404)
-    expect((out.body as { error: string }).error).toBe('not_found')
+    expect(out.status).toBe(503)
+    expect((out.body as { error: string }).error).toBe('internal_error')
+  })
+
+  it('GET returns categories in the pre-migration wire shape (camelCase maxLevel, boolean locked)', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/autonomy')
+    await tryHandleAutonomy(ctx)
+    expect(out.status).toBe(200)
+    const deploy = out.body.categories.find((c: any) => c.key === 'deploy')
+    expect(deploy).toEqual({ key: 'deploy', label: 'Deploy', level: 1, locked: false, maxLevel: 3 })
+    const safety = out.body.categories.find((c: any) => c.key === 'safety')
+    expect(safety.locked).toBe(true)
   })
 
   it('POST returns invalid_value when level out of range', async () => {
@@ -107,5 +126,6 @@ describe('tryHandleAutonomy error normalization', () => {
     await tryHandleAutonomy(ctx)
     expect(out.status).toBe(200)
     expect((out.body as { ok: boolean }).ok).toBe(true)
+    expect(rows.get('deploy')?.level).toBe(2)
   })
 })

@@ -171,7 +171,9 @@ function buildAutonomyBody(name: string): string {
   return [
     '## Autonómia és jóváhagyás',
     '',
-    'Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.',
+    'Az autonóm műveletek fokozatait az autonomy_categories tábla szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent), a dashboard /api/autonomy végpontján át olvasva -- nincs helyi fájl-cache. Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét:',
+    `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/autonomy" | python3 -c "import sys,json; cats=json.load(sys.stdin)['categories']; cat=next((c for c in cats if c['key']=='CATEGORY_KEY'),None); print(cat['level'] if cat else 1)"`,
+    'Ha az API nem érhető el (hiba/timeout), level 1-nek tekintsd a kategóriát (biztonságos alapállapot: csak jelez, nem cselekszik).',
     '',
     '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
     `curl -s -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d "{\\"from\\":\\"${name}\\",\\"to\\":\\"${MAIN_AGENT_ID}\\",\\"content\\":\\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\\"}"`,
