@@ -67,7 +67,6 @@ marveen/
     claudeclaw.db         -- SQLite database
     .dashboard-token      -- Bearer token (0600)
     .claude-oauth-token   -- Fleet OAuth token (0600)
-    model-profile-map.json
 
   agents/                 -- fleet agents directory
     <name>/
@@ -86,7 +85,7 @@ marveen/
   seed-config/            -- default configs written at install time
   seed-skills/            -- default skill library
   seed-scheduled-tasks/   -- default scheduled tasks
-  config-examples/        -- .env.example, model-profile-map.example.json
+  config-examples/        -- .env.example
 
   backups/                -- backup archives (gitignored)
   scheduled-tasks/        -- project-level scheduled tasks
@@ -183,6 +182,7 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 | `system_config` | Dashboard-managed configuration (overrides .env) |
 | `config_change_log` | Configuration change audit log |
 | `autonomy_categories` | Per-category autonomy levels for agents |
+| `model_profile_map` | Model-profile-id to concrete model-id mapping |
 
 **Skills and tenants**
 

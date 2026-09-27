@@ -10,7 +10,8 @@ info:
     **Tiers**
     - Tier 1 (full schema): core inter-agent endpoints — memories, messages, kanban,
       agents, skills, approvals, blackboard, daily-log, skill-usage.
-    - Tier 2 (medium): schedules, ideas, artifacts, token-usage, connectors, recall, autonomy.
+    - Tier 2 (medium): schedules, ideas, artifacts, token-usage, connectors, recall, autonomy,
+      model-profiles.
     - Tier 3 (x-internal): status checks, dashboard-internal routes, static assets.
 
 servers:
@@ -57,6 +58,8 @@ tags:
     description: Consolidated recall (memory + daily-log) view
   - name: autonomy
     description: Autonomy level configuration per category
+  - name: model-profiles
+    description: Deployment-local model-profile-id to model-id mapping
   - name: internal
     description: Dashboard-internal and status endpoints (x-internal)
   - name: admin-tenants
@@ -3527,6 +3530,43 @@ paths:
                   type: integer
                   minimum: 1
                   maximum: 3
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /model-profiles:
+    get:
+      tags: [model-profiles]
+      operationId: getModelProfileMap
+      summary: Current model-profile-id to model-id mapping
+      responses:
+        "200":
+          description: Model profile map
+          content:
+            application/json:
+              schema:
+                type: object
+    patch:
+      tags: [model-profiles]
+      operationId: updateModelProfileMapEntry
+      summary: Update the concrete model id a profile resolves to
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profileId, modelId]
+              properties:
+                profileId:
+                  type: string
+                  enum: [premium_reasoning, build_strong, analysis_efficient, routine_lowcost]
+                modelId:
+                  type: string
       responses:
         "200":
           description: Updated

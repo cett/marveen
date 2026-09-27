@@ -69,6 +69,7 @@ import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
+import { tryHandleModelProfiles } from './web/routes/model-profiles.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
@@ -139,6 +140,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleOnboarding)
   .add(tryHandleStatus)
   .add(tryHandleAutonomy)
+  .add(tryHandleModelProfiles)
   .add(tryHandleApprovals)
   .add(tryHandleTokenUsage)
   .add(tryHandleIdeas)

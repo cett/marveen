@@ -104,6 +104,95 @@ async function setAutonomyLevel(key, level) {
 
 // ============================================================
 
+// === Model profiles ===
+// ============================================================
+
+const MODEL_PROFILE_IDS = ['premium_reasoning', 'build_strong', 'analysis_efficient', 'routine_lowcost']
+
+export async function renderModelProfilesContent(gridEl, footerEl) {
+  gridEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('model-profiles.loading')}</p>`
+
+  try {
+    const res = await fetch('/api/model-profiles')
+    if (!res.ok) throw new Error('fetch failed')
+    const config = await res.json()
+    const byId = new Map(config.profiles.map(p => [p.profileId, p]))
+
+    gridEl.innerHTML = ''
+    for (const profileId of MODEL_PROFILE_IDS) {
+      const entry = byId.get(profileId)
+      const row = document.createElement('div')
+      row.className = 'settings-row'
+
+      const info = document.createElement('div')
+      info.className = 'settings-row-info'
+      const key = document.createElement('div')
+      key.className = 'settings-row-key'
+      key.textContent = t(`model-profiles.label.${profileId}`)
+      info.appendChild(key)
+      row.appendChild(info)
+
+      const editor = document.createElement('div')
+      editor.className = 'settings-row-editor'
+
+      const input = document.createElement('input')
+      input.type = 'text'
+      input.className = 'input'
+      input.value = entry ? entry.modelId : ''
+      input.dataset.profileId = profileId
+      editor.appendChild(input)
+
+      const saveBtn = document.createElement('button')
+      saveBtn.className = 'btn'
+      saveBtn.dataset.variant = 'secondary'
+      saveBtn.dataset.size = 'compact'
+      saveBtn.textContent = t('settings.save_btn.save')
+      saveBtn.addEventListener('click', () => setModelProfileMapEntry(profileId, input.value, gridEl, footerEl))
+      editor.appendChild(saveBtn)
+
+      row.appendChild(editor)
+      gridEl.appendChild(row)
+    }
+
+    if (footerEl) {
+      if (config.updated_at > 0) {
+        const d = new Date(config.updated_at * 1000)
+        footerEl.textContent = t('autonomy.last_modified', { date: d.toLocaleString('hu-HU') })
+      } else {
+        footerEl.textContent = t('autonomy.not_modified')
+      }
+    }
+  } catch (err) {
+    gridEl.innerHTML = `<p style="color:var(--danger)">${t('model-profiles.error')}</p>`
+    if (footerEl) footerEl.textContent = ''
+  }
+}
+
+async function setModelProfileMapEntry(profileId, modelId, gridEl, footerEl) {
+  if (!modelId || !modelId.trim()) {
+    showToast(t('model-profiles.error.empty'))
+    return
+  }
+  try {
+    const res = await fetch('/api/model-profiles', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profileId, modelId: modelId.trim() }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      showToast(getErrorMessage(data, 'Hiba'))
+      return
+    }
+    showToast(t('model-profiles.saved'))
+    if (gridEl) renderModelProfilesContent(gridEl, footerEl)
+  } catch {
+    showToast(t('kanban.toast.save_error'))
+  }
+}
+
+// ============================================================
+
 // ============================================================
 // === Settings (central config registry) ===
 // ============================================================
@@ -119,7 +208,7 @@ window.addEventListener('beforeunload', (e) => {
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
   const known = {
-    kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, observability: true, costops: true, 'claude-plans': true,
+    kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, 'model-profiles': true, observability: true, costops: true, 'claude-plans': true,
     // #953 section-tab ids (frontend-only grouping -- see SECTION_ORDER)
     rendszer: true, csatornak: true, agensek: true, memoria: true, 'fleet-monitor': true, adatmegorzs: true, 'budgetek-csomagok': true,
   }
@@ -711,7 +800,7 @@ export async function loadSettings() {
       }
     }
 
-    const allModules = [...SECTION_ORDER, ...extraSections, 'autonomy', 'budgetek-csomagok']
+    const allModules = [...SECTION_ORDER, ...extraSections, 'autonomy', 'model-profiles', 'budgetek-csomagok']
     const savedTab = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY) || allModules[0]
     const activeTab = allModules.includes(savedTab) ? savedTab : allModules[0]
 
@@ -800,6 +889,48 @@ export async function loadSettings() {
 
       if (mod === activeTab) {
         renderAutonomyContent(grid, footer)
+      }
+    }
+
+    // Model profiles tab (synthetic, like autonomy): edits the
+    // model_profile_map DB table (deployment-local profile-id -> model-id
+    // mapping the runner reads at agent-spawn time).
+    {
+      const mod = 'model-profiles'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = settingsModuleLabel(mod)
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const grid = document.createElement('div')
+      grid.className = 'settings-group'
+      grid.id = 'settingsModelProfilesGrid'
+      panel.appendChild(grid)
+
+      const footer = document.createElement('p')
+      footer.className = 'autonomy-footer'
+      footer.id = 'settingsModelProfilesUpdatedAt'
+      panel.appendChild(footer)
+
+      const refreshBtn = document.createElement('button')
+      refreshBtn.className = 'btn'
+      refreshBtn.dataset.variant = 'secondary'
+      refreshBtn.dataset.size = 'compact'
+      refreshBtn.textContent = t('common.btn.refresh')
+      refreshBtn.addEventListener('click', () => renderModelProfilesContent(grid, footer))
+      panel.appendChild(refreshBtn)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderModelProfilesContent(grid, footer)
       }
     }
 
@@ -900,6 +1031,11 @@ function activateSettingsTab(mod) {
     const grid = document.getElementById('settingsAutonomyGrid')
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
+  }
+  if (mod === 'model-profiles') {
+    const grid = document.getElementById('settingsModelProfilesGrid')
+    const footer = document.getElementById('settingsModelProfilesUpdatedAt')
+    if (grid && !grid.innerHTML.trim()) renderModelProfilesContent(grid, footer)
   }
   if (mod === 'budgetek-csomagok') {
     loadCostopsBudgetsTable()

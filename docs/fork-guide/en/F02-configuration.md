@@ -158,23 +158,20 @@ Agents (per the CLAUDE.md instruction) query a category's current level via `GET
 
 ## Model profile map
 
-`store/model-profile-map.json` (template: `config-examples/model-profile-map.example.json`) lets agents use named profiles (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) instead of concrete model names.
+The `model_profile_map` DB table lets agents use named profiles (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) instead of concrete model names. The startup migration (0054) seeds all four profiles with the models the fleet already runs — Phase 1 intent is abstraction, not re-tiering.
 
-```json
-{
-  "version": "1",
-  "profiles": {
-    "premium_reasoning": "claude-opus-5",
-    "build_strong": "claude-sonnet-5",
-    "analysis_efficient": "claude-sonnet-5",
-    "routine_lowcost": "claude-haiku-4-5-20251001"
-  }
-}
+Edit it from the dashboard's Settings > Model profiles tab (admin-only), or directly:
+
+```http
+GET /api/v1/model-profiles
+PATCH /api/v1/model-profiles
+{ "profileId": "build_strong", "modelId": "claude-sonnet-5" }
 ```
 
-- All four profiles are required — a partial map is rejected at startup
+- All four profiles are always present — a profile whose entry is missing falls that agent back to the install default model, with an error surfaced
 - An agent's explicit `model` field overrides its profile
-- The file lives in `store/` (gitignored), keeping the concrete model mapping off version control
+- Reads are cached for 90 seconds; a PATCH invalidates the cache immediately
+- There is no more `store/model-profile-map.json` file or `config-examples/model-profile-map.example.json` template — the old manual-copy install step has been retired
 
 ## Vault — secret management
 

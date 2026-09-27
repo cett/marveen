@@ -18,11 +18,11 @@ import {
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames, invalidateModelProfileMapCache } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
-import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow } from '../db.js'
+import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow } from '../db.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -144,6 +144,8 @@ export interface DashboardSettingsExport {
   // exported/imported as the raw row array rather than the old {categories}
   // wrapper shape.
   autonomy: AutonomyCategoryRow[]
+  // DB-backed (model_profile_map), same rationale as autonomy above.
+  modelProfileMap: ModelProfileMapRow[]
   autoRestart: Record<string, unknown>
   agentsDesired: Record<string, unknown>
   norbertPersonal: Record<string, unknown>
@@ -649,6 +651,7 @@ function exportDashboardSettings(): DashboardSettingsExport {
   const read = (name: string) => safeReadJson(join(STORE_DIR, name))
   return {
     autonomy: listAutonomyCategories(),
+    modelProfileMap: listModelProfileMap(),
     autoRestart: read('auto-restart.json'),
     agentsDesired: read('agents-desired.json'),
     norbertPersonal: read('norbert-personal.json'),
@@ -1234,6 +1237,11 @@ export function importFleet(
     // destructive beyond what the source snapshot actually describes.
     if (Array.isArray(s.autonomy)) {
       for (const row of s.autonomy) upsertAutonomyCategory(row)
+    }
+    // Same upsert-not-replace rationale as autonomy above.
+    if (Array.isArray(s.modelProfileMap)) {
+      for (const row of s.modelProfileMap) upsertModelProfileMapEntry(row)
+      invalidateModelProfileMapCache()
     }
     if (s.autoRestart && Object.keys(s.autoRestart).length)
       trackedWrite(join(STORE_DIR, 'auto-restart.json'), JSON.stringify(s.autoRestart, null, 2), tracker)

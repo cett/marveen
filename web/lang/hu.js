@@ -986,6 +986,15 @@ window._i18n.hu = {
   'autonomy.level.2':            '2 Javasol, jóváhagyásra vár',
   'autonomy.level.3':            '3 Autonóm, utólag jelent',
 
+  'model-profiles.loading':      'Betöltés...',
+  'model-profiles.error':        'Nem sikerült betölteni a modell-profil térképet.',
+  'model-profiles.error.empty':  'A modell-id nem lehet üres.',
+  'model-profiles.saved':        'Mentve.',
+  'model-profiles.label.premium_reasoning':  'Prémium érvelés',
+  'model-profiles.label.build_strong':       'Erős fejlesztés',
+  'model-profiles.label.analysis_efficient': 'Hatékony elemzés',
+  'model-profiles.label.routine_lowcost':    'Rutin, alacsony költség',
+
   // --- Settings ---
   'settings.page_title':         'Beállítások',
   'settings.page_subtitle':      'Központi konfiguráció -- modulonként csoportosítva',
@@ -1028,6 +1037,7 @@ window._i18n.hu = {
   'settings.module.audit':       'Audit',
   'settings.module.channels':    'Csatornák',
   'settings.module.autonomy':    'Autonómia',
+  'settings.module.model-profiles': 'Modell-profilok',
   'settings.module.security':    'Biztonság',
   'settings.module.observability': 'Megfigyelhetőség',
   'settings.module.costops':     'Budgetek',
