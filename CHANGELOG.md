@@ -9,7 +9,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: faa7161432f353efcfa98c43c16ba16daa0be4aa -->
+<!-- changelog-auto-sha: e7dc6d1dfd44fa5d30ef55fa80300a8fb1c07d60 -->
 
 ### Added
 
