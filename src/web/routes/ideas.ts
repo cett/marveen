@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog } from '../../db.js'
+import { listIdeas, getIdeaStatusCounts, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 
 type IdeaRow = import('../../db.js').IdeaBoxRow
@@ -39,9 +40,14 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/ideas' && method === 'GET') {
     const status = url.searchParams.get('status') || undefined
     const category = url.searchParams.get('category') || undefined
-    const ideas = listIdeas({ status, category, tenantId: effectiveTenantId ?? undefined })
+    const page = parsePagination(url.searchParams, res, { defaultLimit: 25, maxLimit: 100 })
+    if (!page) return true
+    const { limit, offset } = page
+    const { items, total } = listIdeas({ status, category, tenantId: effectiveTenantId ?? undefined, limit, offset })
     const staleCutoff = Math.floor(Date.now() / 1000) - IDEA_STALE_DAYS * 86400
-    json(res, ideas.map(i => ({ ...i, stale: i.status === 'new' && i.updated_at < staleCutoff })))
+    const ideas = items.map(i => ({ ...i, stale: i.status === 'new' && i.updated_at < staleCutoff }))
+    const counts = getIdeaStatusCounts(effectiveTenantId ?? undefined)
+    json(res, { ideas, total, offset, limit, counts })
     return true
   }
 

@@ -4,6 +4,7 @@ import { showToast } from './toast.js'
 import { kanbanState, showBreakdownModal } from './kanban.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
+import { renderPaginator } from './paginator.js'
 
 
 let _openModal = null
@@ -11,23 +12,34 @@ let _closeModal = null
 let _ideaTenantGetter = null
 
 let ideas = []
+let ideaCounts = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
 let ideasPromoteId = null
 let ideaEditId = null
 let ideaDetailId = null
+const IDEAS_LIMIT = 25
+const _state = { offset: 0 }
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
 const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ideas.status.reviewed'), kanban: () => t('ideas.status.kanban'), rejected: () => t('ideas.status.rejected') }
 
 export async function loadIdeasPage() {
+  _state.offset = 0
+  await _loadIdeasPageInternal()
+}
+
+async function _loadIdeasPageInternal() {
   const statusFilter = document.getElementById('ideaStatusFilter')?.value ?? 'active'
   const categoryFilter = document.getElementById('ideaCategoryFilter')?.value || ''
   const params = new URLSearchParams()
-  if (statusFilter && statusFilter !== 'active') params.set('status', statusFilter)
+  if (statusFilter) params.set('status', statusFilter)
   if (categoryFilter) params.set('category', categoryFilter)
   const ideaTenant = _ideaTenantGetter?.()
   if (ideaTenant) params.set('tenant', ideaTenant)
+  params.set('limit', String(IDEAS_LIMIT))
+  params.set('offset', String(_state.offset))
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
-  ideas = await ideasRes.json()
-  if (statusFilter === 'active') ideas = ideas.filter(i => i.status === 'new' || i.status === 'reviewed')
+  const data = await ideasRes.json()
+  ideas = data.ideas ?? []
+  ideaCounts = data.counts ?? { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
   const cats = await catsRes.json()
   const catSel = document.getElementById('ideaCategoryFilter')
   if (catSel) {
@@ -36,11 +48,17 @@ export async function loadIdeasPage() {
   }
   renderIdeasStats()
   renderIdeasList()
+  renderPaginator(document.getElementById('ideasPagination'), {
+    offset: _state.offset,
+    limit: IDEAS_LIMIT,
+    total: data.total ?? ideas.length,
+    onPrev: () => { _state.offset = Math.max(0, _state.offset - IDEAS_LIMIT); _loadIdeasPageInternal() },
+    onNext: () => { _state.offset += IDEAS_LIMIT; _loadIdeasPageInternal() },
+  })
 }
 
 function renderIdeasStats() {
-  const counts = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
-  for (const i of ideas) counts[i.status] = (counts[i.status] || 0) + 1
+  const counts = ideaCounts
   const el = document.getElementById('ideasStats')
   if (!el) return
   el.innerHTML = Object.entries(counts).map(([s, n]) =>

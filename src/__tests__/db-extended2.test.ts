@@ -23,7 +23,7 @@ import {
   // Telegram history
   saveTelegramMessage, getTelegramHistory,
   // Ideas
-  listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories,
+  listIdeas, getIdeaStatusCounts, createIdea, updateIdea, deleteIdea, listIdeaCategories,
   getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog,
   revertIdeaFromKanban,
   // Vault SSH
@@ -485,26 +485,26 @@ describe('telegram history functions', () => {
 describe('idea box functions', () => {
   it('createIdea + listIdeas roundtrip', () => {
     createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2, tenant_id: 'default' })
-    const ideas = listIdeas()
+    const { items: ideas } = listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
 
   it('listIdeas filters by status', () => {
-    const newIdeas = listIdeas({ status: 'new' })
+    const { items: newIdeas } = listIdeas({ status: 'new' })
     expect(newIdeas.some(i => i.id === 'db2-idea-1')).toBe(true)
-    const reviewedIdeas = listIdeas({ status: 'reviewed' })
+    const { items: reviewedIdeas } = listIdeas({ status: 'reviewed' })
     expect(reviewedIdeas.some(i => i.id === 'db2-idea-1')).toBe(false)
   })
 
   it('listIdeas filters by category', () => {
-    const cats = listIdeas({ category: 'Fejlesztes' })
+    const { items: cats } = listIdeas({ category: 'Fejlesztes' })
     expect(cats.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
 
   it('updateIdea updates fields', () => {
     const ok = updateIdea('db2-idea-1', { status: 'reviewed', title: 'Updated idea', impact: 5 })
     expect(ok).toBe(true)
-    const ideas = listIdeas({ status: 'reviewed' })
+    const { items: ideas } = listIdeas({ status: 'reviewed' })
     const idea = ideas.find(i => i.id === 'db2-idea-1')
     expect(idea?.title).toBe('Updated idea')
     expect(idea?.impact).toBe(5)
@@ -533,7 +533,7 @@ describe('idea box functions', () => {
     createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null, tenant_id: 'default' })
     const reverted = revertIdeaFromKanban('db2-card-k1')
     expect(reverted).toBe('db2-idea-2')
-    const ideas = listIdeas()
+    const { items: ideas } = listIdeas()
     const idea = ideas.find(i => i.id === 'db2-idea-2')
     expect(idea?.status).toBe('reviewed')
     expect(idea?.kanban_id).toBeNull()
@@ -547,8 +547,31 @@ describe('idea box functions', () => {
   it('deleteIdea removes the idea', () => {
     const ok = deleteIdea('db2-idea-1')
     expect(ok).toBe(true)
-    const ideas = listIdeas()
+    const { items: ideas } = listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(false)
+  })
+
+  it('listIdeas paginates with limit/offset and reports the unpaginated total', () => {
+    createIdea({ id: 'db2-idea-p1', title: 'P1', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
+    createIdea({ id: 'db2-idea-p2', title: 'P2', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
+    const page1 = listIdeas({ status: 'new', limit: 1, offset: 0 })
+    expect(page1.items).toHaveLength(1)
+    expect(page1.total).toBeGreaterThanOrEqual(2)
+    const page2 = listIdeas({ status: 'new', limit: 1, offset: 1 })
+    expect(page2.items).toHaveLength(1)
+    expect(page2.items[0].id).not.toBe(page1.items[0].id)
+  })
+
+  it("listIdeas status:'active' matches new-or-reviewed only", () => {
+    const { items } = listIdeas({ status: 'active' })
+    expect(items.every(i => i.status === 'new' || i.status === 'reviewed')).toBe(true)
+    expect(items.some(i => i.status === 'kanban')).toBe(false)
+  })
+
+  it('getIdeaStatusCounts tallies by status, tenant-scoped', () => {
+    const counts = getIdeaStatusCounts('default')
+    expect(counts.new).toBeGreaterThanOrEqual(2)
+    expect(typeof counts.kanban).toBe('number')
   })
 })
 

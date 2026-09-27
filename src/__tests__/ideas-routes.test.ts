@@ -63,7 +63,7 @@ describe('GET /api/ideas', () => {
     const { ctx, out } = makeCtx('GET', '/api/ideas')
     await tryHandleIdeas(ctx)
     expect(out.status).toBe(200)
-    const rows = out.body as any[]
+    const rows = (out.body as any).ideas as any[]
     expect(rows.find(r => r.id === freshId).stale).toBe(false)
     expect(rows.find(r => r.id === staleId).stale).toBe(true)
   })
@@ -73,7 +73,20 @@ describe('GET /api/ideas', () => {
     const { ctx, out } = makeCtx('GET', '/api/ideas?status=new&category=Optimalizalas')
     await tryHandleIdeas(ctx)
     expect(out.status).toBe(200)
-    expect((out.body as any[]).every(r => r.status === 'new' && r.category === 'Optimalizalas')).toBe(true)
+    expect(((out.body as any).ideas as any[]).every(r => r.status === 'new' && r.category === 'Optimalizalas')).toBe(true)
+  })
+
+  it('returns total/offset/limit and a tenant-scoped status-count summary', async () => {
+    await createIdeaViaRoute({ title: 'A' })
+    const { ctx, out } = makeCtx('GET', '/api/ideas?limit=1&offset=0')
+    await tryHandleIdeas(ctx)
+    expect(out.status).toBe(200)
+    const body = out.body as any
+    expect(body.limit).toBe(1)
+    expect(body.offset).toBe(0)
+    expect(typeof body.total).toBe('number')
+    expect(body.ideas.length).toBeLessThanOrEqual(1)
+    expect(typeof body.counts.new).toBe('number')
   })
 })
 

@@ -152,14 +152,47 @@ export interface IdeaBoxRow {
 
 // tenantId is omitted (not null) for the admin "all tenants" listing --
 // mirrors kanban.ts's effectiveTenantId convention (null/omitted = unscoped).
-export function listIdeas(opts?: { status?: string; category?: string; tenantId?: string }): IdeaBoxRow[] {
-  let q = 'SELECT * FROM idea_box WHERE 1=1'
+//
+// status: 'active' is a pseudo-status meaning "new or reviewed" -- the
+// dashboard's default filter, previously applied client-side AFTER fetching
+// every idea unfiltered (which broke once the list gained server-side
+// pagination: a page cut before the client filter ran would silently
+// under-fill and its total wouldn't match what was actually shown).
+export function listIdeas(opts?: { status?: string; category?: string; tenantId?: string; limit?: number; offset?: number }): { items: IdeaBoxRow[]; total: number } {
+  let where = ' WHERE 1=1'
   const params: string[] = []
-  if (opts?.status) { q += ' AND status = ?'; params.push(opts.status) }
-  if (opts?.category) { q += ' AND category = ?'; params.push(opts.category) }
-  if (opts?.tenantId) { q += ' AND tenant_id = ?'; params.push(opts.tenantId) }
-  q += ' ORDER BY created_at DESC'
-  return db.prepare(q).all(...params) as IdeaBoxRow[]
+  if (opts?.status === 'active') {
+    where += " AND status IN ('new', 'reviewed')"
+  } else if (opts?.status) {
+    where += ' AND status = ?'; params.push(opts.status)
+  }
+  if (opts?.category) { where += ' AND category = ?'; params.push(opts.category) }
+  if (opts?.tenantId) { where += ' AND tenant_id = ?'; params.push(opts.tenantId) }
+
+  const total = (db.prepare(`SELECT COUNT(*) AS c FROM idea_box${where}`).get(...params) as { c: number }).c
+
+  let q = `SELECT * FROM idea_box${where} ORDER BY created_at DESC`
+  const allParams: unknown[] = [...params]
+  if (opts?.limit !== undefined) {
+    q += ' LIMIT ? OFFSET ?'
+    allParams.push(opts.limit, opts.offset ?? 0)
+  }
+  const items = db.prepare(q).all(...allParams) as IdeaBoxRow[]
+  return { items, total }
+}
+
+// Status counts for the stats strip -- always tenant-scoped only (no
+// status/category filter), so the numbers stay accurate regardless of which
+// page or status filter the list itself is currently showing.
+export function getIdeaStatusCounts(tenantId?: string): Record<string, number> {
+  let q = "SELECT status, COUNT(*) AS c FROM idea_box"
+  const params: string[] = []
+  if (tenantId) { q += ' WHERE tenant_id = ?'; params.push(tenantId) }
+  q += ' GROUP BY status'
+  const rows = db.prepare(q).all(...params) as { status: string; c: number }[]
+  const counts: Record<string, number> = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
+  for (const r of rows) counts[r.status] = r.c
+  return counts
 }
 
 export function createIdea(idea: Omit<IdeaBoxRow, 'created_at' | 'updated_at'>): void {
