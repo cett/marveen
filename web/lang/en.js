@@ -1958,6 +1958,13 @@ window._i18n.en = {
   'import.page.info':             'Accepted extensions: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql, plus xlsx, xls, docx (binary formats with content extraction). Skipped: files with extensions .env, .key, .pem, .p12 and similar key/certificate types; files named id_rsa or id_ed25519; and by content: Bearer tokens, private keys, password values, and IBAN-like patterns.',
   'import.sources.title':         'Import sources',
   'import.add.title':             'Add source',
+  'import.search.title':          'Search imported memories',
+  'import.search.placeholder':    'Search content, keywords, filename...',
+  'import.search.empty':          'No results.',
+  'import.search.error':          'Search error.',
+  'import.search.col_file':       'File',
+  'import.search.col_preview':    'Preview',
+  'import.search.col_updated':    'Updated',
 
   // Backups page
   'nav.backups':                       'Backups',

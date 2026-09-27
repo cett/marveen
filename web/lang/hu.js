@@ -1959,6 +1959,13 @@ window._i18n.hu = {
   'import.page.info':             'Elfogadott kiterjesztések: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql, valamint xlsx, xls, docx (bináris fájlok, tartalom-kinyeréssel). Kihagyva: .env, .key, .pem, .p12 és hasonló kulcs/tanúsítvány fájlok; id_rsa, id_ed25519 nevű fájlok; tartalom alapján Bearer tokenek, privát kulcsok, jelszó-értékek és IBAN-szerű minták.',
   'import.sources.title':         'Importforrások',
   'import.add.title':             'Új forrás',
+  'import.search.title':          'Importált emlékek keresése',
+  'import.search.placeholder':    'Keresés tartalomban, kulcsszóban, fájlnévben...',
+  'import.search.empty':          'Nincs találat.',
+  'import.search.error':          'Keresési hiba.',
+  'import.search.col_file':       'Fájl',
+  'import.search.col_preview':    'Részlet',
+  'import.search.col_updated':    'Módosítva',
 
   // Backups page
   'nav.backups':                       'Adatmentés',
