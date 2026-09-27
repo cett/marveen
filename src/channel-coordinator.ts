@@ -230,7 +230,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // Process one getUpdates batch. For each update: normalize, dedup-insert, and
 // (if newly inserted) hand off to Marveen. Returns the highest update_id seen
 // so the caller can advance the offset AFTER the whole batch is durable.
-function processBatch(updates: { update_id: number }[]): number | null {
+// Exported for tests.
+export function processBatch(updates: { update_id: number }[]): number | null {
   let maxUpdateId: number | null = null
   for (const raw of updates) {
     maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)
@@ -267,7 +268,8 @@ function processBatch(updates: { update_id: number }[]): number | null {
 // the router later while we sit idle. Idempotent: in-flight handoffs are
 // excluded by getEventsNeedingHandoff, and a re-handoff creates a fresh
 // agent_message rather than duplicating the source event.
-function reconcilePending(): void {
+// Exported for tests.
+export function reconcilePending(): void {
   let events
   try {
     events = getEventsNeedingHandoff(SOURCE)
