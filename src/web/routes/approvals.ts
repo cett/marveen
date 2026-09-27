@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../../config.js'
 import {
-  createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
+  createApproval, getApproval, resolveApproval, listApprovals, countApprovals,
+  getApprovalStatusCounts, getOldestPendingApproval, expireTimedOutApprovals,
   createAgentMessage, writeAgentAuditLog, getAutonomyCategory,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 
 // DB unavailable (or category missing timeout_minutes) -> null, unchanged
@@ -121,8 +123,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const agent_id = url.searchParams.get('agent') ?? undefined
     const category = url.searchParams.get('category') ?? undefined
     const status = url.searchParams.get('status') ?? undefined
-    const limitRaw = url.searchParams.get('limit')
-    const limit = limitRaw ? Math.min(parseInt(limitRaw, 10) || 100, 500) : 100
+
+    const page = parsePagination(url.searchParams, res, { defaultLimit: 25, maxLimit: 500 })
+    if (!page) return true
+    const { limit, offset } = page
 
     // Admin sees all tenants; non-admin session users are scoped to their own
     // tenant. Bearer-token (fleet agents) callers are treated as admin-equivalent
@@ -142,8 +146,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       tenantId = ctx.tenantId
     }
 
-    const items = listApprovals({ agent_id, category, status, limit, tenantId })
-    json(res, items)
+    const filter = { agent_id, category, status, tenantId }
+    const items = listApprovals({ ...filter, limit, offset })
+    const total = countApprovals(filter)
+    const counts = getApprovalStatusCounts(tenantId)
+    const oldestPending = getOldestPendingApproval(tenantId) ?? null
+    json(res, { items, total, offset, limit, counts, oldest_pending: oldestPending })
     return true
   }
 

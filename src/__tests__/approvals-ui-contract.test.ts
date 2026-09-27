@@ -88,14 +88,16 @@ describe('approvals UI wiring', () => {
 
   it('badge polls independently of the (lazy) Approvals page, mirroring the updates badge', () => {
     // pollApprovalsBadge is a standalone export -- it must not depend on
-    // _approvalsAll (which is only populated after loadApprovalsPage runs),
+    // _approvalsPage (which is only populated after loadApprovalsPage runs),
     // so the nav badge can update on tabs where Approvals was never opened.
     expect(APPROVALS_MOD).toMatch(/export async function pollApprovalsBadge\(/)
     const pollIdx = APPROVALS_MOD.indexOf('export async function pollApprovalsBadge(')
     const nextExport = APPROVALS_MOD.indexOf('\nexport ', pollIdx + 1)
     const pollBody = APPROVALS_MOD.slice(pollIdx, nextExport > pollIdx ? nextExport : pollIdx + 800)
-    // Server-side status filter keeps the poll payload small (not the full list).
-    expect(pollBody).toContain("/api/approvals?status=pending")
+    // limit=1 keeps the poll payload small; the count itself comes from the
+    // server-computed, tenant-scoped counts.pending, not the returned items.
+    expect(pollBody).toContain("/api/approvals?limit=1")
+    expect(pollBody).toContain('counts?.pending')
     expect(pollBody).toContain('approvalsPendingBadge')
     expect(pollBody).toMatch(/badge\.hidden\s*=\s*count\s*===\s*0/)
 
