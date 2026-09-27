@@ -167,18 +167,20 @@ describe('importFleet apply -- merge field (egressAllowlist)', () => {
 describe('exportFleet/importFleet -- autonomy (DB-backed)', () => {
   it('exports autonomy_categories rows as an array', async () => {
     const { upsertAutonomyCategory } = await import('../db.js')
-    upsertAutonomyCategory({ key: 'deploy_retry', label: 'Deploy retry', level: 2, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
+    upsertAutonomyCategory({ key: 'custom_category', label: 'Custom', level: 2, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
     const { exportFleet } = await import('../web/fleet-transfer.js')
     const fleet = JSON.parse(exportFleet().data)
-    expect(fleet.dashboardSettings.autonomy).toEqual([
-      expect.objectContaining({ key: 'deploy_retry', label: 'Deploy retry', level: 2, max_level: 3 }),
-    ])
+    // 15 defaults (migration 0053) + the one upserted above.
+    expect(fleet.dashboardSettings.autonomy).toHaveLength(16)
+    expect(fleet.dashboardSettings.autonomy).toContainEqual(
+      expect.objectContaining({ key: 'custom_category', label: 'Custom', level: 2, max_level: 3 }),
+    )
   })
 
-  it('returns an empty array when no categories exist yet', async () => {
+  it('exports the 15 default categories that migration 0053 seeds on a fresh DB', async () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')
     const fleet = JSON.parse(exportFleet().data)
-    expect(fleet.dashboardSettings.autonomy).toEqual([])
+    expect(fleet.dashboardSettings.autonomy).toHaveLength(15)
   })
 
   it('import upserts each row into autonomy_categories without touching categories absent from the snapshot', async () => {
@@ -197,11 +199,11 @@ describe('exportFleet/importFleet -- autonomy (DB-backed)', () => {
     expect(getAutonomyCategory('target_only')).toEqual(expect.objectContaining({ label: 'Target only' }))
   })
 
-  it('import does nothing when the source has no autonomy rows', async () => {
+  it('import does nothing when the source has no autonomy rows (the 15 seeded defaults are untouched)', async () => {
     const fleetJson = JSON.stringify(baseFleetWith({ autonomy: [] }))
     const { importFleet, exportFleet } = await import('../web/fleet-transfer.js')
     importFleet(fleetJson, { apply: true })
-    expect(JSON.parse(exportFleet().data).dashboardSettings.autonomy).toEqual([])
+    expect(JSON.parse(exportFleet().data).dashboardSettings.autonomy).toHaveLength(15)
   })
 })
 
