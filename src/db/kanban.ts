@@ -54,16 +54,38 @@ export interface KanbanComment {
   created_at: number
 }
 
-export function listKanbanCards(): KanbanCard[] {
+// status/limit/offset are all optional and additive: a bare listKanbanCards()
+// call keeps returning the full unbounded, unfiltered board exactly as
+// before (every existing caller relies on this). They exist for the kanban
+// board's per-column "load more" (P1c) -- status scopes to one column,
+// limit/offset paginate within it, ordered the same way the flat board
+// itself sorts (sort_order ASC, matching idx_kanban_status_sort from
+// 0055_pagination_indexes.sql; created_at DESC only breaks ties, since
+// sort_order is not guaranteed unique).
+export function listKanbanCards(opts?: { status?: KanbanCard['status']; limit?: number; offset?: number }): KanbanCard[] {
   const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
   const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
   // Auto-archive done cards older than KANBAN_ARCHIVE_DONE_DAYS days
   db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
-  return db
-    .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
-    .all() as KanbanCard[]
+
+  const params: unknown[] = []
+  let sql = 'SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL'
+  if (opts?.status) { sql += ' AND status = ?'; params.push(opts.status) }
+  sql += ' ORDER BY sort_order ASC, created_at DESC'
+  if (opts?.limit !== undefined) {
+    sql += ' LIMIT ?'; params.push(opts.limit)
+    if (opts.offset !== undefined) { sql += ' OFFSET ?'; params.push(opts.offset) }
+  }
+  return db.prepare(sql).all(...params) as KanbanCard[]
+}
+
+export function countKanbanCards(status?: KanbanCard['status']): number {
+  const params: unknown[] = []
+  let sql = 'SELECT COUNT(*) AS n FROM kanban_cards WHERE archived_at IS NULL'
+  if (status) { sql += ' AND status = ?'; params.push(status) }
+  return (db.prepare(sql).get(...params) as { n: number }).n
 }
 
 export function listKanbanCardsSummary(): { status: string; title: string; assignee: string | null; priority: string; id: string }[] {
