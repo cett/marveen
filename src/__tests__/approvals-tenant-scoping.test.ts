@@ -32,6 +32,9 @@ vi.mock('../db.js', () => ({
   getApproval: vi.fn(),
   resolveApproval: vi.fn(),
   listApprovals: vi.fn(),
+  countApprovals: vi.fn(),
+  getApprovalStatusCounts: vi.fn(),
+  getOldestPendingApproval: vi.fn(),
   expireTimedOutApprovals: vi.fn(),
   createAgentMessage: vi.fn(),
 }))
@@ -73,6 +76,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(db.getApproval).mockReturnValue(undefined)
   vi.mocked(db.listApprovals).mockReturnValue([])
+  vi.mocked(db.countApprovals).mockReturnValue(0)
+  vi.mocked(db.getApprovalStatusCounts).mockReturnValue({ pending: 0, approved: 0, rejected: 0, timeout: 0 })
+  vi.mocked(db.getOldestPendingApproval).mockReturnValue(undefined)
   vi.mocked(db.resolveApproval).mockReturnValue(true)
   vi.mocked(db.expireTimedOutApprovals).mockReturnValue(0)
 })

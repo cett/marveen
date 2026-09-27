@@ -6,6 +6,7 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const mockCreate   = vi.fn()
 const mockList     = vi.fn()
+const mockCount    = vi.fn()
 const mockGet      = vi.fn()
 const mockDelete   = vi.fn()
 const mockRename   = vi.fn()
@@ -15,6 +16,7 @@ vi.mock('../artifacts-db.js', () => ({
   ARTIFACT_TITLE_MAX_LENGTH: 250,
   createArtifact:  (...a: unknown[]) => mockCreate(...a),
   listArtifacts:   (...a: unknown[]) => mockList(...a),
+  countArtifacts:  (...a: unknown[]) => mockCount(...a),
   getArtifact:     (...a: unknown[]) => mockGet(...a),
   deleteArtifact:  (...a: unknown[]) => mockDelete(...a),
   renameArtifact:  (...a: unknown[]) => mockRename(...a),
@@ -166,19 +168,22 @@ describe('POST /api/artifacts', () => {
 // ── GET /api/artifacts ────────────────────────────────────────────────────────
 
 describe('GET /api/artifacts', () => {
-  it('returns list from listArtifacts', async () => {
+  it('returns { items, total, offset, limit } from listArtifacts/countArtifacts', async () => {
     const rows = [{ id: '1', title: 'A', kind: 'text' }]
     mockList.mockReturnValue(rows)
+    mockCount.mockReturnValue(1)
     const { ctx, out } = makeCtx('GET', '/api/artifacts?agent=agent-a&kind=text', undefined, { role: 'viewer', tenantId: 'tenant-a' })
     const handled = await tryHandleArtifacts(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    expect(out.body).toEqual(rows)
+    expect(out.body).toEqual({ items: rows, total: 1, offset: 0, limit: 25 })
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ agent: 'agent-a', kind: 'text', tenant_id: 'tenant-a' }))
+    expect(mockCount).toHaveBeenCalledWith(expect.objectContaining({ agent: 'agent-a', kind: 'text', tenant_id: 'tenant-a' }))
   })
 
   it('non-admin list scoped to caller tenant', async () => {
     mockList.mockReturnValue([])
+    mockCount.mockReturnValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts', undefined, { role: 'viewer', tenantId: 'my-tenant' })
     await tryHandleArtifacts(ctx)
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'my-tenant' }))
@@ -186,6 +191,7 @@ describe('GET /api/artifacts', () => {
 
   it('admin list without ?tenant= passes undefined tenant_id (all tenants)', async () => {
     mockList.mockReturnValue([])
+    mockCount.mockReturnValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts', undefined, { role: 'admin', tenantId: null })
     await tryHandleArtifacts(ctx)
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: undefined }))
@@ -193,6 +199,7 @@ describe('GET /api/artifacts', () => {
 
   it('admin list with ?tenant= scopes to that tenant', async () => {
     mockList.mockReturnValue([])
+    mockCount.mockReturnValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts?tenant=specific-tenant', undefined, { role: 'admin', tenantId: null })
     await tryHandleArtifacts(ctx)
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'specific-tenant' }))
@@ -200,9 +207,27 @@ describe('GET /api/artifacts', () => {
 
   it('does not call createArtifact', async () => {
     mockList.mockReturnValue([])
+    mockCount.mockReturnValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts')
     await tryHandleArtifacts(ctx)
     expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('rejects an invalid limit with 400 invalid_value', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/artifacts?limit=abc')
+    await tryHandleArtifacts(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as any).error).toBe('invalid_value')
+    expect(mockList).not.toHaveBeenCalled()
+  })
+
+  it('passes explicit limit/offset through to listArtifacts and the response envelope', async () => {
+    mockList.mockReturnValue([])
+    mockCount.mockReturnValue(42)
+    const { ctx, out } = makeCtx('GET', '/api/artifacts?limit=10&offset=20')
+    await tryHandleArtifacts(ctx)
+    expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ limit: 10, offset: 20 }))
+    expect(out.body).toEqual({ items: [], total: 42, offset: 20, limit: 10 })
   })
 })
 

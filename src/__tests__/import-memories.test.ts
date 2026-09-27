@@ -347,14 +347,14 @@ describe('GET /api/import/log', () => {
 })
 
 describe('GET /api/import/search', () => {
-  it('returns empty array for blank query', async () => {
+  it('returns empty items/total for blank query', async () => {
     const { ctx, out } = makeCtx('GET', '/api/import/search', undefined, {})
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(200)
-    expect(out.body).toEqual([])
+    expect(out.body).toEqual({ items: [], total: 0, offset: 0, limit: 25 })
   })
 
-  it('finds matching import memories', async () => {
+  it('finds matching import memories and reports a real total', async () => {
     const { ctx: postCtx, out: postOut } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/search', interval_hours: 4 })
     await tryHandleImportMemories(postCtx)
     const sid = (postOut.body as { id: string }).id
@@ -369,16 +369,51 @@ describe('GET /api/import/search', () => {
     const { ctx, out } = makeCtx('GET', '/api/import/search', undefined, { q: 'budget' })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(200)
-    const results = out.body as { file_name: string }[]
-    expect(results).toHaveLength(1)
-    expect(results[0].file_name).toBe('meeting-notes.md')
+    const body = out.body as { items: { file_name: string }[]; total: number; offset: number; limit: number }
+    expect(body.total).toBe(1)
+    expect(body.offset).toBe(0)
+    expect(body.limit).toBe(25)
+    expect(body.items).toHaveLength(1)
+    expect(body.items[0].file_name).toBe('meeting-notes.md')
+  })
+
+  it('paginates with limit/offset', async () => {
+    const { ctx: postCtx, out: postOut } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/search-page', interval_hours: 4 })
+    await tryHandleImportMemories(postCtx)
+    const sid = (postOut.body as { id: string }).id
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    for (let i = 0; i < 3; i++) {
+      db.prepare(`
+        INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'pagetoken content', 'pagetoken', ?, ?, ?)
+      `).run(`pgtok${i}a2b3c4d`, sid, `/tmp/search-page/f${i}.md`, `f${i}.md`, `hash${i}`, now, now, now + i)
+    }
+
+    const { ctx, out } = makeCtx('GET', '/api/import/search', undefined, { q: 'pagetoken', limit: '2', offset: '1' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(200)
+    const body = out.body as { items: unknown[]; total: number; offset: number; limit: number }
+    expect(body.total).toBe(3)
+    expect(body.offset).toBe(1)
+    expect(body.limit).toBe(2)
+    expect(body.items).toHaveLength(2)
   })
 
   it('returns nothing when query does not match', async () => {
     const { ctx, out } = makeCtx('GET', '/api/import/search', undefined, { q: 'xyzzy-nonexistent' })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(200)
-    expect(out.body).toEqual([])
+    const body = out.body as { items: unknown[]; total: number }
+    expect(body.items).toEqual([])
+    expect(body.total).toBe(0)
+  })
+
+  it('rejects an invalid limit', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/import/search', undefined, { q: 'budget', limit: 'abc' })
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as { field: string }).field).toBe('limit')
   })
 })
 
@@ -722,9 +757,10 @@ describe('tenant scoping: GET /api/import/stats and /api/import/search', () => {
 
     const { ctx: searchCtx, out: searchOut } = makeCtx('GET', '/api/import/search', undefined, { q: 'budget' }, { role: 'viewer', tenantId: 'tenant-stat-a' })
     await tryHandleImportMemories(searchCtx)
-    const results = searchOut.body as { file_name: string }[]
-    expect(results).toHaveLength(1)
-    expect(results[0].file_name).toBe('/tmp/stat-a/budget-report.md')
+    const searchBody = searchOut.body as { items: { file_name: string }[]; total: number }
+    expect(searchBody.items).toHaveLength(1)
+    expect(searchBody.total).toBe(1)
+    expect(searchBody.items[0].file_name).toBe('/tmp/stat-a/budget-report.md')
 
     // Admin without ?tenant= sees both
     const { ctx: adminStatsCtx, out: adminStatsOut } = makeCtx('GET', '/api/import/stats')

@@ -180,6 +180,41 @@ export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[
   `).all(...agentBind, ...tenantBind, ...kindBind, limit, offset) as ArtifactSummary[]
 }
 
+// Grand-total count for the same filter shape listArtifacts() applies, so a
+// paginated list can show "X-Y / total" without fetching every row. Kept as
+// a separate query (not folded into listArtifacts) so existing callers that
+// treat its return value as a plain array are unaffected.
+export function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 'offset'> = {}): number {
+  const db = getDb()
+
+  const agentBind  = opts.agent ? [opts.agent] : []
+  const tenantBind = opts.tenant_id !== undefined ? [opts.tenant_id] : []
+  const kindBind   = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
+  const q = opts.q?.trim()
+
+  if (q) {
+    const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
+    const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
+    const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
+    const { c } = db.prepare(`
+      SELECT COUNT(*) AS c
+      FROM artifacts a
+      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
+      ${agentCond} ${tenantCond} ${kindCond}
+    `).get(ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind) as { c: number }
+    return c
+  }
+
+  const conditions: string[] = []
+  if (agentBind.length)  conditions.push('agent_id = ?')
+  if (tenantBind.length) conditions.push('tenant_id = ?')
+  if (kindBind.length)   conditions.push('kind = ?')
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  const { c } = db.prepare(`SELECT COUNT(*) AS c FROM artifacts ${where}`)
+    .get(...agentBind, ...tenantBind, ...kindBind) as { c: number }
+  return c
+}
+
 // Escape FTS5 special characters to prevent query-syntax errors on user input.
 // Wraps the term in double quotes so it is treated as a phrase, not as FTS5 operators.
 function ftsEscape(term: string): string {

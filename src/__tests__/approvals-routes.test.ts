@@ -41,6 +41,9 @@ vi.mock('../db.js', () => ({
     action_description: 'Write to /etc', status: 'pending',
     created_at: 1700000000, timeout_at: null, resolved_by: null, resolved_at: null,
   }]),
+  countApprovals: vi.fn().mockReturnValue(1),
+  getApprovalStatusCounts: vi.fn().mockReturnValue({ pending: 1, approved: 0, rejected: 0, timeout: 0 }),
+  getOldestPendingApproval: vi.fn().mockReturnValue(undefined),
   expireTimedOutApprovals: vi.fn().mockReturnValue(0),
   createAgentMessage: vi.fn(),
   writeAgentAuditLog: vi.fn(),
@@ -126,8 +129,10 @@ describe('tryHandleApprovals', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    expect(Array.isArray(out.body)).toBe(true)
-    expect(out.body[0].id).toBe('appr-uuid-1')
+    expect(Array.isArray(out.body.items)).toBe(true)
+    expect(out.body.items[0].id).toBe('appr-uuid-1')
+    expect(out.body.total).toBe(1)
+    expect(out.body.counts).toEqual({ pending: 1, approved: 0, rejected: 0, timeout: 0 })
   })
 
   it('GET /api/approvals/:id returns approval', async () => {

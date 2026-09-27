@@ -4,6 +4,7 @@ import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../db.js', () => ({
   listKanbanCards: vi.fn().mockReturnValue([]),
+  countKanbanCards: vi.fn().mockReturnValue(0),
   createKanbanCard: vi.fn().mockReturnValue({ id: 'card1' }),
   updateKanbanCard: vi.fn().mockReturnValue(true),
   deleteKanbanCard: vi.fn().mockReturnValue(true),
@@ -91,6 +92,36 @@ describe('tryHandleKanban', () => {
     const { ctx, out } = makeCtx('GET', '/api/kanban')
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
+  })
+
+  it('GET /api/kanban?status= returns the paginated per-column contract', async () => {
+    vi.mocked(db.listKanbanCards).mockReturnValueOnce([
+      { id: 'card1', status: 'done' } as any,
+    ])
+    vi.mocked(db.countKanbanCards).mockReturnValueOnce(47)
+    const { ctx, out } = makeCtx('GET', '/api/kanban?status=done&limit=20&offset=20')
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(out.body.items).toHaveLength(1)
+    expect(out.body.total).toBe(47)
+    expect(out.body.offset).toBe(20)
+    expect(out.body.limit).toBe(20)
+    expect(vi.mocked(db.listKanbanCards)).toHaveBeenCalledWith({ status: 'done', limit: 20, offset: 20 })
+    expect(vi.mocked(db.countKanbanCards)).toHaveBeenCalledWith('done')
+  })
+
+  it('GET /api/kanban?status= defaults limit to 20 when omitted', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/kanban?status=planned')
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.body.limit).toBe(20)
+    expect(out.body.offset).toBe(0)
+  })
+
+  it('GET /api/kanban?status= rejects an unknown status', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/kanban?status=bogus')
+    await tryHandleKanban(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('status')
   })
 
   it('POST /api/kanban creates card', async () => {
@@ -469,6 +500,20 @@ describe('tryHandleKanban -- tenant isolation for scoped callers', () => {
     await tryHandleKanban(ctx)
     expect(out.status).toBe(200)
     expect(vi.mocked(db.listKanbanCards)).not.toHaveBeenCalled()
+  })
+
+  it('GET /api/kanban?status= uses scoped list/count for a tenant caller', async () => {
+    vi.mocked(db.getDb).mockReturnValueOnce({
+      prepare: vi.fn().mockReturnValue({
+        all: vi.fn().mockReturnValue([{ id: 'card1', status: 'done', tenant_id: 'acme' }]),
+        get: vi.fn().mockReturnValue({ n: 3 }),
+      }),
+    } as any)
+    const { ctx, out } = makeScopedCtx('GET', '/api/kanban?status=done&limit=20&offset=0', 'acme')
+    await tryHandleKanban(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.items).toHaveLength(1)
+    expect(out.body.total).toBe(3)
   })
 
   it('PUT /api/kanban/:id returns 404 when card does not belong to caller tenant', async () => {

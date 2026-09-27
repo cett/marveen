@@ -3,6 +3,10 @@ import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
+import { renderPaginator } from './paginator.js'
+
+const IMPORT_SEARCH_LIMIT = 25
+const _importSearchState = { q: '', offset: 0 }
 
 // ============================================================
 // === Import Memories -- external file sources ===
@@ -191,6 +195,83 @@ export async function loadImportSources() {
   }
 }
 
+// ── Search imported memories ─────────────────────────────────────────────────
+
+function renderImportSearchResults(items) {
+  const el = document.getElementById('importSearchResults')
+  const emp = document.getElementById('importSearchEmpty')
+  if (!el || !emp) return
+  if (!items.length) { el.innerHTML = ''; emp.hidden = false; return }
+  emp.hidden = true
+  el.innerHTML = `<div class="table-wrap"><table class="table" data-variant="compact">
+    <thead>
+      <tr>
+        <th>${escapeHtml(t('import.search.col_file'))}</th>
+        <th>${escapeHtml(t('import.search.col_preview'))}</th>
+        <th>${escapeHtml(t('import.search.col_updated'))}</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${items.map(r => `
+        <tr>
+          <td><code style="font-size:12px" title="${escapeHtml(r.file_path)}">${escapeHtml(r.file_name)}</code></td>
+          <td style="font-size:12px;color:var(--text-muted)">${escapeHtml(r.preview)}</td>
+          <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">${formatTs(r.updated_at)}</td>
+        </tr>
+      `).join('')}
+    </tbody>
+  </table></div>`
+}
+
+// Public entrypoint (search-button click / Enter key) -- resets to offset 0.
+async function loadImportSearch() {
+  _importSearchState.offset = 0
+  await _loadImportSearchPage()
+}
+
+async function _loadImportSearchPage() {
+  const resultsEl = document.getElementById('importSearchResults')
+  const emptyEl = document.getElementById('importSearchEmpty')
+  const pagerEl = document.getElementById('importSearchPagination')
+  if (!resultsEl || !emptyEl || !pagerEl) return
+
+  // No query yet -- nothing to show (this is an explicit-search box, not a
+  // live "browse everything" list; import_memories can be large and the
+  // search is a LIKE '%q%' scan, so an empty query intentionally does not fetch).
+  if (!_importSearchState.q) {
+    resultsEl.innerHTML = ''
+    emptyEl.hidden = true
+    pagerEl.innerHTML = ''
+    return
+  }
+
+  const params = new URLSearchParams()
+  params.set('q', _importSearchState.q)
+  params.set('limit', String(IMPORT_SEARCH_LIMIT))
+  params.set('offset', String(_importSearchState.offset))
+  const tenant = _importTenantGetter?.()
+  if (tenant) params.set('tenant', tenant)
+
+  try {
+    const res = await fetch(`/api/import/search?${params}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    const items = data.items ?? []
+    renderImportSearchResults(items)
+    renderPaginator(pagerEl, {
+      offset: _importSearchState.offset,
+      limit: IMPORT_SEARCH_LIMIT,
+      total: data.total ?? items.length,
+      onPrev: () => { _importSearchState.offset = Math.max(0, _importSearchState.offset - IMPORT_SEARCH_LIMIT); _loadImportSearchPage() },
+      onNext: () => { _importSearchState.offset += IMPORT_SEARCH_LIMIT; _loadImportSearchPage() },
+    })
+  } catch (err) {
+    resultsEl.innerHTML = ''
+    emptyEl.hidden = true
+    showToast(t('import.search.error') || `Hiba: ${err.message}`, 'error')
+  }
+}
+
 // Populates the admin-only "assign to tenant" select in the add-source form.
 // Hidden entirely for non-admins (initTenantSelector already returned null).
 async function initSourceTenantSelect() {
@@ -216,8 +297,12 @@ export function initImportMemories() {
   // loadImportSources() right after initImportMemories() regardless (see the
   // notes in memories.js's initMemories) -- the first render can race ahead
   // of this resolving, which is benign for the same reason it is there.
-  initTenantSelector('importTenantSelectorContainer', () => loadImportSources())
-    .then(getter => { _importTenantGetter = getter; initSourceTenantSelect() })
+  initTenantSelector('importTenantSelectorContainer', () => {
+    loadImportSources()
+    // Refresh search results too if one is already showing -- otherwise a
+    // tenant switch would leave stale (wrong-tenant) rows on screen.
+    if (_importSearchState.q) loadImportSearch()
+  }).then(getter => { _importTenantGetter = getter; initSourceTenantSelect() })
 
   // SharePoint disclaimer + Confluence fields toggle (mutually exclusive
   // with each other, shown only for their own source type). Declared before
@@ -288,4 +373,17 @@ export function initImportMemories() {
       showToast(t('import.toast.all_wiped'))
     })
   }
+
+  // Search imported memories (explicit trigger, not per-keystroke -- see
+  // _loadImportSearchPage's comment on why an empty query does not fetch).
+  document.getElementById('importSearchBtn')?.addEventListener('click', () => {
+    _importSearchState.q = document.getElementById('importSearchInput')?.value.trim() || ''
+    loadImportSearch()
+  })
+  document.getElementById('importSearchInput')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    _importSearchState.q = e.target.value.trim()
+    loadImportSearch()
+  })
 }

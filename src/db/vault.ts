@@ -175,24 +175,81 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
 }
 
+// agent_id/category use LIKE substring matching, not exact equality -- this
+// mirrors the dashboard's approvals.js filter inputs, which have always done
+// client-side substring matching. Keeping the DB-level filter as exact match
+// while the UI did substring search only worked because the frontend
+// re-filtered the (unpaginated, up-to-500) result set itself; once the UI
+// switches to server-side pagination that client-side re-filter goes away,
+// so the DB filter must implement the same substring semantics.
+function approvalsWhere(opts: {
+  agent_id?: string
+  category?: string
+  status?: string
+  tenantId?: string
+}): { where: string; params: unknown[] } {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (opts.agent_id) { conditions.push('agent_id LIKE ?'); params.push(`%${opts.agent_id}%`) }
+  if (opts.category) { conditions.push('category LIKE ?'); params.push(`%${opts.category}%`) }
+  if (opts.status) { conditions.push('status = ?'); params.push(opts.status) }
+  // SQL-level tenant filter must come before LIMIT (per 626/704 pagination lesson).
+  if (opts.tenantId !== undefined) { conditions.push('tenant_id = ?'); params.push(opts.tenantId) }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  return { where, params }
+}
+
 export function listApprovals(opts: {
   agent_id?: string
   category?: string
   status?: string
   limit?: number
+  offset?: number
   tenantId?: string
 }): Approval[] {
-  const conditions: string[] = []
-  const params: unknown[] = []
-  if (opts.agent_id) { conditions.push('agent_id = ?'); params.push(opts.agent_id) }
-  if (opts.category) { conditions.push('category = ?'); params.push(opts.category) }
-  if (opts.status) { conditions.push('status = ?'); params.push(opts.status) }
-  // SQL-level tenant filter must come before LIMIT (per 626/704 pagination lesson).
-  if (opts.tenantId !== undefined) { conditions.push('tenant_id = ?'); params.push(opts.tenantId) }
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  const { where, params } = approvalsWhere(opts)
   const limit = Math.min(opts.limit ?? 100, 500)
-  params.push(limit)
-  return db.prepare(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ?`).all(...params) as Approval[]
+  const offset = Math.max(opts.offset ?? 0, 0)
+  return db.prepare(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as Approval[]
+}
+
+export function countApprovals(opts: {
+  agent_id?: string
+  category?: string
+  status?: string
+  tenantId?: string
+}): number {
+  const { where, params } = approvalsWhere(opts)
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM approvals ${where}`).get(...params) as { n: number }
+  return row.n
+}
+
+// Tenant-scoped only (no status/category/agent filter) so the stat cards
+// stay accurate regardless of which filtered/paginated page is showing --
+// same reasoning as getIdeaStatusCounts (Ideas P1b).
+export function getApprovalStatusCounts(tenantId?: string): Record<'pending' | 'approved' | 'rejected' | 'timeout', number> {
+  const params: unknown[] = []
+  let where = ''
+  if (tenantId !== undefined) { where = 'WHERE tenant_id = ?'; params.push(tenantId) }
+  const rows = db.prepare(`SELECT status, COUNT(*) AS n FROM approvals ${where} GROUP BY status`).all(...params) as { status: string; n: number }[]
+  const counts = { pending: 0, approved: 0, rejected: 0, timeout: 0 }
+  for (const r of rows) {
+    if (r.status in counts) counts[r.status as keyof typeof counts] = r.n
+  }
+  return counts
+}
+
+// Oldest still-pending approval, tenant-scoped only -- drives the "N pending,
+// oldest waiting Xm" banner without the frontend having to fetch (and
+// re-filter) the whole pending set itself.
+export function getOldestPendingApproval(tenantId?: string): { agent_id: string; category: string; requested_at: number; timeout_at: number | null } | undefined {
+  const params: unknown[] = []
+  let where = `status = 'pending'`
+  if (tenantId !== undefined) { where += ' AND tenant_id = ?'; params.push(tenantId) }
+  return db.prepare(`
+    SELECT agent_id, category, requested_at, timeout_at FROM approvals
+    WHERE ${where} ORDER BY requested_at ASC LIMIT 1
+  `).get(...params) as { agent_id: string; category: string; requested_at: number; timeout_at: number | null } | undefined
 }
 
 // Stamp trace context onto an agent_messages row that was created without one.

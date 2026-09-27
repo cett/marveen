@@ -10,6 +10,7 @@ vi.mock('../workspace-store.js', () => ({
   getWorkspaceDoc: vi.fn(),
   getWorkspaceDocBlob: vi.fn(),
   listWorkspaceDocs: vi.fn(),
+  countWorkspaceDocs: vi.fn(),
   patchWorkspaceDoc: vi.fn(),
   deleteWorkspaceDoc: vi.fn(),
   peekWorkspaceDoc: vi.fn(),
@@ -67,6 +68,7 @@ beforeEach(() => { vi.clearAllMocks() })
 describe('GET /api/workspace', () => {
   it('returns list of docs', async () => {
     vi.mocked(store.listWorkspaceDocs).mockReturnValue([SAMPLE_DOC as any])
+    vi.mocked(store.countWorkspaceDocs).mockReturnValue(1)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -74,8 +76,49 @@ describe('GET /api/workspace', () => {
     expect(out.body.total).toBe(1)
   })
 
+  it('accepts limit/offset and passes them through, with a real COUNT(*) as total', async () => {
+    vi.mocked(store.listWorkspaceDocs).mockReturnValue([SAMPLE_DOC as any])
+    vi.mocked(store.countWorkspaceDocs).mockReturnValue(47)
+    const { ctx, out } = makeCtx('GET', '/api/v1/workspace?limit=20&offset=20')
+    await tryHandleWorkspace(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.total).toBe(47)
+    expect(out.body.offset).toBe(20)
+    expect(out.body.limit).toBe(20)
+    expect(vi.mocked(store.listWorkspaceDocs)).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 20, offset: 20 })
+    )
+  })
+
+  it('omitted limit stays unbounded (agent-to-agent handoff contract)', async () => {
+    vi.mocked(store.listWorkspaceDocs).mockReturnValue([SAMPLE_DOC as any])
+    vi.mocked(store.countWorkspaceDocs).mockReturnValue(1)
+    const { ctx, out } = makeCtx('GET', '/api/v1/workspace?doc_key_prefix=design')
+    await tryHandleWorkspace(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.limit).toBeNull()
+    expect(vi.mocked(store.listWorkspaceDocs)).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: undefined, offset: 0 })
+    )
+  })
+
+  it('rejects an invalid limit', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/v1/workspace?limit=abc')
+    await tryHandleWorkspace(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('limit')
+  })
+
+  it('rejects a negative offset', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/v1/workspace?offset=-1')
+    await tryHandleWorkspace(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('offset')
+  })
+
   it('passes tenant filter to listWorkspaceDocs for non-admin', async () => {
     vi.mocked(store.listWorkspaceDocs).mockReturnValue([])
+    vi.mocked(store.countWorkspaceDocs).mockReturnValue(0)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace', undefined, { role: 'agent', tenantId: 'acme-corp' })
     await tryHandleWorkspace(ctx)
     expect(vi.mocked(store.listWorkspaceDocs)).toHaveBeenCalledWith(
@@ -86,6 +129,7 @@ describe('GET /api/workspace', () => {
 
   it('passes agent filter', async () => {
     vi.mocked(store.listWorkspaceDocs).mockReturnValue([])
+    vi.mocked(store.countWorkspaceDocs).mockReturnValue(0)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace?agent=rick')
     await tryHandleWorkspace(ctx)
     expect(vi.mocked(store.listWorkspaceDocs)).toHaveBeenCalledWith(

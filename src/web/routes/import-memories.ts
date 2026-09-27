@@ -5,6 +5,7 @@ import { readBody, json } from '../http-helpers.js'
 import { crawlSource } from '../import-crawler.js'
 import { VALID_INTERVALS } from '../import-config.js'
 import { getSecret } from '../vault.js'
+import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 
 function genId(): string {
@@ -330,20 +331,31 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   if (path === '/api/import/search' && method === 'GET') {
     const { url } = ctx
     const q = url.searchParams.get('q')?.trim() || ''
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
-    if (!q) { json(res, []); return true }
+
+    const page = parsePagination(url.searchParams, res, { defaultLimit: 25, maxLimit: 100 })
+    if (!page) return true
+    const { limit, offset } = page
+
+    if (!q) { json(res, { items: [], total: 0, offset, limit }); return true }
 
     const searchTc = isAdmin && tenantParam === null ? '' : ' AND s.tenant_id = ?'
     const searchTp = isAdmin && tenantParam === null ? [] : [effectiveTenantId]
-    const rows = getDb().prepare(`
+    const searchParams = [`%${q}%`, `%${q}%`, `%${q}%`, ...searchTp]
+    const items = getDb().prepare(`
       SELECT im.id, im.source_id, im.file_path, im.file_name, im.keywords,
              substr(im.content, 1, 300) AS preview, im.created_at, im.updated_at
       FROM import_memories im
       JOIN import_sources s ON s.id = im.source_id
       WHERE (im.content LIKE ? OR im.keywords LIKE ? OR im.file_name LIKE ?)${searchTc}
-      ORDER BY im.updated_at DESC LIMIT ?
-    `).all(`%${q}%`, `%${q}%`, `%${q}%`, ...searchTp, limit)
-    json(res, rows)
+      ORDER BY im.updated_at DESC LIMIT ? OFFSET ?
+    `).all(...searchParams, limit, offset)
+    const total = (getDb().prepare(`
+      SELECT COUNT(*) AS n
+      FROM import_memories im
+      JOIN import_sources s ON s.id = im.source_id
+      WHERE (im.content LIKE ? OR im.keywords LIKE ? OR im.file_name LIKE ?)${searchTc}
+    `).get(...searchParams) as { n: number }).n
+    json(res, { items, total, offset, limit })
     return true
   }
 

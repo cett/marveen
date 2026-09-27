@@ -44,7 +44,7 @@ describe('tryHandleIdeas: tenant-IDOR guard', () => {
     const id = await createIdea('tenant-a', 'idea from tenant a')
     const { ctx, out } = makeCtx('GET', '/api/ideas', undefined, { role: 'agent', tenantId: 'tenant-a' })
     await tryHandleIdeas(ctx)
-    expect(out.body.find((i: any) => i.id === id)).toBeTruthy()
+    expect(out.body.ideas.find((i: any) => i.id === id)).toBeTruthy()
   })
 
   it('GET /api/ideas excludes another tenant\'s ideas for a non-admin caller', async () => {
@@ -52,8 +52,8 @@ describe('tryHandleIdeas: tenant-IDOR guard', () => {
     await createIdea('tenant-b', 'idea B')
     const { ctx, out } = makeCtx('GET', '/api/ideas', undefined, { role: 'agent', tenantId: 'tenant-a' })
     await tryHandleIdeas(ctx)
-    expect(out.body).toHaveLength(1)
-    expect(out.body[0].title).toBe('idea A')
+    expect(out.body.ideas).toHaveLength(1)
+    expect(out.body.ideas[0].title).toBe('idea A')
   })
 
   it('GET /api/ideas with no ?tenant= returns every tenant for admin', async () => {
@@ -61,7 +61,7 @@ describe('tryHandleIdeas: tenant-IDOR guard', () => {
     await createIdea('tenant-b', 'idea B')
     const { ctx, out } = makeCtx('GET', '/api/ideas', undefined, { role: 'admin' })
     await tryHandleIdeas(ctx)
-    expect(out.body).toHaveLength(2)
+    expect(out.body.ideas).toHaveLength(2)
   })
 
   it('GET /api/ideas?tenant= narrows admin to one tenant', async () => {
@@ -69,8 +69,8 @@ describe('tryHandleIdeas: tenant-IDOR guard', () => {
     await createIdea('tenant-b', 'idea B')
     const { ctx, out } = makeCtx('GET', '/api/ideas?tenant=tenant-b', undefined, { role: 'admin' })
     await tryHandleIdeas(ctx)
-    expect(out.body).toHaveLength(1)
-    expect(out.body[0].title).toBe('idea B')
+    expect(out.body.ideas).toHaveLength(1)
+    expect(out.body.ideas[0].title).toBe('idea B')
   })
 
   it('PUT on another tenant\'s idea 404s (not 403) for a non-admin caller', async () => {

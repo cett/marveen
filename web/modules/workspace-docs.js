@@ -2,6 +2,10 @@ import { escapeHtml } from './util.js'
 import { renderMarkdown } from './docs-research.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
+import { renderPaginator } from './paginator.js'
+
+const WD_LIMIT = 20
+const _state = { offset: 0 }
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 
@@ -37,6 +41,11 @@ function fmtBytes(n) {
 // ── Fetch & render list ───────────────────────────────────────────────────────
 
 export async function loadWorkspaceDocs() {
+  _state.offset = 0
+  await _loadWorkspaceDocsPage()
+}
+
+async function _loadWorkspaceDocsPage() {
   const agent       = agentFilter()?.value?.trim() || ''
   const type        = typeFilter()?.value || ''
   const contentType = contentTypeFilter()?.value || ''
@@ -47,12 +56,22 @@ export async function loadWorkspaceDocs() {
   if (type)        params.set('type', type)
   if (contentType) params.set('content_type', contentType)
   if (tenant)      params.set('tenant', tenant)
+  params.set('limit', String(WD_LIMIT))
+  params.set('offset', String(_state.offset))
 
   try {
     const res = await fetch(`/api/workspace?${params}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    renderList(Array.isArray(data.items) ? data.items : [])
+    const rows = Array.isArray(data.items) ? data.items : []
+    renderList(rows)
+    renderPaginator(document.getElementById('wdPagination'), {
+      offset: _state.offset,
+      limit: WD_LIMIT,
+      total: data.total ?? rows.length,
+      onPrev: () => { _state.offset = Math.max(0, _state.offset - WD_LIMIT); _loadWorkspaceDocsPage() },
+      onNext: () => { _state.offset += WD_LIMIT; _loadWorkspaceDocsPage() },
+    })
   } catch (err) {
     showToast(`Betöltési hiba: ${err.message}`, 'error')
   }

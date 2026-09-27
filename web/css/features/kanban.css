@@ -105,6 +105,12 @@
   border-radius: var(--radius-sm);
 }
 
+.kanban-load-more-btn {
+  width: 100%;
+  justify-content: center;
+  font-size: 12px;
+}
+
 /* Touch drag drop bar. Raised only while a long-press drag is in progress:
    on a phone the columns stack, so the next column is ~2000px below the fold
    and there is nothing on screen to drop onto. Fixed to the bottom edge so

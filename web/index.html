@@ -1153,6 +1153,20 @@
               <div id="importSourcesList" class="import-sources-list"></div>
             </section>
 
+            <!-- Search imported memories -->
+            <section class="import-section">
+              <div class="section-header">
+                <h2 data-i18n="import.search.title">Importált emlékek keresése</h2>
+              </div>
+              <div style="display:flex;gap:8px;margin-bottom:12px">
+                <input type="text" id="importSearchInput" style="flex:1" data-i18n-ph="import.search.placeholder" placeholder="Keresés tartalomban, kulcsszóban, fájlnévben...">
+                <button class="btn" data-variant="secondary" data-size="compact" id="importSearchBtn" data-i18n="common.btn.search">Keresés</button>
+              </div>
+              <div id="importSearchResults"></div>
+              <div id="importSearchEmpty" hidden class="page-info-text" data-i18n="import.search.empty">Nincs találat.</div>
+              <div class="paginator" id="importSearchPagination"></div>
+            </section>
+
             <!-- Run log -->
             <section class="import-section">
               <div class="section-header">
@@ -1396,6 +1410,7 @@
       </div>
       <div class="ideas-stats" id="ideasStats" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
       <div id="ideasList" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div class="paginator" id="ideasPagination"></div>
       <div class="modal-overlay" id="ideaModalOverlay">
         <div class="modal" style="max-width:540px">
           <div class="modal-header">
@@ -2132,6 +2147,7 @@
       </div>
       <div id="artifactsList" style="margin-bottom:16px"></div>
       <div id="artifactsEmpty" hidden style="color:var(--text-muted);padding:24px 0">Nincs találat.</div>
+      <div class="paginator" id="artifactsPagination"></div>
 
       <!-- Preview panel -->
       <div id="artifactsPreview" hidden style="border:1px solid var(--border);border-radius:6px;padding:12px">
@@ -2177,6 +2193,7 @@
       </div>
       <div id="wdList" style="margin-bottom:16px"></div>
       <div id="wdEmpty" hidden style="color:var(--text-muted);padding:24px 0">Nincs találat.</div>
+      <div class="paginator" id="wdPagination"></div>
 
       <!-- Preview panel -->
       <div id="wdPreview" hidden style="border:1px solid var(--border);border-radius:6px;padding:12px">

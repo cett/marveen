@@ -3,10 +3,13 @@ import { renderMarkdown } from './docs-research.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { initTenantSelector } from './tenant-selector.js'
+import { renderPaginator } from './paginator.js'
 
 let _tenantGetter = null
 
 const PREVIEW_TEXT_KINDS = new Set(['text', 'markdown', 'json'])
+const ARTIFACTS_LIMIT = 25
+const _state = { offset: 0 }
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 
@@ -25,6 +28,11 @@ const previewDownload = () => document.getElementById('artifactsPreviewDownload'
 // ── Fetch & render list ───────────────────────────────────────────────────────
 
 export async function loadArtifacts() {
+  _state.offset = 0
+  await _loadArtifactsPage()
+}
+
+async function _loadArtifactsPage() {
   const agent = agentFilter()?.value?.trim() || ''
   const kind  = kindFilter()?.value || ''
   const date  = dateFilter()?.value || ''
@@ -38,13 +46,22 @@ export async function loadArtifacts() {
   }
   const tenant = _tenantGetter?.()
   if (tenant) params.set('tenant', tenant)
-  params.set('limit', '100')
+  params.set('limit', String(ARTIFACTS_LIMIT))
+  params.set('offset', String(_state.offset))
 
   try {
     const res = await fetch(`/api/artifacts?${params}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const rows = await res.json()
+    const data = await res.json()
+    const rows = data.items ?? []
     renderList(rows)
+    renderPaginator(document.getElementById('artifactsPagination'), {
+      offset: _state.offset,
+      limit: ARTIFACTS_LIMIT,
+      total: data.total ?? rows.length,
+      onPrev: () => { _state.offset = Math.max(0, _state.offset - ARTIFACTS_LIMIT); _loadArtifactsPage() },
+      onNext: () => { _state.offset += ARTIFACTS_LIMIT; _loadArtifactsPage() },
+    })
   } catch (err) {
     showToast(t('common.error') || `Error: ${err.message}`, 'error')
   }

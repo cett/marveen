@@ -58,6 +58,21 @@ const kanbanCollapsedLanes = new Set()
 // Set of status column keys that are hidden from the board view.
 let kanbanHiddenColumns = new Set()
 
+// ── Per-column "load more" (P1c) ─────────────────────────────────────────────
+// Only active for the flat, unfiltered board: when no project/assignee/label
+// filter and no swimlane grouping is engaged, loadKanban() fetches each
+// status column's first KANBAN_COLUMN_LIMIT cards separately (instead of the
+// whole board in one shot) and _kanbanPagedMode is true. The moment any
+// filter or grouping gets turned on, loadKanban() falls back to fetching the
+// complete unfiltered set in one request -- every filter/swimlane in this
+// file operates client-side over kanbanCards, and they need the full set to
+// be correct (a project filter must not miss a card just because it wasn't
+// on the loaded page yet). _kanbanColumnPaging tracks, per status, how many
+// cards have been loaded so far and the server-reported total.
+const KANBAN_COLUMN_LIMIT = 20
+let _kanbanPagedMode = false
+const _kanbanColumnPaging = {}
+
 const cardModalOverlay = document.getElementById('cardModalOverlay')
 const cardDetailOverlay = document.getElementById('cardDetailOverlay')
 const breakdownOverlay = document.getElementById('breakdownOverlay')
@@ -188,17 +203,42 @@ export async function loadKanban() {
       } catch { /* ignore malformed storage */ }
     }
     const kanbanTenant = _kanbanTenantGetter?.()
-    const kanbanUrl = kanbanTenant ? `/api/kanban?tenant=${encodeURIComponent(kanbanTenant)}` : '/api/kanban'
-    const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
-      fetch(kanbanUrl),
+    const [assigneesRes, projectsRes, labelsRes] = await Promise.all([
       fetch('/api/kanban/assignees'),
       fetch('/api/kanban-projects'),
       fetch('/api/kanban/labels'),
     ])
-    kanbanCards = await cardsRes.json()
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
+
+    // Paged mode only applies to the flat, unfiltered board -- see the
+    // _kanbanColumnPaging comment above for why filters/grouping force a
+    // full fetch instead.
+    const filtersActive = kanbanGroupBy !== 'none' || !!kanbanProjectFilter || !!kanbanAssigneeFilter || kanbanLabelFilter.size > 0
+    if (filtersActive) {
+      _kanbanPagedMode = false
+      const kanbanUrl = kanbanTenant ? `/api/kanban?tenant=${encodeURIComponent(kanbanTenant)}` : '/api/kanban'
+      const cardsRes = await fetch(kanbanUrl)
+      kanbanCards = await cardsRes.json()
+    } else {
+      _kanbanPagedMode = true
+      // The 30s auto-refresh calls loadKanban() again, which lands here every
+      // time -- re-fetch each column at its CURRENT loaded size (not a hard
+      // reset to KANBAN_COLUMN_LIMIT), so a column the user expanded via
+      // "load more" stays expanded across refreshes instead of silently
+      // collapsing back to 20 every 30 seconds.
+      const pages = await Promise.all(KANBAN_STATUS_DEFS.map((def) => {
+        const alreadyShown = _kanbanColumnPaging[def.status]?.offset ?? 0
+        const pageLimit = Math.max(KANBAN_COLUMN_LIMIT, alreadyShown)
+        return _fetchKanbanColumnPage(def.status, 0, kanbanTenant, pageLimit)
+      }))
+      kanbanCards = []
+      for (const { status, items, total } of pages) {
+        kanbanCards.push(...items)
+        _kanbanColumnPaging[status] = { offset: items.length, total }
+      }
+    }
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -209,10 +249,49 @@ export async function loadKanban() {
   }
 }
 
+// Fetch one page of one status column. Shared by the initial paged load and
+// by the per-column "load more" button.
+async function _fetchKanbanColumnPage(status, offset, tenant, limit = KANBAN_COLUMN_LIMIT) {
+  const params = new URLSearchParams()
+  params.set('status', status)
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  if (tenant) params.set('tenant', tenant)
+  const res = await fetch(`/api/kanban?${params}`)
+  const data = await res.json()
+  return { status, items: data.items ?? [], total: data.total ?? 0 }
+}
+
+// A project/assignee/label filter or swimlane grouping just got toggled. In
+// paged mode the currently loaded cards are only a partial set (per-column
+// first pages), which would make the filter silently look emptier than it
+// really is -- so switch to the full unfiltered fetch via loadKanban()
+// instead of a client-side-only renderKanban(). Once already holding the
+// full set (or turning a filter back off), a plain re-render is correct and
+// avoids an unnecessary round trip.
+function _kanbanFilterChanged() {
+  if (_kanbanPagedMode) { loadKanban(); return }
+  renderKanban()
+}
+
+async function _loadMoreKanbanColumn(status) {
+  const paging = _kanbanColumnPaging[status]
+  if (!paging) return
+  const tenant = _kanbanTenantGetter?.()
+  const { items, total } = await _fetchKanbanColumnPage(status, paging.offset, tenant)
+  kanbanCards.push(...items)
+  _kanbanColumnPaging[status] = { offset: paging.offset + items.length, total }
+  // renderKanban() rebuilds the column's DOM from scratch (col.innerHTML='' +
+  // createCardEl() per card), which re-wires drag-and-drop on every card --
+  // old and newly-appended alike -- for free. No separate DnD-reinit step
+  // needed; see createCardEl's own dragstart/dragover/drop listeners.
+  renderKanban()
+}
+
 document.getElementById('kanbanGroupBy').addEventListener('change', (e) => {
   kanbanGroupBy = e.target.value
   localStorage.setItem('marveen.kanbanGroupBy', kanbanGroupBy)
-  renderKanban()
+  _kanbanFilterChanged()
 })
 
 function populateProjectFilter() {
@@ -263,7 +342,7 @@ function populateProjectSuggestions() {
 
 document.getElementById('kanbanProjectFilter').addEventListener('change', (e) => {
   kanbanProjectFilter = e.target.value
-  renderKanban()
+  _kanbanFilterChanged()
 })
 
 // The kanban "owner" is the assignee whose type is 'owner' -- the person the
@@ -311,7 +390,7 @@ function setupAssigneeFilter() {
     sel.addEventListener('change', (e) => {
       kanbanAssigneeFilter = e.target.value
       syncOwnerFilterBtn()
-      renderKanban()
+      _kanbanFilterChanged()
     })
 
     const ownerBtn = document.createElement('button')
@@ -328,7 +407,7 @@ function setupAssigneeFilter() {
       // Keep the dropdown in sync (only selectable if the owner is a known assignee).
       sel.value = kanbanAssignees.some((a) => a.name === kanbanAssigneeFilter) ? kanbanAssigneeFilter : ''
       syncOwnerFilterBtn()
-      renderKanban()
+      _kanbanFilterChanged()
     })
 
     toolbar.appendChild(label)
@@ -380,13 +459,13 @@ function toggleKanbanLabelFilter(labelId) {
   if (kanbanLabelFilter.has(labelId)) kanbanLabelFilter.delete(labelId)
   else kanbanLabelFilter.add(labelId)
   persistKanbanFilters()
-  renderKanban()
+  _kanbanFilterChanged()
 }
 
 function clearKanbanQuickFilters() {
   kanbanLabelFilter.clear()
   persistKanbanFilters()
-  renderKanban()
+  _kanbanFilterChanged()
 }
 
 function persistKanbanFilters() {
@@ -488,6 +567,20 @@ function renderKanban() {
 
       for (const card of cards) {
         col.appendChild(createCardEl(card, buildEmbeddedSubtrees(card.id, embeddedSubtaskIds)))
+      }
+
+      // Per-column "load more" (P1c): only in paged mode, and only when the
+      // server still has more cards for this status than are loaded.
+      const paging = _kanbanColumnPaging[status]
+      if (_kanbanPagedMode && paging && paging.offset < paging.total) {
+        const loadMoreBtn = document.createElement('button')
+        loadMoreBtn.type = 'button'
+        loadMoreBtn.className = 'btn kanban-load-more-btn'
+        loadMoreBtn.dataset.variant = 'secondary'
+        loadMoreBtn.dataset.size = 'compact'
+        loadMoreBtn.textContent = t('kanban.load_more', { n: paging.total - paging.offset })
+        loadMoreBtn.addEventListener('click', () => _loadMoreKanbanColumn(status))
+        col.appendChild(loadMoreBtn)
       }
     }
     // Hide/show flat-board columns based on visibility set

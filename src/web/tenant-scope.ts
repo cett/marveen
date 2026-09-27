@@ -143,13 +143,18 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
        * the unscoped listKanbanCards() so tenant-scoped and fleet-wide counts
        * agree. `limit` is only applied when explicitly passed; the default
        * (unbounded) call mirrors the unscoped path instead of silently
-       * truncating at a fixed page size.
+       * truncating at a fixed page size. `offset` is only meaningful together
+       * with `limit` (kanban board per-column "load more", P1c).
        */
-      list(status?: string, limit?: number): ScopedKanbanCard[] {
-        const limitClause = limit !== undefined ? ' LIMIT ?' : ''
+      list(status?: string, limit?: number, offset?: number): ScopedKanbanCard[] {
+        let limitClause = ''
+        if (limit !== undefined) {
+          limitClause = ' LIMIT ?'
+          if (offset !== undefined) limitClause += ' OFFSET ?'
+        }
         if (status) {
           const params: unknown[] = [tenantId, status]
-          if (limit !== undefined) params.push(limit)
+          if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
           return db
             .prepare(
               `SELECT * FROM kanban_cards
@@ -159,7 +164,7 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
             .all(...params) as ScopedKanbanCard[]
         }
         const params: unknown[] = [tenantId]
-        if (limit !== undefined) params.push(limit)
+        if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
         return db
           .prepare(
             `SELECT * FROM kanban_cards
@@ -167,6 +172,18 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
              ORDER BY created_at DESC${limitClause}`,
           )
           .all(...params) as ScopedKanbanCard[]
+      },
+
+      /** Count kanban cards for this tenant, excluding archived ones -- pairs with list() for pagination totals. */
+      count(status?: string): number {
+        if (status) {
+          return (db
+            .prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE tenant_id = ? AND status = ? AND archived_at IS NULL')
+            .get(tenantId, status) as { n: number }).n
+        }
+        return (db
+          .prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE tenant_id = ? AND archived_at IS NULL')
+          .get(tenantId) as { n: number }).n
       },
 
       /** Get a single card by id, only if it belongs to this tenant. */

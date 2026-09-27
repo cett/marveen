@@ -94,6 +94,10 @@ Egy kártyára kattintva megnyílik a részlet-panel az **Előzmények** és a *
 
 A **Importálás** gombbal tömeges importálás végezhető JSON formátumból; hasznos, ha egy külső rendszerből kell emlékeket betölteni.
 
+### Importált tartalmak keresése
+
+Az ismétlődő importforrásból (helyi mappa, Google Drive, SharePoint, Confluence -- a beállításához lásd [16 - Kapcsolatok](16-kapcsolatok.md)) betöltött tartalom nem a szokásos Hot/Warm/Cold emlékek közt jelenik meg. Saját kereső mezője van, az importforrások listája mellett: adj meg egy keresőszót, majd nyomj **Keresés**-t vagy Entert -- lapozható találati listát kapsz (fájlnév, rövid tartalom-részlet, utolsó módosítás ideje), a legutóbb módosítottal elöl. A keresés a fájl tartalmában, kulcsszavaiban és fájlnevében is illeszkedik.
+
 ---
 
 ## Tippek

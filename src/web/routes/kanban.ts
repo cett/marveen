@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard,
+  listKanbanCards, countKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus, getDb,
@@ -16,6 +16,7 @@ import {
   countNewHotMemories,
   countPlannedKanbanCards,
   writeAgentAuditLog,
+  type KanbanCard,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -27,7 +28,10 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { scopeToTenant } from '../tenant-scope.js'
+import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
+
+const KANBAN_STATUSES = new Set<KanbanCard['status']>(['planned', 'in_progress', 'waiting', 'testing', 'done'])
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
@@ -190,11 +194,43 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
+    const embedLabels = (card: { id: string }) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] })
+
+    // ?status= switches into the paginated, per-column contract used by the
+    // kanban board's "load more" (P1c): {items,total,offset,limit}, scoped to
+    // one status column. Omitting status keeps the original, unpaginated bare
+    // array -- the board's own full/filtered-mode load (swimlanes, project/
+    // assignee/label filters) still needs the complete unfiltered set, and an
+    // unknown external caller (skills, curl recipes) relying on the old shape
+    // must not silently get a different response shape.
+    const status = ctx.url.searchParams.get('status') as KanbanCard['status'] | null
+    if (status) {
+      if (!KANBAN_STATUSES.has(status)) {
+        json(res, { error: 'invalid_value', field: 'status', hint: `Allowed: ${[...KANBAN_STATUSES].join(', ')}` }, 400)
+        return true
+      }
+      const page = parsePagination(ctx.url.searchParams, res, { defaultLimit: 20, maxLimit: 100 })
+      if (!page) return true
+      const { limit, offset } = page
+
+      let items, total
+      if (effectiveTenantId !== null) {
+        const scoped = scopeToTenant(getDb(), effectiveTenantId).kanban
+        items = scoped.list(status, limit, offset).map(embedLabels)
+        total = scoped.count(status)
+      } else {
+        items = listKanbanCards({ status, limit, offset }).map(embedLabels)
+        total = countKanbanCards(status)
+      }
+      json(res, { items, total, offset, limit })
+      return true
+    }
+
     let cards
     if (effectiveTenantId !== null) {
-      cards = scopeToTenant(getDb(), effectiveTenantId).kanban.list().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+      cards = scopeToTenant(getDb(), effectiveTenantId).kanban.list().map(embedLabels)
     } else {
-      cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+      cards = listKanbanCards().map(embedLabels)
     }
     jsonMaybeGzip(req, res, cards)
     return true

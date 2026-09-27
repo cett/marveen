@@ -1,11 +1,12 @@
 import { readJsonBody, json } from '../http-helpers.js'
 import {
-  createArtifact, listArtifacts, getArtifact, deleteArtifact, getArtifactStats,
+  createArtifact, listArtifacts, countArtifacts, getArtifact, deleteArtifact, getArtifactStats,
   renameArtifact, ARTIFACT_TITLE_MAX_LENGTH,
   ARTIFACT_KINDS, type ArtifactKind,
 } from '../../artifacts-db.js'
 import { signViewToken, verifyViewToken } from '../view-token.js'
 import { logger } from '../../logger.js'
+import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 
 // Tenant scope helpers (mirrors kanban/memories pattern):
@@ -112,17 +113,21 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
 // ?agent=&kind=&q=&limit=&offset=&tenant= (tenant param for admins only)
 function handleList(ctx: RouteContext): boolean {
   const { res, url } = ctx
-  const agent  = url.searchParams.get('agent')  ?? undefined
-  const kind   = url.searchParams.get('kind')   ?? undefined
-  const q      = url.searchParams.get('q')      ?? undefined
-  const limit  = parseInt(url.searchParams.get('limit')  ?? '50',  10)
-  const offset = parseInt(url.searchParams.get('offset') ?? '0',   10)
+  const agent = url.searchParams.get('agent') ?? undefined
+  const kind  = url.searchParams.get('kind')  ?? undefined
+  const q     = url.searchParams.get('q')     ?? undefined
+
+  const page = parsePagination(url.searchParams, res, { defaultLimit: 25, maxLimit: 100 })
+  if (!page) return true
+  const { limit, offset } = page
 
   const tenantScope = effectiveTenant(ctx)
   const tenant_id   = tenantScope !== null ? tenantScope : undefined
 
-  const rows = listArtifacts({ agent, tenant_id, kind, q, limit, offset })
-  json(res, rows)
+  const filter = { agent, tenant_id, kind, q }
+  const items = listArtifacts({ ...filter, limit, offset })
+  const total = countArtifacts(filter)
+  json(res, { items, total, offset, limit })
   return true
 }
 
