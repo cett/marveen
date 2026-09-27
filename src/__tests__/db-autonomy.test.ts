@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -23,17 +23,13 @@ afterEach(() => {
   rmSync(storeDir, { recursive: true, force: true })
 })
 
-function configPath(): string {
-  return join(storeDir, 'autonomy-config.json')
-}
-
 describe('autonomy_categories read/write helpers', () => {
   it('returns undefined for a key that was never set', () => {
     expect(dbMod.getAutonomyCategory('nope')).toBeUndefined()
   })
 
-  it('listAutonomyCategories returns an empty array when the table is empty', () => {
-    expect(dbMod.listAutonomyCategories()).toEqual([])
+  it('listAutonomyCategories starts pre-seeded with the 15 default categories (migration 0053)', () => {
+    expect(dbMod.listAutonomyCategories()).toHaveLength(15)
   })
 
   it('upsertAutonomyCategory inserts a new row', () => {
@@ -68,79 +64,59 @@ describe('autonomy_categories read/write helpers', () => {
   })
 
   it('listAutonomyCategories returns rows ordered by key', () => {
-    dbMod.upsertAutonomyCategory({ key: 'b_key', label: 'B', level: 1, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
-    dbMod.upsertAutonomyCategory({ key: 'a_key', label: 'A', level: 1, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
-    expect(dbMod.listAutonomyCategories().map(r => r.key)).toEqual(['a_key', 'b_key'])
+    dbMod.upsertAutonomyCategory({ key: 'zz_key', label: 'ZZ', level: 1, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
+    dbMod.upsertAutonomyCategory({ key: 'aa_key', label: 'AA', level: 1, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
+    const keys = dbMod.listAutonomyCategories().map(r => r.key)
+    expect(keys[0]).toBe('aa_key')
+    expect(keys[keys.length - 1]).toBe('zz_key')
+    expect(keys).toEqual([...keys].sort())
   })
 })
 
-describe('seedAutonomyCategoriesFromJson', () => {
-  it('returns 0 and seeds nothing when autonomy-config.json does not exist', () => {
-    expect(dbMod.seedAutonomyCategoriesFromJson()).toBe(0)
-    expect(dbMod.listAutonomyCategories()).toHaveLength(0)
+// Migration 0053 hardcodes the 15 default categories directly in SQL (the
+// app-side JSON-file seed this test file used to cover was retired along
+// with store/autonomy-config.json itself). initDatabase() in beforeEach
+// already runs the full migration chain against a fresh :memory: DB, so by
+// the time each test starts, 0053 has already had its one shot at seeding.
+describe('migration 0053: hardcoded default category seed', () => {
+  it('seeds exactly 15 categories on a fresh database', () => {
+    expect(dbMod.listAutonomyCategories()).toHaveLength(15)
   })
 
-  it('copies every JSON category into autonomy_categories with updated_by=migrated_from_json', () => {
-    mkdirSync(storeDir, { recursive: true })
-    writeFileSync(configPath(), JSON.stringify({
-      version: 1,
-      updated_at: 0,
-      categories: [
-        { key: 'email_send', label: 'Email küldés', level: 2, locked: false, maxLevel: 2 },
-        { key: 'payment', label: 'Vásárlás', level: 1, locked: true, maxLevel: 1 },
-      ],
-    }))
-
-    const seeded = dbMod.seedAutonomyCategoriesFromJson()
-
-    expect(seeded).toBe(2)
+  it('seeds known categories with the expected level/locked/max_level', () => {
     const email = dbMod.getAutonomyCategory('email_send')!
-    expect(email.label).toBe('Email küldés')
+    expect(email.label).toBe('Email küldés / válasz')
     expect(email.level).toBe(2)
     expect(email.locked).toBe(0)
     expect(email.max_level).toBe(2)
-    expect(email.updated_by).toBe('migrated_from_json')
+    expect(email.updated_by).toBe('seed_migration')
+
     const payment = dbMod.getAutonomyCategory('payment')!
+    expect(payment.level).toBe(1)
     expect(payment.locked).toBe(1)
+    expect(payment.max_level).toBe(1)
   })
 
-  it('carries timeout_minutes through when present in the JSON (decision A)', () => {
-    mkdirSync(storeDir, { recursive: true })
-    writeFileSync(configPath(), JSON.stringify({
-      categories: [{ key: 'email_send', label: 'Email', level: 2, locked: false, maxLevel: 2, timeout_minutes: 45 }],
-    }))
-    dbMod.seedAutonomyCategoriesFromJson()
-    expect(dbMod.getAutonomyCategory('email_send')?.timeout_minutes).toBe(45)
-  })
+  it('the seed SQL itself is a no-op for keys that already exist (INSERT OR IGNORE guard)', async () => {
+    // applyMigrations() only re-execs a migration file whose version exceeds
+    // schema_version's recorded max (see db-migrations.ts) -- it will never
+    // naturally re-run 0053 against this same connection. To verify the
+    // guard inside 0053's own SQL (not just that the outer bookkeeping skips
+    // it), exec the migration file's SQL directly a second time and confirm
+    // it does not touch a table whose keys already exist.
+    dbMod.setAutonomyCategoryLevel('email_send', 1, 'dashboard')
+    const before = dbMod.listAutonomyCategories()
 
-  it('is idempotent: does not reseed (or overwrite operator edits) once the table has rows', () => {
-    mkdirSync(storeDir, { recursive: true })
-    writeFileSync(configPath(), JSON.stringify({
-      categories: [{ key: 'email_send', label: 'Email', level: 1, locked: false, maxLevel: 2 }],
-    }))
-    dbMod.seedAutonomyCategoriesFromJson()
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const { dirname, join: joinPath } = await import('node:path')
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const sql = readFileSync(joinPath(__dirname, '../migrations/0053_autonomy_categories_seed.sql'), 'utf-8')
+    const { db } = await import('../db/connection.js')
+    db.exec(sql)
 
-    // Simulate an operator having since changed the level via the dashboard.
-    dbMod.setAutonomyCategoryLevel('email_send', 2, 'dashboard')
-
-    const secondRunCount = dbMod.seedAutonomyCategoriesFromJson()
-
-    expect(secondRunCount).toBe(0)
-    const row = dbMod.getAutonomyCategory('email_send')!
-    expect(row.level).toBe(2)
-    expect(row.updated_by).toBe('dashboard')
-  })
-
-  it('skips malformed JSON without throwing', () => {
-    mkdirSync(storeDir, { recursive: true })
-    writeFileSync(configPath(), '{not valid json')
-    expect(dbMod.seedAutonomyCategoriesFromJson()).toBe(0)
-    expect(dbMod.listAutonomyCategories()).toHaveLength(0)
-  })
-
-  it('skips a JSON file with no categories array', () => {
-    mkdirSync(storeDir, { recursive: true })
-    writeFileSync(configPath(), JSON.stringify({ version: 1 }))
-    expect(dbMod.seedAutonomyCategoriesFromJson()).toBe(0)
+    expect(dbMod.listAutonomyCategories()).toEqual(before)
+    expect(dbMod.getAutonomyCategory('email_send')?.level).toBe(1)
+    expect(dbMod.getAutonomyCategory('email_send')?.updated_by).toBe('dashboard')
   })
 })

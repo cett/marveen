@@ -67,7 +67,6 @@ marveen/
     claudeclaw.db         -- SQLite adatbázis
     .dashboard-token      -- Bearer token (0600)
     .claude-oauth-token   -- Fleet OAuth token (0600)
-    autonomy-config.json  -- autonómia-szintek
     model-profile-map.json
 
   agents/                 -- flotta-ágensek könyvtára
@@ -183,6 +182,7 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 |-------|---------|
 | `system_config` | Dashboard-on tárolt konfiguráció (felülírja az .env-t) |
 | `config_change_log` | Konfigurációs változtatások naplója |
+| `autonomy_categories` | Ágensek autonómia-szintjei kategóriánként |
 
 **Skilletek és tenant-kezelés**
 

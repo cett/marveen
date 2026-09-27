@@ -1,12 +1,10 @@
 -- Migration 0052: autonomy_categories table.
 --
 -- Backs the per-category autonomy level (1=notify-only, 2=propose+approve,
--- 3=autonomous+report) that today lives in the store/autonomy-config.json
--- side-car, as part of the wider zero-install work (see migration 0051 for
--- the same pattern applied to system_config). Schema-only -- no seed data
--- here; a one-time app-side seed copies the existing JSON file's categories
--- in on first boot after this migration (see seedAutonomyCategoriesFromJson
--- in src/db/autonomy.ts), the same shape as migrateConfigOverridesToSystemConfig.
+-- 3=autonomous+report) that used to live in a store/autonomy-config.json
+-- side-car (since removed), as part of the wider zero-install work. Schema-only
+-- -- no seed data here; the default categories are hardcoded into migration
+-- 0053 instead.
 --
 -- timeout_minutes is nullable: NULL means no approval-timeout limit for that
 -- category (unchanged behavior from the JSON's optional field).

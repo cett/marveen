@@ -31,7 +31,7 @@ fi
 # Small critical state git does not track. Explicit list -- store/ also holds
 # ~1.7G of large/regenerable data we deliberately do NOT copy.
 for f in vault.json .vault-key .dashboard-token \
-         openrouter-models.json agents-desired.json autonomy-config.json \
+         openrouter-models.json agents-desired.json \
          auto-restart.json command-task-health.json schedule-last-run.json; do
   [ -f "$STORE/$f" ] && cp -p "$STORE/$f" "$DEST/" 2>/dev/null
 done

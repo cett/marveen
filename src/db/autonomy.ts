@@ -1,13 +1,9 @@
-// Read/write access to autonomy_categories (migration 0052) plus the
-// one-time seeder that copies the existing store/autonomy-config.json
-// categories into it, mirroring migrateConfigOverridesToSystemConfig in
-// system-config.ts.
+// Read/write access to autonomy_categories (migration 0052; default rows
+// hardcoded into migration 0053 -- the app-side JSON-file seed this module
+// used to provide was retired once store/autonomy-config.json itself was
+// removed from the repo).
 
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { db } from './connection.js'
-import { STORE_DIR } from '../config.js'
-import { logger } from '../logger.js'
 
 export interface AutonomyCategoryRow {
   key: string
@@ -49,50 +45,4 @@ export function upsertAutonomyCategory(row: Omit<AutonomyCategoryRow, 'updated_a
        max_level = excluded.max_level, timeout_minutes = excluded.timeout_minutes,
        updated_at = excluded.updated_at, updated_by = excluded.updated_by`
   ).run(row.key, row.label, row.level, row.locked, row.max_level, row.timeout_minutes, row.updated_at ?? null, row.updated_by)
-}
-
-interface LegacyAutonomyCategory {
-  key: string
-  label: string
-  level: number
-  locked: boolean
-  maxLevel: number
-  timeout_minutes?: number | null
-}
-
-interface LegacyAutonomyConfig {
-  categories: LegacyAutonomyCategory[]
-}
-
-// One-time seed of store/autonomy-config.json into autonomy_categories, same
-// every-boot-but-effectively-once shape as migrateConfigOverridesToSystemConfig:
-// only runs when the table is still empty, so an operator's later level
-// changes are never overwritten by a stale JSON file still sitting on disk.
-export function seedAutonomyCategoriesFromJson(): number {
-  const existingCount = (db.prepare('SELECT COUNT(*) as c FROM autonomy_categories').get() as { c: number }).c
-  if (existingCount > 0) return 0
-
-  const configPath = join(STORE_DIR, 'autonomy-config.json')
-  if (!existsSync(configPath)) return 0
-
-  let parsed: LegacyAutonomyConfig
-  try {
-    parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
-  } catch (err) {
-    logger.warn({ err }, 'autonomy_categories seed: failed to parse autonomy-config.json, skipping')
-    return 0
-  }
-  if (!parsed || !Array.isArray(parsed.categories)) return 0
-
-  const stmt = db.prepare(
-    `INSERT INTO autonomy_categories (key, label, level, locked, max_level, timeout_minutes, updated_at, updated_by)
-     VALUES (?, ?, ?, ?, ?, ?, unixepoch(), 'migrated_from_json')`
-  )
-  let seeded = 0
-  for (const cat of parsed.categories) {
-    if (!cat.key) continue
-    stmt.run(cat.key, cat.label, cat.level, cat.locked ? 1 : 0, cat.maxLevel, cat.timeout_minutes ?? null)
-    seeded++
-  }
-  return seeded
 }

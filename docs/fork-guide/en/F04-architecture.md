@@ -67,7 +67,6 @@ marveen/
     claudeclaw.db         -- SQLite database
     .dashboard-token      -- Bearer token (0600)
     .claude-oauth-token   -- Fleet OAuth token (0600)
-    autonomy-config.json  -- autonomy levels
     model-profile-map.json
 
   agents/                 -- fleet agents directory
@@ -183,6 +182,7 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 |-------|---------|
 | `system_config` | Dashboard-managed configuration (overrides .env) |
 | `config_change_log` | Configuration change audit log |
+| `autonomy_categories` | Per-category autonomy levels for agents |
 
 **Skills and tenants**
 
