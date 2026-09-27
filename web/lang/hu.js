@@ -218,6 +218,7 @@ window._i18n.hu = {
   'kanban.card.subtasks':        '{done}/{total} alfeladat',
   'kanban.card.comments':        '{n} megjegyzés',
   'kanban.card.children':        '{n} alfeladat',
+  'kanban.load_more':            '+ {n} további kártya [Mutass többet]',
   'kanban.priority.low':         'Alacsony',
   'kanban.priority.normal':      'Normál',
   'kanban.priority.high':        'Magas',
