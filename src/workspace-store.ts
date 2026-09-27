@@ -364,28 +364,43 @@ export interface ListWorkspaceDocsFilter {
   docKey?: string
   docKeyPrefix?: string
   limit?: number
+  offset?: number
   metaOnly?: boolean
+}
+
+function workspaceDocsWhere(filter: ListWorkspaceDocsFilter): { where: string; params: unknown[] } {
+  let where = 'WHERE 1=1'
+  const params: unknown[] = []
+  if (filter.agentId) { where += ' AND agent_id = ?'; params.push(filter.agentId) }
+  if (filter.tenantId !== null && filter.tenantId !== undefined) {
+    where += ' AND tenant_id = ?'; params.push(filter.tenantId)
+  }
+  if (filter.type) { where += ' AND type = ?'; params.push(filter.type) }
+  if (filter.contentType) { where += ' AND content_type = ?'; params.push(filter.contentType) }
+  if (filter.taskRef) { where += ' AND task_ref = ?'; params.push(filter.taskRef) }
+  if (filter.docKey) { where += ' AND doc_key = ?'; params.push(filter.docKey) }
+  else if (filter.docKeyPrefix) { where += ' AND doc_key LIKE ?'; params.push(`${filter.docKeyPrefix}%`) }
+  return { where, params }
 }
 
 export function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): WorkspaceDoc[] {
   const select = filter.metaOnly
     ? 'SELECT id, agent_id, tenant_id, doc_key, title, content_type, type, task_ref, size_bytes, created_at, updated_at, last_accessed_at'
     : 'SELECT *'
-  let sql = `${select} FROM workspace_docs WHERE 1=1`
-  const params: unknown[] = []
-  if (filter.agentId) { sql += ' AND agent_id = ?'; params.push(filter.agentId) }
-  if (filter.tenantId !== null && filter.tenantId !== undefined) {
-    sql += ' AND tenant_id = ?'; params.push(filter.tenantId)
+  const { where, params } = workspaceDocsWhere(filter)
+  let sql = `${select} FROM workspace_docs ${where} ORDER BY updated_at DESC`
+  if (filter.limit && filter.limit > 0) {
+    sql += ' LIMIT ?'; params.push(filter.limit)
+    if (filter.offset && filter.offset > 0) { sql += ' OFFSET ?'; params.push(filter.offset) }
   }
-  if (filter.type) { sql += ' AND type = ?'; params.push(filter.type) }
-  if (filter.contentType) { sql += ' AND content_type = ?'; params.push(filter.contentType) }
-  if (filter.taskRef) { sql += ' AND task_ref = ?'; params.push(filter.taskRef) }
-  if (filter.docKey) { sql += ' AND doc_key = ?'; params.push(filter.docKey) }
-  else if (filter.docKeyPrefix) { sql += ' AND doc_key LIKE ?'; params.push(`${filter.docKeyPrefix}%`) }
-  sql += ' ORDER BY updated_at DESC'
-  if (filter.limit && filter.limit > 0) { sql += ' LIMIT ?'; params.push(filter.limit) }
   const rows = getDb().prepare(sql).all(...params) as DbRow[]
   return rows.map(r => filter.metaOnly ? rowToDocMeta(r) : rowToDoc(r))
+}
+
+export function countWorkspaceDocs(filter: ListWorkspaceDocsFilter): number {
+  const { where, params } = workspaceDocsWhere(filter)
+  const row = getDb().prepare(`SELECT COUNT(*) AS n FROM workspace_docs ${where}`).get(...params) as { n: number }
+  return row.n
 }
 
 export interface PatchWorkspaceDocInput {

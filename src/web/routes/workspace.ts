@@ -12,7 +12,7 @@ import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import {
   saveWorkspaceDoc, getWorkspaceDoc, getWorkspaceDocBlob,
-  listWorkspaceDocs, patchWorkspaceDoc, deleteWorkspaceDoc,
+  listWorkspaceDocs, countWorkspaceDocs, patchWorkspaceDoc, deleteWorkspaceDoc,
   peekWorkspaceDoc, storeWorkspaceDocEmbedding, WORKSPACE_DOC_SIZE_LIMITS,
   type WorkspaceDocType, type WorkspaceContentType,
 } from '../../workspace-store.js'
@@ -40,7 +40,34 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
   // ── GET /api/workspace — list ───────────────────────────────────────────────
   if (path === '/api/workspace' && method === 'GET') {
     const tenantId = effectiveTenant(ctx)
+
+    // Unlike the other paginated list endpoints, an OMITTED ?limit here keeps
+    // its historical meaning of "unbounded" rather than falling back to a
+    // default page size. Several skills (fleet-diagram-iterate,
+    // fleet-consensus-concept, ui-terv-artifact-approval) do
+    // GET /api/workspace?task_ref=...&type=... / ?doc_key=... programmatically
+    // and rely on getting every matching doc back, not a truncated first
+    // page -- silently defaulting to e.g. 20 would break that contract for
+    // any agent-to-agent handoff that has accumulated more docs than the
+    // default. The dashboard frontend always sends an explicit ?limit itself
+    // (see workspace-docs.js), so it gets real pagination without the
+    // programmatic callers being affected.
     const limitRaw = url.searchParams.get('limit')
+    let limit: number | undefined
+    if (limitRaw !== null) {
+      limit = Math.min(parseInt(limitRaw, 10), 100)
+      if (isNaN(limit) || limit < 1) {
+        json(res, { error: 'invalid_value', field: 'limit', hint: 'Invalid "limit" parameter' }, 400)
+        return true
+      }
+    }
+    const offsetRaw = url.searchParams.get('offset')
+    const offset = offsetRaw ? parseInt(offsetRaw, 10) : 0
+    if (isNaN(offset) || offset < 0) {
+      json(res, { error: 'invalid_value', field: 'offset', hint: 'Invalid "offset" parameter' }, 400)
+      return true
+    }
+
     const filter = {
       agentId:      url.searchParams.get('agent') ?? undefined,
       tenantId:     tenantId ?? undefined,
@@ -49,11 +76,11 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
       taskRef:      url.searchParams.get('task_ref') ?? undefined,
       docKey:       url.searchParams.get('doc_key') ?? undefined,
       docKeyPrefix: url.searchParams.get('doc_key_prefix') ?? undefined,
-      limit:        limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : undefined,
       metaOnly:     url.searchParams.get('meta_only') === 'true',
     }
-    const docs = listWorkspaceDocs(filter)
-    json(res, { items: docs, total: docs.length })
+    const docs = listWorkspaceDocs({ ...filter, limit, offset })
+    const total = countWorkspaceDocs(filter)
+    json(res, { items: docs, total, offset, limit: limit ?? null })
     return true
   }
 
