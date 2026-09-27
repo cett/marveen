@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll } from 'vitest'
+import { describe, it, expect, vi, afterAll, afterEach } from 'vitest'
 import https from 'node:https'
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,6 +10,8 @@ import {
   getChannelChatId,
   channelStateDir,
   readChannelToken,
+  generateSlackAppManifest,
+  getSlackAppSetupInstructions,
   type ChannelProviderType,
 } from '../channel-provider.js'
 
@@ -328,5 +330,458 @@ describe('discord formatMessage (formatForDiscord)', () => {
   it('converts checked task-list checkboxes', () => {
     const p = getProvider('discord')
     expect(p.formatMessage('- [x] done')).toBe('☑ done')
+  })
+
+  it('splitMessage respects the 2000 char discord limit', () => {
+    const p = getProvider('discord')
+    const chunks = p.splitMessage('A '.repeat(1500))
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(2000)
+  })
+})
+
+// Backend coverage batch-57: the network-shaped send/validate paths (fetch
+// wrapped) plus the small pure helpers (manifest, get*, googlechat/teams
+// identity formatters) that batch-56 left uncovered.
+
+function sequenceFetch(responses: Array<{ ok?: boolean; status?: number; json?: unknown; text?: string }>): typeof fetch {
+  let i = 0
+  return (async () => {
+    const r = responses[Math.min(i, responses.length - 1)]
+    i++
+    return {
+      ok: r.ok ?? true,
+      status: r.status ?? 200,
+      json: async () => r.json ?? {},
+      text: async () => r.text ?? '',
+    } as Response
+  }) as typeof fetch
+}
+
+describe('telegram sendPhoto', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'telegram-photo-test-'))
+  const photoPath = join(tmpDir, 'photo.png')
+  writeFileSync(photoPath, Buffer.from([0, 1, 2, 3]))
+  afterAll(() => rmSync(tmpDir, { recursive: true, force: true }))
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('builds a multipart request and resolves on an ok response', async () => {
+    const fetchMock = vi.fn(sequenceFetch([{ ok: true }]))
+    vi.stubGlobal('fetch', fetchMock)
+    const p = getProvider('telegram')
+    await p.sendPhoto('tok', '123', photoPath, 'caption')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.telegram.org/bottok/sendPhoto',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('throws with the response status and body on a non-ok response', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ ok: false, status: 400, text: 'Bad Request' }]))
+    const p = getProvider('telegram')
+    await expect(p.sendPhoto('tok', '123', photoPath, 'caption')).rejects.toThrow(/Telegram sendPhoto 400/)
+  })
+
+  it('still throws with the status when reading the error body itself fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      text: async () => { throw new Error('body read failed') },
+    } as unknown as Response)))
+    const p = getProvider('telegram')
+    await expect(p.sendPhoto('tok', '123', photoPath, 'caption')).rejects.toThrow(/Telegram sendPhoto 502/)
+  })
+})
+
+describe('telegram validateToken', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('returns ok with the bot username on a valid token', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: true, result: { username: 'mybot', id: 1 } } }]))
+    const p = getProvider('telegram')
+    await expect(p.validateToken('tok')).resolves.toEqual({ ok: true, botName: 'mybot' })
+  })
+
+  it('returns invalid_value when the API reports not ok', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: false } }]))
+    const p = getProvider('telegram')
+    const r = await p.validateToken('tok')
+    expect(r).toEqual({ ok: false, error: 'invalid_value', hint: 'Invalid bot token' })
+  })
+
+  it('returns internal_error when the request throws', async () => {
+    vi.stubGlobal('fetch', (async () => { throw new Error('network down') }) as unknown as typeof fetch)
+    const p = getProvider('telegram')
+    const r = await p.validateToken('tok')
+    expect(r).toEqual({ ok: false, error: 'internal_error', hint: 'Failed to connect to Telegram API' })
+  })
+})
+
+describe('slack sendMessage', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('resolves when the HTTP response and the Slack payload are both ok', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: true } }]))
+    const p = getProvider('slack')
+    await expect(p.sendMessage('xoxb-1', 'C123', 'hi')).resolves.toBeUndefined()
+  })
+
+  it('throws on a non-ok HTTP response', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ ok: false, status: 500 }]))
+    const p = getProvider('slack')
+    await expect(p.sendMessage('xoxb-1', 'C123', 'hi')).rejects.toThrow(/Slack API HTTP 500/)
+  })
+
+  it('throws on an ok HTTP response with a Slack-level error', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: false, error: 'channel_not_found' } }]))
+    const p = getProvider('slack')
+    await expect(p.sendMessage('xoxb-1', 'C123', 'hi')).rejects.toThrow(/channel_not_found/)
+  })
+})
+
+describe('slack sendPhoto', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'slack-photo-test-'))
+  const photoPath = join(tmpDir, 'photo.png')
+  writeFileSync(photoPath, Buffer.from([0, 1, 2, 3]))
+  afterAll(() => rmSync(tmpDir, { recursive: true, force: true }))
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('walks getUploadURL -> upload -> completeUpload on success', async () => {
+    const fetchMock = vi.fn(sequenceFetch([
+      { json: { ok: true, upload_url: 'https://upload.example/x', file_id: 'F1' } }, // getUploadURLExternal
+      {}, // the raw upload PUT/POST
+      { json: { ok: true } }, // completeUploadExternal
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    const p = getProvider('slack')
+    await p.sendPhoto('xoxb-1', 'C123', photoPath, 'caption')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('throws when getUploadURLExternal does not return an upload_url', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: false, error: 'invalid_auth' } }]))
+    const p = getProvider('slack')
+    await expect(p.sendPhoto('xoxb-1', 'C123', photoPath, 'caption')).rejects.toThrow(/invalid_auth/)
+  })
+
+  it('falls back to "unknown error" when getUploadURLExternal fails without an error field', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: false } }]))
+    const p = getProvider('slack')
+    await expect(p.sendPhoto('xoxb-1', 'C123', photoPath, 'caption')).rejects.toThrow(/unknown error/)
+  })
+
+  it('throws when completeUploadExternal reports not ok', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([
+      { json: { ok: true, upload_url: 'https://upload.example/x', file_id: 'F1' } },
+      {},
+      { json: { ok: false, error: 'file_not_found' } },
+    ]))
+    const p = getProvider('slack')
+    await expect(p.sendPhoto('xoxb-1', 'C123', photoPath, 'caption')).rejects.toThrow(/file_not_found/)
+  })
+
+  it('succeeds with an empty caption (title/initial_comment fallbacks)', async () => {
+    const fetchMock = vi.fn(sequenceFetch([
+      { json: { ok: true, upload_url: 'https://upload.example/x', file_id: 'F1' } },
+      {},
+      { json: { ok: true } },
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    const p = getProvider('slack')
+    await p.sendPhoto('xoxb-1', 'C123', photoPath, '')
+    const completeCall = fetchMock.mock.calls[2]!
+    const body = JSON.parse((completeCall[1] as RequestInit).body as string)
+    expect(body.files[0].title).toBe('photo.png') // falls back to filename
+    expect(body.initial_comment).toBeUndefined()
+  })
+})
+
+describe('slack validateToken', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('returns ok with the bot user on a valid token', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: true, user: 'agent-a-bot' } }]))
+    const p = getProvider('slack')
+    await expect(p.validateToken('xoxb-1')).resolves.toEqual({ ok: true, botName: 'agent-a-bot' })
+  })
+
+  it('returns invalid_value with the Slack error hint when not ok', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: false, error: 'invalid_auth' } }]))
+    const p = getProvider('slack')
+    const r = await p.validateToken('xoxb-1')
+    expect(r).toEqual({ ok: false, error: 'invalid_value', hint: 'invalid_auth' })
+  })
+
+  it('falls back to bot_id when the Slack response has no user field', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: true, bot_id: 'B123' } }]))
+    const p = getProvider('slack')
+    await expect(p.validateToken('xoxb-1')).resolves.toEqual({ ok: true, botName: 'B123' })
+  })
+
+  it('falls back to a default hint when not ok and Slack provides no error field', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ json: { ok: false } }]))
+    const p = getProvider('slack')
+    const r = await p.validateToken('xoxb-1')
+    expect(r).toEqual({ ok: false, error: 'invalid_value', hint: 'Invalid token' })
+  })
+
+  it('returns internal_error when the request throws', async () => {
+    vi.stubGlobal('fetch', (async () => { throw new Error('down') }) as unknown as typeof fetch)
+    const p = getProvider('slack')
+    const r = await p.validateToken('xoxb-1')
+    expect(r).toEqual({ ok: false, error: 'internal_error', hint: 'Failed to connect to Slack API' })
+  })
+})
+
+describe('discord sendMessage', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('resolves on an ok response', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ ok: true }]))
+    const p = getProvider('discord')
+    await expect(p.sendMessage('bot-tok', '999', 'hi')).resolves.toBeUndefined()
+  })
+
+  it('throws with status and body text on a non-ok response', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ ok: false, status: 403, text: 'Missing Access' }]))
+    const p = getProvider('discord')
+    await expect(p.sendMessage('bot-tok', '999', 'hi')).rejects.toThrow(/Discord API 403/)
+  })
+
+  it('still throws with the status when reading the error body itself fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      text: async () => { throw new Error('body read failed') },
+    } as unknown as Response)))
+    const p = getProvider('discord')
+    await expect(p.sendMessage('bot-tok', '999', 'hi')).rejects.toThrow(/Discord API 502/)
+  })
+})
+
+describe('discord sendPhoto', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'discord-photo-test-'))
+  const photoPath = join(tmpDir, 'photo.png')
+  writeFileSync(photoPath, Buffer.from([0, 1, 2, 3]))
+  afterAll(() => rmSync(tmpDir, { recursive: true, force: true }))
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('builds a multipart request and resolves on an ok response', async () => {
+    const fetchMock = vi.fn(sequenceFetch([{ ok: true }]))
+    vi.stubGlobal('fetch', fetchMock)
+    const p = getProvider('discord')
+    await p.sendPhoto('bot-tok', '999', photoPath, 'caption')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://discord.com/api/v10/channels/999/messages',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('throws with status and body text on a non-ok response', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ ok: false, status: 413, text: 'Payload Too Large' }]))
+    const p = getProvider('discord')
+    await expect(p.sendPhoto('bot-tok', '999', photoPath, 'caption')).rejects.toThrow(/Discord sendPhoto 413/)
+  })
+
+  it('still throws with the status when reading the error body itself fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      text: async () => { throw new Error('body read failed') },
+    } as unknown as Response)))
+    const p = getProvider('discord')
+    await expect(p.sendPhoto('bot-tok', '999', photoPath, 'caption')).rejects.toThrow(/Discord sendPhoto 502/)
+  })
+
+  it('succeeds with an empty caption (content field falls back to undefined, omitted from JSON)', async () => {
+    const fetchMock = vi.fn(sequenceFetch([{ ok: true }]))
+    vi.stubGlobal('fetch', fetchMock)
+    const p = getProvider('discord')
+    await p.sendPhoto('bot-tok', '999', photoPath, '')
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const bodyStr = Buffer.from(options.body as Buffer).toString('utf-8')
+    expect(bodyStr).not.toContain('"content"') // JSON.stringify omits keys whose value is undefined
+  })
+})
+
+describe('discord validateToken', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('returns ok with the username on success', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ ok: true, json: { id: '1', username: 'agent-a' } }]))
+    const p = getProvider('discord')
+    await expect(p.validateToken('bot-tok')).resolves.toEqual({ ok: true, botName: 'agent-a' })
+  })
+
+  it('returns invalid_value when the response has no username', async () => {
+    vi.stubGlobal('fetch', sequenceFetch([{ ok: false, json: {} }]))
+    const p = getProvider('discord')
+    const r = await p.validateToken('bot-tok')
+    expect(r).toEqual({ ok: false, error: 'invalid_value', hint: 'Invalid bot token' })
+  })
+
+  it('returns internal_error when the request throws', async () => {
+    vi.stubGlobal('fetch', (async () => { throw new Error('down') }) as unknown as typeof fetch)
+    const p = getProvider('discord')
+    const r = await p.validateToken('bot-tok')
+    expect(r).toEqual({ ok: false, error: 'internal_error', hint: 'Failed to connect to Discord API' })
+  })
+})
+
+describe('generateSlackAppManifest', () => {
+  it('embeds the app name and the bot scopes/events lists', () => {
+    const yaml = generateSlackAppManifest('AgentApp')
+    expect(yaml).toContain('name: "AgentApp"')
+    expect(yaml).toContain('display_name: "AgentApp"')
+    expect(yaml).toContain('- chat:write')
+    expect(yaml).toContain('- app_mention')
+    expect(yaml).toContain('socket_mode_enabled: true')
+  })
+
+  it('strips quotes and backslashes from the app name', () => {
+    const yaml = generateSlackAppManifest('Weird"\\Name')
+    expect(yaml).toContain('name: "WeirdName"')
+  })
+})
+
+describe('getSlackAppSetupInstructions', () => {
+  it('returns a non-empty ordered list mentioning the manifest flow', () => {
+    const steps = getSlackAppSetupInstructions()
+    expect(steps.length).toBeGreaterThan(0)
+    expect(steps.some(s => s.includes('api.slack.com/apps'))).toBe(true)
+    expect(steps.some(s => s.includes('xoxb-'))).toBe(true)
+    expect(steps.some(s => s.includes('xapp-'))).toBe(true)
+  })
+})
+
+describe('getChannelToken / getChannelChatId for discord, googlechat, teams', () => {
+  it('reads the provider-specific token key', () => {
+    expect(getChannelToken('discord', { DISCORD_BOT_TOKEN: 'disc-1' })).toBe('disc-1')
+    expect(getChannelToken('googlechat', { GOOGLECHAT_PROJECT_ID: 'proj-1' })).toBe('proj-1')
+    expect(getChannelToken('teams', { TEAMS_BOT_APP_ID: 'app-1' })).toBe('app-1')
+  })
+
+  it('reads the provider-specific chat-id key', () => {
+    expect(getChannelChatId('discord', { DISCORD_CHANNEL_ID: 'chan-1' })).toBe('chan-1')
+    expect(getChannelChatId('googlechat', { GOOGLECHAT_SPACE_ID: 'spaces/AAA' })).toBe('spaces/AAA')
+    expect(getChannelChatId('teams', { TEAMS_ALLOWED_CONVERSATION_ID: 'conv-1' })).toBe('conv-1')
+  })
+
+  it('returns empty string when the provider-specific token key is missing', () => {
+    expect(getChannelToken('discord', {})).toBe('')
+    expect(getChannelToken('googlechat', {})).toBe('')
+    expect(getChannelToken('teams', {})).toBe('')
+  })
+
+  it('returns empty string when the provider-specific chat-id key is missing', () => {
+    expect(getChannelChatId('discord', {})).toBe('')
+    expect(getChannelChatId('googlechat', {})).toBe('')
+    expect(getChannelChatId('teams', {})).toBe('')
+  })
+})
+
+describe('getProviderType for discord, googlechat, teams', () => {
+  it('returns each provider when explicitly set', () => {
+    expect(getProviderType('discord')).toBe('discord')
+    expect(getProviderType('googlechat')).toBe('googlechat')
+    expect(getProviderType('teams')).toBe('teams')
+  })
+})
+
+describe('channelStateDir for discord, googlechat, teams', () => {
+  it('uses the matching subdirectory for each provider', () => {
+    expect(channelStateDir('discord')).toMatch(/\.claude\/channels\/discord$/)
+    expect(channelStateDir('googlechat')).toMatch(/\.claude\/channels\/googlechat$/)
+    expect(channelStateDir('teams')).toMatch(/\.claude\/channels\/teams$/)
+  })
+})
+
+describe('googlechat/teams formatMessage and splitMessage (identity passthrough)', () => {
+  it('googlechat formatMessage returns the text unchanged', () => {
+    const p = getProvider('googlechat')
+    expect(p.formatMessage('# Hello **world**')).toBe('# Hello **world**')
+  })
+
+  it('teams formatMessage returns the text unchanged', () => {
+    const p = getProvider('teams')
+    expect(p.formatMessage('# Hello **world**')).toBe('# Hello **world**')
+  })
+
+  it('googlechat splitMessage respects its own 4096 char limit', () => {
+    const p = getProvider('googlechat')
+    const chunks = p.splitMessage('A '.repeat(3000))
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(4096)
+  })
+
+  it('teams splitMessage respects its own 28000 char limit', () => {
+    const p = getProvider('teams')
+    const chunks = p.splitMessage('A '.repeat(20000))
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(28000)
+  })
+})
+
+describe('readChannelToken: unreadable file', () => {
+  it('returns null when the file exists but readFileSync throws', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'channel-provider-unreadable-'))
+    try {
+      // A directory path exists but readFileSync on it throws EISDIR.
+      expect(readChannelToken('telegram', tmpDir)).toBeNull()
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
+// The VITEST guard (INSTBOT819, tested above) makes telegramHttpPost's real
+// network branch unreachable under the vitest runner by design. Mock
+// https.request completely (no real network call, regardless of the guard
+// value) and briefly clear process.env.VITEST to exercise that branch's own
+// success/failure/error logic.
+describe('telegramHttpPost network branch (VITEST guard temporarily lifted, https fully mocked)', () => {
+  const originalVitestFlag = process.env.VITEST
+
+  afterEach(() => {
+    process.env.VITEST = originalVitestFlag
+    vi.restoreAllMocks()
+  })
+
+  function mockHttpsRequest(statusCode: number, opts?: { requestError?: Error }) {
+    return vi.spyOn(https, 'request').mockImplementation(((_url: string, _options: unknown, callback: (res: unknown) => void) => {
+      const req = {
+        on: (event: string, handler: (err: Error) => void) => {
+          if (opts?.requestError && event === 'error') handler(opts.requestError)
+          return req
+        },
+        write: vi.fn(),
+        end: vi.fn(() => {
+          if (!opts?.requestError) {
+            const res = { statusCode, resume: vi.fn() }
+            callback(res)
+          }
+        }),
+      }
+      return req
+    }) as unknown as typeof https.request)
+  }
+
+  it('resolves on a 200 response', async () => {
+    mockHttpsRequest(200)
+    delete process.env.VITEST
+    const p = getProvider('telegram')
+    await expect(p.sendMessage('123:tok', '999', 'hello')).resolves.toBeUndefined()
+  })
+
+  it('rejects on a non-200 response', async () => {
+    mockHttpsRequest(500)
+    delete process.env.VITEST
+    const p = getProvider('telegram')
+    await expect(p.sendMessage('123:tok', '999', 'hello')).rejects.toThrow(/Telegram API 500/)
+  })
+
+  it('rejects when the request itself errors', async () => {
+    mockHttpsRequest(200, { requestError: new Error('ECONNRESET') })
+    delete process.env.VITEST
+    const p = getProvider('telegram')
+    await expect(p.sendMessage('123:tok', '999', 'hello')).rejects.toThrow(/ECONNRESET/)
   })
 })
