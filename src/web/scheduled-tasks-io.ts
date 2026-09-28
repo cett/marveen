@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { logger } from '../logger.js'
 import {
   countSchedules, listSchedulesFromDb, getScheduleFromDb, upsertSchedule, deleteSchedule,
   setScheduleEnabled, patchSchedule, seedScheduleIfAbsent,
@@ -235,44 +234,9 @@ export function seedSchedulesFromFilesIfEmpty(): number {
 // transition window and after a rollback (just clear the schedules table).
 export function listScheduledTasks(): ScheduledTask[] {
   if (countSchedules() > 0) {
-    return listSchedulesFromDb({ includeFleet: true }).map(rowToTask).map(reconcileEnabledFromFile)
+    return listSchedulesFromDb({ includeFleet: true }).map(rowToTask)
   }
   return listScheduledTasksFromFiles()
-}
-
-// task-config.json is the documented, hand-editable surface for a scheduled
-// task (SKILL.md + task-config.json on disk) -- but once a task is seeded
-// into the DB, listScheduledTasks() reads the DB row exclusively, and the
-// file becomes a write-only mirror the operator has no way of knowing has
-// stopped mattering. A direct edit that flips enabled to false (bypassing
-// the schedules API/UI, which keeps both in sync) is silently ignored: the
-// DB row stays enabled and the cron loop keeps firing, with nothing in the
-// file, the DB, or the UI hinting that the toggle didn't take (observed
-// 2026-09-27: ironman-czech-2027-monitor's task-config.json was hand-edited
-// to enabled:false, the DB row stayed enabled:1, and the heartbeat fired 8+
-// times that day).
-//
-// Disabling is the one safety action an operator reaches for under time
-// pressure to make a misbehaving task stop firing right now, so a file-level
-// disable is honored immediately, regardless of the DB row -- and the
-// correction is persisted back into the DB so the divergence does not
-// resurface on every tick. The reverse (file says enabled:true, DB says
-// false) is NOT reconciled the same way: that combination only arises from
-// an operator disabling via the API/UI while an unrelated stale file copy
-// still says true, and re-enabling on the operator's behalf would be the
-// wrong default.
-function reconcileEnabledFromFile(task: ScheduledTask): ScheduledTask {
-  if (!task.enabled) return task
-  const fileTask = readScheduledTask(task.name)
-  if (fileTask && fileTask.enabled === false) {
-    logger.warn(
-      { task: task.name },
-      'schedule: task-config.json says enabled=false but the DB row was still enabled -- disabling and reconciling the DB (the file was edited directly, bypassing the schedules API)',
-    )
-    setScheduleEnabled(task.name, false)
-    return { ...task, enabled: false }
-  }
-  return task
 }
 
 // File-system fallback (unchanged original logic, kept for transition/rollback).

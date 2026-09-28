@@ -59,7 +59,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
-- `listScheduledTasks()` now honors `enabled: false` in `task-config.json` even after the task is seeded into the DB `schedules` table; DB row corrected to match so divergence does not resurface.
+- **Reverted:** `listScheduledTasks()`'s file-level `enabled: false` reconciliation (previous entry below) is reverted. Every task's on-disk `task-config.json` in this fleet carries a vestigial `enabled: false` default that was never the operative signal (the `schedules` DB row was the actual source of truth), so the reconciliation read that stale `false` on every task and force-disabled all of them in the DB on first read after deploy -- the scheduler stopped firing entirely. `listScheduledTasks()` goes back to reading the DB row exclusively once a task is seeded there; the file is informational only in that mode. `enabled: false` from a hand-edited file is no longer honored in DB-seeded mode.
 - **[API]** `generate-error-schema.mjs` idempotency: Error-enum replacement in `docs/openapi.yaml` no longer appends an extra blank line on each run.
 - Context-guard "every tier off" early-out now also checks `dailyHandoffEnabled` (previously an agent with only the daily-handoff tier armed was treated as fully disarmed).
 - Audit `principal` field: new `principalSource` sibling records the auth mechanism (`session`/`token`/`peer`/`device`/`unknown`). Registered API token names now resolve correctly. `authPrincipal(ctx)` reads from the auth gate, never from the request body.
