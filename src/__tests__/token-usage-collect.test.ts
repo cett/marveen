@@ -62,7 +62,7 @@ const { FAKE_HOME } = vi.hoisted(() => {
       },
       timestamp: iso(60),
     }),
-    // ON CONFLICT UPDATE regression (#983): two rows colliding on the
+    // ON CONFLICT UPDATE regression: two rows colliding on the
     // (agent, session_id, timestamp, input_tokens, output_tokens) conflict
     // key, no messageId so collapseByMessageId leaves both intact -- the
     // first carries no cache data yet, the second carries the real cache
@@ -197,7 +197,7 @@ describe('collectTokenUsage', () => {
     expect(result2.inserted).toBe(0)
   })
 
-  it('backfills cache_creation_tokens and cache_read_tokens on ON CONFLICT UPDATE (#983)', async () => {
+  it('backfills cache_creation_tokens and cache_read_tokens on ON CONFLICT UPDATE', async () => {
     const row = getDb()
       .prepare(`SELECT cache_creation_tokens, cache_read_tokens FROM token_usage
         WHERE agent = 'fakemain' AND session_id = 'sess-main-collect'
@@ -235,7 +235,7 @@ describe('getModelDistribution', () => {
     }
   })
 
-  it('returns totalThinking per model (#983)', () => {
+  it('returns totalThinking per model', () => {
     const dist = getModelDistribution()
     const opus = dist.find((d: any) => d.model === 'claude-opus-4-5')
     expect(opus).toBeDefined()
@@ -277,7 +277,7 @@ describe('getToolStats', () => {
     }
   })
 
-  it('returns totalThinking per tool (#983)', () => {
+  it('returns totalThinking per tool', () => {
     const stats = getToolStats()
     const bash = stats.find((s: any) => s.tool_name === 'Bash')
     expect(bash).toBeDefined()
@@ -286,7 +286,7 @@ describe('getToolStats', () => {
 })
 
 describe('getTokenSummary', () => {
-  it('returns totalThinking per agent and per model (#983)', () => {
+  it('returns totalThinking per agent and per model', () => {
     const summaries = getTokenSummary()
     const fakemain = summaries.find(s => s.agent === 'fakemain')
     expect(fakemain).toBeDefined()
