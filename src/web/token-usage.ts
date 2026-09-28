@@ -219,6 +219,8 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
     ON CONFLICT(agent, session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
       model = CASE WHEN token_usage.model IS NULL AND excluded.model IS NOT NULL THEN excluded.model ELSE token_usage.model END,
       thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END,
+      cache_creation_tokens = CASE WHEN (token_usage.cache_creation_tokens IS NULL OR token_usage.cache_creation_tokens = 0) AND excluded.cache_creation_tokens > 0 THEN excluded.cache_creation_tokens ELSE token_usage.cache_creation_tokens END,
+      cache_read_tokens = CASE WHEN (token_usage.cache_read_tokens IS NULL OR token_usage.cache_read_tokens = 0) AND excluded.cache_read_tokens > 0 THEN excluded.cache_read_tokens ELSE token_usage.cache_read_tokens END,
       tenant_id = excluded.tenant_id
   `)
 
@@ -275,6 +277,7 @@ export interface TokenSummaryModelRow {
   totalOutput: number
   totalCacheRead: number
   totalCacheCreation: number
+  totalThinking: number
 }
 
 export interface TokenSummary {
@@ -284,6 +287,7 @@ export interface TokenSummary {
   totalOutput: number
   totalCacheRead: number
   totalCacheCreation: number
+  totalThinking: number
   totalSessions: number
   firstSeen: number
   lastSeen: number
@@ -305,6 +309,7 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
       SUM(output_tokens) as totalOutput,
       SUM(cache_read_tokens) as totalCacheRead,
       SUM(cache_creation_tokens) as totalCacheCreation,
+      SUM(thinking_tokens) as totalThinking,
       COUNT(DISTINCT session_id) as totalSessions,
       MIN(timestamp) as firstSeen,
       MAX(timestamp) as lastSeen
@@ -318,7 +323,8 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
       SUM(input_tokens) as totalInput,
       SUM(output_tokens) as totalOutput,
       SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation
+      SUM(cache_creation_tokens) as totalCacheCreation,
+      SUM(thinking_tokens) as totalThinking
     FROM token_usage
     ${where}
     GROUP BY agent, model
@@ -341,6 +347,7 @@ export interface ModelDistEntry {
   totalOutput: number
   totalCacheRead: number
   totalCacheCreation: number
+  totalThinking: number
 }
 
 export function getModelDistribution(from?: number, to?: number, agent?: string): ModelDistEntry[] {
@@ -354,7 +361,8 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
       SUM(input_tokens) as totalInput,
       SUM(output_tokens) as totalOutput,
       SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation
+      SUM(cache_creation_tokens) as totalCacheCreation,
+      SUM(thinking_tokens) as totalThinking
     FROM token_usage
   `
   const conditions: string[] = [
@@ -381,6 +389,7 @@ export interface ToolStatEntry {
   totalOutput: number
   totalCacheRead: number
   totalCacheCreation: number
+  totalThinking: number
 }
 
 export function getToolStats(from?: number, to?: number, agent?: string): ToolStatEntry[] {
@@ -393,7 +402,8 @@ export function getToolStats(from?: number, to?: number, agent?: string): ToolSt
       SUM(input_tokens) as totalInput,
       SUM(output_tokens) as totalOutput,
       SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation
+      SUM(cache_creation_tokens) as totalCacheCreation,
+      SUM(thinking_tokens) as totalThinking
     FROM token_usage
     WHERE tool_name IS NOT NULL
   `

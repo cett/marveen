@@ -38,11 +38,12 @@ function tuPriceForModel(model) {
   return TU_MODEL_PRICING.default
 }
 
-function tuCalcCostUSD(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, model) {
+function tuCalcCostUSD(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, model, thinkingTokens = 0) {
   const p = tuPriceForModel(model)
   return (
     (inputTokens || 0) * p.in +
     (outputTokens || 0) * p.out +
+    (thinkingTokens || 0) * p.out +
     (cacheCreationTokens || 0) * p.cw +
     (cacheReadTokens || 0) * p.cr
   ) / 1_000_000
@@ -165,11 +166,14 @@ function renderTuSummary(summary) {
     const isActive = tuSelectedAgent === s.agent
     const dimmed = tuSelectedAgent && !isActive
     const costUSD = Array.isArray(s.perModel) && s.perModel.length
-      ? s.perModel.reduce((sum, m) => sum + tuCalcCostUSD(m.totalInput || 0, m.totalOutput || 0, m.totalCacheRead || 0, m.totalCacheCreation || 0, m.model && m.model !== '(unknown)' ? m.model : null), 0)
-      : tuCalcCostUSD(s.totalInput, s.totalOutput, s.totalCacheRead, s.totalCacheCreation, null)
+      ? s.perModel.reduce((sum, m) => sum + tuCalcCostUSD(m.totalInput || 0, m.totalOutput || 0, m.totalCacheRead || 0, m.totalCacheCreation || 0, m.model && m.model !== '(unknown)' ? m.model : null, m.totalThinking || 0), 0)
+      : tuCalcCostUSD(s.totalInput, s.totalOutput, s.totalCacheRead, s.totalCacheCreation, null, s.totalThinking || 0)
     const sessions = s.totalSessions || 0
     const tokPerSession = sessions > 0 ? Math.round(totalIn / sessions) : 0
     const costPerSession = sessions > 0 ? costUSD / sessions : 0
+    const reasoningLine = (s.totalThinking || 0) > 0
+      ? `<div class="overview-stat-sub" style="font-size:11px;color:var(--text-secondary)">${t('tokenUsage.reasoning')}: ~${tuFormatTokens(s.totalThinking)} tok</div>`
+      : ''
     return `
       <div class="overview-stat tu-agent-card${isActive ? ' tu-active' : ''}" data-agent="${escapeHtml(s.agent)}"
         style="border-left:3px solid ${tuGetColor(s.agent)};cursor:pointer;${dimmed ? 'opacity:0.4;' : ''}transition:opacity 0.2s">
@@ -178,6 +182,7 @@ function renderTuSummary(summary) {
         <div class="overview-stat-sub">${t('tokenUsage.calls_sub', { calls: (s.totalCalls || 0).toLocaleString(), out: tuFormatTokens(s.totalOutput) })}</div>
         <div class="overview-stat-sub" style="margin-top:4px;color:var(--text-secondary)">${tuFormatCostUSD(costUSD)} &middot; ${sessions} sess</div>
         <div class="overview-stat-sub" style="font-size:11px;color:var(--text-secondary)">${tuFormatTokens(tokPerSession)} tok/sess &middot; ${tuFormatCostUSD(costPerSession)}/sess</div>
+        ${reasoningLine}
       </div>`
   }).join('')
 
@@ -855,9 +860,12 @@ function renderTuModelDist(data) {
   const tdStyle = 'padding:4px 8px 4px 0;font-size:13px;vertical-align:middle'
   const tdRStyle = tdStyle + ';text-align:right'
 
+  const showReasoning = data.some(d => (d.totalThinking || 0) > 0)
+
   let rows = data.map((d, i) => {
     const pct = total > 0 ? ((d.count / total) * 100).toFixed(1) : '0.0'
-    const costUSD = tuCalcCostUSD(d.totalInput, d.totalOutput, d.totalCacheRead, d.totalCacheCreation, d.model !== '(unknown)' ? d.model : null)
+    const costUSD = tuCalcCostUSD(d.totalInput, d.totalOutput, d.totalCacheRead, d.totalCacheCreation, d.model !== '(unknown)' ? d.model : null, d.totalThinking || 0)
+    const reasoningCell = showReasoning ? `<td style="${tdRStyle}">~${tuFormatTokens(d.totalThinking || 0)}</td>` : ''
     return `<tr>
       <td style="${tdStyle}">
         <span style="display:inline-block;width:10px;height:10px;background:${tuGetModelColor(i)};border-radius:2px;margin-right:6px;vertical-align:middle"></span>
@@ -865,15 +873,19 @@ function renderTuModelDist(data) {
       </td>
       <td style="${tdRStyle}">${(d.count || 0).toLocaleString()}</td>
       <td style="${tdRStyle}">${pct}%</td>
+      ${reasoningCell}
       <td style="${tdRStyle}">${tuFormatCostUSD(costUSD)}</td>
     </tr>`
   }).join('')
+
+  const reasoningHeader = showReasoning ? `<th style="text-align:right">${t('tokenUsage.reasoning')}</th>` : ''
 
   tableEl.innerHTML = `<div class="table-wrap"><table class="table" data-variant="compact">
     <thead><tr>
       <th>Modell</th>
       <th style="text-align:right">${t('tokenUsage.model_dist_calls', { n: '' }).trim()}</th>
       <th style="text-align:right">%</th>
+      ${reasoningHeader}
       <th style="text-align:right">Becsült USD</th>
     </tr></thead>
     <tbody>${rows}</tbody>
@@ -906,7 +918,7 @@ function renderTuToolStats(data) {
     }
     entry.count += row.count || 0
     ;(row.agents || '').split(',').forEach(a => { const s = a.trim(); if (s) entry.agentSet.add(s) })
-    entry.costUSD += tuCalcCostUSD(row.totalInput || 0, row.totalOutput || 0, row.totalCacheRead || 0, row.totalCacheCreation || 0, row.model || null)
+    entry.costUSD += tuCalcCostUSD(row.totalInput || 0, row.totalOutput || 0, row.totalCacheRead || 0, row.totalCacheCreation || 0, row.model || null, row.totalThinking || 0)
   }
   const aggregated = Array.from(byTool.values()).sort((a, b) => b.count - a.count).slice(0, 50)
 
