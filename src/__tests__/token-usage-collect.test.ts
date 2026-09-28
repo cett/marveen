@@ -62,6 +62,30 @@ const { FAKE_HOME } = vi.hoisted(() => {
       },
       timestamp: iso(60),
     }),
+    // ON CONFLICT UPDATE regression (#983): two rows colliding on the
+    // (agent, session_id, timestamp, input_tokens, output_tokens) conflict
+    // key, no messageId so collapseByMessageId leaves both intact -- the
+    // first carries no cache data yet, the second carries the real cache
+    // numbers. The upsert must backfill cache_creation/cache_read_tokens,
+    // not just model/thinking_tokens.
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        usage: { input_tokens: 500, output_tokens: 90, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        content: [{ type: 'text', text: 'first pass, no cache yet' }],
+        model: 'claude-sonnet-5',
+      },
+      timestamp: iso(300),
+    }),
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        usage: { input_tokens: 500, output_tokens: 90, cache_read_input_tokens: 88, cache_creation_input_tokens: 77 },
+        content: [{ type: 'text', text: 'second pass, cache now known' }],
+        model: 'claude-sonnet-5',
+      },
+      timestamp: iso(300),
+    }),
     // invalid JSON — should be skipped silently
     '{ not valid json %%',
     // blank line — skipped
@@ -112,6 +136,7 @@ import {
   collectTokenUsage,
   getModelDistribution,
   getToolStats,
+  getTokenSummary,
 } from '../web/token-usage.js'
 
 beforeAll(() => {
@@ -171,6 +196,17 @@ describe('collectTokenUsage', () => {
     expect(after).toBe(before)
     expect(result2.inserted).toBe(0)
   })
+
+  it('backfills cache_creation_tokens and cache_read_tokens on ON CONFLICT UPDATE (#983)', async () => {
+    const row = getDb()
+      .prepare(`SELECT cache_creation_tokens, cache_read_tokens FROM token_usage
+        WHERE agent = 'fakemain' AND session_id = 'sess-main-collect'
+          AND input_tokens = 500 AND output_tokens = 90`)
+      .get() as { cache_creation_tokens: number; cache_read_tokens: number } | undefined
+    expect(row).toBeDefined()
+    expect(row!.cache_creation_tokens).toBe(77)
+    expect(row!.cache_read_tokens).toBe(88)
+  })
 })
 
 describe('getModelDistribution', () => {
@@ -197,6 +233,14 @@ describe('getModelDistribution', () => {
     if (models.length > 0) {
       expect(models.every((m: string) => m.includes('haiku'))).toBe(true)
     }
+  })
+
+  it('returns totalThinking per model (#983)', () => {
+    const dist = getModelDistribution()
+    const opus = dist.find((d: any) => d.model === 'claude-opus-4-5')
+    expect(opus).toBeDefined()
+    // msg-001 (collapsed) carries the ~100-token thinking block
+    expect((opus as any).totalThinking).toBeGreaterThan(0)
   })
 
   it('excludes rows with null or synthetic model', () => {
@@ -231,5 +275,25 @@ describe('getToolStats', () => {
     for (const s of stats) {
       expect((s as any).agents).toContain('fakemain')
     }
+  })
+
+  it('returns totalThinking per tool (#983)', () => {
+    const stats = getToolStats()
+    const bash = stats.find((s: any) => s.tool_name === 'Bash')
+    expect(bash).toBeDefined()
+    expect((bash as any).totalThinking).toBeGreaterThan(0)
+  })
+})
+
+describe('getTokenSummary', () => {
+  it('returns totalThinking per agent and per model (#983)', () => {
+    const summaries = getTokenSummary()
+    const fakemain = summaries.find(s => s.agent === 'fakemain')
+    expect(fakemain).toBeDefined()
+    expect(fakemain!.totalThinking).toBeGreaterThan(0)
+
+    const opusRow = fakemain!.perModel.find(m => m.model === 'claude-opus-4-5')
+    expect(opusRow).toBeDefined()
+    expect(opusRow!.totalThinking).toBeGreaterThan(0)
   })
 })
