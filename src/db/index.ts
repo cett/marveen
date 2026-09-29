@@ -9,6 +9,7 @@
 // of '../../db.js' (or similar relative paths) keep working unchanged.
 export * from './connection.js'
 export * from './agent-settings.js'
+export * from './agent-state.js'
 export * from './agents.js'
 export * from './audit.js'
 export * from './autonomy.js'
@@ -34,6 +35,7 @@ import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from
 import { migrateConfigOverridesToSystemConfig, getSystemConfig, setSystemConfig } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
+import { importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -100,6 +102,12 @@ export function initDatabase(dbPathOverride?: string): void {
   // hand-edited or imported on a prior boot -- is never clobbered by a stale
   // file re-read).
   migrateAgentSettingsFromFiles()
+
+  // Migration 0060 (#985 group 4/8, part 1): one-time import of the
+  // context-restart-gate run-state half of #985 group 4 --
+  // store/context-restart-gate-state.json -- into agent_state. Same
+  // every-boot-but-effectively-once shape as the migrators above.
+  migrateAgentStateFromFiles()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
@@ -149,7 +157,7 @@ function migrateAgentSettingsFromFiles(): void {
     { file: 'context-guard.json', key: 'context_guard' },
     { file: 'auto-restart.json', key: 'auto_restart' },
     // Config half only -- context-restart-gate-state.json (run-state) is
-    // group 4/8, stays a JSON side-car for now.
+    // migrated separately by migrateAgentStateFromFiles() below (group 4/8).
     { file: 'context-restart-gate.json', key: 'context_restart_gate' },
   ]
   for (const { file, key } of files) {
@@ -162,6 +170,41 @@ function migrateAgentSettingsFromFiles(): void {
       }
     } catch (err) {
       logger.warn({ err, file }, 'agent settings migration: failed to parse file, skipping')
+    }
+  }
+}
+
+// Migration 0060 (#985 group 4/8, part 1) file retirement, mirroring
+// retireAgentSettingsFiles() above. Deliberately NOT called from
+// initDatabase() for the same shared-worktree-store/-dir test-race reason.
+// Called once from src/index.ts's real process boot, right after
+// migrateAgentStateFromFiles() (via initDatabase()) has guaranteed every
+// value the file held is already imported.
+export function retireAgentStateFiles(): void {
+  const p = join(STORE_DIR, 'context-restart-gate-state.json')
+  if (!existsSync(p)) return
+  try {
+    renameSync(p, `${p}.deprecated`)
+    logger.info({ path: p }, 'agent state file retired (renamed to .deprecated) -- agent_state DB is now the only read source')
+  } catch (err) {
+    logger.warn({ err, path: p }, 'agent state migration: failed to rename file to .deprecated')
+  }
+}
+
+function migrateAgentStateFromFiles(): void {
+  const files: Array<{ file: string; key: AgentStateKey }> = [
+    { file: 'context-restart-gate-state.json', key: 'gate_run_state' },
+  ]
+  for (const { file, key } of files) {
+    const p = join(STORE_DIR, file)
+    if (!existsSync(p)) continue
+    try {
+      const raw = JSON.parse(readFileSync(p, 'utf-8'))
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        importAgentStateFromFile(key, raw as Record<string, unknown>)
+      }
+    } catch (err) {
+      logger.warn({ err, file }, 'agent state migration: failed to parse file, skipping')
     }
   }
 }

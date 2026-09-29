@@ -59,8 +59,8 @@ describe('GET /api/egress-allowlist', () => {
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/egress-allowlist', role: 'admin' })
     await tryHandleEgressAllowlist(ctx)
     const b = body()
-    expect(b.rows).toHaveLength(199)
-    expect(b.domains).toHaveLength(199)
+    expect(b.rows).toHaveLength(206)
+    expect(b.domains).toHaveLength(206)
     expect(b.domains).toContain('github.com')
     expect(b.prefixes).toEqual([])
     expect(b.quarantine_domains).toEqual([])
@@ -129,8 +129,8 @@ describe('POST /api/egress-allowlist', () => {
 
     const { ctx: getCtx, body: getBody } = makeCtx({ method: 'GET', path: '/api/egress-allowlist', role: 'admin' })
     await tryHandleEgressAllowlist(getCtx)
-    // Still 199 -- github.com was already seeded, INSERT OR IGNORE didn't duplicate it.
-    expect(getBody().rows).toHaveLength(199)
+    // Still 206 -- github.com was already seeded, INSERT OR IGNORE didn't duplicate it.
+    expect(getBody().rows).toHaveLength(206)
   })
 })
 
@@ -146,7 +146,7 @@ describe('DELETE /api/egress-allowlist/:id', () => {
 
     const { ctx: after, body: afterBody } = makeCtx({ method: 'GET', path: '/api/egress-allowlist', role: 'admin' })
     await tryHandleEgressAllowlist(after)
-    expect(afterBody().rows).toHaveLength(198)
+    expect(afterBody().rows).toHaveLength(205)
   })
 
   it('non-admin DELETE is rejected with 403, regardless of tenant', async () => {
@@ -161,6 +161,6 @@ describe('DELETE /api/egress-allowlist/:id', () => {
 
     const { ctx: after, body: afterBody } = makeCtx({ method: 'GET', path: '/api/egress-allowlist', role: 'admin' })
     await tryHandleEgressAllowlist(after)
-    expect(afterBody().rows).toHaveLength(199) // untouched
+    expect(afterBody().rows).toHaveLength(206) // untouched
   })
 })

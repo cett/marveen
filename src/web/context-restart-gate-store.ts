@@ -1,15 +1,10 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { PROJECT_ROOT, STORE_DIR } from '../config.js'
-import { atomicWriteFileSync } from './atomic-write.js'
 import { getAgentSetting, setAgentSetting } from '../db/agent-settings.js'
+import { getAgentState, setAgentState } from '../db/agent-state.js'
 import {
   normalizeGateConfig,
   DEFAULT_GATE_CONFIG,
   type GateConfig,
 } from '../context-restart-gate.js'
-
-const STATE_PATH  = join(STORE_DIR, 'context-restart-gate-state.json')
 
 // ---- Config (per-agent, DB-backed) -------------------------------------------
 //
@@ -37,8 +32,13 @@ export function writeGateConfig(name: string, cfg: unknown, tenantId = 'default'
   return normalized
 }
 
-// ---- State (per-agent run-state: blocking streak tracking, still
-//      file-based -- group 4/8) --------------------------------------------
+// ---- State (per-agent run-state: blocking streak tracking, DB-backed) -------
+//
+// Migration 0060, agent_state table, state_key='gate_run_state' (#985 group
+// 4/8) -- replaces the former store/context-restart-gate-state.json
+// single-file map keyed by agent name. Same no-RBAC-question rationale as
+// the config half above: only context-restart-gate-runner.ts (in-process)
+// reads/writes this, no HTTP route.
 
 export interface GateRunState {
   /** Epoch ms when continuous blocking started; null when not blocked. */
@@ -55,13 +55,6 @@ const EMPTY_STATE: GateRunState = {
   lastClearAt: null,
 }
 
-function readStateRaw(): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(readFileSync(STATE_PATH, 'utf-8'))
-    return (parsed && typeof parsed === 'object') ? parsed as Record<string, unknown> : {}
-  } catch { return {} }
-}
-
 function normalizeState(raw: unknown): GateRunState {
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
   const msOrNull = (v: unknown): number | null =>
@@ -74,12 +67,15 @@ function normalizeState(raw: unknown): GateRunState {
 }
 
 export function readGateRunState(name: string): GateRunState {
-  const raw = readStateRaw()
-  return name in raw ? normalizeState(raw[name]) : { ...EMPTY_STATE }
+  const row = getAgentState(name, 'gate_run_state')
+  if (!row) return { ...EMPTY_STATE }
+  try {
+    return normalizeState(JSON.parse(row.state_value))
+  } catch {
+    return { ...EMPTY_STATE }
+  }
 }
 
 export function writeGateRunState(name: string, state: GateRunState): void {
-  const raw = readStateRaw()
-  raw[name] = state
-  atomicWriteFileSync(STATE_PATH, JSON.stringify(raw, null, 2))
+  setAgentState(name, 'gate_run_state', state)
 }

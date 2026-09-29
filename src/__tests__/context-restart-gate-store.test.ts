@@ -1,11 +1,8 @@
-// Config half is DB-backed since migration 0058 (#985 group 3/8) -- see
+// Both halves are DB-backed: config since migration 0058 (#985 group 3/8),
+// run-state since migration 0060 (#985 group 4/8) -- see
 // context-guard-store.test.ts's header comment for the shared-:memory:-DB
-// rationale. The run-state half (readGateRunState/writeGateRunState) is
-// still file-based (group 4/8), so it keeps the original tmpdir + vi.mock
-// setup for STORE_DIR.
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest'
-import { unlinkSync, existsSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+// rationale (a real in-memory DB, not per-test STORE_DIR isolation).
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 
 const { TMP_ROOT, STORE_DIR } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -31,26 +28,19 @@ import {
 } from '../web/context-restart-gate-store.js'
 import { DEFAULT_GATE_CONFIG } from '../context-restart-gate.js'
 
-const STATE_FILE = join(TMP_ROOT, 'store', 'context-restart-gate-state.json')
-
 beforeAll(() => {
-  // Real in-memory DB for the config half. The STORE_DIR mock above points
-  // at an empty tmpdir, so the boot importer (migrateAgentSettingsFromFiles)
-  // finds no context-restart-gate.json to carry over -- unlike
-  // context-guard-store.test.ts/auto-restart-store.test.ts, which run
-  // against the real worktree store/ and can see real fleet rows.
+  // Real in-memory DB. The STORE_DIR mock above points at an empty tmpdir,
+  // so the boot importers (migrateAgentSettingsFromFiles,
+  // migrateAgentStateFromFiles) find no JSON side-cars to carry over --
+  // unlike context-guard-store.test.ts/auto-restart-store.test.ts, which
+  // run against the real worktree store/ and can see real fleet rows.
   initDatabase(':memory:')
 })
 
-function cleanStateFile(): void {
-  if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE)
-}
-
-beforeEach(cleanStateFile)
 afterEach(() => {
   getDb().exec("DELETE FROM agent_settings WHERE setting_key = 'context_restart_gate'")
+  getDb().exec("DELETE FROM agent_state WHERE state_key = 'gate_run_state'")
 })
-afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }))
 
 describe('readGateConfig / writeGateConfig', () => {
   it('returns defaults when no row exists', () => {
@@ -88,7 +78,7 @@ describe('readGateConfig / writeGateConfig', () => {
 describe('readGateRunState / writeGateRunState', () => {
   const EMPTY_STATE: GateRunState = { firstBlockedAt: null, lastAlertAt: null, lastClearAt: null }
 
-  it('returns empty state when no file exists', () => {
+  it('returns empty state when no row exists', () => {
     expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
@@ -104,23 +94,23 @@ describe('readGateRunState / writeGateRunState', () => {
   })
 
   it('normalizes non-positive / non-finite fields to null on read', () => {
-    require('node:fs').writeFileSync(
-      STATE_FILE,
-      JSON.stringify({ 'agent-a': { firstBlockedAt: -5, lastAlertAt: Infinity, lastClearAt: 'nope' } }),
-    )
+    getDb().prepare(
+      `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', ?, 'default')`,
+    ).run('agent-a', JSON.stringify({ firstBlockedAt: -5, lastAlertAt: Infinity, lastClearAt: 'nope' }))
     expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
   it('floors fractional timestamps on read', () => {
-    require('node:fs').writeFileSync(
-      STATE_FILE,
-      JSON.stringify({ 'agent-a': { firstBlockedAt: 1000.7, lastAlertAt: null, lastClearAt: null } }),
-    )
+    getDb().prepare(
+      `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', ?, 'default')`,
+    ).run('agent-a', JSON.stringify({ firstBlockedAt: 1000.7, lastAlertAt: null, lastClearAt: null }))
     expect(readGateRunState('agent-a').firstBlockedAt).toBe(1000)
   })
 
-  it('survives a corrupted state file', () => {
-    require('node:fs').writeFileSync(STATE_FILE, 'INVALID')
+  it('survives a row whose state_value is not valid JSON', () => {
+    getDb().prepare(
+      `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', 'INVALID', 'default')`,
+    ).run('agent-a')
     expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
