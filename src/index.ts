@@ -517,7 +517,7 @@ async function main(): Promise<void> {
   // deferred part (federation.json).
   retireFederationConfigFile()
 
-  // Same reasoning as retireFederationConfigFile() above, for #985 group
+  // Same reasoning as retireFederationConfigFile() above, for group
   // 5/8's other three files (model-fallback.json, agents-desired.json,
   // terminal-input.json) -- previously migrated but never retired.
   retireGroup5StateFiles()

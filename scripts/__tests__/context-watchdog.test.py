@@ -262,7 +262,7 @@ class TestKnownAgentCwd(unittest.TestCase):
 
 class TestReadGateThreshold(unittest.TestCase):
     """_read_gate_threshold() reads the agent_settings row (migration 0058,
-    #985 group 3/8 -- replaces the former store/context-restart-gate.json),
+    group 3/8 -- replaces the former store/context-restart-gate.json),
     falling back to DEFAULT_THRESHOLD_TOKENS on anything but a valid positive
     number."""
 

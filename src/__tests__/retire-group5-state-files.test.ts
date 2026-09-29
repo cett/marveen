@@ -1,4 +1,4 @@
-// retireGroup5StateFiles() (#985 group 5/8's un-retired trio) unit tests,
+// retireGroup5StateFiles() (group 5/8's un-retired trio) unit tests,
 // fully isolated with a mocked node:fs -- same rationale as
 // retire-config-overrides.test.ts: this function RENAMES files, so it must
 // not touch this worktree's real, shared STORE_DIR (other test files read/

@@ -170,7 +170,7 @@ export function migrateGroup5StateFromFiles(): number {
   return migrated
 }
 
-// #985 group 5/8: the three files migrateGroup5StateFromFiles() backfills
+// group 5/8: the three files migrateGroup5StateFromFiles() backfills
 // above were left un-retired -- every other group renames its source file(s)
 // to .deprecated once the backfill has guaranteed the DB holds everything the
 // file had (retireAgentSettingsFiles() in db/index.ts is the closest sibling,

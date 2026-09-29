@@ -114,7 +114,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
 
 # Fraction of the restart-gate's configured thresholdTokens (agent_settings
-# row, setting_key='context_restart_gate' -- migration 0058, #985 group 3/8,
+# row, setting_key='context_restart_gate' -- migration 0058, group 3/8,
 # replacing the former store/context-restart-gate.json; default 400_000 --
 # src/context-restart-gate.ts DEFAULT_THRESHOLD_TOKENS) at which this hook
 # proactively injects a HANDOFF.
@@ -416,7 +416,7 @@ def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_s
 
 def _read_gate_threshold(agent_id: str) -> int:
     """Best-effort read of this agent's context_restart_gate thresholdTokens
-    from agent_settings (migration 0058, #985 group 3/8 -- replaces the
+    from agent_settings (migration 0058, group 3/8 -- replaces the
     former store/context-restart-gate.json), falling back to the gate's own
     default. Any failure (missing row, corrupt JSON, missing key, DB error)
     falls back silently -- this is a read of an already-fail-closed-guarded
