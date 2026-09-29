@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** Model-fallback-on-limit config (`enabled`/`chain`/`revertAfterMinutes`), agents-desired run-state, and the terminal-input opt-in toggle moved from `store/model-fallback.json`, `store/agents-desired.json`, and `store/terminal-input.json` to `system_config` DB rows (group 5/8; federation stays file-based, deferred to a later step). One-time idempotent backfill from any existing JSON side-cars on boot, deliberately not a baked migration seed (the fallback chain's primary must match the actually-running model; the terminal-input default must stay OFF for a fresh install). New `GET`/`PUT /api/model-fallback` admin route and Settings "Model fallback" tab (enable toggle, chain editor, revert-after-minutes). Fleet export/import updated: `agentsDesired`/`modelFallback`/`terminalInputEnabled` now round-trip through the 3 store modules' own raw field accessors instead of the retired files, preserving the same "operator never set it" vs "explicitly configured" distinction on both sides.
 - migrate kanban-audit-state.json to agent_state (group 4/8 item 2A)
 - migrate context-restart-gate run-state to SQLite (group 4/8 part 1)
 - supplement egress-allowlist seed with 7 post-authoring hosts
