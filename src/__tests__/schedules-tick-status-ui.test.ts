@@ -57,10 +57,17 @@ describe('schedules.js: scheduler tick-status heartbeat', () => {
 
   it('renders a danger badge when stale, success when not, and a warning when lastTickMs is unknown', () => {
     const idx = APP.indexOf('function renderSchedulerHeartbeat')
-    const body = APP.slice(idx, idx + 700)
+    const body = APP.slice(idx, idx + 1000)
     expect(body).toMatch(/data-variant="warning"[^]*tasks\.scheduler_heartbeat\.unknown/)
     expect(body).toMatch(/data-variant="danger"[^]*tasks\.scheduler_heartbeat\.stale/)
     expect(body).toMatch(/data-variant="success"[^]*tasks\.scheduler_heartbeat\.ok/)
+  })
+
+  it('the unknown-badge check keys on ageSeconds, not lastTickMs -- a future-skew stamp (lastTickMs set, ageSeconds null) must also render "unknown", not fall through to formatTickAge(null)', () => {
+    const idx = APP.indexOf('function renderSchedulerHeartbeat')
+    const guardIdx = APP.indexOf('if (', idx)
+    const guard = APP.slice(guardIdx, APP.indexOf(')', guardIdx) + 1)
+    expect(guard).toBe('if (status.ageSeconds == null)')
   })
 
   it('every scheduler_heartbeat i18n key exists in both languages', () => {

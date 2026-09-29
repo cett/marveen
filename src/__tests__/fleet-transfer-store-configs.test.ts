@@ -80,6 +80,7 @@ vi.mock('../env.js', () => ({ updateEnvFile: vi.fn() }))
 import { readFileSync, writeFileSync, existsSync, rmSync as rmSyncReal } from 'node:fs'
 import { join } from 'node:path'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
+import { getFederationConfig, invalidateFederationConfigCache } from '../web/federation/config.js'
 
 function writeStoreJson(name: string, obj: unknown) {
   writeFileSync(join(STORE_DIR, name), JSON.stringify(obj, null, 2), 'utf-8')
@@ -166,6 +167,26 @@ describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () 
     const applied = importFleet(fleetJson, { apply: true }) as any
     expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'target-keeps-this' })
     expect(applied.warnings?.some((w: string) => w.includes('federáció'))).toBe(true)
+  })
+
+  // Followup: the raw-row assertions above (getFederationConfigRaw) don't
+  // exercise the module-level cache in web/federation/config.ts that the rest
+  // of the app actually reads through (getFederationConfig()). Warm that
+  // cache with the target's OWN config, apply a valid import, and confirm
+  // getFederationConfig() reflects the NEW value -- this fails if the
+  // invalidateFederationConfigCache() call after the write is ever removed,
+  // since the cache would otherwise keep serving the pre-import value.
+  it('a valid import invalidates the getFederationConfig() cache, not just the DB row', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    setFederationConfigRaw(JSON.stringify({ enabled: false, systemId: 'target-own-system' }))
+    invalidateFederationConfigCache()
+    expect(getFederationConfig()).toEqual(expect.objectContaining({ enabled: false, systemId: 'target-own-system' }))
+
+    const fleetJson = JSON.stringify(baseFleetWith({ federation: { enabled: true, systemId: 'source-new-system' } }))
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+
+    expect(getFederationConfig()).toEqual(expect.objectContaining({ enabled: true, systemId: 'source-new-system' }))
   })
 })
 

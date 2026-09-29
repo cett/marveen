@@ -372,7 +372,11 @@ function formatTickAge(seconds) {
 }
 
 function renderSchedulerHeartbeat(container, status) {
-  if (status.lastTickMs == null) {
+  // ageSeconds is null both when there is no stamp at all (lastTickMs also
+  // null) AND when the stamp is anomalously far in the future (lastTickMs
+  // set, but computeTickStatus() refuses to report a confident age for it) --
+  // either way there is no age to format, so both render as "unknown".
+  if (status.ageSeconds == null) {
     container.hidden = false
     container.innerHTML = `<span class="badge" data-variant="warning">${escapeHtml(t('tasks.scheduler_heartbeat.unknown'))}</span>`
     return

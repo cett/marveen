@@ -35,10 +35,23 @@ describe('computeTickStatus: scheduler liveness classification', () => {
     expect(status.stale).toBe(true)
   })
 
-  it('a stamp from the future (clock skew) never yields a negative age', () => {
+  it('a small future skew (clock drift, up to 1 minute) never yields a negative age', () => {
     const status = computeTickStatus(now + 60_000, now)
     expect(status.ageSeconds).toBe(0)
     expect(status.stale).toBe(false)
+  })
+
+  it('a stamp more than a minute in the future is reported as unknown/stale, not a confident 0', () => {
+    const status = computeTickStatus(now + 60_001, now)
+    expect(status.ageSeconds).toBeNull()
+    expect(status.stale).toBe(true)
+    expect(status.lastTickMs).toBe(now + 60_001)
+  })
+
+  it('a stamp far in the future (large clock jump) is likewise unknown/stale', () => {
+    const status = computeTickStatus(now + 3_600_000, now)
+    expect(status.ageSeconds).toBeNull()
+    expect(status.stale).toBe(true)
   })
 
   it('a custom threshold is honored', () => {
