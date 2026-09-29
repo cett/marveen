@@ -4,5 +4,7 @@
   "enabled": true,
   "type": "heartbeat",
   "skipIfBusy": false,
-  "createdAt": 0
+  "createdAt": 0,
+  "description": "4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done archiválás) + beakadt task-ok számon kérése (előző audit óta nem mozdult in_progress -> ping az assignee-nek).",
+  "preCheck": "pre-check.sh"
 }
