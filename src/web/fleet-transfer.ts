@@ -27,6 +27,8 @@ import { getDesiredAgents, setDesiredAgents } from './agent-desired-state.js'
 import { readModelFallbackFieldsRaw, writeModelFallbackFieldsRaw } from './model-fallback-store.js'
 import type { ModelFallbackConfig } from '../model-fallback.js'
 import { readTerminalInputEnabledRaw, writeTerminalInputEnabled } from './terminal-input-store.js'
+import { listCostBudgets, replaceCostBudgets } from '../db/cost-budgets.js'
+import type { BudgetEntry } from '../costops/config.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -171,7 +173,14 @@ export interface DashboardSettingsExport {
   // P3: overwrite semantics (whole-file replace), same as the fields above --
   // fleet operational policy, consistent with the identity-takeover model.
   federation: Record<string, unknown>
+  // File-backed still (version/currency/fixed_costs only -- see cost_budgets
+  // below for the part that moved).
   costopsConfig: Record<string, unknown>
+  // DB-backed (cost_budgets, #985 group 6/8), not the `budgets` field that
+  // used to live inside costops-config.json. P3 overwrite semantics (whole-
+  // value replace via replaceCostBudgets), matching the old whole-file
+  // overwrite this field used to get as part of costopsConfig.
+  costBudgets: BudgetEntry[]
   // DB-backed (system_config key 'terminal_input_enabled', #985 group 5/8), not
   // the retired store/terminal-input.json. undefined (omitted from the JSON,
   // via JSON.stringify) when the source never explicitly set this toggle --
@@ -687,6 +696,7 @@ function exportDashboardSettings(): DashboardSettingsExport {
     modelFallback: readModelFallbackFieldsRaw(),
     federation: read('federation.json'),
     costopsConfig: read('costops-config.json'),
+    costBudgets: listCostBudgets('default'),
     egressAllowlist: listEgressAllowlistRows(null),
     terminalInputEnabled: readTerminalInputEnabledRaw(),
   }
@@ -1297,6 +1307,11 @@ export function importFleet(
       trackedWrite(join(STORE_DIR, 'federation.json'), JSON.stringify(s.federation, null, 2), tracker)
     if (s.costopsConfig && Object.keys(s.costopsConfig).length)
       trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
+    // DB-backed (cost_budgets) -- whole-value replace, not a file write. A
+    // possible stale `budgets` key inside s.costopsConfig (an export taken
+    // before #985 group 6/8, or the file's own on-disk remnant) is ignored:
+    // this field is now the sole source for budgets on import.
+    if (Array.isArray(s.costBudgets)) replaceCostBudgets('default', s.costBudgets as BudgetEntry[])
     // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see
     // DashboardSettingsExport doc): INSERT OR IGNORE per row is the union
     // semantics, same upsert-not-replace rationale as autonomy above.

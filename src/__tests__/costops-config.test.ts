@@ -2,11 +2,12 @@
 // exported function only ran incidentally as a side effect of unrelated
 // bootstrap paths -- no test file references validateConfig/
 // loadCostopsConfig/saveCostopsConfig/ensureExampleConfig by name, so the
-// branch/error-path coverage inside them was untested. Pure I/O + validation
-// module (no DB), so the only isolation needed is STORE_DIR -> a fresh temp
-// dir per test, dynamic re-import after vi.resetModules() since
-// COSTOPS_CONFIG_PATH/COSTOPS_EXAMPLE_PATH are module-level consts resolved
-// from STORE_DIR at import time (same pattern as settings-store.test.ts).
+// branch/error-path coverage inside them was untested.
+//
+// `budgets` moved to the cost_budgets DB table (#985 group 6/8) -- this file
+// now also needs a live `db` handle (:memory:, per-test module instance, same
+// pattern as db-system-config.test.ts) alongside the STORE_DIR temp-dir
+// isolation for the still-file-backed version/currency/fixed_costs half.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -22,6 +23,8 @@ beforeEach(async () => {
   mkdirSync(storeDir, { recursive: true })
   process.env['MARVEEN_STORE_DIR'] = storeDir
   vi.resetModules()
+  const dbMod = await import('../db.js')
+  dbMod.initDatabase(':memory:')
   mod = await import('../costops/config.js')
 })
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,6 +24,7 @@ import { initDatabase, getDb } from '../db.js'
 import { evaluateBudgets, type BudgetStatus } from '../costops/budget-alert.js'
 import { runBudgetAlertCheck } from '../costops/budget-alert-runner.js'
 import type { CostOpsConfig, BudgetEntry } from '../costops/config.js'
+import { replaceCostBudgets } from '../db/cost-budgets.js'
 
 const COSTOPS_CONFIG_PATH = join(STORE_DIR, 'costops-config.json')
 const STATE_PATH = join(STORE_DIR, 'budget-alert-state.json')
@@ -208,8 +209,10 @@ describe('evaluateBudgets', () => {
 })
 
 describe('runBudgetAlertCheck', () => {
+  // budgets are DB-backed now (cost_budgets, #985 group 6/8) -- loadCostopsConfig()
+  // inside runBudgetAlertCheck reads them from there, not from the file.
   function writeConfig(budgets: BudgetEntry[]): void {
-    writeFileSync(COSTOPS_CONFIG_PATH, JSON.stringify(config(budgets)), 'utf-8')
+    replaceCostBudgets('default', budgets)
   }
 
   it('does nothing when no budgets are configured', async () => {

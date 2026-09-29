@@ -79,6 +79,14 @@ vi.mock('../db/system-config.js', () => ({
   setSystemConfig: vi.fn(),
 }))
 
+// fleet-transfer.ts (#985 group 6/8) imports listCostBudgets/replaceCostBudgets
+// straight from '../db/cost-budgets.js', not through the '../db.js' re-export
+// mocked above. exportDashboardSettings() now touches it via listCostBudgets().
+vi.mock('../db/cost-budgets.js', () => ({
+  listCostBudgets: vi.fn().mockReturnValue([]),
+  replaceCostBudgets: vi.fn(),
+}))
+
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
   listAgentNames: () => [],

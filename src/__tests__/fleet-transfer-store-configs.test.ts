@@ -310,6 +310,43 @@ describe('exportFleet/importFleet -- agentsDesired/modelFallback/terminalInputEn
   })
 })
 
+// costBudgets moved from the `budgets` field inside store/costops-config.json
+// to the cost_budgets DB table (#985 group 6/8) -- round-tripped through
+// listCostBudgets()/replaceCostBudgets(), not the file helpers above.
+describe('exportFleet/importFleet -- costBudgets (DB-backed)', () => {
+  it('exports cost_budgets rows as an array', async () => {
+    const { replaceCostBudgets } = await import('../db/cost-budgets.js')
+    replaceCostBudgets('default', [{ id: 'global-monthly', amount: 5_000_000 }])
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse(exportFleet().data)
+    expect(fleet.dashboardSettings.costBudgets).toHaveLength(1)
+    expect(fleet.dashboardSettings.costBudgets[0]).toMatchObject({ id: 'global-monthly', amount: 5_000_000 })
+  })
+
+  it('import replaces the target budget set wholesale', async () => {
+    const { replaceCostBudgets, listCostBudgets } = await import('../db/cost-budgets.js')
+    replaceCostBudgets('default', [{ id: 'target-only', amount: 1 }])
+    const fleetJson = JSON.stringify(baseFleetWith({
+      costBudgets: [{ id: 'global-monthly', amount: 5_000_000 }],
+    }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listCostBudgets('default')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('global-monthly')
+  })
+
+  it('import does nothing when the source has no costBudgets array', async () => {
+    const { replaceCostBudgets, listCostBudgets } = await import('../db/cost-budgets.js')
+    replaceCostBudgets('default', [{ id: 'target-only', amount: 1 }])
+    const fleetJson = JSON.stringify(baseFleetWith({ costBudgets: undefined }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    importFleet(fleetJson, { apply: true })
+    expect(listCostBudgets('default')).toHaveLength(1)
+  })
+})
+
 function baseFleetWith(dashboardSettingsOverrides: Record<string, unknown>) {
   return {
     schemaVersion: 1,
