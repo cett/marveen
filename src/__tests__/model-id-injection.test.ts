@@ -78,9 +78,13 @@ describe('the writer chokepoint refuses a bad id before touching disk', () => {
   })
 
   // writeMainModel is the MAIN-agent sibling of writeAgentModel and a
-  // persisted-model writer that skipped the allowlist. It is a private, IO-side-effecting fn in the
-  // heavy model-fallback-runner module (never imported by a test), so we pin the guard at the source:
-  // it must call isValidModelId(model) BEFORE it ever writes .claude/settings.json.
+  // persisted-model writer that skipped the allowlist. Exported and directly
+  // covered behaviourally in model-fallback-runner.test.ts now
+  // (fix/main-model-single-source); this static check stays as a
+  // defense-in-depth pin at the source: it must call isValidModelId(model)
+  // BEFORE it writes MAIN_AGENT_MODEL to .env via updateEnvFile() (it no
+  // longer writes .claude/settings.json at all -- that file is tracked, not
+  // per-install state; see agent-config.ts's readMainModelRaw()).
   it('writeMainModel validates the id BEFORE the write chokepoint', () => {
     const runnerSrc = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'model-fallback-runner.ts'),
@@ -97,9 +101,9 @@ describe('the writer chokepoint refuses a bad id before touching disk', () => {
     }
     const body = runnerSrc.slice(m!.index, end + 1)
     const guardAt = body.indexOf('if (!isValidModelId(model)) throw new InvalidModelIdError(model)')
-    const writeAt = body.indexOf('atomicWriteFileSync')
+    const writeAt = body.indexOf('updateEnvFile')
     expect(guardAt, 'writeMainModel missing the isValidModelId guard').toBeGreaterThan(0)
-    expect(writeAt, 'writeMainModel no longer writes via atomicWriteFileSync').toBeGreaterThan(0)
+    expect(writeAt, 'writeMainModel no longer writes via updateEnvFile').toBeGreaterThan(0)
     expect(guardAt).toBeLessThan(writeAt) // validate before persisting
   })
 })
