@@ -21,6 +21,7 @@ import { agentDir, readAgentMcpScopeRaw } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { MCP_TOOL_REGISTRY, parseMcpScope, buildMcpDenyList } from './mcp-tool-registry.js'
 import { resolveTemplatePlaceholders } from './agent-scaffold-templates.js'
+import { listEgressAllowlistValues } from '../db.js'
 
 
 // SCRIPTS_DIR (config.js): when vitest runs from a git worktree under /tmp,
@@ -690,6 +691,25 @@ export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
   }
 }
 
+// DB-backed replacement for ownerAllowedDomains(), used at the real
+// ensureQuarantineReader() call site now that the operator's domain list
+// lives in egress_allowlist (migration 0056, #985/#984) rather than
+// store/egress-allowlist.json. ownerAllowedDomains() itself is left
+// unchanged -- it stays the degraded-mode fallback below, keeps its own
+// (heavily pinned, #797-derived) test coverage meaningful, and remains the
+// read path the WebFetch egress-gate hook uses when it cannot reach this
+// process's DB (the hook runs outside this process; see D1, workspace-doc
+// b7c3d4e5f6a048b9c2d1e3f4a5b6c7d8).
+export function ownerAllowedDomainsFromDb(storeDir = STORE_DIR): string[] {
+  try {
+    return listEgressAllowlistValues('domain')
+      .map((d) => d.trim())
+      .filter((d) => isPublicFetchHost(d))
+  } catch {
+    return ownerAllowedDomains(storeDir)
+  }
+}
+
 // Render the reader definition: the template's shipped feeds, plus the domains
 // the owner allowed on this install. Pure, so the tests drive the same string
 // the deploy writes.
@@ -791,7 +811,7 @@ export function ensureQuarantineReader(name: string): boolean {
   const destPath = join(destDir, 'quarantine-reader.md')
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), ownerAllowedDomains())
+    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), ownerAllowedDomainsFromDb())
   } catch {
     return false
   }

@@ -1,9 +1,14 @@
 // Round-trip coverage for the four new store/*.json fields in fleet export/import
 // (P3): modelFallback/federation/costopsConfig use OVERWRITE semantics (same as
 // the pre-existing autonomy/autoRestart/agentsDesired/norbertPersonal fields --
-// fleet operational policy, consistent with the identity-takeover model), while
-// egressAllowlist uses MERGE/union semantics -- a security allowlist should only
-// ever grow via migration, never silently narrow a target's own approved domains.
+// fleet operational policy, consistent with the identity-takeover model).
+//
+// egressAllowlist moved from a store/*.json file to the egress_allowlist DB
+// table (migration 0056, #985/#984) -- like autonomy below, it is now
+// round-tripped as a row array via INSERT OR IGNORE (still MERGE/union
+// semantics: a security allowlist should only ever grow via import, never
+// silently narrow a target's own approved domains), not through the file
+// helpers the rest of this suite exercises.
 //
 // Uses the REAL node:fs (pointed at a throwaway temp dir via PROJECT_ROOT/STORE_DIR)
 // so writeFileSync/readFileSync/existsSync behave exactly as in production -- see
@@ -71,25 +76,23 @@ function clearStoreFile(name: string) {
 beforeEach(() => {
   initDatabase(':memory:')
   vi.clearAllMocks()
-  for (const f of ['model-fallback.json', 'federation.json', 'costops-config.json', 'egress-allowlist.json']) {
+  for (const f of ['model-fallback.json', 'federation.json', 'costops-config.json']) {
     clearStoreFile(f)
   }
 })
 
 describe('exportFleet -- store/*.json config fields', () => {
-  it('reads all four new fields from disk', async () => {
+  it('reads all three file-backed fields from disk', async () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')
     writeStoreJson('model-fallback.json', { enabled: true, chain: ['a', 'b'], revertAfterMinutes: 60 })
     writeStoreJson('federation.json', { enabled: true, systemId: 'source-system' })
     writeStoreJson('costops-config.json', { version: 1, currency: 'USD', budgets: [] })
-    writeStoreJson('egress-allowlist.json', { domains: ['source.example.com', 'shared.example.com'] })
 
     const result = exportFleet()
     const fleet = JSON.parse(result.data)
     expect(fleet.dashboardSettings.modelFallback).toEqual({ enabled: true, chain: ['a', 'b'], revertAfterMinutes: 60 })
     expect(fleet.dashboardSettings.federation).toEqual({ enabled: true, systemId: 'source-system' })
     expect(fleet.dashboardSettings.costopsConfig.currency).toBe('USD')
-    expect(fleet.dashboardSettings.egressAllowlist.domains).toEqual(['source.example.com', 'shared.example.com'])
   })
 
   it('returns empty objects when the files do not exist', async () => {
@@ -99,7 +102,6 @@ describe('exportFleet -- store/*.json config fields', () => {
     expect(fleet.dashboardSettings.modelFallback).toEqual({})
     expect(fleet.dashboardSettings.federation).toEqual({})
     expect(fleet.dashboardSettings.costopsConfig).toEqual({})
-    expect(fleet.dashboardSettings.egressAllowlist).toEqual({})
   })
 })
 
@@ -126,38 +128,54 @@ describe('importFleet apply -- overwrite fields (modelFallback/federation/costop
   })
 })
 
-describe('importFleet apply -- merge field (egressAllowlist)', () => {
-  it('unions source domains into the target existing list, keeping target-only entries', async () => {
-    const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('egress-allowlist.json', { domains: ['source.example.com', 'shared.example.com'] })
+// egressAllowlist moved from a store/*.json file to the egress_allowlist DB
+// table (migration 0056) -- round-tripped as a row array, like autonomy
+// below, not through the file helpers the rest of this suite exercises.
+// Every fresh initDatabase(':memory:') seeds the 199 domains migration 0056
+// bakes in, so assertions build on top of that baseline rather than assuming
+// an empty table.
+describe('exportFleet/importFleet -- egressAllowlist (DB-backed)', () => {
+  it('exports egress_allowlist rows as an array, including the 199 migration-seeded domains', async () => {
+    const { insertEgressAllowlistEntry } = await import('../db.js')
+    insertEgressAllowlistEntry({ value: 'source.example.com', type: 'domain', tenant_id: 'default' })
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse(exportFleet().data)
+    expect(fleet.dashboardSettings.egressAllowlist).toHaveLength(200)
+    expect(fleet.dashboardSettings.egressAllowlist).toContainEqual(
+      expect.objectContaining({ value: 'source.example.com', type: 'domain', tenant_id: 'default' }),
+    )
+  })
+
+  it('unions source rows into the target, keeping target-only entries and never overwriting an existing one', async () => {
+    const { insertEgressAllowlistEntry, listEgressAllowlistRows } = await import('../db.js')
+    insertEgressAllowlistEntry({ value: 'source.example.com', type: 'domain', tenant_id: 'default', added_by: 'source-op' })
+    insertEgressAllowlistEntry({ value: 'shared.example.com', type: 'domain', tenant_id: 'default', added_by: 'source-op' })
+    const { exportFleet } = await import('../web/fleet-transfer.js')
     const exported = exportFleet()
 
-    clearStoreFile('egress-allowlist.json')
-    writeStoreJson('egress-allowlist.json', { domains: ['target-only.example.com', 'shared.example.com'] })
+    // Fresh "target" DB: re-init wipes the in-memory DB and re-seeds the 199 defaults.
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+    insertEgressAllowlistEntry({ value: 'target-only.example.com', type: 'domain', tenant_id: 'default', added_by: 'target-op' })
+    insertEgressAllowlistEntry({ value: 'shared.example.com', type: 'domain', tenant_id: 'default', added_by: 'target-op' })
 
+    const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = importFleet(exported.data, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    const merged = readStoreJson('egress-allowlist.json').domains as string[]
-    expect(merged.sort()).toEqual(['shared.example.com', 'source.example.com', 'target-only.example.com'])
+
+    const rows = listEgressAllowlistRows(null)
+    expect(rows.some((r) => r.value === 'source.example.com')).toBe(true)
+    expect(rows.some((r) => r.value === 'target-only.example.com')).toBe(true)
+    // Target's own row for a value both sides had must survive untouched --
+    // INSERT OR IGNORE never fires an UPDATE.
+    expect(rows.find((r) => r.value === 'shared.example.com')?.added_by).toBe('target-op')
   })
 
-  it('creates the target file from the source list when the target has none yet', async () => {
-    const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('egress-allowlist.json', { domains: ['source-only.example.com'] })
-    const exported = exportFleet()
-
-    // no clearStoreFile needed -- beforeEach already ensured a clean target
-
-    importFleet(exported.data, { apply: true })
-    expect(readStoreJson('egress-allowlist.json').domains).toEqual(['source-only.example.com'])
-  })
-
-  it('does not touch the target file when the source has no domains', async () => {
-    const { importFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('egress-allowlist.json', { domains: ['target-only.example.com'] })
-    const fleetJson = JSON.stringify(baseFleetWith({ egressAllowlist: {} }))
+  it('import does nothing when the source has no egress rows (the 199 seeded defaults are untouched)', async () => {
+    const fleetJson = JSON.stringify(baseFleetWith({ egressAllowlist: [] }))
+    const { importFleet, exportFleet } = await import('../web/fleet-transfer.js')
     importFleet(fleetJson, { apply: true })
-    expect(readStoreJson('egress-allowlist.json').domains).toEqual(['target-only.example.com'])
+    expect(JSON.parse(exportFleet().data).dashboardSettings.egressAllowlist).toHaveLength(199)
   })
 })
 

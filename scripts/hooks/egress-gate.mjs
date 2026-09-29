@@ -9,17 +9,29 @@
 //
 // Two-tier allowlist:
 //   1. Built-in (ALLOWED_PREFIXES): hard-coded, always enforced.
-//   2. Runtime (store/egress-allowlist.json): operator-managed, loaded on each
-//      invocation. Shape: { "domains": ["example.com"], "prefixes": ["https://host/path/"] }
-//      Both keys are optional. Missing file or malformed JSON -> treated as empty
-//      lists (FAIL-OPEN on the file, FAIL-SAFE on the decision: the built-in list
-//      still guards; no extra URLs are allowed merely because the file is missing).
+//   2. Runtime (egress_allowlist DB table, migration 0056/#985): operator-managed.
+//      This hook runs OUTSIDE the backend Node process (a fresh subprocess per
+//      PreToolUse call), so it cannot query the DB directly -- it calls
+//      GET /api/v1/egress-allowlist and disk-caches the result for
+//      RUNTIME_CACHE_TTL_MS (resolveRuntimeAllowlist()). If the dashboard is
+//      unreachable (down, still starting, or the call errors/times out), it
+//      falls back to store/egress-allowlist.json via loadRuntimeAllowlist() --
+//      the file this hook used to read exclusively before the DB migration.
+//      That file is left in place (store/ is gitignored) purely as this
+//      fail-safe; it is no longer the primary source. Shape (both the API
+//      response's reshaped fields and the fallback file):
+//      { "domains": ["example.com"], "prefixes": ["https://host/path/"] }.
+//      Missing file/cache, malformed JSON, or a failed API call -> treated as
+//      empty lists (FAIL-OPEN on the source, FAIL-SAFE on the decision: the
+//      built-in list still guards; no extra URLs are allowed merely because
+//      the runtime source is unavailable).
 //
 // When a URL is not on either allowlist:
 //   - The tool call is HARD-BLOCKED (decision: deny).
 //   - The blocked call is appended to EGRESS_BLOCK_LOG for operator review.
-//   - The operator can approve the URL/domain: add it to store/egress-allowlist.json,
-//     then re-run the WebFetch. No restart required.
+//   - The operator can approve the URL/domain via the Settings dashboard (or
+//     POST /api/v1/egress-allowlist), then re-run the WebFetch. No restart
+//     required; the next call picks it up once the cache TTL elapses.
 //
 // The log is separate from the main Marveen log so operators can grep it
 // independently: `tail -f store/egress-blocked.log`
@@ -29,7 +41,7 @@
 // requests. Those channels are out of scope for this hook mechanism and require
 // separate controls if needed.
 
-import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -164,6 +176,102 @@ export function loadRuntimeAllowlist() {
     // Missing file or JSON parse error: treat as empty, never propagate.
     return { domains: [], prefixes: [], quarantineDomains: [] }
   }
+}
+
+// --- DB-backed runtime allowlist (migration 0056/#985, decision D1=A) ------
+//
+// This hook is a fresh Node subprocess per PreToolUse call -- there is no
+// long-lived process to hold an in-memory cache across invocations, so the
+// "process-level Map, 30s TTL" the plan describes is implemented as a small
+// disk-backed cache file instead: functionally the same throttle (at most one
+// dashboard round-trip per RUNTIME_CACHE_TTL_MS across however many WebFetch
+// calls land in that window), just surviving the fact that "the process" here
+// means "one exec, then exit".
+const RUNTIME_CACHE_PATH = join(REPO_ROOT, 'store', '.egress-allowlist-cache.json')
+const RUNTIME_CACHE_TTL_MS = 30_000
+// Kept short: a hung dashboard must not make WebFetch itself feel hung, and
+// the fallback (loadRuntimeAllowlist, below) is one readFileSync away.
+const API_FETCH_TIMEOUT_MS = 2_000
+
+function readRuntimeCache() {
+  try {
+    const raw = JSON.parse(readFileSync(RUNTIME_CACHE_PATH, 'utf-8'))
+    if (typeof raw?.fetchedAt !== 'number') return null
+    if (Date.now() - raw.fetchedAt >= RUNTIME_CACHE_TTL_MS) return null
+    return {
+      domains: Array.isArray(raw.domains) ? raw.domains : [],
+      prefixes: Array.isArray(raw.prefixes) ? raw.prefixes : [],
+      quarantineDomains: Array.isArray(raw.quarantineDomains) ? raw.quarantineDomains : [],
+    }
+  } catch {
+    return null // missing/malformed/stale cache: caller re-fetches
+  }
+}
+
+function writeRuntimeCache(list) {
+  try {
+    mkdirSync(join(REPO_ROOT, 'store'), { recursive: true })
+    writeFileSync(RUNTIME_CACHE_PATH, JSON.stringify({ fetchedAt: Date.now(), ...list }), 'utf-8')
+  } catch {
+    // A cache write failure only costs the throttle benefit, not correctness
+    // (the next call just fetches again) -- never let it block the decision.
+  }
+}
+
+// The dashboard bearer token this install's fleet skills already use
+// (store/.dashboard-token) -- same trust boundary as reading
+// store/egress-allowlist.json directly used to be, since either way this
+// hook already has filesystem access to the store/ directory.
+function readDashboardToken() {
+  try {
+    return readFileSync(join(REPO_ROOT, 'store', '.dashboard-token'), 'utf-8').trim()
+  } catch {
+    return null
+  }
+}
+
+// One HTTP round-trip to the backend's own view of egress_allowlist. Returns
+// null on ANY failure (no token file, connection refused, timeout, non-200,
+// malformed body) -- the caller falls back to the file, never throws.
+async function fetchRuntimeAllowlistFromApi() {
+  const token = readDashboardToken()
+  if (!token) return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(`http://localhost:${DASHBOARD_PORT}/api/v1/egress-allowlist`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
+    if (!res.ok) return null
+    const body = await res.json()
+    return {
+      domains: Array.isArray(body.domains) ? body.domains.filter((d) => typeof d === 'string') : [],
+      prefixes: Array.isArray(body.prefixes) ? body.prefixes.filter((p) => typeof p === 'string') : [],
+      quarantineDomains: Array.isArray(body.quarantine_domains)
+        ? body.quarantine_domains.filter((d) => typeof d === 'string')
+        : [],
+    }
+  } catch {
+    return null // network error, timeout (AbortError), or malformed JSON
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// The entry point's actual allowlist source: fresh disk cache first, else a
+// live API call (cached for next time on success), else the file --
+// loadRuntimeAllowlist()'s own FAIL-OPEN behavior is the final backstop, so
+// this function itself never throws.
+export async function resolveRuntimeAllowlist() {
+  const cached = readRuntimeCache()
+  if (cached) return cached
+  const fromApi = await fetchRuntimeAllowlistFromApi()
+  if (fromApi) {
+    writeRuntimeCache(fromApi)
+    return fromApi
+  }
+  return loadRuntimeAllowlist()
 }
 
 // Pure decision, with the tier that decided it.
@@ -309,7 +417,7 @@ if (isInvokedDirectly()) {
   }
   const url = String(payload?.tool_input?.url ?? '')
   const agentType = String(payload?.agent_type ?? '')
-  const runtimeList = loadRuntimeAllowlist()
+  const runtimeList = await resolveRuntimeAllowlist()
   const decision = egressDecision(payload?.tool_name, payload?.tool_input, runtimeList, agentType)
   if (decision.blocked) {
     logLine('BLOCKED', url, 'reason="not on egress allowlist"', payloadKeySignature(payload), agentType)

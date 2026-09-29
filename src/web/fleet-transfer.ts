@@ -22,7 +22,7 @@ import { AGENTS_BASE_DIR, listAgentNames, invalidateModelProfileMapCache } from 
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
-import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow } from '../db.js'
+import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow } from '../db.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -154,11 +154,15 @@ export interface DashboardSettingsExport {
   modelFallback: Record<string, unknown>
   federation: Record<string, unknown>
   costopsConfig: Record<string, unknown>
-  // P3: MERGE semantics (union, not replace) -- see importFleet(). An allowlist is a
-  // security-positive control that can only ever be narrowed by an overwrite, and a
-  // target machine may have its own already-approved domains for integrations the
-  // source fleet never used; losing those on import would be a silent regression.
-  egressAllowlist: Record<string, unknown>
+  // DB-backed (egress_allowlist, migration 0056/#985), not the retired
+  // store/egress-allowlist.json side-car -- exported as the raw row array
+  // (mirrors autonomy above), imported with MERGE semantics (union, never
+  // replace) via INSERT OR IGNORE on (value, type, tenant_id): an allowlist is
+  // a security-positive control that can only ever be narrowed by an
+  // overwrite, and a target machine may have its own already-approved domains
+  // for integrations the source fleet never used -- losing those on import
+  // would be a silent regression.
+  egressAllowlist: EgressAllowlistRow[]
 }
 
 export interface MemoryRow {
@@ -658,7 +662,7 @@ function exportDashboardSettings(): DashboardSettingsExport {
     modelFallback: read('model-fallback.json'),
     federation: read('federation.json'),
     costopsConfig: read('costops-config.json'),
-    egressAllowlist: read('egress-allowlist.json'),
+    egressAllowlist: listEgressAllowlistRows(null),
   }
 }
 
@@ -1255,15 +1259,11 @@ export function importFleet(
       trackedWrite(join(STORE_DIR, 'federation.json'), JSON.stringify(s.federation, null, 2), tracker)
     if (s.costopsConfig && Object.keys(s.costopsConfig).length)
       trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
-    // egress-allowlist.json -- MERGE, not overwrite (see DashboardSettingsExport doc):
-    // union the source's domains into whatever the target already has, so a
-    // target-specific integration domain never gets silently dropped.
-    const sourceDomains = Array.isArray((s.egressAllowlist as any)?.domains) ? (s.egressAllowlist as any).domains as string[] : []
-    if (sourceDomains.length > 0) {
-      const existing = safeReadJson(join(STORE_DIR, 'egress-allowlist.json'))
-      const existingDomains = Array.isArray((existing as any).domains) ? (existing as any).domains as string[] : []
-      const merged = [...new Set([...existingDomains, ...sourceDomains])].sort()
-      trackedWrite(join(STORE_DIR, 'egress-allowlist.json'), JSON.stringify({ ...existing, domains: merged }, null, 2), tracker)
+    // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see
+    // DashboardSettingsExport doc): INSERT OR IGNORE per row is the union
+    // semantics, same upsert-not-replace rationale as autonomy above.
+    if (Array.isArray(s.egressAllowlist)) {
+      mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
     }
 
     // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)

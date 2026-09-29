@@ -837,6 +837,57 @@ export async function loadSettings() {
           }
           panel.appendChild(group)
         }
+
+        // Egress allowlist (migration 0056): the WebFetch egress-gate hook's
+        // runtime domain/prefix list, previously hand-edited as
+        // store/egress-allowlist.json. Add/delete are admin-only, in the UI
+        // AND enforced server-side (a tenant-scoped non-admin write would
+        // still expand what every tenant's WebFetch calls can reach, since
+        // the hook enforces one fleet-wide union, not a per-tenant list).
+        // Everyone with access to this tab can see the current (own-tenant)
+        // list read-only.
+        const egressTitle = document.createElement('div')
+        egressTitle.className = 'settings-group-title'
+        egressTitle.textContent = t('settings.egress.title')
+        panel.appendChild(egressTitle)
+
+        if (isAdmin) {
+          const egressForm = document.createElement('div')
+          egressForm.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center'
+          egressForm.innerHTML = `
+            <input id="egressAllowlistValueInput" type="text" placeholder="${escapeHtml(t('settings.egress.value_placeholder'))}" style="flex:1;min-width:220px">
+            <select id="egressAllowlistTypeInput">
+              <option value="domain">${escapeHtml(t('settings.egress.type.domain'))}</option>
+              <option value="prefix">${escapeHtml(t('settings.egress.type.prefix'))}</option>
+              <option value="quarantine_domain">${escapeHtml(t('settings.egress.type.quarantine_domain'))}</option>
+            </select>
+            <button class="btn" data-variant="primary" data-size="compact" id="egressAllowlistAddBtn">${escapeHtml(t('settings.egress.add_btn'))}</button>
+          `
+          panel.appendChild(egressForm)
+        }
+
+        const egressFilterWrap = document.createElement('div')
+        egressFilterWrap.style.cssText = 'margin-bottom:8px'
+        egressFilterWrap.innerHTML = `<input id="egressAllowlistFilterInput" type="text" placeholder="${escapeHtml(t('settings.egress.filter_placeholder'))}" style="width:100%;max-width:320px">`
+        panel.appendChild(egressFilterWrap)
+
+        const egressTableWrap = document.createElement('div')
+        egressTableWrap.className = 'table-wrap'
+        egressTableWrap.style.cssText = 'margin-bottom:28px;max-height:420px;overflow-y:auto'
+        egressTableWrap.innerHTML = `
+          <table class="table" data-size="compact">
+            <thead><tr>
+              <th>${t('settings.egress.col.value')}</th>
+              <th>${t('settings.egress.col.type')}</th>
+              <th>${t('settings.egress.col.tenant')}</th>
+              <th>${t('settings.egress.col.added_by')}</th>
+              ${isAdmin ? '<th></th>' : ''}
+            </tr></thead>
+            <tbody id="egressAllowlistTbody"></tbody>
+          </table>`
+        panel.appendChild(egressTableWrap)
+
+        if (sectionId === activeTab) loadEgressAllowlistTable()
       }
 
       renderSectionGroups(panel, sectionId, defs, isAdmin)
@@ -1041,6 +1092,10 @@ function activateSettingsTab(mod) {
     loadCostopsBudgetsTable()
     const body = document.getElementById('claudePlansBody')
     if (body && !body.innerHTML.trim()) renderClaudePlansPanel(body)
+  }
+  if (mod === 'csatornak') {
+    const tbody = document.getElementById('egressAllowlistTbody')
+    if (tbody && !tbody.innerHTML.trim()) loadEgressAllowlistTable()
   }
 }
 
@@ -1527,4 +1582,98 @@ function costopsBudgetScopeLabel(budget) {
   if (budget.scope === 'tenant') return t('tokenUsage.costops_scope_tenant', { name: budget.scope_ref })
   return t('tokenUsage.costops_scope_global')
 }
+
+// === Egress allowlist (Csatornák & Biztonság tab, migration 0056) ==========
+let _egressAllowlistRows = []
+
+async function loadEgressAllowlistTable() {
+  const tbody = document.getElementById('egressAllowlistTbody')
+  if (!tbody) return
+  const colspan = document.getElementById('egressAllowlistAddBtn') ? 5 : 4
+  tbody.innerHTML = `<tr><td colspan="${colspan}" style="color:var(--text-muted)">${t('settings.loading')}</td></tr>`
+  try {
+    const res = await fetch('/api/v1/egress-allowlist')
+    if (!res.ok) {
+      tbody.innerHTML = `<tr><td colspan="${colspan}" style="color:var(--danger)">${t('settings.egress.toast.error')}</td></tr>`
+      return
+    }
+    _egressAllowlistRows = (await res.json()).rows || []
+  } catch {
+    tbody.innerHTML = `<tr><td colspan="${colspan}" style="color:var(--danger)">${t('settings.egress.toast.error')}</td></tr>`
+    return
+  }
+  renderEgressAllowlistTable()
+}
+
+function renderEgressAllowlistTable() {
+  const tbody = document.getElementById('egressAllowlistTbody')
+  if (!tbody) return
+  const isAdmin = !!document.getElementById('egressAllowlistAddBtn')
+  const colspan = isAdmin ? 5 : 4
+  const filter = (document.getElementById('egressAllowlistFilterInput')?.value || '').trim().toLowerCase()
+  const rows = filter ? _egressAllowlistRows.filter(r => r.value.toLowerCase().includes(filter)) : _egressAllowlistRows
+
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="${colspan}" style="color:var(--text-muted)">${t('settings.egress.empty')}</td></tr>`
+    return
+  }
+
+  tbody.innerHTML = rows.map(r => `
+    <tr data-egress-id="${r.id}">
+      <td>${escapeHtml(r.value)}</td>
+      <td>${escapeHtml(r.type)}</td>
+      <td>${escapeHtml(r.tenant_id)}</td>
+      <td>${escapeHtml(r.added_by)}</td>
+      ${isAdmin ? `<td style="text-align:right;white-space:nowrap"><button class="btn" data-variant="danger" data-size="compact" data-action="delete">${escapeHtml(t('common.btn.delete'))}</button></td>` : ''}
+    </tr>`).join('')
+
+  if (isAdmin) {
+    tbody.querySelectorAll('tr[data-egress-id]').forEach(row => {
+      row.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteEgressAllowlistEntry(row.dataset.egressId, row.querySelector('td').textContent))
+    })
+  }
+}
+
+async function addEgressAllowlistEntry() {
+  const valueInput = document.getElementById('egressAllowlistValueInput')
+  const typeInput = document.getElementById('egressAllowlistTypeInput')
+  const value = valueInput?.value.trim()
+  if (!value) return
+  try {
+    const res = await fetch('/api/v1/egress-allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value, type: typeInput?.value || 'domain' }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showToast(getErrorMessage(err) || t('settings.egress.toast.error'), 'error')
+      return
+    }
+    valueInput.value = ''
+    showToast(t('settings.egress.toast.added'))
+    loadEgressAllowlistTable()
+  } catch {
+    showToast(t('settings.egress.toast.error'), 'error')
+  }
+}
+
+async function deleteEgressAllowlistEntry(id, value) {
+  if (!window.confirm(t('settings.egress.confirm_delete', { value }))) return
+  try {
+    const res = await fetch(`/api/v1/egress-allowlist/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) { showToast(t('settings.egress.toast.error'), 'error'); return }
+    showToast(t('settings.egress.toast.deleted'))
+    loadEgressAllowlistTable()
+  } catch {
+    showToast(t('settings.egress.toast.error'), 'error')
+  }
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target?.id === 'egressAllowlistAddBtn') addEgressAllowlistEntry()
+})
+document.addEventListener('input', (e) => {
+  if (e.target?.id === 'egressAllowlistFilterInput') renderEgressAllowlistTable()
+})
 

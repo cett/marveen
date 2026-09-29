@@ -27,6 +27,10 @@ const SYSTEM_FILES = new Set([
   'capability-summaries.json',
   // Usage and keepalive
   'claude-usage.json', '.channel-keepalive', '.channel-last-respawn',
+  // Egress-gate hook: DB-backed since migration 0056 (#985); the file stays
+  // as the hook's fail-safe fallback and its own disk-cache, neither of
+  // which are agent-created state worth an audit row.
+  'egress-allowlist.json', '.egress-allowlist-cache.json',
   // Known Marveen-written log files
   'channels.log', 'channels.error.log',
   'dashboard.log', 'dashboard.error.log',
