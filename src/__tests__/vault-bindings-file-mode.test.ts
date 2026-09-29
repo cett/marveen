@@ -1,4 +1,4 @@
-// VAULTMODE818, revised for #985 group 7/8 (Jónás D2=B decision, plan #984
+// VAULTMODE818, revised for #985 group 7/8 (team decision D2=B, plan #984
 // section 7): the binding store itself moved from store/vault-bindings.json
 // to the vault_bindings DB table, so the pre-migration version of this file
 // (asserting every atomicWriteFileSync(target.mcpFilePath, ...) call in
