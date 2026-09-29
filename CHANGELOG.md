@@ -9,7 +9,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: aa47040cf72900194eef5db97d19332b6eb17403 -->
+<!-- changelog-auto-sha: cd00e7d54aadf38020b01709e16f6102bb1d0451 -->
 
 ### Added
 
@@ -80,6 +80,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- retire context-compact-monitor.sh in favor of the proactive PostToolUse hook, and the interlock stamp/validation counter that gated its removal
 - fix seed-count assertions stale after quarantine supplement
 - scrub internal workspace-doc id from group 1 comments
 - drop internal kanban-id reference from test names
@@ -87,6 +88,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Removed
 
+- **[API]** `GET /api/hook-audit/watchdog-cycles` removed along with `src/watchdog-validation.ts` (the interlock-stamp validation counter it read, itself retired now that `context-compact-monitor.sh` and `store/context-compact-state.json` are gone). Internal/admin route, never documented in `docs/openapi.yaml`, no SUNSET-tracked alias. `hook_audit_log`'s `handoff` rows (the real audit trail) and migration 0038's `trigger_source` column are unaffected.
 - **[API]** `tool_call_log` table and its prune endpoint retired; `GET /api/tool-log`/`GET /api/tool-log/analyze` now read from `otel_spans`. `POST /api/tool-log` (writer) keeps its existing shape. **BREAKING** on internal audit-writer contract: calls missing `trace_id` or `agent_id` are dropped (logged as warning) instead of stored with null columns.
 - Dashboard Napló audit-timeline page removed (nav link, IIFE, i18n keys, CSS); shared `GET /api/audit-log` backend is untouched.
 - Overview Fleet Health strip (`#fleetHealthBar`); underlying counters remain, feeding the Attention Required panel.

@@ -1,16 +1,6 @@
-import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLog, type HookAuditLogEntry } from '../../db.js'
+import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLog } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
-import { MAIN_AGENT_ID } from '../../config.js'
-import { listAgentNames } from '../agent-config.js'
-import { computeWatchdogCycles, computeFleetWatchdogCycles } from '../../watchdog-validation.js'
-
-// Kept wide enough to see the whole rolling window a validation cycle can
-// span (cooldownSecs, default 45min) plus a comfortable margin for the
-// phase-4 gate's target count of handoffs -- 30 days matches the table's own
-// default prune retention (pruneHookAuditLog), so this never claims to see
-// further back than what's actually still in the table.
-const WATCHDOG_CYCLES_LOOKBACK_SECS = 30 * 86400
 
 const VALID_HOOK_TYPES = new Set(['PreToolUse', 'PostToolUse', 'PreCompact', 'Stop'])
 // 'handoff' (added for the context watchdog's proactive-compaction phase):
@@ -19,8 +9,8 @@ const VALID_HOOK_TYPES = new Set(['PreToolUse', 'PostToolUse', 'PreCompact', 'St
 // whether a tool call itself was let through.
 const VALID_VERDICTS = new Set(['allow', 'deny', 'defer', 'handoff'])
 // trigger_source (migration 0038) names which context-protection layer
-// produced a handoff/PreCompact row -- optional, only set by the two
-// producers below (see src/watchdog-validation.ts).
+// produced a handoff/PreCompact row -- optional, only set by the hook
+// scripts that write it (context-watchdog.py, and formerly compact-monitor.sh).
 const VALID_TRIGGER_SOURCES = new Set(['watchdog', 'compact-monitor'])
 
 export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
@@ -88,45 +78,6 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
       limit: limit ? parseInt(limit, 10) : undefined,
     })
     json(res, { entries, total: entries.length })
-    return true
-  }
-
-  // GET /api/hook-audit/watchdog-cycles -- phase-4 validation counter
-  // (?agent=<id>, defaults to the main channels agent; ?agent=all aggregates
-  // across the whole fleet -- main + every persistent sub-agent, part of the
-  // phase-4 sub-agent extension; ?target=<n>, default 10)
-  if (path === '/api/hook-audit/watchdog-cycles' && method === 'GET') {
-    const agentParam = url.searchParams.get('agent') ?? MAIN_AGENT_ID
-    const targetParam = url.searchParams.get('target')
-    const target = targetParam ? parseInt(targetParam, 10) : undefined
-    const nowSecs = Math.floor(Date.now() / 1000)
-
-    if (agentParam === 'all') {
-      const agentIds = [MAIN_AGENT_ID, ...listAgentNames()]
-      const rowsByAgent: Record<string, HookAuditLogEntry[]> = {}
-      for (const id of agentIds) {
-        rowsByAgent[id] = listHookAuditLog({ agent_id: id, sinceSecs: WATCHDOG_CYCLES_LOOKBACK_SECS, limit: 1000 })
-      }
-      const result = computeFleetWatchdogCycles(rowsByAgent, {
-        agentIds,
-        nowSecs,
-        target: target && target > 0 ? target : undefined,
-      })
-      json(res, result)
-      return true
-    }
-
-    const rows = listHookAuditLog({
-      agent_id: agentParam,
-      sinceSecs: WATCHDOG_CYCLES_LOOKBACK_SECS,
-      limit: 1000,
-    })
-    const result = computeWatchdogCycles(rows, {
-      agentId: agentParam,
-      nowSecs,
-      target: target && target > 0 ? target : undefined,
-    })
-    json(res, result)
     return true
   }
 

@@ -6,13 +6,15 @@ Phase 2: on every tool call, read the newest transcript-JSONL line carrying
 `message.usage` for the CURRENT session and write a per-turn row directly
 into the token_usage table -- bypassing the batched collectTokenUsage()
 sweep (src/web/token-usage.ts, 5-minute interval as of phase 1) so anything
-reading token_usage (dashboard, context-compact-monitor.sh,
-context-restart-gate) never sees data older than the agent's last tool call.
+reading token_usage (dashboard, context-restart-gate) never sees data older
+than the agent's last tool call.
 
 Phase 3: if the latest turn's context-token estimate reaches
 CONTEXT_PCT_THRESHOLD of the restart-gate's configured threshold (proactive
-compaction, ahead of both the reactive context-compact-monitor and the
-harness's own late-stage /compact), emit a rolling HANDOFF summary via the
+compaction, ahead of the harness's own late-stage /compact -- and, while it
+still existed, ahead of the reactive context-compact-monitor.sh heartbeat
+this phase made redundant; that heartbeat was retired in phase 4, see below),
+emit a rolling HANDOFF summary via the
 hook's `hookSpecificOutput.additionalContext` -- the same injection channel
 scripts/hooks/ledger-replay.py and taskstate-replay.py already use, just for
 PostToolUse instead of SessionStart. The summary is built entirely from
@@ -21,18 +23,23 @@ HTTP call to the dashboard API, so a stopped/overloaded dashboard process
 never adds latency or a failure mode to this hook (the design report this
 phase is based on flagged an API call from inside a fail-closed hook as the
 main risk: "the watchdog must be an ultra-simple script -- no network, no DB
-writes beyond the essentials"). When a HANDOFF is written,
-the hook also stamps store/context-compact-state.json's `last_compact` for
-this agent to "now" -- context-compact-monitor.sh's own 45-min COOLDOWN_S
-gate then skips it, so the watchdog and the heartbeat-driven /compact never
-fire back-to-back for the same context spike (the interlock the task asked
-for, reusing the monitor's existing cooldown state file instead of adding a
-new one). Every HANDOFF firing is also logged as a verdict='handoff' row in
-the existing hook_audit_log table (see record_handoff_audit()) -- this is
-the validation counter Jonas asked for before phase 4 (retiring
-context-compact-monitor.sh) can be considered: 10 HANDOFF cycles need to
-land with the interlock actually landing and no double-compact slipping
-through before that decision is even on the table.
+writes beyond the essentials"). Every HANDOFF firing is also logged as a
+verdict='handoff' row in the existing hook_audit_log table (see
+record_handoff_audit()) -- this used to also feed a validation counter
+(src/watchdog-validation.ts) that was requested before phase 4 (retiring
+context-compact-monitor.sh) could be considered: 10 HANDOFF cycles needed to
+land with an interlock stamp (store/context-compact-state.json's
+`last_compact`, written here on every HANDOFF and read by the monitor's own
+45-min COOLDOWN_S gate to avoid firing back-to-back with the heartbeat)
+actually landing and no double-compact slipping through, before that
+decision was on the table. Phase 4 has since happened -- both
+context-compact-monitor.sh and this interlock stamp are retired (the stamp
+had no reader left once the heartbeat was gone; re-introducing a file-based
+dedup for the watchdog itself would run against the store/*.json -> SQLite
+migration direction, so it was dropped rather than repurposed), and with it
+the now-purposeless validation counter and its `GET /api/hook-audit/watchdog-cycles`
+route. The hook_audit_log 'handoff' rows themselves stay -- they are the
+real audit trail, independent of the retired counter that used to read them.
 
 #800 F3 (distinct numbering from this hook's own phase 2/3 above -- this is
 OTel work, not the watchdog gate): on the same PostToolUse call that writes
@@ -60,9 +67,7 @@ agent-worker.ts pool (workers run from an isolated home outside both
 PROJECT_ROOT and agents/<id>, e.g. ~/.<agent>-worker(-fast) -- see
 agent-worker.ts): a HANDOFF built from fleet_blackboard/kanban context makes
 sense for a persistent fleet member with its own blackboard row and kanban
-assignments, but not for a short-lived worker that has neither, and the
-compact-interlock stamp is meaningless across multiple concurrent worker
-sessions sharing one derived id.
+assignments, but not for a short-lived worker that has neither.
 
 _known_agent_cwd() below is the authorization gate: unlike
 ledger_lib.agent_id_from_cwd() (shared by a dozen other hooks, none of which
@@ -112,8 +117,8 @@ import ledger_lib  # noqa: E402
 # context-restart-gate.json, default 400_000 -- src/context-restart-gate.ts
 # DEFAULT_THRESHOLD_TOKENS) at which this hook proactively injects a HANDOFF.
 # Deliberately well below the gate's own 100% trigger and the harness's own
-# 90-97% /compact, and below context-compact-monitor.sh's COMPACT_PCT (75)
-# and URGENT_PCT (95) -- this fires first, earliest signal wins.
+# 90-97% /compact, and below the now-retired context-compact-monitor.sh's
+# COMPACT_PCT (75) and URGENT_PCT (95) -- this fires first, earliest signal wins.
 CONTEXT_PCT_THRESHOLD = 0.6
 DEFAULT_THRESHOLD_TOKENS = 400_000
 
@@ -413,11 +418,6 @@ def _gate_config_path() -> str:
         _install_dir(), "store", "context-restart-gate.json")
 
 
-def _compact_state_path() -> str:
-    return os.environ.get("CONTEXT_WATCHDOG_COMPACT_STATE") or os.path.join(
-        _install_dir(), "store", "context-compact-state.json")
-
-
 def _read_gate_threshold(agent_id: str) -> int:
     """Best-effort read of store/context-restart-gate.json's thresholdTokens
     for this agent, falling back to the gate's own default. Any failure
@@ -506,48 +506,22 @@ def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) 
     return text
 
 
-def stamp_compact_interlock(agent_id: str) -> bool:
-    """Interlock with context-compact-monitor.sh: writing last_compact = now
-    into its own state file makes the monitor's 45-min COOLDOWN_S gate skip
-    this agent, so a HANDOFF we just wrote doesn't get immediately followed
-    by the heartbeat sending its own /compact for the same spike. Same file,
-    same field, atomic tmp+rename -- exactly how the monitor writes it
-    itself, so a concurrent monitor run sees a consistent file either way.
-    Returns whether the stamp actually landed -- the caller records this in
-    the handoff's own audit row (reason='...;interlock=yes|no') so the
-    validation counter can tell an attempted interlock from a landed one."""
-    path = _compact_state_path()
-    try:
-        try:
-            with open(path, encoding="utf-8") as f:
-                state = json.load(f)
-        except Exception:
-            state = {}
-        state.setdefault(agent_id, {})["last_compact"] = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp, path)
-        return True
-    except Exception:
-        return False  # best-effort interlock; a missed stamp just means one extra heartbeat check
-
-
-def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, interlock_ok) -> None:
-    """Validation-counter instrumentation (phase-4 gate, kicsi/small task
-    on top of phases 1-3): log every HANDOFF firing into the existing
-    hook_audit_log table (no migration for the row shape -- hook_type stays
-    a true CC event name, 'PostToolUse', matching every other row in the
-    table; 'handoff' is a new verdict value alongside the existing
-    allow/deny/defer, added to the GET/POST /api/hook-audit route's
-    validation sets). reason carries both the context% and whether the
-    compact-monitor interlock stamp landed, e.g. 'ctx=62%;interlock=yes' --
-    the counter query correlates this against context-compact-monitor.sh's
-    own 'PreCompact'/allow rows (see record_compact_audit() there) to
-    detect a double-compact. trigger_source='watchdog' (migration 0038)
-    names this row's producer directly, so a coverage audit doesn't have
-    to re-derive it from hook_type+verdict. Never raises -- this is
-    instrumentation, not a gate."""
+def record_handoff_audit(conn, agent_id, session_id, tool_name, pct) -> None:
+    """Audit-trail instrumentation: log every HANDOFF firing into the
+    existing hook_audit_log table (no migration for the row shape --
+    hook_type stays a true CC event name, 'PostToolUse', matching every
+    other row in the table; 'handoff' is a new verdict value alongside the
+    existing allow/deny/defer, added to the GET/POST /api/hook-audit route's
+    validation sets). This used to also double as phase-4 validation-counter
+    instrumentation (reason carried an 'interlock=yes|no' tag, correlated
+    against the now-retired context-compact-monitor.sh's 'PreCompact'/allow
+    rows by src/watchdog-validation.ts to detect a double-compact) -- that
+    counter has served its purpose (the retirement it was validating is
+    done) and is retired along with the interlock stamp it depended on, so
+    reason now carries only the context%. trigger_source='watchdog'
+    (migration 0038) names this row's producer directly, so a coverage audit
+    doesn't have to re-derive it from hook_type+verdict. Never raises --
+    this is instrumentation, not a gate."""
     try:
         conn.execute(
             "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, reason, session_id, trigger_source) "
@@ -556,7 +530,7 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, interlock_o
                 int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
                 agent_id,
                 tool_name,
-                f"ctx={pct:.0%};interlock={'yes' if interlock_ok else 'no'}",
+                f"ctx={pct:.0%}",
                 session_id,
             ),
         )
@@ -642,13 +616,12 @@ def main():
         # Token/span bookkeeping above runs unconditionally (a sub-agent's
         # tool calls burn real tokens against the same account and should
         # still count toward CostOps budget tracking); only the HANDOFF path
-        # -- additionalContext injection, the compact-interlock stamp, and
-        # the audit-log 'handoff' row -- is fleet-agent-session-only.
+        # -- additionalContext injection and the audit-log 'handoff' row --
+        # is fleet-agent-session-only.
         if pct >= CONTEXT_PCT_THRESHOLD and not cc_subagent_uuid:
             handoff = build_handoff(conn, agent_id, pct, tokens, threshold)
             emit_handoff(handoff)
-            interlock_ok = stamp_compact_interlock(agent_id)
-            record_handoff_audit(conn, agent_id, session_id, tool_name, pct, interlock_ok)
+            record_handoff_audit(conn, agent_id, session_id, tool_name, pct)
     except Exception:
         pass  # logging-category hook: never fail the tool call
     finally:
