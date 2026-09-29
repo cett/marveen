@@ -1,6 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { STORE_DIR } from '../config.js'
+import { getSystemConfig, setSystemConfig } from '../db/system-config.js'
 import { logger } from '../logger.js'
 
 // Desired run-state for sub-agents.
@@ -12,29 +10,33 @@ import { logger } from '../logger.js'
 // it -- and the channel monitor only auto-restarts agents whose *session still
 // exists* with a dead plugin, not agents whose session vanished entirely.
 //
-// This file records which agents the operator wants running, so the monitor can
+// This records which agents the operator wants running, so the monitor can
 // reconcile reality back to that desired state (after a nuke, a dashboard
 // restart, or a machine reboot). Explicit start adds; explicit stop removes --
-// so a deliberately stopped agent is not resurrected.
-const DESIRED_FILE = join(STORE_DIR, 'agents-desired.json')
+// so a deliberately stopped agent is not resurrected. Migrated off
+// store/agents-desired.json into a single system_config row (#985 group 5/8)
+// -- see migrateGroup5StateFromFiles() in db/system-config.ts for the
+// one-time backfill of an existing install's file.
+const KEY = 'agents_desired'
 
 export function getDesiredAgents(): Set<string> {
   try {
-    if (!existsSync(DESIRED_FILE)) return new Set()
-    const parsed = JSON.parse(readFileSync(DESIRED_FILE, 'utf-8'))
+    const row = getSystemConfig(KEY)
+    if (!row) return new Set()
+    const parsed = JSON.parse(row.value)
     if (Array.isArray(parsed)) return new Set(parsed.filter((x): x is string => typeof x === 'string'))
     return new Set()
   } catch (err) {
-    logger.warn({ err }, 'Could not read agents-desired.json; treating as empty')
+    logger.warn({ err }, 'Could not read agents_desired from system_config; treating as empty')
     return new Set()
   }
 }
 
 function writeDesired(set: Set<string>): void {
   try {
-    writeFileSync(DESIRED_FILE, JSON.stringify([...set].sort(), null, 2))
+    setSystemConfig(KEY, JSON.stringify([...set].sort()))
   } catch (err) {
-    logger.error({ err }, 'Failed to persist agents-desired.json')
+    logger.error({ err }, 'Failed to persist agents_desired to system_config')
   }
 }
 
@@ -51,4 +53,12 @@ export function removeDesiredAgent(name: string): void {
   if (!set.delete(name)) return
   writeDesired(set)
   logger.info({ agent: name }, 'Agent removed from desired run-state')
+}
+
+/** Whole-value replace, for fleet-transfer import -- the identity-takeover model
+ *  treats this field as source-authoritative, same as the other P3 overwrite
+ *  fields (see DashboardSettingsExport in fleet-transfer.ts). Unlike
+ *  add/removeDesiredAgent, this does not merge onto the current set. */
+export function setDesiredAgents(names: string[]): void {
+  writeDesired(new Set(names))
 }

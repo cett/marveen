@@ -126,6 +126,88 @@ describe('migrateConfigOverridesToSystemConfig', () => {
   })
 })
 
+describe('migrateGroup5StateFromFiles', () => {
+  it('returns 0 and writes nothing when none of the 3 files exist', () => {
+    expect(dbMod.migrateGroup5StateFromFiles()).toBe(0)
+    expect(dbMod.listSystemConfig().filter(r => r.key !== 'schedule_last_tick_ms')).toHaveLength(0)
+  })
+
+  it('backfills model-fallback.json into 3 keys', () => {
+    mkdirSync(storeDir, { recursive: true })
+    writeFileSync(
+      join(storeDir, 'model-fallback.json'),
+      JSON.stringify({ enabled: true, chain: ['modelA', 'modelB'], revertAfterMinutes: 45 })
+    )
+
+    const migrated = dbMod.migrateGroup5StateFromFiles()
+
+    expect(migrated).toBe(3)
+    expect(dbMod.getSystemConfig('model_fallback_enabled')?.value).toBe('1')
+    expect(dbMod.getSystemConfig('model_fallback_chain')?.value).toBe(JSON.stringify(['modelA', 'modelB']))
+    expect(dbMod.getSystemConfig('model_fallback_revert_after_minutes')?.value).toBe('45')
+    expect(dbMod.getSystemConfig('model_fallback_enabled')?.source).toBe('migrated_from_json')
+  })
+
+  it('backfills agents-desired.json as a single sorted JSON-array key', () => {
+    mkdirSync(storeDir, { recursive: true })
+    writeFileSync(join(storeDir, 'agents-desired.json'), JSON.stringify(['agent-a', 'agent-b']))
+
+    const migrated = dbMod.migrateGroup5StateFromFiles()
+
+    expect(migrated).toBe(1)
+    expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(JSON.stringify(['agent-a', 'agent-b']))
+  })
+
+  it('backfills terminal-input.json enabled:true', () => {
+    mkdirSync(storeDir, { recursive: true })
+    writeFileSync(join(storeDir, 'terminal-input.json'), JSON.stringify({ enabled: true }))
+
+    const migrated = dbMod.migrateGroup5StateFromFiles()
+
+    expect(migrated).toBe(1)
+    expect(dbMod.getSystemConfig('terminal_input_enabled')?.value).toBe('1')
+  })
+
+  it('is a no-op for a missing file: the other 2 files still migrate', () => {
+    mkdirSync(storeDir, { recursive: true })
+    writeFileSync(join(storeDir, 'model-fallback.json'), JSON.stringify({ enabled: true }))
+    writeFileSync(join(storeDir, 'terminal-input.json'), JSON.stringify({ enabled: false }))
+    // agents-desired.json deliberately absent.
+
+    const migrated = dbMod.migrateGroup5StateFromFiles()
+
+    expect(migrated).toBe(2)
+    expect(dbMod.getSystemConfig('agents_desired')).toBeUndefined()
+    expect(dbMod.getSystemConfig('model_fallback_enabled')?.value).toBe('1')
+    expect(dbMod.getSystemConfig('terminal_input_enabled')?.value).toBe('0')
+  })
+
+  it('skips a corrupt JSON file without throwing, and does not block the other files', () => {
+    mkdirSync(storeDir, { recursive: true })
+    writeFileSync(join(storeDir, 'model-fallback.json'), 'not valid json')
+    writeFileSync(join(storeDir, 'agents-desired.json'), JSON.stringify(['agent-a']))
+
+    expect(() => dbMod.migrateGroup5StateFromFiles()).not.toThrow()
+    expect(dbMod.getSystemConfig('model_fallback_enabled')).toBeUndefined()
+    expect(dbMod.getSystemConfig('model_fallback_chain')).toBeUndefined()
+    expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(JSON.stringify(['agent-a']))
+  })
+
+  it('is idempotent: a second run does not overwrite an operator-set row', () => {
+    mkdirSync(storeDir, { recursive: true })
+    writeFileSync(join(storeDir, 'terminal-input.json'), JSON.stringify({ enabled: true }))
+    dbMod.migrateGroup5StateFromFiles()
+
+    dbMod.setSystemConfig('terminal_input_enabled', '0', 'db')
+    const secondRun = dbMod.migrateGroup5StateFromFiles()
+
+    expect(secondRun).toBe(0)
+    const row = dbMod.getSystemConfig('terminal_input_enabled')!
+    expect(row.value).toBe('0')
+    expect(row.source).toBe('db')
+  })
+})
+
 // retireConfigOverridesFile() itself is covered in a separate, fully-mocked
 // file (retire-config-overrides.test.ts): it performs a real rename, and a
 // mocked node:fs there sidesteps needing a real directory at all.

@@ -17,8 +17,9 @@
 // what keeps it from firing.
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { PROJECT_ROOT, STORE_DIR } from '../config.js'
+import { initDatabase } from '../db.js'
 import { agentDir } from '../web/agent-config.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../web/agent-desired-state.js'
 import { tryHandleAgents } from '../web/routes/agents.js'
@@ -27,6 +28,14 @@ import type { RouteContext } from '../web/routes/types.js'
 // A name no live fleet member can collide with. The card is explicit about
 // this: prove it with a throwaway name, never with a running fleet agent.
 const THROWAWAY = 'zz-desired-state-probe'
+
+// agent-desired-state.ts moved from store/agents-desired.json to a
+// system_config row (#985 group 5/8), so this file now needs a live `db`
+// handle too. :memory: is enough -- this file never asserts anything about
+// what another test file wrote, only about the names it adds/removes itself.
+beforeAll(() => {
+  initDatabase(':memory:')
+})
 
 function fakeCtx(path: string, method: string): {
   ctx: RouteContext

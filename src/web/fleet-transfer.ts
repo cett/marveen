@@ -23,6 +23,10 @@ import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
 import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow, listAgentSettingsByKey, setAgentSetting } from '../db.js'
+import { getDesiredAgents, setDesiredAgents } from './agent-desired-state.js'
+import { readModelFallbackFieldsRaw, writeModelFallbackFieldsRaw } from './model-fallback-store.js'
+import type { ModelFallbackConfig } from '../model-fallback.js'
+import { readTerminalInputEnabledRaw, writeTerminalInputEnabled } from './terminal-input-store.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -150,13 +154,31 @@ export interface DashboardSettingsExport {
   // #985 group 3/8), not the retired store/auto-restart.json -- exported as
   // { [agentId]: config }, same shape the old file held.
   autoRestart: Record<string, unknown>
-  agentsDesired: Record<string, unknown>
+  // DB-backed (system_config key 'agents_desired', #985 group 5/8), not the
+  // retired store/agents-desired.json -- exported as a plain name array, same
+  // shape the old file held. Whole-value replace on import (setDesiredAgents),
+  // consistent with the identity-takeover model.
+  agentsDesired: string[]
   norbertPersonal: Record<string, unknown>
-  // P3: overwrite semantics (whole-file replace), same as the four fields above --
-  // these are fleet operational policy, consistent with the identity-takeover model.
-  modelFallback: Record<string, unknown>
+  // DB-backed (system_config keys 'model_fallback_*', #985 group 5/8), not the
+  // retired store/model-fallback.json. Exported via readModelFallbackFieldsRaw()
+  // -- ONLY the fields an operator actually set, never the code-level defaults
+  // readModelFallbackConfig() would substitute (chain[0] must match the model
+  // the TARGET install actually runs, not the source's). A field absent here is
+  // left untouched on import (writeModelFallbackFieldsRaw()), not reset -- see
+  // the doc comments on those two functions in model-fallback-store.ts.
+  modelFallback: Partial<ModelFallbackConfig>
+  // P3: overwrite semantics (whole-file replace), same as the fields above --
+  // fleet operational policy, consistent with the identity-takeover model.
   federation: Record<string, unknown>
   costopsConfig: Record<string, unknown>
+  // DB-backed (system_config key 'terminal_input_enabled', #985 group 5/8), not
+  // the retired store/terminal-input.json. undefined (omitted from the JSON,
+  // via JSON.stringify) when the source never explicitly set this toggle --
+  // security-sensitive, so an import must never silently flip a target's
+  // deliberate opt-in back to OFF just because the source snapshot is silent
+  // on it. See readTerminalInputEnabledRaw()'s doc comment.
+  terminalInputEnabled?: boolean
   // DB-backed (egress_allowlist, migration 0056/#985), not the retired
   // store/egress-allowlist.json side-car -- exported as the raw row array
   // (mirrors autonomy above), imported with MERGE semantics (union, never
@@ -660,12 +682,13 @@ function exportDashboardSettings(): DashboardSettingsExport {
     autonomy: listAutonomyCategories(),
     modelProfileMap: listModelProfileMap(),
     autoRestart: listAgentSettingsByKey('auto_restart'),
-    agentsDesired: read('agents-desired.json'),
+    agentsDesired: [...getDesiredAgents()].sort(),
     norbertPersonal: read('norbert-personal.json'),
-    modelFallback: read('model-fallback.json'),
+    modelFallback: readModelFallbackFieldsRaw(),
     federation: read('federation.json'),
     costopsConfig: read('costops-config.json'),
     egressAllowlist: listEgressAllowlistRows(null),
+    terminalInputEnabled: readTerminalInputEnabledRaw(),
   }
 }
 
@@ -1255,12 +1278,21 @@ export function importFleet(
     if (s.autoRestart) {
       for (const [agentId, cfg] of Object.entries(s.autoRestart)) setAgentSetting(agentId, 'auto_restart', cfg)
     }
-    if (s.agentsDesired && Object.keys(s.agentsDesired).length)
-      trackedWrite(join(STORE_DIR, 'agents-desired.json'), JSON.stringify(s.agentsDesired, null, 2), tracker)
+    // DB-backed (system_config 'agents_desired') -- whole-value replace, not a
+    // file write. Array.isArray guards a pre-migration snapshot that still has
+    // the old `{}` empty-object shape (nothing to import from that).
+    if (Array.isArray(s.agentsDesired)) setDesiredAgents(s.agentsDesired as string[])
     if (s.norbertPersonal && Object.keys(s.norbertPersonal).length)
       trackedWrite(join(STORE_DIR, 'norbert-personal.json'), JSON.stringify(s.norbertPersonal, null, 2), tracker)
+    // DB-backed (system_config 'model_fallback_*') -- see the field-level doc
+    // comment on writeModelFallbackFieldsRaw() for why this only sets the
+    // fields the source snapshot actually carries, not a file write.
     if (s.modelFallback && Object.keys(s.modelFallback).length)
-      trackedWrite(join(STORE_DIR, 'model-fallback.json'), JSON.stringify(s.modelFallback, null, 2), tracker)
+      writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>)
+    // DB-backed (system_config 'terminal_input_enabled') -- see
+    // readTerminalInputEnabledRaw()'s doc comment for why an absent field must
+    // leave the target's current value untouched rather than defaulting it.
+    if (typeof s.terminalInputEnabled === 'boolean') writeTerminalInputEnabled(s.terminalInputEnabled)
     if (s.federation && Object.keys(s.federation).length)
       trackedWrite(join(STORE_DIR, 'federation.json'), JSON.stringify(s.federation, null, 2), tracker)
     if (s.costopsConfig && Object.keys(s.costopsConfig).length)

@@ -6,7 +6,7 @@
 // isolation (that's what the four fleet-transfer-*.test.ts files above already
 // cover in depth).
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { initDatabase, getDb, insertEgressAllowlistEntry, listEgressAllowlistRows } from '../db.js'
+import { initDatabase, getDb, insertEgressAllowlistEntry, listEgressAllowlistRows, setSystemConfig } from '../db.js'
 
 const { TMP_ROOT, STORE_DIR, TASKS_DIR } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -76,7 +76,10 @@ function seedSourceFleet() {
     entries: [{ id: 'ssh-key-abc123', label: 'SSH private key: test', encrypted: 'FAKE-CIPHERTEXT', tenant_id: 'default', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
   }), 'utf-8')
 
-  writeFileSync(join(STORE_DIR, 'model-fallback.json'), JSON.stringify({ enabled: true, chain: ['source-chain'], revertAfterMinutes: 60 }), 'utf-8')
+  // model-fallback is DB-backed now (system_config, #985 group 5/8), not a file.
+  setSystemConfig('model_fallback_enabled', '1')
+  setSystemConfig('model_fallback_chain', JSON.stringify(['source-chain', 'source-chain-2']))
+  setSystemConfig('model_fallback_revert_after_minutes', '60')
   writeFileSync(join(STORE_DIR, 'federation.json'), JSON.stringify({ enabled: true, systemId: 'source-system' }), 'utf-8')
   writeFileSync(join(STORE_DIR, 'costops-config.json'), JSON.stringify({ version: 1, currency: 'USD', budgets: [] }), 'utf-8')
   // egress_allowlist is DB-backed (migration 0056) -- every fresh initDatabase()
@@ -90,7 +93,7 @@ function resetToFreshTarget(preserveEgressDomains: string[] | null) {
   initDatabase(':memory:') // re-seeds the 199 baseline egress_allowlist domains fresh
   writeFileSync(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [] }), 'utf-8')
   writeFileSync(join(STORE_DIR, '.vault-key'), '', 'utf-8')
-  for (const f of ['model-fallback.json', 'federation.json', 'costops-config.json']) {
+  for (const f of ['federation.json', 'costops-config.json']) {
     writeFileSync(join(STORE_DIR, f), '{}', 'utf-8')
   }
   for (const domain of preserveEgressDomains ?? []) {
@@ -146,7 +149,8 @@ describe('end-to-end: export a fully-populated source fleet, apply onto a fresh 
     expect(targetVault.entries.some((e: any) => e.id === 'ssh-key-abc123' && e.encrypted === 'FAKE-CIPHERTEXT')).toBe(true)
 
     // P3: overwrite fields replaced wholesale
-    expect(JSON.parse(readFileSync(join(STORE_DIR, 'model-fallback.json'), 'utf-8'))).toEqual({ enabled: true, chain: ['source-chain'], revertAfterMinutes: 60 })
+    const { readModelFallbackFieldsRaw } = await import('../web/model-fallback-store.js')
+    expect(readModelFallbackFieldsRaw()).toEqual({ enabled: true, chain: ['source-chain', 'source-chain-2'], revertAfterMinutes: 60 })
     expect(JSON.parse(readFileSync(join(STORE_DIR, 'federation.json'), 'utf-8')).systemId).toBe('source-system')
     expect(JSON.parse(readFileSync(join(STORE_DIR, 'costops-config.json'), 'utf-8')).currency).toBe('USD')
 

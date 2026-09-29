@@ -70,6 +70,15 @@ vi.mock('../db.js', () => ({
   setAgentSetting: vi.fn(),
 }))
 
+// model-fallback-store.ts/agent-desired-state.ts/terminal-input-store.ts (#985
+// group 5/8) import getSystemConfig/setSystemConfig straight from
+// '../db/system-config.js', not through the '../db.js' re-export mocked above
+// -- exportDashboardSettings() now touches all three via that path.
+vi.mock('../db/system-config.js', () => ({
+  getSystemConfig: vi.fn().mockReturnValue(undefined),
+  setSystemConfig: vi.fn(),
+}))
+
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
   listAgentNames: () => [],

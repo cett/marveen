@@ -10,6 +10,16 @@
 // silently narrow a target's own approved domains), not through the file
 // helpers the rest of this suite exercises.
 //
+// agentsDesired/modelFallback/terminalInputEnabled moved from
+// store/agents-desired.json, store/model-fallback.json, and
+// store/terminal-input.json to system_config rows (#985 group 5/8) -- like
+// autonomy below, they round-trip through their own store modules'
+// raw-field getters/setters now, not the file helpers. See the doc comments on
+// readModelFallbackFieldsRaw()/writeModelFallbackFieldsRaw() and
+// readTerminalInputEnabledRaw() in the respective store modules for why an
+// unset field is left ABSENT on export (never filled with a code-level
+// default) and left UNTOUCHED on import (never reset) when absent.
+//
 // Uses the REAL node:fs (pointed at a throwaway temp dir via PROJECT_ROOT/STORE_DIR)
 // so writeFileSync/readFileSync/existsSync behave exactly as in production -- see
 // fleet-transfer-schedules.test.ts for why a mocked fs is unsafe here (it would
@@ -76,21 +86,19 @@ function clearStoreFile(name: string) {
 beforeEach(() => {
   initDatabase(':memory:')
   vi.clearAllMocks()
-  for (const f of ['model-fallback.json', 'federation.json', 'costops-config.json']) {
+  for (const f of ['federation.json', 'costops-config.json']) {
     clearStoreFile(f)
   }
 })
 
 describe('exportFleet -- store/*.json config fields', () => {
-  it('reads all three file-backed fields from disk', async () => {
+  it('reads the remaining file-backed fields (federation/costopsConfig) from disk', async () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('model-fallback.json', { enabled: true, chain: ['a', 'b'], revertAfterMinutes: 60 })
     writeStoreJson('federation.json', { enabled: true, systemId: 'source-system' })
     writeStoreJson('costops-config.json', { version: 1, currency: 'USD', budgets: [] })
 
     const result = exportFleet()
     const fleet = JSON.parse(result.data)
-    expect(fleet.dashboardSettings.modelFallback).toEqual({ enabled: true, chain: ['a', 'b'], revertAfterMinutes: 60 })
     expect(fleet.dashboardSettings.federation).toEqual({ enabled: true, systemId: 'source-system' })
     expect(fleet.dashboardSettings.costopsConfig.currency).toBe('USD')
   })
@@ -105,18 +113,18 @@ describe('exportFleet -- store/*.json config fields', () => {
   })
 })
 
-describe('importFleet apply -- overwrite fields (modelFallback/federation/costopsConfig)', () => {
+describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () => {
   it('overwrites an existing target file wholesale with the source value', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('model-fallback.json', { enabled: true, chain: ['source-chain'], revertAfterMinutes: 999 })
+    writeStoreJson('federation.json', { enabled: true, systemId: 'source-system' })
     const exported = exportFleet()
 
-    clearStoreFile('model-fallback.json')
-    writeStoreJson('model-fallback.json', { enabled: false, chain: ['target-own-chain'], revertAfterMinutes: 5 })
+    clearStoreFile('federation.json')
+    writeStoreJson('federation.json', { enabled: false, systemId: 'target-own-system' })
 
     const applied = importFleet(exported.data, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    expect(readStoreJson('model-fallback.json')).toEqual({ enabled: true, chain: ['source-chain'], revertAfterMinutes: 999 })
+    expect(readStoreJson('federation.json')).toEqual({ enabled: true, systemId: 'source-system' })
   })
 
   it('does not touch the target file when the source value is empty', async () => {
@@ -222,6 +230,83 @@ describe('exportFleet/importFleet -- autonomy (DB-backed)', () => {
     const { importFleet, exportFleet } = await import('../web/fleet-transfer.js')
     importFleet(fleetJson, { apply: true })
     expect(JSON.parse(exportFleet().data).dashboardSettings.autonomy).toHaveLength(15)
+  })
+})
+
+// agentsDesired/modelFallback/terminalInputEnabled moved from store/*.json
+// files to system_config rows (#985 group 5/8) -- round-tripped through their
+// own store modules' getters/setters, not the file helpers above.
+describe('exportFleet/importFleet -- agentsDesired/modelFallback/terminalInputEnabled (DB-backed)', () => {
+  it('exports agentsDesired as a sorted name array', async () => {
+    const { setDesiredAgents } = await import('../web/agent-desired-state.js')
+    setDesiredAgents(['agent-b', 'agent-a'])
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    expect(JSON.parse(exportFleet().data).dashboardSettings.agentsDesired).toEqual(['agent-a', 'agent-b'])
+  })
+
+  it('import replaces the target agentsDesired set wholesale', async () => {
+    const { setDesiredAgents, getDesiredAgents } = await import('../web/agent-desired-state.js')
+    setDesiredAgents(['target-only'])
+    const fleetJson = JSON.stringify(baseFleetWith({ agentsDesired: ['agent-a', 'agent-b'] }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    expect([...getDesiredAgents()].sort()).toEqual(['agent-a', 'agent-b'])
+  })
+
+  it('exports only the modelFallback fields an operator actually set, no code-level defaults', async () => {
+    const { setSystemConfig } = await import('../db.js')
+    setSystemConfig('model_fallback_enabled', '1')
+    setSystemConfig('model_fallback_chain', JSON.stringify(['a', 'b']))
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    expect(JSON.parse(exportFleet().data).dashboardSettings.modelFallback).toEqual({ enabled: true, chain: ['a', 'b'] })
+  })
+
+  it('import sets only the fields the source snapshot carries, leaving the rest of the target untouched', async () => {
+    const { writeModelFallbackFieldsRaw, readModelFallbackFieldsRaw } = await import('../web/model-fallback-store.js')
+    writeModelFallbackFieldsRaw({ enabled: false, chain: ['target-own-chain-a', 'target-own-chain-b'], revertAfterMinutes: 5 })
+    const fleetJson = JSON.stringify(baseFleetWith({ modelFallback: { enabled: true, revertAfterMinutes: 999 } }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    // enabled/revertAfterMinutes came from the source; chain was absent from
+    // the source snapshot, so the target's own chain must survive untouched.
+    expect(readModelFallbackFieldsRaw()).toEqual({
+      enabled: true,
+      chain: ['target-own-chain-a', 'target-own-chain-b'],
+      revertAfterMinutes: 999,
+    })
+  })
+
+  it('omits terminalInputEnabled from the export when never explicitly set', async () => {
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    expect('terminalInputEnabled' in JSON.parse(exportFleet().data).dashboardSettings).toBe(false)
+  })
+
+  it('exports terminalInputEnabled once explicitly set, and import applies it', async () => {
+    const { writeTerminalInputEnabled } = await import('../web/terminal-input-store.js')
+    writeTerminalInputEnabled(true)
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    expect(JSON.parse(exportFleet().data).dashboardSettings.terminalInputEnabled).toBe(true)
+
+    const { initDatabase: reinit } = await import('../db.js')
+    reinit(':memory:') // fresh target, toggle defaults back to OFF
+    const fleetJson = JSON.stringify(baseFleetWith({ terminalInputEnabled: true }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const { readTerminalInputEnabled } = await import('../web/terminal-input-store.js')
+    expect(readTerminalInputEnabled()).toBe(true)
+  })
+
+  it('import leaves the target toggle untouched when the source snapshot omits it', async () => {
+    const { writeTerminalInputEnabled, readTerminalInputEnabled } = await import('../web/terminal-input-store.js')
+    writeTerminalInputEnabled(true)
+    const fleetJson = JSON.stringify(baseFleetWith({}))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    expect(readTerminalInputEnabled()).toBe(true)
   })
 })
 

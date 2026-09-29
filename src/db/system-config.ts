@@ -98,6 +98,71 @@ export function migrateConfigOverridesToSystemConfig(): number {
 // physical path. The migrator is read-only w.r.t. the filesystem (writes
 // only into its own process-local DB connection), so it doesn't share this
 // problem.
+// One-time migration of store/model-fallback.json, store/agents-desired.json,
+// and store/terminal-input.json into system_config (#985 group 5/8). Unlike
+// group 1's egress-allowlist (slowly-changing admin data, safe to bake a
+// static "current values" seed into the migration SQL), these three carry
+// either an install-dependent value (the fallback chain's primary must match
+// the actually-running model -- see defaultChainForInstall() in
+// model-fallback-store.ts) or a security-sensitive default (terminal-input:
+// operator must explicitly opt in, OFF otherwise) -- baking this fork's
+// current operator choices into the shipped migration would silently
+// override a fresh install's correct defaults. So this is the same
+// idempotent per-key INSERT-OR-IGNORE backfill as
+// migrateConfigOverridesToSystemConfig above, just reading these three JSON
+// side-cars instead of config-overrides.json: an existing install keeps
+// whatever it already had, a fresh install (no file) gets no row here and
+// falls through to the code-level DEFAULT_* each store module already
+// applies when a key is absent. Safe to call on every boot.
+function migrateOneGroup5File(filename: string, extract: (parsed: unknown) => Array<[string, string]>): number {
+  const filePath = join(STORE_DIR, filename)
+  if (!existsSync(filePath)) return 0
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(filePath, 'utf-8'))
+  } catch (err) {
+    logger.warn({ err, filePath }, 'system_config migration: failed to parse file, skipping')
+    return 0
+  }
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), 'migrated_from_json')`
+  )
+  let migrated = 0
+  for (const [key, value] of extract(parsed)) {
+    const result = stmt.run(key, value)
+    if (result.changes > 0) migrated++
+  }
+  return migrated
+}
+
+export function migrateGroup5StateFromFiles(): number {
+  let migrated = 0
+  migrated += migrateOneGroup5File('model-fallback.json', (parsed) => {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    const o = parsed as Record<string, unknown>
+    const out: Array<[string, string]> = []
+    if (typeof o.enabled === 'boolean') out.push(['model_fallback_enabled', o.enabled ? '1' : '0'])
+    if (Array.isArray(o.chain) && o.chain.every((m) => typeof m === 'string')) {
+      out.push(['model_fallback_chain', JSON.stringify(o.chain)])
+    }
+    if (typeof o.revertAfterMinutes === 'number' && Number.isFinite(o.revertAfterMinutes)) {
+      out.push(['model_fallback_revert_after_minutes', String(o.revertAfterMinutes)])
+    }
+    return out
+  })
+  migrated += migrateOneGroup5File('agents-desired.json', (parsed) => {
+    if (!Array.isArray(parsed)) return []
+    const names = parsed.filter((x): x is string => typeof x === 'string')
+    return [['agents_desired', JSON.stringify(names)]]
+  })
+  migrated += migrateOneGroup5File('terminal-input.json', (parsed) => {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    const o = parsed as Record<string, unknown>
+    return [['terminal_input_enabled', o.enabled === true ? '1' : '0']]
+  })
+  return migrated
+}
+
 export function retireConfigOverridesFile(): void {
   const overridesPath = join(STORE_DIR, 'config-overrides.json')
   if (!existsSync(overridesPath)) return
