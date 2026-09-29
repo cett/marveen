@@ -61,6 +61,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- **Security:** `fast-uri` (transitive via `ajv` <- `@modelcontextprotocol/sdk` <- `@anthropic-ai/claude-agent-sdk`) bumped 3.1.6 -> 3.1.8, resolving a high-severity authority-injection / host-confusion advisory (GHSA-qw65-cvwx-89v3, GHSA-58mr-gqgx-xq4g). `ip-address` bumped 10.5.0 -> 10.7.2 in the same pass (moderate SSRF advisory, same transitive chain via `express-rate-limit`). Both are non-breaking in-range lockfile bumps; neither is a direct dependency.
 - **Reverted:** `listScheduledTasks()`'s file-level `enabled: false` reconciliation (previous entry below) is reverted. Every task's on-disk `task-config.json` in this fleet carries a vestigial `enabled: false` default that was never the operative signal (the `schedules` DB row was the actual source of truth), so the reconciliation read that stale `false` on every task and force-disabled all of them in the DB on first read after deploy -- the scheduler stopped firing entirely. `listScheduledTasks()` goes back to reading the DB row exclusively once a task is seeded there; the file is informational only in that mode. `enabled: false` from a hand-edited file is no longer honored in DB-seeded mode.
 - **[API]** `generate-error-schema.mjs` idempotency: Error-enum replacement in `docs/openapi.yaml` no longer appends an extra blank line on each run.
 - Context-guard "every tier off" early-out now also checks `dailyHandoffEnabled` (previously an agent with only the daily-handoff tier armed was treated as fully disarmed).
