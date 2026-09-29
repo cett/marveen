@@ -407,6 +407,7 @@ window._i18n.en = {
   'tasks.scheduler_heartbeat.ok':      'Scheduler active -- last tick {time}',
   'tasks.scheduler_heartbeat.stale':   'Scheduler has not checked in for {time} -- it may be down',
   'tasks.scheduler_heartbeat.unknown': 'Scheduler status unknown -- no tick data',
+  'tasks.scheduler_heartbeat.clock_anomaly': 'Scheduler tick timestamp is anomalous (in the future) -- needs checking',
   'tasks.retries.meta':          '{age} waiting ({n} attempts)',
   'tasks.btn.new_task':          'New task',
   'tasks.schedule_empty':        'No scheduled tasks',

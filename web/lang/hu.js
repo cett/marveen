@@ -605,6 +605,7 @@ window._i18n.hu = {
   'tasks.scheduler_heartbeat.ok':      'Ütemező aktív -- utolsó tick {time}',
   'tasks.scheduler_heartbeat.stale':   'Ütemező nem jelentkezett {time} óta -- lehet, hogy leállt',
   'tasks.scheduler_heartbeat.unknown': 'Ütemező állapota ismeretlen -- nincs tick-adat',
+  'tasks.scheduler_heartbeat.clock_anomaly': 'Ütemező tick-időbélyege időanomáliát mutat (jövőbeli időpont) -- ellenőrizendő',
   'tasks.retries.meta':          '{age} vár ({n} próbálkozás)',
   'tasks.btn.new_task':          'Új feladat',
   'tasks.schedule_empty':        'Nincsenek ütemezett feladatok',
