@@ -150,12 +150,12 @@ describe('migrateGroup5StateFromFiles', () => {
 
   it('backfills agents-desired.json as a single sorted JSON-array key', () => {
     mkdirSync(storeDir, { recursive: true })
-    writeFileSync(join(storeDir, 'agents-desired.json'), JSON.stringify(['zoe', 'boo']))
+    writeFileSync(join(storeDir, 'agents-desired.json'), JSON.stringify(['agent-a', 'agent-b']))
 
     const migrated = dbMod.migrateGroup5StateFromFiles()
 
     expect(migrated).toBe(1)
-    expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(JSON.stringify(['zoe', 'boo']))
+    expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(JSON.stringify(['agent-a', 'agent-b']))
   })
 
   it('backfills terminal-input.json enabled:true', () => {
@@ -185,12 +185,12 @@ describe('migrateGroup5StateFromFiles', () => {
   it('skips a corrupt JSON file without throwing, and does not block the other files', () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(join(storeDir, 'model-fallback.json'), 'not valid json')
-    writeFileSync(join(storeDir, 'agents-desired.json'), JSON.stringify(['zack']))
+    writeFileSync(join(storeDir, 'agents-desired.json'), JSON.stringify(['agent-a']))
 
     expect(() => dbMod.migrateGroup5StateFromFiles()).not.toThrow()
     expect(dbMod.getSystemConfig('model_fallback_enabled')).toBeUndefined()
     expect(dbMod.getSystemConfig('model_fallback_chain')).toBeUndefined()
-    expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(JSON.stringify(['zack']))
+    expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(JSON.stringify(['agent-a']))
   })
 
   it('is idempotent: a second run does not overwrite an operator-set row', () => {
