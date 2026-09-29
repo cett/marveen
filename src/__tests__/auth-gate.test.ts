@@ -204,8 +204,9 @@ describe('SSE pane-stream ?token= and device-key unaffected by session-priority'
 })
 
 describe('federation endpoint scoping is preserved', () => {
-  // Federation is disabled by default (no store/federation.json), so
-  // identifyFederationCaller returns null: a fed token can never authenticate.
+  // Federation is disabled by default (no federation_config_json row in
+  // system_config), so identifyFederationCaller returns null: a fed token
+  // can never authenticate.
   it('does not authenticate an arbitrary token on the manifest endpoint', () => {
     const r = resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/federation/manifest'), '/api/federation/manifest', 'GET', TOKEN)
     expect(r).toEqual({ kind: 'none' })

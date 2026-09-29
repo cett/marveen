@@ -1,11 +1,18 @@
 // Federation peer configuration (round 2: per-peer inbound tokens).
 //
-// Source of truth is store/federation.json (NOT the settings registry: a
-// registry entry would create a second, conflicting switch via the generic
-// /api/settings route writing to the system_config DB -- the terminal-input
-// toggle precedent applies: own store file + own endpoints).
+// Source of truth is the system_config row 'federation_config_json' (#985
+// group 5/8's deferred part -- see db/federation.ts's header comment for why
+// this is one raw-blob key rather than a normalized peers table: the
+// "lossless disable" contract below needs to round-trip an INVALID stored
+// peer byte-for-byte, which a normalized table cannot hold at all). Used to
+// be store/federation.json; the file is now fully retired (see
+// retireFederationConfigFile() in db/index.ts). This is NOT the generic
+// settings registry: a registry entry would create a second, conflicting
+// switch via the generic /api/settings route also writing to system_config
+// -- the terminal-input toggle precedent applies: own key(s) + own endpoints,
+// same as before with its own file.
 //
-// FAIL-CLOSED: any read/parse/validation error yields a disabled config with
+// FAIL-CLOSED (plan 984, decision D4): any read/parse/validation error yields a disabled config with
 // no peers. A partially valid file does NOT enable a subset -- one bad peer
 // disables the whole feature, with a single warn log. An unknown `trust`
 // value is likewise a validation error: a half-deployed future trust feature
@@ -27,17 +34,18 @@
 //                    not minted ours yet ("pairing pending"). An empty
 //                    outbound token never authenticates anything and the
 //                    bridge refuses to send to such a peer.
-import { existsSync, mkdirSync, readFileSync, unlinkSync, watch, type FSWatcher } from 'node:fs'
+import { unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import { isValidIdSegment } from './address.js'
+import { getFederationConfigRaw, setFederationConfigRaw, deleteFederationConfigRaw } from '../../db/federation.js'
 
-const CONFIG_FILENAME = 'federation.json'
 // Legacy round-1 shared-token file: no longer written or read for auth, but
-// the removal path still deletes it if a pre-round-2 store carries one.
+// the removal path still deletes it if a pre-round-2 store carries one. The
+// only thing left that is still relative to a directory (storeDir below) --
+// the config itself lives in system_config now.
 const LEGACY_TOKEN_FILENAME = '.federation-token'
 export const FEDERATION_MIN_TOKEN_LENGTH = 32
 // Per-peer patience window before a pending outbound message is abandoned.
@@ -81,12 +89,11 @@ export interface FederationConfig {
 
 const DISABLED: FederationConfig = Object.freeze({ enabled: false, systemId: '', routingMode: DEFAULT_ROUTING_MODE, peers: [] })
 
-// Test seam: the store dir is swappable so tests never touch the real
-// checkout's store/ (initDatabase(':memory:') precedent -- explicit override,
-// not NODE_ENV magic).
+// Test seam: only the legacy token file's directory is still swappable --
+// the config itself lives in system_config (the shared DB connection, opened
+// via initDatabase(':memory:') in tests, is the isolation seam for that).
 let storeDir = STORE_DIR
 
-function configPath(): string { return join(storeDir, CONFIG_FILENAME) }
 function legacyTokenPath(): string { return join(storeDir, LEGACY_TOKEN_FILENAME) }
 
 // https is mandatory except on loopback, which the local two-instance smoke
@@ -204,26 +211,39 @@ export function abandonWindowMsForPeer(cfg: FederationConfig, system: string): n
   return minutes * 60_000
 }
 
-// ---- cached, watch-refreshed readers ---------------------------------------
+// ---- cached readers ---------------------------------------------------------
 //
-// settings-store pattern: lazy watch on the store DIRECTORY ({persistent:
-// false} so vitest workers are not held open; mkdir first because fs.watch
-// throws on a missing dir), filename-filtered, and our OWN writes refresh the
-// cache synchronously instead of waiting for a (possibly coalesced) event --
-// otherwise the auth gate could serve one more request against the pre-write
-// enabled/token state.
+// Single system_config row, read through the shared DB connection -- no
+// cross-process file watch needed (nothing outside this Node process reads
+// or writes federation.json anymore; unlike channel access.json, the config
+// has exactly one reader/writer: this module). Our own writes refresh the
+// cache synchronously (setFederationConfigRaw + cachedConfig reset happen in
+// the same call), so the auth gate never serves a request against a stale
+// pre-write enabled/token state.
+//
+// D4 decision C (plan 984): a DB read failure is caught here and
+// logged at error level (not warn, unlike a merely invalid/garbage document
+// below) so an operator can tell "federation disabled because nobody
+// configured it" apart from "federation disabled because the DB read itself
+// is broken" -- a systemic problem federation being off is the least of.
 let cachedConfig: FederationConfig | null = null
 let lastConfigWarning = ''
-let watcher: FSWatcher | undefined
 
-function loadConfigFromDisk(): FederationConfig {
+function loadConfigFromDb(): FederationConfig {
+  let raw: string | undefined
   try {
-    if (!existsSync(configPath())) return DISABLED
-    const result = validateFederationConfig(JSON.parse(readFileSync(configPath(), 'utf-8')))
+    raw = getFederationConfigRaw()
+  } catch (err) {
+    logger.error({ err }, 'federation: DB read failed, returning disabled (fail-closed)')
+    return DISABLED
+  }
+  if (raw === undefined) return DISABLED
+  try {
+    const result = validateFederationConfig(JSON.parse(raw))
     if (typeof result === 'string') {
       if (result !== lastConfigWarning) {
         lastConfigWarning = result
-        logger.warn({ reason: result }, 'federation: invalid federation.json -- federation disabled (fail-closed)')
+        logger.warn({ reason: result }, 'federation: invalid stored config -- federation disabled (fail-closed)')
       }
       return DISABLED
     }
@@ -232,40 +252,32 @@ function loadConfigFromDisk(): FederationConfig {
   } catch (err) {
     if (lastConfigWarning !== 'unreadable') {
       lastConfigWarning = 'unreadable'
-      logger.warn({ err }, 'federation: cannot read federation.json -- federation disabled (fail-closed)')
+      logger.warn({ err }, 'federation: cannot parse stored config -- federation disabled (fail-closed)')
     }
     return DISABLED
   }
 }
 
-function ensureWatching(): void {
-  if (watcher) return
-  try {
-    mkdirSync(storeDir, { recursive: true })
-    watcher = watch(storeDir, { persistent: false }, (_event, filename) => {
-      if (filename === CONFIG_FILENAME) cachedConfig = loadConfigFromDisk()
-    })
-  } catch {
-    // Best-effort: without a watch the cache reflects this process's own
-    // reads/writes, which is still correct for the single-process case.
-  }
-}
-
 export function getFederationConfig(): FederationConfig {
-  ensureWatching()
-  if (cachedConfig === null) cachedConfig = loadConfigFromDisk()
+  if (cachedConfig === null) cachedConfig = loadConfigFromDb()
   return cachedConfig
 }
 
-/** Health of the stored file, for config-MUTATING handlers. When the file
- *  exists but fails validation, getFederationConfig() fail-closes to
+/** Health of the stored config, for config-MUTATING handlers. When a stored
+ *  document exists but fails validation, getFederationConfig() fail-closes to
  *  peers:[] -- a mutation that reads that cache and writes it back would
- *  DESTROY the (hand-recoverable) peers in the file. Such handlers must
- *  refuse instead. 'absent' is healthy (a fresh add creates the file). */
+ *  DESTROY the (hand-recoverable) peers in the stored document. Such handlers
+ *  must refuse instead. 'absent' is healthy (a fresh add creates the row). */
 export function federationFileHealth(): 'ok' | 'absent' | 'invalid' {
+  let raw: string | undefined
   try {
-    if (!existsSync(configPath())) return 'absent'
-    const result = validateFederationConfig(JSON.parse(readFileSync(configPath(), 'utf-8')))
+    raw = getFederationConfigRaw()
+  } catch {
+    return 'invalid'
+  }
+  try {
+    if (raw === undefined) return 'absent'
+    const result = validateFederationConfig(JSON.parse(raw))
     return typeof result === 'string' ? 'invalid' : 'ok'
   } catch {
     return 'invalid'
@@ -301,31 +313,31 @@ export function identifyFederationCaller(
  *  validateFederationConfig accepts. Synchronous write + synchronous cache
  *  refresh (no await window for concurrent writers). */
 export function writeFederationConfig(cfg: FederationConfig): void {
-  mkdirSync(storeDir, { recursive: true })
-  atomicWriteFileSync(configPath(), JSON.stringify(cfg, null, 2), { mode: 0o600 })
-  cachedConfig = loadConfigFromDisk()
+  setFederationConfigRaw(JSON.stringify(cfg, null, 2))
+  cachedConfig = loadConfigFromDb()
 }
 
 /** Master-switch flip that never loses peer data (lossless disable/enable).
- *  Works from the RAW file, not the validated cache: an invalid stored peer
- *  fail-closes the VIEW to peers:[], and writing that back would turn a
- *  view-loss into real data loss. Returns false when the file is unreadable
- *  garbage (nothing to flip -- the validator already fail-closes it). */
+ *  Works from the RAW stored document, not the validated cache: an invalid
+ *  stored peer fail-closes the VIEW to peers:[], and writing that back would
+ *  turn a view-loss into real data loss. Returns false when the stored
+ *  document is unreadable garbage (nothing to flip -- the validator already
+ *  fail-closes it). */
 export function setFederationEnabledPreservingFile(enabled: boolean): boolean {
   try {
     let raw: Record<string, unknown> = {}
-    if (existsSync(configPath())) {
-      const parsed = JSON.parse(readFileSync(configPath(), 'utf-8'))
+    const stored = getFederationConfigRaw()
+    if (stored !== undefined) {
+      const parsed = JSON.parse(stored)
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
       raw = parsed as Record<string, unknown>
     }
     raw.enabled = enabled === true
     if (raw.systemId === undefined) raw.systemId = MAIN_AGENT_ID
-    mkdirSync(storeDir, { recursive: true })
-    atomicWriteFileSync(configPath(), JSON.stringify(raw, null, 2), { mode: 0o600 })
-    cachedConfig = loadConfigFromDisk()
+    setFederationConfigRaw(JSON.stringify(raw, null, 2))
+    cachedConfig = loadConfigFromDb()
     // Report whether the request actually took effect: enabling an
-    // invalid-but-parseable file writes enabled:true but loadConfigFromDisk
+    // invalid-but-parseable document writes enabled:true but loadConfigFromDb
     // fail-closes to DISABLED, so the caller must NOT report success.
     // Disabling always matches (DISABLED.enabled === false).
     return cachedConfig.enabled === (enabled === true)
@@ -334,26 +346,26 @@ export function setFederationEnabledPreservingFile(enabled: boolean): boolean {
   }
 }
 
-/** Set the main-agent delegation routing mode, preserving the rest of the file
- *  (peers, tokens, enabled) even when a stored peer is invalid -- same
- *  raw-file discipline as setFederationEnabledPreservingFile. Returns false on
- *  unreadable garbage. */
+/** Set the main-agent delegation routing mode, preserving the rest of the
+ *  stored document (peers, tokens, enabled) even when a stored peer is
+ *  invalid -- same raw-document discipline as
+ *  setFederationEnabledPreservingFile. Returns false on unreadable garbage. */
 export function setFederationRoutingModePreservingFile(mode: FederationRoutingMode): boolean {
   try {
     let raw: Record<string, unknown> = {}
-    if (existsSync(configPath())) {
-      const parsed = JSON.parse(readFileSync(configPath(), 'utf-8'))
+    const stored = getFederationConfigRaw()
+    if (stored !== undefined) {
+      const parsed = JSON.parse(stored)
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
       raw = parsed as Record<string, unknown>
     }
     raw.routingMode = mode
     if (raw.systemId === undefined) raw.systemId = MAIN_AGENT_ID
-    mkdirSync(storeDir, { recursive: true })
-    atomicWriteFileSync(configPath(), JSON.stringify(raw, null, 2), { mode: 0o600 })
-    cachedConfig = loadConfigFromDisk()
-    // The mode is now persisted to the file. Unlike the enabled flip, routing
-    // mode is orthogonal to peer validity: an invalid stored peer fail-closes
-    // the VIEW to DISABLED, but the mode is still written and applies once the
+    setFederationConfigRaw(JSON.stringify(raw, null, 2))
+    cachedConfig = loadConfigFromDb()
+    // The mode is now persisted. Unlike the enabled flip, routing mode is
+    // orthogonal to peer validity: an invalid stored peer fail-closes the
+    // VIEW to DISABLED, but the mode is still written and applies once the
     // config is valid again -- so a successful write is a success. Only
     // unreadable garbage (caught below) is a failure.
     return true
@@ -362,32 +374,64 @@ export function setFederationRoutingModePreservingFile(mode: FederationRoutingMo
   }
 }
 
-/** Full removal: delete the store files and reset the cache SYNCHRONOUSLY
- *  (never trust the async fs.watch -- macOS may deliver filename=null).
- *  ENOENT-tolerant so removal is idempotent. */
+/** Full removal: delete the stored config row + the legacy token file, reset
+ *  the cache SYNCHRONOUSLY. Idempotent (a second call has nothing left to
+ *  remove). */
 export function removeFederationStore(): void {
-  for (const p of [configPath(), legacyTokenPath()]) {
-    try {
-      unlinkSync(p)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.warn({ err, path: p }, 'federation: store file unlink failed')
-      }
+  try {
+    deleteFederationConfigRaw()
+  } catch (err) {
+    logger.warn({ err }, 'federation: store row delete failed')
+  }
+  try {
+    unlinkSync(legacyTokenPath())
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn({ err, path: legacyTokenPath() }, 'federation: legacy token file unlink failed')
     }
   }
   cachedConfig = DISABLED
   lastConfigWarning = ''
 }
 
+/** Invalidate the cache after an external raw write to the stored config --
+ *  e.g. fleet-transfer import, which writes the raw blob directly via
+ *  db/federation.ts's setFederationConfigRaw() rather than going through
+ *  writeFederationConfig()'s validated-object path (P3 whole-value overwrite,
+ *  same semantics the old trackedWrite(federation.json, ...) import path had,
+ *  including never validating at write time -- only at next read). Without
+ *  this, the in-process cache would keep serving the pre-import config until
+ *  something else happened to call getFederationConfig() cold (there is no
+ *  cross-module file watch anymore -- see the module comment above). */
+export function invalidateFederationConfigCache(): void {
+  cachedConfig = null
+  lastConfigWarning = ''
+}
+
 // ---- test seams -------------------------------------------------------------
 
+// Only the legacy token file's directory is still swappable via this seam --
+// see the module-level comment on `storeDir` above.
 export function _setFederationStoreDirForTest(dir: string): void {
   storeDir = dir
-  if (watcher) { try { watcher.close() } catch { /* ignore */ } watcher = undefined }
-  reloadFederationForTest()
 }
 
 export function reloadFederationForTest(): void {
-  cachedConfig = null
-  lastConfigWarning = ''
+  invalidateFederationConfigCache()
+}
+
+/** Test-only: seed the stored document directly, bypassing validation --
+ *  mirrors what a test used to do by hand-writing federation.json. Lets
+ *  tests construct invalid/garbage documents to exercise the fail-closed
+ *  paths above. Pass a raw string for garbage-JSON cases, or an object for
+ *  the common case. */
+export function _seedFederationConfigForTest(raw: string | Record<string, unknown>): void {
+  setFederationConfigRaw(typeof raw === 'string' ? raw : JSON.stringify(raw))
+  reloadFederationForTest()
+}
+
+/** Test-only: simulate "no federation.json" -- an absent system_config row. */
+export function _clearFederationConfigForTest(): void {
+  deleteFederationConfigRaw()
+  reloadFederationForTest()
 }

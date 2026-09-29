@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -14,9 +14,11 @@ import {
 import { tryHandleFederation, _resetInboxDedupForTest } from '../web/routes/federation.js'
 import {
   _setFederationStoreDirForTest,
-  reloadFederationForTest,
+  _seedFederationConfigForTest,
+  _clearFederationConfigForTest,
   getFederationConfig,
 } from '../web/federation/config.js'
+import { getFederationConfigRaw } from '../db/federation.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 const TMP = mkdtempSync(join(tmpdir(), 'fed-lifecycle-test-'))
@@ -24,8 +26,7 @@ const IN_TOKEN = 'a'.repeat(64)
 const OUT_TOKEN = 'b'.repeat(64)
 
 function writeConfigFile(obj: unknown): void {
-  writeFileSync(join(TMP, 'federation.json'), JSON.stringify(obj))
-  reloadFederationForTest()
+  _seedFederationConfigForTest(obj as Record<string, unknown>)
 }
 
 function fakeCtx(method: string, path: string, body?: string): { ctx: RouteContext; res: { statusCode: number; body: string } } {
@@ -61,7 +62,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  rmSync(join(TMP, 'federation.json'), { force: true })
+  _clearFederationConfigForTest()
   _setFederationStoreDirForTest(TMP)
   _resetInboxDedupForTest()
 })
@@ -266,8 +267,8 @@ describe('master switch + full removal', () => {
     expect((await call('PATCH', '/api/federation/peers/teodor', { baseUrl: 'https://x.example' })).statusCode).toBe(409)
     expect((await call('DELETE', '/api/federation/peers/teodor')).statusCode).toBe(409)
     expect((await call('POST', '/api/federation/peers/teodor/rotate-inbound-token')).statusCode).toBe(409)
-    // the file is untouched:
-    const raw = JSON.parse(readFileSync(join(TMP, 'federation.json'), 'utf-8'))
+    // the stored document is untouched:
+    const raw = JSON.parse(getFederationConfigRaw()!)
     expect(raw.peers).toHaveLength(1)
   })
 
@@ -299,7 +300,7 @@ describe('master switch + full removal', () => {
     const q = createAgentMessage('a', 'teodor/x', 'queued-at-removal')
     const rm = await call('POST', '/api/federation/remove')
     expect(rm.json.ok).toBe(true)
-    expect(existsSync(join(TMP, 'federation.json'))).toBe(false)
+    expect(getFederationConfigRaw()).toBeUndefined()
     expect(existsSync(join(TMP, '.federation-token'))).toBe(false)
     expect(getFederationConfig().enabled).toBe(false)
     expect(getAgentMessage(q.id)?.status).toBe('failed')

@@ -1,15 +1,16 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { initDatabase } from '../db.js'
 import { MAIN_AGENT_ID, BOT_NAME } from '../config.js'
 import {
   tryHandleFederation,
   DIRECTORY_MAX_AGENTS_PER_PEER,
   DIRECTORY_MAX_SKILLS_PER_AGENT,
 } from '../web/routes/federation.js'
-import { _setFederationStoreDirForTest, reloadFederationForTest } from '../web/federation/config.js'
+import { _setFederationStoreDirForTest, _seedFederationConfigForTest, _clearFederationConfigForTest } from '../web/federation/config.js'
 import { pollPeerManifests, resetFederationPollerCache } from '../web/federation/poller.js'
 import { _setCapabilityStoreDirForTest } from '../web/federation/capabilities.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -20,12 +21,11 @@ const OUT_TOKEN = 'c'.repeat(64)
 const NOW = 1_750_000_000_000
 
 function writeEnabledConfig(): void {
-  writeFileSync(join(TMP, 'federation.json'), JSON.stringify({
+  _seedFederationConfigForTest({
     enabled: true,
     systemId: 'localsys',
     peers: [{ id: 'teodor', baseUrl: 'https://mini.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN }],
-  }))
-  reloadFederationForTest()
+  })
 }
 
 function fetchReturning(status: number, body: unknown): typeof fetch {
@@ -49,8 +49,12 @@ async function getDirectory(): Promise<{ statusCode: number; json: any }> {
   return { statusCode: state.statusCode || 200, json: state.body ? JSON.parse(state.body) : null }
 }
 
+beforeAll(() => {
+  initDatabase(':memory:')
+})
+
 beforeEach(() => {
-  rmSync(join(TMP, 'federation.json'), { force: true })
+  _clearFederationConfigForTest()
   rmSync(join(TMP, 'capability-summaries.json'), { force: true })
   _setFederationStoreDirForTest(TMP)
   _setCapabilityStoreDirForTest(TMP)

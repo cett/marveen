@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { initDatabase } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { checkBearerToken } from '../web/dashboard-auth.js'
+import { getFederationConfigRaw } from '../db/federation.js'
 import {
   validateFederationConfig,
   getFederationConfig,
@@ -16,25 +18,32 @@ import {
   isAcceptablePeerBaseUrl,
   abandonWindowMsForPeer,
   _setFederationStoreDirForTest,
+  _seedFederationConfigForTest,
+  _clearFederationConfigForTest,
   reloadFederationForTest,
   FEDERATION_MIN_TOKEN_LENGTH,
   DEFAULT_ABANDON_WINDOW_MINUTES,
   type FederationConfig,
 } from '../web/federation/config.js'
 
-// Isolated store dir (initDatabase(':memory:') precedent: explicit override,
-// never the real checkout's store/).
+// #985 group 5/8's deferred part: federation.json -> system_config
+// ('federation_config_json'). Isolated in-memory DB (model-fallback-store.
+// test.ts precedent) -- storeDir is only still relevant for the legacy
+// .federation-token file (removeFederationStore's other cleanup target).
 const TMP = mkdtempSync(join(tmpdir(), 'fed-config-test-'))
 const IN_TOKEN = 'f'.repeat(64)
 const OUT_TOKEN = 'e'.repeat(64)
 
 function writeConfigFile(obj: unknown): void {
-  writeFileSync(join(TMP, 'federation.json'), JSON.stringify(obj))
-  reloadFederationForTest()
+  _seedFederationConfigForTest(obj as string | Record<string, unknown>)
 }
 
+beforeAll(() => {
+  initDatabase(':memory:')
+})
+
 beforeEach(() => {
-  rmSync(join(TMP, 'federation.json'), { force: true })
+  _clearFederationConfigForTest()
   rmSync(join(TMP, '.federation-token'), { force: true })
   _setFederationStoreDirForTest(TMP)
 })
@@ -197,10 +206,9 @@ describe('isAcceptablePeerBaseUrl / abandonWindowMsForPeer / token mint', () => 
 })
 
 describe('fail-closed store reads', () => {
-  it('missing file / garbage JSON / one invalid peer -> disabled with no peers', () => {
+  it('missing row / garbage JSON / one invalid peer -> disabled with no peers', () => {
     expect(getFederationConfig().enabled).toBe(false)
-    writeFileSync(join(TMP, 'federation.json'), '{not json')
-    reloadFederationForTest()
+    _seedFederationConfigForTest('{not json')
     expect(getFederationConfig().enabled).toBe(false)
     writeConfigFile({ enabled: true, peers: [validPeers[0], { id: 'bad peer!', baseUrl: 'https://x.example', inboundToken: 'g'.repeat(64) }] })
     const cfg = getFederationConfig()
@@ -208,7 +216,7 @@ describe('fail-closed store reads', () => {
     expect(cfg.peers).toHaveLength(0)
   })
 
-  it('valid enabled file -> enabled with parsed peers', () => {
+  it('valid enabled document -> enabled with parsed peers', () => {
     writeConfigFile({ enabled: true, peers: validPeers })
     const cfg = getFederationConfig()
     expect(cfg.enabled).toBe(true)
@@ -228,7 +236,7 @@ describe('identifyFederationCaller', () => {
   })
 
   it('never authenticates against an empty/short stored token', () => {
-    // Hand-edited file with a short inbound token fail-closes the WHOLE
+    // Hand-seeded doc with a short inbound token fail-closes the WHOLE
     // config, so the caller loop never even sees it.
     writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: '' }] })
     expect(identifyFederationCaller('Bearer  ', checkBearerToken)).toBeNull()
@@ -236,7 +244,7 @@ describe('identifyFederationCaller', () => {
 })
 
 describe('lossless enable/disable + removal', () => {
-  it('setFederationEnabledPreservingFile flips the flag and keeps peers -- even INVALID ones stay in the file', () => {
+  it('setFederationEnabledPreservingFile flips the flag and keeps peers -- even INVALID ones stay in the store', () => {
     writeConfigFile({ enabled: true, peers: validPeers })
     expect(setFederationEnabledPreservingFile(false)).toBe(true)
     const cfg = getFederationConfig()
@@ -250,14 +258,13 @@ describe('lossless enable/disable + removal', () => {
     writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: 'short' }] })
     expect(getFederationConfig().peers).toHaveLength(0) // view is fail-closed
     expect(setFederationEnabledPreservingFile(false)).toBe(true)
-    const raw = JSON.parse(readFileSync(join(TMP, 'federation.json'), 'utf-8'))
-    expect(raw.peers).toHaveLength(1) // the file still has the peer
+    const raw = JSON.parse(getFederationConfigRaw()!)
+    expect(raw.peers).toHaveLength(1) // the store still has the peer
     expect(raw.enabled).toBe(false)
   })
 
   it('returns false on unreadable garbage (nothing to flip; validator already fail-closes)', () => {
-    writeFileSync(join(TMP, 'federation.json'), '{oops')
-    reloadFederationForTest()
+    _seedFederationConfigForTest('{oops')
     expect(setFederationEnabledPreservingFile(false)).toBe(false)
   })
 
@@ -268,19 +275,19 @@ describe('lossless enable/disable + removal', () => {
     expect(cfg.routingMode).toBe('strong')
     expect(cfg.enabled).toBe(true) // untouched
     expect(cfg.peers).toHaveLength(1) // lossless
-    // Invalid stored peer -> the VIEW fail-closes, but the file (incl. the peer) is kept.
+    // Invalid stored peer -> the VIEW fail-closes, but the store (incl. the peer) is kept.
     writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: 'short' }] })
     expect(setFederationRoutingModePreservingFile('advisory')).toBe(true)
-    const raw = JSON.parse(readFileSync(join(TMP, 'federation.json'), 'utf-8'))
+    const raw = JSON.parse(getFederationConfigRaw()!)
     expect(raw.routingMode).toBe('advisory')
     expect(raw.peers).toHaveLength(1)
   })
 
-  it('removeFederationStore deletes config + legacy token file and is idempotent', () => {
+  it('removeFederationStore deletes the config row + legacy token file and is idempotent', () => {
     writeConfigFile({ enabled: true, peers: validPeers })
     writeFileSync(join(TMP, '.federation-token'), 'legacy'.repeat(11))
     removeFederationStore()
-    expect(existsSync(join(TMP, 'federation.json'))).toBe(false)
+    expect(getFederationConfigRaw()).toBeUndefined()
     expect(existsSync(join(TMP, '.federation-token'))).toBe(false)
     expect(getFederationConfig().enabled).toBe(false)
     removeFederationStore() // idempotent
@@ -290,5 +297,14 @@ describe('lossless enable/disable + removal', () => {
     writeFederationConfig({ enabled: true, systemId: 'teodor', peers: [{ id: 'arthur', baseUrl: 'https://x.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN, trust: 'untrusted' }] })
     expect(getFederationConfig().enabled).toBe(true)
     expect(getFederationConfig().peers[0].id).toBe('arthur')
+  })
+})
+
+describe('reloadFederationForTest', () => {
+  it('is still exported and clears the cache (legacy-named seam, kept for other federation test files)', () => {
+    writeConfigFile({ enabled: true, peers: validPeers })
+    expect(getFederationConfig().enabled).toBe(true)
+    reloadFederationForTest()
+    expect(getFederationConfig().enabled).toBe(true) // same stored doc, just re-read
   })
 })

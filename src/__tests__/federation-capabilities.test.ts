@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { initDatabase } from '../db.js'
 import { OWNER_NAME } from '../config.js'
-import { _setFederationStoreDirForTest, reloadFederationForTest } from '../web/federation/config.js'
+import { _setFederationStoreDirForTest, _seedFederationConfigForTest, _clearFederationConfigForTest } from '../web/federation/config.js'
 import {
   roleSpecificHead,
   readSummarySource,
@@ -33,9 +34,13 @@ const NOW = 1_750_000_000_000
 const IN_TOKEN = 'i'.repeat(64)
 const OUT_TOKEN = 'o'.repeat(64)
 
+beforeAll(() => {
+  initDatabase(':memory:')
+})
+
 beforeEach(() => {
   rmSync(join(TMP, CAPABILITY_CACHE_FILENAME), { force: true })
-  rmSync(join(TMP, 'federation.json'), { force: true })
+  _clearFederationConfigForTest()
   rmSync(join(TMP, '.dashboard-token'), { force: true })
   _setCapabilityStoreDirForTest(TMP)
   _setFederationStoreDirForTest(TMP)
@@ -88,11 +93,10 @@ describe('containsPrivateData (deterministic outbound scrub)', () => {
   })
 
   it('catches configured peer tokens and the dashboard token value', () => {
-    writeFileSync(join(TMP, 'federation.json'), JSON.stringify({
+    _seedFederationConfigForTest({
       enabled: true, systemId: 'localsys',
       peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN, outboundToken: OUT_TOKEN }],
-    }))
-    reloadFederationForTest()
+    })
     writeFileSync(join(TMP, '.dashboard-token'), 'd'.repeat(64))
     expect(containsPrivateData(`summary leaking ${IN_TOKEN} here`)).toBe('peer token')
     expect(containsPrivateData(`summary leaking ${'d'.repeat(64)}`)).toBe('dashboard token')
