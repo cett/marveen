@@ -608,7 +608,9 @@ def should_emit_handoff(conn, agent_id, session_id, pct, now_ts, build_text):
     args) -- invoked ONLY when rules 1-3 don't already decide, since it costs
     a handful of extra local SQL reads purely to evaluate rule 4.
 
-    On a failure reading the previous row: fail OPEN (EMIT) -- this hook is
+    On a failure reading the previous row: fail OPEN (EMIT) -- _fetchone()
+    already swallows the exception and returns None, which the "no prior
+    row" branch below treats as a first crossing; this hook is
     logging-category and freshness wins over cost (see module docstring).
 
     Returns (should_emit: bool, text: str | None, content_hash: str | None).
@@ -618,17 +620,13 @@ def should_emit_handoff(conn, agent_id, session_id, pct, now_ts, build_text):
     still needs to build the text itself (the rule 1-3 EMIT paths, and the
     fail-open path)."""
     cur_band = _pct_band(int(round(pct * 100)))
-    try:
-        prev = _fetchone(
-            conn,
-            "SELECT ts, reason, content_hash FROM hook_audit_log "
-            "WHERE agent_id = ? AND session_id = ? AND verdict = 'handoff' "
-            "ORDER BY ts DESC, id DESC LIMIT 1",
-            (agent_id, session_id),
-        )
-    except Exception:
-        return True, None, None
-
+    prev = _fetchone(
+        conn,
+        "SELECT ts, reason, content_hash FROM hook_audit_log "
+        "WHERE agent_id = ? AND session_id = ? AND verdict = 'handoff' "
+        "ORDER BY ts DESC, id DESC LIMIT 1",
+        (agent_id, session_id),
+    )
     if prev is None:
         return True, None, None
 
