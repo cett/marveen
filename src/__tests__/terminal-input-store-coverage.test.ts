@@ -1,70 +1,63 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { rmSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
-const FAKE_ROOT = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const fs = require('node:fs') as typeof import('node:fs')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const path = require('node:path') as typeof import('node:path')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const os = require('node:os') as typeof import('node:os')
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-store-test-'))
-  fs.mkdirSync(path.join(root, 'store'), { recursive: true })
-  return root
+// DB-fixture pattern (#985 group 5/8): terminal-input-store.ts now reads/writes
+// the system_config row 'terminal_input_enabled' instead of
+// store/terminal-input.json -- see db-system-config.test.ts for why each test
+// needs its own module instance (config.js/db/connection.js resolve STORE_DIR
+// once, at import time).
+let storeDir: string
+let dbMod: typeof import('../db.js')
+let store: typeof import('../web/terminal-input-store.js')
+
+beforeEach(async () => {
+  storeDir = mkdtempSync(join(tmpdir(), 'terminal-store-test-'))
+  process.env['MARVEEN_STORE_DIR'] = storeDir
+  vi.resetModules()
+  dbMod = await import('../db.js')
+  dbMod.initDatabase(':memory:')
+  store = await import('../web/terminal-input-store.js')
 })
 
-vi.mock('../config.js', () => ({
-  PROJECT_ROOT: FAKE_ROOT,
-  STORE_DIR: FAKE_ROOT + '/store',
-}))
-
-vi.mock('../web/atomic-write.js', () => ({
-  atomicWriteFileSync: vi.fn().mockImplementation((path: string, data: string) => {
-    writeFileSync(path, data)
-  }),
-}))
-
-import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../web/terminal-input-store.js'
-
 afterEach(() => {
-  vi.clearAllMocks()
-  try { rmSync(join(FAKE_ROOT, 'store', 'terminal-input.json')) } catch { /* may not exist */ }
+  delete process.env['MARVEEN_STORE_DIR']
+  rmSync(storeDir, { recursive: true, force: true })
 })
 
 describe('terminal-input-store', () => {
-  it('readTerminalInputEnabled returns false when file does not exist', () => {
-    expect(readTerminalInputEnabled()).toBe(false)
+  it('readTerminalInputEnabled returns false when no row exists (safe OFF default)', () => {
+    expect(store.readTerminalInputEnabled()).toBe(false)
   })
 
-  it('readTerminalInputEnabled returns true when file has enabled:true', () => {
-    writeFileSync(join(FAKE_ROOT, 'store', 'terminal-input.json'), JSON.stringify({ enabled: true }))
-    expect(readTerminalInputEnabled()).toBe(true)
+  it('readTerminalInputEnabled returns true when the row value is 1', () => {
+    dbMod.setSystemConfig('terminal_input_enabled', '1')
+    expect(store.readTerminalInputEnabled()).toBe(true)
   })
 
-  it('readTerminalInputEnabled returns false when file has enabled:false', () => {
-    writeFileSync(join(FAKE_ROOT, 'store', 'terminal-input.json'), JSON.stringify({ enabled: false }))
-    expect(readTerminalInputEnabled()).toBe(false)
+  it('readTerminalInputEnabled returns false when the row value is 0', () => {
+    dbMod.setSystemConfig('terminal_input_enabled', '0')
+    expect(store.readTerminalInputEnabled()).toBe(false)
   })
 
-  it('readTerminalInputEnabled returns false for invalid JSON (fail-closed)', () => {
-    writeFileSync(join(FAKE_ROOT, 'store', 'terminal-input.json'), 'not-json')
-    expect(readTerminalInputEnabled()).toBe(false)
+  it('readTerminalInputEnabled returns false for a malformed stored value (fail-closed)', () => {
+    dbMod.setSystemConfig('terminal_input_enabled', 'not-a-flag')
+    expect(store.readTerminalInputEnabled()).toBe(false)
   })
 
   it('writeTerminalInputEnabled sets enabled:true and returns true', () => {
-    const result = writeTerminalInputEnabled(true)
+    const result = store.writeTerminalInputEnabled(true)
     expect(result).toBe(true)
   })
 
   it('writeTerminalInputEnabled sets enabled:false and returns false', () => {
-    const result = writeTerminalInputEnabled(false)
+    const result = store.writeTerminalInputEnabled(false)
     expect(result).toBe(false)
   })
 
   it('writeTerminalInputEnabled persists state readable by readTerminalInputEnabled', () => {
-    writeTerminalInputEnabled(true)
-    const stored = readTerminalInputEnabled()
-    expect(stored).toBe(true)
+    store.writeTerminalInputEnabled(true)
+    expect(store.readTerminalInputEnabled()).toBe(true)
   })
 })

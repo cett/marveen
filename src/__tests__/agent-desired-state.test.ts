@@ -1,71 +1,64 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
-import { rmSync, existsSync, unlinkSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
-const { TMP_ROOT, STORE_DIR } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { mkdtempSync, mkdirSync } = require('node:fs')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { tmpdir } = require('node:os')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { join } = require('node:path')
-  const root = mkdtempSync(join(tmpdir(), 'desired-state-test-'))
-  mkdirSync(join(root, 'store'), { recursive: true })
-  return { TMP_ROOT: root, STORE_DIR: join(root, 'store') }
+// DB-fixture pattern (#985 group 5/8): agent-desired-state.ts now reads/writes
+// the single system_config row 'agents_desired' (a JSON array) instead of
+// store/agents-desired.json -- see db-system-config.test.ts for why each test
+// needs its own module instance (config.js/db/connection.js resolve STORE_DIR
+// once, at import time).
+let storeDir: string
+let dbMod: typeof import('../db.js')
+let store: typeof import('../web/agent-desired-state.js')
+
+beforeEach(async () => {
+  storeDir = mkdtempSync(join(tmpdir(), 'desired-state-test-'))
+  process.env['MARVEEN_STORE_DIR'] = storeDir
+  vi.resetModules()
+  dbMod = await import('../db.js')
+  dbMod.initDatabase(':memory:')
+  store = await import('../web/agent-desired-state.js')
 })
 
-vi.mock('../config.js', () => ({ PROJECT_ROOT: TMP_ROOT, STORE_DIR }))
-
-import {
-  getDesiredAgents,
-  addDesiredAgent,
-  removeDesiredAgent,
-} from '../web/agent-desired-state.js'
-
-const DESIRED_FILE = join(STORE_DIR, 'agents-desired.json')
-
-function cleanFile(): void {
-  if (existsSync(DESIRED_FILE)) unlinkSync(DESIRED_FILE)
-}
-
-beforeEach(cleanFile)
-afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }))
+afterEach(() => {
+  delete process.env['MARVEEN_STORE_DIR']
+  rmSync(storeDir, { recursive: true, force: true })
+})
 
 describe('getDesiredAgents', () => {
-  it('returns empty Set when no file exists', () => {
-    expect(getDesiredAgents().size).toBe(0)
+  it('returns empty Set when no row exists', () => {
+    expect(store.getDesiredAgents().size).toBe(0)
   })
 
-  it('returns empty Set when file contains invalid JSON', () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require('node:fs').writeFileSync(DESIRED_FILE, '{bad}')
-    expect(getDesiredAgents().size).toBe(0)
+  it('returns empty Set when the stored row is invalid JSON', () => {
+    dbMod.setSystemConfig('agents_desired', '{bad}')
+    expect(store.getDesiredAgents().size).toBe(0)
   })
 
-  it('returns empty Set when file contains non-array JSON', () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require('node:fs').writeFileSync(DESIRED_FILE, '{"key":"val"}')
-    expect(getDesiredAgents().size).toBe(0)
+  it('returns empty Set when the stored row is non-array JSON', () => {
+    dbMod.setSystemConfig('agents_desired', '{"key":"val"}')
+    expect(store.getDesiredAgents().size).toBe(0)
   })
 })
 
 describe('addDesiredAgent', () => {
-  it('creates the file and adds the agent', () => {
-    addDesiredAgent('agent-a')
-    const set = getDesiredAgents()
+  it('creates the row and adds the agent', () => {
+    store.addDesiredAgent('agent-a')
+    const set = store.getDesiredAgents()
     expect(set.has('agent-a')).toBe(true)
   })
 
   it('is idempotent -- adding twice does not duplicate', () => {
-    addDesiredAgent('agent-a')
-    addDesiredAgent('agent-a')
-    expect(getDesiredAgents().size).toBe(1)
+    store.addDesiredAgent('agent-a')
+    store.addDesiredAgent('agent-a')
+    expect(store.getDesiredAgents().size).toBe(1)
   })
 
   it('accumulates multiple agents', () => {
-    addDesiredAgent('agent-a')
-    addDesiredAgent('agent-d')
-    const set = getDesiredAgents()
+    store.addDesiredAgent('agent-a')
+    store.addDesiredAgent('agent-d')
+    const set = store.getDesiredAgents()
     expect(set.has('agent-a')).toBe(true)
     expect(set.has('agent-d')).toBe(true)
   })
@@ -73,20 +66,20 @@ describe('addDesiredAgent', () => {
 
 describe('removeDesiredAgent', () => {
   it('removes an existing agent', () => {
-    addDesiredAgent('agent-a')
-    removeDesiredAgent('agent-a')
-    expect(getDesiredAgents().has('agent-a')).toBe(false)
+    store.addDesiredAgent('agent-a')
+    store.removeDesiredAgent('agent-a')
+    expect(store.getDesiredAgents().has('agent-a')).toBe(false)
   })
 
   it('is idempotent -- removing a non-present agent does not throw', () => {
-    expect(() => removeDesiredAgent('nonexistent')).not.toThrow()
+    expect(() => store.removeDesiredAgent('nonexistent')).not.toThrow()
   })
 
   it('does not remove other agents', () => {
-    addDesiredAgent('agent-a')
-    addDesiredAgent('agent-d')
-    removeDesiredAgent('agent-a')
-    const set = getDesiredAgents()
+    store.addDesiredAgent('agent-a')
+    store.addDesiredAgent('agent-d')
+    store.removeDesiredAgent('agent-a')
+    const set = store.getDesiredAgents()
     expect(set.has('agent-a')).toBe(false)
     expect(set.has('agent-d')).toBe(true)
   })
