@@ -582,6 +582,263 @@ class TestBuildHandoff(unittest.TestCase):
         self.assertIn("60%", text)
 
 
+class TestHashHandoffText(unittest.TestCase):
+    """_hash_handoff_text() must ignore the two lines that change on every
+    single call regardless of real content (the header's ISO timestamp, and
+    the 'Context hasznalat' tokens/pct line) -- otherwise rule 4 could never
+    match on identical content two calls apart."""
+
+    def test_hash_does_not_depend_on_the_timestamp_or_token_count_line(self):
+        a = (
+            "[CONTEXT-WATCHDOG HANDOFF -- 2026-09-29T10:00:00+00:00]\n"
+            "Aktualis feladat (active): doing the thing\n"
+            "Context hasznalat: 240,000 / 400,000 tokens (60%)\n"
+            "[/CONTEXT-WATCHDOG HANDOFF]"
+        )
+        b = (
+            "[CONTEXT-WATCHDOG HANDOFF -- 2026-09-29T10:05:00+00:00]\n"
+            "Aktualis feladat (active): doing the thing\n"
+            "Context hasznalat: 244,000 / 400,000 tokens (61%)\n"
+            "[/CONTEXT-WATCHDOG HANDOFF]"
+        )
+        self.assertEqual(hook._hash_handoff_text(a), hook._hash_handoff_text(b))
+
+    def test_hash_differs_when_the_real_content_changes(self):
+        a = (
+            "[CONTEXT-WATCHDOG HANDOFF -- 2026-09-29T10:00:00+00:00]\n"
+            "Aktualis feladat (active): doing the thing\n"
+            "Context hasznalat: 240,000 / 400,000 tokens (60%)\n"
+            "[/CONTEXT-WATCHDOG HANDOFF]"
+        )
+        b = (
+            "[CONTEXT-WATCHDOG HANDOFF -- 2026-09-29T10:00:00+00:00]\n"
+            "Aktualis feladat (active): doing a DIFFERENT thing\n"
+            "Context hasznalat: 240,000 / 400,000 tokens (60%)\n"
+            "[/CONTEXT-WATCHDOG HANDOFF]"
+        )
+        self.assertNotEqual(hook._hash_handoff_text(a), hook._hash_handoff_text(b))
+
+
+class TestPctBand(unittest.TestCase):
+    def test_60_69_is_band_60(self):
+        self.assertEqual(hook._pct_band(60), 60)
+        self.assertEqual(hook._pct_band(69), 60)
+
+    def test_70s_80s_90s_are_their_own_decade_band(self):
+        self.assertEqual(hook._pct_band(70), 70)
+        self.assertEqual(hook._pct_band(80), 80)
+        self.assertEqual(hook._pct_band(90), 90)
+        self.assertEqual(hook._pct_band(94), 90)
+
+    def test_95_and_above_is_its_own_band_distinct_from_90s(self):
+        self.assertEqual(hook._pct_band(95), 95)
+        self.assertEqual(hook._pct_band(99), 95)
+        self.assertNotEqual(hook._pct_band(95), hook._pct_band(90))
+
+
+class TestShouldEmitHandoff(unittest.TestCase):
+    """The HANDOFF dedup gate. No new persistent state: reads its own prior
+    'handoff' row back out of hook_audit_log via should_emit_handoff()."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.conn = _make_db(self.tmp.name)
+        self.calls = []  # tracks how many times build_text was actually invoked
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.tmp.name)
+
+    def _build_text(self, text="HANDOFF BODY"):
+        def _fn():
+            self.calls.append(1)
+            return text
+        return _fn
+
+    def _seed_prev(self, session_id="sess-1", pct=0.62, ts=1_000_000, content_hash="aaaaaaaa", agent_id=None):
+        self.conn.execute(
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) "
+            "VALUES (?, ?, 'PostToolUse', 'handoff', 'Bash', ?, ?, ?, 'watchdog')",
+            (ts, agent_id or MAIN_AGENT, content_hash, f"ctx={round(pct*100)}%", session_id),
+        )
+        self.conn.commit()
+
+    def test_first_crossing_with_no_prior_row_emits(self):
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.62, 1_000_100, self._build_text()
+        )
+        self.assertTrue(should_emit)
+        # Rule 1 decides without needing the text -- build_text must not run.
+        self.assertEqual(self.calls, [])
+
+    def test_same_band_same_hash_skips(self):
+        self._seed_prev(pct=0.62, ts=1_000_000, content_hash="samehash1")
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_050, self._build_text("HANDOFF BODY")
+        )
+        self.assertFalse(should_emit)
+
+    def test_band_change_emits_even_with_identical_content(self):
+        self._seed_prev(pct=0.68, ts=1_000_000, content_hash=hook._hash_handoff_text("HANDOFF BODY"))
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.71, 1_000_010, self._build_text("HANDOFF BODY")
+        )
+        self.assertTrue(should_emit)
+        # Rule 2 decides without needing the text.
+        self.assertEqual(self.calls, [])
+
+    def test_band_drop_back_down_also_emits(self):
+        # After a compact/restart pct can fall back into an EARLIER band --
+        # rule 2 is a plain band inequality, not just an upward step.
+        self._seed_prev(pct=0.85, ts=1_000_000, content_hash="whatever1")
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.61, 1_000_010, self._build_text()
+        )
+        self.assertTrue(should_emit)
+
+    def test_five_point_same_band_drop_emits(self):
+        self._seed_prev(pct=0.68, ts=1_000_000, content_hash="whatever2")
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_010, self._build_text()
+        )
+        self.assertTrue(should_emit)
+
+    def test_four_point_same_band_drop_does_not_alone_trigger_rule_3(self):
+        # <5-point drop, same band, identical content -> falls through to
+        # rule 4 and skips (not enough time elapsed either).
+        h = hook._hash_handoff_text("HANDOFF BODY")
+        self._seed_prev(pct=0.68, ts=1_000_000, content_hash=h)
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.65, 1_000_010, self._build_text("HANDOFF BODY")
+        )
+        self.assertFalse(should_emit)
+
+    def test_content_changed_but_under_300s_skips(self):
+        self._seed_prev(pct=0.62, ts=1_000_000, content_hash="old-hash1")
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_000 + 299, self._build_text("NEW BODY")
+        )
+        self.assertFalse(should_emit)
+
+    def test_content_changed_and_at_least_300s_emits_with_the_built_text_reused(self):
+        self._seed_prev(pct=0.62, ts=1_000_000, content_hash="old-hash1")
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_000 + 300, self._build_text("NEW BODY")
+        )
+        self.assertTrue(should_emit)
+        self.assertEqual(text, "NEW BODY")
+        self.assertEqual(content_hash, hook._hash_handoff_text("NEW BODY"))
+        # build_text must run exactly once (rule 4 evaluation), not twice.
+        self.assertEqual(self.calls, [1])
+
+    def test_at_or_above_90pct_uses_the_60s_gap_not_300s(self):
+        self._seed_prev(pct=0.91, ts=1_000_000, content_hash="old-hash2")
+        # 65s later: would skip under the normal 300s rule, must emit under 90%+'s 60s rule.
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.92, 1_000_065, self._build_text("NEW BODY 2")
+        )
+        self.assertTrue(should_emit)
+
+    def test_at_or_above_90pct_under_60s_still_skips(self):
+        self._seed_prev(pct=0.91, ts=1_000_000, content_hash="old-hash3")
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.92, 1_000_059, self._build_text("NEW BODY 3")
+        )
+        self.assertFalse(should_emit)
+
+    def test_query_failure_fails_open_and_emits(self):
+        self.conn.close()  # any query against it now raises
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_100, self._build_text()
+        )
+        self.assertTrue(should_emit)
+        self.conn = sqlite3.connect(self.tmp.name)  # reopen so tearDown's close() is valid
+
+    def test_two_sessions_are_independent(self):
+        self._seed_prev(session_id="sess-A", pct=0.62, ts=1_000_000, content_hash="hash-a")
+        # sess-B has no prior row at all -- must be treated as a first crossing.
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-B", 0.63, 1_000_010, self._build_text()
+        )
+        self.assertTrue(should_emit)
+
+    def test_a_skipped_call_writes_no_audit_row(self):
+        # Integration-shaped: mirrors exactly what main() does with the
+        # (should_emit, text, content_hash) result.
+        h = hook._hash_handoff_text("HANDOFF BODY")
+        self._seed_prev(pct=0.62, ts=1_000_000, content_hash=h)
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_010, self._build_text("HANDOFF BODY")
+        )
+        self.assertFalse(should_emit)
+        if should_emit:  # pragma: no cover -- mirrors main()'s guard exactly
+            hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.63, content_hash)
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM hook_audit_log WHERE session_id = ?", ("sess-1",)
+        ).fetchone()[0]
+        self.assertEqual(count, 1)  # only the seeded prev row -- no new one
+
+    def test_identical_hash_skips_even_with_a_long_time_gap(self):
+        # Rule 4 is content-changed AND enough time elapsed -- both must
+        # hold. A long gap alone must not override an identical hash (this
+        # kills a mutant that drops the hash-equality check and gates on
+        # elapsed time alone).
+        h = hook._hash_handoff_text("HANDOFF BODY")
+        self._seed_prev(pct=0.62, ts=1_000_000, content_hash=h)
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_000 + 301, self._build_text("HANDOFF BODY")
+        )
+        self.assertFalse(should_emit)
+
+    def test_a_different_agent_id_with_the_same_session_id_is_not_deduped_against(self):
+        # session_id alone is not a safe dedup key -- two fleet agents could
+        # in principle share a session_id, and one agent's prior HANDOFF must
+        # never suppress another agent's first crossing.
+        self._seed_prev(session_id="sess-1", pct=0.62, ts=1_000_000, content_hash="other-agents-hash", agent_id="other-agent")
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_010, self._build_text()
+        )
+        self.assertTrue(should_emit)
+
+    def test_unparseable_prior_reason_emits(self):
+        # A prior 'handoff' row whose reason doesn't match "ctx=NN%" (should
+        # never happen in practice, but the parse is best-effort) must not
+        # crash the gate or silently suppress -- fail open, same as no prior
+        # row at all.
+        self.conn.execute(
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) "
+            "VALUES (1000000, ?, 'PostToolUse', 'handoff', 'Bash', 'x', 'not-a-pct-format', 'sess-1', 'watchdog')",
+            (MAIN_AGENT,),
+        )
+        self.conn.commit()
+        should_emit, text, content_hash = hook.should_emit_handoff(
+            self.conn, MAIN_AGENT, "sess-1", 0.63, 1_000_010, self._build_text()
+        )
+        self.assertTrue(should_emit)
+
+
+class TestRecordHandoffAuditContentHash(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.conn = _make_db(self.tmp.name)
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.tmp.name)
+
+    def test_content_hash_is_stored_when_given(self):
+        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62, "deadbeef")
+        row = self.conn.execute("SELECT content_hash FROM hook_audit_log").fetchone()
+        self.assertEqual(row[0], "deadbeef")
+
+    def test_content_hash_defaults_to_null(self):
+        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62)
+        row = self.conn.execute("SELECT content_hash FROM hook_audit_log").fetchone()
+        self.assertIsNone(row[0])
+
+
 class TestMainSubprocess(unittest.TestCase):
     """main()'s contract via subprocess: ALWAYS exit 0 (logging-category,
     fail-open -- see module docstring); a HANDOFF is only emitted on stdout
@@ -694,6 +951,62 @@ class TestMainSubprocess(unittest.TestCase):
         self.assertEqual(row[0], "PostToolUse")
         self.assertEqual(row[1], "handoff")
         self.assertIn("ctx=65%", row[2])
+
+    def test_high_usage_emit_stores_the_content_hash_in_the_audit_row(self):
+        _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000, output_tokens=10)])
+        r = self._run_hook(self._payload())
+        self.assertEqual(r.returncode, 0)
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT content_hash FROM hook_audit_log WHERE agent_id = ? AND verdict = 'handoff'", (MAIN_AGENT,)
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row[0])
+        self.assertEqual(len(row[0]), 8)
+
+    def test_dedup_across_several_real_hook_invocations_in_the_same_session(self):
+        # Full main() path across a sequence of real subprocess calls in one
+        # session -- unlike TestShouldEmitHandoff (which calls the pure
+        # function directly), this is what actually exercises the "ORDER BY
+        # ts DESC, id DESC" query against 2+ real rows, and would catch a
+        # regression that always emits regardless of the gate's decision.
+        # 60/61/62% all land in the same band with unchanged content (this
+        # fixture's blackboard/kanban/messages tables stay empty throughout,
+        # so build_handoff()'s body -- everything except the stripped
+        # token-count line -- never changes) -- only the first (60%) must
+        # emit. 70% is a band change and must emit again. 71% lands back in
+        # that same (70%) band, still unchanged content, and must skip --
+        # a reversed ORDER BY would instead compare against the stale 60%
+        # row here (both rows tie on `ts`, since all calls happen within the
+        # same wall-clock second, so `id` is what actually breaks the tie)
+        # and wrongly detect a band change, emitting a 3rd time.
+        steps = [
+            (240_000, False),  # 60% of the 400000 threshold -- first crossing, EMITS
+            (244_000, True),   # 61% -- same band, unchanged content, SKIPS
+            (248_000, True),   # 62% -- same band, unchanged content, SKIPS
+            (280_000, False),  # 70% -- band change, EMITS (2nd)
+            (284_000, True),   # 71% -- same band as the 70% emit, SKIPS
+        ]
+        emits = 0
+        for input_tokens, expect_skip in steps:
+            _write_jsonl(self.transcript_path, [_usage_event(input_tokens=input_tokens, output_tokens=10)])
+            r = self._run_hook(self._payload())
+            self.assertEqual(r.returncode, 0)
+            if expect_skip:
+                self.assertEqual(r.stdout.strip(), "")
+            else:
+                self.assertIn("CONTEXT-WATCHDOG HANDOFF", r.stdout)
+                emits += 1
+        self.assertEqual(emits, 2)
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT reason FROM hook_audit_log WHERE agent_id = ? AND verdict = 'handoff' ORDER BY id",
+            (MAIN_AGENT,),
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 2)
+        self.assertIn("60%", rows[0][0])
+        self.assertIn("70%", rows[1][0])
 
     def test_cc_subagent_tool_call_writes_row_but_never_emits_handoff(self):
         # A Claude-Code Agent-tool sub-agent (fork/quarantine-reader/...)

@@ -23,7 +23,13 @@ HTTP call to the dashboard API, so a stopped/overloaded dashboard process
 never adds latency or a failure mode to this hook (the design report this
 phase is based on flagged an API call from inside a fail-closed hook as the
 main risk: "the watchdog must be an ultra-simple script -- no network, no DB
-writes beyond the essentials"). Every HANDOFF firing is also logged as a
+writes beyond the essentials"). A HANDOFF only actually fires (and only then logs a row) when
+should_emit_handoff()'s dedup gate says so -- first crossing, a pct-band
+change, a same-band pct drop (compact/reset), or a real content change once
+enough time has passed. No new persistent state: the gate reads its own
+prior 'handoff' row (per agent_id+session_id) back out of hook_audit_log,
+so "rows = actual emits" stays true and a skipped call writes nothing.
+Every HANDOFF firing that DOES happen is also logged as a
 verdict='handoff' row in the existing hook_audit_log table (see
 record_handoff_audit()) -- this used to also feed a validation counter
 (src/watchdog-validation.ts) that was requested before phase 4 (retiring
@@ -109,6 +115,8 @@ import os
 import json
 import sqlite3
 import datetime
+import hashlib
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
@@ -510,7 +518,7 @@ def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) 
     return text
 
 
-def record_handoff_audit(conn, agent_id, session_id, tool_name, pct) -> None:
+def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_hash=None) -> None:
     """Audit-trail instrumentation: log every HANDOFF firing into the
     existing hook_audit_log table (no migration for the row shape --
     hook_type stays a true CC event name, 'PostToolUse', matching every
@@ -524,16 +532,20 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct) -> None:
     done) and is retired along with the interlock stamp it depended on, so
     reason now carries only the context%. trigger_source='watchdog'
     (migration 0038) names this row's producer directly, so a coverage audit
-    doesn't have to re-derive it from hook_type+verdict. Never raises --
-    this is instrumentation, not a gate."""
+    doesn't have to re-derive it from hook_type+verdict. content_hash
+    is this row's own emitted HANDOFF's stable-content hash -- see
+    should_emit_handoff()/_hash_handoff_text() -- so the NEXT call in this
+    session can read it back as its dedup baseline, without any new
+    persistent state. Never raises -- this is instrumentation, not a gate."""
     try:
         conn.execute(
-            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, reason, session_id, trigger_source) "
-            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, 'watchdog')",
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) "
+            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog')",
             (
                 int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
                 agent_id,
                 tool_name,
+                content_hash,
                 f"ctx={pct:.0%}",
                 session_id,
             ),
@@ -541,6 +553,105 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct) -> None:
         conn.commit()
     except Exception:
         pass
+
+
+def _hash_handoff_text(text: str) -> str:
+    """Stable-content hash of a HANDOFF body for the dedup rule 4 check: sha1
+    over the text with the two lines that change on every single call
+    (the header's ISO timestamp, and the 'Context hasznalat: N / M (P%)'
+    line -- tokens/pct climb on nearly every tool call even within the same
+    10-point band) stripped out first, so the hash reflects an actual
+    change in the SUMMARIZED content (task/blackboard/kanban/last message),
+    not the clock. First 8 hex chars -- collision risk is irrelevant here,
+    this only gates a rate-limited, best-effort re-emit, never a gate."""
+    kept = [
+        line for line in text.split("\n")
+        if not line.startswith("[CONTEXT-WATCHDOG HANDOFF --")
+        and not line.startswith("Context hasznalat:")
+    ]
+    return hashlib.sha1("\n".join(kept).encode("utf-8")).hexdigest()[:8]
+
+
+_PREV_PCT_RE = re.compile(r"ctx=(\d+)%")
+
+
+def _pct_band(pct_points: int) -> int:
+    """60/70/80/90 decade steps, but >=95 is its own band distinct from the
+    rest of the 90s (a 95%+ re-emit is wanted even without a
+    full band change or a 5-point drop, since it is the last stop before the
+    restart-gate's own 100% trigger)."""
+    if pct_points >= 95:
+        return 95
+    return (pct_points // 10) * 10
+
+
+def should_emit_handoff(conn, agent_id, session_id, pct, now_ts, build_text):
+    """HANDOFF dedup gate: decide whether this PostToolUse call should actually
+    emit a HANDOFF (and log an audit row), or silently skip. Never called
+    below CONTEXT_PCT_THRESHOLD -- the caller only invokes this once pct is
+    already >=60% and the call is not from a sub-agent.
+
+    EMIT when ANY of:
+    1. no prior 'handoff' row for this (agent_id, session_id) -- first crossing.
+    2. the pct band changed vs the prior row's pct (see _pct_band) -- covers
+       both a genuine climb into a new decade AND a drop back to a lower band,
+       which only happens after a compact/restart (pct otherwise only rises).
+    3. pct dropped by >=5 points vs the prior row while STAYING in the same
+       band -- a same-band reset (e.g. compact took it from 68% to 61%).
+    4. the content actually changed (a fresh build_text() hashes differently
+       from the prior row's content_hash) AND enough time elapsed since the
+       prior emit (300s normally, 60s once pct>=90% -- the last stretch
+       before the gate's own trigger deserves tighter freshness).
+    Otherwise: SKIP.
+
+    build_text is a zero-arg callable (build_handoff() bound to this call's
+    args) -- invoked ONLY when rules 1-3 don't already decide, since it costs
+    a handful of extra local SQL reads purely to evaluate rule 4.
+
+    On a failure reading the previous row: fail OPEN (EMIT) -- _fetchone()
+    already swallows the exception and returns None, which the "no prior
+    row" branch below treats as a first crossing; this hook is
+    logging-category and freshness wins over cost (see module docstring).
+
+    Returns (should_emit: bool, text: str | None, content_hash: str | None).
+    text/content_hash are non-None only when this function itself had to
+    build the text (the rule-4 path) -- the caller reuses it to avoid a
+    second, redundant build_handoff() call; both are None when the caller
+    still needs to build the text itself (the rule 1-3 EMIT paths, and the
+    fail-open path)."""
+    cur_band = _pct_band(int(round(pct * 100)))
+    prev = _fetchone(
+        conn,
+        "SELECT ts, reason, content_hash FROM hook_audit_log "
+        "WHERE agent_id = ? AND session_id = ? AND verdict = 'handoff' "
+        "ORDER BY ts DESC, id DESC LIMIT 1",
+        (agent_id, session_id),
+    )
+    if prev is None:
+        return True, None, None
+
+    prev_ts, prev_reason, prev_hash = prev
+    m = _PREV_PCT_RE.search(prev_reason or "")
+    if m is None:
+        return True, None, None
+    prev_pct = int(m.group(1)) / 100.0
+
+    if cur_band != _pct_band(int(round(prev_pct * 100))):
+        return True, None, None
+
+    if (prev_pct - pct) >= 0.05:
+        return True, None, None
+
+    text = build_text()
+    content_hash = _hash_handoff_text(text)
+    if content_hash == prev_hash:
+        return False, None, None
+
+    min_gap_s = 60 if pct >= 0.90 else 300
+    if (now_ts - (prev_ts or 0)) >= min_gap_s:
+        return True, text, content_hash
+
+    return False, None, None
 
 
 def emit_handoff(text: str) -> None:
@@ -623,9 +734,18 @@ def main():
         # -- additionalContext injection and the audit-log 'handoff' row --
         # is fleet-agent-session-only.
         if pct >= CONTEXT_PCT_THRESHOLD and not cc_subagent_uuid:
-            handoff = build_handoff(conn, agent_id, pct, tokens, threshold)
-            emit_handoff(handoff)
-            record_handoff_audit(conn, agent_id, session_id, tool_name, pct)
+            now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            should_emit, handoff, content_hash = should_emit_handoff(
+                conn, agent_id, session_id, pct, now_ts,
+                lambda: build_handoff(conn, agent_id, pct, tokens, threshold),
+            )
+            if should_emit:
+                if handoff is None:
+                    handoff = build_handoff(conn, agent_id, pct, tokens, threshold)
+                if content_hash is None:
+                    content_hash = _hash_handoff_text(handoff)
+                emit_handoff(handoff)
+                record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_hash)
     except Exception:
         pass  # logging-category hook: never fail the tool call
     finally:
