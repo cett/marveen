@@ -1331,11 +1331,41 @@ export function importFleet(
     // the write against cost_budgets' NOT NULL columns.
     if (Array.isArray(s.costBudgets) && s.costBudgets.length > 0) {
       const { config: validatedConfig, errors: budgetErrors } = validateConfig({ budgets: s.costBudgets })
-      replaceCostBudgets('default', validatedConfig.budgets)
+      // De-dup by id, first occurrence wins -- same "first wins" semantics
+      // as migrateCostBudgetsFromFile()'s INSERT OR IGNORE. Without this, a
+      // duplicated id in the source snapshot hits cost_budgets'
+      // PRIMARY KEY(id, tenant_id) and throws mid-write instead of the later
+      // duplicate being silently skipped.
+      const seenIds = new Set<string>()
+      const deduped: BudgetEntry[] = []
+      let duplicateCount = 0
+      for (const b of validatedConfig.budgets) {
+        if (seenIds.has(b.id)) { duplicateCount++; continue }
+        seenIds.add(b.id)
+        deduped.push(b)
+      }
+      // The `s.costBudgets.length > 0` guard above only proves the SOURCE
+      // array was non-empty -- if every entry was invalid (or every valid
+      // entry was a duplicate id), `deduped` can still be empty here.
+      // Applying the "don't wipe on empty" guard to the raw source length
+      // would let a replaceCostBudgets('default', []) call through in
+      // exactly that case, still wiping the target for reasons the source
+      // never actually asked for (nothing it sent survived validation).
+      if (deduped.length > 0) {
+        replaceCostBudgets('default', deduped)
+      }
       if (budgetErrors.length > 0) {
         applyWarnings.push(
           `costBudgets: ${budgetErrors.length} érvénytelen bejegyzés kimaradt az importból (${budgetErrors.join('; ')}).`
         )
+      }
+      if (duplicateCount > 0) {
+        applyWarnings.push(
+          `costBudgets: ${duplicateCount} duplikált id kimaradt (az első előfordulás nyert).`
+        )
+      }
+      if (deduped.length === 0) {
+        applyWarnings.push('costBudgets: egyetlen érvényes bejegyzés sem maradt validálás után -- a célgép saját budgetjei megmaradtak (nem törlődtek).')
       }
     } else if (Array.isArray(s.costBudgets)) {
       applyWarnings.push('costBudgets üres volt a forrás fájlban -- a célgép saját budgetjei megmaradtak (nem törlődtek).')

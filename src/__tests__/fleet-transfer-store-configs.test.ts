@@ -384,6 +384,51 @@ describe('exportFleet/importFleet -- costBudgets (DB-backed)', () => {
     expect(rows[0].id).toBe('good')
     expect(applied.warnings?.some((w: string) => w.includes('costBudgets') && w.includes('érvénytelen'))).toBe(true)
   })
+
+  // Boo re-QA (2nd round before merge): every entry invalid -> validatedConfig.budgets
+  // is empty even though the SOURCE array was non-empty. The "don't wipe on
+  // empty" guard must apply to the VALIDATED/deduped result, not the raw
+  // source length -- otherwise replaceCostBudgets('default', []) still runs
+  // and wipes the target.
+  it('import does NOT wipe the target when every source entry is invalid', async () => {
+    const { replaceCostBudgets, listCostBudgets } = await import('../db/cost-budgets.js')
+    replaceCostBudgets('default', [{ id: 'target-only', amount: 1 }])
+    const fleetJson = JSON.stringify(baseFleetWith({
+      costBudgets: [
+        { amount: 100 }, // missing id
+        { id: 'bad-amount', amount: 'not-a-number' }, // non-number amount
+      ],
+    }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listCostBudgets('default')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('target-only')
+    expect(applied.warnings?.some((w: string) => w.includes('egyetlen érvényes bejegyzés sem maradt'))).toBe(true)
+  })
+
+  // Boo re-QA (2nd round before merge): a duplicated id in the source used
+  // to hit cost_budgets' PRIMARY KEY(id, tenant_id) mid-write and throw.
+  // First occurrence wins, same as migrateCostBudgetsFromFile()'s
+  // INSERT OR IGNORE.
+  it('import de-dupes a repeated id in the source instead of throwing, first entry wins', async () => {
+    const { listCostBudgets } = await import('../db/cost-budgets.js')
+    const fleetJson = JSON.stringify(baseFleetWith({
+      costBudgets: [
+        { id: 'dup', amount: 111 },
+        { id: 'dup', amount: 222 },
+        { id: 'unique', amount: 50 },
+      ],
+    }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listCostBudgets('default')
+    expect(rows).toHaveLength(2)
+    expect(rows.find((r) => r.id === 'dup')?.amount).toBe(111)
+    expect(applied.warnings?.some((w: string) => w.includes('costBudgets') && w.includes('duplikált id'))).toBe(true)
+  })
 })
 
 function baseFleetWith(dashboardSettingsOverrides: Record<string, unknown>) {
