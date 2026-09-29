@@ -8,6 +8,7 @@
 // src/db.ts re-exports everything from here, so the 153 existing importers
 // of '../../db.js' (or similar relative paths) keep working unchanged.
 export * from './connection.js'
+export * from './agent-settings.js'
 export * from './agents.js'
 export * from './audit.js'
 export * from './autonomy.js'
@@ -32,6 +33,8 @@ import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBL
 import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
 import { migrateConfigOverridesToSystemConfig, getSystemConfig, setSystemConfig } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
+import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
+import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
 export function initDatabase(dbPathOverride?: string): void {
@@ -88,6 +91,15 @@ export function initDatabase(dbPathOverride?: string): void {
   // tick-ms guard below), so calling this on every boot is harmless once the
   // JSON side-cars are gone.
   migrateScheduleStateFromFiles()
+
+  // Migration 0058 (#985 group 3/8): one-time import of
+  // store/context-guard.json, store/auto-restart.json and the config half of
+  // store/context-restart-gate.json into agent_settings. Same every-boot-
+  // but-effectively-once shape as the migrators above (INSERT OR IGNORE per
+  // row in importAgentSettingsFromFile, so a value already in the DB --
+  // hand-edited or imported on a prior boot -- is never clobbered by a stale
+  // file re-read).
+  migrateAgentSettingsFromFiles()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
@@ -109,6 +121,47 @@ export function retireScheduleStateFiles(): void {
       logger.info({ path: p }, 'schedule state file retired (renamed to .deprecated) -- schedules/system_config DB is now the only read source')
     } catch (err) {
       logger.warn({ err, path: p }, 'schedule state migration: failed to rename file to .deprecated')
+    }
+  }
+}
+
+// Migration 0058 (#985 group 3/8) file retirement, mirroring
+// retireScheduleStateFiles() above -- rename to .deprecated, deliberately
+// NOT called from initDatabase() for the same shared-worktree-store/-dir
+// test-race reason. Called once from src/index.ts's real process boot,
+// right after migrateAgentSettingsFromFiles() (via initDatabase()) has
+// guaranteed every value all three files held is already imported.
+export function retireAgentSettingsFiles(): void {
+  for (const name of ['context-guard.json', 'auto-restart.json', 'context-restart-gate.json']) {
+    const p = join(STORE_DIR, name)
+    if (!existsSync(p)) continue
+    try {
+      renameSync(p, `${p}.deprecated`)
+      logger.info({ path: p }, 'agent settings file retired (renamed to .deprecated) -- agent_settings DB is now the only read source')
+    } catch (err) {
+      logger.warn({ err, path: p }, 'agent settings migration: failed to rename file to .deprecated')
+    }
+  }
+}
+
+function migrateAgentSettingsFromFiles(): void {
+  const files: Array<{ file: string; key: AgentSettingKey }> = [
+    { file: 'context-guard.json', key: 'context_guard' },
+    { file: 'auto-restart.json', key: 'auto_restart' },
+    // Config half only -- context-restart-gate-state.json (run-state) is
+    // group 4/8, stays a JSON side-car for now.
+    { file: 'context-restart-gate.json', key: 'context_restart_gate' },
+  ]
+  for (const { file, key } of files) {
+    const p = join(STORE_DIR, file)
+    if (!existsSync(p)) continue
+    try {
+      const raw = JSON.parse(readFileSync(p, 'utf-8'))
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        importAgentSettingsFromFile(key, raw as Record<string, unknown>, resolveAgentOwningTenantId)
+      }
+    } catch (err) {
+      logger.warn({ err, file }, 'agent settings migration: failed to parse file, skipping')
     }
   }
 }

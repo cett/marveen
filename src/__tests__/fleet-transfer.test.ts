@@ -66,6 +66,8 @@ vi.mock('../db.js', () => ({
   upsertModelProfileMapEntry: vi.fn(),
   listEgressAllowlistRows: vi.fn().mockReturnValue([]),
   mergeEgressAllowlistEntries: vi.fn(),
+  listAgentSettingsByKey: vi.fn().mockReturnValue({}),
+  setAgentSetting: vi.fn(),
 }))
 
 vi.mock('../web/agent-config.js', () => ({

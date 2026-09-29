@@ -6,7 +6,7 @@ import { writeAgentAuditLog } from './audit.js'
 import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
 import { KanbanCard } from './kanban.js'
-import { Tenant } from './observability.js'
+import { Tenant, getTenantForMainAgent } from './observability.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 
 export interface HeartbeatKanbanSummary {
@@ -754,6 +754,33 @@ export function getTenantsForAgent(agentId: string): string[] {
     .prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1')
     .all(agentId) as { tenant_id: string }[]
   return rows.map(r => r.tenant_id)
+}
+
+/** Resolves the single tenant that "owns" an agent for RBAC purposes
+ *  (agent_settings, group 3/#985): the tenant this agent coordinates
+ *  (getTenantForMainAgent) if any, else the first tenant it is enabled for
+ *  (getTenantsForAgent), else 'default' for a fleet-internal agent with no
+ *  tenant association at all. Used by the agent_settings one-time file
+ *  importer (db/index.ts) to stamp a tenant_id on rows carried over from the
+ *  pre-tenant JSON side-cars -- same source of truth as agentBelongsToTenant
+ *  below, so an imported row's tenant_id always matches what the write-check
+ *  itself would compute for that agent. */
+export function resolveAgentOwningTenantId(agentId: string): string {
+  const primary = getTenantForMainAgent(agentId)
+  if (primary) return primary.id
+  return getTenantsForAgent(agentId)[0] ?? 'default'
+}
+
+/** Whether `tenantId` may manage (read/write) agentId's per-agent settings
+ *  (agent_settings, group 3/#985) -- true if it is the agent's coordinated
+ *  tenant OR one of the tenants the agent is enabled for. Unlike
+ *  resolveAgentOwningTenantId (single tenant, used to stamp a new row), an
+ *  agent can be enabled for more than one tenant, and any of them may
+ *  manage it -- admin bypasses this check entirely (see agents-process.ts). */
+export function agentBelongsToTenant(agentId: string, tenantId: string): boolean {
+  const primary = getTenantForMainAgent(agentId)
+  if (primary?.id === tenantId) return true
+  return getTenantsForAgent(agentId).includes(tenantId)
 }
 
 // Schedules (SQL-backed, replaces file-based scheduled-tasks-io)

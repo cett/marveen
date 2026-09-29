@@ -22,7 +22,7 @@ import { AGENTS_BASE_DIR, listAgentNames, invalidateModelProfileMapCache } from 
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
-import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow } from '../db.js'
+import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow, listAgentSettingsByKey, setAgentSetting } from '../db.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -146,6 +146,9 @@ export interface DashboardSettingsExport {
   autonomy: AutonomyCategoryRow[]
   // DB-backed (model_profile_map), same rationale as autonomy above.
   modelProfileMap: ModelProfileMapRow[]
+  // DB-backed (agent_settings, setting_key='auto_restart', migration 0058,
+  // #985 group 3/8), not the retired store/auto-restart.json -- exported as
+  // { [agentId]: config }, same shape the old file held.
   autoRestart: Record<string, unknown>
   agentsDesired: Record<string, unknown>
   norbertPersonal: Record<string, unknown>
@@ -656,7 +659,7 @@ function exportDashboardSettings(): DashboardSettingsExport {
   return {
     autonomy: listAutonomyCategories(),
     modelProfileMap: listModelProfileMap(),
-    autoRestart: read('auto-restart.json'),
+    autoRestart: listAgentSettingsByKey('auto_restart'),
     agentsDesired: read('agents-desired.json'),
     norbertPersonal: read('norbert-personal.json'),
     modelFallback: read('model-fallback.json'),
@@ -1247,8 +1250,11 @@ export function importFleet(
       for (const row of s.modelProfileMap) upsertModelProfileMapEntry(row)
       invalidateModelProfileMapCache()
     }
-    if (s.autoRestart && Object.keys(s.autoRestart).length)
-      trackedWrite(join(STORE_DIR, 'auto-restart.json'), JSON.stringify(s.autoRestart, null, 2), tracker)
+    // DB-backed (agent_settings) -- upsert per agent, same
+    // rationale as autonomy/modelProfileMap above, not a file write.
+    if (s.autoRestart) {
+      for (const [agentId, cfg] of Object.entries(s.autoRestart)) setAgentSetting(agentId, 'auto_restart', cfg)
+    }
     if (s.agentsDesired && Object.keys(s.agentsDesired).length)
       trackedWrite(join(STORE_DIR, 'agents-desired.json'), JSON.stringify(s.agentsDesired, null, 2), tracker)
     if (s.norbertPersonal && Object.keys(s.norbertPersonal).length)
