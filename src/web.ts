@@ -518,6 +518,7 @@ export function startWebServer(port = 3420): http.Server {
 
   // Collect token usage from JSONL transcripts every 5 minutes so the
   // run-history token estimates (and anything gating on them, e.g. the
+  // context-watchdog hook -- formerly also the now-retired
   // context-compact-monitor heartbeat) stay fresh. Previously 1h -- that
   // staleness window let a stale high reading survive a restart and drive a
   // false-positive compact trigger (context watchdog, phase 1).

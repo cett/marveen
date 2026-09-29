@@ -2,13 +2,19 @@ import type { HookAuditLogEntry } from './db.js'
 
 // Validation-counter gate for context watchdog phase 4 (retiring
 // context-compact-monitor.sh): Jonas asked for 10 successful watchdog
-// cycles observed before that decision is even on the table. A cycle
-// starts when scripts/hooks/context-watchdog.py fires a HANDOFF (logged as
-// a hook_audit_log row: hook_type='PostToolUse', verdict='handoff', reason
-// carrying 'ctx=NN%;interlock=yes|no') and is judged against
-// context-compact-monitor.sh's own audit rows (hook_type='PreCompact',
-// verdict='allow', written only when it actually sends a real /compact --
-// see record_compact_audit() there).
+// cycles observed before that decision was even on the table. Phase 4 has
+// since happened -- context-compact-monitor.sh is retired -- so this module
+// is now validating a decision already made; whether to keep it as a
+// historical/readiness record or retire it too is an open question, not
+// yet settled by that retirement. A cycle starts when
+// scripts/hooks/context-watchdog.py fires a HANDOFF (logged as a
+// hook_audit_log row: hook_type='PostToolUse', verdict='handoff', reason
+// carrying 'ctx=NN%;interlock=yes|no') and is judged against the
+// now-retired context-compact-monitor.sh's own audit rows (hook_type=
+// 'PreCompact', verdict='allow', written only when it actually sent a real
+// /compact -- see record_compact_audit() there, while it still existed;
+// with the heartbeat gone, no new PreCompact/allow rows will land, so every
+// future cycle trivially resolves to 'success' rather than 'double_compact').
 //
 // A cycle is:
 //   - 'interlock_failed' if the watchdog's own state-file stamp didn't
@@ -22,7 +28,7 @@ import type { HookAuditLogEntry } from './db.js'
 //   - 'success' otherwise: interlock landed, and no compact fired inside
 //     the window it was supposed to suppress.
 
-export const DEFAULT_COOLDOWN_SECS = 45 * 60 // matches context-compact-monitor.sh's COOLDOWN_S
+export const DEFAULT_COOLDOWN_SECS = 45 * 60 // matched the now-retired context-compact-monitor.sh's COOLDOWN_S
 export const DEFAULT_VALIDATION_TARGET = 10
 
 export type WatchdogCycleStatus = 'success' | 'double_compact' | 'interlock_failed' | 'pending'
