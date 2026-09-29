@@ -9,9 +9,9 @@
 // must return the FULL cross-tenant union, because the hook enforces one
 // fleet-wide WebFetch policy (the same hook script is wired identically onto
 // every agent's settings.json by ensureEgressGate, not one per tenant). The
-// tenant_id column exists for dashboard-side visibility/ownership only (D1,
-// workspace-doc b7c3d4e5f6a048b9c2d1e3f4a5b6c7d8) -- it does not partition
-// what the hook itself enforces.
+// tenant_id column exists for dashboard-side visibility/ownership only
+// (decision D1, #985 plan doc) -- it does not partition what the hook
+// itself enforces.
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import {

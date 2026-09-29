@@ -8,7 +8,7 @@
 -- fresh per tool call) so it cannot import this table directly -- it calls
 -- GET /api/v1/egress-allowlist over HTTP, disk-cached ~30s, with a fall back to
 -- reading the JSON file directly if the dashboard is unreachable (decision D1=A,
--- workspace-doc b7c3d4e5f6a048b9c2d1e3f4a5b6c7d8). The file itself is left in place
+-- #985 plan doc). The file itself is left in place
 -- (store/ is gitignored) purely as that fallback -- it is no longer read or
 -- written by the backend as the primary source.
 --

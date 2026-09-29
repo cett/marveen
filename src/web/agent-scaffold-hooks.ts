@@ -698,8 +698,8 @@ export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
 // unchanged -- it stays the degraded-mode fallback below, keeps its own
 // (heavily pinned, #797-derived) test coverage meaningful, and remains the
 // read path the WebFetch egress-gate hook uses when it cannot reach this
-// process's DB (the hook runs outside this process; see D1, workspace-doc
-// b7c3d4e5f6a048b9c2d1e3f4a5b6c7d8).
+// process's DB (the hook runs outside this process; see decision D1, #985
+// plan doc).
 export function ownerAllowedDomainsFromDb(storeDir = STORE_DIR): string[] {
   try {
     return listEgressAllowlistValues('domain')
