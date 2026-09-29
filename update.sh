@@ -776,13 +776,6 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ] || [ "$SCHED_FORCED" -gt 0 ]; then
       echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} új, ${SCHED_FORCED} frissítve, ${SCHED_SKIP} kihagyva"
     fi
-    # Init state files for new seeded tasks
-    if [ "$SCHED_NEW" -gt 0 ]; then
-      STATE_FILE="$INSTALL_DIR/store/kanban-audit-state.json"
-      if [ ! -f "$STATE_FILE" ]; then
-        echo '{"last_audit_at":null}' > "$STATE_FILE"
-      fi
-    fi
 
     # Seed bumblebee threat-intel catalogs into ~/.claude/tools/
     BB_SEED_TI="$SEED_SCHED_DIR/bumblebee-hygiene-scan/threat-intel"

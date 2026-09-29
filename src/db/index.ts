@@ -28,14 +28,14 @@ export * from './vector.js'
 
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import { STORE_DIR } from '../config.js'
+import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
 import { migrateConfigOverridesToSystemConfig, getSystemConfig, setSystemConfig } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
-import { importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
+import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -108,6 +108,13 @@ export function initDatabase(dbPathOverride?: string): void {
   // store/context-restart-gate-state.json -- into agent_state. Same
   // every-boot-but-effectively-once shape as the migrators above.
   migrateAgentStateFromFiles()
+
+  // #985 group 4/8, part 2 (item 2A): one-time import of
+  // store/kanban-audit-state.json into agent_state (same table as part 1,
+  // no new migration number needed -- just a new state_key). Same
+  // every-boot-but-effectively-once shape, via migrateKanbanAuditStateFromFile's
+  // own "only if absent" guard.
+  migrateKanbanAuditStateFromFile()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
@@ -206,6 +213,44 @@ function migrateAgentStateFromFiles(): void {
     } catch (err) {
       logger.warn({ err, file }, 'agent state migration: failed to parse file, skipping')
     }
+  }
+}
+
+// #985 group 4/8, part 2 (item 2A) file retirement, mirroring
+// retireAgentStateFiles() above. Deliberately NOT called from initDatabase()
+// for the same shared-worktree-store/-dir test-race reason. Called once from
+// src/index.ts's real process boot, right after migrateKanbanAuditStateFromFile()
+// (via initDatabase()) has guaranteed the file's value is already imported.
+export function retireKanbanAuditStateFile(): void {
+  const p = join(STORE_DIR, 'kanban-audit-state.json')
+  if (!existsSync(p)) return
+  try {
+    renameSync(p, `${p}.deprecated`)
+    logger.info({ path: p }, 'kanban-audit state file retired (renamed to .deprecated) -- agent_state DB is now the only read source')
+  } catch (err) {
+    logger.warn({ err, path: p }, 'kanban-audit state migration: failed to rename file to .deprecated')
+  }
+}
+
+// #985 group 4/8, part 2 (item 2A): store/kanban-audit-state.json is a flat
+// { last_audit_at } object, not the { [agentId]: state } map shape
+// importAgentStateFromFile expects (that shape fits context-restart-gate's
+// run-state, tracked per agent; kanban-audit is a single scheduled task run
+// by MAIN_AGENT_ID, so it has exactly one owner). Hence a small dedicated
+// importer instead of reusing importAgentStateFromFile, with the same
+// "only if absent" idempotence (checked via getAgentState, since there is no
+// bulk INSERT OR IGNORE helper for a single row).
+function migrateKanbanAuditStateFromFile(): void {
+  const p = join(STORE_DIR, 'kanban-audit-state.json')
+  if (!existsSync(p)) return
+  if (getAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at')) return
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf-8')) as { last_audit_at?: unknown }
+    if (typeof raw?.last_audit_at === 'number' && Number.isFinite(raw.last_audit_at)) {
+      setAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at', raw.last_audit_at)
+    }
+  } catch (err) {
+    logger.warn({ err, file: 'kanban-audit-state.json' }, 'kanban-audit state migration: failed to parse file, skipping')
   }
 }
 

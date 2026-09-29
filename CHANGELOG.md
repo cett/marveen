@@ -9,10 +9,28 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
-<!-- changelog-auto-sha: e7dc6d1dfd44fa5d30ef55fa80300a8fb1c07d60 -->
+<!-- changelog-auto-sha: aa47040cf72900194eef5db97d19332b6eb17403 -->
 
 ### Added
 
+- migrate kanban-audit-state.json to agent_state (group 4/8 item 2A)
+- migrate context-restart-gate run-state to SQLite (group 4/8 part 1)
+- supplement egress-allowlist seed with 7 post-authoring hosts
+- migrate agent-settings config to SQLite (group 3/8)
+- migrate schedule last-run/tick state from JSON to SQLite (group 2/8)
+- migrate egress allowlist from JSON file to SQLite (group 1/8)
+- cost calc and reasoning breakdown for thinking tokens
+- track thinking tokens in summary/dist/stats, fix cache upsert
+- search UI + pager (P2c frontend)
+- server-side pagination for search (P2c backend)
+- per-column "load more" for the flat board (P1c)
+- backend support for per-status paginated loading (P1c)
+- server-side pagination for the workspace docs list
+- server-side pagination for the approvals list
+- server-side pagination for the ideas list
+- server-side pagination for the artifacts list
+- add shared pagination param helper and index migration
+- add send-digest-email.py Gmail REST digest sender
 - **[API]** Server-side offset/limit pagination across all dashboard list views: shared `parsePagination()` helper and `{items,total,offset,limit}` response contract applied to `GET /api/artifacts`, `/api/ideas`, `/api/approvals`, `/api/workspace`, `/api/kanban?status=`, and `/api/import/search`. New migration `0055_pagination_indexes.sql` (kanban status+sort_order, idea_box tenant+created_at, workspace_docs tenant+created_at). Kanban board gains per-column "load more" (20 cards/column). Import Memories page gets its first frontend search UI.
 - **[API]** Model-profile map (`premium_reasoning`/`build_strong`/`analysis_efficient`/`routine_lowcost` -> concrete model id) moved from `store/model-profile-map.json` to a new `model_profile_map` DB table (migration 0054, schema + baked default seed with `INSERT OR IGNORE`). Reads via 90s TTL cache; new `GET`/`PATCH /api/model-profiles` admin route invalidates cache on write. New Settings "Model profiles" tab. The example config file and manual install step are removed; fleet-transfer and fork-guide docs updated.
 - **[API]** Autonomy categories (`GET`/`POST /api/autonomy`) moved from `store/autonomy-config.json` to a new `autonomy_categories` DB table, seeded via baked migration with `INSERT OR IGNORE` per key so operator edits are never overwritten. If the DB is unreachable, `GET /api/autonomy` returns `503`; agents should fall back to level 1. Fleet export/import and agent CLAUDE.md templates updated.
@@ -52,6 +70,21 @@ Extract a version for release: `npm run release-notes -- <version>`
 - Memory graph v2: single-round-trip endpoint, cinematic render, semantic edge layer, timeline mode, dark-glass detail card, memory links table with link-maintenance heartbeat; cross-encoder reranker (Xenova/bge-reranker-base); ANN semantic search via sqlite-vec.
 - **[API]** Artifact store (local artifact DB, Bearer-gated CRUD, FTS5 + vector semantic search, cloud-sync hook, HMAC view-token); OTel distributed trace waterfall for inter-agent messages; branch-drift warning; remote-enroll with dashboard token; optional browser login; Microsoft Graph mail module; MCP capability scope per agent.
 
+### Documentation
+
+- log fast-uri/ip-address npm audit high-sev fix
+- log thinking-token tracking + cache upsert fix
+- editorial trim of [Unreleased] section
+- sync README fork-diff and user guide with the P2c search feature
+- document the pagination-dashboard feature
+
+### Infrastructure
+
+- fix seed-count assertions stale after quarantine supplement
+- scrub internal workspace-doc id from group 1 comments
+- drop internal kanban-id reference from test names
+- bootstrap the auto-sha marker to current HEAD
+
 ### Removed
 
 - **[API]** `tool_call_log` table and its prune endpoint retired; `GET /api/tool-log`/`GET /api/tool-log/analyze` now read from `otel_spans`. `POST /api/tool-log` (writer) keeps its existing shape. **BREAKING** on internal audit-writer contract: calls missing `trace_id` or `agent_id` are dropped (logged as warning) instead of stored with null columns.
@@ -61,6 +94,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- bump fast-uri and ip-address to resolve npm audit high-sev finding
+- revert file-level enabled:false reconciliation
+- honor a file-level enabled:false even after DB seeding
 - **Security:** `fast-uri` (transitive via `ajv` <- `@modelcontextprotocol/sdk` <- `@anthropic-ai/claude-agent-sdk`) bumped 3.1.6 -> 3.1.8, resolving a high-severity authority-injection / host-confusion advisory (GHSA-qw65-cvwx-89v3, GHSA-58mr-gqgx-xq4g). `ip-address` bumped 10.5.0 -> 10.7.2 in the same pass (moderate SSRF advisory, same transitive chain via `express-rate-limit`). Both are non-breaking in-range lockfile bumps; neither is a direct dependency.
 - **Reverted:** `listScheduledTasks()`'s file-level `enabled: false` reconciliation (previous entry below) is reverted. Every task's on-disk `task-config.json` in this fleet carries a vestigial `enabled: false` default that was never the operative signal (the `schedules` DB row was the actual source of truth), so the reconciliation read that stale `false` on every task and force-disabled all of them in the DB on first read after deploy -- the scheduler stopped firing entirely. `listScheduledTasks()` goes back to reading the DB row exclusively once a task is seeded there; the file is informational only in that mode. `enabled: false` from a hand-edited file is no longer honored in DB-seeded mode.
 - **[API]** `generate-error-schema.mjs` idempotency: Error-enum replacement in `docs/openapi.yaml` no longer appends an extra blank line on each run.
@@ -90,6 +126,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- reasoning/cache-write labels for hu.js and en.js
 - **[API]** Error response shapes normalized to snake_case tokens across all routes (B1-B15 normalization passes); disabled schedule run returns 409; `GET /api/messages` unknown-param normalized.
 - Fleet blackboard stale-sweeper now also ages out `assigned` rows (delegated but never picked up), transitioning them to `stale` via a flat threshold.
 - Dashboard modularization: agent-scaffold split into hooks + templates; `agents.js` split into 5 files; `connectors.js` split into connectors/vault; Canvas graph engine extracted to `memory-graph.js`; `agent-process.ts` split into spawn/session/config/identity; `db.ts` split by domain.

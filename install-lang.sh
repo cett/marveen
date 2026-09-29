@@ -180,8 +180,6 @@ _t() {
     # ── Skills / tasks ────────────────────────────────────────────────
     en:macos.skill_factory_installed) echo "  skill-factory installed" ;;
     hu:macos.skill_factory_installed) echo "  skill-factory telepítve" ;;
-    en:macos.kanban_state_init) echo "  kanban-audit state initialized" ;;
-    hu:macos.kanban_state_init) echo "  kanban-audit state inicializálva" ;;
     en:macos.bumblebee_installed) echo "  Bumblebee threat-intel catalogs installed" ;;
     hu:macos.bumblebee_installed) echo "  Bumblebee threat-intel katalógusok telepítve" ;;
     # ── Ollama ────────────────────────────────────────────────────────

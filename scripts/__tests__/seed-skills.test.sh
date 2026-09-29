@@ -207,44 +207,6 @@ else
   fail "existing scheduled task config was overwritten"
 fi
 
-# --- Test 5: state-file init ---
-echo ""
-echo "Test 5: kanban-audit state-file initialization"
-STATE_DIR="$TMPDIR_BASE/t5-store"
-mkdir -p "$STATE_DIR"
-STATE_FILE="$STATE_DIR/kanban-audit-state.json"
-
-# Simulate: new task was seeded (SCHED_NEW > 0), state file doesn't exist
-if [ ! -f "$STATE_FILE" ]; then
-  echo '{"last_audit_at":null}' > "$STATE_FILE"
-fi
-
-if [ -f "$STATE_FILE" ]; then
-  pass "state file created"
-else
-  fail "state file not created"
-fi
-
-STATE_CONTENT=$(cat "$STATE_FILE")
-if echo "$STATE_CONTENT" | grep -q '"last_audit_at":null'; then
-  pass "state file has correct initial content"
-else
-  fail "state file content unexpected: $STATE_CONTENT"
-fi
-
-# Second run: state file already exists, should NOT be overwritten
-echo '{"last_audit_at":1700000000}' > "$STATE_FILE"
-# Re-run the guard
-if [ ! -f "$STATE_FILE" ]; then
-  echo '{"last_audit_at":null}' > "$STATE_FILE"
-fi
-STATE_CONTENT2=$(cat "$STATE_FILE")
-if echo "$STATE_CONTENT2" | grep -q '"last_audit_at":1700000000'; then
-  pass "existing state file preserved on second run"
-else
-  fail "existing state file was overwritten"
-fi
-
 # --- Summary ---
 echo ""
 echo "================="

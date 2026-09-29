@@ -8,7 +8,7 @@
 
 import { db } from './connection.js'
 
-export type AgentStateKey = 'gate_run_state'
+export type AgentStateKey = 'gate_run_state' | 'kanban_audit_last_audit_at'
 
 export interface AgentStateRow {
   agent_id: string

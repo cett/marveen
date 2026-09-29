@@ -20,7 +20,7 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
 
 ## Eljárás
 
-1. **State-fájl beolvasás**: `store/kanban-audit-state.json` tartalmazza `last_audit_at` Unix timestampet. Első futáskor null -> ne pingelj senkit, csak állítsd be a state-et.
+1. **State beolvasás**: az `agent_state` táblában, `agent_id='{{MAIN_AGENT_ID}}'` és `state_key='kanban_audit_last_audit_at'` sorban van a `last_audit_at` Unix timestamp (lásd 3. lépés, ugyanoda kell a lekérdezés). Ha nincs sor (első futás) -> ne pingelj senkit, csak állítsd be a state-et.
 
 2. **Tisztítás**: 7+ napos done kártyák archiválása:
    ```bash
@@ -29,8 +29,9 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
 
 3. **Beakadt task detection** (előző audit óta nem mozdult): in_progress kártyák amik `updated_at < last_audit_at`:
    ```bash
-   LAST=$(jq -r .last_audit_at store/kanban-audit-state.json 2>/dev/null || echo 0)
-   sqlite3 store/claudeclaw.db "SELECT id, title, assignee, ROUND((strftime('%s','now')-updated_at)/3600.0,1) as hours_stale FROM kanban_cards WHERE status='in_progress' AND archived_at IS NULL AND updated_at < $LAST ORDER BY hours_stale DESC"
+   LAST=$(sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT state_value FROM agent_state WHERE agent_id='{{MAIN_AGENT_ID}}' AND state_key='kanban_audit_last_audit_at'" 2>/dev/null)
+   [ -z "$LAST" ] && LAST=0
+   sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, title, assignee, ROUND((strftime('%s','now')-updated_at)/3600.0,1) as hours_stale FROM kanban_cards WHERE status='in_progress' AND archived_at IS NULL AND updated_at < $LAST ORDER BY hours_stale DESC"
    ```
 
 4. **Beakadt task -> ping**: minden beakadt kártyához küldj inter-agent message-t az assignee-nek (kivéve {{MAIN_AGENT_ID}}-nek és üres assignee-nek):
@@ -38,7 +39,10 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
    "Kanban-audit: a {card_id} ({title}) {hours_stale}h-ja in_progress mozgás nélkül (előző audit óta). Frissítsd a státuszt (done/waiting) vagy adj komment-et hogy mit blokkol."
    ```
 
-5. **State-fájl frissítés** (a futás VÉGÉN): `store/kanban-audit-state.json` -> `{"last_audit_at": <current Unix timestamp>}`.
+5. **State frissítés** (a futás VÉGÉN), upsert az `agent_state` táblába:
+   ```bash
+   sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id, updated_at) VALUES ('{{MAIN_AGENT_ID}}', 'kanban_audit_last_audit_at', '$(date +%s)', 'default', unixepoch()) ON CONFLICT(agent_id, state_key) DO UPDATE SET state_value=excluded.state_value, updated_at=excluded.updated_at"
+   ```
 
 6. **Delegálatlan kártyák**: in_progress/waiting/planned amiknek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.
 
@@ -51,10 +55,10 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
 - Az "előző audit óta nem mozdult" feltétel azt jelenti: `updated_at < last_audit_at`. NE használj abszolút 24h-os küszöböt.
 - Ne archiválj done-t ha <7 nap (a felhasználó még látni akarja).
 - NE pingelj saját magadat (skip ha assignee='{{MAIN_AGENT_ID}}').
-- Ne re-pingelj 4 órán belül ugyanazt: a state-fájlban tárolt `last_audit_at` automatikusan kezeli ezt.
-- Első futáskor (state-fájl üres) -> ne pingelj, csak inicializáld a state-et.
+- Ne re-pingelj 4 órán belül ugyanazt: az `agent_state`-ben tárolt `last_audit_at` automatikusan kezeli ezt.
+- Első futáskor (nincs sor az `agent_state`-ben) -> ne pingelj, csak inicializáld a state-et.
 - A státuszváltozás (in_progress -> done) is updated_at frissítést jelent, így a következő audit nem fogja megfogni a most-még-aktív taskokat.
 
 ## Ellenőrzés
-- A state-fájl frissült a futás végén.
+- Az `agent_state` sora (`agent_id='{{MAIN_AGENT_ID}}'`, `state_key='kanban_audit_last_audit_at'`) frissült a futás végén.
 - Inter-agent message-ek sikeresek (200 response).

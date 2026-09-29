@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles } from './db.js'
+import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile } from './db.js'
 import { backfillWorkspaceDocs } from './workspace-store.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -504,6 +504,10 @@ async function main(): Promise<void> {
   // Same reasoning as retireAgentSettingsFiles() above, for migration 0060
   // (#985 group 4/8, part 1).
   retireAgentStateFiles()
+
+  // Same reasoning as retireAgentStateFiles() above, for #985 group 4/8,
+  // part 2 (item 2A: kanban-audit-state.json).
+  retireKanbanAuditStateFile()
 
   if (IS_ISOLATED_MODE) {
     // Isolated mode: serve the web dashboard only, no background tasks or agent management.

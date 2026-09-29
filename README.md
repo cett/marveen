@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `c797e680` vs fork `3bccce14`, 2026-09-27
+> Állapot: upstream `4a12c410` vs fork `a49ccaec`, 2026-09-29
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -105,10 +105,12 @@ A DB migration runner checksum-ellenőrzéssel és per-migrációs tranzakciókk
 
 A konfigurációs réteg fájl-alapú `config-overrides.json` shim-je kivezetésre kerül: az összes rendszer-szintű beállítás mostantól kizárólag SQL-alapú `system_config` táblából olvasódik egy egységes `cfg(key)` DB-olvasó függvényen keresztül. Az új telepítő (`install-kori tenant-seed`) az induláskor elvégzi az alapértelmezett tenant-konfiguráció és a szükséges seed-sorok idempotens beírását a `system_config` táblába, így a config-overrides.json hiánya többé nem okoz inkonzisztens állapotot. A beállítások írása szintén DB-only útra váltott: a Settings admin-UI titkos értékeket maszkolt formában (`•••`) jeleníti meg és naplózza az `agent_audit_log`-ba, a nyers értéket a tárolt érték nem tartalmazza a nézetben -- a tényleges secret a vault-ban él, a konfig-sor csak a vault-referenciát tárolja. Az installer robusztusság-javítás az idempotens migrációs futást, az elvált seed/migrate fázist és a részleges telepítés utáni újraindíthatóságot foglalja magában. Az `install-windows.ps1` Ollama-ellenőrzési logikája egységesítve lett a macOS-telepítővel: a fix `sleep 3` várakozás helyett folyamatos wait-probe (egysoros `for` ciklus, CRLF-biztos) várja az Ollama HTTP-endpoint elérhetőségét, így a Windows-telepítő sem lép tovább, amíg az embedding-szolgáltatás valóban nem válaszol. Az autonómia-konfig (`store/autonomy-config.json`) szintén DB-backed: az `autonomy_categories` tábla (0052-es migráció) per-kategória `key`, `level`, `locked`, `max_level`, `timeout_minutes` és audit-mezőket tárol; az `/api/v1/autonomy` végpont kizárólag DB-ből olvas és ír; az `approvals` `getTimeoutAt()` szintén DB-ből veszi a kategória timeout értéket; az ágensek a `cat store/autonomy-config.json` helyett `GET /api/autonomy`-t hívnak, a `store-watcher.ts` az autonómia-konfig-fájl figyeléséből kivezetésre kerül.
 
+Az ágens-szintű futásidejű állapotokat egy közös `agent_state` tábla (0060-as migráció, `agent_id`+`state_key` -> `state_value` JSON) fogja össze: első fogyasztója a context-restart-gate futás-állapota (`store/context-restart-gate-state.json`), majd a 4 óránkénti kanban-audit heartbeat `store/kanban-audit-state.json` (`last_audit_at`) is ide költözött. Ez utóbbi nem backend-route-on, hanem közvetlenül a `seed-scheduled-tasks/kanban-audit/SKILL.md` által futtatott bash/`sqlite3` hívásokon keresztül olvasódik és íródik -- a korábbi `jq`-alapú fájl-műveletek helyén. Mindkét eset egyszeri, induláskor lefutó fájl-importot és utólagos `.deprecated` átnevezést kap (`db/index.ts`), a state-fájlok idempotens telepítéskori seedelése (`install-macos.sh`, `install-linux.sh`, `update.sh`) pedig kikerült, mert az `agent_state` tábla hiánya esetén magától "első futás"-ként viselkedik.
+
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `c797e680` vs fork `3bccce14`, 2026-09-27
+Állapot: upstream `4a12c410` vs fork `a49ccaec`, 2026-09-29
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (fejlesztő -> koordinátor) frissítsd ezt a szakaszt
      a friss git log alapján:
