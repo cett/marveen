@@ -1632,6 +1632,11 @@ async function renderModelFallbackPanel(bodyEl) {
   }
 
   const chain = [...cfg.chain]
+  // Snapshot of what was actually loaded, to diff the save payload against --
+  // see the PUT handler below for why only genuinely CHANGED fields must be
+  // sent (a fresh install's chain is a code-computed default, never an
+  // explicit operator choice, until the operator actually edits it here).
+  const loaded = { enabled: cfg.enabled, chain: [...cfg.chain], revertAfterMinutes: cfg.revertAfterMinutes }
 
   bodyEl.innerHTML = `
     <div class="settings-group-title">${t('settings.module.model-fallback')}</div>
@@ -1715,12 +1720,23 @@ async function renderModelFallbackPanel(bodyEl) {
       showToast(t('settings.model_fallback.toast.chain_too_short'))
       return
     }
+    // Only send fields that actually changed from what was loaded (mirrors
+    // the server's own partial-write handling): a fresh install's chain is a
+    // code-computed default until the operator explicitly edits it, and
+    // sending it back unchanged would make the server persist it as if it
+    // had been an explicit choice -- pinning today's default model forever,
+    // even if the code-level default later changes for new installs.
+    const dirty = {}
+    if (enabled !== loaded.enabled) dirty.enabled = enabled
+    if (JSON.stringify(cleanedChain) !== JSON.stringify(loaded.chain)) dirty.chain = cleanedChain
+    if (revertAfterMinutes !== loaded.revertAfterMinutes) dirty.revertAfterMinutes = revertAfterMinutes
+
     statusEl.textContent = t('settings.model_fallback.saving')
     try {
       const res = await fetch('/api/model-fallback', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled, chain: cleanedChain, revertAfterMinutes }),
+        body: JSON.stringify(dirty),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
