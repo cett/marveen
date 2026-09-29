@@ -90,4 +90,43 @@ describe('writeModelFallbackConfig', () => {
     expect(cfg.enabled).toBe(true)
     expect(cfg.revertAfterMinutes).toBe(90)
   })
+
+  it('an enabled-only write does NOT bake the computed install chain into system_config -- the chain row stays absent', () => {
+    // Fresh DB: readModelFallbackConfig() would compute defaultChainForInstall()
+    // for `current` since nothing is stored yet. That computed value must
+    // never be persisted just because it happened to be merged in-memory.
+    store.writeModelFallbackConfig({ enabled: true })
+    const row = dbMod.getSystemConfig('model_fallback_chain')
+    expect(row).toBeUndefined()
+    // readModelFallbackConfig() still returns a usable chain (computed on
+    // the fly each time) -- the API contract for GET/the PUT response is
+    // unaffected, only the underlying system_config row is.
+    expect(store.readModelFallbackConfig().chain).toEqual(store.defaultChainForInstall())
+  })
+
+  it('an enabled-only write does not touch a PREVIOUSLY explicit chain either', () => {
+    const custom = ['modelA', 'modelB']
+    store.writeModelFallbackConfig({ chain: custom })
+    store.writeModelFallbackConfig({ enabled: true })
+    expect(store.readModelFallbackConfig().chain).toEqual(custom)
+  })
+
+  it('a revertAfterMinutes-only write does not create the enabled or chain rows', () => {
+    store.writeModelFallbackConfig({ revertAfterMinutes: 30 })
+    expect(dbMod.getSystemConfig('model_fallback_enabled')).toBeUndefined()
+    expect(dbMod.getSystemConfig('model_fallback_chain')).toBeUndefined()
+  })
+
+  it('a full write (all three fields) still persists all three -- the UI, which always sends the full object, keeps working exactly as before', () => {
+    store.writeModelFallbackConfig({ enabled: true, chain: [...DEFAULT_MODEL_CHAIN], revertAfterMinutes: 60 })
+    expect(dbMod.getSystemConfig('model_fallback_enabled')?.value).toBe('1')
+    expect(dbMod.getSystemConfig('model_fallback_chain')).toBeDefined()
+    expect(dbMod.getSystemConfig('model_fallback_revert_after_minutes')?.value).toBe('60')
+  })
+
+  it('the returned (in-memory) config is still fully merged even when the chain write was skipped', () => {
+    const saved = store.writeModelFallbackConfig({ enabled: true })
+    expect(saved.chain).toEqual(store.defaultChainForInstall())
+    expect(saved.enabled).toBe(true)
+  })
 })

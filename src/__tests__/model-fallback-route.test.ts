@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
 
-import { initDatabase } from '../db.js'
+import { initDatabase, getSystemConfig } from '../db.js'
 import { tryHandleModelFallback } from '../web/routes/model-fallback.js'
 import { defaultChainForInstall } from '../web/model-fallback-store.js'
 
@@ -124,5 +124,14 @@ describe('PUT /api/model-fallback', () => {
     const second = makeCtx({ method: 'PUT', path: '/api/model-fallback', role: 'admin', body: { revertAfterMinutes: 90 } })
     await tryHandleModelFallback(second.ctx)
     expect(second.body()).toEqual({ enabled: true, chain: ['x', 'y'], revertAfterMinutes: 90 })
+  })
+
+  it('an enabled-only PUT on a fresh install does not bake the computed default chain into system_config', async () => {
+    const { ctx, status, body } = makeCtx({ method: 'PUT', path: '/api/model-fallback', role: 'admin', body: { enabled: true } })
+    await tryHandleModelFallback(ctx)
+    expect(status()).toBe(200)
+    expect(body()).toEqual({ enabled: true, chain: defaultChainForInstall(), revertAfterMinutes: 330 })
+    expect(getSystemConfig('model_fallback_chain')).toBeUndefined()
+    expect(getSystemConfig('model_fallback_revert_after_minutes')).toBeUndefined()
   })
 })
