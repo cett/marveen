@@ -692,12 +692,18 @@ fi
 MAIN_AGENT_ID=""
 BOT_NAME=""
 OWNER_NAME=""
-WEB_PORT=""
+# Respect an already-exported WEB_PORT (same fallback pattern run_seed_refresh()
+# above already uses) instead of blanking it here and unconditionally
+# re-reading .env -- a caller (or --port/env-var invocation) may have set it
+# intentionally. Quotes stripped (tr -d '"'): a quoted WEB_PORT="4567" in .env
+# would otherwise leave the literal quotes in the substituted value, breaking
+# the rendered localhost:"4567" URL.
+WEB_PORT="${WEB_PORT:-}"
 if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID=$(grep '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   BOT_NAME=$(grep '^BOT_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   OWNER_NAME=$(grep '^OWNER_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
-  WEB_PORT=$(grep '^WEB_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+  WEB_PORT="${WEB_PORT:-$(grep '^WEB_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2- | tr -d '"')}"
 fi
 SKILLS_DIR="$HOME/.claude/skills"
 SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
