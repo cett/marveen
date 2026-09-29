@@ -17,7 +17,7 @@ import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask,
 } from '../scheduled-tasks-io.js'
-import { runScheduledTaskNow } from '../schedule-runner.js'
+import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
 
 // Review-gate: every fleet agent authenticates with
@@ -73,6 +73,19 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  // Scheduler liveness for the dashboard's heartbeat indicator (schedule-state-ui):
+  // whether the schedule-runner's tick loop has stamped schedule_last_tick_ms
+  // recently. Admin-only -- it is an operator/ops signal, not tenant data,
+  // same rationale as model-fallback.ts and costops-budgets.ts.
+  if (path === '/api/schedules/tick-status' && method === 'GET') {
+    if (ctx.role !== 'admin') {
+      json(res, { error: 'forbidden', hint: 'Scheduler tick status is admin-only' }, 403)
+      return true
+    }
+    json(res, computeTickStatus(loadLastTickMs(), Date.now()))
+    return true
+  }
 
   if (path === '/api/schedules/agents' && method === 'GET') {
     const agentNames = listAgentNames()
