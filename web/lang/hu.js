@@ -592,6 +592,8 @@ window._i18n.hu = {
   'tasks.btn.delete':            'Törlés',
   'tasks.btn.activate':          'Aktiválás',
   'tasks.toast.activated':       'Feladat aktiválva',
+  'tasks.last_run':              'Utoljára futott: {time}',
+  'tasks.last_run_never':        'Még nem futott',
   'tasks.toast.activate_error':  'Hiba az aktiválás során',
   'tasks.retries.title':         'Függőben lévő ütemezett feladatok ({n})',
   'tasks.retries.hint':          'Busy cél-session, a rendszer tovább próbálkozik. Nyilvánvaló hibánál visszavonhatod.',

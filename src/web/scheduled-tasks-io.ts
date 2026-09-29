@@ -96,6 +96,12 @@ export interface ScheduledTask {
   // 'live' everywhere this is read (backward compat for pre-migration file
   // tasks and any caller that doesn't set it) -- see isTaskLive() below.
   status?: 'draft' | 'pending_review' | 'live'
+  // Runner-managed bookkeeping (migration 0057, #985 group 2/8) -- set via
+  // updateScheduleLastRun(), never by a caller creating/editing a schedule.
+  // Undefined for a file-based task (the legacy fallback branch never had
+  // this data) or a schedule that has not fired yet.
+  lastRunAt?: number
+  lastRunResult?: string
 }
 
 // True when the runner is allowed to fire this task. A task with no status
@@ -278,6 +284,8 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
     stuckAfterMinutes: row.stuck_after_minutes ?? undefined,
     requires: parseRequires(row.requires ? (() => { try { return JSON.parse(row.requires!) } catch { return undefined } })() : undefined),
     status: row.status,
+    lastRunAt: row.last_run_at ?? undefined,
+    lastRunResult: row.last_run_result ?? undefined,
   }
 }
 

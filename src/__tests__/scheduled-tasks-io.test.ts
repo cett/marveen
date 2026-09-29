@@ -307,7 +307,8 @@ describe('scheduled-tasks-io', () => {
         skip_if_busy: 0, force_send: 0, target_session: null, command: null,
         timeout_ms: null, fail_threshold: null, pre_check: null,
         catch_up_max_age_minutes: null, stuck_after_minutes: null, requires: null,
-        status: 'draft', created_at: 1700000000, updated_at: 1700000000,
+        status: 'draft', last_run_at: null, last_run_result: null,
+        created_at: 1700000000, updated_at: 1700000000,
       } satisfies ScheduleRow
       const task = rowToTask(row)
       expect(task.status).toBe('draft')

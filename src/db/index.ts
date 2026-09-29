@@ -24,13 +24,14 @@ export * from './tasks.js'
 export * from './vault.js'
 export * from './vector.js'
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
-import { migrateConfigOverridesToSystemConfig } from './system-config.js'
+import { migrateConfigOverridesToSystemConfig, getSystemConfig, setSystemConfig } from './system-config.js'
+import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { logger } from '../logger.js'
 
 export function initDatabase(dbPathOverride?: string): void {
@@ -77,6 +78,73 @@ export function initDatabase(dbPathOverride?: string): void {
   // its own process-local DB connection), so it doesn't have this problem.
   // See src/index.ts's real boot sequence for the rename call.
   migrateConfigOverridesToSystemConfig()
+
+  // Migration 0057 (#985 group 2/8): one-time import of
+  // store/schedule-last-run.json + store/schedule-tick-state.json into the
+  // schedules.last_run_at column and the schedule_last_tick_ms system_config
+  // row this migration added. Same every-boot-but-effectively-once shape as
+  // the config-overrides migrator above (each write is itself idempotent --
+  // see migrateScheduleLastRunFromFile's "only if still NULL" guard and the
+  // tick-ms guard below), so calling this on every boot is harmless once the
+  // JSON side-cars are gone.
+  migrateScheduleStateFromFiles()
+}
+
+// Migration 0057 (#985 group 2/8) file retirement, mirroring
+// retireConfigOverridesFile(): rename to .deprecated (matches store-watcher's
+// SYSTEM_RE so the rename itself never surfaces as an audited "new file").
+// Deliberately NOT called from initDatabase() -- same reason as
+// retireConfigOverridesFile(): initDatabase() also runs from every test
+// file's beforeEach against the same real, shared worktree store/ dir, and a
+// rename there would race other concurrently-running test files. Called once
+// from src/index.ts's real process boot, right after migrateScheduleStateFromFiles()
+// (via initDatabase()) has guaranteed every value either file held is already
+// imported.
+export function retireScheduleStateFiles(): void {
+  for (const name of ['schedule-last-run.json', 'schedule-tick-state.json']) {
+    const p = join(STORE_DIR, name)
+    if (!existsSync(p)) continue
+    try {
+      renameSync(p, `${p}.deprecated`)
+      logger.info({ path: p }, 'schedule state file retired (renamed to .deprecated) -- schedules/system_config DB is now the only read source')
+    } catch (err) {
+      logger.warn({ err, path: p }, 'schedule state migration: failed to rename file to .deprecated')
+    }
+  }
+}
+
+function migrateScheduleStateFromFiles(): void {
+  const lastRunPath = join(STORE_DIR, 'schedule-last-run.json')
+  if (existsSync(lastRunPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(lastRunPath, 'utf-8'))
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        migrateScheduleLastRunFromFile(raw as Record<string, unknown>)
+      }
+    } catch (err) {
+      logger.warn({ err }, 'schedule state migration: failed to parse schedule-last-run.json, skipping')
+    }
+  }
+
+  // schedule_last_tick_ms is seeded to '0' by migration 0057 itself; only
+  // overwrite that placeholder with the file's real value the first time
+  // (source stays 'db' either way -- the runner writes through setSystemConfig
+  // on every subsequent tick, same as before the migration, just DB instead
+  // of file).
+  const tickStatePath = join(STORE_DIR, 'schedule-tick-state.json')
+  if (existsSync(tickStatePath)) {
+    const current = getSystemConfig('schedule_last_tick_ms')
+    if (!current || current.value === '0') {
+      try {
+        const raw = JSON.parse(readFileSync(tickStatePath, 'utf-8')) as { lastTickMs?: unknown }
+        if (typeof raw?.lastTickMs === 'number' && Number.isFinite(raw.lastTickMs)) {
+          setSystemConfig('schedule_last_tick_ms', String(raw.lastTickMs))
+        }
+      } catch (err) {
+        logger.warn({ err }, 'schedule state migration: failed to parse schedule-tick-state.json, skipping')
+      }
+    }
+  }
 }
 
 function isNonEmptyString(v: unknown): v is string {

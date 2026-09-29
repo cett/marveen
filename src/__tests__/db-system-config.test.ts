@@ -68,14 +68,18 @@ describe('system_config read/write helpers', () => {
   it('listSystemConfig returns all rows ordered by key', () => {
     dbMod.setSystemConfig('B_KEY', '2')
     dbMod.setSystemConfig('A_KEY', '1')
-    expect(dbMod.listSystemConfig().map(r => r.key)).toEqual(['A_KEY', 'B_KEY'])
+    // schedule_last_tick_ms is baked into migration 0057's own seed (#985
+    // group 2/8), present in every fresh DB regardless of this test's writes.
+    expect(dbMod.listSystemConfig().map(r => r.key)).toEqual(['A_KEY', 'B_KEY', 'schedule_last_tick_ms'])
   })
 })
 
 describe('migrateConfigOverridesToSystemConfig', () => {
   it('returns 0 and writes nothing when config-overrides.json does not exist', () => {
     expect(dbMod.migrateConfigOverridesToSystemConfig()).toBe(0)
-    expect(dbMod.listSystemConfig()).toHaveLength(0)
+    // Excludes migration 0057's own schedule_last_tick_ms seed (#985 group
+    // 2/8), unrelated to config-overrides.json.
+    expect(dbMod.listSystemConfig().filter(r => r.key !== 'schedule_last_tick_ms')).toHaveLength(0)
   })
 
   it('copies every JSON key into system_config with source=migrated_from_json', () => {
@@ -112,7 +116,7 @@ describe('migrateConfigOverridesToSystemConfig', () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(overridesPath(), '{not valid json')
     expect(dbMod.migrateConfigOverridesToSystemConfig()).toBe(0)
-    expect(dbMod.listSystemConfig()).toHaveLength(0)
+    expect(dbMod.listSystemConfig().filter(r => r.key !== 'schedule_last_tick_ms')).toHaveLength(0)
   })
 
   it('skips a JSON file that is not a plain object', () => {

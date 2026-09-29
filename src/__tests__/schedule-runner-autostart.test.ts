@@ -321,7 +321,7 @@ describe('schedule-runner: resubmit probe+act is a recover-mode critical section
 
 describe('schedule-runner: resubmit dead ends are compensated, never silent', () => {
   it("the 'giveup' exit enqueues a pending retry (the run-log already says 'fired')", () => {
-    // attemptFireTask records 'fired' + stamps scheduleLastRun BEFORE the
+    // attemptFireTask records 'fired' + stamps last_run_at BEFORE the
     // detached resubmit chain runs; a giveup without compensation is a run-log
     // row that says 'fired' for a task that never ran.
     const giveupIdx = SRC.indexOf('still stuck after Enter + re-inject retries -- giving up')
@@ -458,7 +458,7 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     // The cronPc.skip branch must set the lastRun guard and append a skipped run
     const skipBlock = afterCronPc.slice(afterCronPc.indexOf('if (cronPc.skip)'), afterCronPc.indexOf('for (const agentName of targetAgents) {'))
     expect(skipBlock).toMatch(/cronPc\.skip/)
-    expect(skipBlock).toMatch(/scheduleLastRun\.set/)
+    expect(skipBlock).toMatch(/recordScheduleLastRun/)
     // appendTaskRun is inside the targetAgents loop within the skip block
     expect(afterCronPc.slice(
       afterCronPc.indexOf('if (cronPc.skip)'),

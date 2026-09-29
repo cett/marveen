@@ -394,6 +394,8 @@ window._i18n.en = {
   'tasks.btn.delete':            'Delete',
   'tasks.btn.activate':          'Activate',
   'tasks.toast.activated':       'Task activated',
+  'tasks.last_run':              'Last run: {time}',
+  'tasks.last_run_never':        'Never run',
   'tasks.toast.activate_error':  'Failed to activate',
   'tasks.retries.title':         'Pending scheduled tasks ({n})',
   'tasks.retries.hint':          'Busy target session, system keeps retrying. Cancel if there is an obvious error.',

@@ -259,6 +259,8 @@ export interface ScheduleRow {
   stuck_after_minutes: number | null
   requires: string | null   // JSON blob
   status: 'draft' | 'pending_review' | 'live'
+  last_run_at: number | null      // migration 0057
+  last_run_result: string | null  // migration 0057
   created_at: number
   updated_at: number
 }
@@ -398,6 +400,48 @@ export function deleteSchedule(id: string): boolean {
 export function setScheduleEnabled(id: string, enabled: boolean): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare('UPDATE schedules SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now, id).changes > 0
+}
+
+// Migration 0057: replaces the schedule-runner's in-memory scheduleLastRun
+// Map + store/schedule-last-run.json persistence. Deliberately does NOT
+// touch updated_at (that column tracks operator edits to the schedule's own
+// config, not runner-driven fire bookkeeping). A no-op (changes === 0) is
+// expected and harmless when the runner fires a schedule id that has since
+// been deleted from the table -- same as the old file-backed map, which
+// happily kept stamps for ids with no corresponding schedule.
+export function updateScheduleLastRun(id: string, lastRunAt: number, result: string | null = null): boolean {
+  return db.prepare('UPDATE schedules SET last_run_at = ?, last_run_result = ? WHERE id = ?')
+    .run(lastRunAt, result, id).changes > 0
+}
+
+// Conditional clear used by the 'lost injection' rollback path: only clears
+// if last_run_at still equals the stamp this caller itself wrote (nothing
+// newer has fired in the meantime). Atomic in SQL, replacing the old
+// Map.get-then-delete + file-persist pair.
+export function clearScheduleLastRunIfMatches(id: string, expectedLastRunAt: number): boolean {
+  return db.prepare('UPDATE schedules SET last_run_at = NULL, last_run_result = NULL WHERE id = ? AND last_run_at = ?')
+    .run(id, expectedLastRunAt).changes > 0
+}
+
+// One-time import of store/schedule-last-run.json into the last_run_at
+// column this migration added, mirroring migrateConfigOverridesToSystemConfig()'s
+// shape (called from db/index.ts's initDatabase(), same every-boot-but-
+// effectively-once semantics). Only ever writes a schedule's last_run_at
+// when it is still NULL, so an operator action or a later runner tick that
+// already set it is never clobbered by a stale JSON value re-imported after
+// a restart. Entries for a schedule id no longer present in the table are
+// silently skipped (the UPDATE simply matches zero rows) rather than
+// resurrected as new schedule rows -- inventing prompt/schedule/agent values
+// for a soft-deleted schedule would pollute the live admin UI with rows that
+// have no other content.
+export function migrateScheduleLastRunFromFile(entries: Record<string, unknown>): number {
+  let migrated = 0
+  const stmt = db.prepare('UPDATE schedules SET last_run_at = ? WHERE id = ? AND last_run_at IS NULL')
+  for (const [id, ts] of Object.entries(entries)) {
+    if (typeof ts !== 'number' || !Number.isFinite(ts)) continue
+    if (stmt.run(ts, id).changes > 0) migrated++
+  }
+  return migrated
 }
 
 // INSERT OR IGNORE: seed a schedule from file only if it does not already exist
