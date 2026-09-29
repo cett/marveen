@@ -58,9 +58,18 @@ export function readModelFallbackConfig(): ModelFallbackConfig {
 export function writeModelFallbackConfig(cfg: Partial<ModelFallbackConfig>): ModelFallbackConfig {
   const current = readModelFallbackConfig()
   const merged = normalizeModelFallbackConfig({ ...current, ...cfg })
-  setSystemConfig(KEY_ENABLED, merged.enabled ? '1' : '0')
-  setSystemConfig(KEY_CHAIN, JSON.stringify(merged.chain))
-  setSystemConfig(KEY_REVERT_MINUTES, String(merged.revertAfterMinutes))
+  // Only persist the fields the caller actually sent (same reasoning as
+  // writeModelFallbackFieldsRaw() above). `current` may carry a merely
+  // COMPUTED chain (defaultChainForInstall(), substituted by
+  // readModelFallbackConfig() because nothing was stored yet) -- a caller
+  // that only sent `{ enabled: true }` must not have that computed chain
+  // baked into system_config as if the operator had explicitly configured
+  // it: it would then stop tracking DEFAULT_AGENT_MODEL if that ever
+  // changes, and readModelFallbackConfig()'s explicitChainFromRow() would
+  // treat the now-stale baked value as an operator override forever after.
+  if (cfg.enabled !== undefined) setSystemConfig(KEY_ENABLED, merged.enabled ? '1' : '0')
+  if (cfg.chain !== undefined) setSystemConfig(KEY_CHAIN, JSON.stringify(merged.chain))
+  if (cfg.revertAfterMinutes !== undefined) setSystemConfig(KEY_REVERT_MINUTES, String(merged.revertAfterMinutes))
   return merged
 }
 
