@@ -685,14 +685,19 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
 fi
 
 # Seed skills & scheduled tasks (idempotent: skip existing)
-# Source .env for template variables needed by seed-scheduled-tasks
+# Source .env for template variables needed by seed-scheduled-tasks. Read
+# independently here rather than relying on run_seed_refresh() (above) having
+# already populated these as globals -- this block must render templates
+# correctly even if that function's own seeding path was skipped or never ran.
 MAIN_AGENT_ID=""
 BOT_NAME=""
 OWNER_NAME=""
+WEB_PORT=""
 if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID=$(grep '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   BOT_NAME=$(grep '^BOT_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   OWNER_NAME=$(grep '^OWNER_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+  WEB_PORT=$(grep '^WEB_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
 fi
 SKILLS_DIR="$HOME/.claude/skills"
 SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
@@ -769,6 +774,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"
       done
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
