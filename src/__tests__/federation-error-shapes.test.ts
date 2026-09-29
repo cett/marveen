@@ -6,14 +6,14 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { initDatabase } from '../db.js'
 import { tryHandleFederation } from '../web/routes/federation.js'
 import {
   _setFederationStoreDirForTest,
-  reloadFederationForTest,
+  _seedFederationConfigForTest,
   generatePeerInboundToken,
 } from '../web/federation/config.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -23,8 +23,7 @@ const IN_TOKEN = generatePeerInboundToken()
 const OUT_TOKEN = 'e'.repeat(64)
 
 function writeCfg(obj: unknown): void {
-  writeFileSync(join(TMP, 'federation.json'), JSON.stringify(obj))
-  reloadFederationForTest()
+  _seedFederationConfigForTest(obj as Record<string, unknown>)
 }
 
 function ctx(method: string, path: string, body?: unknown): {
@@ -62,7 +61,6 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  rmSync(join(TMP, 'federation.json'), { force: true })
   _setFederationStoreDirForTest(TMP)
   writeCfg({
     enabled: true,

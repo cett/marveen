@@ -7,6 +7,7 @@
 // cover in depth).
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { initDatabase, getDb, insertEgressAllowlistEntry, listEgressAllowlistRows, setSystemConfig } from '../db.js'
+import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 
 const { TMP_ROOT, STORE_DIR, TASKS_DIR } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -80,7 +81,7 @@ function seedSourceFleet() {
   setSystemConfig('model_fallback_enabled', '1')
   setSystemConfig('model_fallback_chain', JSON.stringify(['source-chain', 'source-chain-2']))
   setSystemConfig('model_fallback_revert_after_minutes', '60')
-  writeFileSync(join(STORE_DIR, 'federation.json'), JSON.stringify({ enabled: true, systemId: 'source-system' }), 'utf-8')
+  setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
   writeFileSync(join(STORE_DIR, 'costops-config.json'), JSON.stringify({ version: 1, currency: 'USD', budgets: [] }), 'utf-8')
   // egress_allowlist is DB-backed (migration 0056) -- every fresh initDatabase()
   // call above already seeded the 199 baseline domains; these two are this
@@ -93,9 +94,9 @@ function resetToFreshTarget(preserveEgressDomains: string[] | null) {
   initDatabase(':memory:') // re-seeds the 199 baseline egress_allowlist domains fresh
   writeFileSync(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [] }), 'utf-8')
   writeFileSync(join(STORE_DIR, '.vault-key'), '', 'utf-8')
-  for (const f of ['federation.json', 'costops-config.json']) {
-    writeFileSync(join(STORE_DIR, f), '{}', 'utf-8')
-  }
+  // federation's system_config row is already absent after the fresh
+  // initDatabase(':memory:') above -- no file to reset.
+  writeFileSync(join(STORE_DIR, 'costops-config.json'), '{}', 'utf-8')
   for (const domain of preserveEgressDomains ?? []) {
     insertEgressAllowlistEntry({ value: domain, type: 'domain' })
   }
@@ -151,7 +152,7 @@ describe('end-to-end: export a fully-populated source fleet, apply onto a fresh 
     // P3: overwrite fields replaced wholesale
     const { readModelFallbackFieldsRaw } = await import('../web/model-fallback-store.js')
     expect(readModelFallbackFieldsRaw()).toEqual({ enabled: true, chain: ['source-chain', 'source-chain-2'], revertAfterMinutes: 60 })
-    expect(JSON.parse(readFileSync(join(STORE_DIR, 'federation.json'), 'utf-8')).systemId).toBe('source-system')
+    expect(JSON.parse(getFederationConfigRaw()!).systemId).toBe('source-system')
     expect(JSON.parse(readFileSync(join(STORE_DIR, 'costops-config.json'), 'utf-8')).currency).toBe('USD')
 
     // P3: egress_allowlist MERGED (DB, migration 0056), not overwritten -- the

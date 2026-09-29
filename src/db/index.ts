@@ -27,6 +27,7 @@ export * from './tasks.js'
 export * from './vault.js'
 export * from './vault-bindings.js'
 export * from './vector.js'
+export * from './federation.js'
 
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
@@ -40,6 +41,7 @@ import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-setti
 import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
 import { migrateCostBudgetsFromFile } from './cost-budgets.js'
 import { migrateVaultBindingsFromFile } from './vault-bindings.js'
+import { migrateFederationConfigFromFile } from './federation.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -135,6 +137,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // the migrators above (INSERT OR IGNORE per row in
   // migrateVaultBindingsFromFile).
   migrateVaultBindingsFromFile()
+
+  // #985 group 5/8's deferred part: one-time import of store/federation.json
+  // into system_config (see db/federation.ts's header comment for why this
+  // is one raw-blob key rather than a normalized table). Same every-boot-
+  // but-effectively-once shape as the migrators above, but whole-value (the
+  // getSystemConfig() guard in migrateFederationConfigFromFile takes the
+  // place of INSERT OR IGNORE here since there's only one row to skip).
+  migrateFederationConfigFromFile()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
@@ -268,6 +278,25 @@ export function retireVaultBindingsFile(): void {
     logger.info({ path: p }, 'vault bindings file retired (renamed to .deprecated) -- vault_bindings DB is now the only read source')
   } catch (err) {
     logger.warn({ err, path: p }, 'vault bindings migration: failed to rename file to .deprecated')
+  }
+}
+
+// #985 group 5/8 file retirement, mirroring retireVaultBindingsFile() above.
+// Deliberately NOT called from initDatabase() for the same shared-worktree-
+// store/-dir test-race reason. Called once from src/index.ts's real process
+// boot, right after migrateFederationConfigFromFile() (via initDatabase())
+// has guaranteed the file's content is already imported. Entire content
+// moved to system_config (nothing else lived in federation.json), so it is
+// fully retired here rather than left in place with one field routed
+// elsewhere.
+export function retireFederationConfigFile(): void {
+  const p = join(STORE_DIR, 'federation.json')
+  if (!existsSync(p)) return
+  try {
+    renameSync(p, `${p}.deprecated`)
+    logger.info({ path: p }, 'federation config file retired (renamed to .deprecated) -- system_config DB is now the only read source')
+  } catch (err) {
+    logger.warn({ err, path: p }, 'federation config migration: failed to rename file to .deprecated')
   }
 }
 

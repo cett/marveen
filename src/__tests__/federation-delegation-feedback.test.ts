@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { initDatabase, createAgentMessage, getAgentMessage, getPendingMessages } from '../db.js'
 import { deliverFederatedBatch } from '../web/message-router.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
-import { _setFederationStoreDirForTest, reloadFederationForTest } from '../web/federation/config.js'
+import { _setFederationStoreDirForTest, _seedFederationConfigForTest } from '../web/federation/config.js'
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -19,11 +19,10 @@ const IN_TOKEN = 'b'.repeat(64)
 const OUT_TOKEN = 'c'.repeat(64)
 
 function writeEnabledConfig(): void {
-  writeFileSync(join(TMP, 'federation.json'), JSON.stringify({
+  _seedFederationConfigForTest({
     enabled: true, systemId: 'localsys',
     peers: [{ id: 'teodor', baseUrl: 'https://mini.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN }],
-  }))
-  reloadFederationForTest()
+  })
 }
 
 async function postMessage(body: unknown): Promise<{ statusCode: number; json: any }> {
@@ -58,7 +57,6 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  rmSync(join(TMP, 'federation.json'), { force: true })
   _setFederationStoreDirForTest(TMP)
   writeEnabledConfig()
 })

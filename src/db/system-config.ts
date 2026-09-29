@@ -41,6 +41,13 @@ export function setSystemConfig(key: string, value: string, source: string = 'db
   ).run(key, value, source)
 }
 
+// Hard delete, not a value clear -- for keys that may hold secret material
+// (e.g. federation peer tokens), leaving a stale row with an empty value is
+// worse than removing it outright. Used by removeFederationStore().
+export function deleteSystemConfig(key: string): void {
+  db.prepare('DELETE FROM system_config WHERE key = ?').run(key)
+}
+
 // One-time migration of store/config-overrides.json into system_config.
 // INSERT OR IGNORE: a key already present in system_config -- whether set by
 // an operator (source='db') or by a previous run of this same migration --

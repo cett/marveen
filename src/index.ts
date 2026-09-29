@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile } from './db.js'
+import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile } from './db.js'
 import { backfillWorkspaceDocs } from './workspace-store.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -512,6 +512,10 @@ async function main(): Promise<void> {
   // Same reasoning as retireKanbanAuditStateFile() above, for #985 group
   // 7/8 (vault-bindings.json).
   retireVaultBindingsFile()
+
+  // Same reasoning as retireVaultBindingsFile() above, for #985 group 5/8's
+  // deferred part (federation.json).
+  retireFederationConfigFile()
 
   if (IS_ISOLATED_MODE) {
     // Isolated mode: serve the web dashboard only, no background tasks or agent management.

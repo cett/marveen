@@ -282,7 +282,7 @@ function isErr(v: unknown): v is typeof JSON_PARSE_ERROR {
 // (hand-recoverable) peers. Returns true when it wrote a 409 (caller stops).
 function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
   if (federationFileHealth() === 'invalid') {
-    json(res, { error: 'conflict', hint: 'federation.json failed validation -- fix or remove the file before editing peers' }, 409)
+    json(res, { error: 'conflict', hint: 'federation config failed validation -- fix or remove it before editing peers' }, 409)
     return true
   }
   return false
@@ -523,7 +523,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (isErr(payload)) return true
     const enabled = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled === true
     const flipped = setFederationEnabledPreservingFile(enabled)
-    if (!flipped) { json(res, { error: 'conflict', hint: 'federation.json failed validation -- federation stays disabled; fix or remove the file' }, 409); return true }
+    if (!flipped) { json(res, { error: 'conflict', hint: 'federation config failed validation -- federation stays disabled; fix or remove it' }, 409); return true }
     if (!enabled) {
       resetPeerBackoff()
       resetFederationPollerCache()
@@ -547,7 +547,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'mode', hint: `invalid mode (${FEDERATION_ROUTING_MODES.join('|')})` }, 400); return true
     }
     if (!setFederationRoutingModePreservingFile(mode as FederationRoutingMode)) {
-      json(res, { error: 'conflict', hint: 'federation.json unreadable -- routing mode not persisted' }, 409); return true
+      json(res, { error: 'conflict', hint: 'federation config unreadable -- routing mode not persisted' }, 409); return true
     }
     ensureFederationClaudeMdSection()
     logger.warn({ fed: true, routingMode: mode }, 'federation: routing mode set via POST /api/federation/routing-mode')
