@@ -439,8 +439,8 @@ class TestOtelSpanWrites(unittest.TestCase):
 
 
 class TestRecordHandoffAudit(unittest.TestCase):
-    """Validation-counter instrumentation (phase-4 gate): every HANDOFF
-    firing must land a verdict='handoff' hook_audit_log row."""
+    """Audit-trail instrumentation: every HANDOFF firing must land a
+    verdict='handoff' hook_audit_log row."""
 
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -452,47 +452,19 @@ class TestRecordHandoffAudit(unittest.TestCase):
         os.unlink(self.tmp.name)
 
     def test_inserts_expected_row(self):
-        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62, True)
+        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62)
         row = self.conn.execute(
             "SELECT agent_id, hook_type, verdict, tool_name, reason, session_id, trigger_source FROM hook_audit_log"
         ).fetchone()
-        self.assertEqual(row, (MAIN_AGENT, "PostToolUse", "handoff", "Bash", "ctx=62%;interlock=yes", "sess-1", "watchdog"))
-
-    def test_interlock_false_is_recorded_in_reason(self):
-        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.9, False)
-        reason = self.conn.execute("SELECT reason FROM hook_audit_log").fetchone()[0]
-        self.assertIn("interlock=no", reason)
+        self.assertEqual(row, (MAIN_AGENT, "PostToolUse", "handoff", "Bash", "ctx=62%", "sess-1", "watchdog"))
 
     def test_never_raises_on_a_closed_connection(self):
         self.conn.close()
         try:
-            hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62, True)
+            hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62)
         except Exception as e:  # pragma: no cover -- the point of the test is that this doesn't happen
             self.fail(f"record_handoff_audit raised: {e!r}")
         self.conn = sqlite3.connect(self.tmp.name)  # reopen (schema already on disk) so tearDown's close() is valid
-
-
-class TestStampCompactInterlock(unittest.TestCase):
-    def test_returns_true_and_writes_last_compact_on_success(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "compact.json")
-            os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"] = path
-            try:
-                ok = hook.stamp_compact_interlock(MAIN_AGENT)
-                self.assertTrue(ok)
-                with open(path) as f:
-                    state = json.load(f)
-                self.assertIn("last_compact", state[MAIN_AGENT])
-            finally:
-                del os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"]
-
-    def test_returns_false_when_the_path_is_unwritable(self):
-        os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"] = "/nonexistent/dir/x/compact.json"
-        try:
-            ok = hook.stamp_compact_interlock(MAIN_AGENT)
-            self.assertFalse(ok)
-        finally:
-            del os.environ["CONTEXT_WATCHDOG_COMPACT_STATE"]
 
 
 class TestBuildHandoff(unittest.TestCase):
@@ -554,7 +526,6 @@ class TestMainSubprocess(unittest.TestCase):
         self.db_path = os.path.join(self.tmpdir.name, "test.db")
         _make_db(self.db_path).close()
         self.gate_config_path = os.path.join(self.tmpdir.name, "gate.json")
-        self.compact_state_path = os.path.join(self.tmpdir.name, "compact.json")
         with open(self.gate_config_path, "w") as f:
             json.dump({MAIN_AGENT: {"enabled": True, "thresholdTokens": 400000}}, f)
         self.transcript_path = os.path.join(self.tmpdir.name, "transcript.jsonl")
@@ -566,7 +537,6 @@ class TestMainSubprocess(unittest.TestCase):
         env = dict(os.environ)
         env["LEDGER_DB_PATH"] = self.db_path
         env["CONTEXT_WATCHDOG_GATE_CONFIG"] = self.gate_config_path
-        env["CONTEXT_WATCHDOG_COMPACT_STATE"] = self.compact_state_path
         env["MAIN_AGENT_ID"] = MAIN_AGENT
         return env
 
@@ -600,9 +570,6 @@ class TestMainSubprocess(unittest.TestCase):
         count = conn.execute("SELECT COUNT(*) FROM token_usage WHERE agent = ?", (MAIN_AGENT,)).fetchone()[0]
         conn.close()
         self.assertEqual(count, 1)
-        if os.path.exists(self.compact_state_path):
-            with open(self.compact_state_path) as f:
-                self.assertNotIn(MAIN_AGENT, json.load(f))
 
     def test_writes_agent_turn_and_model_call_spans(self):
         _write_jsonl(self.transcript_path, [
@@ -642,7 +609,7 @@ class TestMainSubprocess(unittest.TestCase):
         conn.close()
         self.assertEqual(rows, {"turn-a": "ok", "turn-b": "running"})
 
-    def test_high_usage_emits_handoff_and_stamps_interlock(self):
+    def test_high_usage_emits_handoff_and_logs_audit_row(self):
         # 65% of the 400000 threshold configured in setUp.
         _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000, output_tokens=10)])
         r = self._run_hook(self._payload())
@@ -650,9 +617,6 @@ class TestMainSubprocess(unittest.TestCase):
         out = json.loads(r.stdout.strip())
         self.assertIn("CONTEXT-WATCHDOG HANDOFF", out["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PostToolUse")
-        with open(self.compact_state_path) as f:
-            state = json.load(f)
-        self.assertIn("last_compact", state.get(MAIN_AGENT, {}))
         conn = sqlite3.connect(self.db_path)
         row = conn.execute(
             "SELECT hook_type, verdict, reason FROM hook_audit_log WHERE agent_id = ?", (MAIN_AGENT,)
@@ -660,7 +624,7 @@ class TestMainSubprocess(unittest.TestCase):
         conn.close()
         self.assertEqual(row[0], "PostToolUse")
         self.assertEqual(row[1], "handoff")
-        self.assertIn("interlock=yes", row[2])
+        self.assertIn("ctx=65%", row[2])
 
     def test_cc_subagent_tool_call_writes_row_but_never_emits_handoff(self):
         # A Claude-Code Agent-tool sub-agent (fork/quarantine-reader/...)
@@ -668,16 +632,13 @@ class TestMainSubprocess(unittest.TestCase):
         # distinguishable via Claude Code's own "agent_id"/"agent_type"
         # payload fields (present only on a sub-agent's own tool-call
         # events). Same 65%-over-threshold usage as
-        # test_high_usage_emits_handoff_and_stamps_interlock above, but this
+        # test_high_usage_emits_handoff_and_logs_audit_row above, but this
         # must NOT leak the parent's HANDOFF state into the sub-agent's
         # isolated context -- while still counting its real token spend.
         _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000, output_tokens=10)])
         r = self._run_hook(self._payload(agent_id="cc-subagent-uuid-1", agent_type="quarantine-reader"))
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), "")  # no additionalContext injected
-        if os.path.exists(self.compact_state_path):
-            with open(self.compact_state_path) as f:
-                self.assertNotIn(MAIN_AGENT, json.load(f))
         conn = sqlite3.connect(self.db_path)
         handoff_row = conn.execute(
             "SELECT COUNT(*) FROM hook_audit_log WHERE agent_id = ? AND verdict = 'handoff'", (MAIN_AGENT,)

@@ -257,8 +257,7 @@ export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
 // Originally deny-only (the injection-detection gate); 'handoff' was added
 // for the context watchdog's proactive-compaction rows and 'allow' gained a
 // second producer (the now-retired context-compact-monitor.sh's PreCompact
-// rows, while it still existed) -- see src/watchdog-validation.ts for the
-// query that correlates the two.
+// rows, while it still existed).
 // trigger_source (migration 0038) names which of those two producers wrote
 // a given handoff/PreCompact row directly, instead of leaving it to be
 // inferred from the hook_type+verdict combination.
