@@ -10,11 +10,11 @@ description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done arch
 
 ## Autonómia-szint (config-vezérelt, KÖTELEZŐ ELŐSZÖR)
 
-Olvasd be: `jq -r '.categories[]|select(.key=="kanban_archive_done" or .key=="kanban_stuck_nudge")|"\(.key) \(.level)"' {{INSTALL_DIR}}/store/autonomy-config.json`
+Olvasd be az API-ból (a szintek az `autonomy_categories` táblában élnek): `curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" http://localhost:3420/api/autonomy | python3 -c "import sys,json; [print(c['key'], c['level']) for c in json.load(sys.stdin)['categories'] if c['key'] in ('kanban_archive_done','kanban_stuck_nudge')]"` (API-hiba esetén level 1).
 
 A két kategória szintje szabályozza a 2. és 4. lépést:
-- **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj, Telegramon javasold ("X db 7+ napos done archiválásra vár, mehet?") és várj jóváhagyást. level 1 → csak jelezd a számot.
-- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól, Telegramon javasold a tulajdonosnak ({{OWNER_NAME}}). level 1 → csak listázd a beakadt taskokat.
+- **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj magadtól; POST /api/approvals (Bearer token, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_archive_done", action_description pl. "X db 7+ napos done kártya archiválásra vár") -- ez MEGJELENIK a Jóváhagyások képernyőn ÉS értesít (notifyMainAgent). Kérdezd le a döntést GET /api/approvals/<id>-vel: approved → archiválj, rejected/timeout → ne, naplózd. level 1 → csak jelezd a számot.
+- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól; POST /api/approvals (Bearer token, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_stuck_nudge", action_description a beakadt kártyák listájával) -- a Jóváhagyások képernyőn látszik + értesít. approved → pingeld az assignee-ket, rejected/timeout → ne. level 1 → csak listázd a beakadt taskokat.
 
 Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselkedés).
 
@@ -45,6 +45,7 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
    ```
 
 6. **Delegálatlan kártyák**: in_progress/waiting/planned amiknek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.
+   - A "planned" státuszú delegálatlan kártyák ÖNMAGUKBAN NEM jelzésre valók: egy egészséges backlog természetes állapota, hogy több tervezett kártyának nincs még felelőse. Ha ezt minden körben jelentenénk, a heartbeat zajjá válna és elnyomná a valódi jelzéseket (beakadt task, új blokker). Csak akkor jelezz, ha a delegálatlan kártya `in_progress` vagy `waiting` állapotú -- azaz elvileg folyamatban van, de senki nem felel érte. A `planned` halmazt csak akkor említsd, ha a tulajdonos rákérdez, vagy ha feltűnően megnő (pl. >30).
 
 7. **Telegram csak akkor írj ha**:
    - 3+ beakadt task van (kritikus)
@@ -62,3 +63,6 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
 ## Ellenőrzés
 - Az `agent_state` sora (`agent_id='{{MAIN_AGENT_ID}}'`, `state_key='kanban_audit_last_audit_at'`) frissült a futás végén.
 - Inter-agent message-ek sikeresek (200 response).
+
+## Ismert false-positive: NE kérdezz duplikáltan ugyanarra a kártyára
+MIELŐTT új `kanban_stuck_nudge` approval-t kérsz egy kártyára, nézd meg az approval-history-t (`GET /api/approvals?category=kanban_stuck_nudge`) -- ha UGYANARRA a card_id-re már volt `rejected` státuszú kérés ugyanazzal az indoklással, NE kérj újra, csak jelezd csendben (napi napló / hot memória), ne generálj új approval-t. Tipikus eset: egy kártya munkája git-branch/PR szinten fut, ezért a kártya `updated_at`-je nem mozdul, de ez NEM valódi elakadás -- ha a tulajdonos ezt már egyszer explicit elutasította mint false-positive-ot, tekintsd tartósan ismertnek. Csak akkor kérdezz újra, ha a staleness drasztikusan nőtt (pl. megduplázódott) VAGY a kártya állapota/assignee-je változott azóta.
