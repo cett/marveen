@@ -339,9 +339,49 @@ export async function loadSchedules() {
     renderScheduleList(schedules)
     if (currentScheduleView === 'timeline') renderTimeline(schedules)
     loadPendingRetries()
+    loadSchedulerHeartbeat()
   } catch (err) {
     console.error('Ütemezés betöltés hiba:', err)
   }
+}
+
+// schedule_last_tick_ms liveness (schedule-state-ui, /api/schedules/tick-status,
+// admin-only). Skipped for a non-admin caller -- the route would just 403 --
+// same _canWriteSchedules gate the "Új feladat" button already uses.
+async function loadSchedulerHeartbeat() {
+  const container = document.getElementById('schedulerHeartbeatSection')
+  if (!container) return
+  if (!_canWriteSchedules) { container.hidden = true; return }
+  try {
+    const res = await fetch('/api/schedules/tick-status')
+    if (!res.ok) { container.hidden = true; return }
+    const status = await res.json()
+    renderSchedulerHeartbeat(container, status)
+  } catch (err) {
+    console.error('Ütemező életjel betöltés hiba:', err)
+    container.hidden = true
+  }
+}
+
+function formatTickAge(seconds) {
+  if (seconds < 60) return t('common.time.sec_abbr', { n: seconds })
+  const min = Math.floor(seconds / 60)
+  if (min < 60) return t('common.time.min_abbr', { n: min })
+  const hr = Math.floor(min / 60)
+  return t('common.time.hour_abbr', { h: hr })
+}
+
+function renderSchedulerHeartbeat(container, status) {
+  if (status.lastTickMs == null) {
+    container.hidden = false
+    container.innerHTML = `<span class="badge" data-variant="warning">${escapeHtml(t('tasks.scheduler_heartbeat.unknown'))}</span>`
+    return
+  }
+  const time = formatTickAge(status.ageSeconds)
+  container.hidden = false
+  container.innerHTML = status.stale
+    ? `<span class="badge" data-variant="danger">${escapeHtml(t('tasks.scheduler_heartbeat.stale', { time }))}</span>`
+    : `<span class="badge" data-variant="success">${escapeHtml(t('tasks.scheduler_heartbeat.ok', { time }))}</span>`
 }
 
 async function loadPendingRetries() {
@@ -451,6 +491,26 @@ function formatLastRun(ts) {
   return t('common.time.day_abbr', { n: day })
 }
 
+// task.lastRunResult (schedules.last_run_result, migration 0057) -- the
+// OUTCOME of the last fire, distinct from RUN_STATUS_LABEL/VARIANT below
+// (those describe a single logged invocation row in the run-history modal;
+// this describes the scheduler's own per-task bookkeeping, with values the
+// history log never uses: fired_late/skipped_quota/skipped_precheck/command).
+const LAST_RUN_RESULT_LABEL = {
+  fired:            () => t('tasks.last_run_result.fired'),
+  fired_late:       () => t('tasks.last_run_result.fired_late'),
+  skipped_quota:    () => t('tasks.last_run_result.skipped_quota'),
+  skipped_precheck: () => t('tasks.last_run_result.skipped_precheck'),
+  command:          () => t('tasks.last_run_result.command'),
+}
+const LAST_RUN_RESULT_VARIANT = {
+  fired:            'success',
+  fired_late:       'warning',
+  skipped_quota:    'warning',
+  skipped_precheck: 'neutral',
+  command:          'success',
+}
+
 function makeScheduleRow(task) {
     const row = document.createElement('div')
     row.className = 'schedule-row'
@@ -473,6 +533,7 @@ function makeScheduleRow(task) {
           <span>${describeCron(task.schedule)}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
           <span class="schedule-last-run" title="${task.lastRunAt ? escapeHtml(new Date(task.lastRunAt).toLocaleString()) : ''}">${task.lastRunAt ? escapeHtml(t('tasks.last_run', { time: formatLastRun(task.lastRunAt) })) : escapeHtml(t('tasks.last_run_never'))}</span>
+          ${task.lastRunAt && LAST_RUN_RESULT_LABEL[task.lastRunResult] ? `<span class="badge" data-size="sm" data-variant="${LAST_RUN_RESULT_VARIANT[task.lastRunResult]}">${escapeHtml(LAST_RUN_RESULT_LABEL[task.lastRunResult]())}</span>` : ''}
         </div>
       </div>
       <div class="schedule-actions">

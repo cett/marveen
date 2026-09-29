@@ -29,6 +29,10 @@
   gap: 8px;
 }
 
+#schedulerHeartbeatSection {
+  margin-bottom: 12px;
+}
+
 .pending-retries-banner {
   margin-bottom: 16px;
   padding: 14px 18px;

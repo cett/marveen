@@ -580,6 +580,11 @@
             </div>
           </div>
 
+          <!-- Scheduler heartbeat (admin-only; /api/schedules/tick-status
+               returns 403 for a non-admin caller and the JS hides this
+               silently on any non-OK response, same as pendingRetriesSection). -->
+          <div id="schedulerHeartbeatSection" hidden></div>
+
           <!-- Pending retries banner (rendered only when the persistent retry
                queue has entries; the scheduler adds a row for any busy-skipped
                task so the operator can see and cancel stuck items). -->

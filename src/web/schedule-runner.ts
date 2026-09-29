@@ -568,11 +568,39 @@ export function computeCatchUpStart(
 // replacing store/schedule-tick-state.json. The row is seeded to '0' by the
 // migration itself, so a fresh/unmigrated value reads back as 0, not NULL --
 // treated the same as "no stamp" below (falls back to the cold-start window).
-function loadLastTickMs(): number | null {
+// Exported so the /api/schedules/tick-status route (schedule-state-ui) can
+// read the same stamp the catch-up window itself trusts, instead of a second,
+// possibly-diverging read of the row.
+export function loadLastTickMs(): number | null {
   const row = getSystemConfig('schedule_last_tick_ms')
   if (!row) return null
   const n = Number(row.value)
   return Number.isFinite(n) && n > 0 ? n : null
+}
+
+// Threshold past which the dashboard's tick-status indicator flags the
+// scheduler as unresponsive. Persisted at most every TICK_STATE_PERSIST_INTERVAL_MS
+// (60s), so 3 minutes gives a healthy runner 3 missed persist cycles of slack
+// before the UI alarms -- wide enough to absorb a slow tick without false
+// positives, narrow enough that a genuinely dead runner is caught quickly.
+export const SCHEDULE_TICK_STALE_THRESHOLD_MS = 3 * 60_000
+
+export interface ScheduleTickStatus {
+  lastTickMs: number | null
+  ageSeconds: number | null
+  stale: boolean
+}
+
+// Pure: no stamp at all (fresh install, or migration not yet run) is treated
+// as stale -- an unconfirmed liveness is not evidence of a live scheduler.
+export function computeTickStatus(
+  lastTickMs: number | null,
+  nowMs: number,
+  thresholdMs: number = SCHEDULE_TICK_STALE_THRESHOLD_MS,
+): ScheduleTickStatus {
+  if (lastTickMs == null) return { lastTickMs: null, ageSeconds: null, stale: true }
+  const ageMs = Math.max(0, nowMs - lastTickMs)
+  return { lastTickMs, ageSeconds: Math.round(ageMs / 1000), stale: ageMs > thresholdMs }
 }
 
 function persistLastTickMs(nowMs: number): void {

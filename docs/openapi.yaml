@@ -2887,6 +2887,34 @@ paths:
                 items:
                   type: string
 
+  /schedules/tick-status:
+    get:
+      tags: [schedules]
+      operationId: getScheduleTickStatus
+      summary: Scheduler tick liveness (admin-only)
+      description: >-
+        Whether the schedule-runner's tick loop has stamped its liveness
+        marker recently. stale is true when lastTickMs is unknown (no stamp
+        yet) or older than the staleness threshold (3 minutes).
+      responses:
+        "200":
+          description: Tick liveness status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lastTickMs:
+                    type: integer
+                    nullable: true
+                  ageSeconds:
+                    type: integer
+                    nullable: true
+                  stale:
+                    type: boolean
+        "403":
+          description: Caller is not admin
+
   /ideas:
     get:
       tags: [ideas]
