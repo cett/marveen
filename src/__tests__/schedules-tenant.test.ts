@@ -40,9 +40,24 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   rowToTask:                   (row: { id: string }) => ({ name: row.id, ...row }),
 }))
 
+const mockLoadLastTickMs = vi.fn<() => number | null>().mockReturnValue(null)
+
 vi.mock('../agent.js',        () => ({ runAgent: vi.fn() }))
+// This module's own heavy transitive imports (schedule-mcp-precheck ->
+// channel-coordinator/liveness -> config.js's STORE_DIR etc.) are why this
+// file has always mocked schedule-runner.js wholesale rather than partially
+// via importOriginal -- computeTickStatus's actual classification logic is
+// unit-tested for real, unmocked, in schedule-tick-status.test.ts; here only
+// the ROUTE's wiring (admin gate, calls loadLastTickMs + computeTickStatus,
+// returns the result as JSON) is under test.
 vi.mock('../web/schedule-runner.js', () => ({
   runScheduledTaskNow: vi.fn().mockResolvedValue({ ok: true, result: 'ok' }),
+  loadLastTickMs: (...a: unknown[]) => mockLoadLastTickMs(...a as []),
+  computeTickStatus: (lastTickMs: number | null, nowMs: number, thresholdMs = 3 * 60_000) => {
+    if (lastTickMs == null) return { lastTickMs: null, ageSeconds: null, stale: true }
+    const ageMs = Math.max(0, nowMs - lastTickMs)
+    return { lastTickMs, ageSeconds: Math.round(ageMs / 1000), stale: ageMs > thresholdMs }
+  },
 }))
 vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'jarvis',
@@ -141,6 +156,50 @@ describe('GET /api/schedules', () => {
     expect(Array.isArray(out.body)).toBe(true)
     const rows = out.body as Array<{ name?: string; id?: string }>
     expect(rows[0].name).toBe('my-report')
+  })
+})
+
+// ── GET /api/schedules/tick-status ──────────────────────────────────────────
+
+describe('GET /api/schedules/tick-status', () => {
+  beforeEach(() => { vi.clearAllMocks(); mockLoadLastTickMs.mockReturnValue(null) })
+
+  it('non-admin is refused with 403, no status leaked', async () => {
+    mockLoadLastTickMs.mockReturnValue(Date.now())
+    const { ctx, out } = makeCtx('GET', '/api/schedules/tick-status', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body).not.toHaveProperty('lastTickMs')
+  })
+
+  it('admin sees a fresh stamp as not stale', async () => {
+    mockLoadLastTickMs.mockReturnValue(Date.now())
+    const { ctx, out } = makeCtx('GET', '/api/schedules/tick-status', undefined, 'admin', null)
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    const body = out.body as { lastTickMs: number; ageSeconds: number; stale: boolean }
+    expect(body.stale).toBe(false)
+    expect(body.ageSeconds).toBeLessThan(5)
+  })
+
+  it('admin sees a stamp older than the staleness threshold as stale', async () => {
+    mockLoadLastTickMs.mockReturnValue(Date.now() - 10 * 60_000)
+    const { ctx, out } = makeCtx('GET', '/api/schedules/tick-status', undefined, 'admin', null)
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    const body = out.body as { stale: boolean }
+    expect(body.stale).toBe(true)
+  })
+
+  it('admin with no stamp at all (fresh install) is treated as stale, not healthy', async () => {
+    mockLoadLastTickMs.mockReturnValue(null)
+    const { ctx, out } = makeCtx('GET', '/api/schedules/tick-status', undefined, 'admin', null)
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    const body = out.body as { lastTickMs: null; ageSeconds: null; stale: boolean }
+    expect(body.lastTickMs).toBeNull()
+    expect(body.ageSeconds).toBeNull()
+    expect(body.stale).toBe(true)
   })
 })
 
