@@ -31,7 +31,7 @@ import { listCostBudgets, replaceCostBudgets } from '../db/cost-budgets.js'
 import { validateConfig, type BudgetEntry } from '../costops/config.js'
 import { listVaultBindings, replaceVaultBindings, type VaultBinding } from '../db/vault-bindings.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
-import { invalidateFederationConfigCache } from './federation/config.js'
+import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -1394,10 +1394,21 @@ export function importFleet(
     // replace via the raw setter, not a file write, then an explicit cache
     // invalidation (see invalidateFederationConfigCache()'s doc comment for
     // why this bypass needs one -- there is no cross-module file watch
-    // anymore to pick the change up on its own).
+    // anymore to pick the change up on its own). Validated BEFORE the write
+    // (same #524/#526 precedent as costBudgets/vault bindings below): an
+    // invalid source document must not silently overwrite the target's own
+    // working federation config with something the fail-closed reader would
+    // then disable on its very next read -- a booby-trapped import that
+    // "succeeds" but quietly kills the target's federation. Skip the write,
+    // report a warning, leave the target's existing config untouched.
     if (s.federation && Object.keys(s.federation).length) {
-      setFederationConfigRaw(JSON.stringify(s.federation, null, 2))
-      invalidateFederationConfigCache()
+      const result = validateFederationConfig(s.federation)
+      if (typeof result === 'string') {
+        applyWarnings.push(`federáció: a forrás konfig érvénytelen (${result}) -- kihagyva, a célgép saját federációs beállításai megmaradtak.`)
+      } else {
+        setFederationConfigRaw(JSON.stringify(s.federation, null, 2))
+        invalidateFederationConfigCache()
+      }
     }
     if (s.costopsConfig && Object.keys(s.costopsConfig).length)
       trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)

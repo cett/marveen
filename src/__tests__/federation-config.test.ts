@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { initDatabase } from '../db.js'
+import { initDatabase, db } from '../db.js'
+import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { checkBearerToken } from '../web/dashboard-auth.js'
 import { getFederationConfigRaw } from '../db/federation.js'
@@ -221,6 +222,34 @@ describe('fail-closed store reads', () => {
     const cfg = getFederationConfig()
     expect(cfg.enabled).toBe(true)
     expect(cfg.peers.map((p) => p.id)).toEqual(['arthur'])
+  })
+
+  // D4 decision C (plan 984): a DB READ failure (not a garbage/invalid
+  // document -- the DB call itself throwing, e.g. a locked/corrupt file)
+  // must fail-closed the same as an invalid document, but log at error
+  // level, not warn. A mutation flipping loadConfigFromDb()'s try/catch to
+  // fail OPEN (or dropping it entirely) survived the suite before this test
+  // existed -- nothing exercised a genuine throw from getFederationConfigRaw().
+  it('a genuine DB read failure (not just a missing/invalid row) fail-closes and logs at error level', () => {
+    writeConfigFile({ enabled: true, peers: validPeers })
+    expect(getFederationConfig().enabled).toBe(true) // sanity: would be true if the read worked
+
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger)
+    db.exec('ALTER TABLE system_config RENAME TO system_config_test_down')
+    try {
+      reloadFederationForTest() // clear the cache so the next read actually hits the DB
+      const cfg = getFederationConfig()
+      expect(cfg.enabled).toBe(false)
+      expect(cfg.peers).toHaveLength(0)
+      expect(errorSpy).toHaveBeenCalled()
+      const [logArg, msgArg] = errorSpy.mock.calls[0]!
+      expect(msgArg).toMatch(/DB read failed/)
+      expect(logArg).toHaveProperty('err')
+    } finally {
+      db.exec('ALTER TABLE system_config_test_down RENAME TO system_config')
+      errorSpy.mockRestore()
+      reloadFederationForTest()
+    }
   })
 })
 
