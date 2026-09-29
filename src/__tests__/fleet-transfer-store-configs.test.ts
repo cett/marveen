@@ -345,6 +345,45 @@ describe('exportFleet/importFleet -- costBudgets (DB-backed)', () => {
     importFleet(fleetJson, { apply: true })
     expect(listCostBudgets('default')).toHaveLength(1)
   })
+
+  // PR #524 merge-előtti javítás: an EMPTY costBudgets array must not wipe
+  // the target's own budgets -- an empty array can mean "old-format export,
+  // this field genuinely absent" or "source fleet has zero budgets
+  // configured", neither of which justifies deleting what the target already
+  // has (same Object.keys(...).length guard idiom as costopsConfig).
+  it('import does NOT wipe the target budgets when the source costBudgets array is empty', async () => {
+    const { replaceCostBudgets, listCostBudgets } = await import('../db/cost-budgets.js')
+    replaceCostBudgets('default', [{ id: 'target-only', amount: 1 }])
+    const fleetJson = JSON.stringify(baseFleetWith({ costBudgets: [] }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    expect(listCostBudgets('default')).toHaveLength(1)
+    expect(listCostBudgets('default')[0].id).toBe('target-only')
+    expect(applied.warnings?.some((w: string) => w.includes('costBudgets üres volt'))).toBe(true)
+  })
+
+  // PR #524 merge-előtti javítás: a malformed entry (missing id, non-number
+  // amount) must be dropped via validateConfig() before the DB write, not
+  // crash the whole import against cost_budgets' NOT NULL columns -- the
+  // valid entries in the same snapshot still land.
+  it('import drops an invalid costBudgets entry instead of throwing, and still imports the valid ones', async () => {
+    const { listCostBudgets } = await import('../db/cost-budgets.js')
+    const fleetJson = JSON.stringify(baseFleetWith({
+      costBudgets: [
+        { amount: 100 }, // missing id
+        { id: 'bad-amount', amount: 'not-a-number' }, // non-number amount
+        { id: 'good', amount: 50 },
+      ],
+    }))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listCostBudgets('default')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('good')
+    expect(applied.warnings?.some((w: string) => w.includes('costBudgets') && w.includes('érvénytelen'))).toBe(true)
+  })
 })
 
 function baseFleetWith(dashboardSettingsOverrides: Record<string, unknown>) {

@@ -28,7 +28,7 @@ import { readModelFallbackFieldsRaw, writeModelFallbackFieldsRaw } from './model
 import type { ModelFallbackConfig } from '../model-fallback.js'
 import { readTerminalInputEnabledRaw, writeTerminalInputEnabled } from './terminal-input-store.js'
 import { listCostBudgets, replaceCostBudgets } from '../db/cost-budgets.js'
-import type { BudgetEntry } from '../costops/config.js'
+import { validateConfig, type BudgetEntry } from '../costops/config.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -1270,6 +1270,10 @@ export function importFleet(
 
     // 4. Dashboard settings
     const s = fleet.dashboardSettings ?? {}
+    // Declared here (not down by the main-agent-identity block below) so the
+    // costBudgets validation warning further down can also push onto it --
+    // same array, one warnings list for the whole apply.
+    const applyWarnings: string[] = []
     // DB-backed -- upsert each imported row into autonomy_categories
     // (not a file write). Upsert rather than replace-all: a category that
     // only exists on the target fleet (not in the imported snapshot) is left
@@ -1308,10 +1312,34 @@ export function importFleet(
     if (s.costopsConfig && Object.keys(s.costopsConfig).length)
       trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
     // DB-backed (cost_budgets) -- whole-value replace, not a file write. A
-    // possible stale `budgets` key inside s.costopsConfig (an export taken
-    // before #985 group 6/8, or the file's own on-disk remnant) is ignored:
-    // this field is now the sole source for budgets on import.
-    if (Array.isArray(s.costBudgets)) replaceCostBudgets('default', s.costBudgets as BudgetEntry[])
+    // possible `budgets` key inside s.costopsConfig (an export taken before
+    // #985 group 6/8, i.e. the old file-based format) is not read here --
+    // that data is not lost, though: migrateCostBudgetsFromFile()
+    // (src/db/cost-budgets.ts, wired into initDatabase()) picks it up
+    // ADDITIVELY (INSERT OR IGNORE) from costopsConfig's own file write just
+    // above on the target's *next* boot, same as any other pre-#985 install.
+    //
+    // An EMPTY array is deliberately NOT the same as "replace with nothing":
+    // it means either an old-format export (this field genuinely absent) or
+    // a source fleet with zero configured budgets -- neither justifies
+    // wiping a target's own already-configured budgets. Same
+    // Object.keys(...).length guard idiom as costopsConfig above, just
+    // array-shaped. A non-empty array IS still a full replace (P3 semantics,
+    // matching the old whole-file overwrite this field replaced) -- but only
+    // after validateConfig() drops any malformed entry (missing id,
+    // non-number amount), so one bad row in the source snapshot can't crash
+    // the write against cost_budgets' NOT NULL columns.
+    if (Array.isArray(s.costBudgets) && s.costBudgets.length > 0) {
+      const { config: validatedConfig, errors: budgetErrors } = validateConfig({ budgets: s.costBudgets })
+      replaceCostBudgets('default', validatedConfig.budgets)
+      if (budgetErrors.length > 0) {
+        applyWarnings.push(
+          `costBudgets: ${budgetErrors.length} érvénytelen bejegyzés kimaradt az importból (${budgetErrors.join('; ')}).`
+        )
+      }
+    } else if (Array.isArray(s.costBudgets)) {
+      applyWarnings.push('costBudgets üres volt a forrás fájlban -- a célgép saját budgetjei megmaradtak (nem törlődtek).')
+    }
     // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see
     // DashboardSettingsExport doc): INSERT OR IGNORE per row is the union
     // semantics, same upsert-not-replace rationale as autonomy above.
@@ -1540,7 +1568,6 @@ export function importFleet(
     // agent would launch under the pre-import identity (`${old-id}-channels`)
     // while the dashboard looks for `${new-id}-channels` and reports the
     // main agent as down.
-    const applyWarnings: string[] = []
     const sourceIdentity = fleet.mainAgent?.identity
     const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
     if (sourceAgentId && typeof sourceAgentId === 'string') {
