@@ -1,9 +1,6 @@
-import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import { hardRestartMarveenChannels } from './channel-monitor.js'
-import { atomicWriteFileSync } from './atomic-write.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
   listAgentNames,
@@ -12,7 +9,9 @@ import {
   writeAgentModel,
   resolveModelId,
   DEFAULT_MODEL,
+  readMainModelRaw,
 } from './agent-config.js'
+import { updateEnvFile } from '../env.js'
 import {
   agentRunState,
   agentSessionName,
@@ -53,42 +52,24 @@ export function modelUnavailableStreakFor(name: string): number {
   return modelUnavailableStreak.get(name) ?? 0
 }
 
-const MAIN_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.json')
-
+// .env MAIN_AGENT_MODEL > .claude/settings.json .model, same precedence as
+// scripts/channels.sh's resolve_main_model() -- see readMainModelRaw()'s doc
+// comment in agent-config.ts (fix/main-model-single-source). Falls back to
+// DEFAULT_MODEL when neither source has a value, same as before.
 function readMainModel(): string {
-  try {
-    const cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8'))
-    return resolveModelId((cfg && typeof cfg.model === 'string' && cfg.model) || DEFAULT_MODEL)
-  } catch {
-    return DEFAULT_MODEL
-  }
+  const raw = readMainModelRaw()
+  return resolveModelId(raw || DEFAULT_MODEL)
 }
 
+// Writes ONLY .env MAIN_AGENT_MODEL -- .claude/settings.json is a tracked
+// file (part of the repo, not per-install state) and is no longer written by
+// this runner. readMainModel()/readConfiguredMainModel() (channel-monitor.ts)
+// both resolve through readMainModelRaw(), which already prefers .env, so a
+// soft resume or a fallback-chain restart picks up this write correctly
+// without a second write to settings.json.
 export function writeMainModel(model: string): void {
   if (!isValidModelId(model)) throw new InvalidModelIdError(model)
-
-  // 1. Write .claude/settings.json (existing behaviour, atomic).
-  let cfg: Record<string, unknown> = {}
-  try { cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8')) } catch {}
-  cfg.model = model
-  atomicWriteFileSync(MAIN_SETTINGS_PATH, JSON.stringify(cfg, null, 2))
-
-  // 2. Sync .env MAIN_AGENT_MODEL so channels.sh resolve_main_model() sees the
-  //    same value: channels.sh:126-134 prefers MAIN_AGENT_MODEL from .env over
-  //    settings.json, so without this the next channels.sh restart silently
-  //    reverts to the old .env value.
-  const envPath = join(PROJECT_ROOT, '.env')
-  try {
-    let env = readFileSync(envPath, 'utf-8')
-    env = /^MAIN_AGENT_MODEL=/m.test(env)
-      ? env.replace(/^MAIN_AGENT_MODEL=.*/m, `MAIN_AGENT_MODEL=${model}`)
-      : `${env.trimEnd()}\nMAIN_AGENT_MODEL=${model}\n`
-    atomicWriteFileSync(envPath, env)
-  } catch (err) {
-    // Non-fatal: settings.json was written. channels.sh will use the stale .env
-    // value on next restart (model may revert). Log as warning so it is visible.
-    logger.warn({ err }, 'model-fallback: writeMainModel could not sync .env')
-  }
+  updateEnvFile({ MAIN_AGENT_MODEL: model })
 }
 
 function readModelFor(name: string): string {

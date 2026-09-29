@@ -98,6 +98,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- Main agent model resolution had two different readers: `scripts/channels.sh`'s `resolve_main_model()` (initial launch) already preferred `.env MAIN_AGENT_MODEL` over `.claude/settings.json .model`, but `channel-monitor.ts`'s soft-resume reader and `model-fallback-runner.ts`'s fallback-chain reader each read `settings.json` only -- so a `.env`-only model change silently reverted on the next soft resume (`--continue`) or fallback-runner restart. Both now resolve through a single new `readMainModelRaw()` (`agent-config.ts`), matching `channels.sh`'s own precedence exactly. `writeMainModel()` now writes only `.env` (`.claude/settings.json` is a tracked file, not per-install state, and no longer touched here).
 - bump fast-uri and ip-address to resolve npm audit high-sev finding
 - revert file-level enabled:false reconciliation
 - honor a file-level enabled:false even after DB seeding

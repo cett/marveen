@@ -1,7 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 
 // All external dependencies of model-fallback-runner.ts are mocked so the
 // test drives checkAgent() in isolation via startModelFallbackRunner().
@@ -20,6 +17,17 @@ vi.mock('../web/agent-config.js', () => ({
   writeAgentModel: vi.fn(),
   resolveModelId: vi.fn((m: string) => m),
   DEFAULT_MODEL: 'claude-opus-5',
+  // Empty by default (no .env / no settings.json main model configured) --
+  // readMainModel() then falls back to DEFAULT_MODEL, same as the old
+  // settings.json-read-fails path this replaces.
+  readMainModelRaw: vi.fn(() => ''),
+}))
+
+// fix/main-model-single-source: writeMainModel() now writes ONLY .env, via
+// this module's updateEnvFile() -- no more direct settings.json I/O here.
+vi.mock('../env.js', () => ({
+  updateEnvFile: vi.fn(),
+  readEnvFile: vi.fn(() => ({})),
 }))
 
 vi.mock('../web/model-fallback-store.js', () => ({
@@ -71,7 +79,9 @@ vi.mock('../model-id.js', () => ({
 import { capturePane } from '../web/agent-process.js'
 import { detectsModelUnavailable } from '../model-fallback.js'
 import { atomicWriteFileSync } from '../web/atomic-write.js'
-import { startModelFallbackRunner, modelUnavailableStreakFor } from '../web/model-fallback-runner.js'
+import { updateEnvFile } from '../env.js'
+import { isValidModelId } from '../model-id.js'
+import { startModelFallbackRunner, modelUnavailableStreakFor, writeMainModel } from '../web/model-fallback-runner.js'
 
 // MAIN_AGENT_ID as defined in the config mock above.
 const AGENT = 'agent-a'
@@ -140,100 +150,34 @@ describe('modelUnavailableStreak: null pane resets streak between detections', (
   })
 })
 
-// writeMainModel() must sync both .claude/settings.json AND .env so that
-// channels.sh resolve_main_model() (which prefers MAIN_AGENT_MODEL from .env)
-// sees the new model on next channels.sh restart. Bug: before this fix the
-// runner wrote only settings.json; the stale .env value silently reverted the
-// model switch on every channels.sh restart.
-//
-// We test the file-mutation contract directly using a tmp dir so no
-// production files are touched (and so this describe stays independent of
-// the heavy module mocks above, which don't touch real filesystem paths).
-// The logic mirrors writeMainModel() in src/web/model-fallback-runner.ts
-// exactly.
-describe('writeMainModel: .env and settings.json sync', () => {
-  let tmpDir: string
-
-  function applyWriteMainModelLogic(projectRoot: string, model: string): void {
-    const settingsPath = join(projectRoot, '.claude', 'settings.json')
-    let cfg: Record<string, unknown> = {}
-    try { cfg = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch {}
-    cfg.model = model
-    writeFileSync(settingsPath, JSON.stringify(cfg, null, 2))
-
-    const envPath = join(projectRoot, '.env')
-    try {
-      let env = readFileSync(envPath, 'utf-8')
-      env = /^MAIN_AGENT_MODEL=/m.test(env)
-        ? env.replace(/^MAIN_AGENT_MODEL=.*/m, `MAIN_AGENT_MODEL=${model}`)
-        : `${env.trimEnd()}\nMAIN_AGENT_MODEL=${model}\n`
-      writeFileSync(envPath, env)
-    } catch {}
-  }
-
+// fix/main-model-single-source: writeMainModel() now writes ONLY .env
+// (MAIN_AGENT_MODEL), never .claude/settings.json -- that file is tracked
+// (part of the repo), and the old dual-write is what caused the bug this fix
+// closes: a plain .env edit (no settings.json write) left readMainModel()/
+// readConfiguredMainModel() -- both settings.json-only readers at the time --
+// pointed at the stale value. Both readers now resolve through
+// readMainModelRaw() (agent-config.ts), which already prefers .env, so a
+// single .env write here is sufficient and correct.
+describe('writeMainModel', () => {
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'mf-runner-test-'))
-    mkdirSync(join(tmpDir, '.claude'), { recursive: true })
+    vi.mocked(updateEnvFile).mockClear()
+    vi.mocked(atomicWriteFileSync).mockClear()
+    vi.mocked(isValidModelId).mockReturnValue(true)
   })
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
+  it('writes MAIN_AGENT_MODEL to .env via updateEnvFile', () => {
+    writeMainModel('claude-sonnet-5')
+    expect(vi.mocked(updateEnvFile)).toHaveBeenCalledWith({ MAIN_AGENT_MODEL: 'claude-sonnet-5' })
   })
 
-  it('writes the model to .claude/settings.json', () => {
-    writeFileSync(join(tmpDir, '.claude', 'settings.json'), JSON.stringify({ model: 'claude-opus-5', other: 'preserved' }))
-    writeFileSync(join(tmpDir, '.env'), 'FOO=bar\nMAIN_AGENT_MODEL=claude-opus-5\n')
-
-    applyWriteMainModelLogic(tmpDir, 'claude-sonnet-5')
-
-    const cfg = JSON.parse(readFileSync(join(tmpDir, '.claude', 'settings.json'), 'utf-8'))
-    expect(cfg.model).toBe('claude-sonnet-5')
-    expect(cfg.other).toBe('preserved')
+  it('never touches .claude/settings.json', () => {
+    writeMainModel('claude-sonnet-5')
+    expect(vi.mocked(atomicWriteFileSync)).not.toHaveBeenCalled()
   })
 
-  it('replaces MAIN_AGENT_MODEL in .env when the key already exists', () => {
-    writeFileSync(join(tmpDir, '.claude', 'settings.json'), JSON.stringify({ model: 'claude-opus-5' }))
-    writeFileSync(join(tmpDir, '.env'), 'FOO=bar\nMAIN_AGENT_MODEL=claude-opus-5\nBAZ=qux\n')
-
-    applyWriteMainModelLogic(tmpDir, 'claude-sonnet-5')
-
-    const env = readFileSync(join(tmpDir, '.env'), 'utf-8')
-    expect(env).toContain('MAIN_AGENT_MODEL=claude-sonnet-5')
-    expect(env).not.toContain('MAIN_AGENT_MODEL=claude-opus-5')
-    expect(env).toContain('FOO=bar')
-    expect(env).toContain('BAZ=qux')
-  })
-
-  it('appends MAIN_AGENT_MODEL to .env when the key is absent', () => {
-    writeFileSync(join(tmpDir, '.claude', 'settings.json'), JSON.stringify({ model: 'claude-opus-5' }))
-    writeFileSync(join(tmpDir, '.env'), 'FOO=bar\n')
-
-    applyWriteMainModelLogic(tmpDir, 'claude-sonnet-5')
-
-    const env = readFileSync(join(tmpDir, '.env'), 'utf-8')
-    expect(env).toContain('MAIN_AGENT_MODEL=claude-sonnet-5')
-    expect(env).toContain('FOO=bar')
-  })
-
-  it('handles a missing settings.json gracefully (creates it)', () => {
-    writeFileSync(join(tmpDir, '.env'), 'MAIN_AGENT_MODEL=claude-opus-5\n')
-
-    applyWriteMainModelLogic(tmpDir, 'claude-sonnet-5')
-
-    const cfg = JSON.parse(readFileSync(join(tmpDir, '.claude', 'settings.json'), 'utf-8'))
-    expect(cfg.model).toBe('claude-sonnet-5')
-  })
-
-  it('does NOT clobber unrelated .env keys when replacing MAIN_AGENT_MODEL', () => {
-    writeFileSync(join(tmpDir, '.claude', 'settings.json'), JSON.stringify({ model: 'old-model' }))
-    writeFileSync(join(tmpDir, '.env'), 'PORT=3420\nMAIN_AGENT_MODEL=old-model\nDEBUG=1\n')
-
-    applyWriteMainModelLogic(tmpDir, 'claude-haiku-4-5-20251001')
-
-    const env = readFileSync(join(tmpDir, '.env'), 'utf-8')
-    expect(env).toContain('PORT=3420')
-    expect(env).toContain('DEBUG=1')
-    expect(env).toContain('MAIN_AGENT_MODEL=claude-haiku-4-5-20251001')
-    expect(env).not.toContain('MAIN_AGENT_MODEL=old-model')
+  it('throws InvalidModelIdError and never writes for an invalid model id', () => {
+    vi.mocked(isValidModelId).mockReturnValue(false)
+    expect(() => writeMainModel('not-a-real-model')).toThrow()
+    expect(vi.mocked(updateEnvFile)).not.toHaveBeenCalled()
   })
 })

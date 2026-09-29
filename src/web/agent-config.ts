@@ -2,6 +2,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
+import { readEnvFile } from '../env.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
@@ -68,6 +69,39 @@ export function findAvatarForAgent(name: string): string | null {
 
 export function resolveModelId(raw: string): string {
   return MODEL_ALIASES[raw] || raw
+}
+
+// ---- main-agent model: single source of truth (fix/main-model-single-source) --
+//
+// Three places used to each resolve the MAIN agent's configured model their
+// own way: scripts/channels.sh's resolve_main_model() (the initial tmux
+// launch) already preferred .env MAIN_AGENT_MODEL over .claude/settings.json
+// .model, but channel-monitor.ts's readConfiguredMainModel() (soft resume,
+// `--continue`) and model-fallback-runner.ts's readMainModel() (fallback-chain
+// downgrade/revert) each read settings.json ONLY. writeMainModel() wrote both
+// files to paper over that gap -- but a plain .env edit (no dashboard write)
+// still left the TS readers pointed at the stale settings.json value, so a
+// soft resume or a fallback-runner restart silently reverted the model.
+//
+// This is the ONE place that precedence lives now: .env MAIN_AGENT_MODEL >
+// .claude/settings.json .model > '' (empty, same as scripts/channels.sh's own
+// `jq -r '.model // empty'` fallback). Both TS readers below call this
+// directly; scripts/channels.sh is unchanged (its own precedence already
+// matched). Callers apply their own downstream default (e.g.
+// model-fallback-runner.ts falls back to DEFAULT_MODEL) -- this function only
+// resolves the SOURCE, exactly mirroring channels.sh's raw/possibly-empty
+// output.
+const MAIN_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.json')
+
+export function readMainModelRaw(): string {
+  const fromEnv = readEnvFile(['MAIN_AGENT_MODEL'])['MAIN_AGENT_MODEL']
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim()
+  try {
+    const parsed = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8'))
+    return typeof parsed?.model === 'string' ? parsed.model.trim() : ''
+  } catch {
+    return ''
+  }
 }
 
 // ---- model-profile map (deployment-local, card c755f4b2 Block B) -------------
