@@ -207,6 +207,57 @@ else
   fail "existing scheduled task config was overwritten"
 fi
 
+# --- Test 5: update.sh's --reseed-fleet loop substitutes {{WEB_PORT}} ---
+# Regression guard: update.sh has its OWN copy of this sed pipeline (separate
+# from install-macos.sh/install-linux.sh/render_seed_template()) for its
+# --reseed-fleet force-refresh loop. That copy once lacked the {{WEB_PORT}}
+# substitution entirely (only MAIN_AGENT_ID/BOT_NAME/OWNER_NAME/INSTALL_DIR),
+# leaving the literal placeholder in a force-reseeded kanban-audit/SKILL.md --
+# its autonomy-read curl then hit "localhost:{{WEB_PORT}}", an invalid URL.
+echo ""
+echo "Test 5: update.sh reseed-fleet loop substitutes {{WEB_PORT}}"
+
+# 5a: static guard on the actual script -- the exact sed pipeline update.sh's
+# reseed-fleet loop uses for seed-scheduled-tasks must include the WEB_PORT
+# substitution alongside the other four. Anchored on the loop's own preceding
+# comment so it does not also match install-macos.sh/install-linux.sh's (or
+# update.sh's OWN CLAUDE.md-regen) separate, already-correct pipelines.
+UPDATE_SH="$INSTALL_DIR/update.sh"
+RESEED_LOOP_BLOCK=$(awk '/Default skip-if-exists; --reseed-fleet force-refreshes/,/^    done$/' "$UPDATE_SH")
+if echo "$RESEED_LOOP_BLOCK" | grep -q '{{WEB_PORT}}'; then
+  pass "update.sh reseed-fleet loop's sed pipeline includes {{WEB_PORT}}"
+else
+  fail "update.sh reseed-fleet loop's sed pipeline is MISSING {{WEB_PORT}} substitution"
+fi
+
+# 5b: behavioral -- same pipeline shape, run with WEB_PORT=4567, on the real
+# kanban-audit seed source (which references {{WEB_PORT}} in its autonomy
+# curl recipe as of this fix).
+SCHED_TARGET5="$TMPDIR_BASE/t5-sched"
+mkdir -p "$SCHED_TARGET5/kanban-audit"
+WEB_PORT="4567"
+for f in "$SEED_SCHED_DIR/kanban-audit/"*; do
+  [ -f "$f" ] || continue
+  sed -e "s/{{MAIN_AGENT_ID}}/testbot/g" \
+      -e "s/{{BOT_NAME}}/TestBot/g" \
+      -e "s/{{OWNER_NAME}}/Tester/g" \
+      -e "s|{{INSTALL_DIR}}|/opt/testbot|g" \
+      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+      "$f" > "$SCHED_TARGET5/kanban-audit/$(basename "$f")"
+done
+
+if grep -q 'localhost:4567' "$SCHED_TARGET5/kanban-audit/SKILL.md"; then
+  pass "WEB_PORT=4567 substituted to localhost:4567 in SKILL.md"
+else
+  fail "WEB_PORT NOT substituted -- localhost:4567 missing from SKILL.md"
+fi
+
+if grep -q '{{WEB_PORT}}' "$SCHED_TARGET5/kanban-audit/SKILL.md" 2>/dev/null; then
+  fail "raw {{WEB_PORT}} placeholder remains in SKILL.md"
+else
+  pass "no raw {{WEB_PORT}} placeholder in SKILL.md"
+fi
+
 # --- Summary ---
 echo ""
 echo "================="
