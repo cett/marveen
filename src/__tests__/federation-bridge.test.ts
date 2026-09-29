@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { initDatabase } from '../db.js'
 import {
   _setFederationStoreDirForTest,
-  reloadFederationForTest,
+  _seedFederationConfigForTest,
+  _clearFederationConfigForTest,
 } from '../web/federation/config.js'
 import {
   sendFederatedMessage,
@@ -20,8 +22,7 @@ const IN_TOKEN = 'b'.repeat(64)
 const NOW = 1_750_000_000_000
 
 function writeConfigFile(obj: unknown): void {
-  writeFileSync(join(TMP, 'federation.json'), JSON.stringify(obj))
-  reloadFederationForTest()
+  _seedFederationConfigForTest(obj as Record<string, unknown>)
 }
 
 function enabledConfig(peerOverrides: Record<string, unknown> = {}): void {
@@ -38,11 +39,14 @@ function fetchReturning(status: number, body: unknown): typeof fetch {
   return (async () => new Response(JSON.stringify(body), { status })) as typeof fetch
 }
 
+beforeAll(() => {
+  initDatabase(':memory:')
+})
+
 beforeEach(() => {
   _setFederationStoreDirForTest(TMP)
   _resetBackoffForTest()
-  rmSync(join(TMP, 'federation.json'), { force: true })
-  reloadFederationForTest()
+  _clearFederationConfigForTest()
 })
 
 afterAll(() => {

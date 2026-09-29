@@ -3,6 +3,12 @@
 // the pre-existing autonomy/autoRestart/agentsDesired/norbertPersonal fields --
 // fleet operational policy, consistent with the identity-takeover model).
 //
+// federation moved from store/federation.json to the system_config row
+// 'federation_config_json' (#985 group 5/8's deferred part) -- like autonomy
+// below, it now round-trips through db/federation.ts's raw get/set, not the
+// file helpers the rest of this suite exercises. Still P3 whole-value
+// overwrite semantics, same as before.
+//
 // egressAllowlist moved from a store/*.json file to the egress_allowlist DB
 // table (migration 0056, #985/#984) -- like autonomy below, it is now
 // round-tripped as a row array via INSERT OR IGNORE (still MERGE/union
@@ -73,6 +79,7 @@ vi.mock('../env.js', () => ({ updateEnvFile: vi.fn() }))
 
 import { readFileSync, writeFileSync, existsSync, rmSync as rmSyncReal } from 'node:fs'
 import { join } from 'node:path'
+import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 
 function writeStoreJson(name: string, obj: unknown) {
   writeFileSync(join(STORE_DIR, name), JSON.stringify(obj, null, 2), 'utf-8')
@@ -88,17 +95,15 @@ function clearStoreFile(name: string) {
 }
 
 beforeEach(() => {
-  initDatabase(':memory:')
+  initDatabase(':memory:') // fresh in-memory DB each test -- federation's system_config row starts absent
   vi.clearAllMocks()
-  for (const f of ['federation.json', 'costops-config.json']) {
-    clearStoreFile(f)
-  }
+  clearStoreFile('costops-config.json')
 })
 
 describe('exportFleet -- store/*.json config fields', () => {
-  it('reads the remaining file-backed fields (federation/costopsConfig) from disk', async () => {
+  it('reads federation from system_config and the remaining file-backed field (costopsConfig) from disk', async () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('federation.json', { enabled: true, systemId: 'source-system' })
+    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
     writeStoreJson('costops-config.json', { version: 1, currency: 'USD', budgets: [] })
 
     const result = exportFleet()
@@ -118,25 +123,24 @@ describe('exportFleet -- store/*.json config fields', () => {
 })
 
 describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () => {
-  it('overwrites an existing target file wholesale with the source value', async () => {
+  it('overwrites the existing target system_config row wholesale with the source value', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('federation.json', { enabled: true, systemId: 'source-system' })
+    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
     const exported = exportFleet()
 
-    clearStoreFile('federation.json')
-    writeStoreJson('federation.json', { enabled: false, systemId: 'target-own-system' })
+    setFederationConfigRaw(JSON.stringify({ enabled: false, systemId: 'target-own-system' }))
 
     const applied = importFleet(exported.data, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    expect(readStoreJson('federation.json')).toEqual({ enabled: true, systemId: 'source-system' })
+    expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'source-system' })
   })
 
-  it('does not touch the target file when the source value is empty', async () => {
+  it('does not touch the target row when the source value is empty', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    writeStoreJson('federation.json', { enabled: true, systemId: 'target-keeps-this' })
+    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
     const fleetJson = JSON.stringify(baseFleetWith({ federation: {} }))
     importFleet(fleetJson, { apply: true })
-    expect(readStoreJson('federation.json')).toEqual({ enabled: true, systemId: 'target-keeps-this' })
+    expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'target-keeps-this' })
   })
 })
 

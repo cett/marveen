@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { initDatabase, getPendingMessages } from '../db.js'
@@ -14,7 +14,8 @@ import {
 } from '../web/routes/federation.js'
 import {
   _setFederationStoreDirForTest,
-  reloadFederationForTest,
+  _seedFederationConfigForTest,
+  _clearFederationConfigForTest,
   type FederationConfig,
 } from '../web/federation/config.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -32,12 +33,11 @@ const CFG: FederationConfig = {
 const DEPS = { isKnownAgent: (n: string) => n === 'marketing', mainAgentId: 'arthur' }
 
 function writeEnabledConfigFile(): void {
-  writeFileSync(join(TMP, 'federation.json'), JSON.stringify({
+  _seedFederationConfigForTest({
     enabled: true,
     systemId: 'localsys',
     peers: [{ id: 'teodor', baseUrl: 'https://mini.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN }],
-  }))
-  reloadFederationForTest()
+  })
 }
 
 // Minimal req/res doubles for the tryHandleFederation HTTP surface. readBody
@@ -67,7 +67,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  rmSync(join(TMP, 'federation.json'), { force: true })
+  _clearFederationConfigForTest()
   _setFederationStoreDirForTest(TMP)
   _resetInboxDedupForTest()
 })
@@ -204,14 +204,13 @@ describe('tryHandleFederation -- manifest + peers view', () => {
     const { _setCapabilityStoreDirForTest, writeCapabilityCache } = await import('../web/federation/capabilities.js')
     _setCapabilityStoreDirForTest(TMP)
     // Two peers: only 'sharer' has the flag.
-    writeFileSync(join(TMP, 'federation.json'), JSON.stringify({
+    _seedFederationConfigForTest({
       enabled: true, systemId: 'localsys',
       peers: [
         { id: 'sharer', baseUrl: 'https://s.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN, shareCapabilitySummaries: true },
         { id: 'lurker', baseUrl: 'https://l.example', outboundToken: OUT_TOKEN, inboundToken: 'd'.repeat(64) },
       ],
-    }))
-    reloadFederationForTest()
+    })
     writeCapabilityCache({})
 
     async function manifestAs(fedPeer: string | null): Promise<{ agents: Array<{ id: string; capabilitySummary?: string }> }> {

@@ -30,6 +30,8 @@ import { readTerminalInputEnabledRaw, writeTerminalInputEnabled } from './termin
 import { listCostBudgets, replaceCostBudgets } from '../db/cost-budgets.js'
 import { validateConfig, type BudgetEntry } from '../costops/config.js'
 import { listVaultBindings, replaceVaultBindings, type VaultBinding } from '../db/vault-bindings.js'
+import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
+import { invalidateFederationConfigCache } from './federation/config.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -171,8 +173,13 @@ export interface DashboardSettingsExport {
   // left untouched on import (writeModelFallbackFieldsRaw()), not reset -- see
   // the doc comments on those two functions in model-fallback-store.ts.
   modelFallback: Partial<ModelFallbackConfig>
-  // P3: overwrite semantics (whole-file replace), same as the fields above --
-  // fleet operational policy, consistent with the identity-takeover model.
+  // DB-backed (system_config key 'federation_config_json', #985 group 5/8's
+  // deferred part), not the retired store/federation.json. P3: overwrite
+  // semantics (whole-value replace), same as the file used to get -- fleet
+  // operational policy, consistent with the identity-takeover model. Still
+  // the raw, unvalidated document (may contain an invalid peer) -- same
+  // "validate only at read time" contract db/federation.ts's blob storage
+  // preserves from the file.
   federation: Record<string, unknown>
   // File-backed still (version/currency/fixed_costs only -- see cost_budgets
   // below for the part that moved).
@@ -511,6 +518,19 @@ function deplaceholderMcp(mcpObj: Record<string, unknown>): Record<string, unkno
 // File helpers
 // ---------------------------------------------------------------------------
 
+// DB-backed counterpart to safeReadJson() above -- same {} on absent/invalid
+// contract, reading the raw system_config blob instead of a file.
+function readFederationConfigObjectRaw(): Record<string, unknown> {
+  const raw = getFederationConfigRaw()
+  if (raw === undefined) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
 function safeReadJson(path: string): Record<string, unknown> {
   try { return JSON.parse(readFileSync(path, 'utf-8')) } catch { return {} }
 }
@@ -695,7 +715,7 @@ function exportDashboardSettings(): DashboardSettingsExport {
     agentsDesired: [...getDesiredAgents()].sort(),
     norbertPersonal: read('norbert-personal.json'),
     modelFallback: readModelFallbackFieldsRaw(),
-    federation: read('federation.json'),
+    federation: readFederationConfigObjectRaw(),
     costopsConfig: read('costops-config.json'),
     costBudgets: listCostBudgets('default'),
     egressAllowlist: listEgressAllowlistRows(null),
@@ -1370,8 +1390,15 @@ export function importFleet(
     // readTerminalInputEnabledRaw()'s doc comment for why an absent field must
     // leave the target's current value untouched rather than defaulting it.
     if (typeof s.terminalInputEnabled === 'boolean') writeTerminalInputEnabled(s.terminalInputEnabled)
-    if (s.federation && Object.keys(s.federation).length)
-      trackedWrite(join(STORE_DIR, 'federation.json'), JSON.stringify(s.federation, null, 2), tracker)
+    // DB-backed (system_config 'federation_config_json') -- whole-value
+    // replace via the raw setter, not a file write, then an explicit cache
+    // invalidation (see invalidateFederationConfigCache()'s doc comment for
+    // why this bypass needs one -- there is no cross-module file watch
+    // anymore to pick the change up on its own).
+    if (s.federation && Object.keys(s.federation).length) {
+      setFederationConfigRaw(JSON.stringify(s.federation, null, 2))
+      invalidateFederationConfigCache()
+    }
     if (s.costopsConfig && Object.keys(s.costopsConfig).length)
       trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
     // DB-backed (cost_budgets) -- whole-value replace, not a file write. A
