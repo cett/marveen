@@ -10,13 +10,15 @@ description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done arch
 
 ## Autonómia-szint (config-vezérelt, KÖTELEZŐ ELŐSZÖR)
 
-Olvasd be az API-ból (a szintek az `autonomy_categories` táblában élnek): `curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" http://localhost:3420/api/autonomy | python3 -c "import sys,json; [print(c['key'], c['level']) for c in json.load(sys.stdin)['categories'] if c['key'] in ('kanban_archive_done','kanban_stuck_nudge')]"` (API-hiba esetén level 1).
+Olvasd be az API-ból (a szintek az `autonomy_categories` táblában élnek): `curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/autonomy | python3 -c "import sys,json; [print(c['key'], c['level']) for c in json.load(sys.stdin)['categories'] if c['key'] in ('kanban_archive_done','kanban_stuck_nudge')]"`.
 
 A két kategória szintje szabályozza a 2. és 4. lépést:
 - **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj magadtól; POST /api/approvals (Bearer token, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_archive_done", action_description pl. "X db 7+ napos done kártya archiválásra vár") -- ez MEGJELENIK a Jóváhagyások képernyőn ÉS értesít (notifyMainAgent). Kérdezd le a döntést GET /api/approvals/<id>-vel: approved → archiválj, rejected/timeout → ne, naplózd. level 1 → csak jelezd a számot.
 - **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól; POST /api/approvals (Bearer token, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_stuck_nudge", action_description a beakadt kártyák listájával) -- a Jóváhagyások képernyőn látszik + értesít. approved → pingeld az assignee-ket, rejected/timeout → ne. level 1 → csak listázd a beakadt taskokat.
 
-Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselkedés).
+Két külön hiba-eset, ne keverd össze:
+- **Az API nem érhető el** (hálózati hiba, timeout, nem 200-as válasz) → default **level 1** (biztonságos alapállapot: csak jelez, nem cselekszik).
+- **Az API válaszol, de a `kanban_archive_done`/`kanban_stuck_nudge` kulcs hiányzik** a `categories` listából (a kategória még nincs felvéve az `autonomy_categories` táblába) → default **level 3** (régi viselkedés: a hiányzó kategóriát úgy kezeld, mintha még sosem lett volna korlátozva).
 
 ## Eljárás
 
