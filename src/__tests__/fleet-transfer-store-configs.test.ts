@@ -131,16 +131,16 @@ describe('importFleet apply -- overwrite fields (modelFallback/federation/costop
 // egressAllowlist moved from a store/*.json file to the egress_allowlist DB
 // table (migration 0056) -- round-tripped as a row array, like autonomy
 // below, not through the file helpers the rest of this suite exercises.
-// Every fresh initDatabase(':memory:') seeds the 199 domains migration 0056
-// bakes in, so assertions build on top of that baseline rather than assuming
-// an empty table.
+// Every fresh initDatabase(':memory:') seeds the 206 domains migrations 0056
+// + 0059 bake in (199 + a 7-host quarantine-seed supplement), so assertions
+// build on top of that baseline rather than assuming an empty table.
 describe('exportFleet/importFleet -- egressAllowlist (DB-backed)', () => {
-  it('exports egress_allowlist rows as an array, including the 199 migration-seeded domains', async () => {
+  it('exports egress_allowlist rows as an array, including the 206 migration-seeded domains', async () => {
     const { insertEgressAllowlistEntry } = await import('../db.js')
     insertEgressAllowlistEntry({ value: 'source.example.com', type: 'domain', tenant_id: 'default' })
     const { exportFleet } = await import('../web/fleet-transfer.js')
     const fleet = JSON.parse(exportFleet().data)
-    expect(fleet.dashboardSettings.egressAllowlist).toHaveLength(200)
+    expect(fleet.dashboardSettings.egressAllowlist).toHaveLength(207)
     expect(fleet.dashboardSettings.egressAllowlist).toContainEqual(
       expect.objectContaining({ value: 'source.example.com', type: 'domain', tenant_id: 'default' }),
     )
@@ -153,7 +153,7 @@ describe('exportFleet/importFleet -- egressAllowlist (DB-backed)', () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')
     const exported = exportFleet()
 
-    // Fresh "target" DB: re-init wipes the in-memory DB and re-seeds the 199 defaults.
+    // Fresh "target" DB: re-init wipes the in-memory DB and re-seeds the 206 defaults.
     const { initDatabase } = await import('../db.js')
     initDatabase(':memory:')
     insertEgressAllowlistEntry({ value: 'target-only.example.com', type: 'domain', tenant_id: 'default', added_by: 'target-op' })
@@ -171,11 +171,11 @@ describe('exportFleet/importFleet -- egressAllowlist (DB-backed)', () => {
     expect(rows.find((r) => r.value === 'shared.example.com')?.added_by).toBe('target-op')
   })
 
-  it('import does nothing when the source has no egress rows (the 199 seeded defaults are untouched)', async () => {
+  it('import does nothing when the source has no egress rows (the 206 seeded defaults are untouched)', async () => {
     const fleetJson = JSON.stringify(baseFleetWith({ egressAllowlist: [] }))
     const { importFleet, exportFleet } = await import('../web/fleet-transfer.js')
     importFleet(fleetJson, { apply: true })
-    expect(JSON.parse(exportFleet().data).dashboardSettings.egressAllowlist).toHaveLength(199)
+    expect(JSON.parse(exportFleet().data).dashboardSettings.egressAllowlist).toHaveLength(206)
   })
 })
 
