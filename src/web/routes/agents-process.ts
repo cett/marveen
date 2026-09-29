@@ -18,7 +18,7 @@ import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { checkConfigPutFields } from '../agent-put-fields.js'
 import { DEFAULT_AUTO_RESTART } from '../../auto-restart.js'
 import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
-import { claimPendingForAgent, markMessageFailed } from '../../db.js'
+import { claimPendingForAgent, markMessageFailed, agentBelongsToTenant, resolveAgentOwningTenantId } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { readBody, json } from '../http-helpers.js'
 import { remoteRunStateCache, remotePaneCache, assertAgentExists } from './agents-helpers.js'
@@ -29,6 +29,30 @@ import type { RouteContext } from './types.js'
 // turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
 const INBOX_DRAIN_CAP = 10
 
+// Own-tenant-vs-cross-tenant check for the two per-agent settings routes
+// below (context-guard, auto-restart -- agent_settings, migration 0058,
+// #985 group 3/8). Admin bypasses entirely. A non-admin whose tenant does
+// not have `name` enabled (agentBelongsToTenant, db/agents.ts) gets 403 for
+// BOTH read and write, so a cross-tenant caller can't even discover another
+// tenant's guard/restart config. Unlike egress-allowlist (group 1,
+// admin-only writes -- an external hook unions every tenant's rows into one
+// fleet-wide policy), these settings are read and enforced entirely inside
+// this backend process per agent_id, so tenant-scoping here does not expand
+// any OTHER tenant's effective policy (see rbac.ts's
+// ENDPOINT_PERMISSION_REGEX_TABLE comment for the full rationale).
+//
+// A fleet-internal agent with no tenant association at all (e.g. the main
+// coordinator, or a backend-dev agent never offered to a B2B tenant) has an
+// empty agentBelongsToTenant match set for every tenantId -- so this falls
+// back to admin-only for exactly those agents, matching today's real-world
+// operational shape (only the admin dashboard token manages them) without
+// a special case.
+function crossTenantAgentSettingsBlocked(ctx: RouteContext, name: string): boolean {
+  if (ctx.role === 'admin') return false
+  const callerTenant = ctx.tenantId ?? 'default'
+  return !agentBelongsToTenant(name, callerTenant)
+}
+
 export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -36,6 +60,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (autoRestartMatch && method === 'PUT') {
     const name = decodeURIComponent(autoRestartMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
+    if (crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
@@ -45,7 +70,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       return true
     }
     setStoreWriteActor('dashboard')
-    const saved = writeAutoRestartConfig(name, data)
+    const saved = writeAutoRestartConfig(name, data, resolveAgentOwningTenantId(name))
     json(res, { ok: true, autoRestart: saved })
     return true
   }
@@ -58,6 +83,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
+    if (crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
     if (method === 'GET') {
       json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
       return true
@@ -71,7 +97,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       return true
     }
     setStoreWriteActor('dashboard')
-    const saved = writeContextGuardConfig(name, data)
+    const saved = writeContextGuardConfig(name, data, resolveAgentOwningTenantId(name))
     json(res, { ok: true, contextGuard: saved })
     return true
   }

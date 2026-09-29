@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import {
-  PROJECT_ROOT, STORE_DIR,
+  PROJECT_ROOT,
   MAIN_AGENT_ID,
   APP_TZ_INVALID,
 } from '../config.js'
@@ -22,6 +22,10 @@ import {
   findBlackboardRowByAgent,
   createAgentMessage,
   writeAgentAuditLog,
+  updateScheduleLastRun,
+  clearScheduleLastRunIfMatches,
+  getSystemConfig,
+  setSystemConfig,
 } from '../db.js'
 import { toPendingRetryView, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -313,13 +317,12 @@ export const SCHEDULE_JANITOR_PARKED_MIN_AGE_MS = 120_000
 // logs the occurrence once (dashboard-only, no Telegram alert). See
 // sendPendingRetryAlert below.
 
-// When a task fires we record its time here so the catch-up window (30 min on
-// the first tick after a restart) does not re-run it. This map is in-memory, so
-// a dashboard restart that lands inside a task's catch-up window used to re-fire
-// an already-run task (observed: a restart re-sent a second vmd-report). Persist
-// it to disk and reload on startup so the skip-check survives restarts.
-const SCHEDULE_LAST_RUN_PATH = join(STORE_DIR, 'schedule-last-run.json')
-const scheduleLastRun: Map<string, number> = new Map()
+// When a task fires we record its time so the catch-up window (30 min on the
+// first tick after a restart) does not re-run it. Migration 0057 (#985 group
+// 2/8) moved this from an in-memory Map + store/schedule-last-run.json to the
+// schedules.last_run_at DB column -- see recordScheduleLastRun() and
+// task.lastRunAt below. The DB survives restarts on its own, so there is no
+// separate load/persist pair to call at startup any more.
 
 // Dedup for the not-live skip audit log: the fire-loop scans every enabled
 // task once per tick (60s), so a draft/disabled task would otherwise write an
@@ -335,22 +338,11 @@ export function shouldAlertNotLive(seen: Set<string>, taskName: string): boolean
 }
 const notLiveAlerted = new Set<string>()
 
-function loadScheduleLastRun(): void {
+function recordScheduleLastRun(taskName: string, when: number, result: string): void {
   try {
-    const raw = JSON.parse(readFileSync(SCHEDULE_LAST_RUN_PATH, 'utf-8'))
-    if (raw && typeof raw === 'object') {
-      for (const [name, ts] of Object.entries(raw)) {
-        if (typeof ts === 'number' && Number.isFinite(ts)) scheduleLastRun.set(name, ts)
-      }
-    }
-  } catch { /* no file yet / unreadable -- start empty */ }
-}
-
-function persistScheduleLastRun(): void {
-  try {
-    atomicWriteFileSync(SCHEDULE_LAST_RUN_PATH, JSON.stringify(Object.fromEntries(scheduleLastRun), null, 2))
+    updateScheduleLastRun(taskName, when, result)
   } catch (err) {
-    logger.warn({ err }, 'schedule-runner: failed to persist last-run map')
+    logger.warn({ err, task: taskName }, 'schedule-runner: failed to persist last-run stamp')
   }
 }
 
@@ -495,8 +487,6 @@ function maybeSendSizeGuardNotice(taskName: string, bodyChars: number, nowMs: nu
 // staleness (decideCatchUp): still-useful ones are executed as catch-ups, the
 // rest are recorded as 'missed' runs and reported. The one thing that never
 // happens again is silence.
-const SCHEDULE_TICK_STATE_PATH = join(STORE_DIR, 'schedule-tick-state.json')
-
 // Hard ceiling on the catch-up window. Beyond this the downtime is an outage,
 // not a hiccup: replaying a week of crons on boot would be a burst of stale
 // work, so the window is capped and everything older is simply out of scope.
@@ -574,16 +564,20 @@ export function computeCatchUpStart(
   return Math.max(persistedTickMs, now - maxCatchUpMs)
 }
 
+// Migration 0057 (#985 group 2/8): schedule_last_tick_ms system_config row,
+// replacing store/schedule-tick-state.json. The row is seeded to '0' by the
+// migration itself, so a fresh/unmigrated value reads back as 0, not NULL --
+// treated the same as "no stamp" below (falls back to the cold-start window).
 function loadLastTickMs(): number | null {
-  try {
-    const raw = JSON.parse(readFileSync(SCHEDULE_TICK_STATE_PATH, 'utf-8')) as { lastTickMs?: unknown }
-    return typeof raw?.lastTickMs === 'number' && Number.isFinite(raw.lastTickMs) ? raw.lastTickMs : null
-  } catch { return null }
+  const row = getSystemConfig('schedule_last_tick_ms')
+  if (!row) return null
+  const n = Number(row.value)
+  return Number.isFinite(n) && n > 0 ? n : null
 }
 
 function persistLastTickMs(nowMs: number): void {
   try {
-    atomicWriteFileSync(SCHEDULE_TICK_STATE_PATH, JSON.stringify({ lastTickMs: nowMs }, null, 2))
+    setSystemConfig('schedule_last_tick_ms', String(nowMs))
   } catch (err) {
     logger.warn({ err }, 'schedule-runner: failed to persist tick liveness stamp')
   }
@@ -945,8 +939,7 @@ async function attemptFireTask(
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
     await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
     recordDelivery(session, fullPrompt)
-    scheduleLastRun.set(task.name, now)
-    persistScheduleLastRun()
+    recordScheduleLastRun(task.name, now, lateCatchUpMs != null ? 'fired_late' : 'fired')
     // A lateCatchUpMs value means this tick only matched because of the
     // enlarged first-run catch-up window (see startScheduleRunner), i.e. the
     // task missed its normal tick (e.g. the process was down/restarting at
@@ -1018,7 +1011,7 @@ async function attemptFireTask(
           if (action === 'giveup') {
             logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
             // The prompt is parked (never submitted), yet attemptFireTask
-            // already recorded the task 'fired' + stamped scheduleLastRun
+            // already recorded the task 'fired' + stamped last_run_at
             // BEFORE this detached resubmit chain ran -- do NOT move that
             // write, it guards the CRON path against a double-fire while the
             // first injection is still resubmitting. Compensate instead: a
@@ -1226,9 +1219,9 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
 export const SCHEDULE_TICK_MS = 15_000
 
 export function startScheduleRunner(): NodeJS.Timeout {
-  // Reload the persisted last-run times so a restart inside a task's catch-up
-  // window does not re-fire an already-run task.
-  loadScheduleLastRun()
+  // Last-run times now live in schedules.last_run_at (migration 0057) and are
+  // loaded per-task as part of the normal listScheduledTasks() DB read below,
+  // so there is nothing to reload here any more.
   // Reload the size-guard's per-task-per-day notice stamps so a
   // same-day restart does not repeat a WARN/ALERT already sent.
   loadSizeGuardState()
@@ -1353,10 +1346,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           'Scheduled injection never started a turn (session accepted the keystrokes but stayed idle) -- recording as lost and re-queueing',
         )
         appendTaskRun(entry.taskName, entry.agentName, 'lost')
-        if (scheduleLastRun.get(entry.taskName) === entry.injectedAt) {
-          scheduleLastRun.delete(entry.taskName)
-          persistScheduleLastRun()
-        }
+        clearScheduleLastRunIfMatches(entry.taskName, entry.injectedAt)
         insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
         taskInflightMap.delete(key)
       }
@@ -1480,7 +1470,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // Prevent double-firing across a restart: skip if the task already ran at
       // or after the start of this scan window (its occurrence is already
       // recorded, so re-scanning the catch-up window must not fire it again).
-      const lastRun = scheduleLastRun.get(task.name) || 0
+      const lastRun = task.lastRunAt || 0
       if (lastRun >= fromMs) continue
 
       // How late is this occurrence, and is it still worth running? An
@@ -1513,8 +1503,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // does not double-run them on a dashboard restart.
       if (task.type === 'command') {
         runCommandTask(task, now)
-        scheduleLastRun.set(task.name, now)
-        persistScheduleLastRun()
+        recordScheduleLastRun(task.name, now, 'command')
         continue
       }
 
@@ -1546,8 +1535,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           { task: task.name, reason: quota.reason, pressure: quota.pressure },
           'Quota gate: holding back a background task until the window recovers',
         )
-        scheduleLastRun.set(task.name, now)
-        persistScheduleLastRun()
+        recordScheduleLastRun(task.name, now, 'skipped_quota')
         for (const agentName of targetAgents) appendTaskRun(task.name, agentName, 'skipped')
         continue
       }
@@ -1556,8 +1544,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // state (DB, filesystem) that does not vary by target agent.
       const cronPc = runPreCheck(task)
       if (cronPc.skip) {
-        scheduleLastRun.set(task.name, now)
-        persistScheduleLastRun()
+        recordScheduleLastRun(task.name, now, 'skipped_precheck')
         for (const agentName of targetAgents) {
           appendTaskRun(task.name, agentName, 'skipped')
         }

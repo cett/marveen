@@ -437,6 +437,20 @@ function cronCadence(cron) {
 }
 const CADENCE_ICON = { 0: '⚡', 1: '☀️', 2: '📅', 3: '🗓️', 5: '•' }
 
+// schedules.last_run_at (migration 0057, #985 group 2/8). Same abbreviation
+// vocabulary as overview.js's formatRelative, kept local here since that one
+// isn't exported and the two modules' time formatting doesn't need a shared util.
+function formatLastRun(ts) {
+  const diff = Math.max(0, Date.now() - ts)
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return t('common.time.now_abbr')
+  if (min < 60) return t('common.time.min_abbr', { n: min })
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return t('common.time.hour_abbr', { h: hr })
+  const day = Math.floor(hr / 24)
+  return t('common.time.day_abbr', { n: day })
+}
+
 function makeScheduleRow(task) {
     const row = document.createElement('div')
     row.className = 'schedule-row'
@@ -458,6 +472,7 @@ function makeScheduleRow(task) {
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
           <span>${describeCron(task.schedule)}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
+          <span class="schedule-last-run" title="${task.lastRunAt ? escapeHtml(new Date(task.lastRunAt).toLocaleString()) : ''}">${task.lastRunAt ? escapeHtml(t('tasks.last_run', { time: formatLastRun(task.lastRunAt) })) : escapeHtml(t('tasks.last_run_never'))}</span>
         </div>
       </div>
       <div class="schedule-actions">

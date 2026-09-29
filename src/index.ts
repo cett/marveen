@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile } from './db.js'
+import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles } from './db.js'
 import { backfillWorkspaceDocs } from './workspace-store.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -490,6 +490,16 @@ async function main(): Promise<void> {
   // files touching the same physical path. This call site only ever runs
   // once, for a real dashboard process.
   retireConfigOverridesFile()
+
+  // Same reasoning as retireConfigOverridesFile() above, for migration 0057
+  // (#985 group 2/8): only ever called here (real process boot), never from
+  // db/index.ts's initDatabase() itself, which also runs from every test
+  // file's beforeEach against the same real, shared worktree store/ dir.
+  retireScheduleStateFiles()
+
+  // Same reasoning as retireScheduleStateFiles() above, for migration 0058
+  // (#985 group 3/8).
+  retireAgentSettingsFiles()
 
   if (IS_ISOLATED_MODE) {
     // Isolated mode: serve the web dashboard only, no background tasks or agent management.

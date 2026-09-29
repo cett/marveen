@@ -26,8 +26,16 @@ vi.mock('../agent-process.js', () => ({
 vi.mock('../reauth-detect.js', () => ({
   detectReauthNeeded: vi.fn().mockReturnValue({ needsReauth: false }),
 }))
-vi.mock('../auto-restart-store.js', () => ({
+// Real path is src/web/auto-restart-store.js (agents-helpers.ts imports
+// '../auto-restart-store.js' from src/web/routes/) -- this mock's path was
+// stale/dead (resolved to a nonexistent src/auto-restart-store.js) until
+// migration 0058 (#985 group 3/8) made readAutoRestartConfig DB-backed and
+// this test (no initDatabase()) started crashing on the real module.
+vi.mock('../web/auto-restart-store.js', () => ({
   readAutoRestartConfig: vi.fn().mockReturnValue({ enabled: false, maxRestarts: 5 }),
+}))
+vi.mock('../web/context-guard-store.js', () => ({
+  readContextGuardConfig: vi.fn().mockReturnValue({ enabled: false }),
 }))
 vi.mock('../active-model.js', () => ({
   readActiveModelFromProjectDir: vi.fn().mockReturnValue(null),

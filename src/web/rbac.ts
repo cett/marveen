@@ -27,6 +27,7 @@ export type Permission =
   | 'kanban:read'
   | 'kanban:write'
   | 'agents:read'
+  | 'agents:write'
   | 'messages:write'
   | 'approvals:read'
   | 'approvals:write'
@@ -48,6 +49,7 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'kanban:read',
     'kanban:write',
     'agents:read',
+    'agents:write',
     'messages:write',
     'approvals:read',
     'approvals:write',
@@ -63,6 +65,14 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'kanban:read',
     'kanban:write',
     'agents:read',
+    // agents:write is intentionally narrower than the other *:write
+    // permissions here look -- it only unlocks the two ENDPOINT_PERMISSION_REGEX_TABLE
+    // rows below (per-agent context-guard/auto-restart settings, #985 group 3),
+    // and the route itself still enforces own-tenant-vs-cross-tenant (403) for
+    // a non-admin caller. It does NOT cover /start, /stop, /restart, /remote --
+    // those have no table entry at all and stay admin:all-only via the
+    // resolveRequiredPermission fallback.
+    'agents:write',
     'messages:write',
     'approvals:read',
     'blackboard:read',
@@ -202,6 +212,33 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'DELETE', pathPattern: '/api/v1/workspace', prefix: true,  permission: 'memories:write' },
 ]
 
+// ── Regex-matched entries (variable path segment) ───────────────────────────
+//
+// ENDPOINT_PERMISSION_TABLE above only supports prefix/exact matching, which
+// can't isolate a path with a variable segment in the MIDDLE (e.g. an agent
+// name) from its siblings -- a prefix of '/api/agents/' would also loosen
+// /start, /stop, /restart, /remote, which must stay admin:all-only. This
+// table is checked first, before the prefix table, for the few endpoints
+// that need it.
+interface RegexPermissionEntry {
+  method: '*' | 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  regex: RegExp
+  permission: Permission
+}
+
+const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
+  // Per-agent context-guard / auto-restart settings (agent_settings,
+  // migration 0058, #985 group 3/8). Unlike egress_allowlist (group 1,
+  // admin-only writes -- a hook OUTSIDE this process unions every tenant's
+  // rows into one fleet-wide policy), these settings are read and enforced
+  // entirely inside this backend process, per agent_id, with no external
+  // unioning consumer -- so a tenant-scoped write here does not expand any
+  // OTHER tenant's effective policy. This entry only lets a non-admin
+  // 'agent' role reach the route; agents-process.ts itself still enforces
+  // own-tenant-vs-cross-tenant (403) for both GET and PUT.
+  { method: 'PUT', regex: /^\/api\/agents\/[^/]+\/(context-guard|auto-restart)$/, permission: 'agents:write' },
+]
+
 /**
  * Resolve the required Permission for a given HTTP method + path.
  * Returns null if no entry matches (caller should treat as admin:all required).
@@ -210,6 +247,10 @@ export function resolveRequiredPermission(
   method: string,
   path: string,
 ): Permission | null {
+  for (const entry of ENDPOINT_PERMISSION_REGEX_TABLE) {
+    if (entry.method !== '*' && entry.method !== method) continue
+    if (entry.regex.test(path)) return entry.permission
+  }
   for (const entry of ENDPOINT_PERMISSION_TABLE) {
     if (entry.method !== '*' && entry.method !== method) continue
     const matches = entry.prefix

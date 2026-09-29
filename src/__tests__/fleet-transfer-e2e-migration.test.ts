@@ -6,7 +6,7 @@
 // isolation (that's what the four fleet-transfer-*.test.ts files above already
 // cover in depth).
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, getDb, insertEgressAllowlistEntry, listEgressAllowlistRows } from '../db.js'
 
 const { TMP_ROOT, STORE_DIR, TASKS_DIR } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -79,17 +79,23 @@ function seedSourceFleet() {
   writeFileSync(join(STORE_DIR, 'model-fallback.json'), JSON.stringify({ enabled: true, chain: ['source-chain'], revertAfterMinutes: 60 }), 'utf-8')
   writeFileSync(join(STORE_DIR, 'federation.json'), JSON.stringify({ enabled: true, systemId: 'source-system' }), 'utf-8')
   writeFileSync(join(STORE_DIR, 'costops-config.json'), JSON.stringify({ version: 1, currency: 'USD', budgets: [] }), 'utf-8')
-  writeFileSync(join(STORE_DIR, 'egress-allowlist.json'), JSON.stringify({ domains: ['source.example.com', 'shared.example.com'] }), 'utf-8')
+  // egress_allowlist is DB-backed (migration 0056) -- every fresh initDatabase()
+  // call above already seeded the 199 baseline domains; these two are this
+  // test's own additions on top of that baseline.
+  insertEgressAllowlistEntry({ value: 'source.example.com', type: 'domain' })
+  insertEgressAllowlistEntry({ value: 'shared.example.com', type: 'domain' })
 }
 
 function resetToFreshTarget(preserveEgressDomains: string[] | null) {
-  initDatabase(':memory:')
+  initDatabase(':memory:') // re-seeds the 199 baseline egress_allowlist domains fresh
   writeFileSync(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [] }), 'utf-8')
   writeFileSync(join(STORE_DIR, '.vault-key'), '', 'utf-8')
   for (const f of ['model-fallback.json', 'federation.json', 'costops-config.json']) {
     writeFileSync(join(STORE_DIR, f), '{}', 'utf-8')
   }
-  writeFileSync(join(STORE_DIR, 'egress-allowlist.json'), JSON.stringify({ domains: preserveEgressDomains ?? [] }), 'utf-8')
+  for (const domain of preserveEgressDomains ?? []) {
+    insertEgressAllowlistEntry({ value: domain, type: 'domain' })
+  }
 }
 
 beforeEach(() => {
@@ -144,9 +150,12 @@ describe('end-to-end: export a fully-populated source fleet, apply onto a fresh 
     expect(JSON.parse(readFileSync(join(STORE_DIR, 'federation.json'), 'utf-8')).systemId).toBe('source-system')
     expect(JSON.parse(readFileSync(join(STORE_DIR, 'costops-config.json'), 'utf-8')).currency).toBe('USD')
 
-    // P3: egress-allowlist MERGED, not overwritten -- target's own domain survives
-    const mergedDomains = JSON.parse(readFileSync(join(STORE_DIR, 'egress-allowlist.json'), 'utf-8')).domains as string[]
-    expect(mergedDomains.sort()).toEqual(['shared.example.com', 'source.example.com', 'target-only.example.com'])
+    // P3: egress_allowlist MERGED (DB, migration 0056), not overwritten -- the
+    // target's own domain survives alongside the 199 migration-seeded baseline
+    // and the source's own domain.
+    const mergedDomains = listEgressAllowlistRows(null).filter((r) => r.type === 'domain').map((r) => r.value)
+    expect(mergedDomains).toEqual(expect.arrayContaining(['shared.example.com', 'source.example.com', 'target-only.example.com']))
+    expect(mergedDomains).toContain('github.com') // the 199-domain baseline survived the merge too
   })
 
   it('re-applying the same encrypted export a second time is a clean no-op (fully idempotent combined run)', async () => {

@@ -38,6 +38,11 @@ vi.mock('../db.js', () => ({
   claimPendingForAgent: vi.fn().mockReturnValue([]),
   markMessageFailed: vi.fn(),
   getDb: vi.fn(),
+  // agent_settings tenant check (#985 group 3) -- default to "caller belongs"
+  // so the existing (pre-group-3) route tests keep exercising the routes
+  // past the new cross-tenant gate unchanged.
+  agentBelongsToTenant: vi.fn().mockReturnValue(true),
+  resolveAgentOwningTenantId: vi.fn().mockReturnValue('default'),
 }))
 vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/routes/agents-helpers.js')>()

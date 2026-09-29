@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
+// Config half is DB-backed since migration 0058 (#985 group 3/8) -- see
+// context-guard-store.test.ts's header comment for the shared-:memory:-DB
+// rationale. The run-state half (readGateRunState/writeGateRunState) is
+// still file-based (group 4/8), so it keeps the original tmpdir + vi.mock
+// setup for STORE_DIR.
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest'
 import { unlinkSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -16,6 +21,7 @@ const { TMP_ROOT, STORE_DIR } = vi.hoisted(() => {
 
 vi.mock('../config.js', () => ({ PROJECT_ROOT: TMP_ROOT, STORE_DIR }))
 
+import { initDatabase, getDb } from '../db.js'
 import {
   readGateConfig,
   writeGateConfig,
@@ -25,19 +31,29 @@ import {
 } from '../web/context-restart-gate-store.js'
 import { DEFAULT_GATE_CONFIG } from '../context-restart-gate.js'
 
-const CONFIG_FILE = join(TMP_ROOT, 'store', 'context-restart-gate.json')
-const STATE_FILE  = join(TMP_ROOT, 'store', 'context-restart-gate-state.json')
+const STATE_FILE = join(TMP_ROOT, 'store', 'context-restart-gate-state.json')
 
-function cleanStore(): void {
-  if (existsSync(CONFIG_FILE)) unlinkSync(CONFIG_FILE)
+beforeAll(() => {
+  // Real in-memory DB for the config half. The STORE_DIR mock above points
+  // at an empty tmpdir, so the boot importer (migrateAgentSettingsFromFiles)
+  // finds no context-restart-gate.json to carry over -- unlike
+  // context-guard-store.test.ts/auto-restart-store.test.ts, which run
+  // against the real worktree store/ and can see real fleet rows.
+  initDatabase(':memory:')
+})
+
+function cleanStateFile(): void {
   if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE)
 }
 
-beforeEach(cleanStore)
+beforeEach(cleanStateFile)
+afterEach(() => {
+  getDb().exec("DELETE FROM agent_settings WHERE setting_key = 'context_restart_gate'")
+})
 afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }))
 
 describe('readGateConfig / writeGateConfig', () => {
-  it('returns defaults when no file exists', () => {
+  it('returns defaults when no row exists', () => {
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 
@@ -61,13 +77,10 @@ describe('readGateConfig / writeGateConfig', () => {
     expect(readGateConfig('agent-d').enabled).toBe(false)
   })
 
-  it('survives corrupted config file', () => {
-    require('node:fs').writeFileSync(CONFIG_FILE, '{not json')
-    expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
-  })
-
-  it('survives a config file that parses but is not an object', () => {
-    require('node:fs').writeFileSync(CONFIG_FILE, '[1,2,3]')
+  it('survives a row whose setting_value is not valid JSON', () => {
+    getDb().prepare(
+      `INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id) VALUES (?, 'context_restart_gate', '{not json', 'default')`,
+    ).run('agent-a')
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 })
