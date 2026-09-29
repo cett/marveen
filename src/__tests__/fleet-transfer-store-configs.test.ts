@@ -65,6 +65,10 @@ vi.mock('../config.js', () => ({
   CHANNEL_PROVIDER: 'telegram',
 }))
 vi.mock('../web/vault-bindings.js', () => ({ getBindings: () => [] }))
+// initDatabase(':memory:') below is real, so listVaultBindings/replaceVaultBindings
+// (imported by fleet-transfer.ts straight from '../db/vault-bindings.js', not
+// through the '../web/vault-bindings.js' mock above) hit the real vault_bindings
+// table -- no mock needed for those two, only the unrelated web-layer getBindings().
 vi.mock('../env.js', () => ({ updateEnvFile: vi.fn() }))
 
 import { readFileSync, writeFileSync, existsSync, rmSync as rmSyncReal } from 'node:fs'
@@ -430,6 +434,107 @@ describe('exportFleet/importFleet -- costBudgets (DB-backed)', () => {
     expect(applied.warnings?.some((w: string) => w.includes('costBudgets') && w.includes('duplikált id'))).toBe(true)
   })
 })
+
+// vaultBindings moved from the `bindings` field inside store/vault-bindings.json
+// (encrypted-export VaultExport.bindings, not dashboardSettings) to the
+// vault_bindings DB table (#985 group 7/8) -- round-tripped through
+// listVaultBindings()/replaceVaultBindings(). Unlike costBudgets above,
+// import goes through importVaultSection(), gated on `fleet.vault` being
+// present (not dashboardSettings), so these fixtures add a top-level `vault`
+// key instead of a dashboardSettings override.
+describe('exportFleet/importFleet -- vaultBindings (DB-backed, vault section)', () => {
+  it('exports vault_bindings rows as the VaultExport.bindings array (requires a real .vault-key file)', async () => {
+    const { replaceVaultBindings } = await import('../db/vault-bindings.js')
+    replaceVaultBindings('default', [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] }])
+    writeFileSync(join(STORE_DIR, '.vault-key'), 'test-vault-key-material', 'utf-8')
+    writeFileSync(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [] }), 'utf-8')
+
+    const { exportFleet, _decryptForTest } = await import('../web/fleet-transfer.js')
+    const exported = exportFleet({ vaultPassword: 'test-password-12345' })
+    const wrapper = JSON.parse(exported.data)
+    const fleet = JSON.parse(_decryptForTest(wrapper.blob, 'test-password-12345'))
+    expect(fleet.vault.bindings).toHaveLength(1)
+    expect(fleet.vault.bindings[0]).toMatchObject({ vaultSecretId: 's1', envVar: 'API_KEY' })
+  })
+
+  it('import replaces the target binding set wholesale', async () => {
+    const { replaceVaultBindings, listVaultBindings } = await import('../db/vault-bindings.js')
+    replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
+    const fleetJson = JSON.stringify(fleetWithVault([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }]))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listVaultBindings('default')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].vaultSecretId).toBe('s1')
+  })
+
+  it('import does NOT wipe the target bindings when the source array is empty', async () => {
+    const { replaceVaultBindings, listVaultBindings } = await import('../db/vault-bindings.js')
+    replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
+    const fleetJson = JSON.stringify(fleetWithVault([]))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    expect(listVaultBindings('default')).toHaveLength(1)
+    expect(listVaultBindings('default')[0].vaultSecretId).toBe('target-only')
+    expect(applied.warnings?.some((w: string) => w.includes('vault bindings üres volt'))).toBe(true)
+  })
+
+  it('import drops an invalid entry (missing vaultSecretId/envVar) instead of throwing, keeps the valid ones', async () => {
+    const { listVaultBindings } = await import('../db/vault-bindings.js')
+    const fleetJson = JSON.stringify(fleetWithVault([
+      { envVar: 'NO_SECRET_ID', targets: [] },
+      { vaultSecretId: 'no-env-var', targets: [] },
+      { vaultSecretId: 'good', envVar: 'OK', targets: [] },
+    ]))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listVaultBindings('default')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].vaultSecretId).toBe('good')
+    expect(applied.warnings?.some((w: string) => w.includes('vault bindings') && w.includes('érvénytelen'))).toBe(true)
+  })
+
+  it('import does NOT wipe the target when every source entry is invalid', async () => {
+    const { replaceVaultBindings, listVaultBindings } = await import('../db/vault-bindings.js')
+    replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
+    const fleetJson = JSON.stringify(fleetWithVault([
+      { envVar: 'NO_SECRET_ID', targets: [] },
+    ]))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listVaultBindings('default')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].vaultSecretId).toBe('target-only')
+    expect(applied.warnings?.some((w: string) => w.includes('egyetlen érvényes bejegyzés sem maradt'))).toBe(true)
+  })
+
+  it('import de-dupes a repeated (vaultSecretId, envVar) pair instead of throwing, first entry wins', async () => {
+    const { listVaultBindings } = await import('../db/vault-bindings.js')
+    const fleetJson = JSON.stringify(fleetWithVault([
+      { vaultSecretId: 'dup', envVar: 'API_KEY', targets: [{ mcpFilePath: '/first', serverName: 'srv' }] },
+      { vaultSecretId: 'dup', envVar: 'API_KEY', targets: [{ mcpFilePath: '/second', serverName: 'srv' }] },
+      { vaultSecretId: 'unique', envVar: 'OTHER', targets: [] },
+    ]))
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true)
+    const rows = listVaultBindings('default')
+    expect(rows).toHaveLength(2)
+    expect(rows.find((r) => r.vaultSecretId === 'dup')?.targets).toEqual([{ mcpFilePath: '/first', serverName: 'srv' }])
+    expect(applied.warnings?.some((w: string) => w.includes('vault bindings') && w.includes('duplikált'))).toBe(true)
+  })
+})
+
+function fleetWithVault(bindings: unknown[]) {
+  return {
+    ...baseFleetWith({}),
+    vault: { vaultKey: 'test-key', entries: [], bindings },
+  }
+}
 
 function baseFleetWith(dashboardSettingsOverrides: Record<string, unknown>) {
   return {

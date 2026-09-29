@@ -25,6 +25,7 @@ export * from './sessions.js'
 export * from './system-config.js'
 export * from './tasks.js'
 export * from './vault.js'
+export * from './vault-bindings.js'
 export * from './vector.js'
 
 import { existsSync, readFileSync, renameSync } from 'node:fs'
@@ -38,6 +39,7 @@ import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
 import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
 import { migrateCostBudgetsFromFile } from './cost-budgets.js'
+import { migrateVaultBindingsFromFile } from './vault-bindings.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -125,6 +127,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // but-effectively-once shape as the migrators above (INSERT OR IGNORE per
   // row in migrateCostBudgetsFromFile).
   migrateCostBudgetsFromFile()
+
+  // Migration 0062 (#985 group 7/8): one-time import of
+  // store/vault-bindings.json into vault_bindings. Unlike group 6, the whole
+  // file's content moves here (see retireVaultBindingsFile below for the
+  // file's full retirement). Same every-boot-but-effectively-once shape as
+  // the migrators above (INSERT OR IGNORE per row in
+  // migrateVaultBindingsFromFile).
+  migrateVaultBindingsFromFile()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
@@ -239,6 +249,25 @@ export function retireKanbanAuditStateFile(): void {
     logger.info({ path: p }, 'kanban-audit state file retired (renamed to .deprecated) -- agent_state DB is now the only read source')
   } catch (err) {
     logger.warn({ err, path: p }, 'kanban-audit state migration: failed to rename file to .deprecated')
+  }
+}
+
+// #985 group 7/8 file retirement, mirroring retireKanbanAuditStateFile()
+// above. Deliberately NOT called from initDatabase() for the same shared-
+// worktree-store/-dir test-race reason. Called once from src/index.ts's
+// real process boot, right after migrateVaultBindingsFromFile() (via
+// initDatabase()) has guaranteed every binding the file held is already
+// imported. Unlike group 6, this file's ENTIRE content moved to the DB
+// (nothing else lived in vault-bindings.json), so it is fully retired here
+// rather than left in place with one field routed elsewhere.
+export function retireVaultBindingsFile(): void {
+  const p = join(STORE_DIR, 'vault-bindings.json')
+  if (!existsSync(p)) return
+  try {
+    renameSync(p, `${p}.deprecated`)
+    logger.info({ path: p }, 'vault bindings file retired (renamed to .deprecated) -- vault_bindings DB is now the only read source')
+  } catch (err) {
+    logger.warn({ err, path: p }, 'vault bindings migration: failed to rename file to .deprecated')
   }
 }
 

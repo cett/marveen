@@ -29,6 +29,7 @@ import type { ModelFallbackConfig } from '../model-fallback.js'
 import { readTerminalInputEnabledRaw, writeTerminalInputEnabled } from './terminal-input-store.js'
 import { listCostBudgets, replaceCostBudgets } from '../db/cost-budgets.js'
 import { validateConfig, type BudgetEntry } from '../costops/config.js'
+import { listVaultBindings, replaceVaultBindings, type VaultBinding } from '../db/vault-bindings.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -706,7 +707,6 @@ function exportVault(): VaultExport | null {
   const vaultKeyPath = join(STORE_DIR, '.vault-key')
   const vaultKeyMigratedPath = join(STORE_DIR, '.vault-key.migrated')
   const vaultPath = join(STORE_DIR, 'vault.json')
-  const bindingsPath = join(STORE_DIR, 'vault-bindings.json')
 
   if (!existsSync(vaultKeyPath)) {
     // macOS Keychain migration -- vault-key.migrated means key is in Keychain
@@ -723,8 +723,9 @@ function exportVault(): VaultExport | null {
   const vaultKey = readFileSync(vaultKeyPath, 'utf-8').trim()
   const vaultStore = safeReadJson(vaultPath)
   const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
-  const bindingsStore = safeReadJson(bindingsPath)
-  const bindings = (bindingsStore.bindings as Record<string, unknown>[]) ?? []
+  // DB-backed (vault_bindings, migration 0062, #985 group 7/8), not the
+  // retired store/vault-bindings.json.
+  const bindings = listVaultBindings('default') as unknown as Record<string, unknown>[]
 
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
@@ -1145,12 +1146,74 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   }
 }
 
-function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
+// vault.bindings -> vault_bindings (DB-backed, migration 0062, #985 group
+// 7/8), not a file write. Same guard shape as costBudgets' fleet-transfer
+// import (#524 lesson): an EMPTY or entirely-invalid source array must not
+// wipe the target's own bindings (old-format export vs. genuinely zero
+// bindings are indistinguishable, and neither justifies deleting what the
+// target already has), and a duplicated (vaultSecretId, envVar) pair must be
+// de-duped -- first occurrence wins -- instead of hitting
+// vault_bindings' PRIMARY KEY mid-write and throwing. Pushes onto the
+// caller's `warnings` array (the same applyWarnings list importFleet's other
+// DB-backed fields report through) rather than returning its own.
+function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings: string[]): void {
   // vault.vaultKey is plaintext -- the caller already decrypted the whole JSON with the user password
   trackedWrite(join(STORE_DIR, '.vault-key'), vault.vaultKey, tracker, { mode: 0o600 })
   trackedWrite(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: vault.entries }, null, 2), tracker, { mode: 0o600 })
-  trackedWrite(join(STORE_DIR, 'vault-bindings.json'), JSON.stringify({ bindings: vault.bindings }, null, 2), tracker)
   // Channel .env (bot tokens) are intentionally NOT imported -- target must re-pair channels manually.
+
+  const rawBindings = Array.isArray(vault.bindings) ? vault.bindings : []
+  if (rawBindings.length === 0) {
+    if (Array.isArray(vault.bindings)) {
+      warnings.push('vault bindings üres volt a forrás fájlban -- a célgép saját bindingjei megmaradtak (nem törlődtek).')
+    }
+    return
+  }
+
+  const validated: VaultBinding[] = []
+  let invalidCount = 0
+  for (const raw of rawBindings) {
+    const b = raw as Record<string, unknown>
+    if (typeof b?.vaultSecretId !== 'string' || !b.vaultSecretId) { invalidCount++; continue }
+    if (typeof b?.envVar !== 'string' || !b.envVar) { invalidCount++; continue }
+    const targets = Array.isArray(b.targets)
+      ? (b.targets as unknown[]).filter(
+          (t): t is { mcpFilePath: string; serverName: string } =>
+            !!t && typeof (t as any).mcpFilePath === 'string' && typeof (t as any).serverName === 'string',
+        )
+      : []
+    validated.push({ vaultSecretId: b.vaultSecretId, envVar: b.envVar, targets })
+  }
+
+  // De-dup by (vaultSecretId, envVar), first occurrence wins -- same
+  // semantics as migrateVaultBindingsFromFile()'s INSERT OR IGNORE.
+  const seen = new Set<string>()
+  const deduped: VaultBinding[] = []
+  let duplicateCount = 0
+  for (const b of validated) {
+    const key = `${b.vaultSecretId}\u0000${b.envVar}`
+    if (seen.has(key)) { duplicateCount++; continue }
+    seen.add(key)
+    deduped.push(b)
+  }
+
+  // The rawBindings.length===0 check above only proves the SOURCE array was
+  // non-empty -- if every entry was invalid or a duplicate, `deduped` can
+  // still be empty here. Applying the "don't wipe" guard to the raw source
+  // length would let replaceVaultBindings('default', []) through in exactly
+  // that case, still wiping the target for reasons the source never asked for.
+  if (deduped.length > 0) {
+    replaceVaultBindings('default', deduped)
+  }
+  if (invalidCount > 0) {
+    warnings.push(`vault bindings: ${invalidCount} érvénytelen bejegyzés kimaradt az importból.`)
+  }
+  if (duplicateCount > 0) {
+    warnings.push(`vault bindings: ${duplicateCount} duplikált (vaultSecretId, envVar) pár kimaradt (az első előfordulás nyert).`)
+  }
+  if (deduped.length === 0) {
+    warnings.push('vault bindings: egyetlen érvényes bejegyzés sem maradt validálás után -- a célgép saját bindingjei megmaradtak (nem törlődtek).')
+  }
 }
 
 const EMPTY_DIFF: DiffReport = {
@@ -1575,7 +1638,7 @@ export function importFleet(
 
     // 6. Vault -- LAST: vault data is plaintext (decrypted at the top of importFleet)
     if (fleet.vault) {
-      importVaultSection(fleet.vault, tracker)
+      importVaultSection(fleet.vault, tracker, applyWarnings)
     }
 
     // M3: fire-and-forget re-embed imported memories (embedding was stripped at export)

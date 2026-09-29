@@ -1,30 +1,20 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { getSecret, listSecrets } from './vault.js'
 import { getExternalProjectPaths } from './dashboard-settings.js'
+import {
+  listVaultBindings, upsertVaultBinding, deleteVaultBinding, deleteVaultBindingsForSecret,
+  type VaultBinding, type VaultBindingTarget,
+} from '../db/vault-bindings.js'
 import { logger } from '../logger.js'
 
-const BINDINGS_PATH = join(STORE_DIR, 'vault-bindings.json')
 const VAULT_WRAPPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-env-wrapper.sh')
 
-export interface VaultBindingTarget {
-  mcpFilePath: string
-  serverName: string
-}
-
-export interface VaultBinding {
-  vaultSecretId: string
-  envVar: string
-  targets: VaultBindingTarget[]
-}
-
-interface BindingsStore {
-  bindings: VaultBinding[]
-}
+export type { VaultBinding, VaultBindingTarget }
 
 const SENSITIVE_PATTERNS = [
   /_KEY$/i, /_TOKEN$/i, /_SECRET$/i, /_PASSWORD$/i, /_PASS$/i,
@@ -55,46 +45,30 @@ export interface SyncResult {
   errors: string[]
 }
 
-function readBindings(): BindingsStore {
-  try { return JSON.parse(readFileSync(BINDINGS_PATH, 'utf-8')) }
-  catch { return { bindings: [] } }
-}
-
-function writeBindings(store: BindingsStore): void {
-  atomicWriteFileSync(BINDINGS_PATH, JSON.stringify(store, null, 2) + '\n')
-}
-
+// DB-backed (vault_bindings table, migration 0062, #985 group 7/8) -- the
+// store/vault-bindings.json file is fully retired (see
+// retireVaultBindingsFile in db/index.ts). Every function below keeps its
+// pre-migration signature and semantics; only the storage underneath moved.
+// tenant_id is hardcoded to 'default' here, same MVP scope as costBudgets
+// (group 6/8) -- the table has the column for future multi-tenancy, but no
+// caller of this module (connectors.ts routes) is tenant-aware yet.
 export function getBindings(): VaultBinding[] {
-  return readBindings().bindings
+  return listVaultBindings('default')
 }
 
 export function addBinding(binding: VaultBinding): void {
-  const store = readBindings()
-  const idx = store.bindings.findIndex(
-    b => b.vaultSecretId === binding.vaultSecretId && b.envVar === binding.envVar,
-  )
-  if (idx >= 0) {
-    store.bindings[idx] = binding
-  } else {
-    store.bindings.push(binding)
-  }
-  writeBindings(store)
+  upsertVaultBinding('default', binding)
 }
 
 export function removeBinding(vaultSecretId: string, envVar: string): boolean {
-  const store = readBindings()
-  const before = store.bindings.length
-  store.bindings = store.bindings.filter(
-    b => !(b.vaultSecretId === vaultSecretId && b.envVar === envVar),
-  )
-  if (store.bindings.length === before) return false
-  writeBindings(store)
-  return true
+  return deleteVaultBinding('default', vaultSecretId, envVar)
 }
 
 export function removeBindingsForSecret(vaultSecretId: string): void {
-  const store = readBindings()
-  const toRemove = store.bindings.filter(b => b.vaultSecretId === vaultSecretId)
+  // Fetch-then-delete (not delete-then-use-return-value): the DB layer
+  // already returns the deleted rows, so their targets are still available
+  // here for the per-target MCP-file cleanup below.
+  const toRemove = deleteVaultBindingsForSecret('default', vaultSecretId)
   for (const binding of toRemove) {
     for (const target of binding.targets) {
       try {
@@ -107,8 +81,6 @@ export function removeBindingsForSecret(vaultSecretId: string): void {
       } catch { /* skip */ }
     }
   }
-  store.bindings = store.bindings.filter(b => b.vaultSecretId !== vaultSecretId)
-  writeBindings(store)
 }
 
 export function collectAllMcpFilePaths(): Array<{ path: string, label: string }> {
