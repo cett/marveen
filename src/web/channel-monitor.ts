@@ -6,7 +6,7 @@ import { resolveFromPath } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, STORE_DIR, RESPAWN_ENABLED } from '../config.js'
-import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentChannelProvider, readMainModelRaw } from './agent-config.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -541,16 +541,13 @@ async function triggerMarveenMemorySave(): Promise<void> {
 // soft resume passes --model explicitly, mirroring scripts/channels.sh. Without
 // it the respawned session falls back to claude-code's built-in default and
 // silently drifts off the model the user picked. Returns '' when unset.
+// .env MAIN_AGENT_MODEL > .claude/settings.json .model -- see
+// readMainModelRaw()'s doc comment in agent-config.ts (fix/main-model-single-
+// source). Used to be settings.json-only, which meant a soft resume
+// (`--continue`) silently reverted a model change that had only reached
+// .env (e.g. via a dashboard write that no longer touches settings.json).
 function readConfiguredMainModel(): string {
-  try {
-    const settingsPath = join(PROJECT_ROOT, '.claude', 'settings.json')
-    if (!existsSync(settingsPath)) return ''
-    const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'))
-    const model = parsed?.model
-    return typeof model === 'string' ? model.trim() : ''
-  } catch {
-    return ''
-  }
+  return readMainModelRaw()
 }
 
 // Secondary channel plugins the main session co-listens on, read from .env
