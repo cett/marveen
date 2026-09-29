@@ -142,6 +142,31 @@ describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () 
     importFleet(fleetJson, { apply: true })
     expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'target-keeps-this' })
   })
+
+  // QA (PR #528 fixup round): the write used to be unconditional -- an
+  // invalid source document would overwrite the target's own working config
+  // with something the fail-closed reader then disables on its very next
+  // read. A "successful" import that quietly kills the target's federation.
+  it('an invalid source config is not written -- the target keeps its own config, and a warning is reported', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
+    const fleetJson = JSON.stringify(baseFleetWith({
+      federation: { enabled: true, peers: [{ id: 'x', baseUrl: 'https://peer.example', inboundToken: 'too-short' }] },
+    }))
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(applied.ok).toBe(true) // the rest of the import still applies -- this is a warning, not a hard failure
+    expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'target-keeps-this' })
+    expect(applied.warnings?.some((w: string) => w.includes('federáció'))).toBe(true)
+  })
+
+  it('root-is-not-an-object source config is likewise refused, not written', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
+    const fleetJson = JSON.stringify(baseFleetWith({ federation: { enabled: true, peers: 'not-an-array' } }))
+    const applied = importFleet(fleetJson, { apply: true }) as any
+    expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'target-keeps-this' })
+    expect(applied.warnings?.some((w: string) => w.includes('federáció'))).toBe(true)
+  })
 })
 
 // egressAllowlist moved from a store/*.json file to the egress_allowlist DB
