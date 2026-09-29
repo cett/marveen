@@ -32,7 +32,7 @@ import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
-import { migrateConfigOverridesToSystemConfig, getSystemConfig, setSystemConfig } from './system-config.js'
+import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfig } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
 import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
@@ -83,6 +83,7 @@ export function initDatabase(dbPathOverride?: string): void {
   // its own process-local DB connection), so it doesn't have this problem.
   // See src/index.ts's real boot sequence for the rename call.
   migrateConfigOverridesToSystemConfig()
+  migrateGroup5StateFromFiles()
 
   // Migration 0057 (#985 group 2/8): one-time import of
   // store/schedule-last-run.json + store/schedule-tick-state.json into the
