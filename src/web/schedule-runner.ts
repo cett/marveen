@@ -599,7 +599,15 @@ export function computeTickStatus(
   thresholdMs: number = SCHEDULE_TICK_STALE_THRESHOLD_MS,
 ): ScheduleTickStatus {
   if (lastTickMs == null) return { lastTickMs: null, ageSeconds: null, stale: true }
-  const ageMs = Math.max(0, nowMs - lastTickMs)
+  const rawAgeMs = nowMs - lastTickMs
+  // A tiny future skew (clock drift between processes/hosts) is tolerated and
+  // clamped to 0 below, same as before. But a stamp more than a minute in the
+  // future isn't drift -- it's a clock jump or a corrupted row, and silently
+  // reporting it as "just ticked, healthy" would hide exactly the kind of
+  // scheduler anomaly this endpoint exists to surface. Report it as unknown
+  // age and stale instead of a confident-but-wrong ageSeconds:0.
+  if (rawAgeMs < -60_000) return { lastTickMs, ageSeconds: null, stale: true }
+  const ageMs = Math.max(0, rawAgeMs)
   return { lastTickMs, ageSeconds: Math.round(ageMs / 1000), stale: ageMs > thresholdMs }
 }
 
