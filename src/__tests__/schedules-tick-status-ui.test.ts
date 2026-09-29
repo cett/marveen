@@ -57,21 +57,29 @@ describe('schedules.js: scheduler tick-status heartbeat', () => {
 
   it('renders a danger badge when stale, success when not, and a warning when lastTickMs is unknown', () => {
     const idx = APP.indexOf('function renderSchedulerHeartbeat')
-    const body = APP.slice(idx, idx + 1000)
-    expect(body).toMatch(/data-variant="warning"[^]*tasks\.scheduler_heartbeat\.unknown/)
+    const body = APP.slice(idx, idx + 1400)
+    expect(body).toContain('tasks.scheduler_heartbeat.unknown')
+    expect(body).toContain('data-variant="warning">${escapeHtml(t(key))}')
     expect(body).toMatch(/data-variant="danger"[^]*tasks\.scheduler_heartbeat\.stale/)
     expect(body).toMatch(/data-variant="success"[^]*tasks\.scheduler_heartbeat\.ok/)
   })
 
-  it('the unknown-badge check keys on ageSeconds, not lastTickMs -- a future-skew stamp (lastTickMs set, ageSeconds null) must also render "unknown", not fall through to formatTickAge(null)', () => {
+  it('the unknown-badge check keys on ageSeconds, not lastTickMs -- a future-skew stamp (lastTickMs set, ageSeconds null) must also render a warning badge, not fall through to formatTickAge(null)', () => {
     const idx = APP.indexOf('function renderSchedulerHeartbeat')
     const guardIdx = APP.indexOf('if (', idx)
     const guard = APP.slice(guardIdx, APP.indexOf(')', guardIdx) + 1)
     expect(guard).toBe('if (status.ageSeconds == null)')
   })
 
+  it('within that guard, a future-skew stamp (lastTickMs set) renders clock_anomaly, and truly no data (lastTickMs null) renders unknown -- not the same message for both', () => {
+    const idx = APP.indexOf('function renderSchedulerHeartbeat')
+    const guardIdx = APP.indexOf('if (status.ageSeconds == null)', idx)
+    const body = APP.slice(guardIdx, APP.indexOf('return', guardIdx) + 10)
+    expect(body).toMatch(/status\.lastTickMs == null\s*\n\s*\?\s*'tasks\.scheduler_heartbeat\.unknown'\s*\n\s*:\s*'tasks\.scheduler_heartbeat\.clock_anomaly'/)
+  })
+
   it('every scheduler_heartbeat i18n key exists in both languages', () => {
-    for (const key of ['ok', 'stale', 'unknown']) {
+    for (const key of ['ok', 'stale', 'unknown', 'clock_anomaly']) {
       const needle = `'tasks.scheduler_heartbeat.${key}':`
       expect(EN, `en.js missing ${needle}`).toContain(needle)
       expect(HU, `hu.js missing ${needle}`).toContain(needle)

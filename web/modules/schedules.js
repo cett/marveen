@@ -374,11 +374,16 @@ function formatTickAge(seconds) {
 function renderSchedulerHeartbeat(container, status) {
   // ageSeconds is null both when there is no stamp at all (lastTickMs also
   // null) AND when the stamp is anomalously far in the future (lastTickMs
-  // set, but computeTickStatus() refuses to report a confident age for it) --
-  // either way there is no age to format, so both render as "unknown".
+  // set, but computeTickStatus() refuses to report a confident age for it).
+  // Distinct messages: "no tick data yet" is a normal fresh-install/pre-first-
+  // tick state, while a future timestamp is an actual anomaly (clock jump,
+  // corrupted row) worth calling out differently.
   if (status.ageSeconds == null) {
     container.hidden = false
-    container.innerHTML = `<span class="badge" data-variant="warning">${escapeHtml(t('tasks.scheduler_heartbeat.unknown'))}</span>`
+    const key = status.lastTickMs == null
+      ? 'tasks.scheduler_heartbeat.unknown'
+      : 'tasks.scheduler_heartbeat.clock_anomaly'
+    container.innerHTML = `<span class="badge" data-variant="warning">${escapeHtml(t(key))}</span>`
     return
   }
   const time = formatTickAge(status.ageSeconds)
