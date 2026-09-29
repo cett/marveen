@@ -23,6 +23,18 @@ async function apiFetch(url, opts = {}) {
 
 let pendingDeleteName = null
 
+// .modal-overlay only becomes visible via the .active class -- [hidden]
+// alone toggles display:none/block but never restores opacity/visibility.
+// Both must be set (see web/modules/audit-log.js for the same pattern).
+function openDeleteModal() {
+  const m = document.getElementById('backupsDeleteModal')
+  if (m) { m.hidden = false; m.classList.add('active') }
+}
+function closeDeleteModal() {
+  const m = document.getElementById('backupsDeleteModal')
+  if (m) { m.classList.remove('active'); m.hidden = true }
+}
+
 function formatSize(bytes) {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
@@ -190,11 +202,11 @@ function wireEvents() {
 
   // Delete modal
   document.getElementById('backupsDeleteCancelBtn')?.addEventListener('click', () => {
-    document.getElementById('backupsDeleteModal').hidden = true
+    closeDeleteModal()
     pendingDeleteName = null
   })
   document.getElementById('backupsDeleteConfirmBtn')?.addEventListener('click', () => {
-    document.getElementById('backupsDeleteModal').hidden = true
+    closeDeleteModal()
     if (pendingDeleteName) deleteBackup(pendingDeleteName)
     pendingDeleteName = null
   })
@@ -209,7 +221,7 @@ function wireEvents() {
       pendingDeleteName = deleteBtn.dataset.name
       const desc = document.getElementById('backupsDeleteModalDesc')
       if (desc) desc.textContent = deleteBtn.dataset.name
-      document.getElementById('backupsDeleteModal').hidden = false
+      openDeleteModal()
     }
   })
 }
