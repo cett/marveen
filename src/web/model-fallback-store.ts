@@ -63,3 +63,35 @@ export function writeModelFallbackConfig(cfg: Partial<ModelFallbackConfig>): Mod
   setSystemConfig(KEY_REVERT_MINUTES, String(merged.revertAfterMinutes))
   return merged
 }
+
+/** Only the fields an operator actually set, with no code-level default
+ *  substituted in -- for fleet-transfer export. Unlike readModelFallbackConfig(),
+ *  a field this fleet never explicitly configured is simply absent, not filled
+ *  with (e.g.) this install's defaultChainForInstall(). That distinction matters
+ *  on import: the chain's primary entry must match the TARGET's actually-running
+ *  model, so importing a source's merely-computed default would silently point
+ *  the target's fallback chain at a model it may never run (see the
+ *  #985 group 5/8 comment on migrateGroup5StateFromFiles() in
+ *  db/system-config.ts for the same reasoning applied to the install-time
+ *  migration). */
+export function readModelFallbackFieldsRaw(): Partial<ModelFallbackConfig> {
+  const out: Partial<ModelFallbackConfig> = {}
+  const enabledRow = getSystemConfig(KEY_ENABLED)
+  if (enabledRow) out.enabled = enabledRow.value === '1'
+  const explicitChain = explicitChainFromRow(getSystemConfig(KEY_CHAIN)?.value)
+  if (explicitChain) out.chain = explicitChain
+  const revertRow = getSystemConfig(KEY_REVERT_MINUTES)
+  if (revertRow !== undefined) out.revertAfterMinutes = Number(revertRow.value)
+  return out
+}
+
+/** Counterpart to readModelFallbackFieldsRaw(): sets exactly the given fields,
+ *  one row each, with no merge against the current value and no normalization.
+ *  A field left out of `fields` is left untouched -- see the reasoning above for
+ *  why fleet-transfer must not blanket-overwrite an unconfigured chain/enabled/
+ *  revertAfterMinutes with whatever the source fleet's code-level default was. */
+export function writeModelFallbackFieldsRaw(fields: Partial<ModelFallbackConfig>): void {
+  if (fields.enabled !== undefined) setSystemConfig(KEY_ENABLED, fields.enabled ? '1' : '0')
+  if (fields.chain !== undefined) setSystemConfig(KEY_CHAIN, JSON.stringify(fields.chain))
+  if (fields.revertAfterMinutes !== undefined) setSystemConfig(KEY_REVERT_MINUTES, String(fields.revertAfterMinutes))
+}

@@ -36,3 +36,16 @@ export function writeTerminalInputEnabled(enabled: boolean): boolean {
   setSystemConfig(KEY, next ? '1' : '0')
   return next
 }
+
+/** undefined when the operator never explicitly set this toggle -- for
+ *  fleet-transfer export. Unlike readTerminalInputEnabled(), this does NOT
+ *  substitute the safe-OFF default, so a target install that was never told
+ *  about this field on import keeps its own current value instead of being
+ *  silently reset to OFF (this toggle is security-sensitive: see the incident
+ *  note above readTerminalInputEnabled() -- an import must never be able to
+ *  flip a target's deliberate opt-in back off just because the source fleet
+ *  never touched the setting). */
+export function readTerminalInputEnabledRaw(): boolean | undefined {
+  const row = getSystemConfig(KEY)
+  return row ? row.value === '1' : undefined
+}

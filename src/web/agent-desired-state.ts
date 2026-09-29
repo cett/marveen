@@ -54,3 +54,11 @@ export function removeDesiredAgent(name: string): void {
   writeDesired(set)
   logger.info({ agent: name }, 'Agent removed from desired run-state')
 }
+
+/** Whole-value replace, for fleet-transfer import -- the identity-takeover model
+ *  treats this field as source-authoritative, same as the other P3 overwrite
+ *  fields (see DashboardSettingsExport in fleet-transfer.ts). Unlike
+ *  add/removeDesiredAgent, this does not merge onto the current set. */
+export function setDesiredAgents(names: string[]): void {
+  writeDesired(new Set(names))
+}
