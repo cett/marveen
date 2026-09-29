@@ -9,9 +9,9 @@ post-tool-injection-gate.py), with a `hookSpecificOutput.additionalContext`
 HANDOFF only once the context-token estimate crosses CONTEXT_PCT_THRESHOLD.
 
 Every test runs against a temp SQLite DB (LEDGER_DB_PATH override, same seam
-ledger_lib.py already exposes) and temp gate-config/compact-state JSON files
-(CONTEXT_WATCHDOG_GATE_CONFIG / CONTEXT_WATCHDOG_COMPACT_STATE overrides) --
-never the real store/claudeclaw.db or store/context-*.json.
+ledger_lib.py already exposes) -- the gate threshold (agent_settings row,
+setting_key='context_restart_gate') now lives in that same DB, never the
+real store/claudeclaw.db.
 
 Privacy: only neutral fixture data; no real agent names, tokens, or chat IDs.
 """
@@ -102,6 +102,15 @@ def _make_db(path):
           reason TEXT,
           session_id TEXT,
           trigger_source TEXT
+        );
+
+        CREATE TABLE agent_settings (
+          agent_id      TEXT NOT NULL,
+          setting_key   TEXT NOT NULL,
+          setting_value TEXT NOT NULL,
+          tenant_id     TEXT NOT NULL DEFAULT 'default',
+          updated_at    INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (agent_id, setting_key)
         );
 
         CREATE TABLE otel_spans (
@@ -249,6 +258,63 @@ class TestKnownAgentCwd(unittest.TestCase):
     def test_empty_cwd_is_rejected(self):
         self.assertIsNone(hook._known_agent_cwd(""))
         self.assertIsNone(hook._known_agent_cwd(None))
+
+
+class TestReadGateThreshold(unittest.TestCase):
+    """_read_gate_threshold() reads the agent_settings row (migration 0058,
+    #985 group 3/8 -- replaces the former store/context-restart-gate.json),
+    falling back to DEFAULT_THRESHOLD_TOKENS on anything but a valid positive
+    number."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.conn = _make_db(self.tmp.name)
+        self._prev_env = os.environ.get("LEDGER_DB_PATH")
+        os.environ["LEDGER_DB_PATH"] = self.tmp.name
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.tmp.name)
+        if self._prev_env is None:
+            os.environ.pop("LEDGER_DB_PATH", None)
+        else:
+            os.environ["LEDGER_DB_PATH"] = self._prev_env
+
+    def _seed(self, agent_id, value):
+        self.conn.execute(
+            "INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at) "
+            "VALUES (?, 'context_restart_gate', ?, 'default', 0)",
+            (agent_id, json.dumps(value)),
+        )
+        self.conn.commit()
+
+    def test_no_row_falls_back_to_default(self):
+        self.assertEqual(hook._read_gate_threshold("agent-x"), hook.DEFAULT_THRESHOLD_TOKENS)
+
+    def test_configured_threshold_is_read(self):
+        self._seed("agent-x", {"enabled": True, "thresholdTokens": 250000})
+        self.assertEqual(hook._read_gate_threshold("agent-x"), 250000)
+
+    def test_row_for_a_different_agent_does_not_leak(self):
+        self._seed("agent-y", {"enabled": True, "thresholdTokens": 250000})
+        self.assertEqual(hook._read_gate_threshold("agent-x"), hook.DEFAULT_THRESHOLD_TOKENS)
+
+    def test_missing_thresholdTokens_key_falls_back_to_default(self):
+        self._seed("agent-x", {"enabled": True})
+        self.assertEqual(hook._read_gate_threshold("agent-x"), hook.DEFAULT_THRESHOLD_TOKENS)
+
+    def test_non_positive_thresholdTokens_falls_back_to_default(self):
+        self._seed("agent-x", {"enabled": True, "thresholdTokens": 0})
+        self.assertEqual(hook._read_gate_threshold("agent-x"), hook.DEFAULT_THRESHOLD_TOKENS)
+
+    def test_corrupt_json_falls_back_to_default(self):
+        self.conn.execute(
+            "INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at) "
+            "VALUES ('agent-x', 'context_restart_gate', 'not-json', 'default', 0)",
+        )
+        self.conn.commit()
+        self.assertEqual(hook._read_gate_threshold("agent-x"), hook.DEFAULT_THRESHOLD_TOKENS)
 
 
 class TestResolveTenant(unittest.TestCase):
@@ -524,10 +590,14 @@ class TestMainSubprocess(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmpdir.name, "test.db")
-        _make_db(self.db_path).close()
-        self.gate_config_path = os.path.join(self.tmpdir.name, "gate.json")
-        with open(self.gate_config_path, "w") as f:
-            json.dump({MAIN_AGENT: {"enabled": True, "thresholdTokens": 400000}}, f)
+        conn = _make_db(self.db_path)
+        conn.execute(
+            "INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at) "
+            "VALUES (?, 'context_restart_gate', ?, 'default', 0)",
+            (MAIN_AGENT, json.dumps({"enabled": True, "thresholdTokens": 400000})),
+        )
+        conn.commit()
+        conn.close()
         self.transcript_path = os.path.join(self.tmpdir.name, "transcript.jsonl")
 
     def tearDown(self):
@@ -536,7 +606,6 @@ class TestMainSubprocess(unittest.TestCase):
     def _env(self):
         env = dict(os.environ)
         env["LEDGER_DB_PATH"] = self.db_path
-        env["CONTEXT_WATCHDOG_GATE_CONFIG"] = self.gate_config_path
         env["MAIN_AGENT_ID"] = MAIN_AGENT
         return env
 
@@ -679,8 +748,14 @@ class TestMainSubprocess(unittest.TestCase):
         # cwd = <install>/agents/<subagent-id> -- the shape a sub-agent's own
         # settings.json runs the hook with (ensureContextWatchdogHook).
         sub_agent = "subagent-x"
-        with open(self.gate_config_path, "w") as f:
-            json.dump({sub_agent: {"enabled": True, "thresholdTokens": 400000}}, f)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at) "
+            "VALUES (?, 'context_restart_gate', ?, 'default', 0)",
+            (sub_agent, json.dumps({"enabled": True, "thresholdTokens": 400000})),
+        )
+        conn.commit()
+        conn.close()
         _write_jsonl(self.transcript_path, [_usage_event(input_tokens=260000, output_tokens=10)])
         cwd = os.path.join(_INSTALL_DIR, "agents", sub_agent)
         r = self._run_hook(self._payload(cwd=cwd))

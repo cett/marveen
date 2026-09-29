@@ -113,9 +113,11 @@ import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
 
-# Fraction of the restart-gate's configured thresholdTokens (store/
-# context-restart-gate.json, default 400_000 -- src/context-restart-gate.ts
-# DEFAULT_THRESHOLD_TOKENS) at which this hook proactively injects a HANDOFF.
+# Fraction of the restart-gate's configured thresholdTokens (agent_settings
+# row, setting_key='context_restart_gate' -- migration 0058, #985 group 3/8,
+# replacing the former store/context-restart-gate.json; default 400_000 --
+# src/context-restart-gate.ts DEFAULT_THRESHOLD_TOKENS) at which this hook
+# proactively injects a HANDOFF.
 # Deliberately well below the gate's own 100% trigger and the harness's own
 # 90-97% /compact, and below the now-retired context-compact-monitor.sh's
 # COMPACT_PCT (75) and URGENT_PCT (95) -- this fires first, earliest signal wins.
@@ -412,24 +414,26 @@ def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_s
     return model_id
 
 
-def _gate_config_path() -> str:
-    # Test override, same pattern as ledger_lib.db_path()'s LEDGER_DB_PATH.
-    return os.environ.get("CONTEXT_WATCHDOG_GATE_CONFIG") or os.path.join(
-        _install_dir(), "store", "context-restart-gate.json")
-
-
 def _read_gate_threshold(agent_id: str) -> int:
-    """Best-effort read of store/context-restart-gate.json's thresholdTokens
-    for this agent, falling back to the gate's own default. Any failure
-    (missing file, corrupt JSON, missing key) falls back silently -- this is
-    a read of an already-fail-closed-guarded config file, not a new gate."""
-    path = _gate_config_path()
+    """Best-effort read of this agent's context_restart_gate thresholdTokens
+    from agent_settings (migration 0058, #985 group 3/8 -- replaces the
+    former store/context-restart-gate.json), falling back to the gate's own
+    default. Any failure (missing row, corrupt JSON, missing key, DB error)
+    falls back silently -- this is a read of an already-fail-closed-guarded
+    config, not a new gate."""
     try:
-        with open(path, encoding="utf-8") as f:
-            cfg = json.load(f)
-        v = cfg.get(agent_id, {}).get("thresholdTokens")
-        if isinstance(v, (int, float)) and v > 0:
-            return int(v)
+        conn = sqlite3.connect(ledger_lib.db_path(), timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT setting_value FROM agent_settings WHERE agent_id = ? AND setting_key = 'context_restart_gate'",
+                (agent_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            v = json.loads(row[0]).get("thresholdTokens")
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
     except Exception:
         pass
     return DEFAULT_THRESHOLD_TOKENS

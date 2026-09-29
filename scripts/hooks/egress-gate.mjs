@@ -381,9 +381,10 @@ const BLOCK_MESSAGE =
   'KIZÁRÓLAG a quarantine-reader sub-ágensen keresztül kérhető le: ' +
   'Agent({ subagent_type: "quarantine-reader", prompt: `FETCH {"url":"...","nonce":"..."}` }). ' +
   'A letiltott hívás rögzítve lett a store/egress-blocked.log fájlban. ' +
-  'Ha ez a hívás jogos, az operátor jóváhagyhatja: adja hozzá az URL-t vagy domain-t a ' +
-  'store/egress-allowlist.json fájlhoz ({ "domains": ["example.com"] } vagy ' +
-  '{ "prefixes": ["https://example.com/api/"] }), majd futtassa újra a WebFetch hívást.'
+  'Ha ez a hívás jogos, az operátor jóváhagyhatja: POST /api/v1/egress-allowlist ' +
+  '{ "value": "example.com", "type": "domain" } (vagy "type": "prefix" és egy ' +
+  '"https://example.com/api/"-szerű érték a value-ban), admin dashboard-token ' +
+  'szükséges -- majd futtassa újra a WebFetch hívást.'
 
 function allow() { process.exit(0) }
 

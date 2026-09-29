@@ -30,9 +30,13 @@ fi
 
 # Small critical state git does not track. Explicit list -- store/ also holds
 # ~1.7G of large/regenerable data we deliberately do NOT copy.
+#
+# agents-desired.json, auto-restart.json and schedule-last-run.json are NOT
+# listed here (#985 groups 3-5/8): their state now lives in the SQLite DB
+# (agent_settings / system_config), already captured by the .backup above --
+# copying the retired .json side-cars would back up stale, no-longer-read data.
 for f in vault.json .vault-key .dashboard-token \
-         openrouter-models.json agents-desired.json \
-         auto-restart.json command-task-health.json schedule-last-run.json; do
+         openrouter-models.json command-task-health.json; do
   [ -f "$STORE/$f" ] && cp -p "$STORE/$f" "$DEST/" 2>/dev/null
 done
 

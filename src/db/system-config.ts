@@ -170,6 +170,26 @@ export function migrateGroup5StateFromFiles(): number {
   return migrated
 }
 
+// #985 group 5/8: the three files migrateGroup5StateFromFiles() backfills
+// above were left un-retired -- every other group renames its source file(s)
+// to .deprecated once the backfill has guaranteed the DB holds everything the
+// file had (retireAgentSettingsFiles() in db/index.ts is the closest sibling,
+// same multi-file loop). Deliberately NOT called from initDatabase() itself,
+// same shared-worktree-store/-dir test-race reason as retireConfigOverridesFile()
+// above -- called once from src/index.ts's real process boot instead.
+export function retireGroup5StateFiles(): void {
+  for (const name of ['model-fallback.json', 'agents-desired.json', 'terminal-input.json']) {
+    const p = join(STORE_DIR, name)
+    if (!existsSync(p)) continue
+    try {
+      renameSync(p, `${p}.deprecated`)
+      logger.info({ path: p }, 'group 5/8 state file retired (renamed to .deprecated) -- system_config DB is now the only read source')
+    } catch (err) {
+      logger.warn({ err, path: p }, 'system_config migration: failed to rename file to .deprecated')
+    }
+  }
+}
+
 export function retireConfigOverridesFile(): void {
   const overridesPath = join(STORE_DIR, 'config-overrides.json')
   if (!existsSync(overridesPath)) return
