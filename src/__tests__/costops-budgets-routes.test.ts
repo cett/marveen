@@ -80,7 +80,7 @@ describe('costops budgets route -- CRUD', () => {
     expect(body().budgets).toEqual([])
   })
 
-  it('POST creates a budget and persists it to costops-config.json', async () => {
+  it('POST creates a budget and persists it to cost_budgets (DB-backed, #985 group 6/8)', async () => {
     const { ctx, status, body } = makeCtx({
       method: 'POST',
       path: '/api/costops/budgets',
@@ -91,10 +91,10 @@ describe('costops budgets route -- CRUD', () => {
     expect(status()).toBe(201)
     expect(body().budget).toMatchObject({ id: 'global-monthly', amount: 5_000_000, block_on_hard: false })
 
-    expect(existsSync(COSTOPS_CONFIG_PATH)).toBe(true)
-    const onDisk = JSON.parse(readFileSync(COSTOPS_CONFIG_PATH, 'utf-8'))
-    expect(onDisk.budgets).toHaveLength(1)
-    expect(onDisk.budgets[0].id).toBe('global-monthly')
+    const { listCostBudgets } = await import('../db/cost-budgets.js')
+    const rows = listCostBudgets('default')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('global-monthly')
   })
 
   it('GET enriches each budget with live status (spent/ratio/level/blocked)', async () => {

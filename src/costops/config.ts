@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
+import { listCostBudgets, replaceCostBudgets } from '../db/cost-budgets.js'
 
 export const COSTOPS_CONFIG_PATH = join(STORE_DIR, 'costops-config.json')
 export const COSTOPS_EXAMPLE_PATH = join(STORE_DIR, 'costops-config.json.example')
@@ -100,6 +101,12 @@ export interface ConfigLoadResult {
  * malformed config yields an empty (but valid) config plus a list of errors,
  * so the read-only summary endpoint degrades gracefully instead of 500ing.
  * On a missing config, writes the placeholder example alongside for guidance.
+ *
+ * `budgets` is DB-backed (cost_budgets table, #985 group 6/8) -- the file (if
+ * any) only holds `version`/`currency`/`fixed_costs` now. Any `budgets` key
+ * still present in an old-format file is ignored on read; the one-time
+ * backfill from such a file into the table is migrateCostBudgetsFromFile()
+ * (src/db/cost-budgets.ts), wired into initDatabase().
  */
 export function loadCostopsConfig(): ConfigLoadResult {
   if (!existsSync(COSTOPS_CONFIG_PATH)) {
@@ -107,27 +114,34 @@ export function loadCostopsConfig(): ConfigLoadResult {
     // Fresh arrays every call: a caller that mutates the returned config
     // in place (e.g. pushing a new budget before saving) must never corrupt
     // the shared EMPTY_CONFIG singleton for the rest of the process.
-    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: [] }, exists: false, errors: [] }
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: listCostBudgets() }, exists: false, errors: [] }
   }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(COSTOPS_CONFIG_PATH, 'utf-8'))
   } catch (err) {
     logger.warn({ err }, 'costops-config.json is not valid JSON')
-    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: [] }, exists: true, errors: ['config is not valid JSON'] }
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: listCostBudgets() }, exists: true, errors: ['config is not valid JSON'] }
   }
-  return validateConfig(raw)
+  const obj = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
+  return validateConfig({ ...obj, budgets: listCostBudgets() })
 }
 
 /**
  * Persist a config object (typically an in-memory mutation of a prior
- * loadCostopsConfig() result) back to costops-config.json. Re-validates
- * before writing so the on-disk shape always matches validateConfig's
- * normalized output (defaults filled in, unknown fields dropped).
+ * loadCostopsConfig() result) back to costops-config.json + cost_budgets.
+ * Re-validates before writing so both destinations always match
+ * validateConfig's normalized output (defaults filled in, unknown fields
+ * dropped). `budgets` goes to the DB (whole-value replace, matching the old
+ * whole-file-overwrite semantics: a budget removed from the passed-in config
+ * is gone, not merely left un-upserted); `version`/`currency`/`fixed_costs`
+ * still go to the file.
  */
 export function saveCostopsConfig(config: CostOpsConfig): ConfigLoadResult {
   const validated = validateConfig(config)
-  writeFileSync(COSTOPS_CONFIG_PATH, JSON.stringify(validated.config, null, 2) + '\n', 'utf-8')
+  const { budgets, ...fileConfig } = validated.config
+  writeFileSync(COSTOPS_CONFIG_PATH, JSON.stringify(fileConfig, null, 2) + '\n', 'utf-8')
+  replaceCostBudgets('default', budgets)
   return validated
 }
 

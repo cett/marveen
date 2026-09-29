@@ -14,6 +14,7 @@ export * from './agents.js'
 export * from './audit.js'
 export * from './autonomy.js'
 export * from './claude-plans.js'
+export * from './cost-budgets.js'
 export * from './egress-allowlist.js'
 export * from './kanban.js'
 export * from './memory.js'
@@ -36,6 +37,7 @@ import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getS
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
 import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
+import { migrateCostBudgetsFromFile } from './cost-budgets.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -116,6 +118,13 @@ export function initDatabase(dbPathOverride?: string): void {
   // every-boot-but-effectively-once shape, via migrateKanbanAuditStateFromFile's
   // own "only if absent" guard.
   migrateKanbanAuditStateFromFile()
+
+  // Migration 0061 (#985 group 6/8): one-time import of
+  // store/costops-config.json's `budgets[]` array into cost_budgets.
+  // version/currency/fixed_costs stay in the JSON file. Same every-boot-
+  // but-effectively-once shape as the migrators above (INSERT OR IGNORE per
+  // row in migrateCostBudgetsFromFile).
+  migrateCostBudgetsFromFile()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
