@@ -257,6 +257,76 @@ if grep -q '{{WEB_PORT}}' "$SCHED_TARGET5/kanban-audit/SKILL.md" 2>/dev/null; th
 else
   pass "no raw {{WEB_PORT}} placeholder in SKILL.md"
 fi
+unset WEB_PORT
+
+# 5c/5d: run the REAL update.sh block (not a hand-copied pipeline like 5b),
+# extracted by the same comment anchors update.sh itself uses to bound this
+# section (from "Seed skills & scheduled tasks" down to, but not including,
+# the CLAUDE.md-regen section that follows it). This is what actually catches
+# a regression 5a/5b cannot: 5a only checks the sed pipeline has a {{WEB_PORT}}
+# clause at all, and 5b's WEB_PORT="4567" is unquoted plain text, so neither
+# would notice the .env-read line itself being wrong (missing tr -d '"', or
+# unconditionally overwriting an already-exported WEB_PORT).
+BLOCK_FILE="$TMPDIR_BASE/reseed-block.sh"
+sed -n '/^# Seed skills & scheduled tasks (idempotent: skip existing)$/,/^# --- Main CLAUDE.md identity check/p' "$UPDATE_SH" \
+  | sed '$d' > "$BLOCK_FILE"
+if [ ! -s "$BLOCK_FILE" ]; then
+  fail "could not extract the reseed block from update.sh (comment anchors moved?)"
+fi
+
+echo ""
+echo "Test 5c: real update.sh block, quoted WEB_PORT in .env"
+FIXTURE_INSTALL="$TMPDIR_BASE/t5c-install"
+FIXTURE_HOME="$TMPDIR_BASE/t5c-home"
+mkdir -p "$FIXTURE_INSTALL" "$FIXTURE_HOME"
+ln -s "$SEED_SCHED_DIR" "$FIXTURE_INSTALL/seed-scheduled-tasks"
+printf 'MAIN_AGENT_ID=testbot\nBOT_NAME=TestBot\nOWNER_NAME=Tester\nWEB_PORT="4567"\n' > "$FIXTURE_INSTALL/.env"
+
+( unset WEB_PORT
+  export INSTALL_DIR="$FIXTURE_INSTALL" HOME="$FIXTURE_HOME" RESEED_FLEET=""
+  bash "$BLOCK_FILE" > /dev/null 2>&1
+)
+
+T5C_SKILL="$FIXTURE_HOME/.claude/scheduled-tasks/kanban-audit/SKILL.md"
+if [ -f "$T5C_SKILL" ] && grep -q 'localhost:4567' "$T5C_SKILL"; then
+  pass "real update.sh block: quoted .env WEB_PORT renders as localhost:4567"
+else
+  fail "real update.sh block did NOT render localhost:4567 (quoted .env value)"
+fi
+if grep -q '{{WEB_PORT}}' "$T5C_SKILL" 2>/dev/null; then
+  fail "real update.sh block left a raw {{WEB_PORT}} placeholder"
+else
+  pass "real update.sh block left no raw {{WEB_PORT}} placeholder"
+fi
+if grep -qF '"4567"' "$T5C_SKILL" 2>/dev/null || grep -q 'localhost:"4567"' "$T5C_SKILL" 2>/dev/null; then
+  fail "the .env value's quotes were not stripped -- literal quote characters leaked into SKILL.md"
+else
+  pass "the .env value's quotes were stripped before substitution"
+fi
+
+echo ""
+echo "Test 5d: real update.sh block respects an already-exported WEB_PORT over .env"
+FIXTURE_INSTALL2="$TMPDIR_BASE/t5d-install"
+FIXTURE_HOME2="$TMPDIR_BASE/t5d-home"
+mkdir -p "$FIXTURE_INSTALL2" "$FIXTURE_HOME2"
+ln -s "$SEED_SCHED_DIR" "$FIXTURE_INSTALL2/seed-scheduled-tasks"
+# .env deliberately disagrees with the pre-exported value below -- the
+# pre-exported one must win (same precedence run_seed_refresh() already uses).
+printf 'MAIN_AGENT_ID=testbot\nBOT_NAME=TestBot\nOWNER_NAME=Tester\nWEB_PORT=1111\n' > "$FIXTURE_INSTALL2/.env"
+
+( export INSTALL_DIR="$FIXTURE_INSTALL2" HOME="$FIXTURE_HOME2" RESEED_FLEET="" WEB_PORT="9876"
+  bash "$BLOCK_FILE" > /dev/null 2>&1
+)
+
+T5D_SKILL="$FIXTURE_HOME2/.claude/scheduled-tasks/kanban-audit/SKILL.md"
+if [ -f "$T5D_SKILL" ] && grep -q 'localhost:9876' "$T5D_SKILL"; then
+  pass "an already-exported WEB_PORT (9876) wins over a conflicting .env value (1111)"
+else
+  fail "the pre-exported WEB_PORT was NOT respected (expected localhost:9876)"
+fi
+if grep -q 'localhost:1111' "$T5D_SKILL" 2>/dev/null; then
+  fail "the .env value (1111) was used instead of the pre-exported one -- exported WEB_PORT got overwritten"
+fi
 
 # --- Summary ---
 echo ""
