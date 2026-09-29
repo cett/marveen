@@ -2,6 +2,15 @@
 // exercised indirectly via connectors-routes.test.ts, which mocks this whole
 // module -- so none of its own logic (binding CRUD, MCP-file path collection,
 // sensitive-value scanning, sync/unsync file rewriting) had a direct test.
+//
+// #985 group 7/8: the binding store itself moved from store/vault-bindings.json
+// to the vault_bindings DB table -- getBindings/addBinding/removeBinding/
+// removeBindingsForSecret now go through '../db/vault-bindings.js' (mocked
+// below with an in-memory row array) instead of readFileSync/
+// atomicWriteFileSync on BINDINGS_PATH. The target.mcpFilePath writes (the
+// actual MCP config files a binding syncs secrets into) are UNCHANGED by
+// that migration and still go through the mocked node:fs / atomic-write.js
+// below.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { homedir } from 'node:os'
@@ -34,9 +43,6 @@ vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/mock-store',
 }))
 
-// Persists into mockFsFiles so a write is visible to a later read (getBindings
-// after a mutation, etc.), matching real atomic-write.js semantics closely
-// enough for this module's own read-modify-write round trips.
 const atomicWriteFileSync = vi.fn((path: string, content: string) => {
   mockFsFiles[path] = content
 })
@@ -63,6 +69,31 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
+// In-memory stand-in for the vault_bindings table (#985 group 7/8). Declared
+// via vi.hoisted so the vi.mock factory below (itself hoisted above imports)
+// can close over it. seedBindings()/vaultBindingsDb.rows are the test-side
+// handle into the same array the mocked DB functions read/write.
+const vaultBindingsDb = vi.hoisted(() => ({ rows: [] as Array<{ vaultSecretId: string; envVar: string; targets: unknown[] }> }))
+
+vi.mock('../db/vault-bindings.js', () => ({
+  listVaultBindings: vi.fn(() => vaultBindingsDb.rows.map(r => ({ ...r, targets: [...r.targets] }))),
+  upsertVaultBinding: vi.fn((_tenantId: string, binding: { vaultSecretId: string; envVar: string; targets: unknown[] }) => {
+    const idx = vaultBindingsDb.rows.findIndex(r => r.vaultSecretId === binding.vaultSecretId && r.envVar === binding.envVar)
+    if (idx >= 0) vaultBindingsDb.rows[idx] = binding
+    else vaultBindingsDb.rows.push(binding)
+  }),
+  deleteVaultBinding: vi.fn((_tenantId: string, vaultSecretId: string, envVar: string) => {
+    const before = vaultBindingsDb.rows.length
+    vaultBindingsDb.rows = vaultBindingsDb.rows.filter(r => !(r.vaultSecretId === vaultSecretId && r.envVar === envVar))
+    return vaultBindingsDb.rows.length !== before
+  }),
+  deleteVaultBindingsForSecret: vi.fn((_tenantId: string, vaultSecretId: string) => {
+    const toRemove = vaultBindingsDb.rows.filter(r => r.vaultSecretId === vaultSecretId)
+    vaultBindingsDb.rows = vaultBindingsDb.rows.filter(r => r.vaultSecretId !== vaultSecretId)
+    return toRemove
+  }),
+}))
+
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   collectAllMcpFilePaths, scanMcpConfigs, syncSecret, unsyncBinding, syncAllBindings,
@@ -71,11 +102,10 @@ import {
 import { readFileOr, listAgentNames } from '../web/agent-config.js'
 import { getSecret, listSecrets } from '../web/vault.js'
 import { getExternalProjectPaths } from '../web/dashboard-settings.js'
-
-const BINDINGS_PATH = '/tmp/mock-store/vault-bindings.json'
+import { upsertVaultBinding, deleteVaultBinding } from '../db/vault-bindings.js'
 
 function seedBindings(bindings: VaultBinding[]) {
-  setMockFile(BINDINGS_PATH, JSON.stringify({ bindings }))
+  vaultBindingsDb.rows = bindings.map(b => ({ ...b, targets: [...b.targets] }))
 }
 
 beforeEach(() => {
@@ -84,6 +114,7 @@ beforeEach(() => {
   vi.mocked(getExternalProjectPaths).mockReturnValue([])
   vi.mocked(listSecrets).mockReturnValue([])
   vi.mocked(getSecret).mockReturnValue(null)
+  vaultBindingsDb.rows = []
   for (const k of Object.keys(mockFsFiles)) delete mockFsFiles[k]
   for (const k of Object.keys(mockFsDirs)) delete mockFsDirs[k]
 })
@@ -91,48 +122,38 @@ beforeEach(() => {
 // ── getBindings / addBinding / removeBinding ────────────────────────────────
 
 describe('getBindings', () => {
-  it('returns an empty list when the store file does not exist', () => {
+  it('returns an empty list when the DB has no rows', () => {
     expect(getBindings()).toEqual([])
   })
 
-  it('returns the parsed bindings from the store file', () => {
+  it('returns the bindings from the DB', () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
     expect(getBindings()).toEqual([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
-  })
-
-  it('falls back to an empty list on malformed JSON', () => {
-    setMockFile(BINDINGS_PATH, '{not json')
-    expect(getBindings()).toEqual([])
   })
 })
 
 describe('addBinding', () => {
-  it('appends a new binding and persists via atomicWriteFileSync', () => {
-    seedBindings([])
+  it('upserts a new binding into the DB via upsertVaultBinding', () => {
     addBinding({ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
-    expect(atomicWriteFileSync).toHaveBeenCalledTimes(1)
-    const [path, content] = atomicWriteFileSync.mock.calls[0]
-    expect(path).toBe(BINDINGS_PATH)
-    expect(JSON.parse(content as string)).toEqual({
-      bindings: [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }],
-    })
+    expect(upsertVaultBinding).toHaveBeenCalledTimes(1)
+    expect(upsertVaultBinding).toHaveBeenCalledWith('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
+    expect(getBindings()).toEqual([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
   })
 
   it('replaces an existing binding with the same vaultSecretId + envVar', () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/a', serverName: 'x' }] }])
     addBinding({ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/b', serverName: 'y' }] })
-    const [, content] = atomicWriteFileSync.mock.calls[0]
-    const parsed = JSON.parse(content as string) as { bindings: VaultBinding[] }
-    expect(parsed.bindings).toHaveLength(1)
-    expect(parsed.bindings[0].targets).toEqual([{ mcpFilePath: '/b', serverName: 'y' }])
+    const bindings = getBindings()
+    expect(bindings).toHaveLength(1)
+    expect(bindings[0].targets).toEqual([{ mcpFilePath: '/b', serverName: 'y' }])
   })
 })
 
 describe('removeBinding', () => {
-  it('returns false and does not write when no matching binding exists', () => {
+  it('returns false when no matching binding exists', () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
     expect(removeBinding('s2', 'OTHER')).toBe(false)
-    expect(atomicWriteFileSync).not.toHaveBeenCalled()
+    expect(deleteVaultBinding).toHaveBeenCalledWith('default', 's2', 'OTHER')
   })
 
   it('removes the matching binding and returns true', () => {
@@ -141,9 +162,7 @@ describe('removeBinding', () => {
       { vaultSecretId: 's2', envVar: 'OTHER', targets: [] },
     ])
     expect(removeBinding('s1', 'API_KEY')).toBe(true)
-    const [, content] = atomicWriteFileSync.mock.calls[0]
-    const parsed = JSON.parse(content as string) as { bindings: VaultBinding[] }
-    expect(parsed.bindings).toEqual([{ vaultSecretId: 's2', envVar: 'OTHER', targets: [] }])
+    expect(getBindings()).toEqual([{ vaultSecretId: 's2', envVar: 'OTHER', targets: [] }])
   })
 })
 
@@ -208,10 +227,10 @@ describe('removeBindingsForSecret', () => {
     setMockFile('/mcp.json', JSON.stringify({ mcpServers: { srv: { command: 'x' } } }))
 
     expect(() => removeBindingsForSecret('s1')).not.toThrow()
-    // No env block -> the per-target write is skipped, but the bindings store
-    // itself is still rewritten (unconditional writeBindings at the end).
-    expect(atomicWriteFileSync).toHaveBeenCalledTimes(1)
-    expect(atomicWriteFileSync.mock.calls[0][0]).toBe(BINDINGS_PATH)
+    // No env block -> the per-target write is skipped. Unlike the pre-
+    // migration file store, there is no separate bindings-store write to
+    // fall back to, so atomicWriteFileSync is never called at all here.
+    expect(atomicWriteFileSync).not.toHaveBeenCalled()
     expect(getBindings()).toEqual([])
   })
 
@@ -338,7 +357,6 @@ describe('scanMcpConfigs', () => {
 
 describe('syncSecret', () => {
   it('returns updated:0 when there are no bindings for the secret', () => {
-    seedBindings([])
     expect(syncSecret('s1')).toEqual({ updated: 0, errors: [] })
   })
 
@@ -461,7 +479,6 @@ describe('syncAllBindings', () => {
   })
 
   it('returns updated:0 and no errors when there are no bindings at all', () => {
-    seedBindings([])
     expect(syncAllBindings()).toEqual({ updated: 0, errors: [] })
   })
 })

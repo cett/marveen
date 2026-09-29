@@ -87,6 +87,15 @@ vi.mock('../db/cost-budgets.js', () => ({
   replaceCostBudgets: vi.fn(),
 }))
 
+// fleet-transfer.ts (#985 group 7/8) imports listVaultBindings/
+// replaceVaultBindings straight from '../db/vault-bindings.js', not through
+// the '../web/vault-bindings.js' mock below (that one is still used for the
+// unrelated buildBindingLookup()/getBindings() secret-scrubbing path).
+vi.mock('../db/vault-bindings.js', () => ({
+  listVaultBindings: vi.fn().mockReturnValue([]),
+  replaceVaultBindings: vi.fn(),
+}))
+
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
   listAgentNames: () => [],
