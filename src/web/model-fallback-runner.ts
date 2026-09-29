@@ -87,15 +87,16 @@ function sessionFor(name: string): string {
 
 function restartFor(name: string): void {
   if (name === MAIN_AGENT_ID) {
-    // A fresh main relaunch re-reads .claude/settings.json (and thus the new
-    // model). channels.sh always starts fresh for main, so a conversation is
-    // not preserved here -- the model swap is what matters.
+    // A fresh main relaunch re-reads .env (and thus the new model, per
+    // readMainModelRaw()'s .env > settings.json precedence). channels.sh
+    // always starts fresh for main, so a conversation is not preserved here
+    // -- the model swap is what matters.
     //
     // Was a hardcoded `/bin/launchctl kickstart` (macOS-only), so on Linux the
     // usage-limit fallback could never actually swap main's model: it threw
     // ENOENT into the caller's catch. hardRestartMarveenChannels() keeps the
     // launchd path for macOS installs and its Linux respawn-pane path re-reads
-    // settings.json the same way.
+    // .env the same way.
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './web/atomic-write.js'
@@ -62,9 +62,16 @@ export function updateEnvFile(updates: Record<string, string>): void {
   )
   if (entries.length === 0) return
 
+  // .env holds credentials (tokens, model overrides) -- keep it at 0600.
+  // atomicWriteFileSync's tmp file defaults to the umask (0644) when no mode
+  // is passed, and renameSync makes the target inherit that mode, silently
+  // loosening an existing 0600 file on every write. Preserve the current
+  // file's mode when it exists; default a brand-new .env to 0600.
   let content = ''
+  let mode = 0o600
   try {
     content = readFileSync(envPath, 'utf-8')
+    mode = statSync(envPath).mode & 0o777
   } catch {
     content = ''
   }
@@ -88,5 +95,5 @@ export function updateEnvFile(updates: Record<string, string>): void {
     out.push(`${key}=${val}`)
   }
 
-  atomicWriteFileSync(envPath, out.join('\n'))
+  atomicWriteFileSync(envPath, out.join('\n'), { mode })
 }

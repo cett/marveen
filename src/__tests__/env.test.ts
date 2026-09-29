@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { writeFileSync, unlinkSync, existsSync } from 'node:fs'
+import { writeFileSync, unlinkSync, existsSync, chmodSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -9,17 +9,20 @@ const testEnvPath = join(PROJECT_ROOT, '.env')
 
 let hadExistingEnv = false
 let existingContent = ''
+let existingMode = 0o600
 
 beforeEach(() => {
   if (existsSync(testEnvPath)) {
     hadExistingEnv = true
     existingContent = require('fs').readFileSync(testEnvPath, 'utf-8')
+    existingMode = statSync(testEnvPath).mode & 0o777
   }
 })
 
 afterEach(() => {
   if (hadExistingEnv) {
     writeFileSync(testEnvPath, existingContent)
+    chmodSync(testEnvPath, existingMode)
   } else {
     try { unlinkSync(testEnvPath) } catch {}
   }
@@ -108,5 +111,20 @@ describe('updateEnvFile', () => {
     const result = readEnvFile()
     expect(result['FOO']).toBe('updated')
     expect(result['BAZ']).toBe('qux')
+  })
+
+  it('preserves an existing 0600 mode after write', async () => {
+    writeFileSync(testEnvPath, 'FOO=bar\n')
+    chmodSync(testEnvPath, 0o600)
+    const { updateEnvFile } = await import('../env.js')
+    updateEnvFile({ FOO: 'new' })
+    expect(statSync(testEnvPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('creates a new .env at 0600', async () => {
+    try { unlinkSync(testEnvPath) } catch {}
+    const { updateEnvFile } = await import('../env.js')
+    updateEnvFile({ NEW_KEY: 'val' })
+    expect(statSync(testEnvPath).mode & 0o777).toBe(0o600)
   })
 })
