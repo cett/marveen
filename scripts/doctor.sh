@@ -59,11 +59,15 @@ fi
 # The heartbeat SUB-AGENT (session agent-heartbeat) is opt-in and OFF by default
 # -- see the HEARTBEAT_AGENT_ENABLED gate in src/index.ts. Warning about a
 # missing session on an install that never asked for it is pure noise, so only
-# complain when it is actually switched on. The flag can come from .env or from
-# the dashboard's store/config-overrides.json.
-HB_AGENT=$(grep -E "^HEARTBEAT_AGENT_ENABLED=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')
-if [ -z "$HB_AGENT" ] && [ -f store/config-overrides.json ]; then
-  HB_AGENT=$(python3 -c "import json,sys;print(json.load(open('store/config-overrides.json')).get('HEARTBEAT_AGENT_ENABLED',''))" 2>/dev/null)
+# complain when it is actually switched on. The flag can come from the
+# system_config DB row (config-overrides.json was migrated and retired, S8B)
+# or from .env -- same db-over-env precedence as config.ts's cfg().
+HB_AGENT=""
+if [ -f store/claudeclaw.db ]; then
+  HB_AGENT=$(sqlite3 store/claudeclaw.db "SELECT value FROM system_config WHERE key='HEARTBEAT_AGENT_ENABLED';" 2>/dev/null)
+fi
+if [ -z "$HB_AGENT" ]; then
+  HB_AGENT=$(grep -E "^HEARTBEAT_AGENT_ENABLED=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')
 fi
 if [ "$HB_AGENT" = "1" ]; then
   if tmux has-session -t "agent-heartbeat" 2>/dev/null; then
