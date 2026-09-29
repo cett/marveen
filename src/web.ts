@@ -79,6 +79,7 @@ import { tryHandleSkillUsage } from './web/routes/skill-usage.js'
 import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleCostopsBudgets } from './web/routes/costops-budgets.js'
 import { tryHandleEgressAllowlist } from './web/routes/egress-allowlist.js'
+import { tryHandleModelFallback } from './web/routes/model-fallback.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
@@ -151,6 +152,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleSettings)
   .add(tryHandleCostopsBudgets)
   .add(tryHandleEgressAllowlist)
+  .add(tryHandleModelFallback)
   .add(tryHandleVoice)
   .add(tryHandleVaultSshKeys)
   .add(tryHandleVaultSsh)

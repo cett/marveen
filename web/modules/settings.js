@@ -208,7 +208,7 @@ window.addEventListener('beforeunload', (e) => {
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
   const known = {
-    kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, 'model-profiles': true, observability: true, costops: true, 'claude-plans': true,
+    kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, 'model-profiles': true, observability: true, costops: true, 'claude-plans': true, 'model-fallback': true,
     // #953 section-tab ids (frontend-only grouping -- see SECTION_ORDER)
     rendszer: true, csatornak: true, agensek: true, memoria: true, 'fleet-monitor': true, adatmegorzs: true, 'budgetek-csomagok': true,
   }
@@ -800,7 +800,7 @@ export async function loadSettings() {
       }
     }
 
-    const allModules = [...SECTION_ORDER, ...extraSections, 'autonomy', 'model-profiles', 'budgetek-csomagok']
+    const allModules = [...SECTION_ORDER, ...extraSections, 'autonomy', 'model-profiles', 'budgetek-csomagok', 'model-fallback']
     const savedTab = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY) || allModules[0]
     const activeTab = allModules.includes(savedTab) ? savedTab : allModules[0]
 
@@ -1064,6 +1064,33 @@ export async function loadSettings() {
         renderClaudePlansPanel(body)
       }
     }
+
+    // Model-fallback-on-limit tab (#985 group 5/8, synthetic like autonomy/
+    // budgetek-csomagok above): enable toggle + chain editor + revert-after
+    // field over the model_fallback_* system_config rows, via
+    // GET/PUT /api/model-fallback.
+    {
+      const mod = 'model-fallback'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = settingsModuleLabel(mod)
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const body = document.createElement('div')
+      body.id = 'modelFallbackBody'
+      panel.appendChild(body)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) renderModelFallbackPanel(body)
+    }
   } catch (err) {
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
@@ -1096,6 +1123,10 @@ function activateSettingsTab(mod) {
   if (mod === 'csatornak') {
     const tbody = document.getElementById('egressAllowlistTbody')
     if (tbody && !tbody.innerHTML.trim()) loadEgressAllowlistTable()
+  }
+  if (mod === 'model-fallback') {
+    const body = document.getElementById('modelFallbackBody')
+    if (body && !body.innerHTML.trim()) renderModelFallbackPanel(body)
   }
 }
 
@@ -1581,6 +1612,129 @@ function costopsBudgetScopeLabel(budget) {
   if (budget.scope === 'agent') return t('tokenUsage.costops_scope_agent', { name: budget.scope_ref })
   if (budget.scope === 'tenant') return t('tokenUsage.costops_scope_tenant', { name: budget.scope_ref })
   return t('tokenUsage.costops_scope_global')
+}
+
+// === Model-fallback-on-limit (#985 group 5/8) ===============================
+// GET/PUT /api/model-fallback over the model_fallback_* system_config rows.
+// In-memory working copy of the chain array while editing; re-fetched fresh
+// every time the panel is (re)rendered so a stale local edit never survives a
+// tab switch.
+async function renderModelFallbackPanel(bodyEl) {
+  bodyEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('settings.loading')}</p>`
+  let cfg
+  try {
+    const res = await fetch('/api/model-fallback')
+    if (!res.ok) throw new Error(String(res.status))
+    cfg = await res.json()
+  } catch {
+    bodyEl.innerHTML = `<p style="color:var(--danger)">${t('settings.model_fallback.toast.error')}</p>`
+    return
+  }
+
+  const chain = [...cfg.chain]
+
+  bodyEl.innerHTML = `
+    <div class="settings-group-title">${t('settings.module.model-fallback')}</div>
+    <p class="settings-row-desc" style="margin-bottom:16px">${t('settings.model_fallback.desc')}</p>
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-key">${t('settings.model_fallback.enabled_label')}</div>
+        <div class="settings-row-desc">${t('settings.model_fallback.enabled_desc')}</div>
+      </div>
+      <div class="settings-row-editor">
+        <input type="checkbox" id="modelFallbackEnabled" ${cfg.enabled ? 'checked' : ''} />
+      </div>
+    </div>
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-key">${t('settings.model_fallback.chain_label')}</div>
+        <div class="settings-row-desc">${t('settings.model_fallback.chain_desc')}</div>
+      </div>
+    </div>
+    <div id="modelFallbackChainList" style="margin:8px 0 16px"></div>
+    <button class="btn" data-variant="secondary" data-size="compact" id="modelFallbackChainAddBtn">${t('settings.model_fallback.chain_add_btn')}</button>
+    <div class="settings-row" style="margin-top:16px">
+      <div class="settings-row-info">
+        <div class="settings-row-key">${t('settings.model_fallback.revert_label')}</div>
+        <div class="settings-row-desc">${t('settings.model_fallback.revert_desc')}</div>
+      </div>
+      <div class="settings-row-editor">
+        <input type="number" class="input" id="modelFallbackRevertMinutes" min="1" value="${cfg.revertAfterMinutes}" style="width:100px" />
+      </div>
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:12px">
+      <button class="btn" data-variant="primary" id="modelFallbackSaveBtn">${t('common.btn.save')}</button>
+      <span id="modelFallbackStatus" style="font-size:13px;color:var(--text-muted)"></span>
+    </div>`
+
+  function renderChainList() {
+    const listEl = bodyEl.querySelector('#modelFallbackChainList')
+    listEl.innerHTML = chain.map((model, i) => `
+      <div class="settings-row" data-chain-idx="${i}">
+        <div class="settings-row-editor" style="flex:1;gap:8px">
+          <input type="text" class="input" data-role="model-input" value="${escapeHtml(model)}" style="flex:1" />
+          <button class="btn" data-variant="secondary" data-size="compact" data-action="up" ${i === 0 ? 'disabled' : ''}>&uarr;</button>
+          <button class="btn" data-variant="secondary" data-size="compact" data-action="down" ${i === chain.length - 1 ? 'disabled' : ''}>&darr;</button>
+          <button class="btn" data-variant="danger" data-size="compact" data-action="remove" ${chain.length <= 2 ? 'disabled' : ''}>${t('common.btn.delete')}</button>
+        </div>
+      </div>`).join('')
+
+    listEl.querySelectorAll('[data-chain-idx]').forEach((row) => {
+      const i = Number(row.dataset.chainIdx)
+      row.querySelector('[data-role="model-input"]').addEventListener('input', (e) => { chain[i] = e.target.value })
+      row.querySelector('[data-action="up"]')?.addEventListener('click', () => {
+        if (i === 0) return
+        ;[chain[i - 1], chain[i]] = [chain[i], chain[i - 1]]
+        renderChainList()
+      })
+      row.querySelector('[data-action="down"]')?.addEventListener('click', () => {
+        if (i === chain.length - 1) return
+        ;[chain[i + 1], chain[i]] = [chain[i], chain[i + 1]]
+        renderChainList()
+      })
+      row.querySelector('[data-action="remove"]')?.addEventListener('click', () => {
+        if (chain.length <= 2) return
+        chain.splice(i, 1)
+        renderChainList()
+      })
+    })
+  }
+  renderChainList()
+
+  bodyEl.querySelector('#modelFallbackChainAddBtn').addEventListener('click', () => {
+    chain.push('')
+    renderChainList()
+  })
+
+  bodyEl.querySelector('#modelFallbackSaveBtn').addEventListener('click', async () => {
+    const statusEl = bodyEl.querySelector('#modelFallbackStatus')
+    const enabled = bodyEl.querySelector('#modelFallbackEnabled').checked
+    const revertAfterMinutes = Number(bodyEl.querySelector('#modelFallbackRevertMinutes').value)
+    const cleanedChain = chain.map((m) => m.trim()).filter((m) => m.length > 0)
+    if (cleanedChain.length < 2) {
+      showToast(t('settings.model_fallback.toast.chain_too_short'))
+      return
+    }
+    statusEl.textContent = t('settings.model_fallback.saving')
+    try {
+      const res = await fetch('/api/model-fallback', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, chain: cleanedChain, revertAfterMinutes }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        statusEl.textContent = ''
+        showToast(err.hint || t('settings.model_fallback.toast.error'))
+        return
+      }
+      showToast(t('settings.model_fallback.toast.saved'))
+      renderModelFallbackPanel(bodyEl)
+    } catch {
+      statusEl.textContent = ''
+      showToast(t('settings.model_fallback.toast.error'))
+    }
+  })
 }
 
 // === Egress allowlist (Csatornák & Biztonság tab, migration 0056) ==========
