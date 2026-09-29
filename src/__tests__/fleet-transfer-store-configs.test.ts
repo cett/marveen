@@ -385,7 +385,7 @@ describe('exportFleet/importFleet -- costBudgets (DB-backed)', () => {
     expect(applied.warnings?.some((w: string) => w.includes('costBudgets') && w.includes('érvénytelen'))).toBe(true)
   })
 
-  // Boo re-QA (2nd round before merge): every entry invalid -> validatedConfig.budgets
+  // A second QA pass before merge: every entry invalid -> validatedConfig.budgets
   // is empty even though the SOURCE array was non-empty. The "don't wipe on
   // empty" guard must apply to the VALIDATED/deduped result, not the raw
   // source length -- otherwise replaceCostBudgets('default', []) still runs
@@ -408,7 +408,7 @@ describe('exportFleet/importFleet -- costBudgets (DB-backed)', () => {
     expect(applied.warnings?.some((w: string) => w.includes('egyetlen érvényes bejegyzés sem maradt'))).toBe(true)
   })
 
-  // Boo re-QA (2nd round before merge): a duplicated id in the source used
+  // A second QA pass before merge: a duplicated id in the source used
   // to hit cost_budgets' PRIMARY KEY(id, tenant_id) mid-write and throw.
   // First occurrence wins, same as migrateCostBudgetsFromFile()'s
   // INSERT OR IGNORE.
