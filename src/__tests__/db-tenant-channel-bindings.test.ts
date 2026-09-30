@@ -72,8 +72,13 @@ describe('tenant channel bindings', () => {
     dbMod.getDb().pragma('foreign_keys = OFF')   // the FK cascade would mask a missing explicit purge
     dbMod.setChannelBinding('agent-a', 'telegram', '1', 'acme', 'admin')
     dbMod.setChannelBinding('agent-a', 'telegram', '2', 'beta', 'admin')
+    const ctx = dbMod.getDb().prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES (?, ?, 'bound')")
+    ctx.run('agent-a', 'acme'); ctx.run('agent-b', 'beta')
     dbMod.deleteTenant('acme')
     expect(dbMod.getChannelBindingTenant('agent-a', 'telegram', '1')).toBeNull()
     expect(dbMod.getChannelBindingTenant('agent-a', 'telegram', '2')).toBe('beta')
+    // an agent's recorded active context must not keep naming a deleted tenant
+    const left = dbMod.getDb().prepare('SELECT agent_id FROM agent_tenant_context').all() as { agent_id: string }[]
+    expect(left.map(r => r.agent_id)).toEqual(['agent-b'])
   })
 })

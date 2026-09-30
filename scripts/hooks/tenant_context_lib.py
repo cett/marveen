@@ -1,0 +1,189 @@
+"""Resolve the tenant of the request an agent is serving, from the prompt it just received.
+
+Shared by the UserPromptSubmit hook (tenant-context.py, writes the context) and the use-time
+skill gate (reads it). Pure stdlib, no node startup.
+
+The tenant is NEVER taken from free text. It comes from a database row that the source proves:
+  <channel source=.. chat_id=..>       -> tenant_channel_bindings (agent, channel, chat_id)
+  inter-agent delivery frame (msg_id:N) -> agent_messages row N (to_agent must be this agent):
+                                          a tenant-stamped message wins, else the binding
+                                          (agent, 'inter-agent', from_agent), else default
+  <scheduled-task source="scheduled-task:NAME"> -> schedules row (id=NAME, agent=this agent)
+  no source marker at all              -> the local operator: default tenant
+
+Only the TOP-LEVEL structure of the prompt is read (tag blocks are consumed whole, so a marker
+forged inside a chat message body is never seen as a source). Anything that cannot be identified
+or verified is 'unknown'; sources of different tenants in one prompt are 'conflict'. Both mean
+"no tenant skills" to the gate, which is the safe direction: a forged extra marker can only
+turn a request into unknown/conflict, never widen it.
+"""
+import os
+import re
+import sqlite3
+import time
+
+DEFAULT_TENANT = "default"
+
+# Same DDL as migration 0065 (a contract test keeps them identical).
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_tenant_context (
+  agent_id   TEXT    PRIMARY KEY,
+  tenant_id  TEXT    NOT NULL,
+  status     TEXT    NOT NULL CHECK(status IN ('bound','default','unknown','conflict')),
+  source     TEXT    NOT NULL DEFAULT '',
+  session_id TEXT    NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+)
+"""
+
+# One alternation, leftmost-first, non-overlapping: a tag block is consumed whole, so tags
+# nested inside a chat/peer body are part of that body and never separate sources.
+BLOCK_RX = re.compile(
+    r'<(channel|trusted-peer|untrusted|scheduled-task)\b([^>]*)>(.*?)</\1>',
+    re.DOTALL,
+)
+# Delivery frame written by the message router / drain endpoint OUTSIDE the wrapped body.
+FRAME_RX = re.compile(r'\[Uzenet\b[^\]\n]*?\]')
+MSG_ID_RX = re.compile(r'msg_id:(\d+)')
+CHANNEL_RX = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
+
+
+def _attr(attrs, name):
+    m = re.search(r'(?<![\w-])' + name + r'="([^"]*)"', attrs)
+    return m.group(1) if m else None
+
+
+def channel_name(source):
+    """plugin:telegram:telegram -> telegram, plugin:slack-channel:x -> slack-channel."""
+    if not source:
+        return None
+    parts = source.split(":")
+    name = parts[1] if parts[0] == "plugin" and len(parts) > 1 else parts[0]
+    name = name.lower()
+    return name if CHANNEL_RX.match(name) else None
+
+
+def parse_sources(prompt):
+    """List of source dicts found in the top-level structure of the prompt.
+
+    kind: channel | message | scheduled ; a source that is present but unusable has kind
+    'unknown' (with a reason).
+    """
+    sources = []
+    frame_parts = []
+    pos = 0
+    for m in BLOCK_RX.finditer(prompt):
+        frame_parts.append(prompt[pos:m.start()])
+        pos = m.end()
+        tag, attrs = m.group(1), m.group(2)
+        if tag == "channel":
+            channel = channel_name(_attr(attrs, "source"))
+            ext = _attr(attrs, "chat_id")
+            if channel and ext:
+                sources.append({"kind": "channel", "channel": channel, "external_id": ext})
+            else:
+                sources.append({"kind": "unknown", "reason": "channel tag without a usable source/chat_id"})
+        elif tag == "scheduled-task":
+            src = _attr(attrs, "source") or ""
+            name = src[len("scheduled-task:"):] if src.startswith("scheduled-task:") else ""
+            if name:
+                sources.append({"kind": "scheduled", "name": name})
+            else:
+                sources.append({"kind": "unknown", "reason": "scheduled-task tag without a task name"})
+        # trusted-peer / untrusted blocks are message BODIES: only their frame line matters
+    frame_parts.append(prompt[pos:])
+    frame = "".join(frame_parts)
+    for fm in FRAME_RX.finditer(frame):
+        idm = MSG_ID_RX.search(fm.group(0))
+        if idm:
+            sources.append({"kind": "message", "msg_id": int(idm.group(1))})
+        else:
+            sources.append({"kind": "unknown", "reason": "inter-agent frame without a msg_id"})
+    return sources
+
+
+def _one(con, sql, params):
+    try:
+        return con.execute(sql, params).fetchone()
+    except sqlite3.Error:
+        return None
+
+
+def _binding(con, agent_id, channel, external_id):
+    row = _one(
+        con,
+        "SELECT tenant_id FROM tenant_channel_bindings WHERE agent_id=? AND channel=? AND external_id=?",
+        (agent_id, channel, external_id),
+    )
+    return row[0] if row else None
+
+
+def resolve_source(con, agent_id, src):
+    """-> (status, tenant_id, description) for one source; status is bound|default|unknown."""
+    kind = src["kind"]
+    if kind == "channel":
+        desc = "channel:%s:%s" % (src["channel"], src["external_id"])
+        t = _binding(con, agent_id, src["channel"], src["external_id"])
+        return ("bound", t, desc) if t and t != DEFAULT_TENANT else ("default", DEFAULT_TENANT, desc)
+    if kind == "message":
+        desc = "message:%d" % src["msg_id"]
+        row = _one(con, "SELECT to_agent, from_agent, tenant_id FROM agent_messages WHERE id=?", (src["msg_id"],))
+        if not row or row[0] != agent_id:
+            return ("unknown", "", desc + " (not found or not for this agent)")
+        stamped = row[2]
+        if stamped and stamped != DEFAULT_TENANT:
+            return ("bound", stamped, desc)
+        t = _binding(con, agent_id, "inter-agent", row[1] or "")
+        return ("bound", t, desc) if t and t != DEFAULT_TENANT else ("default", DEFAULT_TENANT, desc)
+    if kind == "scheduled":
+        desc = "scheduled:%s" % src["name"]
+        row = _one(con, "SELECT tenant_id FROM schedules WHERE id=? AND agent=?", (src["name"], agent_id))
+        if not row:
+            return ("unknown", "", desc + " (no such task for this agent)")
+        t = row[0]
+        return ("bound", t, desc) if t and t != DEFAULT_TENANT else ("default", DEFAULT_TENANT, desc)
+    return ("unknown", "", src.get("reason", "unidentified source"))
+
+
+def resolve_prompt(con, agent_id, prompt):
+    """-> (status, tenant_id, source_description) for a whole prompt."""
+    sources = parse_sources(prompt or "")
+    if not sources:
+        return ("default", DEFAULT_TENANT, "local")
+    results = [resolve_source(con, agent_id, s) for s in sources]
+    desc = ",".join(r[2] for r in results)[:500]
+    if any(r[0] == "unknown" for r in results):
+        return ("unknown", "", desc)
+    tenants = {r[1] for r in results}
+    if len(tenants) > 1:
+        return ("conflict", "", desc)
+    status = "bound" if any(r[0] == "bound" for r in results) else "default"
+    return (status, tenants.pop(), desc)
+
+
+def connect(path):
+    con = sqlite3.connect(path, timeout=10)
+    con.execute("PRAGMA busy_timeout=10000")
+    con.execute(SCHEMA)
+    return con
+
+
+def write_context(con, agent_id, status, tenant_id, source, session_id):
+    con.execute(
+        "INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, source, session_id, updated_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (agent_id, tenant_id, status, source, session_id or "", int(time.time())),
+    )
+    con.commit()
+
+
+def read_context(con, agent_id):
+    """-> dict(status, tenant_id, source, session_id, updated_at), or None when there is no row."""
+    row = _one(
+        con,
+        "SELECT status, tenant_id, source, session_id, updated_at FROM agent_tenant_context WHERE agent_id=?",
+        (agent_id,),
+    )
+    if not row:
+        return None
+    return {"status": row[0], "tenant_id": row[1], "source": row[2], "session_id": row[3], "updated_at": row[4]}
