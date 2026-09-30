@@ -38,6 +38,17 @@ function parseFrontmatterField(content: string, field: string): string {
   return val
 }
 
+/** Directory name, agent and scope of a file-backed skill id, or null when the id is not one (or is path-unsafe). */
+function fileBackedSkillSpec(id: string): { name: string; isGlobal: boolean } | null {
+  const parts = id.split('/')
+  const okName = (n: string) => n !== '' && sanitizeSkillName(n) === n
+  if (parts.length === 2 && parts[0] === 'global' && okName(parts[1])) return { name: parts[1], isGlobal: true }
+  if (parts.length === 3 && parts[0] === 'agent' && okName(parts[2]) && (parts[1] === MAIN_AGENT_ID || listAgentNames().includes(parts[1]))) {
+    return { name: parts[2], isGlobal: false }
+  }
+  return null
+}
+
 function parseSkillDescription(content: string): string {
   return parseFrontmatterField(content, 'description')
 }
@@ -717,12 +728,27 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const id = decodeSegment(sqlSkillIdMatch[1])
     if (id === null) return badSegment()
     const existing = getSkill(id)
-    if (!existing) { json(res, { error: 'not_found' }, 404); return true }
-    if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    // A file-backed id (global/<dir>, agent/<agent>/<dir>) that has no row yet is CREATED by
+    // the PUT (admin only, fleet tenant): the skill writers are DB-first, so an agent that
+    // has the content must be able to create the row, not just patch an existing one.
+    const createSpec = existing ? null : fileBackedSkillSpec(id)
+    if (!existing && !(createSpec && isAdmin)) { json(res, { error: 'not_found' }, 404); return true }
+    if (existing && !isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
+    if (createSpec) {
+      if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
+      const row = createSkill({
+        id, name: createSpec.name, description: parsed.description ?? parseSkillDescription(parsed.content),
+        content: parsed.content, tenant_id: 'fleet', is_global: createSpec.isGlobal,
+        created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null,
+      })
+      regenSingleSkillFile(id)
+      json(res, { ok: true, skill: row }, 201)
+      return true
+    }
     const updated = updateSkill(id, parsed)
     regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })

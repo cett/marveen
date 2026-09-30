@@ -2,6 +2,8 @@
 
 A Készségek (Skills) az ágensek újrafelhasználható utasítás-fájljai. Egy készség egy SKILL.md fájl, amely leírja, mikor és hogyan kell elvégezni egy adott feladattípust. A dashboardon az Ágensek nézet részletlapjáról érhetők el.
 
+A forrás a készség-adatbázis: a lemezen lévő SKILL.md fájlok (és a `scripts/`, `references/` kísérő fájlok) az ebből generált cache, amit a frontmatter utáni `GENERATED from the skills DB` sor jelöl. Az ágensek a `PUT /api/skills/sql/<URL-kódolt id>` hívással hoznak létre és módosítanak készséget (`global/<név>` vagy `agent/<ágens>/<név>`, a `/` helyén `%2F`); a közvetlen fájlszerkesztést egy hook még visszaszinkronizálja az adatbázisba, de eltérésnél az adatbázis nyer.
+
 ---
 
 ## Készség-típusok
@@ -37,7 +39,7 @@ Az Ágensek nézet részletlapján, a **Készségek** fülön az ágens összes 
 - Add meg a leírást (opcionális, de ajánlott)
 - Kattints a **Mentés** gombra
 
-Ez egy üres SKILL.md fájlt hoz létre; a tartalmat ezután az ágens fájlrendszeren keresztül tölti ki.
+Ez létrehozza a készséget; a tartalmat ezután az ágens a készség-API-n keresztül tölti ki (`PUT /api/skills/sql/<id>`).
 
 ### Importálás (fájl feltöltés)
 

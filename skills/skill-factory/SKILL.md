@@ -64,14 +64,18 @@ Never hardcode fleet-specific agent names or IDs in a skill. Use these placehold
 
 **Placeholders in prose only, never in commands (CRITICAL):** A placeholder inside an executable command is a literal string that never matches. The command runs, finds nothing, and gives no error -- silent failure. Example: `tmux ls | grep agent-<DESIGN_AGENT>` will always return empty. Rule: if a line is inside a code fence (` ``` `), use the real agent ID, not the placeholder. Placeholders go in prose descriptions, table cells, and narrative text only. The migration script enforces this by skipping code fences.
 
-### Step 3: Write SKILL.md
+### Step 3: Save the skill through the API
+
+The skills DB is the source of truth; `SKILL.md` on disk is a generated cache. Create and update are the same call: `PUT /api/skills/sql/<url-encoded id>` (`global/<name>` for a fleet-wide skill, `agent/<AGENT>/<name>` for one agent's own; the `/` in the id must be `%2F`). Build the JSON with a script, never by hand-escaping.
 
 ```bash
 SKILL_NAME="[kebab-case-name]"
-mkdir -p ~/.claude/skills/$SKILL_NAME
-
-cat > ~/.claude/skills/$SKILL_NAME/SKILL.md << 'EOF'
----
+python3 - <<'PY' | curl -s -X PUT "http://localhost:3420/api/skills/sql/global%2F$SKILL_NAME" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -d @-
+import json
+content = """---
 name: [skill-name]
 description: [What it does + when to trigger. Be specific and "pushy" -- include multiple trigger phrases so the skill activates when needed.]
 ---
@@ -99,19 +103,24 @@ description: [What it does + when to trigger. Be specific and "pushy" -- include
 **Example 1:**
 Input: [what the user said]
 Output: [what was produced]
-EOF
+"""
+print(json.dumps({"content": content}))
+PY
 ```
+
+The response is `201` with the new row (`200` when it already existed and was updated). The server writes `~/.claude/skills/$SKILL_NAME/SKILL.md` from the row right away. Do not create that file yourself; if you edit it with Edit/Write anyway, the file-to-DB hook syncs it back, but the API is the primary path.
 
 ### Step 4: Add Supporting Files (if needed)
 
-If the workflow involves scripts or templates:
+If the workflow involves scripts or templates, they are stored in the DB too (`skill_files`), one call per file; the relative path is ONE url-encoded segment:
 
 ```bash
-mkdir -p ~/.claude/skills/$SKILL_NAME/scripts
-mkdir -p ~/.claude/skills/$SKILL_NAME/references
+python3 -c 'import json,sys; print(json.dumps({"content": open(sys.argv[1]).read()}))' ./run.sh \
+  | curl -s -X PUT "http://localhost:3420/api/skills/sql/global%2F$SKILL_NAME/files/scripts%2Frun.sh" \
+      -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d @-
 ```
 
-- `scripts/`: Executable code for deterministic/repetitive tasks
+- `scripts/`: Executable code for deterministic/repetitive tasks (add `"mode": 493` for an executable file; `content_base64` for binary)
 - `references/`: Documentation loaded into context as needed
 - `assets/`: Templates, icons, or other static files
 
@@ -135,7 +144,8 @@ Test the skill mentally:
 - **Too vague descriptions**: The description field is the primary trigger. Be specific and include multiple phrasings.
 - **Missing error handling**: If you hit errors during the original workflow, document them in Pitfalls.
 - **Too long**: Keep SKILL.md under 500 lines. Move large content to `references/` subdirectory.
-- **Duplicate skills**: Before creating, check `~/.claude/skills/.skill-index.md` for existing similar skills. Patch instead of creating a new one.
+- **Duplicate skills**: Before creating, check `~/.claude/skills/.skill-index.md` for existing similar skills. Patch instead of creating a new one (`GET /api/skills/sql/<id>`, change the text, `PUT` it back).
+- **Hand-writing the file**: a `SKILL.md` you write with `cat >` is only a cache the hook may or may not sync; the DB row is what survives a restore and what the regen writes back. Use the API.
 
 ## Skill Quality Checklist
 

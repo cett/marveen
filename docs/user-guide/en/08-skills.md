@@ -2,6 +2,8 @@
 
 Skills are agents' reusable instruction files. A skill is a SKILL.md file that describes when and how to perform a particular type of task. On the dashboard, they are accessible from the agent detail panel in the Agents view.
 
+The skills database is the source of truth: the SKILL.md files (and their `scripts/`, `references/` companions) on disk are a cache generated from it, marked with a `GENERATED from the skills DB` line after the frontmatter. Agents create and change skills with `PUT /api/skills/sql/<url-encoded id>` (`global/<name>` or `agent/<agent>/<name>`, `/` written as `%2F`); a direct file edit is still synced back to the database by a hook, but the database wins when the two differ.
+
 ---
 
 ## Skill types
@@ -37,7 +39,7 @@ On the **Skills** tab of the agent detail panel, all skills available to that ag
 - Enter a description (optional, but recommended)
 - Click **Save**
 
-This creates an empty SKILL.md file; the agent then fills in the content via the filesystem.
+This creates the skill; the agent then fills in the content through the skills API (`PUT /api/skills/sql/<id>`).
 
 ### Import (file upload)
 
