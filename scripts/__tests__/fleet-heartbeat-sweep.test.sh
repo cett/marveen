@@ -65,6 +65,17 @@ case "$OUT" in *"no fetchedAt"*) pass "no fetchedAt: logged";; *) fail "no fetch
 case "$OUT" in *"skipping"*) fail "no fetchedAt: skipped";; *) pass "no fetchedAt: not skipped";; esac
 
 echo ""
+echo "(c2) corrupt snapshot JSON -> guard fails open, sweep runs"
+for BAD in '{not valid json' '' '[]' 'null'; do
+  R="$(make_root "c2-$(printf '%s' "$BAD" | wc -c | tr -d ' ')-${#BAD}")"
+  printf '%s' "$BAD" > "$R/store/claude-usage.json"
+  OUT="$(run_sweep "$R")"
+  case "$OUT" in *"skipping"*) fail "corrupt snapshot '$BAD': skipped the sweep: $OUT";; *) pass "corrupt snapshot '$BAD': not skipped";; esac
+  case "$OUT" in *"sweep start"*) pass "corrupt snapshot '$BAD': sweep started";; *) fail "corrupt snapshot '$BAD': sweep did not start: $OUT";; esac
+  case "$OUT" in *"no fetchedAt"*"fails open"*) pass "corrupt snapshot '$BAD': logged as fail-open";; *) fail "corrupt snapshot '$BAD': fail-open not logged: $OUT";; esac
+done
+
+echo ""
 echo "(d) fresh snapshot below the threshold -> sweep runs"
 R="$(make_root d)"
 echo "{\"sessionPct\":20,\"weeklyPct\":30,\"fetchedAt\":$(now_ms)}" > "$R/store/claude-usage.json"
