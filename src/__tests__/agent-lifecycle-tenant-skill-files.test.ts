@@ -17,6 +17,10 @@ vi.mock('../web/agent-process-session.js', async (importOriginal) => {
     isAgentRunning: vi.fn(() => running.value),
     runTmux: vi.fn(() => { order.push('tmux'); return '' }),
     agentSessionName: vi.fn((n: string) => `agent-${n}`),
+    // startAgentProcess resolves the binaries lazily; without this the test depends on `claude`/`tmux`
+    // being installed on the host (CI has no claude -> 'Required binary not found on PATH').
+    claudeBin: vi.fn(() => '/usr/local/bin/claude'),
+    tmuxBin: vi.fn(() => '/usr/local/bin/tmux'),
   }
 })
 vi.mock('../web/agent-config.js', async (importOriginal) => {
