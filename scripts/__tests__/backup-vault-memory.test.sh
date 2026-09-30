@@ -47,12 +47,13 @@ new_repo() {
   echo "$r"
 }
 
-# stub_security <file> <mode>: ok | notfound | hang
+# stub_security <file> <mode>: ok | notfound | hang | partial
 stub_security() {
   case "$2" in
     ok)       printf '#!/bin/bash\necho "%s"\n' "$KEY_VALUE" > "$1" ;;
     notfound) printf '#!/bin/bash\nexit 44\n' > "$1" ;;
     hang)     printf '#!/bin/bash\nexec sleep 60\n' > "$1" ;;
+    partial)  printf '#!/bin/bash\necho "%s"\nexit 36\n' "$KEY_VALUE" > "$1" ;;   # prints a value, then fails
   esac
   chmod +x "$1"
 }
@@ -109,6 +110,26 @@ if command -v sqlite3 >/dev/null 2>&1; then
   VOUT="$(bash "$R/scripts/verify-restore.sh" "$R/backups/claudeclaw-20200101-000000.tar.gz" 2>&1)"; VRC=$?
   [ "$VRC" -eq 1 ] && echo "$VOUT" | grep -q 'INSIDE the archive' && pass "verify-restore FAILS when the key is inside the archive" || fail "key-in-archive not caught (rc=$VRC)"
   rm -f "$R/backups/claudeclaw-20200101-000000.tar.gz"
+  # Same, but the archived key is the .migrated variant (the regex's optional half).
+  BADM="$TMPDIR_BASE/badm"; mkdir -p "$BADM/repo/store"; cp "$R/store/claudeclaw.db" "$BADM/repo/store/"; echo "$KEY_VALUE" > "$BADM/repo/store/.vault-key.migrated"; echo m > "$BADM/MANIFEST.txt"
+  ( cd "$BADM" && tar -czf "$R/backups/claudeclaw-20200101-000001.tar.gz" MANIFEST.txt repo )
+  VOUT="$(bash "$R/scripts/verify-restore.sh" "$R/backups/claudeclaw-20200101-000001.tar.gz" 2>&1)"; VRC=$?
+  [ "$VRC" -eq 1 ] && echo "$VOUT" | grep -q 'INSIDE the archive' && pass "verify-restore FAILS when .vault-key.migrated is inside the archive" || fail ".vault-key.migrated in archive not caught (rc=$VRC)"
+  rm -f "$R/backups/claudeclaw-20200101-000001.tar.gz"
+  # Regression: printf|grep -q under pipefail = SIGPIPE false negative once the
+  # listing exceeds the pipe buffer. Pad the listing to >200 KB and put the
+  # sentinels/key at the very START, so grep -q exits long before the writer is done.
+  BIG="$TMPDIR_BASE/big"; mkdir -p "$BIG/repo/store" "$BIG/repo/pad"; cp "$R/store/claudeclaw.db" "$BIG/repo/store/"
+  echo "$KEY_VALUE" > "$BIG/repo/store/.vault-key"; echo '[]' > "$BIG/repo/store/vault.json"; echo m > "$BIG/MANIFEST.txt"
+  ( cd "$BIG/repo/pad" && for i in $(seq 1 3000); do : > "padding-file-with-a-fairly-long-name-to-inflate-the-listing-$i.txt"; done )
+  BIGA="$R/backups/claudeclaw-20200101-000002.tar.gz"
+  ( cd "$BIG" && tar -czf "$BIGA" MANIFEST.txt repo/store repo/pad )
+  [ "$(tar -tzf "$BIGA" | wc -c)" -gt 200000 ] && pass "padded listing is >200 KB" || fail "padded listing too small to exercise the pipe buffer"
+  VOUT="$(bash "$R/scripts/verify-restore.sh" "$BIGA" 2>&1)"; VRC=$?
+  [ "$VRC" -eq 1 ] && echo "$VOUT" | grep -q 'INSIDE the archive' && pass "verify-restore FAILS on a key inside a >200 KB listing (no SIGPIPE false negative)" || fail "large-listing key-in-archive missed (rc=$VRC)"
+  echo "$VOUT" | grep -q 'vault key sidecar present\|\[WARN\] vault.json is archived' && pass "vault.json detected in a >200 KB listing" || fail "vault.json missed in a large listing"
+  echo "$VOUT" | grep -q 'MANIFEST.txt present' && echo "$VOUT" | grep -q 'repo/store/claudeclaw.db present' && pass "required sentinels found in a >200 KB listing" || fail "sentinel false FAIL in a large listing"
+  rm -f "$BIGA"
 else
   echo "  SKIP: sqlite3 not installed"
 fi
@@ -166,6 +187,20 @@ R="$(new_repo j)"; rm -f "$R/agents/zed2/.claude-config/projects" "$R/agents/zed
 run_backup "$R" "$TMPDIR_BASE/sec-ok"
 A="$(archive_of "$R")"
 listing_has "$A" '^home/\.claude/projects/-p3/memory/d\.md$' && pass "home auto-memory archived without any symlink" || fail "home auto-memory missing"
+
+echo ""; echo "(k) keychain prints a value but exits non-zero -> value discarded"
+R="$(new_repo k)"; stub_security "$TMPDIR_BASE/sec-partial" partial
+run_backup "$R" "$TMPDIR_BASE/sec-partial"
+ls "$R"/backups/*.vault-key >/dev/null 2>&1 && fail "sidecar written from a failed keychain read" || pass "no sidecar from a non-zero keychain rc"
+grep -q 'NO vault master key was found' "$ERR" && pass "failed keychain read reported as no key" || fail "failed keychain read not reported"
+echo "  $KEY_VALUE" > "$R/store/.vault-key"; chmod 600 "$R/store/.vault-key"
+sleep 1.1   # archive names are per-second; keep the two runs apart
+run_backup "$R" "$TMPDIR_BASE/sec-partial"
+A="$(archive_of "$R")"
+[ -f "${A%.tar.gz}.vault-key" ] && [ "$(cat "${A%.tar.gz}.vault-key")" = "$KEY_VALUE" ] && tar -xOzf "$A" MANIFEST.txt | grep -q 'source: store/.vault-key' && pass "falls through to store/.vault-key after a failed keychain read" || fail "no fallback after failed keychain read"
+
+echo ""; echo "(l) restore instructions keep the key off argv"
+if grep -rnE 'add-generic-password[^`]*-w[[:space:]]+"?\$\(' "$INSTALL_DIR/scripts/backup.sh" "$INSTALL_DIR/docs/fork-guide" >/dev/null; then fail "a restore doc still passes the key via -w \"\$(cat ...)\""; else pass "no doc/header passes the key as a -w argument"; fi
 
 echo ""; echo "(i) contract with the app's keychain module and no baked-in paths"
 SVC="$(grep -oE "SERVICE = '[^']+'" "$INSTALL_DIR/src/web/keychain.ts" | sed -E "s/.*'(.*)'/\1/")"

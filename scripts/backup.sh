@@ -47,7 +47,9 @@
 #   tar -xpzf <archive> -C /tmp/restore        # inspect first
 #   then copy repo/* into the project root and home/* into $HOME.
 #   the vault key file restores to store/.vault-key (mode 0600) -- or import it
-#   into the Keychain: security add-generic-password -U -s com.marveen.vault -a master-key -w "$(cat <keyfile>)"
+#   into the Keychain WITHOUT putting the key on a command line (argv is visible to other
+#   processes via ps): run `security add-generic-password -U -s com.marveen.vault -a master-key -w`
+#   with -w as the last option and no value, then paste the key when it prompts.
 # Full runbook: docs/MIGRATION.md.
 
 set -euo pipefail
@@ -186,9 +188,16 @@ if [[ -f store/vault.json ]]; then
   if [[ -x "${SECURITY_BIN}" ]] && command -v perl >/dev/null 2>&1; then
     # A locked keychain makes `security` block on a GUI prompt; alarm(5) kills
     # it (same reason keychain.ts has a timeout). perl is always present on macOS.
+    # Only a clean exit counts: a non-zero rc (item missing, access denied, alarm
+    # kill) discards whatever was printed, so no partial value becomes the sidecar.
+    KEYCHAIN_RC=0
     VAULT_KEY_VALUE="$(perl -e 'alarm 5; exec @ARGV' "${SECURITY_BIN}" find-generic-password \
-      -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" -w 2>/dev/null || true)"
-    [[ -n "${VAULT_KEY_VALUE}" ]] && VAULT_KEY_SOURCE="macOS Keychain"
+      -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" -w 2>/dev/null)" || KEYCHAIN_RC=$?
+    if [[ "${KEYCHAIN_RC}" -ne 0 ]]; then
+      VAULT_KEY_VALUE=""
+    elif [[ -n "${VAULT_KEY_VALUE}" ]]; then
+      VAULT_KEY_SOURCE="macOS Keychain"
+    fi
   fi
   if [[ -z "${VAULT_KEY_VALUE}" && -s store/.vault-key ]]; then
     VAULT_KEY_VALUE="$(tr -d '[:space:]' < store/.vault-key)"

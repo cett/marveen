@@ -82,6 +82,11 @@ else
   check_fail "tar listing failed"
 fi
 
+# One listing for steps 4 and 4b. Match with here-strings, NOT `printf | grep -q`:
+# grep -q exits on the first hit, the writer gets SIGPIPE, and under pipefail the
+# pipeline reads as "no match" once the listing outgrows the pipe buffer (~64 KB).
+ARCHIVE_LISTING="$(tar -tzf "${ARCHIVE}" 2>/dev/null || true)"
+
 # 4. Sentinel files
 echo "[4] Required files present..."
 REQUIRED=(
@@ -89,7 +94,7 @@ REQUIRED=(
   "repo/store/claudeclaw.db"
 )
 for sentinel in "${REQUIRED[@]}"; do
-  if tar -tzf "${ARCHIVE}" 2>/dev/null | grep -qF "${sentinel}"; then
+  if grep -qF "${sentinel}" <<<"${ARCHIVE_LISTING}"; then
     check_pass "${sentinel} present"
   else
     check_fail "${sentinel} MISSING"
@@ -98,13 +103,12 @@ done
 
 # 4b. Vault key separation
 echo "[4b] Vault key separation..."
-ARCHIVE_LISTING="$(tar -tzf "${ARCHIVE}" 2>/dev/null || true)"
-if printf '%s\n' "${ARCHIVE_LISTING}" | grep -qE '(^|/)\.vault-key(\.migrated)?$'; then
+if grep -qE '(^|/)\.vault-key(\.migrated)?$' <<<"${ARCHIVE_LISTING}"; then
   check_fail "vault master key found INSIDE the archive (must be a separate file)"
 else
   check_pass "no vault master key inside the archive"
 fi
-if printf '%s\n' "${ARCHIVE_LISTING}" | grep -qF "repo/store/vault.json"; then
+if grep -qF "repo/store/vault.json" <<<"${ARCHIVE_LISTING}"; then
   KEY_SIDECAR="${ARCHIVE%.tar.gz}.vault-key"
   if [[ -f "${KEY_SIDECAR}" ]]; then
     check_pass "vault key sidecar present ($(basename "${KEY_SIDECAR}"))"
