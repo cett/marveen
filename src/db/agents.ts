@@ -141,11 +141,14 @@ export function createAgentMessage(
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
   tenantId: string = 'default',
   envelope?: string | null,
+  // true = `tenantId` is final, even when it is 'default': a reply that belongs to an existing message
+  // (the [Eredmény] notice) must not pick up whatever tenant the executor happens to be serving now.
+  pinTenant: boolean = false,
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   // A delegation inherits the tenant of the request the sending agent is serving; an explicit non-default
   // tenant (partner sends) and messages for federated recipients are left as given.
-  if (tenantId === 'default' && !to.includes('/')) tenantId = getDelegationTenant(from, now)
+  if (!pinTenant && tenantId === 'default' && !to.includes('/')) tenantId = getDelegationTenant(from, now)
   const info = db.prepare(
     'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null)

@@ -871,5 +871,36 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
       expect(missing.out.status).toBe(404)
       expect(foreign.out.body).toEqual(missing.out.body)
     })
+
+    // The [Eredmény] notice goes back to the delegator inside the ORIGINAL message's tenant. createAgentMessage
+    // used to be called without one, which stamped it from the executor's current context.
+    describe('the [Eredmény] notice stays in the original message\'s tenant', () => {
+      const noticeCall = (db: typeof import('../db.js')) => vi.mocked(db.createAgentMessage).mock.calls[0]
+
+      it.each(['done', 'failed', 'refused'] as const)('%s: notice for a partner-tenant message is pinned to that tenant', async (status) => {
+        const { db, out } = await put(status, msg('acme'), { role: 'viewer', tenantId: 'acme', auth: { kind: 'token' } })
+        expect(out.status).toBe(200)
+        expect(db.createAgentMessage).toHaveBeenCalledTimes(1)
+        const [from, to, content, , , tenant, , pin] = noticeCall(db)
+        expect([from, to]).toEqual(['agent-b', 'agent-a'])
+        expect(content).toMatch(new RegExp(`^\\[Eredmény\\] msg_id:77 status:${status}`))
+        expect(tenant).toBe('acme')
+        expect(pin).toBe(true)
+      })
+
+      it('an admin closing a partner-tenant message still files the notice under that message\'s tenant', async () => {
+        const { db } = await put('done', msg('acme'), { role: 'admin', tenantId: null, auth: { kind: 'token' } })
+        expect(noticeCall(db)[5]).toBe('acme')
+        expect(noticeCall(db)[7]).toBe(true)
+      })
+
+      it('a default-tenant message (or a legacy row without a tenant) is pinned to default, not left to inheritance', async () => {
+        for (const row of [msg('default'), msg(null)]) {
+          const { db } = await put('done', row, { role: 'viewer', tenantId: undefined })
+          expect(noticeCall(db)[5]).toBe('default')
+          expect(noticeCall(db)[7]).toBe(true)
+        }
+      })
+    })
   })
 })
