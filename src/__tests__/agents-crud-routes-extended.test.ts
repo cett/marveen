@@ -137,6 +137,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     writeAgentDisplayName: vi.fn(),
     writeAgentSecurityProfile: vi.fn(),
     readAgentModel: vi.fn().mockReturnValue('claude-haiku-4-5'),
+    readAgentModelConfigured: vi.fn().mockReturnValue('claude-haiku-4-5'),
     listAgentNames: vi.fn().mockReturnValue([]),
     agentDir: vi.fn().mockImplementation((name: string) => {
       if (name === 'test-agent') return TEST_AGENT_DIR
@@ -152,6 +153,9 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     readAgentTeam: vi.fn().mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], trustSources: [] }),
   }
 })
+vi.mock('../web/model-fallback-state.js', () => ({
+  clearFallbackOverride: vi.fn(),
+}))
 vi.mock('../web/agent-team.js', () => ({
   readAgentTeam: vi.fn().mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], trustSources: [] }),
   writeAgentTeam: vi.fn(),
@@ -320,6 +324,41 @@ describe('agents-crud routes (extended)', () => {
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     expect((responseBody() as any).ok).toBe(true)
+  })
+
+  // A model-fallback downgrade is an overlay above the operator's model. A real
+  // model change through the dashboard supersedes it; a form that merely echoes
+  // the model already configured must not cancel an active downgrade.
+  describe('PUT /api/agents/:name and an active model-fallback downgrade', () => {
+    async function put(body: object) {
+      const agentConfig = await import('../web/agent-config.js')
+      const fallbackState = await import('../web/model-fallback-state.js')
+      vi.mocked(agentConfig.writeAgentModel).mockClear()
+      vi.mocked(fallbackState.clearFallbackOverride).mockClear()
+      const { ctx, statusCode } = makeCtx({ method: 'PUT', path: '/api/agents/test-agent', body: JSON.stringify(body) })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      expect(statusCode()).toBe(200)
+      return { writeAgentModel: agentConfig.writeAgentModel, clearFallbackOverride: fallbackState.clearFallbackOverride }
+    }
+
+    it('a changed model is written and clears the downgrade overlay', async () => {
+      const { writeAgentModel, clearFallbackOverride } = await put({ model: 'claude-sonnet-5' })
+      expect(writeAgentModel).toHaveBeenCalledWith('test-agent', 'claude-sonnet-5')
+      expect(clearFallbackOverride).toHaveBeenCalledTimes(1)
+      expect(clearFallbackOverride).toHaveBeenCalledWith('test-agent')
+    })
+
+    it('an echoed, unchanged model keeps the downgrade overlay', async () => {
+      const { writeAgentModel, clearFallbackOverride } = await put({ model: 'claude-haiku-4-5' })
+      expect(writeAgentModel).toHaveBeenCalledWith('test-agent', 'claude-haiku-4-5')
+      expect(clearFallbackOverride).not.toHaveBeenCalled()
+    })
+
+    it('a PUT that does not carry a model leaves the overlay alone', async () => {
+      const { writeAgentModel, clearFallbackOverride } = await put({ memoryIsolation: false })
+      expect(writeAgentModel).not.toHaveBeenCalled()
+      expect(clearFallbackOverride).not.toHaveBeenCalled()
+    })
   })
 
   it('PUT /api/agents/:name returns 400 for unknown claudePlan id', async () => {
