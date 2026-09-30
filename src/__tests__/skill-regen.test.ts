@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { readFileSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const { FAKE_HOME, FAKE_PROJECT } = vi.hoisted(() => {
@@ -60,6 +60,7 @@ import {
   findMissingSkillFiles,
   listKnownSkillAgents,
 } from '../web/skill-regen.js'
+import { addGeneratedHeader } from '../skill-header.js'
 
 function fleetSkillRow(id: string, content: string) {
   return { id, name: id, description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 }
@@ -83,7 +84,7 @@ describe('regenSingleSkillFile', () => {
     expect(result).toEqual({ written: true, skipped: false, reason: null })
     const path = join(FAKE_HOME, '.claude', 'skills', 'my-skill', 'SKILL.md')
     expect(existsSync(path)).toBe(true)
-    expect(readFileSync(path, 'utf-8')).toBe('# Content v1')
+    expect(readFileSync(path, 'utf-8')).toBe(addGeneratedHeader('# Content v1', 'global/my-skill'))
   })
 
   it('is idempotent: a second call with unchanged content skips the write', () => {
@@ -146,7 +147,7 @@ describe('regenSingleSkillFile', () => {
     expect(result.written).toBe(true)
     const path = join(FAKE_PROJECT, '.claude', 'skills', 'main-skill', 'SKILL.md')
     expect(existsSync(path)).toBe(true)
-    expect(readFileSync(path, 'utf-8')).toBe('main content')
+    expect(readFileSync(path, 'utf-8')).toBe(addGeneratedHeader('main content', 'agent/marveen/main-skill'))
   })
 
   it('reports a write_error when the underlying write throws', () => {
@@ -155,6 +156,38 @@ describe('regenSingleSkillFile', () => {
     const result = regenSingleSkillFile('global/fails-to-write', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'write_error' })
     expect(loggerErrorMock).toHaveBeenCalled()
+  })
+})
+
+describe('generated header and drift handling', () => {
+  beforeEach(() => { getSkillMock.mockReset(); loggerWarnMock.mockClear() })
+
+  it('rewrites a header-less (legacy) cache file quietly: same content, only the marker line is new', () => {
+    const path = join(FAKE_HOME, '.claude', 'skills', 'legacy-skill', 'SKILL.md')
+    getSkillMock.mockReturnValue(fleetSkillRow('global/legacy-skill', '---\nname: l\n---\nbody'))
+    mkdirSync(join(FAKE_HOME, '.claude', 'skills', 'legacy-skill'), { recursive: true })
+    writeFileSync(path, '---\nname: l\n---\nbody')
+    expect(regenSingleSkillFile('global/legacy-skill', true).written).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toBe(addGeneratedHeader('---\nname: l\n---\nbody', 'global/legacy-skill'))
+    expect(loggerWarnMock).not.toHaveBeenCalled()
+  })
+
+  it('warns and restores from the DB when the cache file drifted from the row', () => {
+    const path = join(FAKE_HOME, '.claude', 'skills', 'drifted', 'SKILL.md')
+    getSkillMock.mockReturnValue(fleetSkillRow('global/drifted', 'db truth'))
+    mkdirSync(join(FAKE_HOME, '.claude', 'skills', 'drifted'), { recursive: true })
+    writeFileSync(path, addGeneratedHeader('someone edited this behind the DB', 'global/drifted'))
+    expect(regenSingleSkillFile('global/drifted', true).written).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toBe(addGeneratedHeader('db truth', 'global/drifted'))
+    expect(loggerWarnMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'global/drifted' }), expect.stringContaining('drifted'))
+  })
+
+  it('skips an up-to-date generated file without a warning', () => {
+    getSkillMock.mockReturnValue(fleetSkillRow('global/uptodate', 'same'))
+    expect(regenSingleSkillFile('global/uptodate', true).written).toBe(true)
+    loggerWarnMock.mockClear()
+    expect(regenSingleSkillFile('global/uptodate', true)).toEqual({ written: false, skipped: true, reason: 'content_equal' })
+    expect(loggerWarnMock).not.toHaveBeenCalled()
   })
 })
 

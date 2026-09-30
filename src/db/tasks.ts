@@ -3,6 +3,7 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
+import { stripGeneratedHeader } from '../skill-header.js'
 
 export interface ScheduledTask {
   id: string
@@ -492,6 +493,7 @@ export interface CreateSkillOpts {
 }
 
 export function createSkill(opts: CreateSkillOpts): SkillRow {
+  opts = { ...opts, content: stripGeneratedHeader(opts.content) }
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
     INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
@@ -513,7 +515,7 @@ export function updateSkill(id: string, patch: { name?: string; description?: st
   const vals: unknown[] = [now]
   if (patch.name !== undefined)        { sets.push('name = ?');        vals.push(patch.name) }
   if (patch.description !== undefined) { sets.push('description = ?'); vals.push(patch.description) }
-  if (patch.content !== undefined)     { sets.push('content = ?');     vals.push(patch.content) }
+  if (patch.content !== undefined)     { sets.push('content = ?');     vals.push(stripGeneratedHeader(patch.content)) }
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
   const changes = db.prepare(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`).run(...vals).changes
@@ -588,7 +590,7 @@ export function seedSkillIfAbsent(opts: {
   const result = db.prepare(`
     INSERT OR IGNORE INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
-  `).run(opts.id, opts.name, opts.description, opts.content, opts.tenant_id, opts.is_global ? 1 : 0, now, now)
+  `).run(opts.id, opts.name, opts.description, stripGeneratedHeader(opts.content), opts.tenant_id, opts.is_global ? 1 : 0, now, now)
   return result.changes > 0
 }
 

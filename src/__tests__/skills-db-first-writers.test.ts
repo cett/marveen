@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { readFileSync, existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
+import { addGeneratedHeader } from '../skill-header.js'
 
 // Writers that used to write the SKILL.md file themselves (and mirror it into
 // SQL) are DB-first now: the row is written, the file is generated from it.
@@ -90,7 +91,7 @@ describe('PUT /api/skills/:name (dashboard edit) is DB-first', () => {
     expect(out.status).toBe(200)
     expect(store.get('global/edit-me').content).toBe(next)
     expect(store.get('global/edit-me').description).toBe('fresh')
-    expect(readFileSync(join(globalDir('edit-me'), 'SKILL.md'), 'utf-8')).toBe(next)
+    expect(readFileSync(join(globalDir('edit-me'), 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader(next, 'global/edit-me'))
   })
 
   it('still reaches disk with the automatic write-back switched off (an explicit user edit)', async () => {
@@ -98,7 +99,7 @@ describe('PUT /api/skills/:name (dashboard edit) is DB-first', () => {
     flag.on = false
     const out = await call('PUT', '/api/skills/edit-off', { content: 'edited while switch off' })
     expect(out.status).toBe(200)
-    expect(readFileSync(join(globalDir('edit-off'), 'SKILL.md'), 'utf-8')).toBe('edited while switch off')
+    expect(readFileSync(join(globalDir('edit-off'), 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('edited while switch off', 'global/edit-off'))
     expect(store.get('global/edit-off').content).toBe('edited while switch off')
   })
 
@@ -108,7 +109,7 @@ describe('PUT /api/skills/:name (dashboard edit) is DB-first', () => {
     const out = await call('PUT', '/api/skills/file-only', { content: 'now in the db' })
     expect(out.status).toBe(200)
     expect(store.get('global/file-only').content).toBe('now in the db')
-    expect(readFileSync(join(globalDir('file-only'), 'SKILL.md'), 'utf-8')).toBe('now in the db')
+    expect(readFileSync(join(globalDir('file-only'), 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('now in the db', 'global/file-only'))
   })
 
   it('agent-local edit (?agent=) goes through the agent/<id>/<name> row', async () => {
@@ -117,7 +118,7 @@ describe('PUT /api/skills/:name (dashboard edit) is DB-first', () => {
     const out = await call('PUT', '/api/skills/loc?agent=agent-b', { content: 'agent body' })
     expect(out.status).toBe(200)
     expect(store.get('agent/agent-b/loc').content).toBe('agent body')
-    expect(readFileSync(join(agentSkillDir('agent-b', 'loc'), 'SKILL.md'), 'utf-8')).toBe('agent body')
+    expect(readFileSync(join(agentSkillDir('agent-b', 'loc'), 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('agent body', 'agent/agent-b/loc'))
   })
 })
 
@@ -152,7 +153,7 @@ describe('POST /api/skills/:name/assign registers agent-local rows', () => {
     expect(store.get('agent/agent-b/shared').content).toBe('shared body')
     expect(store.get('agent/agent-c/shared').content).toBe('shared body')
     expect(store.get('agent/agent-b/shared').is_global).toBe(0)
-    expect(readFileSync(join(agentSkillDir('agent-b', 'shared'), 'SKILL.md'), 'utf-8')).toBe('shared body')
+    expect(readFileSync(join(agentSkillDir('agent-b', 'shared'), 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('shared body', 'agent/agent-b/shared'))
 
     out = await call('POST', '/api/skills/shared/assign', { agents: ['agent-c'] })
     expect(out.status).toBe(200)
@@ -165,7 +166,7 @@ describe('POST /api/skills/:name/assign registers agent-local rows', () => {
     seedGlobal('stale', 'stale file text')
     store.set('global/stale', row('global/stale', 'fresh row text'))
     await call('POST', '/api/skills/stale/assign', { agents: ['agent-b'] })
-    expect(readFileSync(join(agentSkillDir('agent-b', 'stale'), 'SKILL.md'), 'utf-8')).toBe('fresh row text')
+    expect(readFileSync(join(agentSkillDir('agent-b', 'stale'), 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('fresh row text', 'agent/agent-b/stale'))
   })
 
   it('re-assigning refreshes an existing agent row from the global row', async () => {

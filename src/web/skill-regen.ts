@@ -23,6 +23,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN } from '../config.js'
 import { listAllSkills, getSkill } from '../db.js'
+import { addGeneratedHeader, stripGeneratedHeader } from '../skill-header.js'
 
 export interface RegenResult {
   enabled: boolean
@@ -128,10 +129,19 @@ export function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): Re
  * never drift apart.
  */
 function writeSkillFileToDisk(id: string, targetPath: string, content: string, dryRun: boolean): 'written' | 'skipped' | 'error' {
+  // The file is a generated cache: SKILL.md content + a marker line after the frontmatter.
+  const generated = addGeneratedHeader(content, id)
   if (existsSync(targetPath)) {
     let onDisk = ''
     try { onDisk = readFileSync(targetPath, 'utf-8') } catch { /* treat as missing */ }
-    if (onDisk === content) return 'skipped'
+    if (onDisk === generated) return 'skipped'
+    // Beyond a missing/outdated marker line, a difference means the cache file
+    // was changed behind the DB's back (an editor, sed, a restored older file)
+    // and the file->DB hook never saw it: say so, then restore it from the DB
+    // rather than letting the two diverge unnoticed.
+    if (onDisk !== '' && stripGeneratedHeader(onDisk) !== content) {
+      logger.warn({ id, path: targetPath }, 'skill-regen: cache file drifted from the DB, restoring it from the DB')
+    }
   }
 
   if (dryRun) {
@@ -142,7 +152,7 @@ function writeSkillFileToDisk(id: string, targetPath: string, content: string, d
   try {
     const dir = targetPath.replace(/\/SKILL\.md$/, '')
     mkdirSync(dir, { recursive: true })
-    atomicWriteFileSync(targetPath, content)
+    atomicWriteFileSync(targetPath, generated)
     logger.info({ id, path: targetPath }, 'skill-regen: wrote')
     return 'written'
   } catch (err) {
@@ -217,7 +227,7 @@ export function removeGeneratedSkillFile(id: string, content: string, tenantId: 
 
   let onDisk = ''
   try { onDisk = readFileSync(targetPath, 'utf-8') } catch { return { removed: false, reason: 'unlink_error' } }
-  if (onDisk !== content) {
+  if (stripGeneratedHeader(onDisk) !== content) {
     logger.warn({ id, path: targetPath }, 'skill-regen: deleted skill has a hand-edited file on disk, leaving it')
     return { removed: false, reason: 'modified_on_disk' }
   }

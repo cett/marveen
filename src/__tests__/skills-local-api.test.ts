@@ -35,6 +35,7 @@ import { tryHandleSkills } from '../web/routes/skills.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { addGeneratedHeader } from '../skill-header.js'
 
 function fakeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
@@ -225,7 +226,7 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
     // DB first: the row holds the content, the file is generated from it.
     expect(skillStore.get(`agent/${MAIN_AGENT_ID}/zz-test-main-local-skill`)?.content).toBe(newContent)
     const written = readFileSync(join(MAIN_SKILL_DIR, 'SKILL.md'), 'utf-8')
-    expect(written).toBe(newContent)
+    expect(written).toBe(addGeneratedHeader(newContent, `agent/${MAIN_AGENT_ID}/zz-test-main-local-skill`))
   })
 
   it('writes updated content to sub-agent local skill SKILL.md', async () => {
@@ -240,7 +241,7 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
 
     expect(skillStore.get(`agent/${SUB_AGENT_ID}/zz-test-sub-local-skill`)?.content).toBe(newContent)
     const written = readFileSync(join(SUB_SKILL_DIR, 'SKILL.md'), 'utf-8')
-    expect(written).toBe(newContent)
+    expect(written).toBe(addGeneratedHeader(newContent, `agent/${SUB_AGENT_ID}/zz-test-sub-local-skill`))
   })
 
   it('returns 404 for PUT on non-existent agent-local skill', async () => {

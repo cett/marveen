@@ -86,7 +86,30 @@ def _skill_id_from_path(file_path: str) -> "str | None":
     return None
 
 
+GENERATED_MARKER = "<!-- GENERATED from the skills DB"
+
+
+def strip_generated_header(content: str) -> str:
+    """Mirror of stripGeneratedHeader (src/skill-header.ts): drop the one marker
+    line that regen puts after the frontmatter, so the DB row never stores it."""
+    pos = 0
+    while pos <= len(content):
+        nl = content.find("\n", pos)
+        line_end = len(content) if nl == -1 else nl
+        if content.startswith(GENERATED_MARKER, pos) and content[pos:line_end].rstrip().endswith("-->"):
+            if nl == -1:  # header is the last line: also drop the newline before it
+                if pos > 0 and content[pos - 1] == "\n":
+                    return content[: pos - 1]
+                return content[:pos]
+            return content[:pos] + content[nl + 1:]
+        if nl == -1:
+            break
+        pos = nl + 1
+    return content
+
+
 def _upsert_skill(skill_id: str, name: str, content: str) -> None:
+    content = strip_generated_header(content)
     now = int(time.time())
     is_global = 1 if skill_id.startswith("global/") else 0
     conn = sqlite3.connect(DB_PATH, timeout=5)
