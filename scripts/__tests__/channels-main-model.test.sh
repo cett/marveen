@@ -69,6 +69,44 @@ expect_model "a similarly named key does not leak in" \
   'NOT_MAIN_AGENT_MODEL=wrong-model
 MAIN_AGENT_MODEL=claude-haiku-4-5' '' 'claude-haiku-4-5'
 
+# Model-fallback downgrade overlay: store/model-fallback-state.json, keyed by
+# agent id. While it holds an entry for the main agent it wins over the env
+# file, which is never rewritten (it stays the revert target).
+# $1 = label, $2 = env body, $3 = state-file body ('' = no file), $4 = expected
+expect_overlay() {
+  local label="$1" env_body="$2" state_body="$3" want="$4"
+  local root got
+  root="$(mktemp -d)"
+  mkdir -p "$root/scripts" "$root/.claude" "$root/store"
+  cp "$SRC" "$root/scripts/channels.sh"
+  printf '%s\n' "$env_body" > "$root/.env"
+  [ -n "$state_body" ] && printf '%s\n' "$state_body" > "$root/store/model-fallback-state.json"
+  got="$(bash "$root/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
+  rm -rf "$root"
+  if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "$want" "$got"; fi
+}
+
+ENV_MAIN='MAIN_AGENT_ID=main-x
+MAIN_AGENT_MODEL=claude-opus-5-5'
+
+expect_overlay "fallback overlay wins over the env file for the main agent" \
+  "$ENV_MAIN" '{"main-x":{"primary":"claude-opus-5-5","current":"claude-sonnet-5","downgradedAt":1}}' 'claude-sonnet-5'
+
+expect_overlay "no state file -> env file as before" \
+  "$ENV_MAIN" '' 'claude-opus-5-5'
+
+expect_overlay "overlay for ANOTHER agent does not leak onto main" \
+  "$ENV_MAIN" '{"sub-y":{"primary":"claude-opus-5-5","current":"claude-haiku-4-5-20251001","downgradedAt":1}}' 'claude-opus-5-5'
+
+expect_overlay "corrupt state file -> env file (never breaks the launch)" \
+  "$ENV_MAIN" '{not json' 'claude-opus-5-5'
+
+expect_overlay "an overlay value that is not a plain model id is ignored" \
+  "$ENV_MAIN" '{"main-x":{"primary":"x","current":"a b; echo pwned","downgradedAt":1}}' 'claude-opus-5-5'
+
+expect_overlay "bracketed suffix survives the overlay route" \
+  "$ENV_MAIN" '{"main-x":{"primary":"x","current":"claude-sonnet-5[1m]","downgradedAt":1}}' 'claude-sonnet-5[1m]'
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

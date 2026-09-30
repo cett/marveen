@@ -4,6 +4,8 @@ import {
   detectsModelUnavailable,
   nextFallbackModel,
   decideModelAction,
+  ladderFromPrimary,
+  DEFAULT_SWITCH_COOLDOWN_MS,
   normalizeModelFallbackConfig,
   DEFAULT_MODEL_CHAIN,
   DEFAULT_MODEL_FALLBACK,
@@ -14,11 +16,16 @@ const PRIMARY = CHAIN[0]
 const SONNET = CHAIN[1]
 const HAIKU = CHAIN[2]
 
+const BOX = '─'.repeat(80)
+// Fragments assembled at runtime so this source file never holds a bare banner
+// line that the live pane detector could read off a pane showing this file.
+const APPROACHING = ['Approaching', 'usage limit'].join(' ')
+const BANNER = ['You hit your session', 'limit · resets 5:50pm'].join(' ')
+
 describe('detectsUsageLimit', () => {
   it('matches Claude plan usage-limit banners in the live region', () => {
     expect(detectsUsageLimit('You have reached your usage limit. Try again later.')).toBe(true)
     expect(detectsUsageLimit('5-hour limit reached ∙ resets 3pm')).toBe(true)
-    expect(detectsUsageLimit('Approaching usage limit')).toBe(true)
     expect(detectsUsageLimit('Your limit will reset at 18:00')).toBe(true)
     expect(detectsUsageLimit('/upgrade to increase your usage limit')).toBe(true)
     // "session limit" variant observed 2026-08-08 -- was missing from the original regex
@@ -31,6 +38,15 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('  ⎿  API Error: 429 overloaded_error: server busy, retrying')).toBe(false)
   })
 
+  // Regression: the "Approaching usage limit" heads-up is only a warning (the
+  // session keeps working) but used to count as an exhausted budget, so a healthy
+  // main agent was downgraded opus -> sonnet -> haiku.
+  it('does NOT match the "approaching" warning (assembled at runtime, see below)', () => {
+    expect(detectsUsageLimit(APPROACHING)).toBe(false)
+    expect(detectsUsageLimit('  ' + APPROACHING + ' (85% of your weekly limit)')).toBe(false)
+    expect(detectsUsageLimit(['  Approaching your usage limit', BOX, '> ', BOX, '  hint'].join('\n'))).toBe(false)
+  })
+
   it('ignores the phrase when it is only up in scrollback, not the live region', () => {
     const scrollback = ['you reached your usage limit', ...Array(40).fill('normal output line')].join('\n')
     expect(detectsUsageLimit(scrollback)).toBe(false)
@@ -39,6 +55,100 @@ describe('detectsUsageLimit', () => {
   it('returns false for empty / whitespace panes', () => {
     expect(detectsUsageLimit('')).toBe(false)
     expect(detectsUsageLimit('   \n  ')).toBe(false)
+  })
+})
+
+describe('detectsUsageLimit: live-region narrowing (box interior, quoted text)', () => {
+  it('fires on the real banner directly above the input box', () => {
+    const pane = ['  earlier output', '', '  ' + BANNER, '', BOX, '> ', BOX, '  ? for shortcuts'].join('\n')
+    expect(detectsUsageLimit(pane)).toBe(true)
+  })
+
+  it('does NOT fire when the phrase sits in the box interior (typed / quoted input)', () => {
+    const pane = ['  status', BOX, '> see: ' + BANNER, BOX, '  ? for shortcuts'].join('\n')
+    expect(detectsUsageLimit(pane)).toBe(false)
+  })
+
+  it('does NOT fire when the banner is far above the box (old transcript)', () => {
+    const pane = ['  ' + BANNER, ...Array(8).fill('  later output'), BOX, '> ', BOX, '  hint'].join('\n')
+    expect(detectsUsageLimit(pane)).toBe(false)
+  })
+
+  it('does NOT fire on a line that quotes the phrase (code / tool output about this feature)', () => {
+    const quoted = ["  expect(detectsUsageLimit('", BANNER, "')).toBe(true)"].join('')
+    const pane = ['  ' + quoted, BOX, '> ', BOX, '  hint'].join('\n')
+    expect(detectsUsageLimit(pane)).toBe(false)
+  })
+
+  it('does NOT fire on a regex / alternation line', () => {
+    const pane = ['  /(usage limit reached|hit your session limit)/i', BOX, '> ', BOX, '  hint'].join('\n')
+    expect(detectsUsageLimit(pane)).toBe(false)
+  })
+
+  it('still fires on a banner whose wording carries an in-word apostrophe', () => {
+    const pane = ["  You've reached your usage limit. Resets at 3pm", BOX, '> ', BOX, '  hint'].join('\n')
+    expect(detectsUsageLimit(pane)).toBe(true)
+  })
+
+  it('headless pane (no box): falls back to the bottom 15 lines', () => {
+    expect(detectsUsageLimit([...Array(5).fill('x'), BANNER].join('\n'))).toBe(true)
+    expect(detectsUsageLimit([BANNER, ...Array(40).fill('x')].join('\n'))).toBe(false)
+  })
+})
+
+describe('ladderFromPrimary', () => {
+  it('starts at the agent primary when it is on the chain', () => {
+    expect(ladderFromPrimary(SONNET, CHAIN)).toEqual([SONNET, HAIKU])
+    expect(ladderFromPrimary(PRIMARY, CHAIN)).toEqual(CHAIN)
+  })
+
+  it('gives a primary that is not on the chain the top slot (never chain[0])', () => {
+    expect(ladderFromPrimary('claude-opus-5-5', CHAIN)).toEqual(['claude-opus-5-5', SONNET, HAIKU])
+  })
+
+  it('a chain too short to fall back on leaves just the primary', () => {
+    expect(ladderFromPrimary('m', ['only'])).toEqual(['m'])
+  })
+})
+
+describe('decideModelAction: cooldown and per-agent primary', () => {
+  const now = 10_000_000
+  const cooldownMs = DEFAULT_SWITCH_COOLDOWN_MS
+
+  it('suppresses a second downgrade inside the cooldown (the 60s cascade)', () => {
+    expect(decideModelAction({
+      limitDetected: true, currentModel: SONNET, chain: CHAIN, downgradedAt: now - 60_000,
+      now, revertAfterMs: 1e9, lastSwitchAt: now - 60_000, cooldownMs,
+    })).toEqual({ kind: 'none' })
+  })
+
+  it('allows the downgrade again once the cooldown has passed', () => {
+    expect(decideModelAction({
+      limitDetected: true, currentModel: SONNET, chain: CHAIN, downgradedAt: now - cooldownMs,
+      now, revertAfterMs: 1e9, lastSwitchAt: now - cooldownMs, cooldownMs,
+    })).toEqual({ kind: 'downgrade', model: HAIKU })
+  })
+
+  it('no cooldown configured -> behaves as before', () => {
+    expect(decideModelAction({
+      limitDetected: true, currentModel: SONNET, chain: CHAIN, downgradedAt: now - 1,
+      now, revertAfterMs: 1e9, lastSwitchAt: now - 1,
+    })).toEqual({ kind: 'downgrade', model: HAIKU })
+  })
+
+  it('the cooldown never blocks a revert', () => {
+    expect(decideModelAction({
+      limitDetected: false, currentModel: SONNET, chain: CHAIN, downgradedAt: now - 60_000,
+      now, revertAfterMs: 60_000, lastSwitchAt: now - 60_000, cooldownMs,
+    })).toEqual({ kind: 'revert', model: PRIMARY })
+  })
+
+  it('revert goes to the agent own primary when the ladder starts there', () => {
+    const ladder = ladderFromPrimary('claude-opus-5-5', CHAIN)
+    expect(decideModelAction({
+      limitDetected: false, currentModel: SONNET, chain: ladder, downgradedAt: now - 60_000,
+      now, revertAfterMs: 60_000,
+    })).toEqual({ kind: 'revert', model: 'claude-opus-5-5' })
   })
 })
 

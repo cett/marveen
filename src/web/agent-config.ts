@@ -14,6 +14,7 @@ import {
   type ModelResolution,
 } from '../model-profiles.js'
 import { listModelProfileMap } from '../db/model-profile-map.js'
+import { getFallbackOverride } from './model-fallback-state.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -93,7 +94,18 @@ export function resolveModelId(raw: string): string {
 // output.
 const MAIN_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.json')
 
+//
+// The model-fallback runner's downgrade overlay (model-fallback-state.ts) sits
+// ABOVE that precedence while active, and scripts/channels.sh's
+// resolve_main_model() reads the same file first. The runner never rewrites
+// .env / settings.json, so readMainModelConfigured() below is always what the
+// operator actually chose -- the revert target.
 export function readMainModelRaw(): string {
+  return getFallbackOverride(MAIN_AGENT_ID)?.current ?? readMainModelConfigured()
+}
+
+// The operator's own main-agent model, ignoring any fallback downgrade.
+export function readMainModelConfigured(): string {
   const fromEnv = readEnvFile(['MAIN_AGENT_MODEL'])['MAIN_AGENT_MODEL']
   if (fromEnv && fromEnv.trim()) return fromEnv.trim()
   try {
@@ -165,7 +177,17 @@ export function resolveAgentModelDetailed(name: string): ModelResolution {
 // Unchanged contract: the concrete model id this agent runs on. For every
 // config that names a `model` -- which is all of them today -- this returns
 // byte-identically what it returned before Block B existed.
+//
+// While the model-fallback runner has the agent downgraded, the overlay in
+// model-fallback-state.ts wins over agent-config.json (which the runner never
+// touches). resolveAgentModelDetailed() above stays the OPERATOR's config, for
+// display and as the revert target; this is what a (re)spawn actually launches.
 export function readAgentModel(name: string): string {
+  return getFallbackOverride(name)?.current ?? resolveAgentModelDetailed(name).model
+}
+
+// The operator's own model for this agent, ignoring any fallback downgrade.
+export function readAgentModelConfigured(name: string): string {
   return resolveAgentModelDetailed(name).model
 }
 
