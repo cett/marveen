@@ -20,6 +20,7 @@ import {
 import {
   decideGate,
   shouldForceRestart,
+  streakBelongsToPreviousSession,
   type GateInputs,
 } from '../context-restart-gate.js'
 
@@ -285,6 +286,30 @@ export function isMcpProcess(childArgs: string, mcpPatterns: string[]): boolean 
 }
 
 /**
+ * Wall-clock start time (ms) of the live claude process behind `session`, or
+ * null when it cannot be determined (no pane, claude not in the tree, ps
+ * failed). Two things hang off it: the context measurement is pinned to the
+ * ACTIVE session's transcript, and a blocking streak that began before it
+ * belongs to a previous session. Unlike the child check this signal is never
+ * load-bearing for safety, so null just means "cannot tell" (old behaviour).
+ */
+export function claudeSessionStartMs(session: string, nowMs: number): number | null {
+  try {
+    const panePid = getPanePid(session)
+    if (panePid === null) return null
+    const claudePid = findClaudePidInTree(
+      panePid,
+      getCommForPid(panePid),
+      getChildPids(panePid).map(pid => ({ pid, comm: getCommForPid(pid) })),
+    )
+    if (claudePid === null) return null
+    const age = getPidAgeSeconds(claudePid)
+    return age === null ? null : nowMs - age * 1000
+  } catch { return null }
+}
+
+
+/**
  * Returns true if the session's claude process has live children that look
  * like in-flight work (Task-tool subagents, background Bash), false if only
  * infrastructure children are found, null if the check cannot be completed
@@ -413,15 +438,17 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 
   const hardGuardPhase = getHardGuardPhase(name)
 
-  const contextTokens = readContextTokensFromProjectDir(workingDir, configDirFor(name))
+  // Start of the live claude process = start of the ACTIVE session.
+  const sessionStartMs = claudeSessionStartMs(session, nowMs)
+  const contextTokens = readContextTokensFromProjectDir(workingDir, configDirFor(name), { sessionStartMs })
 
   const dispatchedStats = (() => {
-    try { return getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs) }
+    try { return getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
     catch { return null }
   })()
 
   const openQuestion = (() => {
-    try { return hasOpenInboundQuestion(agentIdForLedger(name)) }
+    try { return hasOpenInboundQuestion(agentIdForLedger(name), { nowMs, staleCutoffMs: cfg.staleCutoffMs }) }
     catch { return false }
   })()
 
@@ -452,7 +479,15 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     hasLiveTaskState:       liveTaskState,
   }
 
-  const runState = readGateRunState(name)
+  let runState = readGateRunState(name)
+  if (streakBelongsToPreviousSession(runState.firstBlockedAt, sessionStartMs)) {
+    // The agent was restarted since this streak began: the new session must not
+    // inherit the old one's block clock (alert / forced-/clear eligibility).
+    logger.info({ agent: name, firstBlockedAt: runState.firstBlockedAt, sessionStartMs },
+      'context-restart-gate: block streak predates the current session, resetting')
+    runState = { ...runState, firstBlockedAt: null }
+    writeGateRunState(name, runState)
+  }
   const decision = decideGate(inputs, cfg, runState.firstBlockedAt)
 
   logger.debug({ agent: name, action: decision.action, reason: decision.reason,

@@ -15,6 +15,7 @@ import { STORE_DIR } from '../config.js'
 import { writeTaskState, clearTaskState } from '../web/agent-taskstate.js'
 import {
   hasLiveChildProcesses,
+  claudeSessionStartMs,
   getLiveWorkChildArgs,
   hasLiveTaskStateFile,
   getMcpJsonPatterns,
@@ -158,6 +159,31 @@ describe('hasLiveChildProcesses', () => {
       age: { 100: 500, 200: 'fail' },
     })
     expect(hasLiveChildProcesses(SESSION, [])).toBeNull()
+  })
+})
+
+describe('claudeSessionStartMs', () => {
+  const NOW = 1_800_000_000_000
+
+  it('direct shape: now minus the claude process age', async () => {
+    await mockProcessTree({ panePid: 100, comm: { 100: 'claude' }, children: { 100: [] }, age: { 100: 600 } })
+    expect(claudeSessionStartMs(SESSION, NOW)).toBe(NOW - 600_000)
+  })
+
+  it('wrapper shape: uses the claude child, not the wrapper shell', async () => {
+    await mockProcessTree({
+      panePid: 100, comm: { 100: 'bash', 101: 'claude' }, children: { 100: [101] }, age: { 100: 9000, 101: 120 },
+    })
+    expect(claudeSessionStartMs(SESSION, NOW)).toBe(NOW - 120_000)
+  })
+
+  it('cannot tell -> null (no pane, no claude in the tree, or no age)', async () => {
+    await mockProcessTree({})
+    expect(claudeSessionStartMs(SESSION, NOW)).toBeNull()
+    await mockProcessTree({ panePid: 100, comm: { 100: 'bash' }, children: { 100: [] } })
+    expect(claudeSessionStartMs(SESSION, NOW)).toBeNull()
+    await mockProcessTree({ panePid: 100, comm: { 100: 'claude' }, children: { 100: [] }, age: { 100: 'fail' } })
+    expect(claudeSessionStartMs(SESSION, NOW)).toBeNull()
   })
 })
 
