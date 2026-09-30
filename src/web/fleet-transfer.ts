@@ -1583,8 +1583,8 @@ export function importFleet(
 
       // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
       // inserted before vault_ssh_servers below since a server's ssh_key_id refers
-      // to it (foreign_keys enforcement is off for this connection, as elsewhere in
-      // this schema, but the insert order still matches the logical dependency).
+      // to it (foreign_keys is on for this connection, so the insert order matters:
+      // keys before servers).
       for (const key of fleet.vaultSshKeys ?? []) {
         const k = key as any
         if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type) {

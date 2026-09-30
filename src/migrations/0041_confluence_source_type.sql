@@ -43,11 +43,13 @@ INSERT INTO import_sources_new
   SELECT id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id
   FROM import_sources;
 
--- 3. Swap (import_audit_log.source_id REFERENCES import_sources(id) --
--- foreign_keys is off for this connection, as elsewhere in this schema, so
--- the drop/rename does not require dropping and recreating the FK; SQLite's
+-- 3. Swap (import_audit_log.source_id REFERENCES import_sources(id) ON DELETE
+-- CASCADE). better-sqlite3 enables foreign_keys by default, so DROP TABLE
+-- implicitly deletes the rows of import_sources and the cascade removes the
+-- matching import_audit_log rows: this swap discards existing audit history
+-- (nothing to lose on a fresh install, where the table is empty). SQLite's
 -- RENAME TO also updates the reference in import_audit_log's own schema
--- definition automatically).
+-- definition automatically.
 DROP TABLE import_sources;
 ALTER TABLE import_sources_new RENAME TO import_sources;
 

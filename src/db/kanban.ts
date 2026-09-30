@@ -570,8 +570,9 @@ export function updateLabel(id: string, fields: Partial<Pick<Label, 'name' | 'co
 export function deleteLabel(id: string): boolean {
   // Transaction: drop every card<->label link before the label row itself,
   // otherwise the join table keeps dangling references to a label that no
-  // longer exists (FK enforcement is off by default, but the orphan rows
-  // would still silently resurrect a "deleted" label in card detail views).
+  // longer exists (foreign_keys is on by default, but the explicit delete keeps
+  // this independent of the FK's ON DELETE action; orphan rows would silently
+  // resurrect a "deleted" label in card detail views).
   return db.transaction((labelId: string) => {
     db.prepare('DELETE FROM kanban_card_labels WHERE label_id = ?').run(labelId)
     return db.prepare('DELETE FROM labels WHERE id = ?').run(labelId).changes > 0
