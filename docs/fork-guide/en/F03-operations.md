@@ -115,7 +115,7 @@ curl -f http://localhost:3420/
 
 ## Tenant skill gate
 
-Agents that serve several tenants keep each tenant's skills inside that tenant's requests. Two hooks do it (both wired at dashboard start into every sub-agent's `settings.json` and into the main agent's project settings; running sessions pick them up after a restart):
+Agents that serve several tenants keep each tenant's skills inside that tenant's requests. Two hooks do it (both wired at dashboard start into every sub-agent's `settings.json`; the main agent is not gated; running sessions pick them up after a restart):
 
 - `tenant-context.py` (UserPromptSubmit) records, per agent, which tenant the request it is about to serve belongs to (`agent_tenant_context`).
 - `tenant-skill-gate.py` (PreToolUse: `Skill`, file tools, `Bash`) blocks a tenant skill, its directory and its companion scripts outside that tenant's requests. Fleet skills are never affected.

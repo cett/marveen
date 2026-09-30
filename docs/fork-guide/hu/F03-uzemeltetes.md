@@ -115,7 +115,7 @@ curl -f http://localhost:3420/
 
 ## Tenant skill-kapu
 
-A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk kéréseihez kötik. Két hook végzi (mindkettő a dashboard indításakor kerül be minden sub-ágens `settings.json`-jába és a főágens projekt-beállításaiba; a futó sessionök újraindítás után veszik fel):
+A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk kéréseihez kötik. Két hook végzi (mindkettő a dashboard indításakor kerül be minden sub-ágens `settings.json`-jába; a főágens nincs kapu alatt; a futó sessionök újraindítás után veszik fel):
 
 - `tenant-context.py` (UserPromptSubmit): ágensenként rögzíti, hogy a most kiszolgálandó kérés melyik tenanthez tartozik (`agent_tenant_context`).
 - `tenant-skill-gate.py` (PreToolUse: `Skill`, fájl-eszközök, `Bash`): a tenant-skillt, annak könyvtárát és a companion scriptjeit letiltja a tenant kérésein kívül. A fleet-skilleket sosem érinti.
