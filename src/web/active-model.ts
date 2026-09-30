@@ -83,9 +83,23 @@ const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
 // null when there is no transcript / no usage yet (fresh session). This is what
 // the dashboard surfaces so the operator can see a session growing heavy and
 // decide to restart it.
-export function readContextTokensFromProjectDir(workingDir: string, configDir?: string): number | null {
+//
+// `opts.sessionStartMs` (the live claude process's start time) pins the reading
+// to the ACTIVE session: a transcript last written before that moment belongs
+// to a previous session, so it is not this session's context -- a freshly
+// restarted session has no transcript of its own until its first turn, and
+// without the pin the newest file is the OLD session's, whose 400k+ reading
+// made the gate see a huge context in a brand-new session. A session with no
+// transcript of its own yet has accumulated nothing: 0, not null (null means
+// "cannot measure", which the gate fail-closes on and eventually alerts about).
+export function readContextTokensFromProjectDir(
+  workingDir: string,
+  configDir?: string,
+  opts: { sessionStartMs?: number | null } = {},
+): number | null {
   const now = Date.now()
-  const cacheKey = `${workingDir}:${configDir ?? ''}`
+  const sessionStartMs = opts.sessionStartMs ?? null
+  const cacheKey = `${workingDir}:${configDir ?? ''}:${sessionStartMs ?? ''}`
   const cached = ctxCache.get(cacheKey)
   if (cached && cached.expiresAt > now) return cached.value
   let value: number | null = null
@@ -96,7 +110,9 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
         .filter(f => f.endsWith('.jsonl'))
         .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime)
-      if (jsonls.length > 0) {
+      if (sessionStartMs !== null && (jsonls.length === 0 || jsonls[0].mtime < sessionStartMs)) {
+        value = 0
+      } else if (jsonls.length > 0) {
         const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
         const lines = content.split('\n')
         for (let i = lines.length - 1; i >= 0; i--) {
