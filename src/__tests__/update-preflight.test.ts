@@ -108,6 +108,13 @@ describe('checkUpdatePreflight --branch agnostic', () => {
 })
 
 describe('checkUpdatePreflight --dirty working tree', () => {
+  it('treats a locally modified HEARTBEAT.md like any other dirty file (no special exemption)', () => {
+    const result = checkUpdatePreflight(makeGit('main', ' M HEARTBEAT.md\n'))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toBe('dirty-tree')
+  })
+
   it('rejects unstaged modifications', () => {
     const result = checkUpdatePreflight(makeGit('main', ' M src/web.ts\n'))
     expect(result.ok).toBe(false)

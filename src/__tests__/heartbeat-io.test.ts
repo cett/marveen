@@ -334,6 +334,12 @@ describe('buildAgentPrompt', () => {
     expect(prompt).not.toContain('Kovetkezo feladat:')
   })
 
+  it('states the output format inline instead of pointing at a HEARTBEAT.md file', () => {
+    const prompt = buildAgentPrompt(baseData())
+    expect(prompt).toContain('Formatum: emoji-szekciok (Email / Naptar / Kanban / Rendszer)')
+    expect(prompt).not.toContain('HEARTBEAT.md')
+  })
+
   it('includes the main-parked section when getMainParkedState is non-null', () => {
     mockGetMainParkedState.mockReturnValueOnce({ preview: 'p', fails: 2, approxMinutes: 10 })
     const prompt = buildAgentPrompt(baseData())

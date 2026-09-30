@@ -144,17 +144,10 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
     }
   }
 
-  // HEARTBEAT.md is self-modifying (rewritten by the agent every heartbeat).
-  // Treating it as a blocker means the update button is almost always
-  // refused in practice. Skip it from the dirty check; the file is
-  // gitignore'd as "tracked-but-mutable" by convention. Any other dirty
-  // file still blocks (see update.sh which stashes HEARTBEAT.md before
-  // git pull and pops it after).
   const dirty = git.porcelainStatus()
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
-    .filter((l) => !/\sHEARTBEAT\.md$/.test(l))
   if (dirty.length > 0) {
     return {
       ok: false,

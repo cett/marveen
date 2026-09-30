@@ -357,7 +357,7 @@ function buildAgentPrompt(data: HeartbeatData): string {
   prompt += `Heartbeat ellenorzes -- ${timeStr}\n\n`
   prompt += `Az alabbi adatokat gyujtottem nativ modon (API/DB). Fogalmazz tomor, emberi osszefoglalot ${OWNER_NAME} szamara.\n`
   prompt += `FONTOS: Nezd meg az emaileket is MCP-n keresztul (search_emails, utolso 2 ora, olvasatlanok).\n`
-  prompt += `Hasznald a HEARTBEAT.md formatumot.\n\n`
+  prompt += `Formatum: emoji-szekciok (Email / Naptar / Kanban / Rendszer), szekciocim felkover, ures szekciot hagyd ki.\n\n`
 
   // MAINBOXPARK816 stage 1: a parked main-agent input box silences the channel
   // unsupervised, and the alert cannot travel the inter-agent queue (it would
