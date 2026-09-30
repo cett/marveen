@@ -328,6 +328,36 @@ if grep -q 'localhost:1111' "$T5D_SKILL" 2>/dev/null; then
   fail "the .env value (1111) was used instead of the pre-exported one -- exported WEB_PORT got overwritten"
 fi
 
+echo ""
+echo "Test 5e: real update.sh block falls back to the documented default (3420) when WEB_PORT is set nowhere"
+FIXTURE_INSTALL3="$TMPDIR_BASE/t5e-install"
+FIXTURE_HOME3="$TMPDIR_BASE/t5e-home"
+mkdir -p "$FIXTURE_INSTALL3" "$FIXTURE_HOME3"
+ln -s "$SEED_SCHED_DIR" "$FIXTURE_INSTALL3/seed-scheduled-tasks"
+# No WEB_PORT line in .env at all, and (per the `unset WEB_PORT` after Test 5b,
+# and no `export` of it anywhere in this test file) none in the environment
+# either -- this is the "nothing set it" case the ${WEB_PORT:-3420} fallback
+# literal itself is responsible for, distinct from 5c (quoted value present)
+# and 5d (pre-exported value present). Mutation testing flagged this as the
+# one case the other two tests cannot catch: a mutant changing the fallback
+# literal (e.g. 3420 -> 3421) survived until this test existed.
+printf 'MAIN_AGENT_ID=testbot\nBOT_NAME=TestBot\nOWNER_NAME=Tester\n' > "$FIXTURE_INSTALL3/.env"
+
+( unset WEB_PORT
+  export INSTALL_DIR="$FIXTURE_INSTALL3" HOME="$FIXTURE_HOME3" RESEED_FLEET=""
+  bash "$BLOCK_FILE" > /dev/null 2>&1
+)
+
+T5E_SKILL="$FIXTURE_HOME3/.claude/scheduled-tasks/kanban-audit/SKILL.md"
+if [ -f "$T5E_SKILL" ] && grep -q 'localhost:3420' "$T5E_SKILL"; then
+  pass "no WEB_PORT anywhere: real update.sh block falls back to localhost:3420"
+else
+  fail "no WEB_PORT anywhere: expected the localhost:3420 default, not found"
+fi
+if grep -q '{{WEB_PORT}}' "$T5E_SKILL" 2>/dev/null; then
+  fail "raw {{WEB_PORT}} placeholder remains when no WEB_PORT was set anywhere"
+fi
+
 # --- Summary ---
 echo ""
 echo "================="
