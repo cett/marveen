@@ -14,7 +14,8 @@
 // scheduled tasks.
 
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
+import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT } from '../config.js'
@@ -28,11 +29,39 @@ interface McpServerDef {
 
 // -- Pattern derivation ------------------------------------------------------
 
+// Package runners (npx / bunx / pnpm dlx): the server's own script path never
+// appears on the command line, and the runner itself is shared by every such
+// server, so the distinctive token is the package name. It shows up both in the
+// launcher (`npm exec <pkg>`) and in the node child's script path
+// (`.../node_modules/<pkg>/dist/index.js`), which is why a bare substring match
+// on it finds the server however ps renders it. A version suffix (`pkg@1.2.3`)
+// is dropped; a leading `@` is a scope, not a version.
+function packageRunnerArgs(def: McpServerDef): string[] | null {
+  const cmd = def.command ? basename(def.command) : ''
+  const args = def.args ?? []
+  if (cmd === 'npx' || cmd === 'bunx') return args
+  if (cmd === 'pnpm' && args[0] === 'dlx') return args.slice(1)
+  return null
+}
+
+function derivePackagePattern(args: string[]): string | null {
+  const pkg = args.find((a) => !a.startsWith('-'))
+  if (!pkg) return null
+  const at = pkg.lastIndexOf('@')
+  return at > 0 ? pkg.slice(0, at) : pkg
+}
+
 // A stdio MCP server's most distinctive ps signature is its script path (the
 // first arg containing '/'); node/python interpreter paths are shared across
-// servers so `command` alone would cross-match. Fall back to command+first-arg
-// for servers launched as a bare binary (e.g. `garmin-mcp`).
+// servers so `command` alone would cross-match. Package runners are matched by
+// package name (above). Fall back to command+first-arg for servers launched as
+// a bare binary (e.g. `garmin-mcp`). Remote (sse/http) servers have no
+// `command`, hence no process, hence no pattern: they stay fail-open.
 export function deriveProcessPattern(def: McpServerDef): string | null {
+  const runnerArgs = packageRunnerArgs(def)
+  // A package runner with no package name (only flags) has no usable signature:
+  // `npx -y` would match every npx-launched process, so report "unknown" instead.
+  if (runnerArgs) return derivePackagePattern(runnerArgs)
   const pathArg = (def.args ?? []).find((a) => a.includes('/'))
   if (pathArg) return pathArg
   if (def.command) {
@@ -42,11 +71,19 @@ export function deriveProcessPattern(def: McpServerDef): string | null {
   return null
 }
 
-// Merge the project-root .mcp.json with the agent's own (agent wins on name
-// collision), returning name -> ps pattern. Missing/unparsable files yield {}.
+// Merge the MCP configs the session can see, returning name -> ps pattern.
+// Precedence, lowest to highest: user scope (`mcpServers` in ~/.claude.json --
+// where `claude mcp add --scope user` puts gmail, google-drive & co, which is why
+// a root-.mcp.json-only view left those servers without a pattern and their
+// `requires` entry a silent no-op), then the project-root .mcp.json, then the
+// agent's own .mcp.json. Missing/unparsable files yield nothing for that file.
 export function resolveMcpProcessPatterns(agentName: string | null): Record<string, string> {
   const out: Record<string, string> = {}
-  const files = [join(PROJECT_ROOT, '.mcp.json')]
+  const files = [
+    join(homedir(), '.claude.json'),
+    join(homedir(), '.claude', '.claude.json'),
+    join(PROJECT_ROOT, '.mcp.json'),
+  ]
   if (agentName) {
     try {
       files.push(join(agentDir(agentName), '.mcp.json'))
