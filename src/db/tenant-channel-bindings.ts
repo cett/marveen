@@ -75,3 +75,43 @@ export function deleteChannelBinding(agentId: string, channel: string, externalI
   if (removed) invalidateAgentTenantContext(agentId)
   return removed
 }
+
+/**
+ * True iff the agent currently serves the tenant: the tenant is not disabled and the agent is its
+ * main agent or is enabled for it in tenant_agent_availability. Same rule as _serves() in
+ * scripts/hooks/tenant_context_lib.py (keep the two in step).
+ */
+export function agentServesTenant(agentId: string, tenantId: string): boolean {
+  return db
+    .prepare(`
+      SELECT 1 FROM tenants t
+      WHERE t.id = ? AND t.disabled_at IS NULL
+        AND (t.main_agent_id = ? OR EXISTS (
+          SELECT 1 FROM tenant_agent_availability a WHERE a.tenant_id = t.id AND a.agent_id = ? AND a.enabled = 1))
+    `)
+    .get(tenantId, agentId, agentId) !== undefined
+}
+
+const DEFAULT_CONTEXT_MAX_AGE_SECONDS = 43200
+
+/**
+ * Tenant a message sent BY this agent is stamped with: the tenant of the request the agent is serving
+ * (agent_tenant_context, status 'bound') so a delegation inherits it. Anything else (no context, default,
+ * unknown, conflict, stale, the agent no longer serving the tenant, a DB error) is 'default', the
+ * least-privileged stamp: a receiver never gains tenant skills from it.
+ * Staleness uses the same TENANT_CONTEXT_MAX_AGE_SECONDS as the use-time gate.
+ */
+export function getDelegationTenant(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): string {
+  try {
+    const row = db
+      .prepare('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?')
+      .get(agentId) as { tenant_id: string | null; status: string; updated_at: number } | undefined
+    if (!row || row.status !== 'bound' || !row.tenant_id || row.tenant_id === UNBOUND_SOURCE_TENANT) return UNBOUND_SOURCE_TENANT
+    const parsed = Number.parseInt(process.env['TENANT_CONTEXT_MAX_AGE_SECONDS'] ?? '', 10)
+    const maxAge = Number.isFinite(parsed) ? parsed : DEFAULT_CONTEXT_MAX_AGE_SECONDS
+    if (maxAge > 0 && nowSeconds - (row.updated_at ?? 0) > maxAge) return UNBOUND_SOURCE_TENANT
+    return agentServesTenant(agentId, row.tenant_id) ? row.tenant_id : UNBOUND_SOURCE_TENANT
+  } catch {
+    return UNBOUND_SOURCE_TENANT
+  }
+}

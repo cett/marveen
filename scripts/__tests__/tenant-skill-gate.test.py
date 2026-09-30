@@ -29,6 +29,7 @@ SCHEMA = [
        PRIMARY KEY (agent_id, channel, external_id))""",
     "CREATE TABLE agent_messages (id INTEGER PRIMARY KEY, from_agent TEXT, to_agent TEXT, tenant_id TEXT)",
     "CREATE TABLE schedules (id TEXT PRIMARY KEY, agent TEXT, tenant_id TEXT)",
+    "CREATE TABLE tenants (id TEXT PRIMARY KEY, main_agent_id TEXT, disabled_at INTEGER)",
     "CREATE TABLE tenant_agent_availability (tenant_id TEXT, agent_id TEXT, enabled INTEGER DEFAULT 1)",
 ]
 
@@ -46,6 +47,8 @@ def make_db(path):
     con.execute("INSERT INTO tenant_channel_bindings VALUES ('agent-a','telegram','111','tenant-x')")
     con.execute("INSERT INTO tenant_channel_bindings VALUES ('agent-a','telegram','222','tenant-y')")
     con.execute("INSERT INTO schedules VALUES ('nightly','agent-a',NULL)")
+    con.execute("INSERT INTO tenants VALUES ('tenant-x',NULL,NULL)")
+    con.execute("INSERT INTO tenants VALUES ('tenant-y',NULL,NULL)")
     con.execute("INSERT INTO tenant_agent_availability VALUES ('tenant-x','agent-a',1)")
     con.execute("INSERT INTO tenant_agent_availability VALUES ('tenant-y','agent-a',1)")
     con.commit()
@@ -103,6 +106,14 @@ class TestMembershipRecheck(Base):
         err = self.denied("Skill", skill="tenant-x-demo")   # no new prompt in between
         self.assertIn("engedelyezve", err)
         self.allowed("Skill", skill="global/handoff")        # fleet skills stay usable
+
+    def test_tenant_disabled_after_the_prompt_is_denied_at_once(self):
+        self.prompt(CHAN % "111")
+        self.allowed("Skill", skill="tenant-x-demo")
+        con = sqlite3.connect(self.db)
+        con.execute("UPDATE tenants SET disabled_at=5 WHERE id='tenant-x'")
+        con.commit(); con.close()
+        self.denied("Skill", skill="tenant-x-demo")
 
     def test_missing_availability_table_fails_closed(self):
         self.prompt(CHAN % "111")

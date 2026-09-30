@@ -119,13 +119,16 @@ def _binding(con, agent_id, channel, external_id):
 
 
 def _serves(con, agent_id, tenant_id):
-    """True iff the agent is (still) enabled for the tenant. A binding, a tenant-stamped message or a
-    tenant-owned task can outlive the availability row; an agent disabled for a tenant must not keep
-    resolving to it. Lookup errors count as not serving (fail closed)."""
+    """True iff the agent (still) serves the tenant: the tenant is not disabled and the agent is either its
+    main agent or enabled for it in tenant_agent_availability. Same rule as agentServesTenant() in
+    src/db/tenant-channel-bindings.ts. A binding, a tenant-stamped message or a tenant-owned task can outlive
+    the availability row; an agent disabled for a tenant must not keep resolving to it. Lookup errors count
+    as not serving (fail closed)."""
     return _one(
         con,
-        "SELECT 1 FROM tenant_agent_availability WHERE agent_id=? AND tenant_id=? AND enabled=1",
-        (agent_id, tenant_id),
+        "SELECT 1 FROM tenants t WHERE t.id=? AND t.disabled_at IS NULL AND (t.main_agent_id=? OR EXISTS "
+        "(SELECT 1 FROM tenant_agent_availability a WHERE a.tenant_id=t.id AND a.agent_id=? AND a.enabled=1))",
+        (tenant_id, agent_id, agent_id),
     ) is not None
 
 

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { writeAgentAuditLog } from './audit.js'
 import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
+import { getDelegationTenant } from './tenant-channel-bindings.js'
 import { KanbanCard } from './kanban.js'
 import { Tenant, getTenantForMainAgent } from './observability.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
@@ -142,6 +143,9 @@ export function createAgentMessage(
   envelope?: string | null,
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // A delegation inherits the tenant of the request the sending agent is serving; an explicit non-default
+  // tenant (partner sends) and messages for federated recipients are left as given.
+  if (tenantId === 'default' && !to.includes('/')) tenantId = getDelegationTenant(from, now)
   const info = db.prepare(
     'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null)

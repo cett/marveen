@@ -26,6 +26,7 @@ _spec.loader.exec_module(tcl)
 BINDINGS_DDL = """CREATE TABLE tenant_channel_bindings (agent_id TEXT NOT NULL, channel TEXT NOT NULL,
   external_id TEXT NOT NULL, tenant_id TEXT NOT NULL, PRIMARY KEY (agent_id, channel, external_id))"""
 MESSAGES_DDL = """CREATE TABLE agent_messages (id INTEGER PRIMARY KEY, from_agent TEXT, to_agent TEXT, tenant_id TEXT)"""
+TENANTS_DDL = """CREATE TABLE tenants (id TEXT PRIMARY KEY, main_agent_id TEXT, disabled_at INTEGER)"""
 AVAIL_DDL = """CREATE TABLE tenant_agent_availability (tenant_id TEXT NOT NULL, agent_id TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (tenant_id, agent_id))"""
 SCHEDULES_DDL = """CREATE TABLE schedules (id TEXT PRIMARY KEY, agent TEXT NOT NULL, tenant_id TEXT)"""
@@ -35,7 +36,7 @@ CHAN = '<channel source="plugin:telegram:telegram" chat_id="%s" message_id="1" u
 
 def make_db(path):
     con = sqlite3.connect(path)
-    for ddl in (BINDINGS_DDL, MESSAGES_DDL, SCHEDULES_DDL, AVAIL_DDL):
+    for ddl in (BINDINGS_DDL, MESSAGES_DDL, SCHEDULES_DDL, AVAIL_DDL, TENANTS_DDL):
         con.execute(ddl)
     con.execute("INSERT INTO tenant_channel_bindings VALUES ('agent-a','telegram','111','tenant-x')")
     con.execute("INSERT INTO tenant_channel_bindings VALUES ('agent-a','telegram','222','tenant-y')")
@@ -47,6 +48,8 @@ def make_db(path):
     con.execute("INSERT INTO agent_messages VALUES (13,'partner-bot','agent-a',NULL)")
     con.execute("INSERT INTO schedules VALUES ('nightly','agent-a',NULL)")
     con.execute("INSERT INTO schedules VALUES ('tenant-job','agent-a','tenant-y')")
+    con.execute("INSERT INTO tenants VALUES ('tenant-x','main-x',NULL)")
+    con.execute("INSERT INTO tenants VALUES ('tenant-y',NULL,NULL)")
     con.execute("INSERT INTO tenant_agent_availability VALUES ('tenant-x','agent-a',1)")
     con.execute("INSERT INTO tenant_agent_availability VALUES ('tenant-y','agent-a',1)")
     con.commit()
@@ -144,6 +147,16 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(self.r(frame(11))[0], "unknown")                      # tenant-stamped message
         self.assertEqual(self.r(frame(13))[0], "unknown")                      # sender binding
         self.assertEqual(self.r(CHAN % ("222", "hi")), ("bound", "tenant-y"))  # other tenants unaffected
+
+    def test_main_agent_of_the_tenant_serves_without_an_availability_row(self):
+        self.con.execute("INSERT INTO tenant_channel_bindings VALUES ('main-x','telegram','444','tenant-x')")
+        self.assertEqual(self.r(CHAN % ("444", "hi"), agent="main-x"), ("bound", "tenant-x"))
+
+    def test_disabled_tenant_resolves_to_unknown_even_for_its_main_agent(self):
+        self.con.execute("INSERT INTO tenant_channel_bindings VALUES ('main-x','telegram','444','tenant-x')")
+        self.con.execute("UPDATE tenants SET disabled_at=5 WHERE id='tenant-x'")
+        self.assertEqual(self.r(CHAN % ("444", "hi"), agent="main-x")[0], "unknown")
+        self.assertEqual(self.r(CHAN % ("111", "hi"))[0], "unknown")
 
     def test_binding_without_any_availability_row_is_unknown(self):
         self.con.execute("DELETE FROM tenant_agent_availability WHERE tenant_id='tenant-y'")

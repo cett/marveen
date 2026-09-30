@@ -108,4 +108,52 @@ describe('tenant channel bindings', () => {
       expect(contextAgents()).toEqual(['agent-a', 'agent-b'])
     })
   })
+
+  describe('getDelegationTenant: a delegation inherits the tenant of the sender\'s active request', () => {
+    const setContext = (agent: string, tenant: string | null, status: string, updatedAt?: number) =>
+      dbMod.getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)')
+        .run(agent, tenant ?? '', status, updatedAt ?? Math.floor(Date.now() / 1000))
+    const enable = (tenant: string, agent: string) =>
+      dbMod.getDb().prepare('INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES (?, ?, 1)').run(tenant, agent)
+
+    it('a bound, fresh context of an agent that serves the tenant is stamped onto the message', () => {
+      enable('acme', 'agent-a'); setContext('agent-a', 'acme', 'bound')
+      expect(dbMod.getDelegationTenant('agent-a')).toBe('acme')
+      const msg = dbMod.createAgentMessage('agent-a', 'agent-b', 'do it')
+      expect(msg.tenant_id).toBe('acme')
+      expect(dbMod.getAgentMessage(msg.id)?.tenant_id).toBe('acme')
+    })
+
+    it('the tenant\'s main agent needs no availability row', () => {
+      dbMod.getDb().prepare("UPDATE tenants SET main_agent_id = 'main-x' WHERE id = 'acme'").run()
+      setContext('main-x', 'acme', 'bound')
+      expect(dbMod.getDelegationTenant('main-x')).toBe('acme')
+    })
+
+    it.each([
+      ['no context row', () => {}],
+      ['status default', () => setContext('agent-a', 'default', 'default')],
+      ['status unknown', () => setContext('agent-a', '', 'unknown')],
+      ['status conflict', () => setContext('agent-a', '', 'conflict')],
+      ['stale context', () => { enable('acme', 'agent-a'); setContext('agent-a', 'acme', 'bound', 1) }],
+      ['agent not enabled for the tenant', () => setContext('agent-a', 'acme', 'bound')],
+      ['agent disabled for the tenant', () => { enable('acme', 'agent-a'); dbMod.getDb().prepare('UPDATE tenant_agent_availability SET enabled = 0').run(); setContext('agent-a', 'acme', 'bound') }],
+      ['tenant disabled', () => { enable('acme', 'agent-a'); setContext('agent-a', 'acme', 'bound'); dbMod.getDb().prepare("UPDATE tenants SET disabled_at = 5 WHERE id = 'acme'").run() }],
+    ])('%s -> default (least-privileged stamp)', (_name, arrange) => {
+      arrange()
+      expect(dbMod.getDelegationTenant('agent-a')).toBe('default')
+      expect(dbMod.createAgentMessage('agent-a', 'agent-b', 'x').tenant_id).toBe('default')
+    })
+
+    it('an explicit partner tenant and a federated recipient are left as given', () => {
+      enable('acme', 'agent-a'); setContext('agent-a', 'acme', 'bound')
+      expect(dbMod.createAgentMessage('agent-a', 'agent-b', 'x', null, null, 'beta').tenant_id).toBe('beta')
+      expect(dbMod.createAgentMessage('agent-a', 'peer/agent-z', 'x').tenant_id).toBe('default')
+    })
+
+    it('a DB error is the default stamp, not a crash', () => {
+      dbMod.getDb().exec('DROP TABLE agent_tenant_context')
+      expect(dbMod.getDelegationTenant('agent-a')).toBe('default')
+    })
+  })
 })
