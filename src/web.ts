@@ -26,6 +26,7 @@ import { startWorkspaceDocsTtlSweeper } from './web/workspace-docs-ttl-sweeper.j
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
 import { regenSkillFilesFromSQL, importSkillCompanionFilesFromDisk } from './web/skill-regen.js'
+import { applySeedSkillRefreshMarker } from './web/skill-seed-refresh.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
@@ -660,6 +661,13 @@ export function startWebServer(port = 3420): http.Server {
       if (seeded > 0) logger.info({ seeded }, 'Schedules table seeded from files')
     } catch (err) {
       logger.warn({ err }, 'Schedule DB seed skipped')
+    }
+    try {
+      // update.sh refreshed shipped skill files: bring their DB rows along before the regen writes rows back over files.
+      const refreshed = applySeedSkillRefreshMarker()
+      if (refreshed.applied > 0 || refreshed.errors > 0) logger.info(refreshed, 'Refreshed seed skills applied to the DB')
+    } catch (err) {
+      logger.warn({ err }, 'Seed skill refresh apply skipped')
     }
     try {
       // Companion files (scripts/, references/) that only exist on disk go into the DB first.

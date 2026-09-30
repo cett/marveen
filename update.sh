@@ -452,12 +452,30 @@ render_seed_template() {
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
+# The skills table is the source of truth and the regen writes a one-line
+# "GENERATED from the skills DB" marker after the frontmatter of every skill
+# file. Shipped versions never carry it, so compare modulo that line, or a
+# regenerated (still untouched) copy would look "modified" and never refresh.
+strip_skill_header() {
+  sed '/^<!-- GENERATED from the skills DB.*-->[[:space:]]*$/d'
+}
+
+# A refreshed/reseeded seed skill FILE must also reach its DB row, or the startup
+# regen writes the old row back over it. The dashboard applies this marker
+# (src/web/skill-seed-refresh.ts) before the regen runs.
+note_refreshed_seed_skill() {
+  marker_dir="${MARVEEN_STORE_DIR:-$INSTALL_DIR/store}"
+  mkdir -p "$marker_dir" 2>/dev/null || return 0
+  printf '%s\n' "$1" >>"$marker_dir/.seed-refreshed-skills" 2>/dev/null || true
+  return 0
+}
+
 # True (0) iff $1 (an installed file) is byte-identical to ANY historical version
 # of $2 (a repo-relative path), rendered when $3 = "template".
 seed_copy_is_untouched() {
   installed="$1"; rel="$2"; mode="${3:-verbatim}"
   [ -f "$installed" ] || return 1
-  cur="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+  cur="$(strip_skill_header <"$installed" 2>/dev/null | shasum -a 256 2>/dev/null | awk '{print $1}')"
   [ -n "$cur" ] || return 1
   # Newest first, capped: a file we shipped 25+ revisions ago and never fixed
   # since is not worth the extra git calls.
@@ -497,7 +515,7 @@ refresh_untouched_seeds() {
       else
         want="$(shasum -a 256 <"$f" | awk '{print $1}')"
       fi
-      have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+      have="$(strip_skill_header <"$installed" 2>/dev/null | shasum -a 256 | awk '{print $1}')"
       [ "$want" = "$have" ] && continue
       if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
         if [ "$mode" = "template" ]; then
@@ -506,6 +524,7 @@ refresh_untouched_seeds() {
           cp "$f" "$installed"
         fi
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+        if [ "$src_rel" = "seed-skills" ] && [ "$base" = "SKILL.md" ]; then note_refreshed_seed_skill "$name"; fi
       else
         SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
       fi
@@ -735,6 +754,7 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
       [ -f "$f" ] || continue
       cp "$f" "$target/$(basename "$f")"
     done
+    note_refreshed_seed_skill "$skill_name"
     if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ] || [ "$SEED_FORCED" -gt 0 ]; then

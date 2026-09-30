@@ -51,7 +51,7 @@ export interface RegenResult {
  *   agent/<agentId>/<name>     -> <project>/agents/<agentId>/.claude/skills/<name>/SKILL.md
  *   agent/<MAIN_AGENT_ID>/<name> -> <project>/.claude/skills/<name>/SKILL.md
  */
-function resolveSkillPath(id: string): string | null {
+export function resolveSkillPath(id: string): string | null {
   // Reject any component that could escape the expected base directories.
   if (id.includes('..') || id.startsWith('/')) return null
 
