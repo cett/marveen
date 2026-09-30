@@ -10,8 +10,8 @@
 --
 -- No tenant_id column of its own: a row belongs to whoever owns skills.id, and
 -- every reader goes through the skill row (same shape as skill_tenant_access).
--- The FK cascades on delete, but SQLite FK enforcement is off by default, so
--- deleteSkill() and the tenant purge remove the rows explicitly as well.
+-- The FK cascades on delete (better-sqlite3 enables foreign_keys by default);
+-- deleteSkill() and the tenant purge also remove the rows explicitly, which is harmless.
 CREATE TABLE IF NOT EXISTS skill_files (
   skill_id   TEXT    NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
   rel_path   TEXT    NOT NULL,

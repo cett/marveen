@@ -12,8 +12,8 @@
 -- A source with no row is treated as the 'default' tenant by the resolver (fleet-internal
 -- use); it is never guessed from another source.
 --
--- The FK cascades on tenant delete, but SQLite FK enforcement is off by default, so the
--- tenant purge (deleteTenant) removes the rows explicitly as well.
+-- The FK cascades on tenant delete (better-sqlite3 enables foreign_keys by default); the
+-- tenant purge (deleteTenant) also removes the rows explicitly, which is harmless.
 CREATE TABLE IF NOT EXISTS tenant_channel_bindings (
   agent_id    TEXT    NOT NULL,
   channel     TEXT    NOT NULL,

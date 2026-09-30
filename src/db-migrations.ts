@@ -172,6 +172,7 @@ const KNOWN_SAFE_MISMATCHES: Record<number, string> = {
   4: 'Privacy scrub 2026-07-29: agent-name removed from seed comment. No schema change.',
   52: 'autonomy-config.json retirement: header comment updated to point at the 0053 hardcoded seed instead of the now-removed app-side JSON seeder. No schema change.',
   56: 'Privacy scrub 2026-09-29: internal workspace-doc id removed from header comment (replaced with the #985 plan doc reference already used elsewhere). No schema change.',
+  63: 'Header comment corrected: better-sqlite3 enables foreign_keys by default, so the skill_files FK cascade is enforced (the comment said it was off). No schema change.',
 }
 
 /**
