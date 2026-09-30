@@ -17,10 +17,16 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 let projectRoot: string
 let agentsBaseDir: string
+let fakeHome: string
+let realHome: string | undefined
 
 beforeEach(() => {
   projectRoot = mkdtempSync(join(tmpdir(), 'mcp-precheck-root-'))
   agentsBaseDir = mkdtempSync(join(tmpdir(), 'mcp-precheck-agents-'))
+  // user-scope config lives under $HOME; keep the real ~/.claude.json out of these tests
+  fakeHome = mkdtempSync(join(tmpdir(), 'mcp-precheck-home-'))
+  realHome = process.env.HOME
+  process.env.HOME = fakeHome
   vi.resetModules()
   vi.doMock('../config.js', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../config.js')>()
@@ -34,6 +40,9 @@ afterEach(() => {
   vi.doUnmock('../channel-coordinator/liveness.js')
   rmSync(projectRoot, { recursive: true, force: true })
   rmSync(agentsBaseDir, { recursive: true, force: true })
+  rmSync(fakeHome, { recursive: true, force: true })
+  if (realHome === undefined) delete process.env.HOME
+  else process.env.HOME = realHome
 })
 
 function writeMcpJson(dir: string, mcpServers: Record<string, unknown>) {
@@ -90,6 +99,45 @@ describe('resolveMcpProcessPatterns', () => {
     writeFileSync(join(projectRoot, '.mcp.json'), '{not valid json')
     const resolve = await loadResolve()
     expect(resolve(null)).toEqual({})
+  })
+
+  it('reads the user-scope mcpServers of ~/.claude.json (gmail & co live there, not in .mcp.json)', async () => {
+    writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({
+      mcpServers: {
+        gmail: { type: 'stdio', command: 'npx', args: ['-y', 'gmail-mcp-server'] },
+        'google-drive': { type: 'stdio', command: 'npx', args: ['-y', '@piotr-agier/google-drive-mcp'] },
+        'google-calendar': { type: 'sse', url: 'https://gcal.mcp.example.test/mcp' },
+      },
+      projects: { '/some/project': { mcpServers: { scoped: { command: 'node', args: ['/p/x.js'] } } } },
+    }))
+    const resolve = await loadResolve()
+    // remote server: no pattern (fail-open); project-scoped servers are not user scope
+    expect(resolve(null)).toEqual({ gmail: 'gmail-mcp-server', 'google-drive': '@piotr-agier/google-drive-mcp' })
+  })
+
+  it('precedence: user scope < project .mcp.json < agent .mcp.json', async () => {
+    writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({ mcpServers: {
+      gmail: { command: 'npx', args: ['-y', 'user-gmail'] },
+      drive: { command: 'npx', args: ['-y', 'user-drive'] },
+      only_user: { command: 'npx', args: ['-y', 'only-user-mcp'] },
+    } }))
+    writeMcpJson(projectRoot, { gmail: { command: 'node', args: ['/root/gmail/index.js'] }, drive: { command: 'node', args: ['/root/drive/index.js'] } })
+    const agentDir = join(agentsBaseDir, 'alice')
+    writeMcpJson(agentDir, { drive: { command: 'node', args: ['/alice/drive/index.js'] } })
+    vi.doMock('../web/agent-config.js', () => ({ agentDir: (name: string) => join(agentsBaseDir, name) }))
+    const resolve = await loadResolve()
+    expect(resolve('alice')).toEqual({
+      gmail: '/root/gmail/index.js',
+      drive: '/alice/drive/index.js',
+      only_user: 'only-user-mcp',
+    })
+  })
+
+  it('an unparsable ~/.claude.json does not hide the project-root servers (fail-open)', async () => {
+    writeFileSync(join(fakeHome, '.claude.json'), '{not json')
+    writeMcpJson(projectRoot, { gmail: { command: 'node', args: ['/root/gmail/index.js'] } })
+    const resolve = await loadResolve()
+    expect(resolve(null)).toEqual({ gmail: '/root/gmail/index.js' })
   })
 
   it('omits a server whose pattern cannot be derived', async () => {

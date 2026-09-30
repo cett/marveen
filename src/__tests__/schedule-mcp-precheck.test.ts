@@ -35,11 +35,44 @@ describe('deriveProcessPattern', () => {
 
   it('bare binárisnál command + első arg', () => {
     expect(deriveProcessPattern({ command: 'garmin-mcp', args: [] })).toBe('garmin-mcp')
-    expect(deriveProcessPattern({ command: 'npx', args: ['ollama-mcp'] })).toBe('npx ollama-mcp')
+    expect(deriveProcessPattern({ command: 'npx', args: ['ollama-mcp'] })).toBe('ollama-mcp')
+  })
+
+  it('package runner (npx / bunx / pnpm dlx): a csomagnév a minta, a flagek és a verzió nem', () => {
+    expect(deriveProcessPattern({ command: 'npx', args: ['-y', 'gmail-mcp-server'] })).toBe('gmail-mcp-server')
+    expect(deriveProcessPattern({ command: 'npx', args: ['-y', '@piotr-agier/google-drive-mcp'] })).toBe('@piotr-agier/google-drive-mcp')
+    expect(deriveProcessPattern({ command: '/opt/homebrew/bin/npx', args: ['--yes', 'some-mcp@1.2.3'] })).toBe('some-mcp')
+    expect(deriveProcessPattern({ command: 'npx', args: ['-y', '@scope/pkg@2.0.0'] })).toBe('@scope/pkg')
+    expect(deriveProcessPattern({ command: 'bunx', args: ['some-mcp'] })).toBe('some-mcp')
+    expect(deriveProcessPattern({ command: 'pnpm', args: ['dlx', 'some-mcp'] })).toBe('some-mcp')
+  })
+
+  it('package runner csomagnév nélkül (csak flagek) -> nincs minta, a `npx -y` mindent elkapna', () => {
+    expect(deriveProcessPattern({ command: 'npx', args: ['-y'] })).toBeNull()
+    expect(deriveProcessPattern({ command: 'npx', args: [] })).toBeNull()
+  })
+
+  it('távoli (sse/http) szervernek nincs processze, tehát nincs minta', () => {
+    expect(deriveProcessPattern({ url: 'https://mcp.example.test/mcp' } as never)).toBeNull()
   })
 
   it('command nélkül nincs minta (fail-open jelzés)', () => {
     expect(deriveProcessPattern({})).toBeNull()
+  })
+})
+
+describe('decideMcpPrecheck: npx-launched server, pattern from the package name', () => {
+  const patterns = { gmail: 'gmail-mcp-server' }
+  it('alive: the npm-exec launcher line and the node child both match', () => {
+    expect(decideMcpPrecheck(['gmail'], patterns, ['npm exec gmail-mcp-server'])).toEqual({ ok: true, missing: [], unknown: [] })
+    expect(decideMcpPrecheck(['gmail'], patterns, ['node /home/u/.npm/_npx/ab12/node_modules/gmail-mcp-server/dist/index.js --non-interactive']))
+      .toEqual({ ok: true, missing: [], unknown: [] })
+  })
+  it('missing: only unrelated processes -> blocks', () => {
+    expect(decideMcpPrecheck(['gmail'], patterns, ['npm exec other-mcp', 'node /x/other-mcp/index.js'])).toEqual({ ok: false, missing: ['gmail'], unknown: [] })
+  })
+  it('an unknown server (no pattern) still fails open', () => {
+    expect(decideMcpPrecheck(['google-calendar'], patterns, [])).toEqual({ ok: true, missing: [], unknown: ['google-calendar'] })
   })
 })
 
