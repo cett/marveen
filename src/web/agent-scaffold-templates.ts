@@ -341,7 +341,7 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 ### Automatikus skill generálás
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre skill-t az API-n:
 
-PUT /api/skills/sql/:id (ahol az id pl. "global/skill-nev" vagy "agent/AGENT_ID/skill-nev")
+PUT /api/skills/sql/:id (ahol az id pl. "global/skill-nev" vagy "agent/AGENT_ID/skill-nev", az URL-ben URL-kódolva, mert a "/" nem szerepelhet nyersen: /api/skills/sql/global%2Fskill-nev)
 Body: { name, description, content } -- a content YAML frontmatter + szekciók (Mikor használd, Eljárás, Buktatók, Ellenőrzés).
 A 716-F hook fallbackként megmarad: ha fájlt írsz, az automatikusan SQL-be kerül.
 

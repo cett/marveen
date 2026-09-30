@@ -10,9 +10,9 @@
  *   npx tsx scripts/regen-skills.ts [--dry-run] [--force]
  *
  *   --dry-run   Log what would be written without touching disk. Works even
- *               when SKILL_SQL_REGEN is unset (useful for the proof step).
+ *               when SKILL_SQL_REGEN=0 (useful for the proof step).
  *   --force     Bypass the SKILL_SQL_REGEN kill-switch for a live manual run.
- *               The startup hook still requires the env var.
+ *               The startup hook honours the same switch.
  */
 import { initDatabase, countSkills } from '../src/db.js'
 import { regenSkillFilesFromSQL, findMissingSkillFiles } from '../src/web/skill-regen.js'
@@ -25,7 +25,7 @@ const force  = process.argv.includes('--force')
 initDatabase()
 
 if (!dryRun && !force && !SKILL_SQL_REGEN) {
-  console.error('SKILL_SQL_REGEN kill-switch is off. Pass --dry-run for a preview, or --force for a live manual run.')
+  console.error('SKILL_SQL_REGEN kill-switch is off (SKILL_SQL_REGEN=0). Pass --dry-run for a preview, or --force for a live manual run.')
   process.exit(1)
 }
 
