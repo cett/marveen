@@ -758,6 +758,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     if (typeof parsed.tenant_id !== 'string' || !parsed.tenant_id) { json(res, { error: 'required', field: 'tenant_id', hint: 'tenant_id is required' }, 400); return true }
     grantSkillAccess(id, parsed.tenant_id, ctx.auth?.kind === 'session' ? ctx.auth.user : undefined)
+    // A granted tenant skill also lands under the grantee tenant's agents.
+    regenSingleSkillFile(id)
     json(res, { ok: true })
     return true
   }
@@ -770,6 +772,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     const ok = revokeSkillAccess(id, tenantId)
     if (!ok) { json(res, { error: 'not_found' }, 404); return true }
+    // Drop the generated copy from the agents that only qualified through this grant.
+    regenSingleSkillFile(id)
     json(res, { ok: true })
     return true
   }

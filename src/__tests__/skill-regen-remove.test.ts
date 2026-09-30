@@ -76,9 +76,9 @@ describe('removeGeneratedSkillFile', () => {
     expect(removeGeneratedSkillFile('global/never-existed', 'x', 'fleet')).toEqual({ removed: false, reason: 'absent' })
   })
 
-  it('does nothing for a non-fleet (B2B tenant) skill', () => {
+  it('never touches the fleet skill dirs for a non-fleet (B2B tenant) skill (tenant copies: skill-regen-tenant.test.ts)', () => {
     seed('tenantish', 'x')
-    expect(removeGeneratedSkillFile('global/tenantish', 'x', 'acme')).toEqual({ removed: false, reason: 'not_file_backed' })
+    expect(removeGeneratedSkillFile('global/tenantish', 'x', 'acme')).toEqual({ removed: false, reason: 'absent' })
     expect(existsSync(dir('tenantish'))).toBe(true)
   })
 

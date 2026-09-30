@@ -38,6 +38,7 @@ import { hashPassword } from '../password-hash.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, listAgentNames } from '../agent-config.js'
 import { getHighRiskMcpServersForAgent } from '../mcp-risk-policy.js'
+import { regenTenantSkillFiles } from '../skill-regen.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -455,6 +456,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
     const row = setTenantAgentAvailability(tenantId, sanitizedAgentId, enabled)
     auditAdmin(ctx, 'admin.agent_availability.set', `${tenantId}/${agentId}`, { enabled })
+    // Tenant skills are generated under the tenant's enabled agents: follow the matrix.
+    try { regenTenantSkillFiles(tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant skill files could not be reconciled after an availability change') }
     json(res, { tenant_id: row.tenant_id, agent_id: row.agent_id, enabled: row.enabled === 1, updated_at: row.updated_at })
     return true
   }

@@ -37,6 +37,8 @@ const { getSkillMock, listAllSkillsMock } = vi.hoisted(() => ({
 vi.mock('../db.js', () => ({
   getSkill: getSkillMock,
   listAllSkills: listAllSkillsMock,
+  listSkillAccess: vi.fn().mockReturnValue([]),
+  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
 }))
 
 const { atomicWriteMock } = vi.hoisted(() => ({ atomicWriteMock: vi.fn() }))
@@ -107,7 +109,7 @@ describe('regenSingleSkillFile', () => {
     expect(result).toEqual({ written: false, skipped: false, reason: 'not_found' })
   })
 
-  it('is a no-op (not_file_backed) for a tenant-scoped B2B skill, without touching disk', () => {
+  it('is a no-op (not_file_backed) for a tenant-scoped B2B skill whose tenant has no agent, without touching disk', () => {
     getSkillMock.mockReturnValue({ id: 'acme-corp-my-skill', name: 'my-skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 })
     const result = regenSingleSkillFile('acme-corp-my-skill', true)
     expect(result).toEqual({ written: false, skipped: true, reason: 'not_file_backed' })
@@ -227,7 +229,7 @@ describe('regenSkillFilesFromSQL', () => {
     expect(loggerErrorMock).toHaveBeenCalled()
   })
 
-  it('filters to fleet-tenant rows only, ignoring tenant-scoped B2B rows', () => {
+  it('writes fleet rows to their canonical paths and creates no file for a tenant row whose tenant has no agent', () => {
     listAllSkillsMock.mockReturnValue([
       fleetSkillRow('global/fleet-only', '# fleet'),
       { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },

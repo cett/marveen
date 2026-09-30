@@ -24,6 +24,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { initDatabase, seedSkillIfAbsent, countSkills } from '../src/db.js'
+import { readGeneratedHeader } from '../src/skill-header.js'
 import { AGENTS_BASE_DIR, listAgentNames } from '../src/web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../src/config.js'
 
@@ -69,6 +70,8 @@ function collectSkillFiles(skillsDir: string, idPrefix: string, isGlobal: boolea
     if (!existsSync(skillMdPath)) continue
     let content = ''
     try { content = readFileSync(skillMdPath, 'utf-8') } catch { continue }
+    // A generated tenant skill copy is a cache of a tenant row, not a fleet skill.
+    if (readGeneratedHeader(content)?.tenant) continue
     files.push({
       id: `${idPrefix}/${entry}`,
       name: entry,

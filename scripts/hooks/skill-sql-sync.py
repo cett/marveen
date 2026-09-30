@@ -18,6 +18,7 @@ Design invariants:
 """
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -108,6 +109,75 @@ def strip_generated_header(content: str) -> str:
     return content
 
 
+def read_generated_header(content: str) -> "tuple[str | None, bool] | None":
+    """Mirror of readGeneratedHeader (src/skill-header.ts): (id, is_tenant) of the
+    marker line, or None when the file carries none."""
+    pos = 0
+    while pos <= len(content):
+        nl = content.find("\n", pos)
+        line_end = len(content) if nl == -1 else nl
+        if content.startswith(GENERATED_MARKER, pos) and content[pos:line_end].rstrip().endswith("-->"):
+            m = re.search(r"\((tenant skill|skill) ([^)\s]+)\)", content[pos:line_end])
+            return (m.group(2), m.group(1) == "tenant skill") if m else (None, False)
+        if nl == -1:
+            break
+        pos = nl + 1
+    return None
+
+
+def tenant_dir_name(skill_id: str) -> "str | None":
+    """Mirror of tenantSkillDirName (src/web/skill-regen.ts)."""
+    d = re.sub(r"[^A-Za-z0-9._-]", "-", skill_id).lstrip(".-")
+    return d if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", d or "") else None
+
+
+def _agent_and_dir_from_path(file_path: str) -> "tuple[str, str] | None":
+    """(agentId, skill dir) for <AGENTS_BASE_DIR>/<agentId>/.claude/skills/<dir>/SKILL.md."""
+    p = os.path.normpath(os.path.abspath(file_path))
+    skill_dir = os.path.dirname(p)
+    skills_dir = os.path.dirname(skill_dir)
+    claude_dir = os.path.dirname(skills_dir)
+    agent_dir = os.path.dirname(claude_dir)
+    if (os.path.basename(skills_dir) == "skills" and os.path.basename(claude_dir) == ".claude"
+            and os.path.normpath(os.path.dirname(agent_dir)) == os.path.normpath(AGENTS_BASE_DIR)):
+        return os.path.basename(agent_dir), os.path.basename(skill_dir)
+    return None
+
+
+def _sync_tenant_skill(file_path: str, content: str, header_id: str) -> str:
+    """A generated tenant skill copy was edited: update THAT tenant row, never
+    create rows or fall back to agent/<id>/<dir>. The header is only a claim an
+    agent could forge, so the edit is applied only when the file sits where regen
+    would put this skill: an agent that qualifies for the row's tenant (owner or
+    granted) and the exact directory name. Returns a log message."""
+    where = _agent_and_dir_from_path(file_path)
+    if not where:
+        return "tenant header outside an agent skills dir, ignored"
+    agent_id, dir_name = where
+    if dir_name != tenant_dir_name(header_id):
+        return f"tenant header id {header_id} does not match directory {dir_name}, ignored"
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        row = conn.execute("SELECT tenant_id FROM skills WHERE id = ?", (header_id,)).fetchone()
+        if not row or row[0] == "fleet":
+            return f"no tenant skill {header_id} in the DB, ignored"
+        tenants = {row[0]} | {r[0] for r in conn.execute(
+            "SELECT tenant_id FROM skill_tenant_access WHERE skill_id = ?", (header_id,))}
+        ph = ",".join("?" * len(tenants))
+        ok = conn.execute(
+            f"SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN ({ph})",
+            (agent_id, *sorted(tenants))).fetchone()
+        if not ok:
+            return f"agent {agent_id} does not qualify for tenant skill {header_id}, ignored"
+        conn.execute("UPDATE skills SET content = ?, updated_at = ? WHERE id = ?",
+                     (strip_generated_header(content), int(time.time()), header_id))
+        conn.commit()
+        return f"updated tenant skill {header_id}"
+    finally:
+        conn.close()
+
+
 def _upsert_skill(skill_id: str, name: str, content: str) -> None:
     content = strip_generated_header(content)
     now = int(time.time())
@@ -156,6 +226,16 @@ def main() -> None:
         with open(file_path) as f:
             content = f.read()
     except OSError:
+        sys.exit(0)
+
+    # A generated TENANT copy maps to its tenant row, not to agent/<id>/<dir>.
+    hdr = read_generated_header(content)
+    if hdr and hdr[1]:
+        try:
+            msg = _sync_tenant_skill(file_path, content, hdr[0]) if hdr[0] else "tenant header without id, ignored"
+            print(f"skill-sql-sync: {msg}", file=sys.stderr)
+        except Exception as exc:
+            print(f"skill-sql-sync: SQL error for tenant skill {hdr[0]}: {exc}", file=sys.stderr)
         sys.exit(0)
 
     name = skill_id.rsplit("/", 1)[-1]
