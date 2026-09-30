@@ -15,7 +15,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureDestructiveGate, ensureGovernanceGateCommands, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureDestructiveGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -618,6 +618,7 @@ export function startWebServer(port = 3420): http.Server {
       const stalePatched: string[] = []
       const egressPatched: string[] = []
       const destructivePatched: string[] = []
+      const tenantPatched: string[] = []
       const govPatched: string[] = []
       const watchdogPatched: string[] = []
       const pruned: string[] = []
@@ -632,6 +633,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureDestructiveGate(agentName)) destructivePatched.push(agentName)
+        if (ensureTenantHooks(agentName)) tenantPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         // No-op for MAIN_AGENT_ID (already covered via the project-tracked
         // .claude/settings.json) -- see ensureContextWatchdogHook's own comment.
@@ -642,6 +644,7 @@ export function startWebServer(port = 3420): http.Server {
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
+      if (tenantPatched.length) logger.info({ patched: tenantPatched }, 'tenant-context + tenant-skill-gate hooks backfilled into agent settings.json')
       if (destructivePatched.length) logger.info({ patched: destructivePatched }, 'destructive-gate Bash hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
       if (watchdogPatched.length) logger.info({ patched: watchdogPatched }, 'context-watchdog PostToolUse hook backfilled into sub-agent settings.json')
