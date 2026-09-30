@@ -42,6 +42,32 @@
 
 .field-control:is(textarea) { resize: vertical; }
 
+/* === Bare .input === plain text/number inputs outside a .field wrapper
+   (e.g. Settings > Model fallback chain rows) still need theme-aware
+   background/text/border -- without this they fall back to the browser's
+   default white input styling in dark mode. */
+
+.input {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  color: var(--text);
+  min-height: 36px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow   var(--dur-fast) var(--ease-out);
+}
+
+.input::placeholder { color: var(--text-muted); }
+
+.input:focus {
+  border-color: var(--border-focus);
+  box-shadow: var(--focus-ring);
+}
+
 .field-help  { font-size: var(--fs-xs); color: var(--text-muted); margin-top: var(--sp-05); }
 .field-error { font-size: var(--fs-xs); color: var(--danger);     margin-top: var(--sp-05); display: none; }
 

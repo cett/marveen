@@ -1131,6 +1131,7 @@ window._i18n.hu = {
   'settings.model_fallback.toast.saved': 'Model-fallback beállítások elmentve',
   'settings.model_fallback.toast.error': 'Hiba történt',
   'settings.model_fallback.toast.chain_too_short': 'A láncnak legalább 2 modellt kell tartalmaznia',
+  'settings.model_fallback.toast.no_changes': 'Nincs változás -- nem mentve',
   'settings.module.claude-plans': 'Claude planek',
   'settings.claude_plans.intro':  'Regisztrált Claude-előfizetések (planek). Egy plan egy már bejelentkezett, tartós CLAUDE_CONFIG_DIR-t jelöl -- a bejelentkezést magát (claude setup-token) kézzel kell elvégezni, ide csak a regisztrációt vezeted fel. Az automata kulcs-rotáció (lásd a lenti kapcsolót) még nincs bekötve.',
   'settings.claude_plans.empty':  'Még nincs regisztrált plan.',

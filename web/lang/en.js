@@ -817,6 +817,7 @@ window._i18n.en = {
   'settings.model_fallback.toast.saved': 'Model-fallback settings saved',
   'settings.model_fallback.toast.error': 'Something went wrong',
   'settings.model_fallback.toast.chain_too_short': 'The chain needs at least 2 models',
+  'settings.model_fallback.toast.no_changes': 'Nothing changed -- not saved',
   'settings.module.claude-plans': 'Claude plans',
   'settings.claude_plans.intro':  'Registered Claude subscriptions (plans). A plan points at an already-logged-in, persistent CLAUDE_CONFIG_DIR -- the login itself (claude setup-token) is a manual step done ahead of time; this just registers it. Automatic key rotation (see the toggle below) is not wired up yet.',
   'settings.claude_plans.empty':  'No plans registered yet.',

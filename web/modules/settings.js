@@ -1731,6 +1731,11 @@ async function renderModelFallbackPanel(bodyEl) {
     if (JSON.stringify(cleanedChain) !== JSON.stringify(loaded.chain)) dirty.chain = cleanedChain
     if (revertAfterMinutes !== loaded.revertAfterMinutes) dirty.revertAfterMinutes = revertAfterMinutes
 
+    if (Object.keys(dirty).length === 0) {
+      showToast(t('settings.model_fallback.toast.no_changes'))
+      return
+    }
+
     statusEl.textContent = t('settings.model_fallback.saving')
     try {
       const res = await fetch('/api/model-fallback', {
