@@ -17,7 +17,7 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 KEY_VALUE="dGVzdC1tYXN0ZXIta2V5LW5vdC1yZWFs"   # fake base64, not a real key
 
-mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }  # GNU first: on Linux `stat -f` exits 0 with filesystem info
 
 # new_repo <name>: a fake install with vault + memory in every location, plus decoys.
 new_repo() {
