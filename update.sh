@@ -441,6 +441,7 @@ run_unit_maintenance
 # explicit --regen-claudemd flag, because that file is the operator's text).
 SEED_REFRESH_UPDATED=0
 SEED_REFRESH_KEPT=0
+SEED_REFRESH_KEPT_SKILLS=0
 
 # Render a template stream the same way the seeder does. Keep in sync with the
 # sed blocks in the seeding loops below and in install-linux.sh.
@@ -527,6 +528,7 @@ refresh_untouched_seeds() {
         if [ "$src_rel" = "seed-skills" ] && [ "$base" = "SKILL.md" ]; then note_refreshed_seed_skill "$name"; fi
       else
         SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
+        if [ "$src_rel" = "seed-skills" ]; then SEED_REFRESH_KEPT_SKILLS=$((SEED_REFRESH_KEPT_SKILLS + 1)); fi
       fi
     done
   done
@@ -539,6 +541,7 @@ run_seed_refresh() {
   # else (a test harness found exactly that).
   SEED_REFRESH_UPDATED="${SEED_REFRESH_UPDATED:-0}"
   SEED_REFRESH_KEPT="${SEED_REFRESH_KEPT:-0}"
+  SEED_REFRESH_KEPT_SKILLS="${SEED_REFRESH_KEPT_SKILLS:-0}"
   # .env values feed the template rendering; without MAIN_AGENT_ID a rendered
   # comparison would be meaningless, so templated tasks are skipped then.
   if [ -f "$INSTALL_DIR/.env" ]; then
@@ -553,6 +556,12 @@ run_seed_refresh() {
   fi
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
+  fi
+  # A kept skill file is NOT safe just because the refresh left it alone: the skills
+  # table is the source of truth and the dashboard rewrites a differing file from the
+  # row at its next start. Say so, or "megtartva" reads as "your edit is preserved".
+  if [ "$SEED_REFRESH_KEPT_SKILLS" -gt 0 ]; then
+    echo -e "  ${ORANGE}!${NC} Megtartott, helyben modositott skill-fajl: ${SEED_REFRESH_KEPT_SKILLS}. A skillek forrasa az adatbazis: a kovetkezo dashboard-inditaskor a fajl visszairodik a DB-bol, hacsak a modositast nem a dashboardon vagy az API-n (PUT /api/skills/sql/<url-kodolt id>) vitted be (a fajl-szerkesztest csak az Edit/Write hook szinkronizalja vissza)."
   fi
   return 0
 }

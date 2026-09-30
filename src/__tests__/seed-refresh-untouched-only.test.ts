@@ -70,7 +70,7 @@ function runRefresh(install: string, home: string): { out: string; code: number 
   const script = join(install, 'probe.sh')
   writeFileSync(script, [
     'set -u',
-    'GREEN=""; NC=""',
+    'GREEN=""; ORANGE=""; NC=""',
     `INSTALL_DIR="${install}"`,
     `HOME="${home}"`,
     'MAIN_AGENT_ID=""; BOT_NAME=""; OWNER_NAME=""; WEB_PORT=""',
@@ -261,6 +261,37 @@ describe('seed refresh vs the skills-DB generated header and the DB row', () => 
       expect(r.code).toBe(0)
       expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(edited)
       expect(existsSync(join(f.install, 'store', '.seed-refreshed-skills'))).toBe(false)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a KEPT modified skill file says the DB is the source, so the file edit is rewritten at the next start', () => {
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'skills', 'demo')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), f.versions[1] + '# hand edit\n')
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(r.out).toMatch(/Megtartott, helyben modositott skill-fajl: 1/)
+      expect(r.out).toMatch(/adatbazis/)
+      expect(r.out).toMatch(/visszairodik/)
+      expect(r.out).toMatch(/PUT \/api\/skills\/sql/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('no such warning when nothing skill-related was kept (a kept scheduled task does not trigger it)', () => {
+    const f = makeFixture()
+    try {
+      const tdir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(tdir, { recursive: true })
+      writeFileSync(join(tdir, 'SKILL.md'), 'task edited by the operator\n')
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(r.out).not.toMatch(/Megtartott, helyben modositott skill-fajl/)
     } finally {
       rmSync(f.base, { recursive: true, force: true })
     }

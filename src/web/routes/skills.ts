@@ -749,6 +749,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, skill: row }, 201)
       return true
     }
+    // The description column mirrors the frontmatter (that is what the loader and the list show):
+    // new content without an explicit description carries its frontmatter description along.
+    if (typeof parsed.content === 'string' && parsed.description === undefined) {
+      const fmDescription = parseSkillDescription(parsed.content)
+      if (fmDescription) parsed = { ...parsed, description: fmDescription }
+    }
     const updated = updateSkill(id, parsed)
     regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })

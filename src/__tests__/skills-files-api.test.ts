@@ -58,6 +58,7 @@ vi.mock('../db.js', () => ({
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'
+import { listSkillAccess } from '../db.js'
 
 afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
 
@@ -88,6 +89,7 @@ const b64 = (s: string) => Buffer.from(s).toString('base64')
 beforeEach(() => {
   rmSync(FAKE_HOME, { recursive: true, force: true })
   store.clear(); files.clear(); avail.clear()
+  vi.mocked(listSkillAccess).mockReturnValue([])
   mkdirSync(join(FAKE_PROJECT, 'agents', 'ann'), { recursive: true })
   store.set(SID, row(SID))
   mkdirSync(gdir(), { recursive: true })
@@ -182,6 +184,44 @@ describe('PUT/GET/DELETE /api/skills/sql/<id>/files/<rel>', () => {
     expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toContain('(tenant skill acme-demo)')
     expect((await call('DELETE', `/api/skills/sql/acme-demo/files/${enc('references/notes.md')}`, undefined, { role: 'user', tenantId: 'acme' })).status).toBe(200)
     expect(existsSync(join(dir, 'references'))).toBe(false)
+  })
+})
+
+describe('companion file access for a tenant the skill is GRANTED to', () => {
+  const FID = 'acme-demo'
+  const frel = `/api/skills/sql/${FID}/files/${enc('scripts/run.sh')}`
+  const owner = { role: 'user', tenantId: 'acme' }
+  const grantee = { role: 'user', tenantId: 'beta' }
+  const stranger = { role: 'user', tenantId: 'gamma' }
+
+  beforeEach(async () => {
+    store.set(FID, row(FID, 'acme', '---\nname: demo\n---\nbody'))
+    vi.mocked(listSkillAccess).mockImplementation(((id: string) => (id === FID ? [{ skill_id: id, tenant_id: 'beta' }] : [])) as any)
+    expect((await call('PUT', frel, { content: '#!/bin/sh\necho hi\n', mode: 0o755 }, owner)).status).toBe(201)
+  })
+
+  it('the grantee lists and reads the files (content included)', async () => {
+    const list = await call('GET', `/api/skills/sql/${FID}/files`, undefined, grantee)
+    expect(list.status).toBe(200)
+    expect(list.body.files.map((f: any) => f.rel_path)).toEqual(['scripts/run.sh'])
+    const item = await call('GET', frel, undefined, grantee)
+    expect(item.status).toBe(200)
+    expect(Buffer.from(item.body.content_base64, 'base64').toString()).toBe('#!/bin/sh\necho hi\n')
+  })
+
+  it('the grantee cannot write or delete (404, nothing changes)', async () => {
+    expect((await call('PUT', frel, { content: 'evil' }, grantee)).status).toBe(404)
+    expect((await call('DELETE', frel, undefined, grantee)).status).toBe(404)
+    expect(files.get(`${FID}\u0000scripts/run.sh`).content.toString()).toBe('#!/bin/sh\necho hi\n')
+  })
+
+  it('a tenant without a grant cannot even list or read them', async () => {
+    expect((await call('GET', `/api/skills/sql/${FID}/files`, undefined, stranger)).status).toBe(404)
+    expect((await call('GET', frel, undefined, stranger)).status).toBe(404)
+  })
+
+  it('a tenant caller without a tenant id is not a grantee', async () => {
+    expect((await call('GET', `/api/skills/sql/${FID}/files`, undefined, { role: 'user' })).status).toBe(404)
   })
 })
 

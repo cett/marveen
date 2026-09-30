@@ -122,6 +122,37 @@ describe('PUT /api/skills/sql/:id creates a missing file-backed skill', () => {
     })
   }
 
+  describe('the description of an existing skill follows the frontmatter', () => {
+    beforeEach(() => {
+      mockGetSkill.mockReturnValue({ id: 'global/new-skill', tenant_id: 'fleet' } as any)
+      mockUpdateSkill.mockReturnValue({ id: 'global/new-skill' } as any)
+    })
+    const put = async (body: object) => {
+      const { ctx, out } = makeCtx('PUT', `/api/skills/sql/${enc('global/new-skill')}`, body)
+      await tryHandleSkills(ctx)
+      expect(out.status).toBe(200)
+      return mockUpdateSkill.mock.calls[0][1] as any
+    }
+
+    it('new content without a description carries its frontmatter description', async () => {
+      expect((await put(BODY)).description).toBe('does x')
+    })
+
+    it('an explicit description wins over the frontmatter', async () => {
+      expect((await put({ ...BODY, description: 'explicit' })).description).toBe('explicit')
+    })
+
+    it('content without a frontmatter description leaves the stored description alone', async () => {
+      const patch = await put({ content: 'just text' })
+      expect(patch).not.toHaveProperty('description')
+    })
+
+    it('a patch without content does not touch the description', async () => {
+      const patch = await put({ name: 'renamed' })
+      expect(patch).not.toHaveProperty('description')
+    })
+  })
+
   it('an existing row is still updated, not re-created', async () => {
     mockGetSkill.mockReturnValue({ id: 'global/new-skill', tenant_id: 'fleet' } as any)
     mockUpdateSkill.mockReturnValue({ id: 'global/new-skill' } as any)

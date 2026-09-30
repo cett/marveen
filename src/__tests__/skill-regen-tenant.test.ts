@@ -89,6 +89,21 @@ describe('tenant skill file generation', () => {
     expect(existsSync(join(FAKE_PROJECT, '.claude'))).toBe(false)
   })
 
+  it('never writes to the main agent even when it is enabled for the tenant AND has a directory on disk', () => {
+    // The plain "not on disk" case above is filtered by the directory check alone; this one only the
+    // main-agent exclusion stops: the main agent's skills dir is project-wide, not a tenant's own.
+    mkAgent('marveen')
+    row(ID, 'acme'); avail.set('acme', ['marveen', 'ann'])
+    expect(regenSingleSkillFile(ID)).toEqual({ written: true, skipped: false, reason: null })
+    expect(existsSync(agentSkill('ann', ID))).toBe(true)
+    expect(existsSync(agentSkill('marveen', ID))).toBe(false)
+    expect(existsSync(join(FAKE_PROJECT, '.claude'))).toBe(false)
+    // the bulk (startup) pass and the per-tenant pass agree
+    regenSkillFilesFromSQL()
+    regenTenantSkillFiles('acme')
+    expect(existsSync(agentSkill('marveen', ID))).toBe(false)
+  })
+
   it('a second regen with unchanged content is content_equal', () => {
     row(ID, 'acme'); avail.set('acme', ['ann'])
     regenSingleSkillFile(ID)
