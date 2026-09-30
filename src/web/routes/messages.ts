@@ -387,6 +387,24 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { status: newStatus, result } = JSON.parse(body.toString()) as { status: string; result?: string }
 
+    // Tenant isolation: the mutators below act on the id alone, so without this
+    // a tenant-scoped token could close, fail or refuse ANOTHER tenant's message
+    // (and trigger its [Eredmény] notification). Admin bypasses, like every other
+    // tenant-aware route; everyone else may only touch their own tenant's rows
+    // ('default' = the fleet's own). A foreign row answers exactly like a missing
+    // one (404, same body) so ids cannot be probed across tenants. A row's
+    // tenant_id never changes after insert, so checking before the UPDATE is safe.
+    const existing = getAgentMessage(id)
+    if (!isAdmin) {
+      if (existing && (existing.tenant_id ?? 'default') !== effectiveTenantId) {
+        writeAgentAuditLog({ agent_id: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', entity: 'message', action: 'update', entity_id: id,
+          detail: { status: newStatus, caller_tenant_id: effectiveTenantId, message_tenant_id: existing.tenant_id ?? 'default', reason: 'cross_tenant_denied', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
+        logger.warn({ id, callerTenant: effectiveTenantId, messageTenant: existing.tenant_id }, 'Rejected cross-tenant PUT /api/messages/:id')
+        json(res, { error: 'not_found', field: 'messageId', hint: 'Message not found or invalid status' }, 404)
+        return true
+      }
+    }
+
     let ok = false
     if (newStatus === 'done') ok = markMessageDone(id, result)
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
@@ -398,7 +416,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     else if (newStatus === 'refused') ok = markMessageRefused(id, result)
 
     if (ok) {
-      const done = getAgentMessage(id)
+      // Same row as the tenant pre-check above: nothing the notification needs
+      // (from/to/content/trace ids) changes with the status update.
+      const done = existing
       // Close the OTel span now that the message has a terminal status.
       if (done?.trace_id && done?.span_id) {
         closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
