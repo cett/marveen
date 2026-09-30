@@ -71,6 +71,29 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
   } catch { return null }
 }
 
+// Shape check for the command-task fields shared by POST and PUT. Returns the
+// 400 body, or null when the fields are fine. `command` must be a non-empty
+// string when required; timeoutMs / failThreshold are positive integers when
+// present (the runner takes them as milliseconds / a consecutive-failure count).
+function validateCommandFields(
+  data: { command?: unknown; timeoutMs?: unknown; failThreshold?: unknown },
+  opts: { commandRequired: boolean },
+): { error: string; field: string; hint: string } | null {
+  if (data.command !== undefined && typeof data.command !== 'string') {
+    return { error: 'invalid_value', field: 'command', hint: 'command must be a string' }
+  }
+  if (opts.commandRequired && !(data.command as string | undefined)?.trim()) {
+    return { error: 'required', field: 'command', hint: 'A command task needs a command' }
+  }
+  for (const field of ['timeoutMs', 'failThreshold'] as const) {
+    const v = data[field]
+    if (v !== undefined && v !== null && !(typeof v === 'number' && Number.isInteger(v) && v > 0)) {
+      return { error: 'invalid_value', field, hint: `${field} must be a positive integer` }
+    }
+  }
+  return null
+}
+
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -194,14 +217,23 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const data = JSON.parse(body.toString()) as {
       name: string; description: string; prompt: string; schedule: string; agent?: string;
       type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string;
+      command?: string; timeoutMs?: number; failThreshold?: number;
       tenant_id?: string
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'required', field: 'name', hint: 'Name is required' }, 400); return true }
-    if (!data.prompt?.trim()) { json(res, { error: 'required', field: 'prompt', hint: 'Prompt is required' }, 400); return true }
-    if (data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
+    const isCommand = data.type === 'command'
+    // A command task runs a shell command and has no LLM prompt: it needs a
+    // command, and the prompt is optional. Every other type still needs a prompt.
+    if (isCommand) {
+      const bad = validateCommandFields(data, { commandRequired: true })
+      if (bad) { json(res, bad, 400); return true }
+    } else if (!data.prompt?.trim()) {
+      json(res, { error: 'required', field: 'prompt', hint: 'Prompt is required' }, 400); return true
+    }
+    if ((data.prompt ?? '').length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
-        error: 'limit_exceeded', field: 'prompt', hint: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
+        error: 'limit_exceeded', field: 'prompt', hint: `Prompt too large (${(data.prompt ?? '').length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
       }, 413)
       return true
     }
@@ -229,7 +261,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
     writeScheduledTask(name, {
       description: data.description || '',
-      prompt: data.prompt.trim(),
+      prompt: (data.prompt ?? '').trim(),
       schedule: data.schedule.trim(),
       agent: data.agent || MAIN_AGENT_ID,
       enabled: true,
@@ -237,6 +269,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       skipIfBusy: data.skipIfBusy === true,
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
+      ...(isCommand ? { command: data.command!.trim(), timeoutMs: data.timeoutMs, failThreshold: data.failThreshold } : {}),
       tenantId,
       status,
     })
@@ -288,6 +321,29 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     const data = JSON.parse(body.toString()) as {
       description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
+      command?: string; timeoutMs?: number; failThreshold?: number; allowTypeChange?: boolean
+    }
+    // A command task is a shell command, not a prompt: switching it to another
+    // type by accident (an old client that only knows task/heartbeat sends
+    // type:'task' on every save) would silently turn the nightly backup into a
+    // prompt to an LLM. The change needs an explicit allowTypeChange:true.
+    if (dbRow?.type === 'command' && data.type !== undefined && data.type !== 'command' && data.allowTypeChange !== true) {
+      json(res, {
+        error: 'invalid_value', field: 'type',
+        hint: 'A command task cannot be changed to another type without allowTypeChange:true',
+      }, 400)
+      return true
+    }
+    const resultingType = data.type ?? dbRow?.type
+    if (resultingType === 'command') {
+      const bad = validateCommandFields(
+        { ...data, command: data.command ?? dbRow?.command ?? undefined },
+        { commandRequired: true },
+      )
+      if (bad) { json(res, bad, 400); return true }
+    } else {
+      const bad = validateCommandFields(data, { commandRequired: false })
+      if (bad) { json(res, bad, 400); return true }
     }
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {

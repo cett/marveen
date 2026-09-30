@@ -13,6 +13,7 @@ import { getErrorMessage } from './error-message.js'
 import { avatarBust } from './agents.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { can } from './rbac-client.js'
+import { buildSchedulePayload } from './schedule-payload.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
 
@@ -93,10 +94,18 @@ document.getElementById('scheduleModalClose').addEventListener('click', () => _c
 scheduleModalOverlay.addEventListener('click', (e) => { if (e.target === scheduleModalOverlay) _closeModal?.(scheduleModalOverlay) })
 
 // Frequency change handler
-// Type toggle (task vs heartbeat)
+// Command tasks show a command/timeout/threshold block instead of the prompt.
+function syncScheduleTypeFields() {
+  const type = document.getElementById('scheduleType').value
+  document.getElementById('scheduleCommandGroup').hidden = type !== 'command'
+  document.getElementById('schedulePromptGroup').hidden = type === 'command'
+  document.getElementById('heartbeatTemplateGroup').hidden = type !== 'heartbeat'
+}
+
+// Type toggle (task vs heartbeat vs command)
 document.getElementById('scheduleType').addEventListener('change', () => {
+  syncScheduleTypeFields()
   const isHeartbeat = document.getElementById('scheduleType').value === 'heartbeat'
-  document.getElementById('heartbeatTemplateGroup').hidden = !isHeartbeat
   if (isHeartbeat && !document.getElementById('schedulePrompt').value.trim()) {
     // Set default heartbeat schedule to every 15 min
     scheduleFrequency.value = 'custom'
@@ -189,7 +198,11 @@ function resetScheduleForm() {
   expandAnswers = []
   document.getElementById('scheduleEditName').value = ''
   document.getElementById('scheduleType').value = 'task'
-  document.getElementById('heartbeatTemplateGroup').hidden = true
+  document.getElementById('scheduleType').disabled = false
+  document.getElementById('scheduleCommand').value = ''
+  document.getElementById('scheduleTimeoutMs').value = ''
+  document.getElementById('scheduleFailThreshold').value = ''
+  syncScheduleTypeFields()
   document.getElementById('heartbeatTemplate').value = ''
   saveScheduleBtn.disabled = !_canWriteSchedules
   saveScheduleBtn.querySelector('.btn-text').hidden = false
@@ -937,14 +950,28 @@ export function openEditSchedule(task) {
     document.getElementById('scheduleForceSend').checked = !!task.forceSend
     document.getElementById('scheduleTargetSession').value = task.targetSession || ''
 
-    // Set type (heartbeat or task; custom types fall back to task)
+    // Set type (heartbeat, command or task; custom types fall back to task)
     const typeEl = document.getElementById('scheduleType')
-    typeEl.value = (task.type === 'heartbeat') ? 'heartbeat' : 'task'
-    document.getElementById('heartbeatTemplateGroup').hidden = typeEl.value !== 'heartbeat'
+    typeEl.value = (task.type === 'heartbeat' || task.type === 'command') ? task.type : 'task'
+    // A command task stays a command task here: the server refuses an implicit
+    // type change, and the shell command is not something to retype as a prompt.
+    typeEl.disabled = task.type === 'command'
+    document.getElementById('scheduleCommand').value = task.command || ''
+    document.getElementById('scheduleTimeoutMs').value = task.timeoutMs != null ? String(task.timeoutMs) : ''
+    document.getElementById('scheduleFailThreshold').value = task.failThreshold != null ? String(task.failThreshold) : ''
+    syncScheduleTypeFields()
 
     // Set agent
     const agentSel = document.getElementById('scheduleAgent')
     if (agentSel.querySelector(`option[value="${task.agent}"]`)) {
+      agentSel.value = task.agent
+    } else if (task.agent) {
+      // Not in the selector (agent not running/listed): keep it as a one-off
+      // option, otherwise saving silently reassigns the task to the first agent.
+      const keep = document.createElement('option')
+      keep.value = task.agent
+      keep.textContent = task.agent
+      agentSel.appendChild(keep)
       agentSel.value = task.agent
     }
 
@@ -1059,22 +1086,29 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
 
 saveScheduleBtn.addEventListener('click', async () => {
   const editName = document.getElementById('scheduleEditName').value
-  const name = document.getElementById('scheduleName').value.trim()
-  const description = document.getElementById('scheduleDesc').value.trim()
-  const prompt = document.getElementById('schedulePrompt').value.trim()
-  const schedule = getScheduleCron()
-  const agent = document.getElementById('scheduleAgent').value
-  const type = document.getElementById('scheduleType').value
-  // Advanced options -- the backend already persists these; expose them here.
-  const skipIfBusy = document.getElementById('scheduleSkipIfBusy').checked
-  const forceSend = document.getElementById('scheduleForceSend').checked
-  const targetSession = document.getElementById('scheduleTargetSession').value.trim()
-  const advanced = { skipIfBusy, forceSend }
-  if (targetSession) advanced.targetSession = targetSession
-
-  if (!name) { document.getElementById('scheduleName').focus(); return }
-  if (!prompt) { document.getElementById('schedulePrompt').focus(); return }
-  if (!schedule) { showToast(t('tasks.toast.select_schedule')); return }
+  const built = buildSchedulePayload({
+    name: document.getElementById('scheduleName').value.trim(),
+    description: document.getElementById('scheduleDesc').value.trim(),
+    prompt: document.getElementById('schedulePrompt').value.trim(),
+    schedule: getScheduleCron(),
+    agent: document.getElementById('scheduleAgent').value,
+    type: document.getElementById('scheduleType').value,
+    skipIfBusy: document.getElementById('scheduleSkipIfBusy').checked,
+    forceSend: document.getElementById('scheduleForceSend').checked,
+    targetSession: document.getElementById('scheduleTargetSession').value.trim(),
+    command: document.getElementById('scheduleCommand').value,
+    timeoutMs: document.getElementById('scheduleTimeoutMs').value,
+    failThreshold: document.getElementById('scheduleFailThreshold').value,
+  }, { editing: !!editName })
+  if (!built.ok) {
+    if (built.focus === 'schedule') { showToast(t('tasks.toast.select_schedule')); return }
+    const focusId = {
+      name: 'scheduleName', prompt: 'schedulePrompt', command: 'scheduleCommand',
+      timeoutMs: 'scheduleTimeoutMs', failThreshold: 'scheduleFailThreshold',
+    }[built.focus]
+    document.getElementById(focusId)?.focus()
+    return
+  }
 
   saveScheduleBtn.disabled = true
   saveScheduleBtn.querySelector('.btn-text').hidden = true
@@ -1086,7 +1120,7 @@ saveScheduleBtn.addEventListener('click', async () => {
       const res = await fetch(`/api/schedules/${encodeURIComponent(editName)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description, prompt, schedule, agent, type, ...advanced }),
+        body: JSON.stringify(built.body),
       })
       if (!res.ok) {
         const err = await res.json()
@@ -1099,7 +1133,7 @@ saveScheduleBtn.addEventListener('click', async () => {
       const res = await fetch('/api/schedules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description, prompt, schedule, agent, type, ...advanced }),
+        body: JSON.stringify(built.body),
       })
       if (!res.ok) {
         const err = await res.json()

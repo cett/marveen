@@ -3773,6 +3773,7 @@
             <select id="scheduleType">
               <option value="task" data-i18n="tasks.modal.type_task">Feladat (mindig szól)</option>
               <option value="heartbeat" data-i18n="tasks.modal.type_heartbeat">Heartbeat (csak ha fontos)</option>
+              <option value="command" data-i18n="tasks.modal.type_command">Parancs (shell, LLM nélkül)</option>
             </select>
           </div>
           <div class="form-group form-half" id="heartbeatTemplateGroup" hidden>
@@ -3790,7 +3791,21 @@
           <label for="scheduleDesc" data-i18n="common.description">Leírás <span class="hint">(rövid)</span></label>
           <input type="text" id="scheduleDesc" placeholder="Mit csinál ez a feladat" data-i18n-placeholder="schedules.modal.desc_ph">
         </div>
-        <div class="form-group">
+        <div class="form-group" id="scheduleCommandGroup" hidden>
+          <label for="scheduleCommand" data-i18n="tasks.modal.command_label">Parancs</label>
+          <textarea id="scheduleCommand" rows="3" spellcheck="false" placeholder="pl. bash /path/to/script.sh" data-i18n-placeholder="tasks.modal.command_ph"></textarea>
+          <div class="form-row">
+            <div class="form-group form-half">
+              <label for="scheduleTimeoutMs" data-i18n="tasks.modal.timeout_label">Időkorlát (ms)</label>
+              <input type="number" id="scheduleTimeoutMs" min="1" step="1" placeholder="120000">
+            </div>
+            <div class="form-group form-half">
+              <label for="scheduleFailThreshold" data-i18n="tasks.modal.fail_threshold_label">Riasztás ennyi egymás utáni hiba után</label>
+              <input type="number" id="scheduleFailThreshold" min="1" step="1" placeholder="1">
+            </div>
+          </div>
+        </div>
+        <div class="form-group" id="schedulePromptGroup">
           <label for="schedulePrompt" data-i18n="tasks.modal.prompt_label">Prompt</label>
           <textarea id="schedulePrompt" rows="6" placeholder="Röviden írd le mit csináljon (pl. 'nézd meg az emailjeimet és foglald össze')" data-i18n-placeholder="schedules.modal.prompt_ph"></textarea>
           <div class="prompt-expand-row">
