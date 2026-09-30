@@ -8,6 +8,8 @@ import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
   APP_TZ_INVALID,
+  TELEGRAM_BOT_TOKEN,
+  ALLOWED_CHAT_ID,
 } from '../config.js'
 import {
   appendTaskRun,
@@ -42,8 +44,11 @@ import {
   SCHEDULED_TASK_BODY_WARN_CHARS,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
   isTaskLive,
+  syncTaskConfigEnabledFromDb,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
+import { createSkipTracker } from './schedule-skip-ledger.js'
+import { sendTelegramMessage } from './telegram.js'
 import { listAgentNames, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -337,6 +342,30 @@ export function shouldAlertNotLive(seen: Set<string>, taskName: string): boolean
   return true
 }
 const notLiveAlerted = new Set<string>()
+
+// Skip ledger (schedule-skip-ledger.ts): one task_runs row per held occurrence
+// and one deduped alert per mass-skip event. Lives for the process.
+const skipTracker = createSkipTracker()
+
+// How often the DB -> task-config.json `enabled` mirror is reconciled while the
+// process runs (it always runs once at startup too).
+const CONFIG_ENABLED_SYNC_INTERVAL_MS = 60 * 60_000
+
+function sendMassSkipAlert(held: string[], taskCount: number): void {
+  const shown = held.slice(0, 8).join(', ') + (held.length > 8 ? `, +${held.length - 8}` : '')
+  logger.error(
+    { held, taskCount },
+    'schedule-runner: most enabled tasks are held back at once (disabled / not live) -- occurrences are being recorded as skipped',
+  )
+  try {
+    writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: 'mass_skip',
+      entity_id: 'scheduler', detail: { held: held.length, taskCount, sample: held.slice(0, 8) } })
+  } catch { /* audit failure must not block the tick */ }
+  if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) return
+  const text = `\u26a0\ufe0f \u00dctemez\u0151: ${held.length} feladat (a t\u00f6bbs\u00e9g) egyszerre kimarad \u00e9s nem fut: ${shown}. Az esed\u00e9kess\u00e9gek skipped_* sork\u00e9nt a task_runs-ban vannak; ellen\u0151rizd az enabled/status mez\u0151ket.`
+  sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
+    .catch(err => logger.warn({ err }, 'schedule-runner: mass-skip alert send failed'))
+}
 
 function recordScheduleLastRun(taskName: string, when: number, result: string): void {
   try {
@@ -1322,6 +1351,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
   // are reported against the tick interval instead.
   let pendingStartupGapMs = persistedTickMs != null ? startupGapMs : 0
   let lastPersistedTickMs = 0
+  let lastConfigSyncMs = 0
 
   let tickRunning = false
   async function runCheck() {
@@ -1495,6 +1525,34 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // routine heartbeats (see taskInjectionRank). listScheduledTasks() builds
     // a fresh array every tick, so the in-place sort leaks nowhere.
     tasks.sort((a, b) => taskInjectionRank(a) - taskInjectionRank(b))
+
+    // Skip ledger: a due occurrence of a task that is held back (not live, or
+    // part of a mass disable) leaves a task_runs row instead of vanishing with
+    // the tick window, and a mass skip alerts once. Must never break the tick.
+    try {
+      const skipScan = skipTracker.scan(tasks, fromMs, now, {
+        cronPrevOccurrence: (schedule, from, to) => cronPrevOccurrence(schedule, from, to),
+        targets: t => t.agent === 'all'
+          ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
+          : [t.agent || MAIN_AGENT_ID],
+        appendTaskRun,
+      })
+      if (skipScan.alert) sendMassSkipAlert(skipScan.massHeld, tasks.length)
+    } catch (err) {
+      logger.warn({ err }, 'schedule-runner: skip ledger failed (tick continues)')
+    }
+
+    // task-config.json is a mirror of the DB row, never the other way round: pull
+    // a drifted `enabled` back to the DB value (startup, then hourly).
+    if (now - lastConfigSyncMs >= CONFIG_ENABLED_SYNC_INTERVAL_MS) {
+      lastConfigSyncMs = now
+      try {
+        const fixed = syncTaskConfigEnabledFromDb()
+        if (fixed.length) logger.warn({ fixed }, 'schedule-runner: task-config.json enabled had drifted from the DB -- rewritten from the DB')
+      } catch (err) {
+        logger.warn({ err }, 'schedule-runner: task-config enabled sync failed')
+      }
+    }
 
     // One read per tick, shared by every task the loop considers: the whole
     // fleet draws on ONE subscription quota pool, so the gate below asks the
