@@ -525,7 +525,17 @@ function agentDirsOnDisk(): string[] {
   }
 }
 
-function tenantSkillRecipients(row: SkillRow): string[] {
+// Tenant skill files exist only while their agent runs (generated at agent start, removed at stop).
+// The probe says whether an agent is running; the default (everything runs) keeps callers and tests
+// that never wire it unchanged, the dashboard sets it from the tmux run state at startup.
+let agentRunningProbe: (agentId: string) => boolean = () => true
+export function setTenantSkillAgentProbe(probe: (agentId: string) => boolean): void { agentRunningProbe = probe }
+function agentIsRunning(agentId: string): boolean {
+  try { return agentRunningProbe(agentId) } catch { return true }   // unsure: keep the files, the use-time gate still applies
+}
+
+/** Agents that MAY hold a generated copy of a tenant skill (mode, tenant availability, directory on disk), running or not. */
+function tenantSkillQualifiers(row: SkillRow): string[] {
   const mode = TENANT_SKILL_FILES   // read once: a getter in tests, a constant in production
   if (mode === 'off') return []
   const tenants = new Set<string>([row.tenant_id])
@@ -538,6 +548,11 @@ function tenantSkillRecipients(row: SkillRow): string[] {
     // single: an agent shared by several tenants would expose this tenant's skill (and its
     // companion scripts) to requests of the other tenants.
     (mode === 'all' || getTenantsForAgent(a).length === 1))
+}
+
+/** Agents that hold a generated copy right now: the qualifiers that are running. */
+function tenantSkillRecipients(row: SkillRow): string[] {
+  return tenantSkillQualifiers(row).filter(agentIsRunning)
 }
 
 function readTextOrNull(p: string): string | null {
@@ -555,36 +570,39 @@ function unlinkSkillFile(path: string): boolean {
   }
 }
 
+/** Write one agent's generated copy (SKILL.md + companion files) of a tenant skill; a hand-made skill of the same name is never overwritten. */
+function writeTenantCopy(row: SkillRow, agentId: string, files: SkillFileRow[], dryRun: boolean, out: TenantReconcile): void {
+  const path = tenantSkillPath(agentId, row.id)
+  if (!path) { out.errors++; return }
+  if (existsSync(path)) {
+    const existing = readTextOrNull(path)
+    const hdr = existing === null ? null : readGeneratedHeader(existing)
+    if (!hdr || !hdr.tenant || hdr.id !== row.id) {
+      // A hand-made skill (or another generated one) already owns this name.
+      logger.warn({ id: row.id, agentId, path }, 'skill-regen: tenant skill name collides with an existing file, skipping')
+      out.skipped++
+      return
+    }
+  }
+  const outcome = writeSkillFileToDisk(row.id, path, row.content, dryRun, { tenant: true })
+  if (outcome === 'written') out.written++
+  else if (outcome === 'skipped') out.skipped++
+  else out.errors++
+  if (outcome !== 'error') {
+    const c = writeCompanionFiles(dirOfSkillMd(path), files, dryRun)
+    out.written += c.written
+    out.skipped += c.skipped
+    out.errors += c.errors
+  }
+}
+
 function reconcileTenantSkill(row: SkillRow, dryRun: boolean): TenantReconcile {
   const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0 }
   const expected = new Set(tenantSkillRecipients(row))
   out.recipients = expected.size
   const files = safeListSkillFiles(row.id)
 
-  for (const agentId of expected) {
-    const path = tenantSkillPath(agentId, row.id)
-    if (!path) { out.errors++; continue }
-    if (existsSync(path)) {
-      const existing = readTextOrNull(path)
-      const hdr = existing === null ? null : readGeneratedHeader(existing)
-      if (!hdr || !hdr.tenant || hdr.id !== row.id) {
-        // A hand-made skill (or another generated one) already owns this name.
-        logger.warn({ id: row.id, agentId, path }, 'skill-regen: tenant skill name collides with an existing file, skipping')
-        out.skipped++
-        continue
-      }
-    }
-    const outcome = writeSkillFileToDisk(row.id, path, row.content, dryRun, { tenant: true })
-    if (outcome === 'written') out.written++
-    else if (outcome === 'skipped') out.skipped++
-    else out.errors++
-    if (outcome !== 'error') {
-      const c = writeCompanionFiles(dirOfSkillMd(path), files, dryRun)
-      out.written += c.written
-      out.skipped += c.skipped
-      out.errors += c.errors
-    }
-  }
+  for (const agentId of expected) writeTenantCopy(row, agentId, files, dryRun, out)
 
   for (const agentId of agentDirsOnDisk()) {
     if (expected.has(agentId)) continue
@@ -593,12 +611,19 @@ function reconcileTenantSkill(row: SkillRow, dryRun: boolean): TenantReconcile {
     const onDisk = readTextOrNull(path)
     const hdr = onDisk === null ? null : readGeneratedHeader(onDisk)
     if (onDisk === null || !hdr || !hdr.tenant || hdr.id !== row.id) continue   // not our generated copy
-    if (stripGeneratedHeader(onDisk) !== row.content) {
-      logger.warn({ id: row.id, agentId, path }, 'skill-regen: stale tenant copy was edited by hand, leaving it')
+    const handEdited = stripGeneratedHeader(onDisk) !== row.content
+    if (dryRun) {
+      logger.info({ id: row.id, agentId, path, handEdited }, 'skill-regen [dry-run]: would remove stale tenant copy')
       continue
     }
-    if (dryRun) { logger.info({ id: row.id, agentId, path }, 'skill-regen [dry-run]: would remove stale tenant copy'); continue }
+    // Generated companion files (byte-equal to the DB row) go either way; a
+    // hand-edited SKILL.md is kept, but its scripts must not stay on an agent
+    // that no longer qualifies.
     removeCompanionFiles(dirOfSkillMd(path), files)
+    if (handEdited) {
+      logger.warn({ id: row.id, agentId, path }, 'skill-regen: stale tenant copy was edited by hand, leaving SKILL.md (generated companion files removed)')
+      continue
+    }
     if (unlinkSkillFile(path)) {
       logger.info({ id: row.id, agentId, path }, 'skill-regen: removed tenant skill from an agent that no longer qualifies')
       out.removed++
@@ -652,6 +677,54 @@ function removeTenantSkillFiles(id: string, content: string, files: SkillFileRow
   }
   if (removed) return { removed: true, reason: null }
   return { removed: false, reason: modified ? 'modified_on_disk' : 'absent' }
+}
+
+/**
+ * Agent START: write the generated copies of every tenant skill this agent qualifies for
+ * (before its session launches, so the loader sees them). Same rules as the bulk regen; the
+ * agent does not have to be running yet.
+ */
+export function generateTenantSkillFilesForAgent(agentId: string, forceEnabled = false): { written: number; skipped: number; errors: number } {
+  const total = { written: 0, skipped: 0, errors: 0 }
+  if (!SKILL_SQL_REGEN && !forceEnabled) return total
+  for (const row of listAllSkills()) {
+    if (row.tenant_id === 'fleet' || !tenantSkillQualifiers(row).includes(agentId)) continue
+    const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0 }
+    writeTenantCopy(row, agentId, safeListSkillFiles(row.id), false, out)
+    total.written += out.written; total.skipped += out.skipped; total.errors += out.errors
+  }
+  return total
+}
+
+/**
+ * Agent STOP: delete every GENERATED tenant skill copy in this agent's skills directory
+ * (SKILL.md and companion files). A hand-edited SKILL.md or companion file is kept (it holds
+ * work the DB does not have); a generated copy whose skill row is gone is removed.
+ */
+export function removeGeneratedTenantSkillFilesForAgent(agentId: string, forceEnabled = false): { removed: number; kept: number; errors: number } {
+  const total = { removed: 0, kept: 0, errors: 0 }
+  if (!SKILL_SQL_REGEN && !forceEnabled) return total
+  if (!SAFE_SEGMENT.test(agentId)) return total
+  const skillsDir = join(AGENTS_BASE_DIR, agentId, '.claude', 'skills')
+  let entries: string[] = []
+  try { entries = readdirSync(skillsDir) } catch { return total }
+  const rows = new Map(listAllSkills().map(r => [r.id, r]))
+  for (const entry of entries) {
+    const path = join(skillsDir, entry, 'SKILL.md')
+    const text = readTextOrNull(path)
+    const hdr = text === null ? null : readGeneratedHeader(text)
+    if (text === null || !hdr || !hdr.tenant || !hdr.id) continue   // not a generated tenant copy
+    const row = rows.get(hdr.id)
+    if (row) removeCompanionFiles(dirOfSkillMd(path), safeListSkillFiles(row.id))
+    if (row && stripGeneratedHeader(text) !== row.content) {
+      logger.warn({ id: hdr.id, agentId, path }, 'skill-regen: tenant skill copy was edited by hand, keeping it at agent stop')
+      total.kept++
+      continue
+    }
+    if (unlinkSkillFile(path)) total.removed++
+    else total.errors++
+  }
+  return total
 }
 
 /**

@@ -406,6 +406,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
   injectDestructiveGate(existing)
+  if (name !== MAIN_AGENT_ID) injectTenantHooks(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -568,6 +569,78 @@ export function ensureDestructiveGate(name: string): boolean {
   if (isUnsafeHookCommand(command)) return false
   injectDestructiveGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Tenant use-time isolation hooks (agent_tenant_context + tenant-skill gate):
+//   - scripts/hooks/tenant-context.py, UserPromptSubmit: records which tenant the request the agent is
+//     about to serve belongs to (exit 2 refuses the prompt when the previous context cannot be invalidated);
+//   - scripts/hooks/tenant-skill-gate.py, PreToolUse: keeps a tenant's skills inside that tenant's requests
+//     (Skill tool, and file/shell tools that point into a tenant skill directory).
+// Both are fail-CLOSED python3 commands like the destructive gate: no interpreter -> BLOCK. They are wired
+// into every sub-agent (a single-tenant or tenant-less agent passes through cheaply: the gate only reads the
+// DB when a call can involve a tenant skill). The main agent is exempt here: its hooks are repo-shipped
+// project settings (see refuseMainAgentHookWrite). Exported for unit tests.
+const TENANT_CONTEXT_SCRIPT = 'tenant-context.py'
+const TENANT_SKILL_GATE_SCRIPT = 'tenant-skill-gate.py'
+export const TENANT_SKILL_GATE_MATCHER = 'Skill|Read|Edit|Write|NotebookEdit|Glob|Grep|Bash'
+
+export function tenantHookCommand(scriptPath: string): string {
+  const name = scriptPath.split('/').pop() ?? scriptPath
+  const miss = `${name.replace(/\.py$/, '')}: python3 not found -- DENY`
+  return `command -v python3 >/dev/null 2>&1 || { echo '${miss}' >&2; exit 2; }; python3 "${scriptPath}"`
+}
+
+function tenantHookCommands(): { context: string; gate: string } {
+  return {
+    context: tenantHookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', TENANT_CONTEXT_SCRIPT)),
+    gate: tenantHookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', TENANT_SKILL_GATE_SCRIPT)),
+  }
+}
+
+export function injectTenantHooks(existing: Record<string, unknown>): void {
+  const { context, gate } = tenantHookCommands()
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(context) || isUnsafeHookCommand(gate)) return
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const ups = Array.isArray(hooks.UserPromptSubmit) ? (hooks.UserPromptSubmit as unknown[]) : []
+  hooks.UserPromptSubmit = [
+    ...ups.filter((e) => !JSON.stringify(e).includes(TENANT_CONTEXT_SCRIPT)),
+    { hooks: [{ type: 'command', command: context, timeout: 10 }] },
+  ]
+  const ptu = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...ptu.filter((e) => !JSON.stringify(e).includes(TENANT_SKILL_GATE_SCRIPT)),
+    { matcher: TENANT_SKILL_GATE_MATCHER, hooks: [{ type: 'command', command: gate, timeout: 10 }] },
+  ]
+}
+
+// Idempotent migration: ensure every sub-agent's settings.json carries both tenant hooks. Called at server
+// startup next to ensureDestructiveGate so existing agents get them without a respawn. true = file updated.
+export function ensureTenantHooks(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureTenantHooks')) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const { context, gate } = tenantHookCommands()
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const upsJson = JSON.stringify(Array.isArray(hooks.UserPromptSubmit) ? hooks.UserPromptSubmit : [])
+  const ptuEntries = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as Array<{ matcher?: string }> : []
+  const gateEntry = ptuEntries.find((e) => JSON.stringify(e).includes(TENANT_SKILL_GATE_SCRIPT))
+  if (
+    upsJson.includes(TENANT_CONTEXT_SCRIPT) && hookCommandWired(upsJson, context) &&
+    gateEntry && gateEntry.matcher === TENANT_SKILL_GATE_MATCHER && hookCommandWired(JSON.stringify(gateEntry), gate)
+  ) return false
+  if (isUnsafeHookCommand(context) || isUnsafeHookCommand(gate)) return false
+  injectTenantHooks(settings)
+  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }

@@ -403,6 +403,11 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
   if (fields.length === 0) return existing
   params.push(id)
   db.prepare(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`).run(...params)
+  // Disabling the tenant or changing its main agent ends the use-time tenant context of every agent that was
+  // serving it (the skill gate fails closed until each agent's next prompt re-resolves the source).
+  if (patch.disabled === true || (patch.main_agent_id !== undefined && patch.main_agent_id !== existing.main_agent_id)) {
+    db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(id)
+  }
   return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant
 }
 
@@ -420,7 +425,7 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //  10. Drop skill_tenant_access before skills (FK; SQLite FK enforcement is off by default).
 //  11. Drop skills.
 //  12. Drop vec_workspace_docs then workspace_docs (app-level vec sync, no trigger).
-//  13. Drop tenant_agent_availability.
+//  13. Drop tenant_agent_availability, tenant_channel_bindings and agent_tenant_context.
 //  14. Drop vault_ssh_servers (child of vault_ssh_keys by FK direction).
 //  15. Drop vault_ssh_keys.
 //  16. Purge vault.json secrets -- the one non-transactional step (file I/O,
@@ -501,6 +506,8 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number, secre
 
     // 13. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
     db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
+    db.prepare('DELETE FROM tenant_channel_bindings WHERE tenant_id = ?').run(tenantId)
+    db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(tenantId)
 
     // 14 & 15. Drop the vault SSH pool (child before parent by FK direction;
     //          SQLite FK enforcement is off by default, same as steps 10/13).

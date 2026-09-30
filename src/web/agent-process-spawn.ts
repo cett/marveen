@@ -14,6 +14,7 @@ import { resolveAgentConfigDir } from './claude-plans.js'
 import { recoverActivePlanFromHandoff } from './claude-plan-handoff-marker.js'
 import { deactivatePlanForAgent } from '../db.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
+import { generateTenantSkillFilesForAgent, removeGeneratedTenantSkillFilesForAgent } from './skill-regen.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { loadProfileTemplate } from './profiles.js'
 import { buildProviderEnv } from './provider-dispatch.js'
@@ -114,6 +115,10 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
 
 
   if (isAgentRunning(name)) return { ok: false, error: 'conflict', hint: 'Agent is already running' }
+
+  // Tenant skill files exist only while the agent runs: generate them before the session launches so
+  // its loader sees them. Best effort: without them the agent merely lacks the tenant's skills.
+  try { generateTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be generated at agent start (non-fatal)') }
 
   // #886: restore the agent_active_plans binding a preceding stop dropped, if
   // the just-restarted agent's HANDOFF.md carries a plan marker (context-guard
@@ -535,6 +540,11 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string; h
     // starts unbound until explicitly reassigned (a manual stop). Best-effort:
     // must never fail the stop itself.
     try { deactivatePlanForAgent(name) } catch (err) { logger.warn({ err, name }, 'deactivatePlanForAgent failed (non-fatal)') }
+    // The generated tenant skill copies leave with the session (the DB stays the source; the next
+    // start regenerates them). A local cleanup: a remote agent's files live on the laptop.
+    if (!host) {
+      try { removeGeneratedTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be removed at agent stop (non-fatal)') }
+    }
     logger.info({ name, session, host }, 'Agent tmux session stopped')
     return { ok: true }
   } catch (err) {

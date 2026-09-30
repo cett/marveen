@@ -51,6 +51,16 @@ export interface OkResponse {
   ok: boolean;
 }
 
+export interface ChannelBinding {
+  agent_id: string;
+  channel: string;
+  external_id: string;
+  tenant_id: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface Memory {
   id: number;
   /** Owning agent id, or "import" for imported shadow rows */
@@ -487,6 +497,10 @@ export type UpdateUserResponse = DashboardUserPublic
 export type CreatePartnerSenderResponse = PartnerSender
 
 export type DisablePartnerSenderResponse = OkResponse
+
+export type SetChannelBindingResponse = ChannelBinding
+
+export type DeleteChannelBindingResponse = OkResponse
 
 export type ListBackgroundTasksResponse = Record<string, unknown>[]
 
