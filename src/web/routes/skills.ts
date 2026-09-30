@@ -8,14 +8,16 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
-import { regenSingleSkillFile, removeGeneratedSkillFile } from '../skill-regen.js'
+import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile, importCompanionFilesOfDir } from '../skill-regen.js'
+import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from '../../skill-files.js'
 import type { RouteContext } from './types.js'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
   listSkillsForTenant, listAllSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
+  listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -489,6 +491,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         const desc = parseFrontmatterField(content, 'description')
         try {
           seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true })
+          // scripts/, references/ ... of the archive belong in the DB too (skill_files).
+          importCompanionFilesOfDir(`global/${dirName}`, join(skillsDir, dirName))
         } catch (sqlErr) {
           logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
         }
@@ -659,6 +663,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
   const sqlSkillsBase = path === '/api/skills/sql' || path === '/api/v1/skills/sql'
   const sqlSkillIdMatch = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)$/)
+  const sqlFilesBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files$/)
+  const sqlFilesItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files\/([^/]+)$/)
   const sqlAccessBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access$/)
   const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
 
@@ -729,12 +735,84 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    const companionFiles = listSkillFiles(id)   // read before the delete removes them
     deleteSkill(id)
     // The file is only a generated cache of the row: drop it too, or the loader
     // keeps serving a skill the DB no longer has (a hand-edited file is kept).
-    removeGeneratedSkillFile(id, existing.content, existing.tenant_id)
+    removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)
     json(res, { ok: true })
     return true
+  }
+
+  // --- companion files (scripts/, references/, ...) of a skill: skill_files ---
+  // Same visibility/ownership rules as the skill row itself (GET: owner, grantee
+  // or admin; write: owner tenant or admin). The rel path is ONE percent-encoded
+  // segment (scripts%2Frun.sh). Writes go to the DB, then the on-disk copy is
+  // regenerated from it.
+  const filesId = sqlFilesBase ?? sqlFilesItem
+  if (filesId) {
+    const id = decodeSegment(filesId[1])
+    if (id === null) return badSegment()
+    const skill = getSkill(id)
+    if (!skill) { json(res, { error: 'not_found' }, 404); return true }
+    const canWrite = isAdmin || callerTenantId === skill.tenant_id
+    const canRead = canWrite || (!!callerTenantId && listSkillAccess(id).some(g => g.tenant_id === callerTenantId))
+    if (!canRead) { json(res, { error: 'not_found' }, 404); return true }
+    const fileView = (f: { rel_path: string; content: Buffer; mode: number; updated_at: number }) =>
+      ({ rel_path: f.rel_path, size: f.content.length, mode: f.mode, updated_at: f.updated_at })
+
+    if (sqlFilesBase && method === 'GET') {
+      json(res, { files: listSkillFiles(id).map(fileView) })
+      return true
+    }
+
+    if (sqlFilesItem && (method === 'GET' || method === 'PUT' || method === 'DELETE')) {
+      const rawRel = decodeSegment(sqlFilesItem[2])
+      if (rawRel === null) return badSegment()
+      const rel = normalizeSkillRelPath(rawRel)
+      if (!rel) { json(res, { error: 'invalid_value', field: 'rel_path', hint: 'Relative posix path without .., empty segments or backslashes; SKILL.md itself is the skill content' }, 400); return true }
+
+      if (method === 'GET') {
+        const f = getSkillFile(id, rel)
+        if (!f) { json(res, { error: 'not_found' }, 404); return true }
+        json(res, { ...fileView(f), content_base64: f.content.toString('base64') })
+        return true
+      }
+
+      if (!canWrite) { json(res, { error: 'not_found' }, 404); return true }
+
+      if (method === 'DELETE') {
+        const f = getSkillFile(id, rel)
+        if (!f) { json(res, { error: 'not_found' }, 404); return true }
+        deleteSkillFile(id, rel)
+        // Drop the generated copy too (only while it still equals the deleted row).
+        removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
+        json(res, { ok: true })
+        return true
+      }
+
+      let raw: Buffer
+      try { raw = await readBody(req, { maxBytes: Math.ceil(MAX_SKILL_FILE_BYTES * 4 / 3) + 4096 }) } catch (err) {
+        if (err instanceof RequestBodyTooLargeError) { json(res, { error: 'limit_exceeded', hint: `File too large (max ${MAX_SKILL_FILE_BYTES} bytes)` }, 413); return true }
+        throw err
+      }
+      let parsed: { content?: unknown; content_base64?: unknown; mode?: unknown } = {}
+      try { parsed = JSON.parse(raw.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+      const hasText = typeof parsed.content === 'string'
+      const hasB64 = typeof parsed.content_base64 === 'string'
+      if (hasText === hasB64) { json(res, { error: 'required', field: 'content', hint: 'Send exactly one of content (utf-8 text) or content_base64' }, 400); return true }
+      if (hasB64 && !/^[A-Za-z0-9+/]*={0,2}$/.test(parsed.content_base64 as string)) { json(res, { error: 'invalid_value', field: 'content_base64', hint: 'Not valid base64' }, 400); return true }
+      const bytes = hasText ? Buffer.from(parsed.content as string, 'utf-8') : Buffer.from(parsed.content_base64 as string, 'base64')
+      if (bytes.length > MAX_SKILL_FILE_BYTES) { json(res, { error: 'limit_exceeded', hint: `File too large (max ${MAX_SKILL_FILE_BYTES} bytes)` }, 413); return true }
+      if (parsed.mode !== undefined && (typeof parsed.mode !== 'number' || !Number.isInteger(parsed.mode))) { json(res, { error: 'invalid_value', field: 'mode', hint: 'mode must be an integer (permission bits)' }, 400); return true }
+      const isNew = !getSkillFile(id, rel)
+      if (isNew && countSkillFiles(id) >= MAX_SKILL_FILES_PER_SKILL) { json(res, { error: 'limit_exceeded', hint: `At most ${MAX_SKILL_FILES_PER_SKILL} companion files per skill` }, 400); return true }
+      const saved = putSkillFile(id, rel, bytes, parsed.mode as number | undefined)
+      const regen = regenSingleSkillFile(id, true)   // an explicit write always reaches disk, like PUT /api/skills/:name
+      if (regen.reason === 'write_error') { json(res, { error: 'internal_error', hint: 'Saved to the DB, but the on-disk copy could not be written' }, 500); return true }
+      json(res, { ok: true, file: fileView(saved) }, isNew ? 201 : 200)
+      return true
+    }
   }
 
   if (sqlAccessBase && method === 'GET') {

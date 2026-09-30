@@ -25,7 +25,7 @@ import { startOtelPushExporter } from './web/otel-push-exporter.js'
 import { startWorkspaceDocsTtlSweeper } from './web/workspace-docs-ttl-sweeper.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
-import { regenSkillFilesFromSQL } from './web/skill-regen.js'
+import { regenSkillFilesFromSQL, importSkillCompanionFilesFromDisk } from './web/skill-regen.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
@@ -660,6 +660,13 @@ export function startWebServer(port = 3420): http.Server {
       if (seeded > 0) logger.info({ seeded }, 'Schedules table seeded from files')
     } catch (err) {
       logger.warn({ err }, 'Schedule DB seed skipped')
+    }
+    try {
+      // Companion files (scripts/, references/) that only exist on disk go into the DB first.
+      const companions = importSkillCompanionFilesFromDisk()
+      if (companions.seeded > 0) logger.info({ seeded: companions.seeded }, 'Skill companion files imported into the DB')
+    } catch (err) {
+      logger.warn({ err }, 'Skill companion file import skipped')
     }
     try {
       const regen = regenSkillFilesFromSQL()

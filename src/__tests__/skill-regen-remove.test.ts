@@ -27,7 +27,7 @@ vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: join(FAKE_PROJECT, 'agents'),
   listAgentNames: () => ['agent-b'],
 }))
-vi.mock('../db.js', () => ({ getSkill: vi.fn(), listAllSkills: vi.fn().mockReturnValue([]) }))
+vi.mock('../db.js', () => ({ getSkill: vi.fn(), listAllSkills: vi.fn().mockReturnValue([]), listSkillFiles: vi.fn().mockReturnValue([]), seedSkillFileIfAbsent: vi.fn() }))
 vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } }))
 
 import { removeGeneratedSkillFile } from '../web/skill-regen.js'

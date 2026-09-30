@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { initDatabase, seedSkillIfAbsent, countSkills } from '../src/db.js'
 import { readGeneratedHeader } from '../src/skill-header.js'
+import { importSkillCompanionFilesFromDisk } from '../src/web/skill-regen.js'
 import { AGENTS_BASE_DIR, listAgentNames } from '../src/web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../src/config.js'
 
@@ -141,4 +142,8 @@ for (const s of skills) {
 }
 
 console.log(`\nDone: ${inserted} newly inserted, ${skipped} already existed (preserved).`)
+
+// Companion files (scripts/, references/) next to the fleet skills go into skill_files, insert-if-absent.
+const companions = importSkillCompanionFilesFromDisk()
+console.log(`Companion files: ${companions.seeded} newly inserted, ${companions.skipped} already in the DB, ${companions.errors} error(s).`)
 console.log(`DB now has ${countSkills()} skill rows.`)

@@ -15,18 +15,24 @@
  *      false/off/no) switches it off (see parseSkillSqlRegen in config.ts).
  *   5. Path safety: IDs with '..' or absolute-path components are rejected.
  *
+ * Companion files (skill_files: scripts/, references/, ...) are generated next
+ * to the SKILL.md with the same rules; they are only ever ADDED or UPDATED by
+ * regen, removed only by an explicit delete of the file or skill (and then only
+ * while still byte-equal to the deleted row).
+ *
  * Tenant skills (tenant_id != 'fleet') are generated only under the agents of
  * the owning tenant and of the tenants they are granted to (see the "tenant
  * skills" section below); a tenant with no agent keeps its skills DB-only.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, unlinkSync } from 'node:fs'
-import { join, normalize } from 'node:path'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, unlinkSync } from 'node:fs'
+import { dirname, join, normalize, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN } from '../config.js'
-import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, type SkillRow } from '../db.js'
+import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, listSkillFiles, seedSkillFileIfAbsent, type SkillRow, type SkillFileRow } from '../db.js'
+import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath, sanitizeSkillFileMode } from '../skill-files.js'
 import { addGeneratedHeader, stripGeneratedHeader, readGeneratedHeader } from '../skill-header.js'
 
 export interface RegenResult {
@@ -123,6 +129,12 @@ export function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): Re
     if (outcome === 'written') written++
     else if (outcome === 'skipped') skipped++
     else errors++
+    if (outcome !== 'error') {
+      const c = writeCompanionFiles(dirOfSkillMd(targetPath), safeListSkillFiles(row.id), dryRun)
+      written += c.written
+      skipped += c.skipped
+      errors += c.errors
+    }
   }
 
   for (const row of tenantRows) {
@@ -224,9 +236,11 @@ export function regenSingleSkillFile(id: string, forceEnabled = false): SingleRe
   if (!targetPath) return { written: false, skipped: false, reason: 'unrecognized_id' }
 
   const outcome = writeSkillFileToDisk(id, targetPath, row.content, false)
-  if (outcome === 'written') return { written: true, skipped: false, reason: null }
-  if (outcome === 'skipped') return { written: false, skipped: true, reason: 'content_equal' }
-  return { written: false, skipped: false, reason: 'write_error' }
+  if (outcome === 'error') return { written: false, skipped: false, reason: 'write_error' }
+  const c = writeCompanionFiles(dirOfSkillMd(targetPath), safeListSkillFiles(id), false)
+  if (c.errors > 0) return { written: false, skipped: false, reason: 'write_error' }
+  if (outcome === 'written' || c.written > 0) return { written: true, skipped: false, reason: null }
+  return { written: false, skipped: true, reason: 'content_equal' }
 }
 
 export interface RemoveGeneratedResult {
@@ -247,10 +261,11 @@ export interface RemoveGeneratedResult {
  * @param id       The deleted skill's SQL id.
  * @param content  The deleted row's content (read BEFORE the DB delete).
  * @param tenantId The deleted row's tenant_id; non-fleet skills are removed from every agent that holds a generated copy.
+ * @param files    The deleted skill's companion file rows (read BEFORE the DB delete); the ones still byte-equal on disk are removed too.
  */
-export function removeGeneratedSkillFile(id: string, content: string, tenantId: string): RemoveGeneratedResult {
+export function removeGeneratedSkillFile(id: string, content: string, tenantId: string, files: SkillFileRow[] = []): RemoveGeneratedResult {
   if (!SKILL_SQL_REGEN) return { removed: false, reason: 'disabled' }
-  if (tenantId !== 'fleet') return removeTenantSkillFiles(id, content)
+  if (tenantId !== 'fleet') return removeTenantSkillFiles(id, content, files)
   const targetPath = resolveSkillPath(id)
   if (!targetPath) return { removed: false, reason: 'unrecognized_id' }
   if (!existsSync(targetPath)) return { removed: false, reason: 'absent' }
@@ -263,13 +278,211 @@ export function removeGeneratedSkillFile(id: string, content: string, tenantId: 
   }
   try {
     unlinkSync(targetPath)
-    try { rmdirSync(targetPath.replace(/\/SKILL\.md$/, '')) } catch { /* not empty (companion files) or gone */ }
+    removeCompanionFiles(dirOfSkillMd(targetPath), files)
+    try { rmdirSync(dirOfSkillMd(targetPath)) } catch { /* not empty (untracked files) or gone */ }
     logger.info({ id, path: targetPath }, 'skill-regen: removed generated file of deleted skill')
     return { removed: true, reason: null }
   } catch (err) {
     logger.error({ err, id, path: targetPath }, 'skill-regen: failed to remove generated file')
     return { removed: false, reason: 'unlink_error' }
   }
+}
+
+// --- companion files (skill_files) ---------------------------------------------
+
+function dirOfSkillMd(skillMdPath: string): string {
+  return skillMdPath.replace(/\/SKILL\.md$/, '')
+}
+
+function safeListSkillFiles(id: string): SkillFileRow[] {
+  try { return listSkillFiles(id) } catch (err) {
+    logger.error({ err, id }, 'skill-regen: failed to read skill companion files')
+    return []
+  }
+}
+
+/** Absolute target of a companion file, or null if the path escapes the skill dir or crosses a symlink. */
+function companionTarget(skillDir: string, relPath: string): string | null {
+  const rel = normalizeSkillRelPath(relPath)
+  if (!rel) return null
+  const target = join(skillDir, ...rel.split('/'))
+  if (!normalize(target).startsWith(normalize(skillDir) + sep)) return null
+  // A symlink anywhere on the way (an agent-made scripts -> /elsewhere) would redirect the write.
+  let cur = skillDir
+  for (const part of rel.split('/')) {
+    cur = join(cur, part)
+    try { if (lstatSync(cur).isSymbolicLink()) return null } catch { break }   // ENOENT: the rest does not exist yet
+  }
+  return target
+}
+
+interface CompanionWrite { written: number; skipped: number; errors: number }
+
+/** Write the DB's companion files under one skill dir: content-equal files are left, others are replaced atomically. */
+function writeCompanionFiles(skillDir: string, files: SkillFileRow[], dryRun: boolean): CompanionWrite {
+  const out: CompanionWrite = { written: 0, skipped: 0, errors: 0 }
+  for (const f of files) {
+    const target = companionTarget(skillDir, f.rel_path)
+    if (!target) {
+      logger.warn({ skillDir, rel: f.rel_path }, 'skill-regen: unsafe companion file path, skipping')
+      out.errors++
+      continue
+    }
+    const mode = sanitizeSkillFileMode(f.mode)
+    if (existsSync(target)) {
+      let onDisk: Buffer | null = null
+      try { onDisk = readFileSync(target) } catch { /* treated as differing */ }
+      if (onDisk && onDisk.equals(f.content)) {
+        try { if ((statSync(target).mode & 0o777) !== mode && !dryRun) chmodSync(target, mode) } catch { /* best effort */ }
+        out.skipped++
+        continue
+      }
+      logger.warn({ skillDir, rel: f.rel_path }, 'skill-regen: companion file drifted from the DB, restoring it from the DB')
+    }
+    if (dryRun) { out.written++; continue }
+    try {
+      mkdirSync(dirname(target), { recursive: true })
+      atomicWriteFileSync(target, f.content, { mode })
+      out.written++
+    } catch (err) {
+      logger.error({ err, skillDir, rel: f.rel_path }, 'skill-regen: companion file write failed')
+      out.errors++
+    }
+  }
+  return out
+}
+
+/** Remove one generated companion file (only while byte-equal to `expected`) and prune the empty dirs above it, up to the skill dir. */
+function removeCompanionFile(skillDir: string, relPath: string, expected: Buffer): 'removed' | 'absent' | 'modified' | 'error' {
+  const target = companionTarget(skillDir, relPath)
+  if (!target || !existsSync(target)) return 'absent'
+  let onDisk: Buffer
+  try { onDisk = readFileSync(target) } catch { return 'error' }
+  if (!onDisk.equals(expected)) {
+    logger.warn({ skillDir, rel: relPath }, 'skill-regen: companion file was edited by hand, leaving it')
+    return 'modified'
+  }
+  try {
+    unlinkSync(target)
+    for (let d = dirname(target); normalize(d) !== normalize(skillDir) && normalize(d).startsWith(normalize(skillDir) + sep); d = dirname(d)) {
+      try { rmdirSync(d) } catch { break }   // not empty
+    }
+    return 'removed'
+  } catch (err) {
+    logger.error({ err, skillDir, rel: relPath }, 'skill-regen: failed to remove companion file')
+    return 'error'
+  }
+}
+
+function removeCompanionFiles(skillDir: string, files: SkillFileRow[]): void {
+  for (const f of files) removeCompanionFile(skillDir, f.rel_path, f.content)
+}
+
+/**
+ * Remove the generated copy of ONE deleted companion file from the skill's
+ * on-disk locations (the fleet dir, or every tenant copy). Only byte-equal
+ * files go; returns how many were removed.
+ */
+export function removeGeneratedCompanionFile(id: string, relPath: string, content: Buffer, tenantId: string): number {
+  if (!SKILL_SQL_REGEN) return 0
+  let removed = 0
+  if (tenantId === 'fleet') {
+    const skillMd = resolveSkillPath(id)
+    if (skillMd && removeCompanionFile(dirOfSkillMd(skillMd), relPath, content) === 'removed') removed++
+    return removed
+  }
+  for (const agentId of agentDirsOnDisk()) {
+    const path = tenantSkillPath(agentId, id)
+    if (!path || !existsSync(path)) continue
+    const text = readTextOrNull(path)
+    const hdr = text === null ? null : readGeneratedHeader(text)
+    if (!hdr || !hdr.tenant || hdr.id !== id) continue
+    if (removeCompanionFile(dirOfSkillMd(path), relPath, content) === 'removed') removed++
+  }
+  return removed
+}
+
+const SKIP_DIRS = new Set(['node_modules', '__pycache__', '.git'])
+const SKIP_FILES = new Set(['.DS_Store'])
+
+function walkCompanionFiles(root: string): { rel: string; abs: string }[] {
+  const out: { rel: string; abs: string }[] = []
+  const walk = (dir: string, prefix: string) => {
+    let entries: string[] = []
+    try { entries = readdirSync(dir).sort() } catch { return }
+    for (const name of entries) {
+      const abs = join(dir, name)
+      const rel = prefix ? `${prefix}/${name}` : name
+      let st
+      try { st = lstatSync(abs) } catch { continue }
+      if (st.isSymbolicLink()) continue
+      if (st.isDirectory()) { if (!SKIP_DIRS.has(name)) walk(abs, rel); continue }
+      if (!st.isFile() || SKIP_FILES.has(name) || rel === 'SKILL.md') continue
+      out.push({ rel, abs })
+    }
+  }
+  walk(root, '')
+  return out
+}
+
+export interface CompanionImportResult { seeded: number; skipped: number; errors: number }
+
+/**
+ * Seed skill_files for ONE skill from the files that sit next to its SKILL.md
+ * in `skillDir`. Insert-if-absent: a file the DB already has is never
+ * overwritten. Symlinks, tool caches and over-limit files are not imported.
+ */
+export function importCompanionFilesOfDir(skillId: string, skillDir: string, dryRun = false): CompanionImportResult {
+  const out: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
+  const found = walkCompanionFiles(skillDir)
+  if (found.length > MAX_SKILL_FILES_PER_SKILL) {
+    logger.warn({ id: skillId, files: found.length }, 'skill-regen: too many companion files, not importing this skill\'s files')
+    out.errors++
+    return out
+  }
+  for (const f of found) {
+    const rel = normalizeSkillRelPath(f.rel)
+    if (!rel) { out.skipped++; continue }
+    try {
+      const st = statSync(f.abs)
+      if (st.size > MAX_SKILL_FILE_BYTES) {
+        logger.warn({ id: skillId, rel }, 'skill-regen: companion file over the size limit, not importing it')
+        out.errors++
+        continue
+      }
+      if (dryRun) { out.seeded++; continue }
+      if (seedSkillFileIfAbsent(skillId, rel, readFileSync(f.abs), st.mode)) out.seeded++
+      else out.skipped++
+    } catch (err) {
+      logger.error({ err, id: skillId, rel }, 'skill-regen: companion file import failed')
+      out.errors++
+    }
+  }
+  return out
+}
+
+/**
+ * Seed skill_files from the companion files that already sit next to fleet
+ * skills on disk (scripts/, references/, ...). Safe on every startup (see
+ * importCompanionFilesOfDir) and only matters until the DB holds them all. Runs
+ * BEFORE the regen, which would otherwise never know about these files.
+ */
+export function importSkillCompanionFilesFromDisk(dryRun = false): CompanionImportResult {
+  const total: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
+  let rows: SkillRow[]
+  try { rows = listAllSkills().filter(r => r.tenant_id === 'fleet') } catch (err) {
+    logger.error({ err }, 'skill-regen: failed to query skills table for companion import')
+    return { ...total, errors: 1 }
+  }
+  for (const row of rows) {
+    const skillMd = resolveSkillPath(row.id)
+    if (!skillMd || !existsSync(skillMd)) continue
+    const r = importCompanionFilesOfDir(row.id, dirOfSkillMd(skillMd), dryRun)
+    total.seeded += r.seeded
+    total.skipped += r.skipped
+    total.errors += r.errors
+  }
+  return total
 }
 
 // --- tenant skills ---------------------------------------------------------
@@ -340,6 +553,7 @@ function reconcileTenantSkill(row: SkillRow, dryRun: boolean): TenantReconcile {
   const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0 }
   const expected = new Set(tenantSkillRecipients(row))
   out.recipients = expected.size
+  const files = safeListSkillFiles(row.id)
 
   for (const agentId of expected) {
     const path = tenantSkillPath(agentId, row.id)
@@ -358,6 +572,12 @@ function reconcileTenantSkill(row: SkillRow, dryRun: boolean): TenantReconcile {
     if (outcome === 'written') out.written++
     else if (outcome === 'skipped') out.skipped++
     else out.errors++
+    if (outcome !== 'error') {
+      const c = writeCompanionFiles(dirOfSkillMd(path), files, dryRun)
+      out.written += c.written
+      out.skipped += c.skipped
+      out.errors += c.errors
+    }
   }
 
   for (const agentId of agentDirsOnDisk()) {
@@ -372,6 +592,7 @@ function reconcileTenantSkill(row: SkillRow, dryRun: boolean): TenantReconcile {
       continue
     }
     if (dryRun) { logger.info({ id: row.id, agentId, path }, 'skill-regen [dry-run]: would remove stale tenant copy'); continue }
+    removeCompanionFiles(dirOfSkillMd(path), files)
     if (unlinkSkillFile(path)) {
       logger.info({ id: row.id, agentId, path }, 'skill-regen: removed tenant skill from an agent that no longer qualifies')
       out.removed++
@@ -404,7 +625,7 @@ function sweepOrphanTenantFiles(tenantSkillIds: Set<string>, dryRun: boolean): v
   }
 }
 
-function removeTenantSkillFiles(id: string, content: string): RemoveGeneratedResult {
+function removeTenantSkillFiles(id: string, content: string, files: SkillFileRow[]): RemoveGeneratedResult {
   if (!tenantSkillDirName(id)) return { removed: false, reason: 'unrecognized_id' }
   let removed = false
   let modified = false
@@ -419,6 +640,7 @@ function removeTenantSkillFiles(id: string, content: string): RemoveGeneratedRes
       modified = true
       continue
     }
+    removeCompanionFiles(dirOfSkillMd(path), files)
     if (unlinkSkillFile(path)) removed = true
     else return { removed, reason: 'unlink_error' }
   }

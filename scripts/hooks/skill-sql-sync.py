@@ -144,6 +144,17 @@ def _agent_and_dir_from_path(file_path: str) -> "tuple[str, str] | None":
     return None
 
 
+def _agent_qualifies(conn, skill_id: str, owner_tenant: str, agent_id: str) -> bool:
+    """True when the agent has an enabled availability row for the skill's owning
+    tenant or for a tenant it is granted to (the recipients regen writes to)."""
+    tenants = {owner_tenant} | {r[0] for r in conn.execute(
+        "SELECT tenant_id FROM skill_tenant_access WHERE skill_id = ?", (skill_id,))}
+    ph = ",".join("?" * len(tenants))
+    return conn.execute(
+        f"SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN ({ph})",
+        (agent_id, *sorted(tenants))).fetchone() is not None
+
+
 def _sync_tenant_skill(file_path: str, content: str, header_id: str) -> str:
     """A generated tenant skill copy was edited: update THAT tenant row, never
     create rows or fall back to agent/<id>/<dir>. The header is only a claim an
@@ -162,18 +173,119 @@ def _sync_tenant_skill(file_path: str, content: str, header_id: str) -> str:
         row = conn.execute("SELECT tenant_id FROM skills WHERE id = ?", (header_id,)).fetchone()
         if not row or row[0] == "fleet":
             return f"no tenant skill {header_id} in the DB, ignored"
-        tenants = {row[0]} | {r[0] for r in conn.execute(
-            "SELECT tenant_id FROM skill_tenant_access WHERE skill_id = ?", (header_id,))}
-        ph = ",".join("?" * len(tenants))
-        ok = conn.execute(
-            f"SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN ({ph})",
-            (agent_id, *sorted(tenants))).fetchone()
-        if not ok:
+        if not _agent_qualifies(conn, header_id, row[0], agent_id):
             return f"agent {agent_id} does not qualify for tenant skill {header_id}, ignored"
         conn.execute("UPDATE skills SET content = ?, updated_at = ? WHERE id = ?",
                      (strip_generated_header(content), int(time.time()), header_id))
         conn.commit()
         return f"updated tenant skill {header_id}"
+    finally:
+        conn.close()
+
+
+MAX_SKILL_FILE_BYTES = 5 * 1024 * 1024
+MAX_SKILL_FILES_PER_SKILL = 200
+_SKIP_SEGMENTS = {"node_modules", "__pycache__", ".git"}
+
+
+def normalize_skill_rel_path(rel: str) -> "str | None":
+    """Mirror of normalizeSkillRelPath (src/skill-files.ts)."""
+    if not rel or len(rel) > 200 or re.search(r"[\x00-\x1f\x7f\\]", rel) or rel.startswith("/"):
+        return None
+    parts = rel.split("/")
+    if any(p in ("", ".", "..") for p in parts) or rel == "SKILL.md":
+        return None
+    return rel
+
+
+def sanitize_skill_file_mode(mode: int) -> int:
+    """Mirror of sanitizeSkillFileMode: 0755 when any exec bit is set, else 0644."""
+    return 0o755 if mode & 0o111 else 0o644
+
+
+def _companion_location(file_path: str) -> "tuple[str, str] | None":
+    """(skill dir, posix rel path) when file_path is a non-SKILL.md file inside a
+    skill directory (any depth), else None. The skill dir is the nearest ancestor
+    that _skill_id_from_path recognizes as a skill location."""
+    p = os.path.normpath(os.path.abspath(file_path))
+    if os.path.basename(p) == "SKILL.md":
+        return None
+    d = os.path.dirname(p)
+    for _ in range(8):
+        if _skill_id_from_path(os.path.join(d, "SKILL.md")):
+            rel = os.path.relpath(p, d).replace(os.sep, "/")
+            if rel.startswith("../") or set(rel.split("/")) & _SKIP_SEGMENTS:
+                return None
+            return d, rel
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def _sync_companion_file(file_path: str, skill_dir: str, rel: str) -> str:
+    """A companion file (scripts/, references/, ...) of a skill was edited: store
+    it in skill_files of the skill's row. Only for a skill that already has a row
+    (SKILL.md is what creates rows); for a generated TENANT copy the row is the
+    tenant one named in the header, with the same qualification check as the
+    SKILL.md path."""
+    rel_n = normalize_skill_rel_path(rel)
+    if not rel_n:
+        return f"companion path {rel!r} not accepted, ignored"
+    try:
+        st = os.stat(file_path)
+        if not os.path.isfile(file_path) or os.path.islink(file_path):
+            return "companion is not a regular file, ignored"
+        if st.st_size > MAX_SKILL_FILE_BYTES:
+            return f"companion {rel_n} over the size limit, ignored"
+        with open(file_path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return "companion unreadable, ignored"
+
+    skill_md = os.path.join(skill_dir, "SKILL.md")
+    skill_id = _skill_id_from_path(skill_md)
+    tenant_agent = None
+    try:
+        with open(skill_md) as f:
+            hdr = read_generated_header(f.read())
+    except OSError:
+        hdr = None
+    if hdr and hdr[1]:
+        if not hdr[0]:
+            return "tenant header without id, ignored"
+        where = _agent_and_dir_from_path(skill_md)
+        if not where or where[1] != tenant_dir_name(hdr[0]):
+            return "tenant copy location does not match its header, ignored"
+        skill_id, tenant_agent = hdr[0], where[0]
+    if not skill_id:
+        return "not inside a skill directory, ignored"
+
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        row = conn.execute("SELECT tenant_id FROM skills WHERE id = ?", (skill_id,)).fetchone()
+        if not row:
+            return f"no skill {skill_id} in the DB yet, companion ignored"
+        if tenant_agent is not None:
+            if row[0] == "fleet" or not _agent_qualifies(conn, skill_id, row[0], tenant_agent):
+                return f"agent {tenant_agent} does not qualify for tenant skill {skill_id}, ignored"
+        exists = conn.execute("SELECT 1 FROM skill_files WHERE skill_id = ? AND rel_path = ?", (skill_id, rel_n)).fetchone()
+        if not exists:
+            n = conn.execute("SELECT COUNT(*) FROM skill_files WHERE skill_id = ?", (skill_id,)).fetchone()[0]
+            if n >= MAX_SKILL_FILES_PER_SKILL:
+                return f"skill {skill_id} already has {n} companion files, ignored"
+        now = int(time.time())
+        conn.execute(
+            """INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(skill_id, rel_path) DO UPDATE SET
+                 content = excluded.content, mode = excluded.mode, updated_at = excluded.updated_at""",
+            (skill_id, rel_n, data, sanitize_skill_file_mode(st.st_mode), now, now),
+        )
+        conn.commit()
+        return f"stored companion {rel_n} of {skill_id}"
     finally:
         conn.close()
 
@@ -220,6 +332,12 @@ def main() -> None:
 
     skill_id = _skill_id_from_path(file_path)
     if not skill_id:
+        loc = _companion_location(file_path)
+        if loc:
+            try:
+                print(f"skill-sql-sync: {_sync_companion_file(file_path, loc[0], loc[1])}", file=sys.stderr)
+            except Exception as exc:
+                print(f"skill-sql-sync: SQL error for companion {loc[1]}: {exc}", file=sys.stderr)
         sys.exit(0)
 
     try:

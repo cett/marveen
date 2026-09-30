@@ -50,6 +50,7 @@ vi.mock('../db.js', () => ({
   grantSkillAccess: vi.fn(),
   revokeSkillAccess: vi.fn(),
   listSkillAccess: vi.fn().mockReturnValue([]),
+  listSkillFiles: vi.fn().mockReturnValue([]),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'

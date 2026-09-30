@@ -38,6 +38,7 @@ vi.mock('../db.js', () => ({
   getSkill: getSkillMock,
   listAllSkills: listAllSkillsMock,
   listSkillAccess: vi.fn().mockReturnValue([]),
+  listSkillFiles: vi.fn().mockReturnValue([]),
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
 }))
 

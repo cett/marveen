@@ -489,6 +489,7 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number, secre
     if (skillIds.length > 0) {
       const ph = skillIds.map(() => '?').join(', ')
       db.prepare(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`).run(...skillIds)
+      db.prepare(`DELETE FROM skill_files WHERE skill_id IN (${ph})`).run(...skillIds)
     }
     db.prepare('DELETE FROM skills WHERE tenant_id = ?').run(tenantId)
 
