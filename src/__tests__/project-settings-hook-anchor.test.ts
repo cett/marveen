@@ -37,7 +37,7 @@ const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py',
     'staleness-guard.py', 'channel-inbox-drain.py',
-    'voice-reply-directive.py', 'telegram_progress.py', 'tenant-context.py',
+    'voice-reply-directive.py', 'telegram_progress.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'post-tool-injection-gate.py', 'tool-log-capture.py',
@@ -45,7 +45,7 @@ const EXPECTED: Record<string, string[]> = {
     'telegram_progress_reply_clear.py', 'skill-usage-capture.py',
   ],
   PreToolUse: [
-    'channel-image-resize.sh', 'egress-gate.mjs', 'destructive-gate.py', 'tenant-skill-gate.py',
+    'channel-image-resize.sh', 'egress-gate.mjs', 'destructive-gate.py',
   ],
   Stop: ['telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py'],
