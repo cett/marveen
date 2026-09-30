@@ -1475,6 +1475,8 @@ window._i18n.en = {
   'agents.model.card_title':     'Model switch: {agent}',
   'agents.model.card_desc':      'Current: {current}\nSuggested: {suggested}\n\nReason: {reason}',
   'agents.model.toast_active':   'New model active: {model}',
+  'agents.model.fallback_active': 'fallback active: {model}',
+  'agents.model.fallback_hint':   'The configured model stays in place and is restored when the fallback ends. Saving a different model overrides the fallback.',
   'agents.model.toast_restarted':'Restarted: {model}',
 
   // --- Channel toasts ---

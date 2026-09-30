@@ -3183,6 +3183,7 @@
               <div class="meta-value-row">
                 <span class="meta-value" id="agentDetailModel"></span>
                 <span class="meta-badge" id="agentDetailModelRestarting" hidden data-i18n="agents.detail.restarting">újraindítás alatt</span>
+                <span class="meta-badge" id="agentDetailModelFallback" hidden></span>
               </div>
             </div>
             <div class="agent-overview-item">
@@ -3248,6 +3249,7 @@
               </optgroup>
             </select>
             <button class="btn agent-save-section" data-variant="secondary" data-size="compact" id="saveModelBtn" data-i18n="common.btn.save">Mentés</button>
+            <div id="agentModelFallbackHint" hidden style="margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4"></div>
             <button class="btn" data-variant="secondary" data-size="compact" id="modelSuggestBtn" style="margin-left:6px" data-i18n="agents.settings.model_suggest_btn">Javaslat</button>
             <button class="btn" data-variant="secondary" data-size="compact" id="openrouterBrowseBtn" style="margin-left:6px;display:none" title="Kézi OpenRouter modellek listájának szerkesztése (pipával)">🔀 OpenRouter kézi lista</button>
             <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
