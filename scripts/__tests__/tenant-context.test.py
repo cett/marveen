@@ -34,8 +34,18 @@ SCHEDULES_DDL = """CREATE TABLE schedules (id TEXT PRIMARY KEY, agent TEXT NOT N
 CHAN = '<channel source="plugin:telegram:telegram" chat_id="%s" message_id="1" user="u" ts="2026-01-01T00:00:00Z">\n%s\n</channel>'
 
 
+MIGRATION_0065 = os.path.join(ROOT, "src", "migrations", "0065_agent_tenant_context.sql")
+
+
+def create_context_table(con):
+    """The table belongs to migration 0065; the hooks never create it, so fixtures apply the migration."""
+    with open(MIGRATION_0065) as f:
+        con.executescript(f.read())
+
+
 def make_db(path):
     con = sqlite3.connect(path)
+    create_context_table(con)
     for ddl in (BINDINGS_DDL, MESSAGES_DDL, SCHEDULES_DDL, AVAIL_DDL, TENANTS_DDL):
         con.execute(ddl)
     con.execute("INSERT INTO tenant_channel_bindings VALUES ('agent-a','telegram','111','tenant-x')")
@@ -226,6 +236,19 @@ class TestHook(unittest.TestCase):
         c = self.ctx()
         self.assertEqual((c["status"], c["tenant_id"], c["source"]), ("unknown", "", "hook-error"))   # not tenant-x
 
+    def test_missing_table_is_not_created_and_the_prompt_is_refused(self):
+        bare = os.path.join(self.tmp.name, "bare.db")
+        sqlite3.connect(bare).close()                      # dashboard migration has not run: no table
+        p = self.run_hook(CHAN % ("111", "hi"), db=bare)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("refusing the prompt", p.stderr)
+        con = sqlite3.connect(bare)
+        try:
+            tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        finally:
+            con.close()
+        self.assertEqual(tables, [])                        # the hook created nothing
+
     def test_refuses_the_prompt_when_the_context_cannot_be_invalidated(self):
         bad = os.path.join(self.tmp.name, "no-such-dir", "t.db")
         p = self.run_hook(CHAN % ("111", "hi"), db=bad)
@@ -233,12 +256,17 @@ class TestHook(unittest.TestCase):
         self.assertIn("refusing the prompt", p.stderr)
 
 
-class TestSchemaContract(unittest.TestCase):
-    def test_hook_ddl_equals_the_migration(self):
-        with open(os.path.join(ROOT, "src", "migrations", "0065_agent_tenant_context.sql")) as f:
-            sql = re.sub(r"--[^\n]*", "", f.read())
-        norm = lambda s: re.sub(r"\s+", " ", s).strip().rstrip(";").strip()
-        self.assertEqual(norm(sql), norm(tcl.SCHEMA))
+class TestNoDdlInTheHooks(unittest.TestCase):
+    def test_hook_scripts_never_run_ddl(self):
+        for name in ("tenant_context_lib.py", "tenant-context.py", "tenant-skill-gate.py"):
+            with open(os.path.join(HOOKS, name)) as f:
+                code = f.read()
+            self.assertIsNone(re.search(r"\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|TRIGGER|VIEW)\b", code, re.I), name)
+        self.assertFalse(hasattr(tcl, "SCHEMA"))
+
+    def test_migration_owns_the_table(self):
+        with open(MIGRATION_0065) as f:
+            self.assertIn("CREATE TABLE IF NOT EXISTS agent_tenant_context", f.read())
 
 
 if __name__ == "__main__":

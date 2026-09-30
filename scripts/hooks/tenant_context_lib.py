@@ -24,17 +24,8 @@ import time
 
 DEFAULT_TENANT = "default"
 
-# Same DDL as migration 0065 (a contract test keeps them identical).
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS agent_tenant_context (
-  agent_id   TEXT    PRIMARY KEY,
-  tenant_id  TEXT    NOT NULL,
-  status     TEXT    NOT NULL CHECK(status IN ('bound','default','unknown','conflict')),
-  source     TEXT    NOT NULL DEFAULT '',
-  session_id TEXT    NOT NULL DEFAULT '',
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-)
-"""
+# agent_tenant_context is owned by migration 0065. These hooks never run DDL: a missing table makes the prompt
+# hook refuse the prompt and the gate deny (fail closed), it is not created here.
 
 # One alternation, leftmost-first, non-overlapping: a tag block is consumed whole, so tags
 # nested inside a chat/peer body are part of that body and never separate sources.
@@ -183,7 +174,6 @@ def resolve_prompt(con, agent_id, prompt):
 def connect(path):
     con = sqlite3.connect(path, timeout=10)
     con.execute("PRAGMA busy_timeout=10000")
-    con.execute(SCHEMA)
     return con
 
 

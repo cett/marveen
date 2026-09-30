@@ -12,8 +12,8 @@
 --           conflict a batch mixes sources of different tenants: tenant_id = ''
 --   source  short human-readable description of what was resolved (channel:telegram:<id>, ...)
 --
--- The hook also creates this table itself (same DDL, checked by a contract test) so a prompt that
--- arrives before the dashboard migration ran does not fail.
+-- This migration owns the table: the hooks never run DDL. If the table is missing (a prompt that arrives before
+-- the dashboard migration ran) the prompt hook refuses the prompt and the gate denies tenant skills, fail closed.
 CREATE TABLE IF NOT EXISTS agent_tenant_context (
   agent_id   TEXT    PRIMARY KEY,
   tenant_id  TEXT    NOT NULL,

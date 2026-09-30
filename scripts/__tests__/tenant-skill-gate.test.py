@@ -36,6 +36,8 @@ SCHEMA = [
 
 def make_db(path):
     con = sqlite3.connect(path)
+    with open(os.path.join(ROOT, "src", "migrations", "0065_agent_tenant_context.sql")) as f:
+        con.executescript(f.read())   # the table belongs to the migration; the hooks never create it
     for ddl in SCHEMA:
         con.execute(ddl)
     con.execute("INSERT INTO skills VALUES ('global/handoff','handoff','x','fleet')")
@@ -75,7 +77,6 @@ class Base(unittest.TestCase):
 
     def set_context(self, status, tenant, age=0):
         con = sqlite3.connect(self.db)
-        con.execute(tcl.SCHEMA)
         tcl.write_context(con, "agent-a", status, tenant, "test", "s")
         con.execute("UPDATE agent_tenant_context SET updated_at = ? WHERE agent_id = 'agent-a'", (int(time.time()) - age,))
         con.commit(); con.close()
@@ -114,6 +115,18 @@ class TestMembershipRecheck(Base):
         con.execute("UPDATE tenants SET disabled_at=5 WHERE id='tenant-x'")
         con.commit(); con.close()
         self.denied("Skill", skill="tenant-x-demo")
+
+    def test_missing_context_table_denies_tenant_skills_and_creates_nothing(self):
+        self.prompt(CHAN % "111")
+        con = sqlite3.connect(self.db)
+        con.execute("DROP TABLE agent_tenant_context")
+        con.commit(); con.close()
+        self.denied("Skill", skill="tenant-x-demo")
+        self.allowed("Skill", skill="global/handoff")
+        con = sqlite3.connect(self.db)
+        names = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE name='agent_tenant_context'")]
+        con.close()
+        self.assertEqual(names, [])
 
     def test_missing_availability_table_fails_closed(self):
         self.prompt(CHAN % "111")
