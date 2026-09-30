@@ -43,13 +43,25 @@ EOF
 # gate cannot account for. Above a fan-out-adjusted threshold, skip the whole sweep so a
 # high-quota window is never blown by background heartbeats. Reads the same usage snapshot
 # the dashboard maintains (store/claude-usage.json: sessionPct / weeklyPct).
+# Like the per-task gate (src/quota-gate.ts, staleAfterMs) it only trusts a FRESH snapshot:
+# a number older than QUOTA_STALE_MINUTES says nothing about now, so the guard fails open.
+# Without this check a snapshot frozen at 83% (2026-06-15) skipped every sweep for 40 days.
 QUOTA_THRESHOLD="${QUOTA_THRESHOLD:-75}"
+QUOTA_STALE_MINUTES="${QUOTA_STALE_MINUTES:-20}"
 USAGE_FILE="$ROOT/store/claude-usage.json"
 if [ -f "$USAGE_FILE" ]; then
-  PCT="$(jq -r '[(.sessionPct // 0), (.weeklyPct // 0)] | max | floor' "$USAGE_FILE" 2>/dev/null || echo 0)"
-  if [ -n "$PCT" ] && [ "$PCT" != "null" ] && [ "$PCT" -ge "$QUOTA_THRESHOLD" ] 2>/dev/null; then
-    echo "[$(ts)] quota ${PCT}% >= ${QUOTA_THRESHOLD}% (fan-out guard) -- skipping fleet heartbeat sweep" >> "$LOG"
-    exit 0
+  FETCHED_MS="$(jq -r '.fetchedAt // empty' "$USAGE_FILE" 2>/dev/null || true)"
+  NOW_MS=$(( $(date +%s) * 1000 ))
+  if ! [[ "$FETCHED_MS" =~ ^[0-9]+$ ]]; then
+    echo "[$(ts)] usage snapshot has no fetchedAt -- fan-out guard fails open" >> "$LOG"
+  elif [ $(( NOW_MS - FETCHED_MS )) -gt $(( QUOTA_STALE_MINUTES * 60000 )) ]; then
+    echo "[$(ts)] usage snapshot stale ($(( (NOW_MS - FETCHED_MS) / 60000 ))m > ${QUOTA_STALE_MINUTES}m) -- fan-out guard fails open" >> "$LOG"
+  else
+    PCT="$(jq -r '[(.sessionPct // 0), (.weeklyPct // 0)] | max | floor' "$USAGE_FILE" 2>/dev/null || echo 0)"
+    if [ -n "$PCT" ] && [ "$PCT" != "null" ] && [ "$PCT" -ge "$QUOTA_THRESHOLD" ] 2>/dev/null; then
+      echo "[$(ts)] quota ${PCT}% >= ${QUOTA_THRESHOLD}% (fan-out guard) -- skipping fleet heartbeat sweep" >> "$LOG"
+      exit 0
+    fi
   fi
 fi
 
