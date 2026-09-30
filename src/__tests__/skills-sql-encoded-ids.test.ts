@@ -178,4 +178,21 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
     expect(r.out.status).toBe(400)
     expect(mockRevoke).not.toHaveBeenCalled()
   })
+
+  it('POST access with a malformed escape in the skill id is a 400 and grants nothing', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/skills/sql/bad%zzid/access', { tenant_id: 't1' })
+    expect(await tryHandleSkills(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('invalid_value')
+    expect(mockGetSkill).not.toHaveBeenCalled()
+    expect(mockGrant).not.toHaveBeenCalled()
+  })
+
+  it('DELETE access item with a malformed escape in the skill id (valid tenant) is a 400 and revokes nothing', async () => {
+    const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/bad%zzid/access/t1')
+    expect(await tryHandleSkills(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('invalid_value')
+    expect(mockRevoke).not.toHaveBeenCalled()
+  })
 })
