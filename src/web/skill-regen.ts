@@ -687,6 +687,49 @@ export function findMissingSkillFiles(): string[] {
   return missing
 }
 
+export interface SkillFileGaps {
+  /** Fleet skill ids whose SKILL.md is missing. */
+  skillFiles: string[]
+  /** "<skill id>:<rel path>" of DB companion files missing (or with an unsafe path) on disk. */
+  companionFiles: string[]
+  /** "<tenant skill id>@<agent>" of expected tenant copies that are missing. */
+  tenantCopies: string[]
+}
+
+/**
+ * Read-only, quiet gap check between the DB and the generated cache: skills,
+ * companion files and tenant copies that exist in the DB but not on disk (the
+ * state right after a restore, or with SKILL_SQL_REGEN off). Content drift is
+ * not reported here; the regen restores it with a warning.
+ */
+export function findSkillFileGaps(): SkillFileGaps {
+  const gaps: SkillFileGaps = { skillFiles: [], companionFiles: [], tenantCopies: [] }
+  let rows: SkillRow[]
+  try { rows = listAllSkills() } catch { return gaps }
+  const missingCompanions = (id: string, skillDir: string) => {
+    for (const f of safeListSkillFiles(id)) {
+      const t = companionTarget(skillDir, f.rel_path)
+      if (!t || !existsSync(t)) gaps.companionFiles.push(`${id}:${f.rel_path}`)
+    }
+  }
+  for (const row of rows) {
+    if (row.tenant_id === 'fleet') {
+      const p = resolveSkillPath(row.id)
+      if (!p) continue
+      if (!existsSync(p)) gaps.skillFiles.push(row.id)
+      missingCompanions(row.id, dirOfSkillMd(p))
+      continue
+    }
+    for (const agentId of tenantSkillRecipients(row)) {
+      const p = tenantSkillPath(agentId, row.id)
+      if (!p) continue
+      if (!existsSync(p)) gaps.tenantCopies.push(`${row.id}@${agentId}`)
+      missingCompanions(row.id, dirOfSkillMd(p))
+    }
+  }
+  return gaps
+}
+
 /**
  * Return the set of agent IDs whose local skills directory exists on disk,
  * so callers can verify the loader would find them.

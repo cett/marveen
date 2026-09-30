@@ -176,6 +176,32 @@ cp -a /tmp/restore/home/. ~/
 
 > The `-p` (preserve modes) flag ensures `0600` token files remain owner-readable after restore.
 
+### After a restore: regenerate the skill files
+
+The skills database is the source of truth; the `SKILL.md` files and their `scripts/`, `references/` companions under `~/.claude/skills/` and `agents/*/.claude/skills/` are a cache generated from it (the archive still contains `.claude/skills`, so a full restore brings them back too). When the database was restored without the files, or the files are older than the database:
+
+```bash
+# 0. Files that exist on disk but not in the DB yet (e.g. a newer file restore): insert-if-absent, never overwrites a row
+npx tsx scripts/materialize-skills.ts
+
+# 1. List what the DB has but the disk lacks (skills, companion files, tenant copies); exit 1 if anything
+npx tsx scripts/regen-skills.ts --check
+
+# 2. Write everything from the DB (fleet + agent-local skills, companion files, tenant skills under the tenants' own agents)
+npx tsx scripts/regen-skills.ts --force
+```
+
+The dashboard does the same at every start unless `SKILL_SQL_REGEN=0`; with the switch off it logs a `Skills exist in the DB but their files are missing` warning instead. A file that differs from its DB row is restored from the row (with a warning), so a hand-edited file that never reached the DB is overwritten: save it first if it matters.
+
+Running agent sessions load their skills at start, so restart them afterwards (the loop covers the sub-agents; the main agent is restarted the same way with `POST /api/agents/<MAIN_AGENT_ID>/restart`, which goes through its channels service):
+
+```bash
+TOKEN=$(cat store/.dashboard-token)
+for a in $(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/agents | python3 -c 'import sys,json; print(" ".join(x["name"] for x in json.load(sys.stdin)))'); do
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3420/api/agents/$a/restart"; echo " $a"
+done
+```
+
 ### SHA-256 verification
 
 ```bash
