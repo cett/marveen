@@ -87,6 +87,10 @@ export async function tryHandleBackups(ctx: RouteContext): Promise<boolean> {
     unlinkSync(filePath)
     const sha256Path = filePath.replace('.tar.gz', '.sha256')
     if (existsSync(sha256Path)) { try { unlinkSync(sha256Path) } catch { /* ignore */ } }
+    // The vault master key lives in its own sidecar (never inside the archive);
+    // remove it with its archive so a deleted backup leaves no orphan key behind.
+    const keyPath = filePath.replace('.tar.gz', '.vault-key')
+    if (existsSync(keyPath)) { try { unlinkSync(keyPath) } catch { /* ignore */ } }
     json(res, { ok: true })
     return true
   }
