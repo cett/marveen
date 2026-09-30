@@ -29,6 +29,7 @@ SCHEMA = [
        PRIMARY KEY (agent_id, channel, external_id))""",
     "CREATE TABLE agent_messages (id INTEGER PRIMARY KEY, from_agent TEXT, to_agent TEXT, tenant_id TEXT)",
     "CREATE TABLE schedules (id TEXT PRIMARY KEY, agent TEXT, tenant_id TEXT)",
+    "CREATE TABLE tenant_agent_availability (tenant_id TEXT, agent_id TEXT, enabled INTEGER DEFAULT 1)",
 ]
 
 
@@ -45,6 +46,8 @@ def make_db(path):
     con.execute("INSERT INTO tenant_channel_bindings VALUES ('agent-a','telegram','111','tenant-x')")
     con.execute("INSERT INTO tenant_channel_bindings VALUES ('agent-a','telegram','222','tenant-y')")
     con.execute("INSERT INTO schedules VALUES ('nightly','agent-a',NULL)")
+    con.execute("INSERT INTO tenant_agent_availability VALUES ('tenant-x','agent-a',1)")
+    con.execute("INSERT INTO tenant_agent_availability VALUES ('tenant-y','agent-a',1)")
     con.commit()
     con.close()
 

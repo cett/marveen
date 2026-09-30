@@ -118,13 +118,31 @@ def _binding(con, agent_id, channel, external_id):
     return row[0] if row else None
 
 
+def _serves(con, agent_id, tenant_id):
+    """True iff the agent is (still) enabled for the tenant. A binding, a tenant-stamped message or a
+    tenant-owned task can outlive the availability row; an agent disabled for a tenant must not keep
+    resolving to it. Lookup errors count as not serving (fail closed)."""
+    return _one(
+        con,
+        "SELECT 1 FROM tenant_agent_availability WHERE agent_id=? AND tenant_id=? AND enabled=1",
+        (agent_id, tenant_id),
+    ) is not None
+
+
+def _tenant_result(con, agent_id, tenant_id, desc):
+    if not tenant_id or tenant_id == DEFAULT_TENANT:
+        return ("default", DEFAULT_TENANT, desc)
+    if not _serves(con, agent_id, tenant_id):
+        return ("unknown", "", desc + " (agent not enabled for tenant %s)" % tenant_id)
+    return ("bound", tenant_id, desc)
+
+
 def resolve_source(con, agent_id, src):
     """-> (status, tenant_id, description) for one source; status is bound|default|unknown."""
     kind = src["kind"]
     if kind == "channel":
         desc = "channel:%s:%s" % (src["channel"], src["external_id"])
-        t = _binding(con, agent_id, src["channel"], src["external_id"])
-        return ("bound", t, desc) if t and t != DEFAULT_TENANT else ("default", DEFAULT_TENANT, desc)
+        return _tenant_result(con, agent_id, _binding(con, agent_id, src["channel"], src["external_id"]), desc)
     if kind == "message":
         desc = "message:%d" % src["msg_id"]
         row = _one(con, "SELECT to_agent, from_agent, tenant_id FROM agent_messages WHERE id=?", (src["msg_id"],))
@@ -132,16 +150,14 @@ def resolve_source(con, agent_id, src):
             return ("unknown", "", desc + " (not found or not for this agent)")
         stamped = row[2]
         if stamped and stamped != DEFAULT_TENANT:
-            return ("bound", stamped, desc)
-        t = _binding(con, agent_id, "inter-agent", row[1] or "")
-        return ("bound", t, desc) if t and t != DEFAULT_TENANT else ("default", DEFAULT_TENANT, desc)
+            return _tenant_result(con, agent_id, stamped, desc)
+        return _tenant_result(con, agent_id, _binding(con, agent_id, "inter-agent", row[1] or ""), desc)
     if kind == "scheduled":
         desc = "scheduled:%s" % src["name"]
         row = _one(con, "SELECT tenant_id FROM schedules WHERE id=? AND agent=?", (src["name"], agent_id))
         if not row:
             return ("unknown", "", desc + " (no such task for this agent)")
-        t = row[0]
-        return ("bound", t, desc) if t and t != DEFAULT_TENANT else ("default", DEFAULT_TENANT, desc)
+        return _tenant_result(con, agent_id, row[0], desc)
     return ("unknown", "", src.get("reason", "unidentified source"))
 
 
