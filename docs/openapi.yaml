@@ -197,6 +197,25 @@ components:
           type: boolean
           enum: [true]
 
+    ChannelBinding:
+      type: object
+      required: [agent_id, channel, external_id, tenant_id, created_by, created_at, updated_at]
+      properties:
+        agent_id:
+          type: string
+        channel:
+          type: string
+        external_id:
+          type: string
+        tenant_id:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: integer
+        updated_at:
+          type: integer
+
     Memory:
       type: object
       required: [id, agent_id, content, category, created_at, accessed_at]
@@ -4188,6 +4207,139 @@ paths:
             response body also includes `agent_id`, `tenant_id`, and
             `risky_mcp_servers` (the offending server names). Resubmit with
             `confirm: true` to proceed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/channel-bindings:
+    get:
+      tags: [admin]
+      operationId: listChannelBindings
+      summary: List channel-to-tenant bindings
+      description: >-
+        Which tenant an incoming source (Telegram chat, dashboard chat,
+        inter-agent sender) belongs to, per agent. A source without a binding
+        is treated as the `default` tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bindings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ChannelBinding"
+                  total:
+                    type: integer
+    put:
+      tags: [admin]
+      operationId: setChannelBinding
+      summary: Bind a source to a tenant
+      description: >-
+        Creates the binding, or moves an existing source to another tenant (a
+        source belongs to exactly one tenant). A non-default tenant requires the
+        agent to be enabled for it.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, channel, external_id, tenant_id]
+              properties:
+                agent_id:
+                  type: string
+                channel:
+                  type: string
+                  description: Lowercase channel token, e.g. `telegram`, `slack`, `dashboard`.
+                external_id:
+                  type: string
+                  description: The id the channel reports for the source (chat id, user id, sender id).
+                tenant_id:
+                  type: string
+      responses:
+        "200":
+          description: The binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelBinding"
+        "400":
+          description: "`invalid_value` — malformed `channel` or `external_id`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`not_found` — unknown agent, or tenant missing or disabled"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`conflict` — the agent is not enabled for this tenant"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [admin]
+      operationId: deleteChannelBinding
+      summary: Remove a binding
+      description: The source falls back to the `default` tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: channel
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: external_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Binding removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: "`required` — a query parameter is missing"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`not_found` — no such binding"
           content:
             application/json:
               schema:

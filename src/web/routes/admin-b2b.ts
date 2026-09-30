@@ -28,6 +28,10 @@ import {
   disablePartnerSender,
   listTenantAgentAvailability,
   setTenantAgentAvailability,
+  agentBelongsToTenant,
+  listChannelBindings,
+  setChannelBinding,
+  deleteChannelBinding,
   type Tenant,
   type DashboardUserPublic,
   type PartnerSender,
@@ -50,6 +54,9 @@ const VALID_ROLES = new Set(['admin', 'agent', 'read_only', 'viewer'])
 const USERNAME_RE = /^[A-Za-z0-9._-]+$/
 // sender_id must be a valid sanitized agent ident (sanitizeAgentIdent strips everything else)
 const SENDER_ID_RE = /^[a-zA-Z0-9_-]+$/
+// channel binding: lowercase channel token; external id is whatever the channel reports (chat/user id), printable, no whitespace
+const CHANNEL_RE = /^[a-z][a-z0-9_-]{0,31}$/
+const EXTERNAL_ID_RE = /^[^\s\x00-\x1f\x7f]{1,128}$/
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -372,6 +379,70 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
     auditAdmin(ctx, 'admin.partner_sender.disable', `${tenantId}/${sanitizeAgentIdent(senderId)}`,
       { sender_id: sanitizeAgentIdent(senderId), tenant_id: tenantId })
+    json(res, { ok: true })
+    return true
+  }
+
+  // ── Channel -> tenant bindings ─────────────────────────────────────────────
+  // GET    /api/admin/channel-bindings?tenant_id=<id>&agent_id=<id>
+  // PUT    /api/admin/channel-bindings   {agent_id, channel, external_id, tenant_id}
+  // DELETE /api/admin/channel-bindings?agent_id=<id>&channel=<c>&external_id=<x>
+  //
+  // Which tenant an incoming source (Telegram chat, dashboard chat, inter-agent
+  // sender) belongs to, per agent. A source without a binding is the default tenant.
+  // Binding to a non-default tenant needs the agent to belong to that tenant.
+
+  if (path === '/api/admin/channel-bindings' && method === 'GET') {
+    const items = listChannelBindings({
+      tenantId: ctx.url.searchParams.get('tenant_id') || undefined,
+      agentId: ctx.url.searchParams.get('agent_id') || undefined,
+    })
+    json(res, { items, total: items.length })
+    return true
+  }
+
+  if (path === '/api/admin/channel-bindings' && method === 'PUT') {
+    const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+    const agentId = typeof body.agent_id === 'string' ? body.agent_id.trim() : ''
+    const channel = typeof body.channel === 'string' ? body.channel.trim().toLowerCase() : ''
+    const externalId = typeof body.external_id === 'string' ? body.external_id.trim() : ''
+    const tenantId = typeof body.tenant_id === 'string' ? body.tenant_id.trim() : ''
+
+    if (!agentId || !isKnownAgent(agentId)) {
+      json(res, { error: 'not_found', field: 'agent_id', hint: 'Unknown agent' }, 404); return true
+    }
+    if (!CHANNEL_RE.test(channel)) {
+      json(res, { error: 'invalid_value', field: 'channel', hint: 'channel must be a lowercase token, e.g. telegram, slack, dashboard' }, 400); return true
+    }
+    if (!EXTERNAL_ID_RE.test(externalId)) {
+      json(res, { error: 'invalid_value', field: 'external_id', hint: 'external_id must be 1-128 printable characters without whitespace' }, 400); return true
+    }
+    const tenant = tenantId ? getTenant(tenantId) : undefined
+    if (!tenant || tenant.disabled_at !== null) {
+      json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
+    }
+    if (tenantId !== 'default' && !agentBelongsToTenant(agentId, tenantId)) {
+      json(res, { error: 'conflict', field: 'tenant_id', hint: 'Agent is not enabled for this tenant' }, 409); return true
+    }
+    const record = setChannelBinding(agentId, channel, externalId, tenantId, ctx.auth?.user ?? 'system')
+    auditAdmin(ctx, 'admin.channel_binding.set', `${agentId}/${channel}/${externalId}`,
+      { agent_id: agentId, channel, external_id: externalId, tenant_id: tenantId })
+    json(res, record)
+    return true
+  }
+
+  if (path === '/api/admin/channel-bindings' && method === 'DELETE') {
+    const agentId = ctx.url.searchParams.get('agent_id') ?? ''
+    const channel = (ctx.url.searchParams.get('channel') ?? '').toLowerCase()
+    const externalId = ctx.url.searchParams.get('external_id') ?? ''
+    if (!agentId || !channel || !externalId) {
+      json(res, { error: 'required', hint: 'pass ?agent_id=<id>&channel=<c>&external_id=<x>' }, 400); return true
+    }
+    if (!deleteChannelBinding(agentId, channel, externalId)) {
+      json(res, { error: 'not_found', hint: 'Binding not found' }, 404); return true
+    }
+    auditAdmin(ctx, 'admin.channel_binding.delete', `${agentId}/${channel}/${externalId}`,
+      { agent_id: agentId, channel, external_id: externalId })
     json(res, { ok: true })
     return true
   }
