@@ -67,6 +67,10 @@ curl -s -X POST http://localhost:3420/api/messages \
 
 The message is injected into the target agent's tmux session; the agent processes it and responds on its own channel.
 
+The executor closes a delegated message with `PUT /api/messages/<id>` (`status`: `done`, `failed` or `refused`, optional `result`). The delegator then receives a completion notice that starts with `[Eredmény]`; that notice is stored in the same tenant as the original message, so a tenant-scoped delegator sees the result of its own request.
+
+Tenant rule for this endpoint: a non-admin caller can only update messages of its own tenant (a message without a tenant counts as `default`). A message of another tenant answers exactly like a missing id (`404 not_found`), so message ids cannot be probed across tenants; the rejected attempt is written to the audit log. Admin callers are not restricted.
+
 ---
 
 ## Tenant management (RBAC)
@@ -157,7 +161,7 @@ Scheduled tasks are file-based: each task is a directory containing a `SKILL.md`
 **`type`** values:
 - `task` -- always sends a notification with the result after each run
 - `heartbeat` -- only notifies when something important or urgent is detected
-- `command` -- runs a shell command (not a Claude Code prompt)
+- `command` -- runs a shell command directly (no agent session, no prompt); see "Command tasks" below
 
 ### Built-in tasks
 
@@ -189,6 +193,61 @@ DELETE http://localhost:3420/api/v1/schedules/<id>
 For the full cron format and payload reference, see the `dashboard-schedule-crud` skill.
 
 > Do not write directly to the SQLite `scheduled_tasks` table -- that is a deprecated API. Use the dashboard API or the file-based directories.
+
+### Command tasks
+
+A `type: command` task runs its `command` through `bash -lc` inside the dashboard process, without any agent session or model call. The cron loop and a manual run use the same code path.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `command` | -- | Shell command; a task without one is skipped |
+| `timeoutMs` | `10000` | Run time limit |
+| `failThreshold` | `2` | Consecutive failures before the first alert |
+
+- The command runs **asynchronously**, so the dashboard keeps serving requests while it runs. A command that calls the dashboard's own API (`curl http://localhost:<port>/api/...`) therefore gets an answer.
+- On timeout the **whole process tree** is stopped (SIGTERM, then SIGKILL after 2 seconds), not only the shell, and the run counts as a failure.
+- A run that is still in progress when the next occurrence (or a manual run) arrives is skipped, never started twice.
+- Health is tracked per task in `store/command-task-health.json` (failure streak, last status, last run). A Telegram alert is sent once when the streak reaches `failThreshold`, and a recovery message when the task succeeds again. With `failThreshold: 1` the first failure alerts. Alerts need the Telegram token and chat id to be configured; otherwise they are only logged.
+
+Example, a nightly backup that alerts on the first failure (give it a generous timeout, the default 10 seconds is too short for a backup):
+
+```json
+{
+  "schedule": "0 3 * * *",
+  "agent": "marveen",
+  "enabled": true,
+  "type": "command",
+  "description": "Nightly backup",
+  "command": "cd /path/to/marveen && bash scripts/backup.sh",
+  "timeoutMs": 600000,
+  "failThreshold": 1
+}
+```
+
+### Running a task manually
+
+`POST /api/v1/schedules/<name>/run` fires a task immediately, ignoring the cron match, the catch-up window and `skipIfBusy`. A disabled task answers `409 disabled`; a draft task answers `409 not_live` (a human admin may still run a draft to preview it before activating it).
+
+- Prompt tasks (`task`, `heartbeat`): the prompt is delivered to the target agent session like a cron fire. A stopped agent is started, and a busy session gets a queued retry. The response lists one outcome per agent, for example `<agent>: fired`.
+- Command tasks: the shell command is run directly, as the cron loop does, and the last-run time is recorded. The call does not wait for the command; it answers at once with `command: started (outcome in store/command-task-health.json)`.
+
+### MCP pre-check
+
+A task can declare the MCP servers it depends on in `task-config.json`:
+
+```json
+{ "requires": { "mcp_servers": ["gmail", "google-drive"] } }
+```
+
+Before the prompt is delivered, the runner checks that each named server has a live process under the target session's `claude` process. If one is provably missing, the task is deferred to the pending-retry queue and an alert names the missing server, instead of the prompt running against a dead server.
+
+How a server is recognised: the runner merges the MCP configs the session can see, in increasing priority: user scope (`mcpServers` in `~/.claude.json`), the project `.mcp.json`, then the agent's own `.mcp.json`. For servers started through `npx`, `bunx` or `pnpm dlx` the match pattern is the package name (without the version suffix); for other servers it is the script path, or the command plus its first argument for a bare binary. The check is **fail-open**: a remote (`sse`/`http`) server, a runner without a package name, an unreadable config file, a remote session or an unresolvable `claude` process never block a task.
+
+### Fleet memory heartbeat sweep
+
+`scripts/fleet-heartbeat-sweep.sh [stagger_seconds]` asks every running sub-agent (discovered live from `/api/agents`, the main agent excluded) to run its own memory heartbeat, one agent at a time with a pause between them (default 60 seconds). Log: `store/fleet-heartbeat-sweep.log`. It is meant to be triggered by a scheduled task every few hours.
+
+The sweep multiplies one scheduled decision into one model turn per agent, so it has its own quota guard. It reads `store/claude-usage.json` and skips the whole sweep when the higher of `sessionPct` and `weeklyPct` reaches `QUOTA_THRESHOLD` (default `75`). The guard only trusts a **fresh** snapshot: if `fetchedAt` is older than `QUOTA_STALE_MINUTES` (default `20`), or missing, the guard logs the reason and lets the sweep run (fail-open). A usage number that stopped updating therefore cannot silence the sweep for weeks.
 
 ### Timezone
 

@@ -67,6 +67,8 @@ marveen/
     claudeclaw.db         -- SQLite database
     .dashboard-token      -- Bearer token (0600)
     .claude-oauth-token   -- Fleet OAuth token (0600)
+    model-fallback-state.json -- active model-fallback downgrades (per agent)
+    command-task-health.json  -- failure streaks of type=command scheduled tasks
 
   agents/                 -- fleet agents directory
     <name>/

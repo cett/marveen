@@ -154,6 +154,36 @@ Two detection signals:
 
 The watchdog is patient: it only intervenes after `AUTH_DEAD_THRESHOLD_TICKS` consecutive negative signals (approximately 10–15 minutes), so a brief network blip does not trigger an unnecessary restart.
 
+## Model fallback on usage limit
+
+When an agent hits the plan's usage limit, or its model becomes unavailable, the model-fallback runner can move it down a configurable chain (for example opus, then sonnet, then haiku) and later climb back. It is off by default. Admins configure it in Settings, "Model fallback", or with `GET` / `PUT /api/model-fallback` (`enabled`, `chain`, `revertAfterMinutes`; the default revert window is 330 minutes, overridable with `DEFAULT_REVERT_AFTER_MINUTES`). The configuration is stored in the database (`system_config`).
+
+How it works:
+
+- A sweep runs every 60 seconds over the main agent and every running sub-agent. It reads the pane, and acts only when the pane is idle.
+- A usage-limit banner is one detection. A "model unavailable" message must be seen in two consecutive sweeps, so an error text quoted in a chat does not cause a switch. The "approaching usage limit" warning does not count as an exhausted quota.
+- A downgrade is stored as a **persistent overlay** in `store/model-fallback-state.json` (per agent: `primary`, `current`, `downgradedAt`). The model resolvers, including `scripts/channels.sh` for the main agent, read the overlay first while it is active. Your own configuration (`MAIN_AGENT_MODEL` in `.env`, or the agent's `model` in `agent-config.json`) is never rewritten.
+- A sub-agent is respawned with its conversation kept (`--continue`). The main agent is relaunched fresh, so its conversation is not preserved; the model swap is what matters there.
+- The overlay survives a dashboard restart, so the revert still happens. After `revertAfterMinutes` without a limit, the agent returns to **its own configured model** (not the first model of the chain), and the overlay is removed.
+- After any switch there is a 10 minute cooldown before a new downgrade, because a respawned pane can still show the old banner and would otherwise be walked down the whole chain within minutes.
+- If the agent's configured model is changed to the very model the overlay pins, the overlay is dropped as stale at the next sweep.
+- Changing an agent's model on purpose (dashboard, or `PUT /api/agents/<name>` with a `model` different from the configured one) clears its overlay, so your choice wins over an automatic downgrade. Saving a form that only repeats the unchanged model does not cancel an active downgrade.
+
+## Context restart gate
+
+The context restart gate keeps long sessions healthy without cutting work in flight. When an agent's context grows past a token threshold it sends a soft `/clear`, so the SessionStart hooks can carry the agent into a fresh session, but only when nothing is in flight. It uses no model tokens: every check is a database query, a file read, or a pane/process snapshot.
+
+It is opt-in per agent (disabled by default). The per-agent settings live in the `agent_settings` table (key `context_restart_gate`) and the run state in the `agent_state` table; there is no HTTP route for them. Defaults: threshold 400000 tokens, stale cutoff 2 hours, re-check every 5 minutes, persistent-block alert after 2 hours, forced `/clear` after 4 hours of block.
+
+The gate is fail-closed: a signal it cannot measure blocks the restart. It blocks while any of these holds: the pane is not confirmed idle or shows a usage-limit banner, the hard context guard is managing the session, the claude process has live children (Task-tool subagents, background shell commands), the agent has dispatched messages still awaiting a result, the last inbound channel message has no later reply, or a structured task state is in progress. A gate that stays blocked for hours raises an alert, and past the forced-restart window, with nothing in flight and the pane idle, it sends the `/clear` anyway.
+
+Signals that no longer describe live work are ignored, so a gate cannot stay shut on stale data:
+
+- An unanswered inbound message older than the stale cutoff counts as abandoned, like a dispatched message of the same age.
+- Completion reports (`[Eredmény]` messages) and a sub-agent's messages to the main agent (status reports, replies) are not counted as pending outbound, because no result ever comes back for them. The main agent's own outbound messages are real delegation and still count.
+- A blocking streak that began before the current session started is discarded: a restarted agent does not inherit the old session's block clock, alert or forced-restart eligibility.
+- The context size is measured from the **active** session's transcript only. A transcript last written before the session started belongs to the previous session; a new session with no transcript yet counts as 0 tokens, not as the old session's size.
+
 ## Backup and restore
 
 ### Running a backup
@@ -169,6 +199,8 @@ Archives go to `backups/` (`claudeclaw-YYYYMMDD-HHMMSS.tar.gz`) with a SHA-256 s
 ```bash
 BACKUP_KEEP=14 bash scripts/backup.sh
 ```
+
+To run the backup nightly, schedule it as a `type: command` task (see F07, "Command tasks"): it runs without an agent session, and with `failThreshold: 1` the first failure sends a Telegram alert.
 
 ### Archive contents
 

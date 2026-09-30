@@ -67,6 +67,10 @@ curl -s -X POST http://localhost:3420/api/messages \
 
 Az üzenet a cél-ágens tmux session-jébe kerül injektálásra; az ágens feldolgozza és a saját csatornáján válaszol.
 
+A végrehajtó a `PUT /api/messages/<id>` hívással zárja le a kiosztott üzenetet (`status`: `done`, `failed` vagy `refused`, opcionális `result`). A delegáló ezután egy `[Eredmény]` kezdetű teljesítési értesítőt kap; ez az értesítő az eredeti üzenet tenantjába kerül, így a tenant-hatókörű delegáló látja a saját kérésének az eredményét.
+
+Tenant-szabály erre a végpontra: nem-admin hívó csak a saját tenantjának üzenetét módosíthatja (a tenant nélküli üzenet `default`-nak számít). Másik tenant üzenete pontosan úgy válaszol, mint egy nem létező azonosító (`404 not_found`), így az üzenet-azonosítók tenantok között nem tapogathatók végig; az elutasított kísérlet bekerül az audit-naplóba. Az admin hívót nem korlátozza.
+
 ---
 
 ## Tenant-kezelés (RBAC)
@@ -157,7 +161,7 @@ Az ütemezett feladatok fájl-alapúak: minden feladat egy könyvtárból áll, 
 **`type`** értékei:
 - `task` -- futás után mindig értesítést küld az eredményről
 - `heartbeat` -- csak akkor küld értesítést, ha fontos vagy sürgős esemény van
-- `command` -- shell parancsot futtat (nem Claude Code promptot)
+- `command` -- shell parancsot futtat közvetlenül (nincs ágens-session, nincs prompt); lásd lejjebb a "Command feladatok" szakaszt
 
 ### Beépített feladatok
 
@@ -189,6 +193,61 @@ DELETE http://localhost:3420/api/v1/schedules/<id>
 Részletes cron-formátum és payload: a `dashboard-schedule-crud` skill tartalmazza.
 
 > Ne írd közvetlenül az SQLite `scheduled_tasks` táblát -- ez egy régi API. Használd a dashboard API-t vagy a fájl-alapú könyvtárakat.
+
+### Command feladatok
+
+A `type: command` feladat a `command` mezőt `bash -lc`-vel futtatja a dashboard folyamatán belül, ágens-session és modellhívás nélkül. A cron-ciklus és a kézi futtatás ugyanazt a kódutat használja.
+
+| Mező | Alapérték | Jelentés |
+|------|-----------|----------|
+| `command` | -- | Shell parancs; parancs nélküli feladat kimarad |
+| `timeoutMs` | `10000` | Futásidő-korlát |
+| `failThreshold` | `2` | Hány egymás utáni hiba után jön az első riasztás |
+
+- A parancs **aszinkron** fut, így a dashboard közben is kiszolgálja a kéréseket. A dashboard saját API-ját hívó parancs (`curl http://localhost:<port>/api/...`) ezért kap választ.
+- Időtúllépéskor a **teljes folyamatfa** leáll (SIGTERM, 2 másodperc után SIGKILL), nem csak a shell, és a futás hibának számít.
+- Az az előfordulás, amely még fut, amikor a következő esedékes (vagy egy kézi futtatás) megérkezik, kimarad, sosem indul kétszer.
+- Az állapotot feladatonként a `store/command-task-health.json` tartja (hibasorozat, utolsó státusz, utolsó futás). Telegram-riasztás egyszer megy, amikor a sorozat eléri a `failThreshold`-ot, és helyreállás-üzenet, amikor a feladat újra sikeres. `failThreshold: 1` mellett már az első hiba riaszt. A riasztáshoz be kell állítani a Telegram tokent és a chat azonosítót, különben csak naplózódik.
+
+Példa: éjszakai mentés, amely az első hibánál riaszt (adj neki bőséges időkorlátot, az alapértelmezett 10 másodperc kevés egy mentéshez):
+
+```json
+{
+  "schedule": "0 3 * * *",
+  "agent": "marveen",
+  "enabled": true,
+  "type": "command",
+  "description": "Éjszakai mentés",
+  "command": "cd /path/to/marveen && bash scripts/backup.sh",
+  "timeoutMs": 600000,
+  "failThreshold": 1
+}
+```
+
+### Feladat kézi futtatása
+
+A `POST /api/v1/schedules/<name>/run` azonnal elindít egy feladatot, figyelmen kívül hagyva a cron-egyezést, a catch-up ablakot és a `skipIfBusy`-t. A letiltott feladat `409 disabled`, a vázlat (draft) státuszú `409 not_live` választ ad (emberi admin a vázlatot is lefuttathatja, hogy az aktiválás előtt megnézze).
+
+- Prompt-feladatok (`task`, `heartbeat`): a prompt a cél-ágens session-jébe kerül, mint egy cron-indításnál. A leállt ágenst elindítja, a foglalt session pedig sorba állított újrapróbálkozást kap. A válasz ágensenként egy eredményt sorol fel, például `<agent>: fired`.
+- Command feladatok: a shell parancs közvetlenül fut, ahogy a cron-ciklusban is, és rögzítődik az utolsó futás ideje. A hívás nem várja meg a parancsot, azonnal `command: started (outcome in store/command-task-health.json)` választ ad.
+
+### MCP előellenőrzés
+
+A feladat a `task-config.json`-ban megadhatja, mely MCP szerverektől függ:
+
+```json
+{ "requires": { "mcp_servers": ["gmail", "google-drive"] } }
+```
+
+A prompt kézbesítése előtt a futtató ellenőrzi, hogy minden megnevezett szervernek van-e élő folyamata a cél-session `claude` folyamata alatt. Ha valamelyik bizonyíthatóan hiányzik, a feladat a függő újrapróbálkozások sorába kerül, és egy riasztás megnevezi a hiányzó szervert, ahelyett hogy a prompt egy halott szerver ellen futna le.
+
+A szerver felismerése: a futtató összefésüli a session által látott MCP konfigurációkat, növekvő prioritással: user-scope (`mcpServers` a `~/.claude.json`-ban), a projekt `.mcp.json`-ja, végül az ágens saját `.mcp.json`-ja. A `npx`, `bunx` vagy `pnpm dlx` útján indított szervereknél a keresett minta a csomagnév (a verziótoldalék nélkül); a többinél a szkript útvonala, szkriptútvonal nélküli bináris esetén a parancs és az első argumentuma. Az ellenőrzés **fail-open**: távoli (`sse`/`http`) szerver, csomagnév nélküli futtató, olvashatatlan konfigfájl, távoli session vagy nem feloldható `claude` folyamat sosem blokkol feladatot.
+
+### Flotta memória-heartbeat sweep
+
+A `scripts/fleet-heartbeat-sweep.sh [stagger_masodperc]` megkéri minden futó al-ágenst (élőben az `/api/agents`-ből, a főágens kivételével), hogy futtassa a saját memória-heartbeatjét, egyesével, köztük szünettel (alapból 60 másodperc). Napló: `store/fleet-heartbeat-sweep.log`. Úgy tervezték, hogy néhány óránként egy ütemezett feladat indítsa.
+
+A sweep egy ütemezett döntésből ágensenként egy modell-fordulót csinál, ezért saját kvóta-őre van. A `store/claude-usage.json`-t olvassa, és az egész sweepet kihagyja, ha a `sessionPct` és a `weeklyPct` nagyobbika eléri a `QUOTA_THRESHOLD`-ot (alapból `75`). Az őr csak **friss** pillanatképnek hisz: ha a `fetchedAt` régebbi, mint a `QUOTA_STALE_MINUTES` (alapból `20`), vagy hiányzik, az őr naplózza az okot és átengedi a sweepet (fail-open). Egy megállt használati érték így nem némíthatja el hetekre a sweepet.
 
 ### Időzóna
 

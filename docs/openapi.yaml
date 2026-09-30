@@ -1603,6 +1603,13 @@ paths:
       tags: [messages]
       operationId: updateMessageStatus
       summary: Mark a message done, failed, or refused (executor callback)
+      description: >-
+        Tenant-scoped: a non-admin caller may only update messages that belong
+        to its own tenant (a message without a tenant counts as `default`). A
+        message of another tenant answers exactly like a missing id (404, same
+        body), so message ids cannot be probed across tenants. Admin callers
+        are not restricted. The `[Eredmény]` completion notice sent back to the
+        delegator is stored in the original message's tenant.
       requestBody:
         required: true
         content:
@@ -1635,7 +1642,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/OkResponse"
         "404":
-          description: Message not found or invalid status transition
+          description: >-
+            Message not found, invalid status transition, or the message
+            belongs to another tenant (indistinguishable from a missing id)
           content:
             application/json:
               schema:
@@ -2773,6 +2782,12 @@ paths:
       tags: [agents]
       operationId: updateAgentConfig
       summary: Update agent configuration fields
+      description: >-
+        Changing `model` to a value different from the agent's configured model
+        also clears the agent's model-fallback overlay (the persistent downgrade
+        pin kept in `store/model-fallback-state.json`), so an explicit model
+        choice supersedes an automatic usage-limit downgrade. Sending the
+        unchanged model value leaves an active overlay in place.
       requestBody:
         required: true
         content:
@@ -2933,6 +2948,74 @@ paths:
                     type: boolean
         "403":
           description: Caller is not admin
+
+  /schedules/{name}/run:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [schedules]
+      operationId: runScheduleNow
+      summary: Run a scheduled task now (manual run)
+      description: >-
+        Fires the task immediately, bypassing the cron match, the catch-up
+        window and `skipIfBusy`. A disabled task answers 409 `disabled` and a
+        draft task 409 `not_live` (a human admin may still run a draft to
+        preview it).
+
+
+        For prompt-type tasks (`task`, `heartbeat`) the prompt is delivered to
+        the target agent session like a cron fire; a stopped agent is started
+        and a busy session gets a queued retry. The result is a per-agent
+        summary such as `<agent>: fired` (other outcomes: `busy`, `starting`, `missing`, `error`, `mcp-missing`, `first-run`).
+
+
+        For `type: command` tasks the shell command is run directly, exactly
+        as the cron loop does, without an agent session. The call does not wait
+        for the command: it answers at once with `command: started (...)`, the
+        command runs asynchronously (whole process tree killed on timeout) and
+        its outcome is recorded in `store/command-task-health.json`. If the
+        previous run of the same command task is still in progress, the new
+        run is skipped instead of started twice.
+      responses:
+        "200":
+          description: Run started or delivered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, result]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  result:
+                    type: string
+                    description: >-
+                      Per-agent delivery summary for prompt tasks, or
+                      `command: started (outcome in store/command-task-health.json)`
+                      for command tasks.
+        "400":
+          description: Run rejected for another reason
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Schedule not found (also for a schedule of another tenant)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Schedule is disabled (`disabled`) or not live (`not_live`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /ideas:
     get:
