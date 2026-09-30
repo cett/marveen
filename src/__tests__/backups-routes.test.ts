@@ -151,6 +151,18 @@ describe('DELETE /api/backups/:name', () => {
     ])
   })
 
+  it('also deletes the vault-key sidecar so no orphan master key outlives its archive', async () => {
+    fsState.existing.add('/repo/backups/claudeclaw-20260101-000000.tar.gz')
+    fsState.existing.add('/repo/backups/claudeclaw-20260101-000000.vault-key')
+    const { ctx, status } = makeCtx('DELETE', '/api/backups/claudeclaw-20260101-000000.tar.gz')
+    await tryHandleBackups(ctx)
+    expect(status()).toBe(200)
+    expect(fsState.unlinked).toEqual([
+      '/repo/backups/claudeclaw-20260101-000000.tar.gz',
+      '/repo/backups/claudeclaw-20260101-000000.vault-key',
+    ])
+  })
+
   it('deletes the archive without erroring when there is no checksum sidecar', async () => {
     fsState.existing.add('/repo/backups/claudeclaw-20260101-000000.tar.gz')
     const { ctx, status } = makeCtx('DELETE', '/api/backups/claudeclaw-20260101-000000.tar.gz')

@@ -29,7 +29,7 @@ describe('parseSkillSqlRegen', () => {
 })
 
 describe('SKILL_SQL_REGEN export', () => {
-  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules() })
+  afterEach(() => { vi.unstubAllEnvs(); vi.doUnmock('../env.js'); vi.resetModules() })
 
   it('is false when process.env sets SKILL_SQL_REGEN=0 (process.env beats .env)', async () => {
     vi.stubEnv('SKILL_SQL_REGEN', '0')
@@ -50,5 +50,37 @@ describe('SKILL_SQL_REGEN export', () => {
     vi.resetModules()
     const cfg = await import('../config.js')
     expect(cfg.SKILL_SQL_REGEN).toBe(true)
+  })
+
+  // The dotenv file reaches config.ts through readEnvFile(); fake it to pin the precedence rule:
+  // a set process.env value (even blank) wins, only an unset one falls back to the file.
+  async function regenWith(dotEnv: string | undefined, processEnv: string | undefined): Promise<boolean> {
+    vi.doMock('../env.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../env.js')>()
+      return { ...actual, readEnvFile: () => (dotEnv === undefined ? {} : { SKILL_SQL_REGEN: dotEnv }) }
+    })
+    vi.stubEnv('SKILL_SQL_REGEN', processEnv)
+    vi.resetModules()
+    return (await import('../config.js')).SKILL_SQL_REGEN
+  }
+
+  it('the dotenv value 0 switches it off when process.env does not set it', async () => {
+    expect(await regenWith('0', undefined)).toBe(false)
+  })
+
+  it('process.env=1 beats the dotenv value 0', async () => {
+    expect(await regenWith('0', '1')).toBe(true)
+  })
+
+  it('process.env=0 beats the dotenv value 1', async () => {
+    expect(await regenWith('1', '0')).toBe(false)
+  })
+
+  it('a blank process.env beats the dotenv value 0 (blank never disables, never falls through)', async () => {
+    expect(await regenWith('0', '')).toBe(true)
+  })
+
+  it('stays on with neither set', async () => {
+    expect(await regenWith(undefined, undefined)).toBe(true)
   })
 })

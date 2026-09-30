@@ -134,7 +134,7 @@ The watchdog is patient: it only intervenes after `AUTH_DEAD_THRESHOLD_TICKS` co
 bash scripts/backup.sh
 ```
 
-Archives go to `backups/` (`claudeclaw-YYYYMMDD-HHMMSS.tar.gz`) with a SHA-256 sidecar file (`.sha256`).
+Archives go to `backups/` (`claudeclaw-YYYYMMDD-HHMMSS.tar.gz`) with a SHA-256 sidecar file (`.sha256`). When a vault exists, the vault master key is written to a separate `claudeclaw-YYYYMMDD-HHMMSS.vault-key` file (mode 0600) -- see below.
 
 **Retention:** the most recent 30 archives are kept (default). Override:
 
@@ -149,15 +149,24 @@ The archive has two groups:
 **`repo/` group** (relative to the project root):
 - `store/claudeclaw.db` (+ `-shm`/`-wal`) — database (after WAL checkpoint)
 - `store/.dashboard-token` — Bearer token
+- `store/vault.json` — the *encrypted* secret vault (the key is not in the archive)
 - `.env` — main configuration
 - `agents/*/CLAUDE.md`, `SOUL.md`, `.mcp.json` — agent identities
 - `agents/*/.claude/channels/*/` — per-agent channel configuration
+- `agents/*/memory/` — per-agent memory directory
 
 **`home/` group** (relative to `$HOME`):
 - `.claude/skills/` — skill library
 - `.claude/scheduled-tasks/` — file-based scheduled tasks
+- `.claude/projects/*/memory/` — auto-memory of the main agent, workers and sub-agents (their `projects` dirs are symlinks to this one shared location, so it is stored once)
 - `.claude/channels/*/` — channel tokens and pairing state
 - `Library/LaunchAgents/com.<agent-id>.*.plist` — launchd jobs (macOS)
+
+### Vault master key
+
+`store/vault.json` is encrypted; the master key lives in the macOS Keychain (item `com.marveen.vault` / `master-key`) or, as a fallback, in `store/.vault-key`. The key is deliberately **not** in the archive: anyone holding the archive and the key can decrypt the vault. `backup.sh` writes it to `backups/claudeclaw-YYYYMMDD-HHMMSS.vault-key` (0600). **Store that file somewhere other than the archive** (a different disk or a password manager). If no key can be found at backup time, the backup still completes and prints a warning -- the vault in that archive cannot be decrypted. To restore the key: copy the file to `store/.vault-key` (`chmod 600`), or import it into the Keychain without putting the key on a command line (arguments are visible to other processes via `ps`): run `security add-generic-password -U -s com.marveen.vault -a master-key -w` with `-w` as the last option and no value, and paste the key when it prompts.
+
+`scripts/verify-restore.sh` fails if a key file is found *inside* an archive, and warns if `vault.json` is archived but the `.vault-key` sidecar is not next to it.
 
 ### Restore
 
