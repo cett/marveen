@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -779,5 +779,97 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
         detail: expect.objectContaining({ authorized_by: 'partner_sender_allowlist', principal: 'partner-system', principalSource: 'peer' }),
       }),
     )
+  })
+
+  // Tenant isolation for PUT /api/messages/:id (done / failed / refused): the
+  // mutators act on the id alone, so the route has to compare the caller's tenant
+  // with the row's tenant_id before any of them runs.
+  describe('PUT /api/messages/:id tenant isolation', () => {
+    const msg = (tenant_id: string | null) => ({
+      id: 77, from_agent: 'agent-a', to_agent: 'agent-b', content: 'do it', status: 'pending',
+      tenant_id, trace_id: null, span_id: null,
+    }) as any
+    const STATUSES = ['done', 'failed', 'refused'] as const
+    const mutatorFor = (db: typeof import('../db.js'), status: (typeof STATUSES)[number]) =>
+      status === 'done' ? db.markMessageDone : status === 'failed' ? db.markMessageFailed : db.markMessageRefused
+
+    async function put(
+      status: string,
+      row: ReturnType<typeof msg> | null,
+      opts: { role?: string; tenantId?: string | null; auth?: RouteContext['auth'] },
+    ) {
+      const db = await import('../db.js')
+      for (const f of [db.markMessageDone, db.markMessageFailed, db.markMessageRefused, db.createAgentMessage, db.writeAgentAuditLog]) {
+        vi.mocked(f as any).mockClear()
+      }
+      vi.mocked(db.getAgentMessage).mockReturnValue(row)
+      const { ctx, out } = makeCtx('PUT', '/api/messages/77', { status, result: 'r' }, opts)
+      await tryHandleMessages(ctx)
+      return { db, out }
+    }
+
+    afterEach(async () => {
+      const db = await import('../db.js')
+      vi.mocked(db.getAgentMessage).mockReturnValue(null as any)
+    })
+
+    for (const status of STATUSES) {
+      it(`${status}: a tenant-scoped caller may update its OWN tenant's message`, async () => {
+        const { db, out } = await put(status, msg('acme'), { role: 'viewer', tenantId: 'acme', auth: { kind: 'token' } })
+        expect(out.status).toBe(200)
+        expect(out.body.ok).toBe(true)
+        expect(mutatorFor(db, status)).toHaveBeenCalledWith(77, 'r')
+      })
+
+      it(`${status}: a tenant-scoped caller is denied ANOTHER tenant's message (404, nothing mutated, no notification)`, async () => {
+        const { db, out } = await put(status, msg('other'), { role: 'viewer', tenantId: 'acme', auth: { kind: 'token' } })
+        expect(out.status).toBe(404)
+        expect(out.body.error).toBe('not_found')
+        expect(db.markMessageDone).not.toHaveBeenCalled()
+        expect(db.markMessageFailed).not.toHaveBeenCalled()
+        expect(db.markMessageRefused).not.toHaveBeenCalled()
+        expect(db.createAgentMessage).not.toHaveBeenCalled()
+        expect(db.writeAgentAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+          entity: 'message', action: 'update', entity_id: 77,
+          detail: expect.objectContaining({ reason: 'cross_tenant_denied', caller_tenant_id: 'acme', message_tenant_id: 'other' }),
+        }))
+      })
+
+      it(`${status}: admin may update any tenant's message`, async () => {
+        const { db, out } = await put(status, msg('other'), { role: 'admin', tenantId: null, auth: { kind: 'token' } })
+        expect(out.status).toBe(200)
+        expect(mutatorFor(db, status)).toHaveBeenCalledWith(77, 'r')
+      })
+    }
+
+    it('a default-tenant (fleet-scoped, non-admin) caller is denied a partner tenant message', async () => {
+      const { db, out } = await put('done', msg('acme'), { role: 'viewer', tenantId: undefined })
+      expect(out.status).toBe(404)
+      expect(db.markMessageDone).not.toHaveBeenCalled()
+    })
+
+    it('a partner-tenant caller is denied a default-tenant (fleet) message', async () => {
+      const { db, out } = await put('failed', msg('default'), { role: 'viewer', tenantId: 'acme' })
+      expect(out.status).toBe(404)
+      expect(db.markMessageFailed).not.toHaveBeenCalled()
+    })
+
+    it('a legacy row without a tenant_id counts as the default tenant', async () => {
+      const ok = await put('done', msg(null), { role: 'viewer', tenantId: undefined })
+      expect(ok.out.status).toBe(200)
+      const denied = await put('done', msg(null), { role: 'viewer', tenantId: 'acme' })
+      expect(denied.out.status).toBe(404)
+      expect(denied.db.markMessageDone).not.toHaveBeenCalled()
+    })
+
+    it('a foreign-tenant message looks exactly like a missing one (no id probing)', async () => {
+      const foreign = await put('done', msg('other'), { role: 'viewer', tenantId: 'acme' })
+      const db = await import('../db.js')
+      vi.mocked(db.markMessageDone).mockReturnValueOnce(false)
+      const missing = await put('done', null, { role: 'viewer', tenantId: 'acme' })
+      expect(foreign.out.status).toBe(404)
+      expect(missing.out.status).toBe(404)
+      expect(foreign.out.body).toEqual(missing.out.body)
+    })
   })
 })
