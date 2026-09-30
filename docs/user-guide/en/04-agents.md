@@ -90,6 +90,41 @@ The `⧉ tmux` button copies the agent's tmux attach command to the clipboard.
 
 ---
 
+## Model fallback on usage limit
+
+The model fallback feature keeps an agent working when its plan usage limit runs out. It is off by default and is switched on, together with the model chain and the revert time, in **Settings > Model fallback** (admin only; see [11 - Settings](11-settings.md)).
+
+While it is enabled, the system checks every running agent (and the main agent) once a minute. An agent is moved down when its live terminal shows:
+
+- an exhausted plan usage limit banner (a generic rate-limit or API overload error and the "approaching usage limit" warning do not count), or
+- a "selected model is no longer available" error, confirmed on two consecutive checks.
+
+The agent then steps one model down the chain and its session is restarted so the cheaper model takes over (sub-agents continue their conversation). The switch only happens while the agent is idle; if it is busy, it is deferred to a later check.
+
+### It is an overlay, not a config change
+
+The downgrade never rewrites the agent's configured model. It is stored as a temporary override in `store/model-fallback-state.json` (per agent: the configured model, the fallback model and the time of the downgrade). Every launch of the agent, including the main agent's launch script, uses the override first while it exists and otherwise falls back to the configured model.
+
+Because the override is on disk:
+
+- a dashboard or server restart does not lose it, and the revert timer keeps counting from the stored downgrade time;
+- if the restart that should apply the new model fails, the override is rolled back to its previous state.
+
+### Cooldown, chain and revert
+
+- After every switch there is a 10 minute cooldown before another downgrade, so a freshly restarted session that still shows the old banner cannot walk the agent down the whole chain.
+- Each agent walks the chain starting from its own configured model, one step at a time. At the bottom of the chain nothing more happens.
+- Once the revert time (default 330 minutes) has passed since the downgrade and the limit message is gone, the override is removed and the agent restarts on its configured model. If the limit message is still showing, the agent stays on the fallback model. Like the downgrade, the revert waits for an idle agent.
+
+### Seeing and resetting it
+
+- The model badge on the agent card always shows the configured model. The detail panel header and the model selector on the Settings tab show the model the live session reported, which is the fallback model while a downgrade is active.
+- Changing an agent's model on the Settings tab and saving it replaces the override: the override is removed and the agent restarts on the model you chose. Saving a form that submits the configured model unchanged does not remove it. Note that while a downgrade is active the selector shows the fallback model, so saving without changing the selection makes the fallback model the new configured model.
+- To send an agent back to its configured model by hand without changing the configuration, remove that agent's entry from `store/model-fallback-state.json` and restart the agent. This is also the way to reset the main agent, whose model cannot be edited from the dashboard.
+- Switching the feature off does not remove existing overrides, and no revert runs while it is off. An agent that is still on a fallback model stays there until the override is removed as described above or the feature is switched on again.
+
+---
+
 ## Federated agents
 
 If the fleet includes a federated (remote-server) peer system, its agents also appear in the grid with a "Federated" badge and their reachability status. These agents can also be messaged from the Messages view.

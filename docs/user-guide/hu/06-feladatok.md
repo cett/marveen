@@ -1,6 +1,6 @@
 # Feladatok
 
-A Feladatok nézet az ütemezett feladatokat kezeli. Minden feladat egy meghatározott ágenshez van rendelve, és cron-ütemezés szerint automatikusan fut - az ágens ütemező futtatja, amely percenként ellenőrzi az esedékes feladatokat.
+A Feladatok nézet az ütemezett feladatokat kezeli. Minden feladat egy meghatározott ágenshez van rendelve, és cron-ütemezés szerint automatikusan fut - az ütemező futtatja, amely 15 másodpercenként ellenőrzi az esedékes feladatokat. Kivétel a parancs típus, amely közvetlenül futtat egy shell-parancsot, és nem von be ágenst (lásd lent).
 
 ---
 
@@ -10,8 +10,9 @@ A Feladatok nézet az ütemezett feladatokat kezeli. Minden feladat egy meghatá
 |-------|--------|
 | **Feladat** | Minden futás után értesítés érkezik az eredményről |
 | **Szívdobogás** | Csak akkor értesít, ha fontos vagy sürgős eseményt talál; csendes futásnál nincs visszajelzés |
+| **Parancs** | Közvetlenül futtat egy shell-parancsot, AI ágens nélkül; ismételt hiba után Telegram-riasztást küld |
 
-A szívdobogás típus folyamatos háttér-ellenőrzésre való (pl. naptár, e-mail, kanban figyelés), míg az egyszerű feladat típus mindig jelenti az eredményt.
+A szívdobogás típus folyamatos háttér-ellenőrzésre való (pl. naptár, e-mail, kanban figyelés), míg az egyszerű feladat típus mindig jelenti az eredményt. A parancs típus az AI-t nem igénylő infrastruktúra-feladatokra való, például az éjszakai adatmentésre.
 
 ---
 
@@ -29,13 +30,13 @@ A feladatok háromféle nézetben tekinthetők meg:
 
 | Oszlop | Leírás |
 |--------|--------|
-| **Típus** | Feladat vagy Szívdobogás |
+| **Típus** | Feladat, Szívdobogás vagy Parancs |
 | **Név** | Egyedi azonosító (módosítás után nem változtatható) |
 | **Leírás** | Opcionális rövid szöveg |
 | **Ütemezés** | Cron-kifejezés emberi olvasható formában |
-| **Ágens** | Melyik ágens futtatja |
+| **Ágens** | Melyik ágens futtatja (a parancs típusú feladatok futtatásához nem használja) |
 | **Státusz** | Aktív (live) vagy Vázlat/Jóváhagyás alatt |
-| **Műveletek** | Szüneteltetés / Folytatás / Szerkesztés / Törlés |
+| **Műveletek** | Aktiválás (csak vázlatnál) / Futtatás most / Szüneteltetés / Folytatás / Futási előzmények / Törlés; szerkeszteni a sorra kattintva lehet |
 
 ---
 
@@ -43,7 +44,7 @@ A feladatok háromféle nézetben tekinthetők meg:
 
 1. Kattints az **+ Feladat** gombra.
 2. Add meg a nevet (egyedi, utólag nem módosítható) és az opcionális leírást.
-3. Válaszd ki a feladattípust (Feladat / Szívdobogás).
+3. Válaszd ki a feladattípust (Feladat / Szívdobogás). Parancs típusú feladat ebből az ablakból nem hozható létre; lásd [Parancs típusú feladatok](#parancs-típusú-feladatok).
 4. Ha szívdobogást választottál, a beépített sablonok közül egyet kiválaszthatod kiindulópontnak:
    - **Naptár** - közeli esemény figyelése (15 percenként)
    - **E-mail** - sürgős levél figyelése (30 percenként)
@@ -56,6 +57,63 @@ A feladatok háromféle nézetben tekinthetők meg:
    - **Egyéni** - tetszőleges cron-kifejezés
 7. Válaszd ki a célágensét.
 8. Kattints a **Mentés** gombra.
+
+---
+
+## Feladat futtatása azonnal
+
+A lista sorában a **Futtatás most** gomb azonnal, az ütemezéstől függetlenül futtatja a feladatot. Még nem aktív feladatnál a gomb le van tiltva, szüneteltetett feladatot pedig nem lehet futtatni.
+
+- Feladat vagy szívdobogás esetén az utasítás a hozzárendelt ágenshez kerül. Ha az ágens éppen dolgozik, a kézbesítés félre kerül, és újrapróbálódik.
+- Parancs típusú feladatnál a shell-parancs közvetlenül lefut, és a kérés azonnal `command: started` válasszal tér vissza (ezt a megerősítő üzenet is mutatja). Az eredmény nem része ennek a válasznak, aszinkron módon rögzítődik (lásd [Parancs típusú feladatok](#parancs-típusú-feladatok)). Ugyanez elérhető a `POST /api/schedules/{name}/run` végponton is.
+
+---
+
+## Parancs típusú feladatok
+
+A parancs típusú feladat egy nyers shell-parancsot (`bash -lc`) futtat a szerveren. Nincs benne AI modell és ágens-munkamenet, ezért nem fogyaszt tokent, és akkor is működik, ha az ágens le van állítva vagy éppen dolgozik. Olyan ellenőrzésekre és munkákra való, amelyek nem függhetnek AI-tól: éjszakai adatmentés, token-frissítés, lemez-ellenőrzés.
+
+| Beállítás | Jelentés |
+|-----------|----------|
+| `command` | A futtatandó shell-parancs |
+| `timeoutMs` | Időkorlát ezredmásodpercben (alapértelmezetten 10000) |
+| `failThreshold` | Hány egymás utáni hiba után megy riasztás (alapértelmezetten 2) |
+
+Működése:
+
+- **Siker és hiba** - a 0-s kilépési kód siker. Bármilyen más kilépési kód, az indítás sikertelensége vagy az időkorlát elérése hiba. A standard kimenet elvész; a hibakimenet első 200 karaktere a hiba részleteként megmarad.
+- **Nincs visszatartás** - a parancs típusú feladat figyelmen kívül hagyja az ágens-feladatokra érvényes "kihagyás, ha foglalt" opciót, a használati-keret miatti visszatartást és az előellenőrzést.
+- **Aszinkron** - a parancs a háttérben fut, és soha nem blokkolja a dashboardot, így akár a dashboard saját API-ját is hívhatja. Az időkorlát elérésekor a parancs által indított teljes folyamatfa leáll (először szelíd leállítás, 2 másodperc után kényszerített), nem csak a shell.
+- **Nincs átfedés** - ha az előző futás még tart, amikor a következő esedékes lenne, vagy amikor a Futtatás most gombot nyomod, az új futás kimarad ahelyett, hogy kétszer indulna.
+- **Leállás után** - ha a dashboard le volt állva, amikor egy parancs típusú feladat esedékes lett, a futás a következő induláskor pótlódik, amíg alapértelmezetten legfeljebb 24 órás (a feladatoknál 3 óra, a szívdobogásoknál 30 perc). A régebbi esedékességek kihagyottként kerülnek rögzítésre.
+
+### Állapotfájl és hiba-riasztások
+
+Minden futás frissíti a `store/command-task-health.json` fájlt, amely parancs típusú feladatonként egy bejegyzést tartalmaz: az egymás utáni hibák számát, hogy ment-e már riasztás, az utolsó állapotot (`ok` vagy `fail`) és az utolsó futás idejét (ezredmásodperc az epoch óta).
+
+- Egy sikeres futás nullázza a hibaszámlálót.
+- Amikor a számláló eléri a `failThreshold` értékét, egyetlen Telegram-riasztás megy a tulajdonosnak a hiba részleteivel. A további hibák nem ismétlik a riasztást.
+- A riasztás utáni első sikeres futás egyetlen "helyreállt" üzenetet küld, és törli a riasztási állapotot.
+- A riasztáshoz be kell állítani a Telegram bot tokent és a tulajdonos csevegését; ennek hiányában a riasztás kimarad, és csak a naplóba kerül. A riasztás szövege jelenleg mindig magyar.
+
+Minden lefutott futás bekerül a feladat futási előzményeibe is. A listában látható `parancs lefutott` jelvény csak azt jelzi, hogy a futás elindult; az eredményt az állapotfájlból lehet kiolvasni.
+
+### Beállítás
+
+Az Új feladat és a Szerkesztés ablak csak a Feladat és a Szívdobogás típust ismeri. A parancs típusú feladatot az API-n keresztül kell beállítani: hozd létre az ütemezést, majd módosítsd (`PUT /api/schedules/{name}`) úgy, hogy a `type` értéke `command` legyen, mellé add meg a `command` értékét, és szükség esetén a `timeoutMs` és a `failThreshold` értékét.
+
+Parancs típusú feladatot ne mentsd a Szerkesztés ablakból. Az ablak azt a típust küldi el, amit mutat (Feladat vagy Szívdobogás), ami a feladatot visszaalakítaná ágens-feladattá.
+
+---
+
+## Szükséges MCP szerverek
+
+Az a feladat, amely MCP szerveren keresztül dolgozik (például e-mail vagy naptár), a konfigurációjában a `requires.mcp_servers` mezővel megadhatja a szükséges szervereket. Az utasítás kézbesítése előtt az ütemező ellenőrzi, hogy minden megnevezett szervernek van-e élő folyamata az ágens munkamenete alatt.
+
+- Ha egy szükséges szerverről bizonyosan kiderül, hogy hiányzik, az utasítás nem kerül kézbesítésre. A futás várakozik, és a későbbi ellenőrzéseken újrapróbálódik, amíg a szerver vissza nem tér; a dashboard naplója megnevezi a hiányzó szervert.
+- Az ellenőrzés látja a felhasználói szinten, a projektben és az ágens saját konfigurációjában beállított szervereket (ebben a precedencia-sorrendben). Az `npx`, `bunx` vagy `pnpm dlx` segítségével indított szervereket a csomagnevük alapján ismeri fel.
+- Az olyan szerverek, amelyeket folyamat alapján nem lehet azonosítani (távoli, URL-alapú szerverek, olvashatatlan konfiguráció), valamint a távoli gépen futó munkamenetek nincsenek ellenőrizve, és elérhetőnek számítanak.
+- A parancs típusú feladatoknál nincs MCP-követelmény ellenőrzés.
 
 ---
 

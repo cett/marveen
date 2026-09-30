@@ -29,6 +29,19 @@ A **Verify** gomb az adott mentési fájl épségét ellenőrzi: a rendszer újr
 
 ---
 
+## Ütemezett éjszakai mentés
+
+A mentés minden éjjel automatikusan is lefuthat parancs típusú feladatként (lásd [06 - Feladatok](06-feladatok.md)). Egy ilyen feladat a telepítési könyvtár `scripts/backup.sh` szkriptjét futtatja közvetlenül, AI ágens nélkül, így a mentés nem függ attól, hogy elérhető-e egy modell vagy egy ágens-munkamenet. Tipikus beállítás:
+
+- ütemezés: `0 3 * * *` (minden éjjel 03:00, a szerver időzónája szerint)
+- típus: `command`, a parancs `bash <telepítési könyvtár>/scripts/backup.sh`
+- `timeoutMs`: az adatbázis méretéhez elég hosszú (például 120000)
+- `failThreshold`: `1`, így a sikertelen mentés már az első hibánál Telegram-riasztást küld, nem csak a másodiknál; egy későbbi sikeres futás "helyreállt" üzenetet küld
+
+Az egyes futások eredménye a `store/command-task-health.json` fájlban rögzítődik. Friss telepítés nem tartalmazza ezt a feladatot; a Feladatok fejezetben leírtak szerint kell létrehozni. Az általa készített mentések a fenti listában ugyanúgy megjelennek, mint a kézi mentések.
+
+---
+
 ## Megőrzési beállítás
 
 A **Megőrzés** legördülő az automatikusan megőrzött mentések számát állítja be. Az ennél régebbi mentések automatikusan törlődnek a következő mentési futtatáskor. A beállítást a **Mentés** gombbal rögzítheted.
@@ -43,5 +56,6 @@ A **Törlés** gombra kattintva megerősítő ablak jelenik meg. Törlés után 
 
 ## Kapcsolódó fejezetek
 
-- [11 - Beállítások](11-beallitasok.md) -- automatikus mentési ütemezés
+- [06 - Feladatok](06-feladatok.md) -- parancs típusú feladatok és ütemezés
+- [11 - Beállítások](11-beallitasok.md) -- mentés-megőrzési beállítás
 - [13 - Audit napló](13-audit.md) -- rendszeresemények nyomon követése

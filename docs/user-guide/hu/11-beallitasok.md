@@ -1,6 +1,6 @@
 # Beállítások
 
-A Beállítások nézet a Marveen rendszer konfigurációs kulcsait csoportosítja 9 fülre. A változtatások egy piszkos-állapot-sávon keresztül menthetők; a mentés csak a ténylegesen módosított kulcsokat írja a szervernek.
+A Beállítások nézet a Marveen rendszer konfigurációs kulcsait csoportosítja fülekre. A változtatások egy piszkos-állapot-sávon keresztül menthetők; a mentés csak a ténylegesen módosított kulcsokat írja a szervernek.
 
 ---
 
@@ -26,7 +26,7 @@ Az alap rendszerkonfiguráció: ágens-azonosítók, hálózati beállítások �
 | `DASHBOARD_LANG` | Az alapértelmezett dashboard-nyelv (`hu` vagy `en`) |
 | `SCHEDULER_TZ` | Az ütemező időzónája (pl. `Europe/Budapest`) |
 | `ALERT_THRESHOLD_MS` | Az API-válasz lassúság-riasztás küszöbértéke milliszekundumban |
-| `DEFAULT_REVERT_AFTER_MINUTES` | Hány perc után állítsa vissza automatikusan az autonómia-szintet a legalacsonyabbra |
+| `DEFAULT_REVERT_AFTER_MINUTES` | Alapértelmezetten hány perc után tér vissza a fallback modellen lévő ágens a beállított modelljére (alapérték: 330); a Modell fallback fülön elmentett érték elsőbbséget élvez |
 
 ---
 
@@ -211,6 +211,18 @@ A kilencedik szekció is szintetikus: a costops-konfigurációban beállított t
 ### Costops költségkeretek
 
 A beállított budgetek listázva jelennek meg; szerkesztésük a konfigurációs fájlban lehetséges. Részletes áttekintésük a [Statisztikák](10-statisztikak.md) nézetben érhető el.
+
+---
+
+## 10. Modell fallback
+
+A Modell fallback szekció szintetikus, és csak rendszergazdának érhető el. Azt a flotta-szintű szabályt állítja be, amely egy ágenst olcsóbb modellre tesz át, amikor kifogy a csomag használati kerete (a működését az [04 - Ágensek](04-agensek.md) fejezet írja le).
+
+| Mező | Leírás |
+|------|--------|
+| **Engedélyezve** | Alapból ki van kapcsolva; amíg nincs bejelölve, egyetlen ágens sem vált automatikusan modellt |
+| **Modell lánc** | Az első elem az elsődleges modell; minden további elem a következő lépcső lefelé. Legalább 2 elem kell |
+| **Visszaállási idő (perc)** | A lefokozás után mennyi idővel térhet vissza az ágens a beállított modelljére, ha a limit üzenet már eltűnt |
 
 ---
 
