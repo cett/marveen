@@ -187,3 +187,65 @@ def read_context(con, agent_id):
     if not row:
         return None
     return {"status": row[0], "tenant_id": row[1], "source": row[2], "session_id": row[3], "updated_at": row[4]}
+
+
+# ── use-time skill access (read side, used by tenant-skill-gate.py) ─────────────────────────────
+
+FLEET_TENANT = "fleet"
+SAFE_SEGMENT = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+SKILL_DIR_RX = re.compile(r'(?<![\w.-])\.claude/skills/([^/\s\'"`;|&<>()$*?\[\]{}\\]+)')
+FRONTMATTER_NAME_RX = re.compile(r'\A---\s*\n(.*?)\n---', re.DOTALL)
+
+
+def skill_dir_name(skill_id):
+    """Same mapping as tenantSkillDirName() in src/web/skill-regen.ts."""
+    d = re.sub(r'^[.-]+', '', re.sub(r'[^A-Za-z0-9._-]', '-', skill_id or ''))
+    return d if SAFE_SEGMENT.match(d) else None
+
+
+def _frontmatter_name(content):
+    m = FRONTMATTER_NAME_RX.match(content or "")
+    if not m:
+        return None
+    nm = re.search(r'^name:\s*(.+?)\s*$', m.group(1), re.MULTILINE)
+    return nm.group(1).strip().strip('"\'') if nm else None
+
+
+def load_tenant_skills(con):
+    """Every non-fleet skill: [{id, tenant_id, dir, names(set), granted(set of tenant ids)}].
+
+    Raises sqlite3.Error when the skills table cannot be read (the gate fails closed on that)."""
+    rows = con.execute("SELECT id, name, content, tenant_id FROM skills WHERE tenant_id != ?", (FLEET_TENANT,)).fetchall()
+    grants = {}
+    try:
+        for sid, tid in con.execute("SELECT skill_id, tenant_id FROM skill_tenant_access"):
+            grants.setdefault(sid, set()).add(tid)
+    except sqlite3.Error:
+        pass  # no grants table (older schema) = no grants
+    out = []
+    for sid, name, content, tenant in rows:
+        names = {n for n in (name, _frontmatter_name(content), skill_dir_name(sid)) if n}
+        out.append({"id": sid, "tenant_id": tenant, "dir": skill_dir_name(sid), "names": names,
+                    "granted": grants.get(sid, set())})
+    return out
+
+
+def usable_context(ctx, now=None, max_age=None):
+    """-> (tenant_id or None, reason). None = no tenant skill may be used."""
+    if ctx is None:
+        return None, "nincs rogzitett tenant-kontextus ehhez az agenshez"
+    if ctx["status"] not in ("bound", "default") or not ctx["tenant_id"]:
+        return None, "a keres tenantja nem azonosithato (%s)" % ctx["status"]
+    if max_age is None:
+        try:
+            max_age = int(os.environ.get("TENANT_CONTEXT_MAX_AGE_SECONDS", "43200"))
+        except ValueError:
+            max_age = 43200
+    age = (now if now is not None else int(time.time())) - int(ctx["updated_at"] or 0)
+    if max_age > 0 and age > max_age:
+        return None, "a rogzitett tenant-kontextus elavult (%d mp)" % age
+    return ctx["tenant_id"], ""
+
+
+def skill_accessible(skill, tenant_id):
+    return skill["tenant_id"] == tenant_id or tenant_id in skill["granted"]
