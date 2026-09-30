@@ -120,7 +120,7 @@ The system looks for credentials in five places, in this order (first match wins
 # External systems (non-fleet agents) allowed to send via POST /api/messages
 # SYSTEM_SENDER_IDS=cortex
 
-# SQL skill system file regeneration (default: 0 = disabled)
+# SQL skill system file regeneration (default: on; set 0/false/off/no to disable)
 # SKILL_SQL_REGEN=0
 ```
 

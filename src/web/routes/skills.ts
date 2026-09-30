@@ -624,6 +624,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const isAdmin = ctx.role === 'admin'
   const callerTenantId = ctx.tenantId ?? null
 
+  // Skill ids contain '/' ("global/<dir>", "agent/<id>/<dir>"), so clients send
+  // them percent-encoded (encodeURIComponent) as ONE path segment; the raw
+  // '/' form cannot be matched by the [^/]+ segments below. url.pathname keeps
+  // %2F intact, so decoding here is the only decode. A malformed escape
+  // ("%", "%zz") is a client error, not a 500.
+  const decodeSegment = (raw: string): string | null => {
+    try { return decodeURIComponent(raw) } catch { return null }
+  }
+  const badSegment = () => { json(res, { error: 'invalid_value', field: 'id', hint: 'Malformed percent-encoding in path' }, 400); return true }
+
   const sqlSkillsBase = path === '/api/skills/sql' || path === '/api/v1/skills/sql'
   const sqlSkillIdMatch = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)$/)
   const sqlAccessBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access$/)
@@ -659,7 +669,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillIdMatch && method === 'GET') {
-    const id = decodeURIComponent(sqlSkillIdMatch[1])
+    const id = decodeSegment(sqlSkillIdMatch[1])
+    if (id === null) return badSegment()
     const row = getSkill(id)
     if (!row) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin) {
@@ -674,7 +685,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillIdMatch && method === 'PUT') {
-    const id = decodeURIComponent(sqlSkillIdMatch[1])
+    const id = decodeSegment(sqlSkillIdMatch[1])
+    if (id === null) return badSegment()
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
@@ -689,7 +701,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillIdMatch && method === 'DELETE') {
-    const id = decodeURIComponent(sqlSkillIdMatch[1])
+    const id = decodeSegment(sqlSkillIdMatch[1])
+    if (id === null) return badSegment()
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
@@ -699,7 +712,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlAccessBase && method === 'GET') {
-    const id = decodeURIComponent(sqlAccessBase[1])
+    const id = decodeSegment(sqlAccessBase[1])
+    if (id === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
@@ -708,7 +722,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlAccessBase && method === 'POST') {
-    const id = decodeURIComponent(sqlAccessBase[1])
+    const id = decodeSegment(sqlAccessBase[1])
+    if (id === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
@@ -723,8 +738,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
   if (sqlAccessItem && method === 'DELETE') {
     const [, rawId, rawTenantId] = sqlAccessItem
-    const id = decodeURIComponent(rawId)
-    const tenantId = decodeURIComponent(rawTenantId)
+    const id = decodeSegment(rawId)
+    const tenantId = decodeSegment(rawTenantId)
+    if (id === null || tenantId === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     const ok = revokeSkillAccess(id, tenantId)
     if (!ok) { json(res, { error: 'not_found' }, 404); return true }

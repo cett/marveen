@@ -11,8 +11,8 @@
  *   2. Runs only AFTER materialization (caller responsibility).
  *   3. IDEMPOTENT + ATOMIC: content-equal files are skipped; writes go to a
  *      sibling .tmp then rename() over the target.
- *   4. KILL-SWITCH: SKILL_SQL_REGEN=1 must be set explicitly. Any other
- *      value (including absent) leaves regen disabled -- fail-safe.
+ *   4. KILL-SWITCH: regen is ON by default; SKILL_SQL_REGEN=0 (also
+ *      false/off/no) switches it off (see parseSkillSqlRegen in config.ts).
  *   5. Path safety: IDs with '..' or absolute-path components are rejected.
  */
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'

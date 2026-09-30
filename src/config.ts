@@ -504,11 +504,16 @@ export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
 export const DEFAULT_AGENT_MODEL =
   cfg('DEFAULT_AGENT_MODEL') || DISTRIBUTION_DEFAULT_AGENT_MODEL
 
-// Kill-switch for the SQL->file skill regen at startup (716-D).
-// Fail-safe: any value other than the literal '1' leaves regen disabled.
-// Set SKILL_SQL_REGEN=1 in .env (or process.env for one-off CLI runs).
+// Kill-switch for the SQL->file skill regen (716-D). The DB is the source of
+// truth and the SKILL.md files are the loader cache Claude Code reads, so the
+// write-back is ON by default; set SKILL_SQL_REGEN=0 (or false/off/no) in .env
+// (or process.env for one-off CLI runs) to switch it off. Anything else,
+// including unset/empty, leaves it on.
 // process.env takes precedence so the env var can override .env at runtime.
-export const SKILL_SQL_REGEN = (process.env['SKILL_SQL_REGEN'] ?? env['SKILL_SQL_REGEN']) === '1'
+export function parseSkillSqlRegen(raw: string | undefined): boolean {
+  return !['0', 'false', 'off', 'no'].includes((raw ?? '').trim().toLowerCase())
+}
+export const SKILL_SQL_REGEN = parseSkillSqlRegen(process.env['SKILL_SQL_REGEN'] ?? env['SKILL_SQL_REGEN'])
 
 // Boot-time Zod validation: additive side-effect only.
 // Warns on recoverable format errors; throws on FATAL misconfiguration in prod.

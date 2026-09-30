@@ -9,8 +9,9 @@ and UPSERTs the file's current content into the skills table.
 Design invariants:
   - Never breaks the agent: always exits 0.
   - Idempotent: content unchanged -> UPDATE changes=0, no-op.
-  - Direct SQLite, not the HTTP API. Skill ids contain '/' which the route regex
-    /api/skills/sql/:id ([^/]+) cannot match after URL-path splitting.
+  - Direct SQLite, not the HTTP API. Skill ids contain '/', which the route only
+    accepts percent-encoded (global%2F<dir>); going straight to the DB avoids
+    depending on the dashboard being up.
   - Reads MAIN_AGENT_ID from .env (default: jarvis).
   - BLOCKS 716-D fleet-wide SQL regen (SKILL_SQL_REGEN kill-switch) from
     clobbering hand-edited SQL rows between startup regens.

@@ -120,7 +120,7 @@ A rendszer öt helyen keresi a hitelesítést, ebben a sorrendben (az első tal�
 # Külső rendszerek (nem flotta-ágensek), amelyek üzenhetnek a POST /api/messages-en
 # SYSTEM_SENDER_IDS=cortex
 
-# SQL skill-rendszer fájl-regenerálás (alapértelmezés: 0 = kikapcsolva)
+# SQL skill-rendszer fájl-regenerálás (alapértelmezés: bekapcsolva; 0/false/off/no kikapcsolja)
 # SKILL_SQL_REGEN=0
 ```
 
