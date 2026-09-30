@@ -1150,6 +1150,17 @@ export async function runScheduledTaskNow(
   if (!isTaskLive(task) && !opts.allowNotLive) return { ok: false, error: 'not_live', hint: 'Schedule is not live -- an admin must activate it first' }
 
   const now = Date.now()
+
+  // type='command' tasks never go through an agent session: the cron loop runs
+  // the shell command directly (runCommandTask). A manual run must do the same;
+  // sending it down the session path below would type the (stale) prompt into
+  // the target agent's pane, or park a pending retry when that pane is busy.
+  if (task.type === 'command') {
+    runCommandTask(task, now)
+    recordScheduleLastRun(task.name, now, 'command')
+    return { ok: true, result: 'command: executed (outcome in store/command-task-health.json)' }
+  }
+
   const targets = task.agent === 'all'
     ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
     : [task.agent || MAIN_AGENT_ID]
