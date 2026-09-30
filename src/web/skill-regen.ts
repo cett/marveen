@@ -593,12 +593,19 @@ function reconcileTenantSkill(row: SkillRow, dryRun: boolean): TenantReconcile {
     const onDisk = readTextOrNull(path)
     const hdr = onDisk === null ? null : readGeneratedHeader(onDisk)
     if (onDisk === null || !hdr || !hdr.tenant || hdr.id !== row.id) continue   // not our generated copy
-    if (stripGeneratedHeader(onDisk) !== row.content) {
-      logger.warn({ id: row.id, agentId, path }, 'skill-regen: stale tenant copy was edited by hand, leaving it')
+    const handEdited = stripGeneratedHeader(onDisk) !== row.content
+    if (dryRun) {
+      logger.info({ id: row.id, agentId, path, handEdited }, 'skill-regen [dry-run]: would remove stale tenant copy')
       continue
     }
-    if (dryRun) { logger.info({ id: row.id, agentId, path }, 'skill-regen [dry-run]: would remove stale tenant copy'); continue }
+    // Generated companion files (byte-equal to the DB row) go either way; a
+    // hand-edited SKILL.md is kept, but its scripts must not stay on an agent
+    // that no longer qualifies.
     removeCompanionFiles(dirOfSkillMd(path), files)
+    if (handEdited) {
+      logger.warn({ id: row.id, agentId, path }, 'skill-regen: stale tenant copy was edited by hand, leaving SKILL.md (generated companion files removed)')
+      continue
+    }
     if (unlinkSkillFile(path)) {
       logger.info({ id: row.id, agentId, path }, 'skill-regen: removed tenant skill from an agent that no longer qualifies')
       out.removed++

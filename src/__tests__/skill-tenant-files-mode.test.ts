@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { existsSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseTenantSkillFiles } from '../config.js'
 
@@ -124,6 +124,29 @@ describe('TENANT_SKILL_FILES modes', () => {
     flag.mode = 'off'
     regenSkillFilesFromSQL()
     expect(existsSync(copy('ann'))).toBe(false)
+  })
+
+  it('tightening keeps a hand-edited SKILL.md but still removes the generated companion script', () => {
+    flag.mode = 'all'
+    regenSingleSkillFile(ID)
+    const bobMd = copy('bob')
+    writeFileSync(bobMd, readFileSync(bobMd, 'utf8') + '\nhand-written addition\n')
+    expect(existsSync(copy('bob', 'scripts/run.sh'))).toBe(true)
+    flag.mode = 'single'
+    regenSkillFilesFromSQL()
+    expect(existsSync(bobMd)).toBe(true)                            // hand edit is never deleted
+    expect(existsSync(copy('bob', 'scripts/run.sh'))).toBe(false)   // generated script must not stay on the shared agent
+    expect(existsSync(copy('ann', 'scripts/run.sh'))).toBe(true)    // single-tenant agent keeps its copy
+  })
+
+  it('tightening leaves a hand-edited companion script alone', () => {
+    flag.mode = 'all'
+    regenSingleSkillFile(ID)
+    writeFileSync(copy('bob', 'scripts/run.sh'), '#!/bin/sh\necho mine\n')
+    flag.mode = 'single'
+    regenSkillFilesFromSQL()
+    expect(existsSync(copy('bob'))).toBe(false)
+    expect(readFileSync(copy('bob', 'scripts/run.sh'), 'utf8')).toContain('echo mine')
   })
 
   it('the gap check follows the mode: a copy the mode excludes is not a gap', () => {
