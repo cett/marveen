@@ -434,6 +434,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
           done.to_agent,
           done.from_agent,
           `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,
+          null, null,
+          // The notice belongs to the original message, so it stays in that message's tenant. Without
+          // this it was stamped from the executor's current context (usually 'default'), and a
+          // tenant-scoped delegator never saw the result of its own request.
+          done.tenant_id ?? 'default',
+          null,
+          true,
         )
       }
       json(res, { ok: true }); return true

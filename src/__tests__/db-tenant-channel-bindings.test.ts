@@ -151,6 +151,17 @@ describe('tenant channel bindings', () => {
       expect(dbMod.createAgentMessage('agent-a', 'peer/agent-z', 'x').tenant_id).toBe('default')
     })
 
+    it('pinTenant keeps the given tenant even while the sender serves another one (the [Eredmény] notice)', () => {
+      enable('acme', 'agent-a'); setContext('agent-a', 'acme', 'bound')
+      // inherited: a plain send from a bound agent picks up its current tenant ...
+      expect(dbMod.createAgentMessage('agent-a', 'agent-b', 'x').tenant_id).toBe('acme')
+      // ... a pinned 'default' (reply to a fleet message) does not, and a pinned partner tenant stays as given
+      const pinnedDefault = dbMod.createAgentMessage('agent-a', 'agent-b', 'x', null, null, 'default', null, true)
+      expect(pinnedDefault.tenant_id).toBe('default')
+      expect(dbMod.getAgentMessage(pinnedDefault.id)?.tenant_id).toBe('default')
+      expect(dbMod.createAgentMessage('agent-a', 'agent-b', 'x', null, null, 'beta', null, true).tenant_id).toBe('beta')
+    })
+
     it('a DB error is the default stamp, not a crash', () => {
       dbMod.getDb().exec('DROP TABLE agent_tenant_context')
       expect(dbMod.getDelegationTenant('agent-a')).toBe('default')
