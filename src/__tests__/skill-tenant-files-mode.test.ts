@@ -49,7 +49,10 @@ vi.mock('../db.js', () => ({
   seedSkillFileIfAbsent: vi.fn(),
 }))
 
-import { regenSingleSkillFile, regenSkillFilesFromSQL, findSkillFileGaps } from '../web/skill-regen.js'
+import {
+  regenSingleSkillFile, regenSkillFilesFromSQL, findSkillFileGaps,
+  setTenantSkillAgentProbe, generateTenantSkillFilesForAgent, removeGeneratedTenantSkillFilesForAgent,
+} from '../web/skill-regen.js'
 
 afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
 
@@ -61,6 +64,7 @@ beforeEach(() => {
   rmSync(FAKE_PROJECT, { recursive: true, force: true })
   store.clear(); files.clear(); grants.clear(); avail.clear()
   flag.mode = 'single'
+  setTenantSkillAgentProbe(() => true)
   for (const a of ['ann', 'bob', 'cy']) mkAgent(a)
   store.set(ID, { id: ID, name: ID, description: '', content: '---\nname: demo\n---\nbody\n', tenant_id: 'acme', is_global: 0 })
   files.set(ID, [{ rel_path: 'scripts/run.sh', content: Buffer.from('#!/bin/sh\n'), mode: 0o755 }])
@@ -155,5 +159,107 @@ describe('TENANT_SKILL_FILES modes', () => {
     expect(findSkillFileGaps().tenantCopies.sort()).toEqual([`${ID}@ann`, `${ID}@bob`])
     flag.mode = 'off'
     expect(findSkillFileGaps().tenantCopies).toEqual([])
+  })
+})
+
+// Tenant skill files belong to RUNNING agents: written at agent start, deleted at stop.
+describe('tenant skill files follow the agent lifecycle', () => {
+  const md = (a: string) => copy(a)
+  const script = (a: string) => copy(a, 'scripts/run.sh')
+
+  it('the bulk regen writes copies for running agents only and prunes the generated copies of stopped ones', () => {
+    regenSingleSkillFile(ID)
+    expect(existsSync(md('ann'))).toBe(true)
+    setTenantSkillAgentProbe(a => a !== 'ann')   // ann is now stopped
+    regenSkillFilesFromSQL()
+    expect(existsSync(md('ann'))).toBe(false)
+    expect(existsSync(script('ann'))).toBe(false)
+    setTenantSkillAgentProbe(() => true)
+    regenSkillFilesFromSQL()
+    expect(existsSync(md('ann'))).toBe(true)
+  })
+
+  it('a live skill edit writes to running agents only', () => {
+    setTenantSkillAgentProbe(() => false)
+    expect(regenSingleSkillFile(ID).written).toBe(false)
+    expect(existsSync(md('ann'))).toBe(false)
+  })
+
+  it('a probe that throws counts as running (files are kept, the use-time gate still applies)', () => {
+    regenSingleSkillFile(ID)
+    setTenantSkillAgentProbe(() => { throw new Error('tmux gone') })
+    regenSkillFilesFromSQL()
+    expect(existsSync(md('ann'))).toBe(true)
+  })
+
+  it('agent start: generateTenantSkillFilesForAgent writes SKILL.md and scripts even though the agent is not running yet', () => {
+    setTenantSkillAgentProbe(() => false)
+    const r = generateTenantSkillFilesForAgent('ann')
+    expect(r.errors).toBe(0)
+    expect(existsSync(md('ann'))).toBe(true)
+    expect(existsSync(script('ann'))).toBe(true)
+  })
+
+  it('agent start follows the mode: a shared agent gets nothing in single, off gets nothing at all', () => {
+    generateTenantSkillFilesForAgent('bob')
+    expect(existsSync(md('bob'))).toBe(false)
+    flag.mode = 'all'
+    generateTenantSkillFilesForAgent('bob')
+    expect(existsSync(md('bob'))).toBe(true)
+    rmSync(join(FAKE_PROJECT, 'agents', 'bob', '.claude'), { recursive: true, force: true })
+    flag.mode = 'off'
+    generateTenantSkillFilesForAgent('ann')
+    expect(existsSync(md('ann'))).toBe(false)
+  })
+
+  it('agent start never overwrites a hand-made skill of the same name', () => {
+    mkdirSync(join(FAKE_PROJECT, 'agents', 'ann', '.claude', 'skills', ID), { recursive: true })
+    writeFileSync(md('ann'), 'my own skill\n')
+    generateTenantSkillFilesForAgent('ann')
+    expect(readFileSync(md('ann'), 'utf8')).toBe('my own skill\n')
+  })
+
+  it('agent stop: removes the generated SKILL.md and companion script, leaves other agents alone', () => {
+    flag.mode = 'all'
+    regenSingleSkillFile(ID)
+    const r = removeGeneratedTenantSkillFilesForAgent('ann')
+    expect(r).toEqual({ removed: 1, kept: 0, errors: 0 })
+    expect(existsSync(md('ann'))).toBe(false)
+    expect(existsSync(script('ann'))).toBe(false)
+    expect(existsSync(md('bob'))).toBe(true)
+    expect(existsSync(script('bob'))).toBe(true)
+  })
+
+  it('agent stop keeps a hand-edited SKILL.md (and a hand-edited script) but removes what is still generated', () => {
+    regenSingleSkillFile(ID)
+    writeFileSync(md('ann'), readFileSync(md('ann'), 'utf8') + '\nhand-written addition\n')
+    const r = removeGeneratedTenantSkillFilesForAgent('ann')
+    expect(r.kept).toBe(1)
+    expect(existsSync(md('ann'))).toBe(true)
+    expect(existsSync(script('ann'))).toBe(false)   // generated script goes
+    generateTenantSkillFilesForAgent('cy')          // no-op (cy not enabled for acme), keeps the test honest
+    rmSync(join(FAKE_PROJECT, 'agents', 'ann', '.claude'), { recursive: true, force: true })
+    regenSingleSkillFile(ID)
+    writeFileSync(script('ann'), '#!/bin/sh\necho mine\n')
+    removeGeneratedTenantSkillFilesForAgent('ann')
+    expect(existsSync(md('ann'))).toBe(false)
+    expect(readFileSync(script('ann'), 'utf8')).toContain('echo mine')
+  })
+
+  it('agent stop removes a generated copy whose skill row is gone and never touches a hand-made skill', () => {
+    regenSingleSkillFile(ID)
+    store.delete(ID)
+    files.delete(ID)
+    const handMade = join(FAKE_PROJECT, 'agents', 'ann', '.claude', 'skills', 'mine', 'SKILL.md')
+    mkdirSync(join(FAKE_PROJECT, 'agents', 'ann', '.claude', 'skills', 'mine'), { recursive: true })
+    writeFileSync(handMade, '---\nname: mine\n---\nhand made\n')
+    removeGeneratedTenantSkillFilesForAgent('ann')
+    expect(existsSync(md('ann'))).toBe(false)
+    expect(readFileSync(handMade, 'utf8')).toContain('hand made')
+  })
+
+  it('stop and start are no-ops for an agent with no skills directory, and respect the kill switch input', () => {
+    expect(removeGeneratedTenantSkillFilesForAgent('cy')).toEqual({ removed: 0, kept: 0, errors: 0 })
+    expect(removeGeneratedTenantSkillFilesForAgent('../etc')).toEqual({ removed: 0, kept: 0, errors: 0 })
   })
 })

@@ -25,7 +25,8 @@ import { startOtelPushExporter } from './web/otel-push-exporter.js'
 import { startWorkspaceDocsTtlSweeper } from './web/workspace-docs-ttl-sweeper.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
-import { regenSkillFilesFromSQL, importSkillCompanionFilesFromDisk, findSkillFileGaps } from './web/skill-regen.js'
+import { regenSkillFilesFromSQL, importSkillCompanionFilesFromDisk, findSkillFileGaps, setTenantSkillAgentProbe } from './web/skill-regen.js'
+import { isAgentRunning as isAgentSessionRunning } from './web/agent-process-session.js'
 import { applySeedSkillRefreshMarker } from './web/skill-seed-refresh.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
@@ -676,6 +677,8 @@ export function startWebServer(port = 3420): http.Server {
     } catch (err) {
       logger.warn({ err }, 'Skill companion file import skipped')
     }
+    // Tenant skill files belong to running agents only: the startup regen writes them for those and prunes the rest.
+    setTenantSkillAgentProbe(isAgentSessionRunning)
     try {
       const regen = regenSkillFilesFromSQL()
       if (regen.enabled) {
