@@ -81,4 +81,31 @@ describe('tenant channel bindings', () => {
     const left = dbMod.getDb().prepare('SELECT agent_id FROM agent_tenant_context').all() as { agent_id: string }[]
     expect(left.map(r => r.agent_id)).toEqual(['agent-b'])
   })
+
+  describe('a binding change takes effect at once (the recorded context of the agent is dropped)', () => {
+    const seedContext = () => {
+      const st = dbMod.getDb().prepare("INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status) VALUES (?, ?, 'bound')")
+      st.run('agent-a', 'acme'); st.run('agent-b', 'acme')
+    }
+    const contextAgents = () =>
+      (dbMod.getDb().prepare('SELECT agent_id FROM agent_tenant_context ORDER BY agent_id').all() as { agent_id: string }[]).map(r => r.agent_id)
+
+    it('re-binding to another tenant and deleting a binding drop that agent\'s context only', () => {
+      dbMod.setChannelBinding('agent-a', 'telegram', '1', 'acme', 'admin')
+      seedContext()
+      dbMod.setChannelBinding('agent-a', 'telegram', '1', 'beta', 'admin')
+      expect(contextAgents()).toEqual(['agent-b'])
+      seedContext()
+      expect(dbMod.deleteChannelBinding('agent-a', 'telegram', '1')).toBe(true)
+      expect(contextAgents()).toEqual(['agent-b'])
+    })
+
+    it('an unchanged re-PUT and a delete of a missing binding leave the context alone', () => {
+      dbMod.setChannelBinding('agent-a', 'telegram', '1', 'acme', 'admin')
+      seedContext()
+      dbMod.setChannelBinding('agent-a', 'telegram', '1', 'acme', 'admin')
+      expect(dbMod.deleteChannelBinding('agent-a', 'telegram', '999')).toBe(false)
+      expect(contextAgents()).toEqual(['agent-a', 'agent-b'])
+    })
+  })
 })

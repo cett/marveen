@@ -88,9 +88,12 @@ def main():
         try:
             skills = tcl.load_tenant_skills(con)
             ctx = tcl.read_context(con, agent_id)
+            serves = ctx is None or tcl.context_still_serves(con, agent_id, ctx)
         finally:
             con.close()
         tenant, why = tcl.usable_context(ctx)
+        if tenant is not None and not serves:
+            tenant, why = None, "az agens mar nincs engedelyezve a(z) '%s' tenanthez" % ctx["tenant_id"]
         for kind, value in targets:
             if kind == "skill":
                 cands = [s for s in skills if value in s["names"]]

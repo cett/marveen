@@ -93,6 +93,25 @@ class Base(unittest.TestCase):
         return p.stderr
 
 
+class TestMembershipRecheck(Base):
+    def test_tenant_disabled_for_the_agent_after_the_prompt_is_denied_at_once(self):
+        self.prompt(CHAN % "111")   # tenant-x, context recorded as bound
+        self.allowed("Skill", skill="tenant-x-demo")
+        con = sqlite3.connect(self.db)
+        con.execute("UPDATE tenant_agent_availability SET enabled=0 WHERE tenant_id='tenant-x'")
+        con.commit(); con.close()
+        err = self.denied("Skill", skill="tenant-x-demo")   # no new prompt in between
+        self.assertIn("engedelyezve", err)
+        self.allowed("Skill", skill="global/handoff")        # fleet skills stay usable
+
+    def test_missing_availability_table_fails_closed(self):
+        self.prompt(CHAN % "111")
+        con = sqlite3.connect(self.db)
+        con.execute("DROP TABLE tenant_agent_availability")
+        con.commit(); con.close()
+        self.denied("Skill", skill="tenant-x-demo")
+
+
 class TestSkillTool(Base):
     def test_own_tenant_skill_allowed_other_tenants_denied(self):
         self.prompt(CHAN % "111")   # tenant-x

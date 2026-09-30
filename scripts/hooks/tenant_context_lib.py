@@ -263,5 +263,14 @@ def usable_context(ctx, now=None, max_age=None):
     return ctx["tenant_id"], ""
 
 
+def context_still_serves(con, agent_id, ctx):
+    """Re-check, at use time, that a recorded 'bound' context still holds: the agent must still be enabled for
+    the tenant. The context row is written once per prompt, so without this a tenant disabled for the agent
+    after the prompt would keep being served until the next one. Errors count as not serving."""
+    if ctx["status"] != "bound":
+        return True
+    return _serves(con, agent_id, ctx["tenant_id"])
+
+
 def skill_accessible(skill, tenant_id):
     return skill["tenant_id"] == tenant_id or tenant_id in skill["granted"]
