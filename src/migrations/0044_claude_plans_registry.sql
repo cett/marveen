@@ -1,10 +1,10 @@
 -- Claude Plans registry (#886): DB mirror of store/claude-plans.json, plus a
 -- new per-agent active-plan binding with a real lifecycle (the JSON side-car
 -- store/claude-plans-state.json has none -- a dead agent's "active" entry
--- stays forever). foreign_keys enforcement is off for this connection, as
--- elsewhere in this schema (see 0041_confluence_source_type.sql) -- the
--- REFERENCES clause below documents the relationship; cascade delete on plan
--- removal is done explicitly in application code (deleteClaudePlanRow), not
+-- stays forever). foreign_keys enforcement is ON for this connection
+-- (better-sqlite3 default), so the REFERENCES clause below is enforced;
+-- cascade delete on plan removal is nevertheless done explicitly in
+-- application code, children before parent (deleteClaudePlanRow), not
 -- relied on at the DB layer.
 
 CREATE TABLE IF NOT EXISTS claude_plans_registry (

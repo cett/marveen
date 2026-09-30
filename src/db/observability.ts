@@ -422,7 +422,7 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //   7. Drop memories row-by-row with vec0 sync (safe path chosen 2026-08-30).
 //   8. Drop artifacts (vec_artifacts cleaned by DELETE trigger).
 //   9. Drop schedules (tenant_id IS NULL = fleet scope, untouched).
-//  10. Drop skill_tenant_access before skills (FK; SQLite FK enforcement is off by default).
+//  10. Drop skill_tenant_access before skills (FK; foreign_keys is on by default, so the order matters).
 //  11. Drop skills.
 //  12. Drop vec_workspace_docs then workspace_docs (app-level vec sync, no trigger).
 //  13. Drop tenant_agent_availability, tenant_channel_bindings and agent_tenant_context.
@@ -485,7 +485,7 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number, secre
     // 9. Drop schedules (tenant_id IS NULL = fleet scope, those are untouched)
     db.prepare('DELETE FROM schedules WHERE tenant_id = ?').run(tenantId)
 
-    // 10 & 11. Drop skill_tenant_access before skills (SQLite FK enforcement is off by default;
+    // 10 & 11. Drop skill_tenant_access before skills (foreign_keys is on by default, so the order matters;
     //          explicit two-pass: access grants TO this tenant, then grants FROM its skills).
     db.prepare('DELETE FROM skill_tenant_access WHERE tenant_id = ?').run(tenantId)
     const skillIds = (
@@ -504,13 +504,13 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number, secre
     }
     db.prepare('DELETE FROM workspace_docs WHERE tenant_id = ?').run(tenantId)
 
-    // 13. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
+    // 13. Drop tenant_agent_availability (foreign_keys is on by default; the explicit delete is redundant with the cascade but harmless)
     db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
     db.prepare('DELETE FROM tenant_channel_bindings WHERE tenant_id = ?').run(tenantId)
     db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(tenantId)
 
     // 14 & 15. Drop the vault SSH pool (child before parent by FK direction;
-    //          SQLite FK enforcement is off by default, same as steps 10/13).
+    //          foreign_keys is on by default, same as steps 10/13).
     db.prepare('DELETE FROM vault_ssh_servers WHERE tenant_id = ?').run(tenantId)
     db.prepare('DELETE FROM vault_ssh_keys WHERE tenant_id = ?').run(tenantId)
 
