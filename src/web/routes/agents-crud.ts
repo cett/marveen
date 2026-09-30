@@ -16,6 +16,7 @@ import {
   findAvatarForAgent,
   resolveModelId,
   readAgentModel,
+  readAgentModelConfigured,
   readModelProfileMap,
   writeAgentModelProfile,
   writeAgentModel,
@@ -35,6 +36,7 @@ import {
   KNOWN_VOICE_MODELS,
   type AuthMode,
 } from '../agent-config.js'
+import { clearFallbackOverride } from '../model-fallback-state.js'
 import { parseMcpScope, type McpScope } from '../mcp-tool-registry.js'
 import { readClaudePlans } from '../claude-plans.js'
 import {
@@ -842,7 +844,13 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
-    if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.model !== undefined) {
+      const changed = resolveModelId(data.model) !== readAgentModelConfigured(name)
+      writeAgentModel(name, data.model)
+      // An operator's model change supersedes a model-fallback downgrade; a
+      // form that merely echoes the unchanged value must not cancel it.
+      if (changed) clearFallbackOverride(name)
+    }
     // Optional generic capability tier. An unknown id
     // is a 400, never a persisted value -- storing one would leave the UI
     // showing a profile while resolution silently fell back to the install

@@ -124,6 +124,20 @@ fi
 # Kept as a function so `--resolve-main-model` can exercise exactly the code
 # the launch path uses, with no tmux, store or network involved.
 resolve_main_model() {
+  # The model-fallback runner's downgrade overlay (store/model-fallback-state.json,
+  # keyed by agent id) wins while it is active: the runner pins the agent to a
+  # cheaper model WITHOUT touching .env, so the operator's MAIN_AGENT_MODEL below
+  # stays intact as the revert target. The value ends up single-quoted into the
+  # launch command, so anything that is not a plain model id is ignored.
+  local _fb_state="${MARVEEN_STORE_DIR:-$INSTALL_DIR/store}/model-fallback-state.json"
+  if [ -f "$_fb_state" ] && command -v jq >/dev/null 2>&1; then
+    local _fb_model
+    _fb_model="$(jq -r --arg id "${MAIN_AGENT_ID:-marveen}" '.[$id].current // empty' "$_fb_state" 2>/dev/null)"
+    if [ -n "$_fb_model" ] && printf '%s' "$_fb_model" | grep -Eq '^[][A-Za-z0-9._:/-]{1,128}$'; then
+      printf '%s' "$_fb_model"
+      return 0
+    fi
+  fi
   if [ -n "${MAIN_AGENT_MODEL:-}" ]; then
     printf '%s' "$MAIN_AGENT_MODEL"
     return 0

@@ -77,34 +77,33 @@ describe('the writer chokepoint refuses a bad id before touching disk', () => {
     expect(() => writeAgentModel('nonexistent-agent', 'a $(id)')).toThrow(InvalidModelIdError)
   })
 
-  // writeMainModel is the MAIN-agent sibling of writeAgentModel and a
-  // persisted-model writer that skipped the allowlist. Exported and directly
-  // covered behaviourally in model-fallback-runner.test.ts now
-  // (fix/main-model-single-source); this static check stays as a
-  // defense-in-depth pin at the source: it must call isValidModelId(model)
-  // BEFORE it writes MAIN_AGENT_MODEL to .env via updateEnvFile() (it no
-  // longer writes .claude/settings.json at all -- that file is tracked, not
-  // per-install state; see agent-config.ts's readMainModelRaw()).
-  it('writeMainModel validates the id BEFORE the write chokepoint', () => {
-    const runnerSrc = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'model-fallback-runner.ts'),
+  // setFallbackOverride is the model-fallback runner's persisted-model writer
+  // (it replaced writeMainModel, which wrote .env): the value it stores is read
+  // back by scripts/channels.sh and interpolated into the launch command, so it
+  // must call isValidModelId() on BOTH model fields BEFORE it touches the file.
+  it('setFallbackOverride validates both ids BEFORE the write chokepoint', () => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'model-fallback-state.ts'),
       'utf8',
     )
-    const m = /function writeMainModel\s*\([^)]*\)[^{]*\{/.exec(runnerSrc)
-    expect(m, 'writeMainModel not found').not.toBeNull()
+    const m = /export function setFallbackOverride\s*\([^)]*\)[^{]*\{/.exec(src)
+    expect(m, 'setFallbackOverride not found').not.toBeNull()
     // Brace-match the function body so the assertions cannot be satisfied by code elsewhere.
     let depth = 0
-    let end = runnerSrc.length
-    for (let i = runnerSrc.indexOf('{', m!.index); i < runnerSrc.length; i++) {
-      if (runnerSrc[i] === '{') depth++
-      else if (runnerSrc[i] === '}' && --depth === 0) { end = i; break }
+    let end = src.length
+    for (let i = src.indexOf('{', m!.index); i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}' && --depth === 0) { end = i; break }
     }
-    const body = runnerSrc.slice(m!.index, end + 1)
-    const guardAt = body.indexOf('if (!isValidModelId(model)) throw new InvalidModelIdError(model)')
-    const writeAt = body.indexOf('updateEnvFile')
-    expect(guardAt, 'writeMainModel missing the isValidModelId guard').toBeGreaterThan(0)
-    expect(writeAt, 'writeMainModel no longer writes via updateEnvFile').toBeGreaterThan(0)
-    expect(guardAt).toBeLessThan(writeAt) // validate before persisting
+    const body = src.slice(m!.index, end + 1)
+    const primaryAt = body.indexOf('if (!isValidModelId(entry.primary)) throw new InvalidModelIdError(entry.primary)')
+    const currentAt = body.indexOf('if (!isValidModelId(entry.current)) throw new InvalidModelIdError(entry.current)')
+    const writeAt = body.indexOf('writeAll(')
+    expect(primaryAt, 'setFallbackOverride missing the primary guard').toBeGreaterThan(0)
+    expect(currentAt, 'setFallbackOverride missing the current guard').toBeGreaterThan(0)
+    expect(writeAt, 'setFallbackOverride no longer writes via writeAll').toBeGreaterThan(0)
+    expect(primaryAt).toBeLessThan(writeAt) // validate before persisting
+    expect(currentAt).toBeLessThan(writeAt)
   })
 })
 

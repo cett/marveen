@@ -13,21 +13,20 @@ vi.mock('../web/agent-process.js', () => ({
 vi.mock('../web/agent-config.js', () => ({
   listAgentNames: vi.fn(() => []),
   readAgentRemoteHost: vi.fn(() => null),
-  readAgentModel: vi.fn(() => 'claude-opus-5'),
-  writeAgentModel: vi.fn(),
+  readAgentModelConfigured: vi.fn(() => 'claude-opus-5'),
   resolveModelId: vi.fn((m: string) => m),
   DEFAULT_MODEL: 'claude-opus-5',
   // Empty by default (no .env / no settings.json main model configured) --
-  // readMainModel() then falls back to DEFAULT_MODEL, same as the old
-  // settings.json-read-fails path this replaces.
-  readMainModelRaw: vi.fn(() => ''),
+  // the runner then falls back to DEFAULT_MODEL.
+  readMainModelConfigured: vi.fn(() => ''),
 }))
 
-// fix/main-model-single-source: writeMainModel() now writes ONLY .env, via
-// this module's updateEnvFile() -- no more direct settings.json I/O here.
-vi.mock('../env.js', () => ({
-  updateEnvFile: vi.fn(),
-  readEnvFile: vi.fn(() => ({})),
+// The runner no longer writes any operator model config; the downgrade overlay
+// is a separate store (model-fallback-state.ts), mocked out here.
+vi.mock('../web/model-fallback-state.js', () => ({
+  getFallbackOverride: vi.fn(() => null),
+  setFallbackOverride: vi.fn(),
+  clearFallbackOverride: vi.fn(),
 }))
 
 vi.mock('../web/model-fallback-store.js', () => ({
@@ -42,6 +41,8 @@ vi.mock('../model-fallback.js', () => ({
   detectsUsageLimit: vi.fn(() => false),
   detectsModelUnavailable: vi.fn(() => false),
   decideModelAction: vi.fn(() => ({ kind: 'none' })),
+  ladderFromPrimary: vi.fn((primary: string) => [primary]),
+  DEFAULT_SWITCH_COOLDOWN_MS: 600_000,
 }))
 
 vi.mock('../pane-state.js', () => ({
@@ -71,17 +72,10 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }))
 
-vi.mock('../model-id.js', () => ({
-  isValidModelId: vi.fn(() => true),
-  InvalidModelIdError: class extends Error {},
-}))
-
 import { capturePane } from '../web/agent-process.js'
 import { detectsModelUnavailable } from '../model-fallback.js'
 import { atomicWriteFileSync } from '../web/atomic-write.js'
-import { updateEnvFile } from '../env.js'
-import { isValidModelId } from '../model-id.js'
-import { startModelFallbackRunner, modelUnavailableStreakFor, writeMainModel } from '../web/model-fallback-runner.js'
+import { startModelFallbackRunner, modelUnavailableStreakFor } from '../web/model-fallback-runner.js'
 
 // MAIN_AGENT_ID as defined in the config mock above.
 const AGENT = 'agent-a'
@@ -147,37 +141,5 @@ describe('modelUnavailableStreak: null pane resets streak between detections', (
 
     // Streak reached 1, never 2 — no model file was written.
     expect(vi.mocked(atomicWriteFileSync)).not.toHaveBeenCalled()
-  })
-})
-
-// fix/main-model-single-source: writeMainModel() now writes ONLY .env
-// (MAIN_AGENT_MODEL), never .claude/settings.json -- that file is tracked
-// (part of the repo), and the old dual-write is what caused the bug this fix
-// closes: a plain .env edit (no settings.json write) left readMainModel()/
-// readConfiguredMainModel() -- both settings.json-only readers at the time --
-// pointed at the stale value. Both readers now resolve through
-// readMainModelRaw() (agent-config.ts), which already prefers .env, so a
-// single .env write here is sufficient and correct.
-describe('writeMainModel', () => {
-  beforeEach(() => {
-    vi.mocked(updateEnvFile).mockClear()
-    vi.mocked(atomicWriteFileSync).mockClear()
-    vi.mocked(isValidModelId).mockReturnValue(true)
-  })
-
-  it('writes MAIN_AGENT_MODEL to .env via updateEnvFile', () => {
-    writeMainModel('claude-sonnet-5')
-    expect(vi.mocked(updateEnvFile)).toHaveBeenCalledWith({ MAIN_AGENT_MODEL: 'claude-sonnet-5' })
-  })
-
-  it('never touches .claude/settings.json', () => {
-    writeMainModel('claude-sonnet-5')
-    expect(vi.mocked(atomicWriteFileSync)).not.toHaveBeenCalled()
-  })
-
-  it('throws InvalidModelIdError and never writes for an invalid model id', () => {
-    vi.mocked(isValidModelId).mockReturnValue(false)
-    expect(() => writeMainModel('not-a-real-model')).toThrow()
-    expect(vi.mocked(updateEnvFile)).not.toHaveBeenCalled()
   })
 })

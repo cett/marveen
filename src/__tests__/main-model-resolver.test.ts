@@ -19,11 +19,15 @@ beforeEach(async () => {
   mkdirSync(join(tmpDir, '.claude'), { recursive: true })
   process.env['CLAUDECLAW_ENV_DIR'] = tmpDir
   vi.resetModules()
+  mkdirSync(join(tmpDir, 'store'), { recursive: true })
   vi.doMock('../config.js', () => ({
     PROJECT_ROOT: tmpDir,
+    STORE_DIR: join(tmpDir, 'store'),
     MAIN_AGENT_ID: 'main',
     DEFAULT_AGENT_MODEL: 'claude-sonnet-5',
   }))
+  // readAgentModel() consults the model-profile map; no DB in this test.
+  vi.doMock('../db/model-profile-map.js', () => ({ listModelProfileMap: () => [] }))
   mod = await import('../web/agent-config.js')
 })
 
@@ -77,5 +81,49 @@ describe('readMainModelRaw', () => {
   it('returns "" when settings.json .model is not a string', () => {
     writeFileSync(join(tmpDir, '.claude', 'settings.json'), JSON.stringify({ model: 42 }))
     expect(mod.readMainModelRaw()).toBe('')
+  })
+})
+
+// The model-fallback runner pins a downgraded agent through an overlay
+// (store/model-fallback-state.json) instead of rewriting the operator's config.
+// The launch-path resolvers must honour it; the *Configured readers must not.
+describe('model-fallback overlay', () => {
+  function writeOverlay(body: unknown): void {
+    writeFileSync(join(tmpDir, 'store', 'model-fallback-state.json'), JSON.stringify(body))
+  }
+  function writeAgent(name: string, model: string): void {
+    mkdirSync(join(tmpDir, 'agents', name), { recursive: true })
+    writeFileSync(join(tmpDir, 'agents', name, 'agent-config.json'), JSON.stringify({ model }))
+  }
+
+  it('readMainModelRaw prefers the overlay over .env; readMainModelConfigured ignores it', () => {
+    writeEnv('MAIN_AGENT_MODEL=claude-opus-5-5\n')
+    writeOverlay({ main: { primary: 'claude-opus-5-5', current: 'claude-sonnet-5', downgradedAt: 1 } })
+    expect(mod.readMainModelRaw()).toBe('claude-sonnet-5')
+    expect(mod.readMainModelConfigured()).toBe('claude-opus-5-5')
+  })
+
+  it('an overlay for another agent does not change the main model', () => {
+    writeEnv('MAIN_AGENT_MODEL=claude-opus-5-5\n')
+    writeOverlay({ other: { primary: 'claude-opus-5-5', current: 'claude-haiku-4-5-20251001', downgradedAt: 1 } })
+    expect(mod.readMainModelRaw()).toBe('claude-opus-5-5')
+  })
+
+  it('no overlay file -> readMainModelRaw is exactly the configured model', () => {
+    writeEnv('MAIN_AGENT_MODEL=claude-opus-5-5\n')
+    expect(mod.readMainModelRaw()).toBe('claude-opus-5-5')
+  })
+
+  it('readAgentModel prefers the overlay; readAgentModelConfigured keeps the operator model', () => {
+    writeAgent('sub', 'claude-sonnet-5')
+    writeOverlay({ sub: { primary: 'claude-sonnet-5', current: 'claude-haiku-4-5-20251001', downgradedAt: 1 } })
+    expect(mod.readAgentModel('sub')).toBe('claude-haiku-4-5-20251001')
+    expect(mod.readAgentModelConfigured('sub')).toBe('claude-sonnet-5')
+  })
+
+  it('a corrupt overlay file falls through to the operator model', () => {
+    writeAgent('sub', 'claude-sonnet-5')
+    writeFileSync(join(tmpDir, 'store', 'model-fallback-state.json'), '{not json')
+    expect(mod.readAgentModel('sub')).toBe('claude-sonnet-5')
   })
 })

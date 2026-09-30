@@ -59,32 +59,52 @@ export function normalizeModelFallbackConfig(raw: unknown): ModelFallbackConfig 
   return { enabled, chain, revertAfterMinutes }
 }
 
-// The Claude Code usage-limit banner appears at the bottom of the pane (above
-// the footer) when the plan budget is exhausted or nearly so. Match only the
-// live banner region so a message body or scrollback that merely quotes the
-// phrase does not trip a downgrade.
+// The Claude Code usage-limit banner is printed as the newest transcript item,
+// directly above the input box, once the plan budget is exhausted. Match only
+// that live region so a message body, scrollback or the box interior (typed
+// input, a quoted inter-agent message) that merely mentions the phrase does not
+// trip a downgrade.
 const USAGE_LIMIT_BANNER_REGION_LINES = 15
+// With a recognisable input box: how many lines above its upper border still
+// count as "the newest transcript item" (banner + blank/spacer lines).
+const USAGE_LIMIT_LINES_ABOVE_BOX = 5
 
-// Distinctive plan-limit phrasings. Deliberately NARROW: a generic "rate limit"
-// / "API Error: 429" (transient overload, handled elsewhere) must NOT match --
-// that is a momentary blip, not a plan-budget exhaustion that warrants a model
-// switch.
+// Distinctive plan-limit phrasings for an EXHAUSTED budget. Deliberately
+// NARROW: a generic "rate limit" / "API Error: 429" (transient overload, handled
+// elsewhere) must NOT match, and neither must the "Approaching usage limit"
+// heads-up -- that one is only a warning, the session keeps working, and
+// downgrading on it switched a healthy agent to a cheaper model for no reason.
 // "session limit" variant observed in production (2026-08-08):
 //   "You hit your session limit · resets 5:50pm"
 // The original regex only covered "usage limit"; "session" was missing.
 const USAGE_LIMIT_RX =
-  /(usage limit reached|reached your usage limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|upgrade to increase your usage limit)/i
+  /(usage limit reached|reached your usage limit|hit (?:your|the) (?:session|usage) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|upgrade to increase your usage limit)/i
 
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a
- * transient API 429). Pure + dependency-free. Restricted to the bottom region
- * so quoted text in scrollback or a reply body cannot trigger it.
+ * transient API 429, not an "approaching" warning). Pure + dependency-free.
+ *
+ * With a Claude Code input box on screen, only the few lines directly above the
+ * box and the hint lines below it are examined -- the box interior is excluded
+ * (same reasoning as detectsModelUnavailable). Without a box (headless /
+ * crashed pane) it falls back to the bottom 15 lines.
  */
 export function detectsUsageLimit(pane: string): boolean {
   if (!pane || !pane.trim()) return false
-  const lines = pane.split('\n')
-  const region = lines.slice(-USAGE_LIMIT_BANNER_REGION_LINES).join('\n')
-  return USAGE_LIMIT_RX.test(region)
+  const region = liveStatusRegionOf(pane, USAGE_LIMIT_LINES_ABOVE_BOX)
+    ?? pane.split('\n').slice(-USAGE_LIMIT_BANNER_REGION_LINES).join('\n')
+  return region.split('\n').some((line) => !looksQuotedOrCode(line) && USAGE_LIMIT_RX.test(line))
+}
+
+// An agent that reads or greps this very feature (source, tests, docs, a chat
+// quoting the phrase) puts the trigger phrases into its OWN pane, right above
+// the input box, where they are indistinguishable from a banner by position
+// alone. The real banner is a plain sentence, so a line that quotes the phrase
+// (opening quote / backtick before it) or is regex/code (`|` alternation) is not
+// one. An apostrophe inside a word ("You've") is not an opening quote.
+const QUOTED_OR_CODE_RX = /(?:^|[^A-Za-z])['"`]|\|/
+function looksQuotedOrCode(line: string): boolean {
+  return QUOTED_OR_CODE_RX.test(line)
 }
 
 // Claude Code shows this message when the configured model is no longer
@@ -98,15 +118,16 @@ const MODEL_UNAVAILABLE_REGION_LINES = 15
 const BOX_BORDER_RX = /─{10,}/
 
 /**
- * The Claude Code live status region: the status line directly above the upper
- * box border (top-1), plus the hint lines below the lower box border.
+ * The Claude Code live status region: the `linesAbove` line(s) directly above
+ * the upper box border (default 1, the status line), plus the hint lines below
+ * the lower box border.
  * The box interior (where user input and inter-agent messages live) is
  * intentionally excluded -- Claude Code never writes its own model-unavailable
  * errors there, and a quoted message could persist across many sweeps and cause
  * a false positive that box-interior exclusion prevents.
  * Returns null when the pane has no recognisable input box (headless / crashed).
  */
-function liveStatusRegionOf(pane: string): string | null {
+function liveStatusRegionOf(pane: string, linesAbove = 1): string | null {
   const lines = pane.split('\n')
   const borders: number[] = []
   for (let i = lines.length - 1; i >= 0 && borders.length < 2; i--) {
@@ -116,7 +137,7 @@ function liveStatusRegionOf(pane: string): string | null {
   // borders[0] = lower border (larger index), borders[1] = upper border (smaller index)
   const lower = borders[0]
   const upper = borders[1]
-  const statusLine = upper >= 1 ? [lines[upper - 1]] : []
+  const statusLine = lines.slice(Math.max(0, upper - linesAbove), upper)
   const belowBox = lines.slice(lower + 1)
   return [...statusLine, ...belowBox].join('\n')
 }
@@ -140,6 +161,29 @@ export function detectsModelUnavailable(pane: string): boolean {
   const region = liveStatusRegionOf(pane)
     ?? pane.split('\n').slice(-MODEL_UNAVAILABLE_REGION_LINES).join('\n')
   return MODEL_UNAVAILABLE_RX.test(region)
+}
+
+// After a downgrade/respawn, leave the agent alone for this long. A freshly
+// respawned pane can still show the old banner (or the model-unavailable
+// error), and without a pause the next 60s sweep walks the agent straight down
+// the whole chain (opus -> sonnet -> haiku in two minutes).
+export const DEFAULT_SWITCH_COOLDOWN_MS = 10 * 60_000
+
+/**
+ * The ladder an agent actually walks: `primary` first, then everything below it.
+ *
+ * The configured chain is fleet-global, but each agent has its own primary (the
+ * model the operator configured for it). When the primary is on the chain the
+ * ladder starts there (an agent already on sonnet must not "downgrade" to an
+ * opus that sits above it); when it is not on the chain at all (e.g. a newer
+ * model than the chain knows) it takes the chain's top slot, so the agent still
+ * drops to chain[1] first and a revert lands on ITS primary, never on chain[0].
+ */
+export function ladderFromPrimary(primary: string, chain: string[]): string[] {
+  if (chain.length < 2) return [primary]
+  const idx = chain.indexOf(primary)
+  if (idx >= 0) return chain.slice(idx)
+  return [primary, ...chain.slice(1)]
 }
 
 /**
@@ -168,6 +212,10 @@ export interface ModelFallbackFacts {
   now: number
   /** Revert window in ms. */
   revertAfterMs: number
+  /** When this agent was last switched (either direction, ms epoch), or null. */
+  lastSwitchAt?: number | null
+  /** No new DOWNGRADE within this long after lastSwitchAt. Default: no cooldown. */
+  cooldownMs?: number
 }
 
 export type ModelAction =
@@ -179,6 +227,7 @@ export type ModelAction =
  * Decide what to do for one agent. Pure: the runner gates the I/O (idle pane,
  * actual write+restart) separately.
  *
+ *   - limit detected inside the cooldown after the last switch -> nothing.
  *   - limit detected & a lower model exists -> downgrade to it.
  *   - limit detected & already at the bottom -> nothing (cannot go lower).
  *   - no limit & downgraded long enough ago -> revert to the primary (chain[0]).
@@ -186,6 +235,9 @@ export type ModelAction =
  */
 export function decideModelAction(f: ModelFallbackFacts): ModelAction {
   if (f.limitDetected) {
+    if (f.lastSwitchAt != null && f.cooldownMs && f.now - f.lastSwitchAt < f.cooldownMs) {
+      return { kind: 'none' }
+    }
     const next = nextFallbackModel(f.currentModel, f.chain)
     if (next && next !== f.currentModel) return { kind: 'downgrade', model: next }
     return { kind: 'none' }
