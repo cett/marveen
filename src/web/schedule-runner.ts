@@ -1156,9 +1156,9 @@ export async function runScheduledTaskNow(
   // sending it down the session path below would type the (stale) prompt into
   // the target agent's pane, or park a pending retry when that pane is busy.
   if (task.type === 'command') {
-    runCommandTask(task, now)
+    void runCommandTask(task, now)
     recordScheduleLastRun(task.name, now, 'command')
-    return { ok: true, result: 'command: executed (outcome in store/command-task-health.json)' }
+    return { ok: true, result: 'command: started (outcome in store/command-task-health.json)' }
   }
 
   const targets = task.agent === 'all'
@@ -1549,7 +1549,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // alerts. Record the run time like a fired task so the catch-up window
       // does not double-run them on a dashboard restart.
       if (task.type === 'command') {
-        runCommandTask(task, now)
+        void runCommandTask(task, now)
         recordScheduleLastRun(task.name, now, 'command')
         continue
       }

@@ -52,7 +52,7 @@ describe('runScheduledTaskNow: type=command', () => {
     listTasksMock.mockReturnValue([task()])
     const r = await runScheduledTaskNow('nightly-backup')
     expect(r.ok).toBe(true)
-    expect(r.result).toMatch(/^command: executed/)
+    expect(r.result).toMatch(/^command: started/)
     expect(runCommandTaskMock).toHaveBeenCalledTimes(1)
     expect(runCommandTaskMock.mock.calls[0][0]).toMatchObject({ name: 'nightly-backup', command: 'bash scripts/backup.sh' })
     expect(updateLastRunMock).toHaveBeenCalledWith('nightly-backup', expect.any(Number), 'command')

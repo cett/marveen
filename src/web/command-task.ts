@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { STORE_DIR, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from "../config.js"
@@ -62,31 +62,90 @@ export function evaluateCommandResult(
   }
 }
 
-function runCommand(cmd: string, timeoutMs: number): { ok: boolean; detail: string } {
-  try {
-    const r = spawnSync("bash", ["-lc", cmd], { timeout: timeoutMs, encoding: "utf-8" })
-    if (r.error) {
-      const code = (r.error as NodeJS.ErrnoException).code
-      if (code === "ETIMEDOUT") return { ok: false, detail: `timeout ${timeoutMs}ms` }
-      return { ok: false, detail: r.error.message }
+const MAX_STDERR_BYTES = 4096
+const KILL_GRACE_MS = 2000
+
+// Runs `bash -lc <cmd>` WITHOUT blocking the event loop. This matters because
+// the scheduler lives inside the dashboard process: a synchronous spawn would
+// freeze the HTTP server for the whole run, so a command that talks to the
+// dashboard's own API (curl http://localhost:<port>/api/...) could never be
+// answered and would simply time out. The child gets its own process group so a
+// timeout takes the whole tree down (bash, curl, tar, ...), not just the shell.
+function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolve) => {
+    let settled = false
+    let timedOut = false
+    let stderr = ""
+    let timer: NodeJS.Timeout | undefined
+    const finish = (r: { ok: boolean; detail: string }) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(r)
     }
-    if (r.status === 0) return { ok: true, detail: "exit 0" }
-    const err = (r.stderr || "").trim().slice(0, 200)
-    return { ok: false, detail: `exit ${r.status}${err ? ": " + err : ""}` }
-  } catch (err) {
-    return { ok: false, detail: (err as Error).message }
-  }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn("bash", ["-lc", cmd], { stdio: ["ignore", "ignore", "pipe"], detached: true })
+    } catch (err) {
+      finish({ ok: false, detail: (err as Error).message })
+      return
+    }
+    const killTree = (signal: NodeJS.Signals) => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal)
+        else child.kill(signal)
+      } catch { /* already gone */ }
+    }
+    child.stderr?.on("data", (d: Buffer) => {
+      if (stderr.length < MAX_STDERR_BYTES) stderr += d.toString()
+    })
+    child.on("error", (err) => finish({ ok: false, detail: err.message }))
+    child.on("close", (code, signal) => {
+      if (timedOut) return finish({ ok: false, detail: `timeout ${timeoutMs}ms` })
+      if (code === 0) return finish({ ok: true, detail: "exit 0" })
+      const err = stderr.trim().slice(0, 200)
+      finish({ ok: false, detail: `exit ${code ?? signal}${err ? ": " + err : ""}` })
+    })
+    timer = setTimeout(() => {
+      timedOut = true
+      killTree("SIGTERM")
+      setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS).unref()
+      // do not wait for a stubborn tree to exit: the run is already a failure
+      finish({ ok: false, detail: `timeout ${timeoutMs}ms` })
+    }, timeoutMs)
+  })
 }
 
-export function runCommandTask(task: ScheduledTask, now: number): void {
+// A command task that is still running when its next occurrence is due (or when
+// someone hits run-now) is skipped rather than started twice: two overlapping
+// backups or memory sweeps would fight over the same files/rows.
+const inFlight = new Set<string>()
+
+// Never rejects: every failure is logged and recorded as a failed run.
+export async function runCommandTask(task: ScheduledTask, now: number): Promise<void> {
   if (!task.command) {
     logger.warn({ task: task.name }, "command task has no command, skipping")
     return
   }
+  if (inFlight.has(task.name)) {
+    logger.warn({ task: task.name }, "command task still running from an earlier occurrence, skipping this one")
+    return
+  }
+  inFlight.add(task.name)
+  try {
+    await runCommandTaskInner(task, now)
+  } catch (err) {
+    logger.warn({ err, task: task.name }, "command task crashed outside the command itself")
+  } finally {
+    inFlight.delete(task.name)
+  }
+}
+
+async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<void> {
   const timeoutMs = task.timeoutMs && task.timeoutMs > 0 ? task.timeoutMs : 10_000
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
   const map = load()
-  const { ok, detail } = runCommand(task.command, timeoutMs)
+  const { ok, detail } = await runCommand(task.command as string, timeoutMs)
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()

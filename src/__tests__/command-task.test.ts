@@ -1,16 +1,17 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
 
 const {
-  spawnSyncMock, atomicWriteFileSyncMock, appendTaskRunMock, sendTelegramMessageMock, readFileSyncMock,
+  spawnMock, atomicWriteFileSyncMock, appendTaskRunMock, sendTelegramMessageMock, readFileSyncMock,
 } = vi.hoisted(() => ({
-  spawnSyncMock: vi.fn(),
+  spawnMock: vi.fn(),
   atomicWriteFileSyncMock: vi.fn(),
   appendTaskRunMock: vi.fn(),
   sendTelegramMessageMock: vi.fn(),
   readFileSyncMock: vi.fn(),
 }))
 
-vi.mock('node:child_process', () => ({ spawnSync: spawnSyncMock }))
+vi.mock('node:child_process', () => ({ spawn: spawnMock }))
 vi.mock('node:fs', () => ({ readFileSync: readFileSyncMock }))
 vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/command-task-test',
@@ -38,13 +39,34 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return { name: 'ping-check', command: 'true', ...overrides } as ScheduledTask
 }
 
+
+
+// A stand-in for the bash child: emits its outcome on the next tick, or never
+// (hang) so the timeout path can be driven with fake timers.
+interface FakeOutcome { code?: number | null; signal?: string | null; stderr?: string; error?: Error; hang?: boolean }
+function fakeChild(o: FakeOutcome = {}) {
+  const child = new EventEmitter() as EventEmitter & { stderr: EventEmitter; pid?: number; kill: ReturnType<typeof vi.fn> }
+  child.stderr = new EventEmitter()
+  child.kill = vi.fn()
+  if (!o.hang) {
+    setImmediate(() => {
+      if (o.error) { child.emit('error', o.error); return }
+      if (o.stderr) child.stderr.emit('data', Buffer.from(o.stderr))
+      child.emit('close', o.code ?? 0, o.signal ?? null)
+    })
+  }
+  return child
+}
+function nextSpawn(o: FakeOutcome) { spawnMock.mockImplementationOnce(() => fakeChild(o)) }
+
 beforeEach(() => {
-  spawnSyncMock.mockReset().mockReturnValue({ status: 0, stderr: '', error: undefined })
+  spawnMock.mockReset().mockImplementation(() => fakeChild())
   atomicWriteFileSyncMock.mockReset()
   appendTaskRunMock.mockReset()
   sendTelegramMessageMock.mockReset().mockResolvedValue(undefined)
   readFileSyncMock.mockReset().mockImplementation(() => { throw new Error('ENOENT') })
 })
+afterEach(() => { vi.useRealTimers() })
 
 describe('evaluateCommandResult -- pure decision logic', () => {
   const NOW = 1000
@@ -94,65 +116,121 @@ describe('evaluateCommandResult -- pure decision logic', () => {
 describe('runCommandTask', () => {
   it('skips (and does not run a command) when the task has no command', async () => {
     const { runCommandTask } = await freshCommandTaskModule()
-    runCommandTask(task({ command: undefined }), 1000)
-    expect(spawnSyncMock).not.toHaveBeenCalled()
+    await runCommandTask(task({ command: undefined }), 1000)
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 
-  it('runs the command via bash -lc with the configured timeout', async () => {
+  it('runs the command via bash -lc in its own process group, without blocking (async spawn)', async () => {
     const { runCommandTask } = await freshCommandTaskModule()
-    runCommandTask(task({ command: 'echo hi', timeoutMs: 5000 }), 1000)
-    expect(spawnSyncMock).toHaveBeenCalledWith('bash', ['-lc', 'echo hi'], expect.objectContaining({ timeout: 5000 }))
+    await runCommandTask(task({ command: 'echo hi', timeoutMs: 5000 }), 1000)
+    expect(spawnMock).toHaveBeenCalledWith('bash', ['-lc', 'echo hi'], expect.objectContaining({ detached: true }))
   })
 
-  it('defaults the timeout to 10s and the fail threshold to 2 when unset', async () => {
+  it('returns a promise that settles only after the command finished and the result is recorded', async () => {
     const { runCommandTask } = await freshCommandTaskModule()
-    runCommandTask(task({ timeoutMs: undefined, failThreshold: undefined }), 1000)
-    expect(spawnSyncMock).toHaveBeenCalledWith('bash', ['-lc', 'true'], expect.objectContaining({ timeout: 10_000 }))
+    const p = runCommandTask(task(), 1000)
+    expect(p).toBeInstanceOf(Promise)
+    expect(appendTaskRunMock).not.toHaveBeenCalled()
+    await p
+    expect(appendTaskRunMock).toHaveBeenCalledTimes(1)
   })
 
   it('persists the health map and records a task run on every invocation', async () => {
     const { runCommandTask } = await freshCommandTaskModule()
-    runCommandTask(task(), 1000)
+    await runCommandTask(task(), 1000)
     expect(atomicWriteFileSyncMock).toHaveBeenCalled()
     expect(appendTaskRunMock).toHaveBeenCalledWith('ping-check', 'system')
   })
 
   it('uses the task-declared agent for the task-run record when present', async () => {
     const { runCommandTask } = await freshCommandTaskModule()
-    runCommandTask(task({ agent: 'agent-custom' }), 1000)
+    await runCommandTask(task({ agent: 'agent-custom' }), 1000)
     expect(appendTaskRunMock).toHaveBeenCalledWith('ping-check', 'agent-custom')
   })
 
   it('does not send a Telegram alert on a lone failure below threshold', async () => {
     const { runCommandTask } = await freshCommandTaskModule()
-    spawnSyncMock.mockReturnValue({ status: 1, stderr: 'boom', error: undefined })
-    runCommandTask(task({ failThreshold: 2 }), 1000)
-    await Promise.resolve()
+    nextSpawn({ code: 1, stderr: 'boom' })
+    await runCommandTask(task({ failThreshold: 2 }), 1000)
     expect(sendTelegramMessageMock).not.toHaveBeenCalled()
   })
 
   it('sends a Telegram alert once the failure streak crosses the threshold', async () => {
-    spawnSyncMock.mockReturnValue({ status: 1, stderr: 'boom', error: undefined })
+    nextSpawn({ code: 1, stderr: 'boom' })
     // Simulate one prior failure already on record.
     readFileSyncMock.mockReturnValue(JSON.stringify({ 'ping-check': { fails: 1, alerted: false, lastStatus: 'fail', lastRun: 0 } }))
     const { runCommandTask } = await freshCommandTaskModule()
-    runCommandTask(task({ failThreshold: 2 }), 1000)
-    await Promise.resolve()
+    await runCommandTask(task({ failThreshold: 2 }), 1000)
     expect(sendTelegramMessageMock).toHaveBeenCalledWith('bot-token', 'chat-id', expect.stringContaining('Hiba'))
+    expect(sendTelegramMessageMock).toHaveBeenCalledWith('bot-token', 'chat-id', expect.stringContaining('exit 1: boom'))
   })
 
   it('sends a recovery Telegram message once an alerted task succeeds again', async () => {
     readFileSyncMock.mockReturnValue(JSON.stringify({ 'ping-check': { fails: 3, alerted: true, lastStatus: 'fail', lastRun: 0 } }))
     const { runCommandTask } = await freshCommandTaskModule()
-    runCommandTask(task(), 1000)
-    await Promise.resolve()
+    await runCommandTask(task(), 1000)
     expect(sendTelegramMessageMock).toHaveBeenCalledWith('bot-token', 'chat-id', expect.stringContaining('Helyre'))
   })
 
-  it('treats spawnSync error as a failure and surfaces the timeout detail', async () => {
+  it('a spawn error is a failed run, not an exception', async () => {
     const { runCommandTask } = await freshCommandTaskModule()
-    spawnSyncMock.mockReturnValue({ status: null, stderr: '', error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) })
-    expect(() => runCommandTask(task({ timeoutMs: 500 }), 1000)).not.toThrow()
+    nextSpawn({ error: Object.assign(new Error('spawn bash ENOENT'), { code: 'ENOENT' }) })
+    await expect(runCommandTask(task({ failThreshold: 1 }), 1000)).resolves.toBeUndefined()
+    expect(sendTelegramMessageMock).toHaveBeenCalledWith('bot-token', 'chat-id', expect.stringContaining('ENOENT'))
+  })
+
+  it('a spawn that throws synchronously is a failed run, not an exception', async () => {
+    const { runCommandTask } = await freshCommandTaskModule()
+    spawnMock.mockImplementationOnce(() => { throw new Error('EAGAIN') })
+    await expect(runCommandTask(task({ failThreshold: 1 }), 1000)).resolves.toBeUndefined()
     expect(atomicWriteFileSyncMock).toHaveBeenCalled()
+  })
+
+  it('a timeout kills the whole process group and is recorded as a failure (defaults to 10s)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const child = fakeChild({ hang: true })
+    child.pid = 4242
+    spawnMock.mockImplementationOnce(() => child)
+    const { runCommandTask } = await freshCommandTaskModule()
+    const p = runCommandTask(task({ timeoutMs: undefined, failThreshold: 1 }), 1000)
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(killSpy).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2)
+    await p
+    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM')
+    expect(sendTelegramMessageMock).toHaveBeenCalledWith('bot-token', 'chat-id', expect.stringContaining('timeout 10000ms'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL')
+    killSpy.mockRestore()
+  })
+
+  it('does not start the same task twice while it is still running (in-flight guard)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const first = fakeChild({ hang: true })
+    spawnMock.mockImplementationOnce(() => first)
+    const { runCommandTask } = await freshCommandTaskModule()
+    const p1 = runCommandTask(task({ timeoutMs: 60_000 }), 1000)
+    await runCommandTask(task({ timeoutMs: 60_000 }), 2000) // second occurrence: skipped at once
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    first.emit('close', 0, null)
+    await p1
+    // once finished, the next occurrence runs again
+    await runCommandTask(task(), 3000)
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('a different task is not blocked by one that is still running', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const hang = fakeChild({ hang: true })
+    spawnMock.mockImplementationOnce(() => hang)
+    const { runCommandTask } = await freshCommandTaskModule()
+    const p1 = runCommandTask(task({ name: 'slow', timeoutMs: 60_000 }), 1000)
+    const p2 = runCommandTask(task({ name: 'fast' }), 1000)
+    await vi.advanceTimersByTimeAsync(10)
+    await p2
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+    hang.emit('close', 0, null)
+    await p1
   })
 })
