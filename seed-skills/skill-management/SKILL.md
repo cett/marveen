@@ -85,7 +85,12 @@ description: {one-line, specific about triggers}
 - {Known issues, if any}
 ```
 
-4. Write to `~/.claude/skills/{name}/SKILL.md`
+4. Save it through the API (the skills DB is the source of truth, `SKILL.md` is a generated cache): `PUT /api/skills/sql/global%2F{name}` with body `{"content": "<the SKILL.md text>"}` (id `agent/<agent>/{name}` for an agent-local skill; the `/` in the id must be `%2F`; build the JSON with a script, e.g. `python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))'`)
+   ```bash
+   python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))' < draft.md \
+     | curl -s -X PUT "http://localhost:3420/api/skills/sql/global%2F{name}" \
+         -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d @-
+   ```
 5. Update `.skill-index.md` if it exists
 
 Rules:
@@ -98,9 +103,9 @@ Rules:
 
 Targeted modification of an existing skill:
 
-1. Read the current SKILL.md
+1. Read the current row: `GET /api/skills/sql/global%2F{name}` (`skill.content`), or the generated `SKILL.md`
 2. Identify the section to change based on user input or retrospective proposal
-3. Apply targeted edit (old text -> new text), not full rewrite
+3. Apply targeted edit (old text -> new text), not full rewrite, then `PUT /api/skills/sql/global%2F{name}` with the full updated `{"content": ...}` (a direct edit of the generated file is still synced back by the hook, but the API is the primary path)
 4. If adding a pitfall from a runtime discovery, append to the Pitfalls section
 5. Log the patch reason in the Pitfalls section if it came from an error recovery
 
@@ -112,10 +117,11 @@ Rules:
 ### action=delete
 
 1. Show the skill content first
-2. Ask for confirmation: "Delete skill '{name}'? This removes the entire directory."
-3. On confirmation:
+2. Ask for confirmation: "Delete skill '{name}'? This removes the skill and its generated directory."
+3. On confirmation delete the row; the server removes the generated file and directory itself (only if the file was not hand-edited):
 ```bash
-rm -rf "${HOME}/.claude/skills/${NAME}"
+curl -s -X DELETE "http://localhost:3420/api/skills/sql/global%2F${NAME}" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)"
 ```
 4. Update `.skill-index.md` if it exists
 

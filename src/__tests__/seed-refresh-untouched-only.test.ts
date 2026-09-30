@@ -30,7 +30,7 @@ function sliceShellFn(src: string, name: string): string {
   return src.slice(start, end + 2)
 }
 
-const FUNCS = ['render_seed_template', 'seed_copy_is_untouched', 'refresh_untouched_seeds', 'run_seed_refresh']
+const FUNCS = ['render_seed_template', 'strip_skill_header', 'note_refreshed_seed_skill', 'seed_copy_is_untouched', 'refresh_untouched_seeds', 'run_seed_refresh']
   .map((n) => sliceShellFn(UPDATE, n))
   .join('\n')
 
@@ -70,7 +70,7 @@ function runRefresh(install: string, home: string): { out: string; code: number 
   const script = join(install, 'probe.sh')
   writeFileSync(script, [
     'set -u',
-    'GREEN=""; NC=""',
+    'GREEN=""; ORANGE=""; NC=""',
     `INSTALL_DIR="${install}"`,
     `HOME="${home}"`,
     'MAIN_AGENT_ID=""; BOT_NAME=""; OWNER_NAME=""; WEB_PORT=""',
@@ -212,6 +212,95 @@ describe('seed refresh touches only provably untouched copies', () => {
     } finally {
       rmSync(f.base, { recursive: true, force: true })
     }
+  })
+})
+
+const GEN_HEADER = '<!-- GENERATED from the skills DB (skill global/demo). Edit it in the dashboard or via PUT /api/skills/sql/<url-encoded id>; this file is rewritten from the DB, a direct edit is only kept if the file->DB hook synced it. -->\n'
+
+describe('seed refresh vs the skills-DB generated header and the DB row', () => {
+  it('refreshes a regenerated (headered) copy that is otherwise an untouched old version, and queues its DB row', () => {
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'skills', 'demo')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), f.versions[0] + GEN_HEADER)
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(f.versions[2])
+      expect(readFileSync(join(f.install, 'store', '.seed-refreshed-skills'), 'utf-8')).toBe('demo\n')
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a headered copy already equal to the current version is not a refresh (idempotent, no marker)', () => {
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'skills', 'demo')
+      mkdirSync(dir, { recursive: true })
+      const headered = f.versions[2] + GEN_HEADER
+      writeFileSync(join(dir, 'SKILL.md'), headered)
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(headered)
+      expect(r.out).not.toMatch(/frissitve: [1-9]/)
+      expect(existsSync(join(f.install, 'store', '.seed-refreshed-skills'))).toBe(false)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a headered copy with a real edit (a dashboard edit regenerated the file) is kept and not queued', () => {
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'skills', 'demo')
+      mkdirSync(dir, { recursive: true })
+      const edited = f.versions[1] + GEN_HEADER + 'dashboard edit\n'
+      writeFileSync(join(dir, 'SKILL.md'), edited)
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(edited)
+      expect(existsSync(join(f.install, 'store', '.seed-refreshed-skills'))).toBe(false)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a KEPT modified skill file says the DB is the source, so the file edit is rewritten at the next start', () => {
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'skills', 'demo')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), f.versions[1] + '# hand edit\n')
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(r.out).toMatch(/Megtartott, helyben modositott skill-fajl: 1/)
+      expect(r.out).toMatch(/adatbazis/)
+      expect(r.out).toMatch(/visszairodik/)
+      expect(r.out).toMatch(/PUT \/api\/skills\/sql/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('no such warning when nothing skill-related was kept (a kept scheduled task does not trigger it)', () => {
+    const f = makeFixture()
+    try {
+      const tdir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(tdir, { recursive: true })
+      writeFileSync(join(tdir, 'SKILL.md'), 'task edited by the operator\n')
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(r.out).not.toMatch(/Megtartott, helyben modositott skill-fajl/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('the --reseed-fleet loop queues the skill row too', () => {
+    const loop = UPDATE.slice(UPDATE.indexOf('SEED_SKILLS_DIR="$INSTALL_DIR/seed-skills"'))
+    const body = loop.slice(0, loop.indexOf('SEED_FORCED=$((SEED_FORCED + 1))'))
+    expect(body).toMatch(/note_refreshed_seed_skill "\$skill_name"/)
   })
 })
 

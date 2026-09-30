@@ -6,10 +6,22 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+// Stateful skills table: PUT is DB-first now (row written, file generated from
+// it), so the fake DB has to remember what the route stored.
+const { skillStore } = vi.hoisted(() => ({ skillStore: new Map<string, any>() }))
+
 vi.mock('../db.js', () => ({
-  getSkill: vi.fn().mockReturnValue(undefined),
-  createSkill: vi.fn().mockImplementation((opts: any) => ({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
-  updateSkill: vi.fn().mockReturnValue(undefined),
+  getSkill: vi.fn().mockImplementation((id: string) => skillStore.get(id)),
+  createSkill: vi.fn().mockImplementation((opts: any) => {
+    const row = { ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 }
+    skillStore.set(opts.id, row)
+    return row
+  }),
+  updateSkill: vi.fn().mockImplementation((id: string, patch: any) => {
+    const row = { ...skillStore.get(id), ...patch }
+    skillStore.set(id, row)
+    return row
+  }),
   deleteSkill: vi.fn().mockReturnValue(true),
   seedSkillIfAbsent: vi.fn().mockReturnValue(true),
   listSkillsForTenant: vi.fn().mockReturnValue([]),
@@ -23,6 +35,7 @@ import { tryHandleSkills } from '../web/routes/skills.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { addGeneratedHeader } from '../skill-header.js'
 
 function fakeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
@@ -188,6 +201,7 @@ describe('GET /api/skills/:name?agent=<id> (agent-local detail)', () => {
 
 describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
   beforeEach(() => {
+    skillStore.clear()
     seedSkill(MAIN_SKILL_DIR, 'main agent test skill')
     seedSkill(SUB_SKILL_DIR, 'sub-agent test skill')
   })
@@ -209,9 +223,10 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
     expect(out.status).toBe(200)
     expect(out.body).toHaveProperty('ok', true)
 
-    // Verify file was actually written
+    // DB first: the row holds the content, the file is generated from it.
+    expect(skillStore.get(`agent/${MAIN_AGENT_ID}/zz-test-main-local-skill`)?.content).toBe(newContent)
     const written = readFileSync(join(MAIN_SKILL_DIR, 'SKILL.md'), 'utf-8')
-    expect(written).toBe(newContent)
+    expect(written).toBe(addGeneratedHeader(newContent, `agent/${MAIN_AGENT_ID}/zz-test-main-local-skill`))
   })
 
   it('writes updated content to sub-agent local skill SKILL.md', async () => {
@@ -224,8 +239,9 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
     await tryHandleSkills(ctx)
     expect(out.status).toBe(200)
 
+    expect(skillStore.get(`agent/${SUB_AGENT_ID}/zz-test-sub-local-skill`)?.content).toBe(newContent)
     const written = readFileSync(join(SUB_SKILL_DIR, 'SKILL.md'), 'utf-8')
-    expect(written).toBe(newContent)
+    expect(written).toBe(addGeneratedHeader(newContent, `agent/${SUB_AGENT_ID}/zz-test-sub-local-skill`))
   })
 
   it('returns 404 for PUT on non-existent agent-local skill', async () => {

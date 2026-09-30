@@ -10,7 +10,7 @@ import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin } from '../sanitize.js'
-import { regenSingleSkillFile } from '../skill-regen.js'
+import { regenSingleSkillFile, importCompanionFilesOfDir } from '../skill-regen.js'
 import type { RouteContext } from './types.js'
 import { createSkill, deleteSkill, seedSkillIfAbsent, listAgentOwnedSkills, listGlobalFleetSkills, type SkillRow } from '../../db.js'
 
@@ -146,6 +146,8 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
         const importSqlId = importIsGlobal ? `global/${dirName}` : `agent/${name}/${dirName}`
         try {
           seedSkillIfAbsent({ id: importSqlId, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: importIsGlobal })
+          // scripts/, references/ ... of the archive belong in the DB too (skill_files).
+          importCompanionFilesOfDir(importSqlId, join(skillsDir, dirName))
         } catch (sqlErr) {
           logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
         }

@@ -58,6 +58,7 @@ vi.mock('../web/atomic-write.js', async (importOriginal) => {
 import { generateSkillMd } from '../web/agent-scaffold.js'
 import { initDatabase, getSkill } from '../db.js'
 import { tryHandleAgentsSkills } from '../web/routes/agents-skills.js'
+import { addGeneratedHeader } from '../skill-header.js'
 
 function makeCtx(opts: { method: string; path: string; body?: Buffer; contentType?: string }): {
   ctx: RouteContext; status: () => number; body: () => unknown
@@ -233,7 +234,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
     expect(body()).toEqual({ ok: true, name: 'new-skill' })
-    expect(readFileSync(join(GLOBAL_SKILLS_DIR, 'new-skill', 'SKILL.md'), 'utf-8')).toBe('# generated content')
+    expect(readFileSync(join(GLOBAL_SKILLS_DIR, 'new-skill', 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('# generated content', 'global/new-skill'))
     expect(getSkill('global/new-skill')).toMatchObject({ name: 'new-skill', is_global: 1 })
   })
 
@@ -242,7 +243,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
     const { ctx, status } = makeCtx({ method: 'POST', path: '/api/agents/agent-b/skills', body: jsonBody({ name: 'sub-skill', description: 'y' }) })
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
-    expect(readFileSync(join(agentSkillsDir('agent-b'), 'sub-skill', 'SKILL.md'), 'utf-8')).toBe('# sub-agent skill')
+    expect(readFileSync(join(agentSkillsDir('agent-b'), 'sub-skill', 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('# sub-agent skill', 'agent/agent-b/sub-skill'))
     expect(getSkill('agent/agent-b/sub-skill')).toMatchObject({ is_global: 0 })
   })
 

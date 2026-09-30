@@ -187,6 +187,32 @@ tar -xpzf backups/claudeclaw-20260101-120000.tar.gz \
 
 > A `-p` (preserve modes) opció gondoskodik arról, hogy a `0600` jogosultságú token-fájlok ne legyenek világ-olvashatók visszaállítás után.
 
+### Visszaállítás után: a skill-fájlok újragenerálása
+
+A forrás a készség-adatbázis; a `~/.claude/skills/` és `agents/*/.claude/skills/` alatti `SKILL.md` fájlok és a `scripts/`, `references/` kísérőik az ebből generált cache (az archívum a `.claude/skills` mappát is tartalmazza, teljes visszaállításnál ezek is visszajönnek). Ha az adatbázis fájlok nélkül lett visszaállítva, vagy a fájlok régebbiek az adatbázisnál:
+
+```bash
+# 0. Lemezen lévő, de még nem DB-beli fájlok (pl. újabb fájl-visszaállítás): insert-if-absent, sort sosem ír felül
+npx tsx scripts/materialize-skills.ts
+
+# 1. Ami a DB-ben van, de a lemezről hiányzik (skill, kísérő fájl, tenant-másolat); hiány esetén exit 1
+npx tsx scripts/regen-skills.ts --check
+
+# 2. Minden kiírása a DB-ből (fleet + ágens-lokális skillek, kísérő fájlok, tenant-skillek a tenant saját ágensei alá)
+npx tsx scripts/regen-skills.ts --force
+```
+
+A dashboard minden indulásnál ugyanezt teszi, hacsak `SKILL_SQL_REGEN=0`; kikapcsolt kapcsolónál egy `Skills exist in the DB but their files are missing` figyelmeztetést naplóz. A DB-sortól eltérő fájl a sorból áll vissza (figyelmeztetéssel), tehát egy kézzel szerkesztett, de a DB-be sosem jutott fájl felülíródik: ha számít, előbb mentsd el.
+
+A futó ágens-sessionök induláskor töltik be a skilleket, ezért utána indítsd újra őket (a ciklus az alágenseket fedi; a fő ágenst ugyanígy a `POST /api/agents/<MAIN_AGENT_ID>/restart` indítja újra, ami a channels szolgáltatáson át megy):
+
+```bash
+TOKEN=$(cat store/.dashboard-token)
+for a in $(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/agents | python3 -c 'import sys,json; print(" ".join(x["name"] for x in json.load(sys.stdin)))'); do
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3420/api/agents/$a/restart"; echo " $a"
+done
+```
+
 ### SHA-256 ellenőrzés
 
 ```bash

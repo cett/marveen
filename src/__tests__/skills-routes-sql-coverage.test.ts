@@ -59,6 +59,7 @@ vi.mock('../web/multipart.js', () => ({
 
 vi.mock('../web/skill-regen.js', () => ({
   regenSingleSkillFile: vi.fn(),
+  removeGeneratedSkillFile: vi.fn(),
 }))
 
 vi.mock('../logger.js', () => ({
@@ -76,6 +77,7 @@ vi.mock('../db.js', () => ({
   grantSkillAccess: vi.fn(),
   revokeSkillAccess: vi.fn().mockReturnValue(true),
   listSkillAccess: vi.fn().mockReturnValue([]),
+  listSkillFiles: vi.fn().mockReturnValue([]),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'
@@ -370,10 +372,13 @@ describe('tryHandleSkills SQL endpoints', () => {
       const { getSkill, grantSkillAccess } = await import('../db.js')
       ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-skill' })
       ;(grantSkillAccess as any).mockReturnValueOnce(true)
+      const { regenSingleSkillFile } = await import('../web/skill-regen.js')
+      ;(regenSingleSkillFile as any).mockClear()
       const { ctx, out } = makeCtx('POST', '/api/skills/sql/fleet-skill/access', { tenant_id: 'new-tenant' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
       expect(out.body.ok).toBe(true)
+      expect(regenSingleSkillFile).toHaveBeenCalledWith('fleet-skill')   // grantee tenant agents get the file
     })
 
     it('non-admin cannot grant access', async () => {
@@ -403,10 +408,13 @@ describe('tryHandleSkills SQL endpoints', () => {
     it('admin revokes access', async () => {
       const { revokeSkillAccess } = await import('../db.js')
       ;(revokeSkillAccess as any).mockReturnValueOnce(true)
+      const { regenSingleSkillFile } = await import('../web/skill-regen.js')
+      ;(regenSingleSkillFile as any).mockClear()
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/fleet-skill/access/acme', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
       expect(out.body.ok).toBe(true)
+      expect(regenSingleSkillFile).toHaveBeenCalledWith('fleet-skill')   // generated copies of the revoked tenant go away
     })
 
     it('non-admin cannot revoke access', async () => {

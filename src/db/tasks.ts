@@ -3,6 +3,8 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
+import { stripGeneratedHeader } from '../skill-header.js'
+import { sanitizeSkillFileMode } from '../skill-files.js'
 
 export interface ScheduledTask {
   id: string
@@ -492,6 +494,7 @@ export interface CreateSkillOpts {
 }
 
 export function createSkill(opts: CreateSkillOpts): SkillRow {
+  opts = { ...opts, content: stripGeneratedHeader(opts.content) }
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
     INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
@@ -513,7 +516,7 @@ export function updateSkill(id: string, patch: { name?: string; description?: st
   const vals: unknown[] = [now]
   if (patch.name !== undefined)        { sets.push('name = ?');        vals.push(patch.name) }
   if (patch.description !== undefined) { sets.push('description = ?'); vals.push(patch.description) }
-  if (patch.content !== undefined)     { sets.push('content = ?');     vals.push(patch.content) }
+  if (patch.content !== undefined)     { sets.push('content = ?');     vals.push(stripGeneratedHeader(patch.content)) }
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
   const changes = db.prepare(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`).run(...vals).changes
@@ -521,7 +524,55 @@ export function updateSkill(id: string, patch: { name?: string; description?: st
 }
 
 export function deleteSkill(id: string): boolean {
+  db.prepare('DELETE FROM skill_files WHERE skill_id = ?').run(id)
   return db.prepare('DELETE FROM skills WHERE id = ?').run(id).changes > 0
+}
+
+// --- skill companion files (migration 0063, rules in src/skill-files.ts) ---
+
+export interface SkillFileRow {
+  skill_id: string
+  rel_path: string
+  content: Buffer
+  mode: number
+  created_at: number
+  updated_at: number
+}
+
+export function listSkillFiles(skillId: string): SkillFileRow[] {
+  return db.prepare('SELECT * FROM skill_files WHERE skill_id = ? ORDER BY rel_path').all(skillId) as SkillFileRow[]
+}
+
+export function getSkillFile(skillId: string, relPath: string): SkillFileRow | undefined {
+  return db.prepare('SELECT * FROM skill_files WHERE skill_id = ? AND rel_path = ?').get(skillId, relPath) as SkillFileRow | undefined
+}
+
+/** Upsert one companion file. The caller has normalized rel_path and checked the size. */
+export function putSkillFile(skillId: string, relPath: string, content: Buffer, mode?: number): SkillFileRow {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(skill_id, rel_path) DO UPDATE SET content = excluded.content, mode = excluded.mode, updated_at = excluded.updated_at
+  `).run(skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)
+  return getSkillFile(skillId, relPath) as SkillFileRow
+}
+
+/** Insert only when the (skill, path) pair is absent: never overwrites the DB. Returns true when inserted. */
+export function seedSkillFileIfAbsent(skillId: string, relPath: string, content: Buffer, mode?: number): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    INSERT OR IGNORE INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(skillId, relPath, content, sanitizeSkillFileMode(mode), now, now).changes > 0
+}
+
+export function deleteSkillFile(skillId: string, relPath: string): boolean {
+  return db.prepare('DELETE FROM skill_files WHERE skill_id = ? AND rel_path = ?').run(skillId, relPath).changes > 0
+}
+
+export function countSkillFiles(skillId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS n FROM skill_files WHERE skill_id = ?').get(skillId) as { n: number }).n
 }
 
 /**
@@ -588,7 +639,7 @@ export function seedSkillIfAbsent(opts: {
   const result = db.prepare(`
     INSERT OR IGNORE INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
-  `).run(opts.id, opts.name, opts.description, opts.content, opts.tenant_id, opts.is_global ? 1 : 0, now, now)
+  `).run(opts.id, opts.name, opts.description, stripGeneratedHeader(opts.content), opts.tenant_id, opts.is_global ? 1 : 0, now, now)
   return result.changes > 0
 }
 

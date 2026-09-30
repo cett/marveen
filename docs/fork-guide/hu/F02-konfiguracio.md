@@ -122,6 +122,11 @@ A rendszer öt helyen keresi a hitelesítést, ebben a sorrendben (az első tal�
 
 # SQL skill-rendszer fájl-regenerálás (alapértelmezés: bekapcsolva; 0/false/off/no kikapcsolja)
 # SKILL_SQL_REGEN=0
+
+# A tenant-skillek generált másolata az ágensek saját skills könyvtárában (alapérték: single)
+#   single = csak a PONTOSAN EGY tenantnál engedélyezett ágensek; off = a tenant-skillek csak DB-ben élnek;
+#   all = minden engedélyezett ágens, a több tenant között megosztottak is (kereszt-tenant kitettség)
+# TENANT_SKILL_FILES=single
 ```
 
 ## Autonómia-konfiguráció

@@ -335,20 +335,24 @@ NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
 
 ### Skill-ek helye
-- Globális: ~/.claude/skills/ (minden ágens számára elérhető)
-- Egyéni: a te munkakönyvtárad .claude/skills/ mappája
+- Globális: id global/SKILL-NEV (fájl: ~/.claude/skills/SKILL-NEV/SKILL.md, minden ágens számára elérhető)
+- Egyéni: id agent/AGENT_ID/SKILL-NEV (fájl: a te munkakönyvtárad .claude/skills/ mappája)
+
+A forrás a skills DB. A SKILL.md (és a scripts/, references/ kísérő fájlok) generált cache: a szerver a DB-ből írja újra, a frontmatter utáni "GENERATED from the skills DB" sor jelzi.
 
 ### Automatikus skill generálás
-Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre skill-t az API-n:
+Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre skill-t az API-n. Létrehozás és módosítás ugyanaz a hívás; az id URL-kódolt (global/skill-nev -> global%2Fskill-nev, a "/" nem szerepelhet nyersen):
 
-PUT /api/skills/sql/:id (ahol az id pl. "global/skill-nev" vagy "agent/AGENT_ID/skill-nev", az URL-ben URL-kódolva, mert a "/" nem szerepelhet nyersen: /api/skills/sql/global%2Fskill-nev)
-Body: { name, description, content } -- a content YAML frontmatter + szekciók (Mikor használd, Eljárás, Buktatók, Ellenőrzés).
-A 716-F hook fallbackként megmarad: ha fájlt írsz, az automatikusan SQL-be kerül.
+curl -s -X PUT "${dashboardOrigin}/api/skills/sql/global%2FSKILL-NEV" -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d @skill.json
+
+A skill.json a teljes SKILL.md tartalom: {"content": "<YAML frontmatter + szekciók (Mikor használd, Eljárás, Buktatók, Ellenőrzés)>"}; a "description" opcionális, alapból a frontmatterből jön. Generáld a JSON-t szkripttel (pl. python3 json.dumps), ne escape-elj kézzel.
+Kísérő fájl: PUT ${dashboardOrigin}/api/skills/sql/global%2FSKILL-NEV/files/scripts%2Ffutas.sh {"content": "..."} (a relatív út is egy URL-kódolt szegmens).
+Ha mégis fájlt szerkesztesz (Edit/Write), a hook azt is a DB-be szinkronizálja, de az API az elsődleges út.
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:
 1. Ne írd újra az egész skill-t, csak a megváltozott részt javítsd
-2. Használj célzott cserét (régi szöveg -> új szöveg)
+2. Olvasd ki a sort (GET /api/skills/sql/<url-kódolt id>), cseréld ki benne a megváltozott részt (régi szöveg -> új szöveg), és küldd vissza PUT-tal
 3. Jegyezd fel a változtatás okát a skill Buktatók szekciójába
 
 ### Mikor generálj skill-t?

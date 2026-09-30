@@ -25,7 +25,8 @@ import { startOtelPushExporter } from './web/otel-push-exporter.js'
 import { startWorkspaceDocsTtlSweeper } from './web/workspace-docs-ttl-sweeper.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
-import { regenSkillFilesFromSQL } from './web/skill-regen.js'
+import { regenSkillFilesFromSQL, importSkillCompanionFilesFromDisk, findSkillFileGaps } from './web/skill-regen.js'
+import { applySeedSkillRefreshMarker } from './web/skill-seed-refresh.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
@@ -662,12 +663,39 @@ export function startWebServer(port = 3420): http.Server {
       logger.warn({ err }, 'Schedule DB seed skipped')
     }
     try {
+      // update.sh refreshed shipped skill files: bring their DB rows along before the regen writes rows back over files.
+      const refreshed = applySeedSkillRefreshMarker()
+      if (refreshed.applied > 0 || refreshed.errors > 0) logger.info(refreshed, 'Refreshed seed skills applied to the DB')
+    } catch (err) {
+      logger.warn({ err }, 'Seed skill refresh apply skipped')
+    }
+    try {
+      // Companion files (scripts/, references/) that only exist on disk go into the DB first.
+      const companions = importSkillCompanionFilesFromDisk()
+      if (companions.seeded > 0) logger.info({ seeded: companions.seeded }, 'Skill companion files imported into the DB')
+    } catch (err) {
+      logger.warn({ err }, 'Skill companion file import skipped')
+    }
+    try {
       const regen = regenSkillFilesFromSQL()
       if (regen.enabled) {
         logger.info({ written: regen.written, skipped: regen.skipped, errors: regen.errors }, 'Skill files regenerated from SQL')
       }
     } catch (err) {
       logger.warn({ err }, 'Skill file regen skipped')
+    }
+    try {
+      // Skills that are in the DB but not on disk (fresh restore, regen switched off, a failed write): say so once.
+      const gaps = findSkillFileGaps()
+      const missing = gaps.skillFiles.length + gaps.companionFiles.length + gaps.tenantCopies.length
+      if (missing > 0) {
+        logger.warn(
+          { skills: gaps.skillFiles.length, companionFiles: gaps.companionFiles.length, tenantCopies: gaps.tenantCopies.length, sample: [...gaps.skillFiles, ...gaps.companionFiles, ...gaps.tenantCopies].slice(0, 5) },
+          'Skills exist in the DB but their files are missing on disk; run `npx tsx scripts/regen-skills.ts --force` (see the operations guide, "After a restore") or remove SKILL_SQL_REGEN=0',
+        )
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Skill file gap check skipped')
     }
   }
 
