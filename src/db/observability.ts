@@ -403,6 +403,11 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
   if (fields.length === 0) return existing
   params.push(id)
   db.prepare(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`).run(...params)
+  // Disabling the tenant or changing its main agent ends the use-time tenant context of every agent that was
+  // serving it (the skill gate fails closed until each agent's next prompt re-resolves the source).
+  if (patch.disabled === true || (patch.main_agent_id !== undefined && patch.main_agent_id !== existing.main_agent_id)) {
+    db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(id)
+  }
   return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant
 }
 

@@ -156,4 +156,30 @@ describe('tenant channel bindings', () => {
       expect(dbMod.getDelegationTenant('agent-a')).toBe('default')
     })
   })
+
+  describe('disabling drops the affected agent contexts at once', () => {
+    const ctx = () => dbMod.getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status) VALUES (?, ?, \'bound\')')
+    const agents = () => (dbMod.getDb().prepare('SELECT agent_id FROM agent_tenant_context ORDER BY agent_id').all() as { agent_id: string }[]).map(r => r.agent_id)
+
+    it('disabling the agent for a tenant drops that agent\'s context for that tenant only', () => {
+      ctx().run('agent-a', 'acme'); ctx().run('agent-b', 'acme'); ctx().run('agent-c', 'beta')
+      dbMod.setTenantAgentAvailability('acme', 'agent-a', true)
+      expect(agents()).toEqual(['agent-a', 'agent-b', 'agent-c'])       // enabling changes nothing
+      dbMod.setTenantAgentAvailability('acme', 'agent-a', false)
+      expect(agents()).toEqual(['agent-b', 'agent-c'])
+      dbMod.setTenantAgentAvailability('beta', 'agent-b', false)         // agent-b's context is acme's: untouched
+      expect(agents()).toEqual(['agent-b', 'agent-c'])
+    })
+
+    it('disabling a tenant or changing its main agent drops every context of that tenant', () => {
+      ctx().run('agent-a', 'acme'); ctx().run('agent-b', 'acme'); ctx().run('agent-c', 'beta')
+      dbMod.updateTenant('acme', { display_name: 'Acme 2' })
+      expect(agents()).toEqual(['agent-a', 'agent-b', 'agent-c'])       // unrelated edit
+      dbMod.updateTenant('acme', { main_agent_id: 'agent-a' })
+      expect(agents()).toEqual(['agent-c'])
+      ctx().run('agent-b', 'beta')
+      dbMod.updateTenant('beta', { disabled: true })
+      expect(agents()).toEqual([])
+    })
+  })
 })

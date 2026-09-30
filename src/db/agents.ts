@@ -729,6 +729,9 @@ export function setTenantAgentAvailability(tenantId: string, agentId: string, en
       enabled    = excluded.enabled,
       updated_at = excluded.updated_at
   `).run(tenantId, agentId, enabled ? 1 : 0, now)
+  // Disabling the agent for the tenant ends its use-time context for that tenant at once (the skill gate
+  // fails closed until the agent's next prompt re-resolves the source).
+  if (!enabled) db.prepare('DELETE FROM agent_tenant_context WHERE agent_id = ? AND tenant_id = ?').run(agentId, tenantId)
   return db.prepare('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?').get(tenantId, agentId) as TenantAgentAvailability
 }
 
