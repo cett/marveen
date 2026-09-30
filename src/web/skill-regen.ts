@@ -30,8 +30,8 @@ import { homedir } from 'node:os'
 import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
-import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN } from '../config.js'
-import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, listSkillFiles, seedSkillFileIfAbsent, type SkillRow, type SkillFileRow } from '../db.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN, TENANT_SKILL_FILES } from '../config.js'
+import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, getTenantsForAgent, listSkillFiles, seedSkillFileIfAbsent, type SkillRow, type SkillFileRow } from '../db.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath, sanitizeSkillFileMode } from '../skill-files.js'
 import { addGeneratedHeader, stripGeneratedHeader, readGeneratedHeader } from '../skill-header.js'
 
@@ -526,12 +526,18 @@ function agentDirsOnDisk(): string[] {
 }
 
 function tenantSkillRecipients(row: SkillRow): string[] {
+  const mode = TENANT_SKILL_FILES   // read once: a getter in tests, a constant in production
+  if (mode === 'off') return []
   const tenants = new Set<string>([row.tenant_id])
   for (const g of listSkillAccess(row.id)) tenants.add(g.tenant_id)
   const agents = new Set<string>()
   for (const t of tenants) for (const a of getEnabledAgentsForTenant(t)) agents.add(a)
   // The main agent's skills dir is the project-wide one, not a tenant's own.
-  return [...agents].filter(a => a !== MAIN_AGENT_ID && SAFE_SEGMENT.test(a) && isDir(join(AGENTS_BASE_DIR, a)))
+  return [...agents].filter(a =>
+    a !== MAIN_AGENT_ID && SAFE_SEGMENT.test(a) && isDir(join(AGENTS_BASE_DIR, a)) &&
+    // single: an agent shared by several tenants would expose this tenant's skill (and its
+    // companion scripts) to requests of the other tenants.
+    (mode === 'all' || getTenantsForAgent(a).length === 1))
 }
 
 function readTextOrNull(p: string): string | null {

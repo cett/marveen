@@ -122,6 +122,11 @@ The system looks for credentials in five places, in this order (first match wins
 
 # SQL skill system file regeneration (default: on; set 0/false/off/no to disable)
 # SKILL_SQL_REGEN=0
+
+# Generated copies of tenant skills in the agents' own skills directories (default: single)
+#   single = only agents enabled for exactly ONE tenant; off = tenant skills stay DB-only;
+#   all = every enabled agent, including agents shared by several tenants (cross-tenant exposure)
+# TENANT_SKILL_FILES=single
 ```
 
 ## Autonomy configuration

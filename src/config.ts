@@ -515,6 +515,23 @@ export function parseSkillSqlRegen(raw: string | undefined): boolean {
 }
 export const SKILL_SQL_REGEN = parseSkillSqlRegen(process.env['SKILL_SQL_REGEN'] ?? env['SKILL_SQL_REGEN'])
 
+// Which agents receive a GENERATED copy of a tenant skill (tenant_id != 'fleet') in their own
+// skills directory:
+//   off    none: tenant skills stay DB-only
+//   single only agents enabled for exactly ONE tenant (default): no other tenant's requests reach
+//          that agent, so the copy (and its companion scripts) cannot cross a tenant boundary
+//   all    every enabled agent of the owning/granted tenants, including agents shared by several
+//          tenants. Cross-tenant exposure: only with the use-time isolation in place.
+// Anything unrecognised (or unset/empty) means single, the safe default.
+export type TenantSkillFilesMode = 'off' | 'single' | 'all'
+export function parseTenantSkillFiles(raw: string | undefined): TenantSkillFilesMode {
+  const v = (raw ?? '').trim().toLowerCase()
+  if (['off', '0', 'false', 'no', 'none'].includes(v)) return 'off'
+  if (v === 'all') return 'all'
+  return 'single'
+}
+export const TENANT_SKILL_FILES = parseTenantSkillFiles(process.env['TENANT_SKILL_FILES'] ?? env['TENANT_SKILL_FILES'])
+
 // Boot-time Zod validation: additive side-effect only.
 // Warns on recoverable format errors; throws on FATAL misconfiguration in prod.
 // Existing exports above are unchanged -- the parse result is not used.
