@@ -7,7 +7,7 @@ import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
 import { getDelegationTenant } from './tenant-channel-bindings.js'
 import { KanbanCard } from './kanban.js'
-import { Tenant, getTenantForMainAgent } from './observability.js'
+import { Tenant, getTenantForMainAgent, COMPLETION_REPORT_PREFIX } from './observability.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 
 export interface HeartbeatKanbanSummary {
@@ -364,23 +364,41 @@ export interface DispatchedPendingStats {
  * Check how many outbound messages this agent dispatched that have not yet
  * received a result (status pending or delivered), separating live (within
  * staleCutoffMs) from stale (beyond it). Used by the context-restart gate.
+ *
+ * Only messages that actually ask for a result count. Two kinds never get a
+ * result back, so they stay 'delivered' for good and used to hold the gate
+ * shut for the whole stale window (a status-report burst: 6 delivered reports
+ * = a 122 minute block):
+ *   - completion reports (COMPLETION_REPORT_PREFIX): the executor's own
+ *     answer, nobody PUTs a result on an answer;
+ *   - when `coordinatorAgentId` is given, an executor's messages TO the
+ *     coordinator (status reports / replies -- work is delegated by the
+ *     coordinator, never to it). The coordinator's own outbound is real
+ *     delegation and still counts.
  */
 export function getDispatchedPendingStats(
   fromAgent: string,
   nowMs: number,
   staleCutoffMs: number,
+  opts: { coordinatorAgentId?: string } = {},
 ): DispatchedPendingStats {
   const cutoffEpoch = Math.floor((nowMs - staleCutoffMs) / 1000)
+  const excludeReports = opts.coordinatorAgentId && opts.coordinatorAgentId !== fromAgent
+  const awaiting = `from_agent = ? AND status IN ('pending','delivered')
+         AND substr(content, 1, ${COMPLETION_REPORT_PREFIX.length}) <> ?${excludeReports ? ' AND to_agent <> ?' : ''}`
+  const args = excludeReports
+    ? [fromAgent, COMPLETION_REPORT_PREFIX, opts.coordinatorAgentId]
+    : [fromAgent, COMPLETION_REPORT_PREFIX]
   const liveRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
+       WHERE ${awaiting}
          AND CAST(created_at AS INTEGER) > ?`,
-  ).get(fromAgent, cutoffEpoch) as { cnt: number }
+  ).get(...args, cutoffEpoch) as { cnt: number }
   const staleRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
+       WHERE ${awaiting}
          AND CAST(created_at AS INTEGER) <= ?`,
-  ).get(fromAgent, cutoffEpoch) as { cnt: number }
+  ).get(...args, cutoffEpoch) as { cnt: number }
   return {
     count:    liveRow?.cnt ?? 0,
     hasStale: (staleRow?.cnt ?? 0) > 0,
@@ -390,14 +408,24 @@ export function getDispatchedPendingStats(
 /**
  * True when the agent's last inbound channel message has no later outbound
  * (unanswered question). Used by the context-restart gate.
+ *
+ * With `opts`, an inbound older than staleCutoffMs no longer counts (same
+ * cutoff as dispatched outbound): a question nobody answered for hours is
+ * abandoned, not live work. Without it the ledger is the only clock, and an
+ * agent whose channel logging stopped (last row months old) reads "open"
+ * forever -- the gate then blocked for 160+ hours.
  */
-export function hasOpenInboundQuestion(agentId: string): boolean {
+export function hasOpenInboundQuestion(
+  agentId: string,
+  opts?: { nowMs: number; staleCutoffMs: number },
+): boolean {
   const row = db.prepare(
     `SELECT id, created_at FROM conversation_log
        WHERE agent_id = ? AND direction = 'in'
        ORDER BY created_at DESC, id DESC LIMIT 1`,
   ).get(agentId) as { id: number; created_at: number } | undefined
   if (!row) return false
+  if (opts && row.created_at <= Math.floor((opts.nowMs - opts.staleCutoffMs) / 1000)) return false
   const laterOut = db.prepare(
     `SELECT 1 FROM conversation_log
        WHERE agent_id = ? AND direction = 'out'

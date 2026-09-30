@@ -289,3 +289,28 @@ function block(
   const action: GateAction = elapsed >= cfg.persistentBlockAlertMs ? 'block-alert' : 'block'
   return { action, reason }
 }
+
+/**
+ * Slack for "the streak began before this session": the session start is
+ * derived from a process age (whole seconds, re-read every sweep), so a streak
+ * that began right at the start must not flap across the boundary.
+ */
+export const SESSION_START_TOLERANCE_MS = 60_000
+
+/**
+ * True when a blocking streak began BEFORE the current session existed, i.e.
+ * it belongs to a previous session (the agent was restarted since) and must
+ * not be carried over. Carrying it over let a fresh session inherit the old
+ * one's block clock, so it raised a persistent-block alert (and was eligible
+ * for a forced /clear) for a block the new session never had.
+ *
+ * Pure. null on either side means "cannot tell" -> false (keep the streak).
+ */
+export function streakBelongsToPreviousSession(
+  firstBlockedAt: number | null,
+  sessionStartMs: number | null,
+  toleranceMs: number = SESSION_START_TOLERANCE_MS,
+): boolean {
+  if (firstBlockedAt === null || sessionStartMs === null) return false
+  return firstBlockedAt < sessionStartMs - toleranceMs
+}
