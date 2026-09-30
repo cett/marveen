@@ -127,6 +127,13 @@ The system looks for credentials in five places, in this order (first match wins
 #   single = only agents enabled for exactly ONE tenant; off = tenant skills stay DB-only;
 #   all = every enabled agent, including agents shared by several tenants (cross-tenant exposure)
 # TENANT_SKILL_FILES=single
+
+# Use-time tenant context (default: 43200 = 12 h, 0 = no age limit)
+#   How long an agent's per-prompt tenant context stays valid for the skill gate; after that tenant
+#   skills are denied until the next prompt re-resolves the source. Not a binding cache: changing or
+#   deleting a binding, disabling the agent or the tenant, or changing the tenant's main agent drops
+#   the affected context at once.
+# TENANT_CONTEXT_MAX_AGE_SECONDS=43200
 ```
 
 ## Autonomy configuration

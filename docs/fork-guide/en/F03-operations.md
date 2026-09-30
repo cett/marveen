@@ -113,6 +113,30 @@ Direct HTTP health check:
 curl -f http://localhost:3420/
 ```
 
+## Tenant skill gate
+
+Agents that serve several tenants keep each tenant's skills inside that tenant's requests. Two hooks do it (both wired at dashboard start into every sub-agent's `settings.json` and into the main agent's project settings; running sessions pick them up after a restart):
+
+- `tenant-context.py` (UserPromptSubmit) records, per agent, which tenant the request it is about to serve belongs to (`agent_tenant_context`).
+- `tenant-skill-gate.py` (PreToolUse: `Skill`, file tools, `Bash`) blocks a tenant skill, its directory and its companion scripts outside that tenant's requests. Fleet skills are never affected.
+
+**Bind a source to a tenant** (chat, dashboard user or inter-agent sender, per agent) with the admin API:
+
+```bash
+curl -s -X PUT http://localhost:3420/api/v1/admin/channel-bindings \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
+  -d '{"agent_id":"<agent>","channel":"telegram","external_id":"<chat id>","tenant_id":"<tenant>"}'
+# GET lists (?tenant_id= / ?agent_id=), DELETE unbinds (?agent_id=&channel=&external_id=)
+```
+
+- A source with no binding belongs to the `default` tenant: tenant skills are not usable for it.
+- A message an agent sends while serving a tenant's request is stamped with that tenant, so a coordinator's delegation carries it to the receiving agent. That message is then visible to that tenant's dashboard users and to admins, and to no other tenant.
+- The agent must be enabled for the tenant (or be its main agent) and the tenant must not be disabled; otherwise the source resolves to "unknown" and no tenant skill is usable.
+- Changing or deleting a binding, disabling an agent for a tenant, disabling a tenant or changing its main agent drops the affected context at once; tenant skills stay denied until the agent's next prompt re-resolves the source.
+- Fail closed: a missing table, a database error, a stale context (`TENANT_CONTEXT_MAX_AGE_SECONDS`) or a gate error denies the tenant skill. The prompt hook refuses the prompt when it cannot record the context. It never creates tables: migration 0065 owns `agent_tenant_context`, so the dashboard must have migrated first.
+
+Limits: this enforces the **use** of tenant skills, best-effort on the shell side (a command that builds a path from variables is not caught). It is not data isolation: an agent's shared session still holds the earlier tenant's messages in its context.
+
 ## Watchdog
 
 The channel connection is supervised by an independent watchdog (`scripts/channel-watchdog.sh`) that runs separately from the dashboard process (systemd timer, every 5 minutes). If the channel session gets stuck or exits, the watchdog recovers it with `tmux respawn-pane` — only the channel session, not any other agent sessions.

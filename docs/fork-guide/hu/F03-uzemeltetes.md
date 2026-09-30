@@ -113,6 +113,30 @@ A dashboard HTTP health végpont közvetlen ellenőrzése:
 curl -f http://localhost:3420/
 ```
 
+## Tenant skill-kapu
+
+A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk kéréseihez kötik. Két hook végzi (mindkettő a dashboard indításakor kerül be minden sub-ágens `settings.json`-jába és a főágens projekt-beállításaiba; a futó sessionök újraindítás után veszik fel):
+
+- `tenant-context.py` (UserPromptSubmit): ágensenként rögzíti, hogy a most kiszolgálandó kérés melyik tenanthez tartozik (`agent_tenant_context`).
+- `tenant-skill-gate.py` (PreToolUse: `Skill`, fájl-eszközök, `Bash`): a tenant-skillt, annak könyvtárát és a companion scriptjeit letiltja a tenant kérésein kívül. A fleet-skilleket sosem érinti.
+
+**Forrás tenanthez kötése** (chat, dashboard-felhasználó vagy inter-agent feladó, ágensenként) az admin API-val:
+
+```bash
+curl -s -X PUT http://localhost:3420/api/v1/admin/channel-bindings \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
+  -d '{"agent_id":"<ágens>","channel":"telegram","external_id":"<chat id>","tenant_id":"<tenant>"}'
+# GET listáz (?tenant_id= / ?agent_id=), DELETE megszünteti (?agent_id=&channel=&external_id=)
+```
+
+- A kötés nélküli forrás a `default` tenanthez tartozik: tenant-skill nem használható hozzá.
+- Az ágens által egy tenant kérésének kiszolgálása közben küldött üzenet megkapja a tenant bélyegét, így a koordinátor delegálása a fogadó ágenshez is elviszi. Az ilyen üzenetet az adott tenant dashboard-felhasználói és az adminok látják, más tenant nem.
+- Az ágensnek engedélyezettnek kell lennie a tenantnál (vagy annak főágensének), a tenant nem lehet letiltva; különben a forrás "ismeretlen", és tenant-skill nem használható.
+- Kötés módosítása vagy törlése, ágens letiltása egy tenantnál, tenant letiltása vagy a főágens cseréje azonnal törli az érintett kontextust; a tenant-skillek a következő promptig tiltottak, amíg az újra nem oldja a forrást.
+- Fail-closed: hiányzó tábla, adatbázis-hiba, elavult kontextus (`TENANT_CONTEXT_MAX_AGE_SECONDS`) vagy kapu-hiba esetén a tenant-skill tiltott. A prompt-hook elutasítja a promptot, ha nem tudja rögzíteni a kontextust. Táblát sosem hoz létre: az `agent_tenant_context`-et a 0065 migráció birtokolja, ezért a dashboardnak előbb migrálnia kell.
+
+Korlátok: ez a tenant-skillek **használatát** kényszeríti ki, a shell oldalán best-effort (a változókból összeállított útvonalat nem fogja meg). Nem adat-izoláció: az ágens közös sessionje az előző tenant üzeneteit továbbra is tartalmazza.
+
 ## Watchdog
 
 A csatorna-kapcsolatot egy független watchdog felügyeli (`scripts/channel-watchdog.sh`), amely a dashboard folyamattól függetlenül fut (systemd timer, 5 percenként). Ha a csatorna-munkamenet elakad vagy leáll, a watchdog `tmux respawn-pane`-nel állítja helyre -- kizárólag a csatorna-munkamenetet, a többi ágenst nem érinti.

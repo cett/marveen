@@ -127,6 +127,13 @@ A rendszer öt helyen keresi a hitelesítést, ebben a sorrendben (az első tal�
 #   single = csak a PONTOSAN EGY tenantnál engedélyezett ágensek; off = a tenant-skillek csak DB-ben élnek;
 #   all = minden engedélyezett ágens, a több tenant között megosztottak is (kereszt-tenant kitettség)
 # TENANT_SKILL_FILES=single
+
+# Használat-kori tenant-kontextus (alapérték: 43200 = 12 óra, 0 = nincs korhatár)
+#   Az ágens promptonként rögzített tenant-kontextusa ennyi ideig érvényes a skill-kapu számára; utána a
+#   tenant-skillek tiltottak, amíg a következő prompt újra nem oldja a forrást. Nem a kötések cache-e:
+#   kötés módosítása/törlése, az ágens vagy a tenant letiltása, a tenant főágensének cseréje azonnal
+#   törli az érintett kontextust.
+# TENANT_CONTEXT_MAX_AGE_SECONDS=43200
 ```
 
 ## Autonómia-konfiguráció
