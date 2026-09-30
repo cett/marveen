@@ -15,7 +15,7 @@
  *      false/off/no) switches it off (see parseSkillSqlRegen in config.ts).
  *   5. Path safety: IDs with '..' or absolute-path components are rejected.
  */
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs'
 import { join, normalize } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from '../logger.js'
@@ -187,6 +187,49 @@ export function regenSingleSkillFile(id: string, forceEnabled = false): SingleRe
   if (outcome === 'written') return { written: true, skipped: false, reason: null }
   if (outcome === 'skipped') return { written: false, skipped: true, reason: 'content_equal' }
   return { written: false, skipped: false, reason: 'write_error' }
+}
+
+export interface RemoveGeneratedResult {
+  removed: boolean
+  reason: 'disabled' | 'not_file_backed' | 'unrecognized_id' | 'absent' | 'modified_on_disk' | 'unlink_error' | null
+}
+
+/**
+ * Remove the generated SKILL.md of a skill that was just deleted from SQL, so
+ * the loader cache does not resurrect a skill the DB no longer has.
+ *
+ * The file is only a cache of the DB row, so it is only deleted while it is
+ * still byte-equal to the row's content: a file someone edited by hand (and
+ * that the file->DB hook has not synced) is left in place and reported as
+ * 'modified_on_disk' instead of destroying that edit. The skill directory is
+ * removed only when it ends up empty (companion files keep it alive).
+ *
+ * @param id       The deleted skill's SQL id.
+ * @param content  The deleted row's content (read BEFORE the DB delete).
+ * @param tenantId The deleted row's tenant_id; non-fleet skills are not file-backed.
+ */
+export function removeGeneratedSkillFile(id: string, content: string, tenantId: string): RemoveGeneratedResult {
+  if (!SKILL_SQL_REGEN) return { removed: false, reason: 'disabled' }
+  if (tenantId !== 'fleet') return { removed: false, reason: 'not_file_backed' }
+  const targetPath = resolveSkillPath(id)
+  if (!targetPath) return { removed: false, reason: 'unrecognized_id' }
+  if (!existsSync(targetPath)) return { removed: false, reason: 'absent' }
+
+  let onDisk = ''
+  try { onDisk = readFileSync(targetPath, 'utf-8') } catch { return { removed: false, reason: 'unlink_error' } }
+  if (onDisk !== content) {
+    logger.warn({ id, path: targetPath }, 'skill-regen: deleted skill has a hand-edited file on disk, leaving it')
+    return { removed: false, reason: 'modified_on_disk' }
+  }
+  try {
+    unlinkSync(targetPath)
+    try { rmdirSync(targetPath.replace(/\/SKILL\.md$/, '')) } catch { /* not empty (companion files) or gone */ }
+    logger.info({ id, path: targetPath }, 'skill-regen: removed generated file of deleted skill')
+    return { removed: true, reason: null }
+  } catch (err) {
+    logger.error({ err, id, path: targetPath }, 'skill-regen: failed to remove generated file')
+    return { removed: false, reason: 'unlink_error' }
+  }
 }
 
 /**

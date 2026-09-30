@@ -59,6 +59,7 @@ vi.mock('../web/multipart.js', () => ({
 
 vi.mock('../web/skill-regen.js', () => ({
   regenSingleSkillFile: vi.fn(),
+  removeGeneratedSkillFile: vi.fn(),
 }))
 
 vi.mock('../logger.js', () => ({

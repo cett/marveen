@@ -4,14 +4,13 @@ import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-config.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
-import { regenSingleSkillFile } from '../skill-regen.js'
+import { regenSingleSkillFile, removeGeneratedSkillFile } from '../skill-regen.js'
 import type { RouteContext } from './types.js'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
@@ -537,6 +536,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const destDir = join(agentSkillsDir, skillName)
       if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true })
       execSync(`cp -r ${shellEscape(globalSkillDir)} ${shellEscape(destDir)}`, { timeout: 10000 })
+      // Companion files (scripts/, references/) still travel via the copy above
+      // until they live in the DB; SKILL.md is registered as the agent-local row
+      // so the DB, not the copy, is what the agent's skill is generated from.
+      const globalRow = getSkill(`global/${skillName}`)
+      if (globalRow) {
+        const localId = `agent/${agentName}/${skillName}`
+        if (getSkill(localId)) updateSkill(localId, { content: globalRow.content, description: globalRow.description })
+        else createSkill({ id: localId, name: skillName, description: globalRow.description, content: globalRow.content, tenant_id: 'fleet', is_global: false })
+        regenSingleSkillFile(localId, true)
+      }
     }
 
     for (const agentName of allAgentNames) {
@@ -544,6 +553,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
       if (existsSync(agentSkillDir)) {
         rmSync(agentSkillDir, { recursive: true, force: true })
+        deleteSkill(`agent/${agentName}/${skillName}`)
       }
     }
 
@@ -576,7 +586,6 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         return true
       }
       if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
-      const skillMdPath = join(skillDir, 'SKILL.md')
       const body = await readBody(req)
       const { content } = JSON.parse(body.toString()) as { content: string }
       if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
@@ -587,7 +596,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       } else {
         createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false })
       }
-      atomicWriteFileSync(skillMdPath, content)
+      // DB-first: the row above is the source of truth, the file is generated
+      // from it. forceEnabled: this is an explicit user edit of an existing
+      // file-backed skill, which always reached disk; the SKILL_SQL_REGEN
+      // switch only governs the automatic write-back, not this.
+      const agentRegen = regenSingleSkillFile(agentSqlId, true)
+      if (agentRegen.reason === 'write_error' || agentRegen.reason === 'unrecognized_id') {
+        logger.error({ skillName, agentId: agentPutParam, reason: agentRegen.reason }, 'Agent-local skill saved to SQL but file generation failed')
+        json(res, { error: 'internal_error', hint: 'Saved, but generating the skill file failed' }, 500)
+        return true
+      }
       logger.info({ skillName, agentId: agentPutParam }, 'Agent-local skill updated via dashboard')
       json(res, { ok: true })
       return true
@@ -600,7 +618,6 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
-    const skillMdPath = join(skillDir, 'SKILL.md')
     const body = await readBody(req)
     const { content } = JSON.parse(body.toString()) as { content: string }
     if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
@@ -611,7 +628,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     } else {
       createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true })
     }
-    atomicWriteFileSync(skillMdPath, content)
+    // DB-first (see the agent-local branch above): generate the file from the row.
+    const globalRegen = regenSingleSkillFile(globalSqlId, true)
+    if (globalRegen.reason === 'write_error' || globalRegen.reason === 'unrecognized_id') {
+      logger.error({ skillName, reason: globalRegen.reason }, 'Skill saved to SQL but file generation failed')
+      json(res, { error: 'internal_error', hint: 'Saved, but generating the skill file failed' }, 500)
+      return true
+    }
     logger.info({ skillName }, 'Skill updated via dashboard')
     json(res, { ok: true })
     return true
@@ -707,6 +730,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     deleteSkill(id)
+    // The file is only a generated cache of the row: drop it too, or the loader
+    // keeps serving a skill the DB no longer has (a hand-edited file is kept).
+    removeGeneratedSkillFile(id, existing.content, existing.tenant_id)
     json(res, { ok: true })
     return true
   }

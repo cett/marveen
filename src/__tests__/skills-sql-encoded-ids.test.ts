@@ -14,7 +14,7 @@ vi.mock('../config.js', async (importOriginal) => {
 })
 vi.mock('../web/agent-scaffold.js', () => ({ generateSkillMd: vi.fn() }))
 vi.mock('../web/multipart.js', () => ({ parseMultipart: vi.fn().mockReturnValue({ file: null }) }))
-vi.mock('../web/skill-regen.js', () => ({ regenSingleSkillFile: vi.fn() }))
+vi.mock('../web/skill-regen.js', () => ({ regenSingleSkillFile: vi.fn(), removeGeneratedSkillFile: vi.fn() }))
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
