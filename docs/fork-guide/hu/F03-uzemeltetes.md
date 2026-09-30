@@ -134,7 +134,7 @@ A watchdog türelmes: csak `AUTH_DEAD_THRESHOLD_TICKS` egymást követő negatí
 bash scripts/backup.sh
 ```
 
-Az archívum a `backups/` könyvtárba kerül (`claudeclaw-YYYYMMDD-HHMMSS.tar.gz`) SHA-256 sidecar fájllal együtt (`.sha256`).
+Az archívum a `backups/` könyvtárba kerül (`claudeclaw-YYYYMMDD-HHMMSS.tar.gz`) SHA-256 sidecar fájllal együtt (`.sha256`). Ha van vault, a vault mesterkulcsa külön fájlba kerül (`claudeclaw-YYYYMMDD-HHMMSS.vault-key`, 0600 mód) -- lásd lentebb.
 
 **Megőrzés:** az utolsó 30 archívum marad meg (alapértelmezés). Felülírható:
 
@@ -149,15 +149,24 @@ Az archívum két csoportból áll:
 **`repo/` csoport** (a projekt könyvtárához képest relatív):
 - `store/claudeclaw.db` (+ `-shm`/`-wal`) -- az adatbázis (WAL-checkpoint után)
 - `store/.dashboard-token` -- Bearer token
+- `store/vault.json` -- a *titkosított* titokvault (a kulcs nincs az archívumban)
 - `.env` -- fő konfiguráció
 - `agents/*/CLAUDE.md`, `SOUL.md`, `.mcp.json` -- ágens-identitások
 - `agents/*/.claude/channels/*/` -- csatorna-konfiguráció
+- `agents/*/memory/` -- ágensenkénti memória-könyvtár
 
 **`home/` csoport** (a `$HOME`-hoz képest relatív):
 - `.claude/skills/` -- skill könyvtár
 - `.claude/scheduled-tasks/` -- fájl-alapú ütemezett feladatok
+- `.claude/projects/*/memory/` -- a fő ágens, a workerek és az al-ágensek auto-memóriája (a `projects` könyvtáraik erre az egy közös helyre mutató symlinkek, ezért egyszer kerül mentésre)
 - `.claude/channels/*/` -- csatorna-tokenek és párosítási állapot
 - `Library/LaunchAgents/com.<agent-id>.*.plist` -- launchd jobs (macOS)
+
+### Vault mesterkulcs
+
+A `store/vault.json` titkosított; a mesterkulcs a macOS Keychainben van (`com.marveen.vault` / `master-key` elem), tartaléknak a `store/.vault-key` fájlban. A kulcs szándékosan **nincs** az archívumban: aki az archívumot és a kulcsot is birtokolja, feloldja a vaultot. A `backup.sh` a `backups/claudeclaw-YYYYMMDD-HHMMSS.vault-key` fájlba írja (0600). **Ezt a fájlt az archívumtól máshol tárold** (másik lemez vagy jelszókezelő). Ha a mentéskor nem található kulcs, a mentés lefut és figyelmeztet -- az abban az archívumban lévő vault nem fejthető vissza. Kulcs visszaállítása: másold a fájlt `store/.vault-key` néven (`chmod 600`), vagy importáld a Keychainbe: `security add-generic-password -U -s com.marveen.vault -a master-key -w "$(cat <kulcsfájl>)"`.
+
+A `scripts/verify-restore.sh` hibát jelez, ha egy archívumban kulcsfájlt talál, és figyelmeztet, ha a `vault.json` benne van, de a `.vault-key` sidecar nincs mellette.
 
 ### Visszaállítás
 

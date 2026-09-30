@@ -9,6 +9,9 @@
 #   3. gzip stream is not corrupt (gzip -t).
 #   4. tar listing succeeds (no broken entries).
 #   5. Required sentinel files are present inside the archive.
+#      Also: the vault master key must NOT be inside the archive (it lives in a
+#      separate <archive>.vault-key file); a vault.json without that sidecar next
+#      to the archive is reported as a warning (the operator may have moved it).
 #   6. Embedded DB is extracted to a temp dir and PRAGMA integrity_check runs.
 #
 # Exit codes: 0 = all checks passed, 1 = one or more checks failed.
@@ -92,6 +95,23 @@ for sentinel in "${REQUIRED[@]}"; do
     check_fail "${sentinel} MISSING"
   fi
 done
+
+# 4b. Vault key separation
+echo "[4b] Vault key separation..."
+ARCHIVE_LISTING="$(tar -tzf "${ARCHIVE}" 2>/dev/null || true)"
+if printf '%s\n' "${ARCHIVE_LISTING}" | grep -qE '(^|/)\.vault-key(\.migrated)?$'; then
+  check_fail "vault master key found INSIDE the archive (must be a separate file)"
+else
+  check_pass "no vault master key inside the archive"
+fi
+if printf '%s\n' "${ARCHIVE_LISTING}" | grep -qF "repo/store/vault.json"; then
+  KEY_SIDECAR="${ARCHIVE%.tar.gz}.vault-key"
+  if [[ -f "${KEY_SIDECAR}" ]]; then
+    check_pass "vault key sidecar present ($(basename "${KEY_SIDECAR}"))"
+  else
+    echo "  [WARN] vault.json is archived but $(basename "${KEY_SIDECAR}") is not next to it -- keep the key file safe elsewhere, the vault cannot be decrypted without it"
+  fi
+fi
 
 # 5. DB integrity_check
 echo "[5] DB integrity check..."
