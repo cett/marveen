@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `4a12c410` vs fork `a49ccaec`, 2026-09-29
+> Állapot: upstream `4a12c410` vs fork `831b6f88`, 2026-09-30
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -137,10 +137,12 @@ A vault-titok-MCP-env-var kötések a `store/vault-bindings.json`-ból egy új `
 
 A Feladatok (Schedules) admin nézet két, eddig láthatatlan vagy csak DB-ben létező állapotot kapott meg: (1) egy jelvény az "utoljára futott" időpont mellett, ami a futás KIMENETELÉT is mutatja (`fired`/`fired_late`/`skipped_quota`/`skipped_precheck`/`command`, a `schedules.last_run_result` oszlopból, 0057-es migráció) -- eddig csak az időpont látszott, az hogy időben lefutott-e, kvóta miatt kimaradt-e, vagy csak nem volt teendője a precheck szerint, sehol nem jelent meg. (2) egy scheduler-szintű életjel-jelző (új, admin-only `GET /api/schedules/tick-status` végpont), ami azt mutatja, mikor pecsételte meg utoljára a schedule-runner tick-ciklusa a saját `schedule_last_tick_ms` élő-jelzését -- ez a pecsét eddig kizárólag a catch-up ablak induló pontjának kiszámítására szolgált induláskor, admin-felületen sehol nem jelent meg, így egy leragadt/leállt runner-t az operátor csak a DB közvetlen olvasásával tudott volna észrevenni. A jelvény zöldről pirosra vált, ha az utolsó tick 3 percnél régebbi (vagy még egyáltalán nem történt pecsételés). Mindkét kiegészítés csak-olvasás -- egyetlen meglévő végpont vagy tárolt adatszerkezet sem változott.
 
+Az üzemeltetési kézikönyv (`docs/fork-guide`, magyarul és angolul) új szakaszokat kapott a legutóbbi változtatásokról: a model-fallback tartós fedő-állapota (`store/model-fallback-state.json`, visszaállás újraindítás után, 10 perces szünet, a szándékos modellváltás törli), a context-restart kapu elévülő jelei, a `type: command` ütemezett feladatok (aszinkron futás, teljes folyamatfa leállítása időtúllépéskor, `store/command-task-health.json`, riasztás a `failThreshold`-nál, kézi futtatás, MCP előellenőrzés) és a flotta memória-heartbeat sweep friss-pillanatkép kvóta-őre. A `docs/openapi.yaml` bővült a `POST /schedules/{name}/run` végponttal, a `PUT /messages/{id}` tenant-szabályával (másik tenant üzenete 404) és a `PUT /agents/{name}` fedő-állapot-törlő viselkedésével.
+
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `4a12c410` vs fork `a49ccaec`, 2026-09-29
+Állapot: upstream `4a12c410` vs fork `831b6f88`, 2026-09-30
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (fejlesztő -> koordinátor) frissítsd ezt a szakaszt
      a friss git log alapján:

@@ -29,6 +29,19 @@ The **Verify** button checks the integrity of a backup file: the system recalcul
 
 ---
 
+## Scheduled nightly backup
+
+A backup can run automatically every night as a command task (see [06 - Tasks](06-tasks.md)). Such a task runs `scripts/backup.sh` from the install directory directly, with no AI agent involved, so the backup does not depend on a model or an agent session being available. A typical setup:
+
+- schedule: `0 3 * * *` (every night at 03:00, server time zone)
+- type: `command`, with the command `bash <install directory>/scripts/backup.sh`
+- `timeoutMs`: enough for your database size (for example 120000)
+- `failThreshold`: `1`, so a failed backup raises a Telegram alert on the very first failure instead of the second; a later successful run sends a "recovered" message
+
+The result of each run is recorded in `store/command-task-health.json`. A fresh install does not ship with this task; create it as described in the Tasks chapter. The backups it produces appear in the list above like manual ones.
+
+---
+
 ## Retention setting
 
 The **Retention** dropdown sets how many backups are kept automatically. Older backups beyond this count are removed on the next backup run. Save the setting with the **Save** button.
@@ -43,5 +56,6 @@ Clicking **Delete** shows a confirmation dialog. Deleted files cannot be recover
 
 ## Related sections
 
-- [11 - Settings](11-settings.md) -- automatic backup schedule
+- [06 - Tasks](06-tasks.md) -- command tasks and scheduling
+- [11 - Settings](11-settings.md) -- backup retention setting
 - [13 - Audit Log](13-audit.md) -- system event tracking

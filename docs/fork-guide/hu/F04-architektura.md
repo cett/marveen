@@ -67,6 +67,8 @@ marveen/
     claudeclaw.db         -- SQLite adatbázis
     .dashboard-token      -- Bearer token (0600)
     .claude-oauth-token   -- Fleet OAuth token (0600)
+    model-fallback-state.json -- aktív model-fallback lefokozások (ágensenként)
+    command-task-health.json  -- a type=command ütemezett feladatok hibasorozatai
 
   agents/                 -- flotta-ágensek könyvtára
     <name>/

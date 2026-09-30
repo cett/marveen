@@ -90,6 +90,41 @@ A `⧉ tmux` gomb az ágens tmux-csatoló parancsát másolja a vágólapra.
 
 ---
 
+## Modell-fallback használati limit esetén
+
+A modell-fallback funkció akkor tartja munkában az ágenst, amikor kifogy a csomag használati kerete. Alapértelmezetten ki van kapcsolva; a **Beállítások > Modell fallback** fülön kapcsolható be, ugyanitt adható meg a modell-lánc és a visszaállási idő (csak rendszergazdának; lásd [11 - Beállítások](11-beallitasok.md)).
+
+Bekapcsolt állapotban a rendszer percenként ellenőrzi az összes futó ágenst (és a fő ágenst is). Egy ágens lejjebb kerül, ha az élő terminálján ezt látja:
+
+- kimerült csomag-használati limit üzenetet (az általános rate-limit vagy API-túlterheltség hiba és az "approaching usage limit" figyelmeztetés nem számít), vagy
+- "a kiválasztott modell már nem elérhető" hibát, amelyet két egymást követő ellenőrzés is megerősít.
+
+Ekkor az ágens egy lépéssel lejjebb lép a modell-láncban, és a munkamenete újraindul, hogy az olcsóbb modell vegye át a munkát (az al-ágensek a beszélgetésüket folytatják). A váltás csak tétlen ágensnél történik meg; ha az ágens éppen dolgozik, a következő ellenőrzésre halasztódik.
+
+### Fedő-állapot, nem konfig-módosítás
+
+A lefokozás soha nem írja át az ágens beállított modelljét. Ideiglenes felülbírálásként tárolódik a `store/model-fallback-state.json` fájlban (ágensenként: a beállított modell, a fallback modell és a lefokozás ideje). Az ágens minden indításakor, a fő ágens indító szkriptjénél is, először ezt a felülbírálást használja, amíg létezik; egyébként a beállított modellt.
+
+Mivel a felülbírálás lemezen van:
+
+- a dashboard vagy a szerver újraindítása nem veszíti el, a visszaállási időzítő pedig a tárolt lefokozási időponttól számol tovább;
+- ha az új modellt érvényesítő újraindítás nem sikerül, a felülbírálás visszaáll az előző állapotára.
+
+### Szünet, lánc és visszaállás
+
+- Minden váltás után 10 perc szünet van új lefokozás előtt, így egy frissen újraindított munkamenet, amely még a régi üzenetet mutatja, nem tudja végigléptetni az ágenst az egész láncon.
+- Minden ágens a saját beállított modelljétől indulva, egyesével lépked a láncon. A lánc alján nem történik több semmi.
+- Ha a lefokozás óta eltelt a visszaállási idő (alapértelmezetten 330 perc), és a limit üzenet eltűnt, a felülbírálás megszűnik, és az ágens a beállított modelljén indul újra. Ha a limit üzenet még látszik, az ágens a fallback modellen marad. A visszaállás is megvárja, hogy az ágens tétlen legyen.
+
+### Megtekintés és visszaállítás
+
+- Az ágens-kártya modell-jelvénye mindig a beállított modellt mutatja. A részletlap fejléce és a Beállítások fül modell-választója azt a modellt mutatja, amelyet az élő munkamenet jelentett, ez lefokozás alatt a fallback modell.
+- Az ágens modelljének módosítása a Beállítások fülön, majd mentése lecseréli a felülbírálást: a felülbírálás megszűnik, az ágens pedig az általad választott modellen indul újra. Az a mentés, amely a beállított modellt változatlanul küldi el, nem törli. Fontos: lefokozás alatt a választó a fallback modellt mutatja, így a kiválasztás módosítása nélküli mentés a fallback modellt teszi az új beállított modellé.
+- Ha az ágenst a konfiguráció módosítása nélkül, kézzel szeretnéd visszaküldeni a beállított modelljére, töröld az ágens bejegyzését a `store/model-fallback-state.json` fájlból, és indítsd újra az ágenst. Így állítható vissza a fő ágens is, amelynek modellje a dashboardról nem szerkeszthető.
+- A funkció kikapcsolása nem törli a meglévő felülbírálásokat, és kikapcsolt állapotban nem fut visszaállás. A fallback modellen lévő ágens ott marad, amíg a felülbírálást a fenti módon el nem távolítod, vagy a funkciót újra be nem kapcsolod.
+
+---
+
 ## Föderált ágensek
 
 Ha a flottában föderált (másik szerveren futó) társrendszer is konfigurálva van, azok ágenseinek kártyái szintén megjelennek egy "Föderált" jelvénnyel, és a kapcsolatuk állapotát is mutatják. Ezeknek az ágenseknek az Üzenetek nézetben is lehet üzenni.

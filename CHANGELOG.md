@@ -93,6 +93,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 - editorial trim of [Unreleased] section
 - sync README fork-diff and user guide with the P2c search feature
 - document the pagination-dashboard feature
+- user guide and fork guide (HU+EN) cover the model-fallback overlay, `type: command` scheduled tasks (asynchronous run, health file, run-now response, nightly backup as a command task), the required-MCP pre-check, the context restart gate stale signals and the fleet heartbeat sweep usage guard. **[API]** `docs/openapi.yaml` documents `POST /schedules/{name}/run`, the tenant rule of `PUT /messages/{id}` (another tenant's message answers 404) and the overlay clearing of `PUT /agents/{name}`.
 
 ### Infrastructure
 

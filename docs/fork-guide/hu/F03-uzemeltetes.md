@@ -154,6 +154,36 @@ Két érzékelési jel:
 
 A watchdog türelmes: csak `AUTH_DEAD_THRESHOLD_TICKS` egymást követő negatív jelzés után avatkozik be (kb. 10-15 perc), hogy ne indítson felesleges újraindítást egy rövid hálózatkimaradás után.
 
+## Modell-fallback használati limitnél
+
+Ha egy ágens eléri a csomag használati limitjét, vagy a modellje elérhetetlenné válik, a model-fallback futtató egy beállítható láncon (például opus, majd sonnet, majd haiku) lejjebb léptetheti, később pedig visszaléptetheti. Alapból ki van kapcsolva. Adminként a Beállítások "Modell fallback" fülén, vagy a `GET` / `PUT /api/model-fallback` végponttal állítható (`enabled`, `chain`, `revertAfterMinutes`; az alapértelmezett visszaállási idő 330 perc, a `DEFAULT_REVERT_AFTER_MINUTES`-szel felülírható). A konfiguráció az adatbázisban van (`system_config`).
+
+Működés:
+
+- 60 másodpercenként lefut egy sweep a főágensen és minden futó al-ágensen. Beolvassa a panelt, és csak akkor cselekszik, ha a panel tétlen.
+- A használati-limit banner egy észlelés. A "model unavailable" üzenetet két egymás utáni sweepben kell látnia, így egy chatben idézett hibaszöveg nem okoz váltást. Az "approaching usage limit" figyelmeztetés nem számít kimerült keretnek.
+- A lefokozás **tartós fedő-állapotként** kerül a `store/model-fallback-state.json` fájlba (ágensenként: `primary`, `current`, `downgradedAt`). A modell-feloldók, a főágensnél a `scripts/channels.sh` is, az aktív fedő-állapotot nézik először. A saját konfigurációd (`MAIN_AGENT_MODEL` az `.env`-ben, vagy az ágens `model` mezője az `agent-config.json`-ban) sosem íródik felül.
+- Az al-ágens a beszélgetése megtartásával indul újra (`--continue`). A főágens frissen indul újra, így a beszélgetése nem marad meg; ott a modellcsere a lényeg.
+- A fedő-állapot túléli a dashboard újraindítását, így a visszaállás is megtörténik. `revertAfterMinutes` limitmentes idő után az ágens a **saját konfigurált modelljére** tér vissza (nem a lánc első tagjára), és a fedő-állapot törlődik.
+- Minden váltás után 10 perc szünet van új lefokozás előtt, mert egy újraindított panelen még látszhat a régi banner, és az ágens percek alatt végigmenne a teljes láncon.
+- Ha az ágens konfigurált modelljét pont arra állítod, amit a fedő-állapot rögzít, a következő sweep elavultként eldobja.
+- Az ágens modelljének szándékos átállítása (dashboard, vagy `PUT /api/agents/<name>` a konfiguráltól eltérő `model`-lel) törli a fedő-állapotát, így a te döntésed erősebb az automatikus lefokozásnál. Az a mentés, amely csak a változatlan modellt ismétli, nem szünteti meg az aktív lefokozást.
+
+## Context-restart kapu
+
+A context-restart kapu egészségesen tartja a hosszú session-öket anélkül, hogy félbeszakítaná a folyamatban lévő munkát. Ha az ágens kontextusa egy token-küszöb fölé nő, puha `/clear`-t küld, hogy a SessionStart hookok átvigyék az ágenst egy friss session-be, de csak akkor, ha semmi sincs folyamatban. Nem használ modell-tokent: minden ellenőrzés adatbázis-lekérdezés, fájlolvasás vagy panel/folyamat pillanatkép.
+
+Ágensenként opt-in (alapból kikapcsolt). Az ágensenkénti beállítások az `agent_settings` táblában vannak (`context_restart_gate` kulcs), a futás-állapot az `agent_state` táblában; HTTP végpont nincs hozzájuk. Alapértékek: küszöb 400000 token, elévülési határ 2 óra, újraellenőrzés 5 percenként, tartós-blokk riasztás 2 óra után, kényszerített `/clear` 4 óra blokk után.
+
+A kapu fail-closed: egy nem mérhető jel blokkol. Blokkol, amíg ezek bármelyike fennáll: a panel nem igazoltan tétlen vagy használati-limit bannert mutat, a kemény kontextus-őr kezeli a session-t, a claude folyamatnak élő gyermeke van (Task-tool al-ágens, háttérben futó shell parancs), az ágensnek kiküldött, még eredményre váró üzenete van, az utolsó bejövő csatorna-üzenetre nincs későbbi válasz, vagy egy strukturált feladat-állapot folyamatban van. Az órákig blokkoló kapu riasztást küld, és a kényszerített-újraindítási ablak után, ha semmi sincs folyamatban és a panel tétlen, mégis elküldi a `/clear`-t.
+
+Azok a jelek, amelyek már nem élő munkát írnak le, figyelmen kívül maradnak, így a kapu nem ragadhat be elavult adat miatt:
+
+- Az elévülési határnál régebbi megválaszolatlan bejövő üzenet elhagyottnak számít, ahogy az ugyanilyen korú kiküldött üzenet is.
+- A teljesítési jelentések (`[Eredmény]` üzenetek) és az al-ágens főágensnek küldött üzenetei (státuszjelentések, válaszok) nem számítanak függő kimenő üzenetnek, mert rájuk soha nem érkezik eredmény. A főágens saját kimenő üzenetei valódi delegálások, ezek továbbra is számítanak.
+- A jelenlegi session indulása előtt kezdődött blokkolási sorozat eldobásra kerül: az újraindított ágens nem örökli a régi session blokk-óráját, riasztását és kényszerített-újraindítási jogosultságát.
+- A kontextus-méretet csak az **aktív** session átiratából méri. A session indulása előtt utoljára írt átirat az előző session-é; az új session, amelynek még nincs saját átirata, 0 tokennek számít, nem a régi session méretének.
+
 ## Mentés és visszaállítás
 
 ### Mentés futtatása
@@ -169,6 +199,8 @@ Az archívum a `backups/` könyvtárba kerül (`claudeclaw-YYYYMMDD-HHMMSS.tar.g
 ```bash
 BACKUP_KEEP=14 bash scripts/backup.sh
 ```
+
+Az éjszakai futtatáshoz ütemezd `type: command` feladatként (lásd F07, "Command feladatok"): ágens-session nélkül fut, és `failThreshold: 1` mellett már az első hiba Telegram-riasztást küld.
 
 ### Az archívum tartalma
 

@@ -1,6 +1,6 @@
 # Settings
 
-The Settings view groups the Marveen system configuration keys into 9 tabs. Changes are saved through a dirty-state bar; saving only sends keys that were actually modified to the server.
+The Settings view groups the Marveen system configuration keys into tabs. Changes are saved through a dirty-state bar; saving only sends keys that were actually modified to the server.
 
 ---
 
@@ -26,7 +26,7 @@ Core system configuration: agent identifiers, network settings, and operating mo
 | `DASHBOARD_LANG` | Default dashboard language (`hu` or `en`) |
 | `SCHEDULER_TZ` | Time zone for the scheduler (e.g. `Europe/Budapest`) |
 | `ALERT_THRESHOLD_MS` | Threshold in milliseconds after which an API response is flagged as slow |
-| `DEFAULT_REVERT_AFTER_MINUTES` | Minutes after which autonomy levels are automatically reset to the lowest value |
+| `DEFAULT_REVERT_AFTER_MINUTES` | Default number of minutes before an agent on a fallback model returns to its configured model (default 330); a value saved on the Model fallback tab takes precedence |
 
 ---
 
@@ -211,6 +211,18 @@ The ninth section is also synthetic: it shows the token cost budgets configured 
 ### Costops budgets
 
 Configured budgets are listed here; editing them requires changes to the configuration file. A detailed status view is available in [Statistics](10-statistics.md).
+
+---
+
+## 10. Model fallback
+
+The Model fallback section is synthetic and admin-only. It configures the fleet-wide policy that moves an agent to a cheaper model when its plan usage limit runs out (how it behaves is described in [04 - Agents](04-agents.md)).
+
+| Field | Description |
+|-------|-------------|
+| **Enabled** | Off by default; while unchecked, no agent is ever switched automatically |
+| **Model chain** | The first entry is the primary model; each following entry is the next step down. At least 2 entries are required |
+| **Revert after (minutes)** | How long after a downgrade the agent may return to its configured model, once the limit message is gone |
 
 ---
 
