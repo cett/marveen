@@ -9,7 +9,7 @@ import type { RouteContext } from './routes/types.js'
 // turns a successful write into an error (the review gate itself is the status the row
 // holds, not these).
 
-export type ScheduleAuditAction = 'create' | 'update' | 'delete' | 'toggle' | 'activate' | 'review_requested'
+export type ScheduleAuditAction = 'create' | 'update' | 'delete' | 'toggle' | 'activate' | 'review_requested' | 'retarget'
 
 export interface ScheduleActor {
   /** agent_audit_log.agent_id: the session user, the token name, the device name, or `claimed:<id>`. */
@@ -17,6 +17,14 @@ export interface ScheduleActor {
   actorKind: 'session' | 'token' | 'device' | 'other'
   /** The self-declared X-Agent-Id, kept apart because it is not authentication. */
   claimedAgent: string | null
+}
+
+// A real dashboard login (auth.kind==='session') is the only signal that a person is driving the
+// request: the shared dashboard token maps to role 'admin' for every fleet agent, so the role alone
+// cannot tell "a human approved this" from "an agent proposed this". Every review-gate decision
+// (creation status, activation, running a non-live task, who gets notified) keys off this.
+export function isHumanAdmin(ctx: RouteContext): boolean {
+  return ctx.role === 'admin' && ctx.auth?.kind === 'session'
 }
 
 export function scheduleActor(ctx: RouteContext): ScheduleActor {
@@ -68,7 +76,7 @@ export function resetReviewNotifyThrottle(): void {
 export function notifyScheduleReview(opts: {
   name: string
   tenant: string
-  reason: 'edited' | 'created'
+  reason: 'edited' | 'created' | 'retargeted'
   changed?: ReadonlyArray<string>
   by: string
   now?: number

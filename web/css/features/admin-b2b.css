@@ -176,3 +176,8 @@
   font-size: 13px;
   padding: 4px 8px;
 }
+
+/* Starter pack panel (per selected tenant) */
+.admin-b2b-starter-lines p { margin: 4px 0; }
+.admin-b2b-starter-hint { color: var(--text-muted); font-size: .9em; }
+.admin-b2b-starter-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }

@@ -28,6 +28,7 @@ import {
   clearScheduleLastRunIfMatches,
   getSystemConfig,
   setSystemConfig,
+  listChannelBindings,
 } from '../db.js'
 import { toPendingRetryView, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -723,24 +724,96 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
  *  the boss's chat, and pointing a sub-agent's result there is the precise
  *  bug the old sentinel existed to avoid. */
 export function resolveBoundChatId(agentName: string): string | null {
+  const raw = readTelegramAccessJson(agentName)
+  if (!raw) return null
+  const chosen = chatIdFromAccessConfig(raw)
+  // "First allowlist entry" is a HEURISTIC, not a stated fact: access.json
+  // has no owner field, so with 2+ entries a reordering would silently
+  // redirect scheduled-task results to another person -- the exact failure
+  // class the old sentinel guarded against, now throw-free and thus
+  // invisible. The warn turns a silent misdirection into a searchable log
+  // line; behaviour is unchanged.
+  const candidates = Array.isArray(raw.allowFrom) ? raw.allowFrom.length : 0
+  if (chosen && candidates > 1) {
+    logger.warn({ agent: agentName, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
+  }
+  return chosen
+}
+
+/** The agent's telegram access.json (the file the plugin enforces), or null when missing/unparsable. */
+function readTelegramAccessJson(agentName: string): Record<string, unknown> | null {
   const dir = agentName === MAIN_AGENT_ID
     ? channelStateDir('telegram')
     : channelStateDir('telegram', agentDir(agentName))
   try {
-    const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
-    const chosen = chatIdFromAccessConfig(raw)
-    // "First allowlist entry" is a HEURISTIC, not a stated fact: access.json
-    // has no owner field, so with 2+ entries a reordering would silently
-    // redirect scheduled-task results to another person -- the exact failure
-    // class the old sentinel guarded against, now throw-free and thus
-    // invisible. The warn turns a silent misdirection into a searchable log
-    // line; behaviour is unchanged.
-    const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
-    if (chosen && candidates > 1) {
-      logger.warn({ agent: agentName, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
-    }
-    return chosen
+    const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as unknown
+    return raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
   } catch { return null }
+}
+
+/** Most recipients a tenant-owned task result is sent to. */
+export const MAX_TENANT_DELIVERY_CHATS = 3
+
+/** Pure core of resolveTenantDeliveryChats. A binding qualifies when it is a
+ *  telegram DM (digits only: group chats carry a negative id) and the same id
+ *  is on the agent's access.json allowlist, so it is deliverable by
+ *  construction. Order follows the bindings, capped at MAX_TENANT_DELIVERY_CHATS. */
+export function selectTenantDeliveryChats(
+  bindings: ReadonlyArray<{ channel: string; external_id: string }>,
+  accessConfig: unknown,
+): string[] {
+  const allowed = new Set<string>()
+  const allowFrom = (accessConfig as { allowFrom?: unknown } | null | undefined)?.allowFrom
+  if (Array.isArray(allowFrom)) {
+    for (const entry of allowFrom) {
+      if (typeof entry === 'string' && entry.trim()) allowed.add(entry.trim())
+      else if (typeof entry === 'number') allowed.add(String(entry))
+    }
+  }
+  const out: string[] = []
+  for (const b of bindings) {
+    if (b.channel !== 'telegram' || !/^\d+$/.test(b.external_id)) continue
+    if (!allowed.has(b.external_id) || out.includes(b.external_id)) continue
+    out.push(b.external_id)
+    if (out.length >= MAX_TENANT_DELIVERY_CHATS) break
+  }
+  return out
+}
+
+/** Chats a non-default tenant's task result may be delivered to: the telegram
+ *  DM bindings of (tenant, agent), restricted to the agent's own allowlist.
+ *  Never falls back to access.json allowFrom[0]: that entry can be the fleet
+ *  owner, not the tenant's user. No binding -> empty list -> no instruction. */
+export function resolveTenantDeliveryChats(agentName: string, tenantId: string): string[] {
+  try {
+    const bindings = listChannelBindings({ tenantId, agentId: agentName })
+    if (bindings.length === 0) return []
+    return selectTenantDeliveryChats(bindings, readTelegramAccessJson(agentName))
+  } catch (err) {
+    logger.warn({ err, agent: agentName, tenant: tenantId }, 'tenant delivery chat resolution failed -- no Telegram instruction')
+    return []
+  }
+}
+
+/** Delivery prefix of a non-heartbeat task prompt. `default` tenant keeps the
+ *  agent's bound chat (resolveBoundChatId); a tenant-owned task goes only to its
+ *  tenant's bindings, and without any it carries no Telegram instruction. */
+export function buildTaskDeliveryPrefix(task: Pick<ScheduledTask, 'name' | 'tenantId'>, agentName: string): string {
+  const tenantId = task.tenantId ?? 'default'
+  if (tenantId !== 'default') {
+    const chats = resolveTenantDeliveryChats(agentName, tenantId)
+    if (chats.length > 0) {
+      return `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${chats.join(', ')}, reply tool). `
+    }
+    logger.warn({ task: task.name, agent: agentName, tenant: tenantId }, 'scheduled task: tenant has no deliverable telegram binding for this agent -- prompt omits the Telegram delivery instruction')
+    return `[Utemezett feladat: ${task.name}] `
+  }
+  const boundChatId = resolveBoundChatId(agentName)
+  if (boundChatId) {
+    return `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${boundChatId}, reply tool). `
+  }
+  logger.warn({ task: task.name, agent: agentName }, 'scheduled task: agent has no bound telegram chat (access.json missing/empty) -- prompt omits the Telegram delivery instruction')
+  return `[Utemezett feladat: ${task.name}] `
 }
 
 // What a scheduled task costs the shared quota pool, for the gate in
@@ -976,13 +1049,7 @@ async function attemptFireTask(
       // than to deliver to the wrong chat, and the warn below makes the
       // config gap visible. The system-level pending-retry alert further
       // down still uses ALLOWED_CHAT_ID by design.
-      const boundChatId = resolveBoundChatId(agentName)
-      if (boundChatId) {
-        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${boundChatId}, reply tool). `
-      } else {
-        logger.warn({ task: task.name, agent: agentName }, 'scheduled task: agent has no bound telegram chat (access.json missing/empty) -- prompt omits the Telegram delivery instruction')
-        prefix = `[Utemezett feladat: ${task.name}] `
-      }
+      prefix = buildTaskDeliveryPrefix(task, agentName)
     }
     // A scheduled task body is the agent's OWN task, authored by the operator
     // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both
