@@ -165,6 +165,12 @@ components:
         forceSend: { type: boolean }
         targetSession: { type: string }
         createdAt: { type: integer }
+        contentHash:
+          type: string
+          description: >-
+            Fingerprint of the fields an approval covers (prompt, command, type,
+            schedule, agent, target session, timeout, fail threshold, busy
+            flags). Send it back as `expected_hash` when activating.
 
     Error:
       type: object
@@ -196,6 +202,7 @@ components:
             - federation_disabled
             - tenant_required
             - unknown_query_parameter
+            - stale_revision
         hint:
           type: string
           description: >-
@@ -3151,6 +3158,19 @@ paths:
         resulting (tenant, agent) pair is re-checked, and the task goes back to
         `draft` so a person re-activates it. A command task cannot be changed to
         another type without `allowTypeChange: true`.
+
+
+        Re-review: a caller that is not an authenticated admin (a tenant user,
+        a scoped token, a device key, an agent on the shared token) who changes
+        what a `live` task executes (`prompt`, `command`, `type`, `schedule`,
+        `agent`, `targetSession`, `timeoutMs`, `failThreshold`, `skipIfBusy`,
+        `forceSend`) sets it to `pending_review`. The change is written, the
+        runner stops firing the task, and an admin has to activate it again.
+        Resending the stored values, or changing only `description` or
+        `enabled`, does not. A task that is already not `live` keeps its status.
+        Every edit writes one audit row (`review_requested` or `update`), and a
+        task sent back to review notifies the main agent (at most once an hour
+        per task).
       requestBody:
         required: true
         content:
@@ -3185,7 +3205,20 @@ paths:
                 properties:
                   ok: { type: boolean, enum: [true] }
                   tenant_id: { type: string, description: Present only after a tenant move. }
-                  status: { type: string, enum: [draft], description: Present only after a tenant move. }
+                  status:
+                    type: string
+                    enum: [draft, pending_review]
+                    description: >-
+                      `draft` after a tenant move; `pending_review` when the edit sent a
+                      live task back to review. Absent otherwise.
+                  review_required:
+                    type: boolean
+                    enum: [true]
+                    description: Present (true) when the edit sent a live task back to review.
+                  changed:
+                    type: array
+                    items: { type: string }
+                    description: The fields that triggered the review. Present with `review_required`.
         "400":
           description: Invalid field, or the (tenant, agent) pair is not valid
           content:
@@ -3263,10 +3296,20 @@ paths:
     post:
       tags: [schedules]
       operationId: activateSchedule
-      summary: Activate a draft scheduled task
+      summary: Activate a draft or held scheduled task
       description: >-
-        The only way a `draft` task becomes `live`. Authenticated admin only: an
-        agent on the shared token cannot approve its own proposal.
+        The only way a `draft` or `pending_review` task becomes `live`.
+        Authenticated admin only: an agent on the shared token cannot approve
+        its own proposal. Pass the `contentHash` the task was listed with as
+        `expected_hash`: if the task changed since, nothing is activated and the
+        answer is 409 `stale_revision` with the current hash.
+      parameters:
+        - name: expected_hash
+          in: query
+          required: false
+          schema:
+            type: string
+          description: The `contentHash` the admin reviewed. Optional; unchecked when omitted.
       responses:
         "200":
           description: Activated
@@ -3286,6 +3329,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           description: Schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The task changed after the caller loaded it (`stale_revision`); the body carries the current `content_hash`
           content:
             application/json:
               schema:

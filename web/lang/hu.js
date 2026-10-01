@@ -590,6 +590,7 @@ window._i18n.hu = {
   'tasks.status.active':         'aktív',
   'tasks.status.paused':         'szünet',
   'tasks.status.draft':          'piszkozat',
+  'tasks.status.pending_review': 'jóváhagyásra vár',
   'tasks.btn.run_now':           'Futtatás most',
   'tasks.btn.toggle_pause':      'Szüneteltetés',
   'tasks.btn.toggle_resume':     'Folytatás',
@@ -1587,6 +1588,7 @@ window._i18n.hu = {
   // --- Tasks toasts ---
   'tasks.toast.select_schedule': 'Válassz ütemezést',
   'tasks.toast.updated':         'Feladat frissítve',
+  'tasks.toast.review_required': 'Mentve. A feladat szünetel, amíg egy admin jóvá nem hagyja a változtatást',
   'tasks.toast.moved_draft':     'Feladat áthelyezve ({tenant}), piszkozat: aktiválni kell',
   'tasks.toast.created':         'Feladat létrehozva!',
 
@@ -2076,6 +2078,7 @@ window._i18n.hu = {
   'errors.timeout':                  'Időtúllépés',
   'errors.disabled':                 'A funkció le van tiltva',
   'errors.not_live':                 'A feladat nincs élesítve -- egy adminnak aktiválnia kell',
+  'errors.stale_revision':           'A feladat megváltozott, mióta megnyitottad -- nézd át az aktuális változatot, és aktiváld újra',
   'errors.managed_settings_missing': 'Hiányzó menedzselt beállítás',
   'errors.upstream_error':           'Külső szolgáltatás nem elérhető',
   'errors.sender_not_in_allowlist':  'A küldő nincs az engedélyezett listán',

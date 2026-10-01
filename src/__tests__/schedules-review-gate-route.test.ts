@@ -196,6 +196,7 @@ describe('POST /api/schedules/:name/activate', () => {
   })
 
   it('404s an unknown schedule name for a human admin', async () => {
+    mockGetScheduleFromDb.mockReturnValue(undefined)
     mockActivateSchedule.mockReturnValue(null)
     const { ctx, out } = makeCtx('POST', '/api/schedules/does-not-exist/activate', undefined, { role: 'admin', auth: { kind: 'session' } })
     await tryHandleSchedules(ctx)
@@ -204,6 +205,7 @@ describe('POST /api/schedules/:name/activate', () => {
   })
 
   it('200s and flips status to live for a human admin on an existing draft', async () => {
+    mockGetScheduleFromDb.mockReturnValue({ id: 'my-task', tenant_id: null, status: 'draft', prompt: 'p' })
     mockActivateSchedule.mockReturnValue({ id: 'my-task', status: 'live' })
     const { ctx, out } = makeCtx('POST', '/api/schedules/my-task/activate', undefined, { role: 'admin', auth: { kind: 'session' } })
     await tryHandleSchedules(ctx)

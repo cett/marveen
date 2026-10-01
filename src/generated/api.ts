@@ -58,11 +58,13 @@ export interface Schedule {
   forceSend?: boolean;
   targetSession?: string;
   createdAt?: number;
+  /** Fingerprint of the fields an approval covers (prompt, command, type, schedule, agent, target session, timeout, fail threshold, busy flags). Send it back as `expected_hash` when activating. */
+  contentHash?: string;
 }
 
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
-  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter';
+  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter' | 'stale_revision';
   /** Optional human-readable debugging note. Present when the server has extra context that helps the caller fix the request (e.g. which parameter name the filter expects, or why a value was rejected). Clients must not rely on its exact text; treat it as informational. */
   hint?: string;
   /** Name of the request field that caused the validation failure. Present on 4xx validation errors when the problem can be attributed to a single input field. */

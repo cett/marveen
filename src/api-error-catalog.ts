@@ -22,6 +22,7 @@ export const ERROR_TOKENS = [
   'federation_disabled',     // not not_supported: actionable differently -- admin enable vs API version change
   'tenant_required', // a schedule create could not tell which tenant owns the task (send tenant_id or X-Agent-Id)
   'unknown_query_parameter', // not invalid_value: parameter NAME unknown (remove/rename), vs VALUE wrong (fix value)
+  'stale_revision', // not conflict: the schedule exists and is fine, but changed after the caller loaded it (reload and review again)
 ] as const
 
 export type ErrorToken = typeof ERROR_TOKENS[number]
@@ -44,8 +45,9 @@ export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = 
   // not_live = review-gate conflict (entity exists but is draft/pending_review,
   // distinct from disabled -- the fix is activation by an admin, not re-enabling);
   // managed_settings_missing = precondition unmet (entity exists, external config missing);
-  // all three are state conflicts, not malformed requests.
-  409: ['conflict', 'disabled', 'not_live', 'managed_settings_missing'],
+  // stale_revision = optimistic-lock miss on an activation (content changed since it was loaded);
+  // all four are state conflicts, not malformed requests.
+  409: ['conflict', 'disabled', 'not_live', 'stale_revision', 'managed_settings_missing'],
   429: ['limit_exceeded'],
   500: ['internal_error'],
   502: ['upstream_error'],
