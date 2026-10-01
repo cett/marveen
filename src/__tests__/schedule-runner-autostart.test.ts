@@ -155,7 +155,7 @@ describe('schedule-runner source contract (sentinel removed)', () => {
 
   it('the no-binding branch omits the Telegram instruction instead of guessing a chat', () => {
     expect(SRC).toContain('prompt omits the Telegram delivery instruction')
-    expect(SRC).toMatch(/prefix = `\[Utemezett feladat: \$\{task\.name\}\] `/)
+    expect(SRC).toMatch(/return `\[Utemezett feladat: \$\{task\.name\}\] `/)
   })
 
   it('resolution reads the same access.json the plugin enforces', () => {
