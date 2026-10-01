@@ -173,7 +173,8 @@ Marveen seeds the following tasks at install time:
 |------|------|-------------|
 | `auto-update` | `0 4 * * 3` (Wednesdays) | Automatic update (opt-in: `AUTO_UPDATE_ENABLED=1`) |
 | `kanban-audit` | `0 8,12,16,20 * * *` | 4-hourly kanban cleanup and stuck-task detection |
-| `memory-maintenance` | `0 3 * * *` | Daily memory maintenance (tier reassignment, version pruning) |
+| `nightly-backup` | `0 3 * * *` | Daily data backup (`scripts/backup.sh`), a command task without an LLM |
+| `memory-maintenance` | `15 3 * * *` | Daily memory maintenance (tier reassignment, version pruning, link-graph upkeep), a command task without an LLM |
 | `budget-plafon-monitor` | own cron | Token usage threshold monitoring |
 | `bumblebee-hygiene-scan` | own cron | Bumblebee (Go) service health check |
 
