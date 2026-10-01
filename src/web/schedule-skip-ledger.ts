@@ -19,7 +19,9 @@
 // back at once. That is not an operator's hand (one toggle at a time); it is the
 // scheduler reading its own tasks wrongly, and each held occurrence is exactly
 // what must not vanish. One deduped alert goes out per mass event. Tasks that
-// were already disabled before the event are never part of it.
+// were already disabled before the event are never part of it. The "runnable a
+// tick ago" baseline survives a restart: the first scan seeds it from the DB, so
+// a process that comes up already inside a mass event still detects it.
 import type { ScheduledTask } from './scheduled-tasks-io.js'
 import { isTaskLive } from './scheduled-tasks-io.js'
 
@@ -46,6 +48,16 @@ export interface SkipLedgerDeps {
   /** Agents the occurrence would have fired at (the same set a 'missed' run uses). */
   targets: (task: ScheduledTask) => string[]
   appendTaskRun: (name: string, agent: string, status: string) => void
+  /**
+   * Names of the tasks the DB says are runnable (enabled + live), read ONCE,
+   * independently of the tick's own task list, before the tracker's first scan.
+   * A fresh tracker has no history, so without it a process that (re)starts
+   * already inside a mass event -- every task reading as disabled from the very
+   * first tick -- would take that state as the baseline and never detect it.
+   * Tasks the DB itself has disabled are not in it, so an operator's own
+   * switches stay invisible. A throw is treated as "no baseline".
+   */
+  dbRunnable?: () => Iterable<string>
 }
 
 export interface SkipScanResult {
@@ -71,9 +83,15 @@ export function createSkipTracker(): SkipTracker {
   // leaves when it is runnable again or MASS_EPISODE_MAX_MS has passed.
   const episode = new Map<string, number>()
   let alerted = false
+  let seeded = false
 
   return {
     scan(tasks, fromMs, now, deps) {
+      if (!seeded) {
+        seeded = true
+        try { for (const name of deps.dbRunnable?.() ?? []) prevRunnable.add(name) }
+        catch { /* no baseline: behaves like a tracker that has only the tick's own evidence */ }
+      }
       const kinds = new Map(tasks.map(t => [t.name, classifyTask(t)] as const))
 
       // Held = would have run on the previous tick's evidence: not_live is always

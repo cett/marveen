@@ -45,6 +45,7 @@ import {
   MAX_SCHEDULED_TASK_PROMPT_LEN,
   isTaskLive,
   syncTaskConfigEnabledFromDb,
+  listDbRunnableTaskNames,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { createSkipTracker } from './schedule-skip-ledger.js'
@@ -1536,6 +1537,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
           : [t.agent || MAIN_AGENT_ID],
         appendTaskRun,
+        dbRunnable: listDbRunnableTaskNames,
       })
       if (skipScan.alert) sendMassSkipAlert(skipScan.massHeld, tasks.length)
     } catch (err) {

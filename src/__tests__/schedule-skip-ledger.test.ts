@@ -150,6 +150,77 @@ describe('skip ledger: a mass disable (enabled flipped to 0 for most tasks at on
   })
 })
 
+describe('skip ledger: a process that (re)starts already inside a mass event', () => {
+  // The tick reads every task as disabled from its very first read (the DB still
+  // says enabled). A fresh tracker has no "runnable a tick ago" history, so
+  // without a DB baseline the mass disable is taken as the normal state: 0 rows,
+  // 0 alerts, for as long as it lasts.
+  const dbEnabled = (tasks: ScheduledTask[]) => () => tasks.map(t => t.name)
+  const readAsDisabled = (): Partial<ScheduledTask> => ({ enabled: false })
+
+  it('without a baseline the restart-into-the-incident goes unseen (what the seed fixes)', () => {
+    const { runs, deps } = harness()
+    const { alerts } = runTicks(createSkipTracker(), () => fleet24(readAsDisabled), T0, T0 + 2 * HOUR, deps)
+    expect(runs).toEqual([])
+    expect(alerts).toBe(0)
+  })
+
+  it('seeded from the DB: skipped_disabled rows from the first tick on, and one alert', () => {
+    const { runs, deps } = harness()
+    const tasks = fleet24(readAsDisabled)
+    const { alerts } = runTicks(createSkipTracker(), () => tasks, T0, T0 + 2 * HOUR, { ...deps, dbRunnable: dbEnabled(tasks) })
+
+    expect(alerts).toBe(1)
+    for (let i = 0; i < 24; i++) {
+      const rows = runs.filter(r => r.name === `t${i}`)
+      expect(rows.length, `t${i}`).toBe(occurrencesBetween(CADENCE_MIN[i % 3], T0, T0 + 2 * HOUR))
+      expect(new Set(rows.map(r => r.status))).toEqual(new Set([SKIP_STATUS_DISABLED]))
+    }
+  })
+
+  it('the very first scan already records and alerts (no warm-up tick)', () => {
+    const { runs, deps } = harness()
+    const tasks = fleet24(readAsDisabled)
+    const res = createSkipTracker().scan(tasks, T0, T0 + 30 * MIN, { ...deps, dbRunnable: dbEnabled(tasks) })
+    expect(res.alert).toBe(true)
+    expect(res.recorded.length).toBeGreaterThan(0)
+    expect(runs.length).toBeGreaterThan(0)
+  })
+
+  it('tasks the DB itself has disabled stay out of it, even in the middle of a mass event', () => {
+    const { runs, deps } = harness()
+    const tasks = fleet24(readAsDisabled)
+    const dbSaysEnabled = tasks.filter((_, i) => i >= 4).map(t => t.name) // t0..t3 are disabled in the DB too
+    runTicks(createSkipTracker(), () => tasks, T0, T0 + 2 * HOUR, { ...deps, dbRunnable: () => dbSaysEnabled })
+
+    for (let i = 0; i < 4; i++) expect(runs.filter(r => r.name === `t${i}`), `t${i}`).toEqual([])
+    expect(runs.filter(r => r.name === 't4').length).toBeGreaterThan(0)
+  })
+
+  it('a fleet the DB has disabled as a whole (operator switch-off) records nothing and does not alert', () => {
+    const { runs, deps } = harness()
+    const { alerts } = runTicks(createSkipTracker(), () => fleet24(readAsDisabled), T0, T0 + 2 * HOUR, { ...deps, dbRunnable: () => [] })
+    expect(runs).toEqual([])
+    expect(alerts).toBe(0)
+  })
+
+  it('the baseline is read once, before the first scan only', () => {
+    const { deps } = harness()
+    let reads = 0
+    const tasks = fleet24(readAsDisabled)
+    runTicks(createSkipTracker(), () => tasks, T0, T0 + HOUR, { ...deps, dbRunnable: () => { reads++; return tasks.map(t => t.name) } })
+    expect(reads).toBe(1)
+  })
+
+  it('a failing baseline read does not break the tick (falls back to the tick evidence)', () => {
+    const { runs, deps } = harness()
+    const tasks = fleet24(i => (i < 4 ? {} : { status: 'draft' }))
+    const { alerts } = runTicks(createSkipTracker(), () => tasks, T0, T0 + HOUR, { ...deps, dbRunnable: () => { throw new Error('db gone') } })
+    expect(runs.length).toBeGreaterThan(0) // drafts still recorded
+    expect(alerts).toBe(1)
+  })
+})
+
 describe('skip ledger: what is NOT a mass event', () => {
   it('a single operator toggle among many tasks records nothing and does not alert', () => {
     const { runs, deps } = harness()
@@ -266,6 +337,10 @@ describe('the runner wires the ledger into every tick', () => {
 
   it('raises the mass-skip alert off the scan result', () => {
     expect(SRC).toMatch(/if \(skipScan\.alert\) sendMassSkipAlert\(/)
+  })
+
+  it('seeds the skip tracker baseline from the DB rows, not from the tick task list', () => {
+    expect(SRC).toMatch(/dbRunnable: listDbRunnableTaskNames/)
   })
 
   it('reconciles task-config.json enabled from the DB', () => {

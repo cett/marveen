@@ -245,6 +245,16 @@ export function listScheduledTasks(): ScheduledTask[] {
   return listScheduledTasksFromFiles()
 }
 
+/** Names of the DB schedules that are enabled AND live. Reads the DB row
+ *  itself (never the task-config.json mirror), so it is the scheduler's baseline
+ *  of what SHOULD be running no matter how the tick's own task list was read. */
+export function listDbRunnableTaskNames(): string[] {
+  return listSchedulesFromDb({ includeFleet: true })
+    .map(rowToTask)
+    .filter(t => t.enabled && isTaskLive(t))
+    .map(t => t.name)
+}
+
 // File-system fallback (unchanged original logic, kept for transition/rollback).
 export function listScheduledTasksFromFiles(): ScheduledTask[] {
   if (!existsSync(SCHEDULED_TASKS_DIR)) return []
