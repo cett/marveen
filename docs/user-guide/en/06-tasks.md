@@ -100,7 +100,7 @@ Each finished run is also added to the task's run history. The badge in the list
 
 ### Setting one up
 
-Choose the **Command (shell, no LLM)** type in the New task dialog. The dialog then asks for the **Command** (required), the **Timeout (ms)** and **Alert after this many consecutive failures**, and the prompt is not required and is not sent. The Edit dialog shows an existing command task the same way and keeps its type when you save it.
+Choose the **Command (shell, no LLM)** type in the New task dialog. The dialog then asks for the **Command** (required), the **Timeout (ms)** and **Alert after this many consecutive failures**, and the prompt is not required and is not sent. The Edit dialog shows an existing command task the same way with the type selector disabled, and keeps its type when you save it.
 
 Through the API, `POST /api/schedules` with `type` set to `command` needs a `command` and no `prompt`; `timeoutMs` and `failThreshold` are optional positive integers.
 

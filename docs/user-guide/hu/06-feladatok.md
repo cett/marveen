@@ -100,7 +100,7 @@ Minden lefutott futás bekerül a feladat futási előzményeibe is. A listában
 
 ### Beállítás
 
-Az Új feladat ablakban válaszd a **Parancs (shell, LLM nélkül)** típust. Az ablak ilyenkor a **Parancs** mezőt (kötelező), az **Időkorlát (ms)** és a **Riasztás ennyi egymás utáni hiba után** értékét kéri, a prompt nem kötelező, és nem kerül elküldésre. A Szerkesztés ablak a meglévő parancs típusú feladatot ugyanígy mutatja, és mentéskor megtartja a típusát.
+Az Új feladat ablakban válaszd a **Parancs (shell, LLM nélkül)** típust. Az ablak ilyenkor a **Parancs** mezőt (kötelező), az **Időkorlát (ms)** és a **Riasztás ennyi egymás utáni hiba után** értékét kéri, a prompt nem kötelező, és nem kerül elküldésre. A Szerkesztés ablak a meglévő parancs típusú feladatot ugyanígy mutatja, letiltott típusválasztóval, és mentéskor megtartja a típusát.
 
 Az API-n a `POST /api/schedules` hívás `command` típussal `command` értéket kér, `prompt` nélkül; a `timeoutMs` és a `failThreshold` opcionális pozitív egész szám.
 
