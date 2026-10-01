@@ -245,6 +245,16 @@ export function listScheduledTasks(): ScheduledTask[] {
   return listScheduledTasksFromFiles()
 }
 
+/** Names of the DB schedules that are enabled AND live. Reads the DB row
+ *  itself (never the task-config.json mirror), so it is the scheduler's baseline
+ *  of what SHOULD be running no matter how the tick's own task list was read. */
+export function listDbRunnableTaskNames(): string[] {
+  return listSchedulesFromDb({ includeFleet: true })
+    .map(rowToTask)
+    .filter(t => t.enabled && isTaskLive(t))
+    .map(t => t.name)
+}
+
 // File-system fallback (unchanged original logic, kept for transition/rollback).
 export function listScheduledTasksFromFiles(): ScheduledTask[] {
   if (!existsSync(SCHEDULED_TASKS_DIR)) return []
@@ -287,6 +297,37 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
     lastRunAt: row.last_run_at ?? undefined,
     lastRunResult: row.last_run_result ?? undefined,
   }
+}
+
+/**
+ * Pull task-config.json's `enabled` back to the DB value. The file is only a
+ * mirror of the `schedules` row (the DB is the source of truth, the runner reads
+ * it), so a drifted copy misleads anyone reading the file and would re-enable or
+ * disable a task on a DB-less rollback. Only `enabled` is touched: the key is
+ * rewritten in place, every other key and the SKILL.md stay byte-for-byte; a
+ * missing or unparseable file is left alone (the mirror is never created here).
+ * Returns the names of the tasks whose file was rewritten.
+ */
+export function syncTaskConfigEnabledFromDb(
+  rows: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>> = listSchedulesFromDb({ includeFleet: true }),
+  dir: string = SCHEDULED_TASKS_DIR,
+): string[] {
+  const fixed: string[] = []
+  for (const row of rows) {
+    const configPath = join(dir, row.id, 'task-config.json')
+    let config: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as unknown
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+      config = parsed as Record<string, unknown>
+    } catch { continue }
+    const want = row.enabled === 1
+    if (config.enabled === want) continue
+    config.enabled = want
+    atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+    fixed.push(row.id)
+  }
+  return fixed
 }
 
 export function writeScheduledTask(
