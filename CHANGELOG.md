@@ -95,6 +95,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 - sync README fork-diff and user guide with the P2c search feature
 - document the pagination-dashboard feature
 - user guide and fork guide (HU+EN) cover the model-fallback overlay, `type: command` scheduled tasks (asynchronous run, health file, run-now response, nightly backup as a command task), the required-MCP pre-check, the context restart gate stale signals and the fleet heartbeat sweep usage guard. **[API]** `docs/openapi.yaml` documents `POST /schedules/{name}/run`, the tenant rule of `PUT /messages/{id}` (another tenant's message answers 404) and the overlay clearing of `PUT /agents/{name}`.
+- task guide (HU+EN) describes command tasks in the task dialog and the `allowTypeChange` guard. **[API]** `docs/openapi.yaml` `POST /schedules` now lists the real request fields (`name`, `schedule`, `prompt`, `agent`, `type`, `command`, `timeoutMs`, `failThreshold`, ...) and the `200`/`400`/`409`/`413` responses instead of the outdated `201` and `agent_id`/`skill_name`/`cron` shape.
 
 ### Infrastructure
 

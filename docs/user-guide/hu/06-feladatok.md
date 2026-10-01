@@ -44,7 +44,7 @@ A feladatok háromféle nézetben tekinthetők meg:
 
 1. Kattints az **+ Feladat** gombra.
 2. Add meg a nevet (egyedi, utólag nem módosítható) és az opcionális leírást.
-3. Válaszd ki a feladattípust (Feladat / Szívdobogás). Parancs típusú feladat ebből az ablakból nem hozható létre; lásd [Parancs típusú feladatok](#parancs-típusú-feladatok).
+3. Válaszd ki a feladattípust (Feladat / Szívdobogás / Parancs). A parancs típusú feladat prompt helyett egy shell-parancsot, egy opcionális időkorlátot és azt a számot kéri, ahány egymás utáni hiba után riasztás megy; lásd [Parancs típusú feladatok](#parancs-típusú-feladatok).
 4. Ha szívdobogást választottál, a beépített sablonok közül egyet kiválaszthatod kiindulópontnak:
    - **Naptár** - közeli esemény figyelése (15 percenként)
    - **E-mail** - sürgős levél figyelése (30 percenként)
@@ -100,9 +100,11 @@ Minden lefutott futás bekerül a feladat futási előzményeibe is. A listában
 
 ### Beállítás
 
-Az Új feladat és a Szerkesztés ablak csak a Feladat és a Szívdobogás típust ismeri. A parancs típusú feladatot az API-n keresztül kell beállítani: hozd létre az ütemezést, majd módosítsd (`PUT /api/schedules/{name}`) úgy, hogy a `type` értéke `command` legyen, mellé add meg a `command` értékét, és szükség esetén a `timeoutMs` és a `failThreshold` értékét.
+Az Új feladat ablakban válaszd a **Parancs (shell, LLM nélkül)** típust. Az ablak ilyenkor a **Parancs** mezőt (kötelező), az **Időkorlát (ms)** és a **Riasztás ennyi egymás utáni hiba után** értékét kéri, a prompt nem kötelező, és nem kerül elküldésre. A Szerkesztés ablak a meglévő parancs típusú feladatot ugyanígy mutatja, letiltott típusválasztóval, és mentéskor megtartja a típusát.
 
-Parancs típusú feladatot ne mentsd a Szerkesztés ablakból. Az ablak azt a típust küldi el, amit mutat (Feladat vagy Szívdobogás), ami a feladatot visszaalakítaná ágens-feladattá.
+Az API-n a `POST /api/schedules` hívás `command` típussal `command` értéket kér, `prompt` nélkül; a `timeoutMs` és a `failThreshold` opcionális pozitív egész szám.
+
+A szerver elutasítja azt a módosítást, amely a parancs típusú feladatot másik típusra váltaná, hacsak a kérés kifejezetten nem küldi az `allowTypeChange: true` értéket, így egy régebbi kliens nem alakíthatja át véletlenül.
 
 ---
 

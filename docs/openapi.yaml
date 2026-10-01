@@ -2856,36 +2856,90 @@ paths:
       tags: [schedules]
       operationId: createSchedule
       summary: Create a scheduled task
+      description: >-
+        Creates a schedule. Only a human dashboard login creates it as `live`;
+        any other caller (including agents on the shared token) gets a `draft`
+        that an admin must activate before the runner fires it. `prompt` is
+        required for `task` and `heartbeat`; a `command` task needs `command`
+        instead and the prompt is optional. A non-admin caller always gets its
+        own tenant.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [agent_id, skill_name, cron]
+              required: [name, schedule]
               properties:
-                agent_id:
+                name:
                   type: string
-                skill_name:
+                  description: Unique task name (sanitized to a slug)
+                description:
                   type: string
-                cron:
+                prompt:
+                  type: string
+                  description: Required unless `type` is `command`
+                schedule:
                   type: string
                   description: Cron expression (node local TZ, Europe/Budapest)
-                task_type:
+                agent:
                   type: string
-                  enum: [task, heartbeat]
+                  description: Target agent (defaults to the main agent)
+                type:
+                  type: string
+                  enum: [task, heartbeat, command]
                   default: task
-                payload:
-                  type: object
+                skipIfBusy:
+                  type: boolean
+                forceSend:
+                  type: boolean
+                targetSession:
+                  type: string
+                command:
+                  type: string
+                  description: Shell command, required when `type` is `command`
+                timeoutMs:
+                  type: integer
+                  minimum: 1
+                  description: Command timeout in milliseconds (command tasks)
+                failThreshold:
+                  type: integer
+                  minimum: 1
+                  description: Consecutive failures before an alert (command tasks)
+                tenant_id:
+                  type: string
+                  description: Admin only; omitted means fleet scope
       responses:
-        "201":
+        "200":
           description: Task created
           content:
             application/json:
               schema:
                 type: object
+                required: [ok, name, status]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  name:
+                    type: string
+                  status:
+                    type: string
+                    enum: [draft, live]
         "400":
-          description: Validation error
+          description: Validation error (missing name, prompt, schedule or command, bad cron, non-positive timeoutMs or failThreshold)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A schedule with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: Request body or prompt too large
           content:
             application/json:
               schema:

@@ -44,7 +44,7 @@ Tasks can be viewed in three layouts:
 
 1. Click the **+ Task** button.
 2. Enter a name (unique, cannot be changed later) and an optional description.
-3. Select the task type (Task / Heartbeat). Command tasks cannot be created from this dialog; see [Command tasks](#command-tasks).
+3. Select the task type (Task / Heartbeat / Command). A command task asks for a shell command, an optional timeout and the number of consecutive failures after which an alert is sent, instead of a prompt; see [Command tasks](#command-tasks).
 4. For heartbeat tasks, you can choose a built-in template as a starting point:
    - **Calendar** - watch for upcoming events (every 15 minutes)
    - **Email** - watch for urgent messages (every 30 minutes)
@@ -100,9 +100,11 @@ Each finished run is also added to the task's run history. The badge in the list
 
 ### Setting one up
 
-The New task and Edit dialogs only know the Task and Heartbeat types. A command task is set up through the API: create the schedule, then update it (`PUT /api/schedules/{name}`) with `type` set to `command` plus `command`, and optionally `timeoutMs` and `failThreshold`.
+Choose the **Command (shell, no LLM)** type in the New task dialog. The dialog then asks for the **Command** (required), the **Timeout (ms)** and **Alert after this many consecutive failures**, and the prompt is not required and is not sent. The Edit dialog shows an existing command task the same way with the type selector disabled, and keeps its type when you save it.
 
-Do not save a command task from the Edit dialog. The dialog submits the type it shows (Task or Heartbeat), which would turn the task back into an agent task.
+Through the API, `POST /api/schedules` with `type` set to `command` needs a `command` and no `prompt`; `timeoutMs` and `failThreshold` are optional positive integers.
+
+The server refuses a change that would turn a command task into another type unless the request explicitly sends `allowTypeChange: true`, so an older client cannot convert it by accident.
 
 ---
 
