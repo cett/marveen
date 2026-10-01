@@ -119,6 +119,23 @@ A task that works through an MCP server (for example email or calendar) can decl
 
 ---
 
+## Run history and skipped runs
+
+The **Run history** action in the list row shows the latest 10 runs of a task: the time, the status and an estimated token use. The usual statuses are shown as OK, Error and Skipped; any other status is shown under its stored name.
+
+The scheduler does not let a due occurrence of an enabled task disappear without a trace. When an occurrence is due but the task is held back, one row is added to the run history, once per occurrence and once for every agent the task would have run on:
+
+| Status | Meaning |
+|--------|---------|
+| `skipped_not_live` | The task is enabled but still a Draft or Pending review, so the review gate holds it back. Every due occurrence is recorded. |
+| `skipped_disabled` | The task was switched off together with most of the other tasks at once (see below). Every due occurrence is recorded for as long as it stays off, for at most 24 hours. |
+
+These rows only record that the occurrence was held back; the task is not run. A task you pause on your own, or a single toggle, is the normal switch: it leaves no row.
+
+When most enabled tasks are held back at the same time (at least 4 tasks in play and more than half of them), the scheduler treats it as a fault instead of a deliberate pause. The owner then gets one Telegram alert listing the held tasks (if the Telegram bot token and owner chat are configured; the alert text is currently always Hungarian), and the event is also written to the audit log. There is no new alert until the situation has ended. If you see such an alert, check the **Status** and enabled state of the tasks.
+
+---
+
 ## Pausing and resuming
 
 The pause or play button in the list row temporarily pauses or resumes a task. A paused task does not run, but its configuration is preserved.

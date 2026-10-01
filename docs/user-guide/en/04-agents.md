@@ -118,10 +118,11 @@ Because the override is on disk:
 
 ### Seeing and resetting it
 
-- The model badge on the agent card always shows the configured model. The detail panel header and the model selector on the Settings tab show the model the live session reported, which is the fallback model while a downgrade is active.
-- Changing an agent's model on the Settings tab and saving it replaces the override: the override is removed and the agent restarts on the model you chose. Saving a form that submits the configured model unchanged does not remove it. Note that while a downgrade is active the selector shows the fallback model, so saving without changing the selection makes the fallback model the new configured model.
+- The model badge on the agent card always shows the configured model. While a downgrade is active, the detail panel header shows the model the live session runs on (the fallback model) with a `fallback active: <model>` marker next to it. The model selector on the Settings tab keeps showing the configured model, with the same marker and a short hint underneath.
+- Choosing a different model on the Settings tab and saving it replaces the override: the override is removed and the agent restarts on the model you chose. Saving without changing the selection does nothing: no request is sent, the agent is not restarted and the override stays in place, so the agent returns to its configured model when the revert time is up.
 - To send an agent back to its configured model by hand without changing the configuration, remove that agent's entry from `store/model-fallback-state.json` and restart the agent. This is also the way to reset the main agent, whose model cannot be edited from the dashboard.
-- Switching the feature off does not remove existing overrides, and no revert runs while it is off. An agent that is still on a fallback model stays there until the override is removed as described above or the feature is switched on again.
+- Switching the feature off only stops new downgrades. An agent that is already on a fallback model still returns to its configured model: while an override exists the system keeps checking that agent once a minute and, when the revert time has passed since the downgrade, removes the override and restarts the agent exactly as it does with the feature on (an idle agent only; the main agent is relaunched). With the feature off a limit message on the terminal no longer holds the revert back, and agents without an override are not looked at. The saved revert time still applies, so the return can take as long as that time minus what has already passed since the downgrade; use the manual reset above if you do not want to wait.
+- If an agent is stopped when its override is due, the override is simply removed without a restart, and the next start of the agent uses its configured model. This applies with the feature on as well.
 
 ---
 

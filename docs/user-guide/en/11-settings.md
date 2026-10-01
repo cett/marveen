@@ -224,6 +224,8 @@ The Model fallback section is synthetic and admin-only. It configures the fleet-
 | **Model chain** | The first entry is the primary model; each following entry is the next step down. At least 2 entries are required |
 | **Revert after (minutes)** | How long after a downgrade the agent may return to its configured model, once the limit message is gone |
 
+Unchecking **Enabled** stops new downgrades only. An agent that is already on a fallback model still returns to its configured model once the revert time has passed (the saved value applies), so you do not need to switch the feature back on to release it. The details are in [04 - Agents](04-agents.md#model-fallback-on-usage-limit).
+
 ---
 
 ## Tips

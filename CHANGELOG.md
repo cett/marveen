@@ -96,6 +96,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 - document the pagination-dashboard feature
 - user guide and fork guide (HU+EN) cover the model-fallback overlay, `type: command` scheduled tasks (asynchronous run, health file, run-now response, nightly backup as a command task), the required-MCP pre-check, the context restart gate stale signals and the fleet heartbeat sweep usage guard. **[API]** `docs/openapi.yaml` documents `POST /schedules/{name}/run`, the tenant rule of `PUT /messages/{id}` (another tenant's message answers 404) and the overlay clearing of `PUT /agents/{name}`.
 - task guide (HU+EN) describes command tasks in the task dialog and the `allowTypeChange` guard. **[API]** `docs/openapi.yaml` `POST /schedules` now lists the real request fields (`name`, `schedule`, `prompt`, `agent`, `type`, `command`, `timeoutMs`, `failThreshold`, ...) and the `200`/`400`/`409`/`413` responses instead of the outdated `201` and `agent_id`/`skill_name`/`cron` shape.
+- user guide and fork guide (HU+EN) cover the skipped-run statuses `skipped_not_live` / `skipped_disabled`, the mass-skip alert, the restart baseline and the `task-config.json` `enabled` sync from the database, the model selector that keeps the configured model with a `fallback active` marker (the old warning about saving it unchanged is gone), and the revert of an existing fallback overlay when the feature is switched off (the old warning that the agent stays stuck is gone).
 
 ### Infrastructure
 

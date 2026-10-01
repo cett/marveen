@@ -163,6 +163,8 @@ Scheduled tasks are file-based: each task is a directory containing a `SKILL.md`
 - `heartbeat` -- only notifies when something important or urgent is detected
 - `command` -- runs a shell command directly (no agent session, no prompt); see "Command tasks" below
 
+The database row is the source of truth for `enabled`; `task-config.json` is only a mirror of it. The scheduler pulls a drifted `enabled` in the file back to the database value at startup and then once an hour (database to file only, never the other way round). Only that key is rewritten, every other key keeps its value, `SKILL.md` is not touched, and a missing or unparseable file is skipped (the mirror is never created by the sync). Each correction is logged as a warning that names the tasks.
+
 ### Built-in tasks
 
 Marveen seeds the following tasks at install time:
@@ -230,6 +232,30 @@ Example, a nightly backup that alerts on the first failure (give it a generous t
 
 - Prompt tasks (`task`, `heartbeat`): the prompt is delivered to the target agent session like a cron fire. A stopped agent is started, and a busy session gets a queued retry. The response lists one outcome per agent, for example `<agent>: fired`.
 - Command tasks: the shell command is run directly, as the cron loop does, and the last-run time is recorded. The call does not wait for the command; it answers at once with `command: started (outcome in store/command-task-health.json)`.
+
+### Held-back occurrences and the mass-skip alert
+
+A due occurrence of an enabled task must not be consumed without a trace. Every tick the scheduler sorts each task into one of three states:
+
+| State | Condition | Effect |
+|-------|-----------|--------|
+| runnable | enabled and live | normal fire and catch-up |
+| disabled | `enabled` is off | normally the operator's own switch: no run, no row, never replayed by a catch-up |
+| not live | enabled, but the review gate holds it (`draft` / `pending_review`) | not run; every due occurrence is written to `task_runs` as `skipped_not_live` |
+
+One row is written per due occurrence found in the tick window, once for every target agent (the task's agent, the main agent when none is set, or the main agent plus every running agent for an `all` task). The rows show in the run history (`GET /api/v1/schedules/<name>/runs`, latest 10) and the dashboard shows the raw status name.
+
+A disabled task is also recorded, as `skipped_disabled`, when it is part of a **mass event**. A mass event is when at least 4 tasks are in play (the tasks that were runnable on the previous tick plus every task that is enabled now) and more than half of them are held back at once. Held back means not live, or disabled although it was runnable on the previous tick. That is the scheduler reading its own tasks wrongly, not one operator toggling a switch, so each held occurrence is recorded. A task stays in the event until it is runnable again or 24 hours have passed. Tasks that were already disabled before the event are never part of it, and a single toggle never reaches the threshold.
+
+When a mass event starts, one alert goes out:
+
+- an error line in the dashboard log;
+- an audit row (agent `scheduler`, entity `schedule`, action `mass_skip`, detail: number of held tasks, number of tasks, up to 8 names), visible in the dashboard audit log;
+- a Telegram message to the owner chat with the number of held tasks and up to 8 names (`+N` for the rest), when the bot token and owner chat id are configured. The text is currently always Hungarian.
+
+The alert is deduplicated, not rate-limited by time: the flag stays set while the event lasts and is re-armed as soon as the condition no longer holds. It lives in memory, so a restart that is still inside an event alerts again.
+
+The detection survives a restart. The "runnable on the previous tick" baseline is kept in memory, so a freshly started process would have no history and could take a state where every task already reads as disabled as normal. On the first scan the baseline is therefore seeded from the database rows themselves (enabled and live, read independently of the tick's own task list), so a process that comes up inside a mass event records the held occurrences and sends the alert from its first tick. Tasks the database has disabled are not in the baseline and leave no rows. If the baseline read fails, the scan falls back to the tick's own evidence. A failure of the whole skip ledger is logged as a warning and never breaks the tick.
 
 ### MCP pre-check
 

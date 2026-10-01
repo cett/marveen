@@ -224,6 +224,8 @@ A Modell fallback szekció szintetikus, és csak rendszergazdának érhető el. 
 | **Modell lánc** | Az első elem az elsődleges modell; minden további elem a következő lépcső lefelé. Legalább 2 elem kell |
 | **Visszaállási idő (perc)** | A lefokozás után mennyi idővel térhet vissza az ágens a beállított modelljére, ha a limit üzenet már eltűnt |
 
+Az **Engedélyezve** kikapcsolása csak az új lefokozásokat állítja le. Az az ágens, amely már a fallback modellen van, a visszaállási idő leteltével (a mentett érték érvényes) továbbra is visszatér a beállított modelljére, így nem kell visszakapcsolnod a funkciót a felszabadításához. A részletek a [04 - Ágensek](04-agensek.md#modell-fallback-használati-limit-esetén) fejezetben vannak.
+
 ---
 
 ## Tippek

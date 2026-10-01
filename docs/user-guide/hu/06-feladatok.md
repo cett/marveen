@@ -119,6 +119,23 @@ Az a feladat, amely MCP szerveren keresztül dolgozik (például e-mail vagy nap
 
 ---
 
+## Futási előzmények és kihagyott futások
+
+A lista sorában a **Futási előzmények** művelet a feladat legutóbbi 10 futását mutatja: az időpontot, az állapotot és a becsült tokenhasználatot. A szokásos állapotok Rendben, Hiba és Kihagyva néven jelennek meg; minden más állapot a tárolt nevén látszik.
+
+Az ütemező nem hagyja nyomtalanul eltűnni egy engedélyezett feladat esedékes előfordulását. Ha egy előfordulás esedékes, de a feladatot visszatartják, a futási előzményekbe egy sor kerül, előfordulásonként egyszer, és minden olyan ágensre külön, amelyen a feladat futott volna:
+
+| Állapot | Jelentés |
+|---------|----------|
+| `skipped_not_live` | A feladat engedélyezett, de még Vázlat vagy Jóváhagyás alatt van, ezért a jóváhagyási kapu visszatartja. Minden esedékes előfordulás rögzítődik. |
+| `skipped_disabled` | A feladatot a többi feladat többségével egyszerre kapcsolták ki (lásd lent). Amíg kikapcsolva marad, minden esedékes előfordulás rögzítődik, legfeljebb 24 óráig. |
+
+Ezek a sorok csak azt rögzítik, hogy az előfordulást visszatartották; a feladat nem fut le. Az a feladat, amelyet te magad szüneteltetsz, vagy egy különálló kapcsolgatás a megszokott művelet: nem hagy sort maga után.
+
+Ha az engedélyezett feladatok többsége egyszerre van visszatartva (legalább 4 feladat van játékban, és több mint a fele), az ütemező ezt hibának tekinti, nem szándékos szüneteltetésnek. Ilyenkor a tulajdonos egyetlen Telegram-riasztást kap a visszatartott feladatok listájával (ha a Telegram bot token és a tulajdonosi chat be van állítva; a riasztás szövege jelenleg mindig magyar), az esemény pedig az audit naplóba is bekerül. Új riasztás addig nem jön, amíg a helyzet meg nem szűnik. Ha ilyen riasztást látsz, nézd meg a feladatok **Státusz** és engedélyezett állapotát.
+
+---
+
 ## Szüneteltetés és folytatás
 
 A lista sorában a szünet- vagy lejátszás-gombbal az adott feladat ideiglenesen szüneteltethető, majd folytatható. Szüneteltetett feladat nem fut, de a konfigurációja megmarad.
