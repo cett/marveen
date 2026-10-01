@@ -2905,6 +2905,14 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Schedule"
+        "403":
+          description: >-
+            Refused: the account has no tenant, or, in `enforce` mode, the role
+            lacks `schedules:read`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       tags: [schedules]
       operationId: createSchedule
@@ -3016,7 +3024,8 @@ paths:
         "403":
           description: >-
             The caller is not allowed to create schedules: no tenant, a device
-            key, or the default tenant for a non-admin
+            key or federation principal, the default tenant for a non-admin, or,
+            in `enforce` mode, a role without `schedules:write`
           content:
             application/json:
               schema:
@@ -3060,6 +3069,14 @@ paths:
                 type: array
                 items:
                   type: object
+        "403":
+          description: >-
+            Refused: the account has no tenant, or, in `enforce` mode, the role
+            lacks `schedules:read`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /schedules/agents:
     get:
@@ -3097,6 +3114,14 @@ paths:
                     avatar:
                       type: string
                       description: Avatar URL
+        "403":
+          description: >-
+            Refused: the account has no tenant, or, in `enforce` mode, the role
+            lacks `schedules:read`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /schedules/tick-status:
     get:
@@ -3149,6 +3174,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            Refused: the account has no tenant, a device key or federation
+            principal, the `default` tenant for a non-admin, or, in `enforce`
+            mode, a role without `schedules:write`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: Retry not found (also for another tenant's retry)
           content:
@@ -3182,8 +3216,11 @@ paths:
         another type without `allowTypeChange: true`.
 
 
+        Needs `schedules:write`.
+
+
         Re-review: a caller that is not an authenticated admin (a tenant user,
-        a scoped token, a device key, an agent on the shared token) who changes
+        a scoped token, an agent on the shared token) who changes
         what a `live` task executes (`prompt`, `command`, `type`, `schedule`,
         `agent`, `targetSession`, `timeoutMs`, `failThreshold`, `skipIfBusy`,
         `forceSend`) sets it to `pending_review`. The change is written, the
@@ -3248,7 +3285,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: A tenant move by a caller that is not an authenticated admin
+          description: >-
+            A tenant move by a caller that is not an authenticated admin, or the
+            refusals every schedules write can get: no tenant, a device key or
+            federation principal, the `default` tenant for a non-admin, or, in
+            `enforce` mode, a role without `schedules:write`
           content:
             application/json:
               schema:
@@ -3269,9 +3310,19 @@ paths:
       tags: [schedules]
       operationId: deleteSchedule
       summary: Delete a scheduled task
+      description: Needs `schedules:write`. Writes one audit row.
       responses:
         "200":
           description: Deleted
+        "403":
+          description: >-
+            Refused: the account has no tenant, a device key or federation
+            principal, the `default` tenant for a non-admin, or, in `enforce`
+            mode, a role without `schedules:write`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: Schedule not found (also for a schedule of another tenant)
           content:
@@ -3290,6 +3341,9 @@ paths:
       tags: [schedules]
       operationId: toggleSchedule
       summary: Enable or disable a scheduled task
+      description: >-
+        Needs `schedules:write`. Switching a task on or off never changes its
+        review status: a `draft` or `pending_review` task stays held.
       responses:
         "200":
           description: New state
@@ -3301,6 +3355,15 @@ paths:
                 properties:
                   ok: { type: boolean, enum: [true] }
                   enabled: { type: boolean }
+        "403":
+          description: >-
+            Refused: the account has no tenant, a device key or federation
+            principal, the `default` tenant for a non-admin, or, in `enforce`
+            mode, a role without `schedules:write`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: Schedule not found (also for a schedule of another tenant)
           content:
@@ -3324,7 +3387,8 @@ paths:
         Authenticated admin only: an agent on the shared token cannot approve
         its own proposal. Pass the `contentHash` the task was listed with as
         `expected_hash`: if the task changed since, nothing is activated and the
-        answer is 409 `stale_revision` with the current hash.
+        answer is 409 `stale_revision` with the current hash. Needs `admin:all`
+        and, on top of that, a signed-in admin; writes one audit row.
       parameters:
         - name: expected_hash
           in: query
@@ -3360,7 +3424,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                type: object
+                required: [error]
+                properties:
+                  error: { type: string, enum: [stale_revision] }
+                  content_hash:
+                    type: string
+                    description: The task's current `contentHash`; review it and activate again with this value.
+                  hint: { type: string }
 
   /schedules/{name}/runs:
     parameters:
@@ -3391,7 +3462,7 @@ paths:
                       description: >-
                         Outcome of the run, for example `fired`, `error` or `skipped`. A due
                         occurrence the scheduler held back is recorded instead
-                        of run: `skipped_not_live` (still a draft),
+                        of run: `skipped_not_live` (a draft, or a task held for a new review),
                         `skipped_disabled` (switched off in a mass event) and
                         `skipped_tenant_mismatch` (the task's tenant and agent
                         no longer fit together: the agent was switched off for
@@ -3399,6 +3470,14 @@ paths:
                     tokens_est:
                       type: integer
                       description: Estimated token use of the run, null when it cannot be estimated
+        "403":
+          description: >-
+            Refused: the account has no tenant, or, in `enforce` mode, the role
+            lacks `schedules:read`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: Schedule not found (also for a schedule of another tenant)
           content:
@@ -3420,8 +3499,8 @@ paths:
       description: >-
         Fires the task immediately, bypassing the cron match, the catch-up
         window and `skipIfBusy`. A disabled task answers 409 `disabled` and a
-        draft task 409 `not_live` (a human admin may still run a draft to
-        preview it).
+        draft or `pending_review` task 409 `not_live` (a signed-in admin may
+        still run it to preview it). Needs `schedules:write`.
 
 
         For prompt-type tasks (`task`, `heartbeat`) the prompt is delivered to
@@ -3457,6 +3536,15 @@ paths:
                       for command tasks.
         "400":
           description: Run rejected for another reason
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            Refused: the account has no tenant, a device key or federation
+            principal, the `default` tenant for a non-admin, or, in `enforce`
+            mode, a role without `schedules:write`
           content:
             application/json:
               schema:

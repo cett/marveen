@@ -35,9 +35,9 @@ Tasks can be viewed in three layouts:
 | **Description** | Optional short text |
 | **Schedule** | Cron expression in human-readable form |
 | **Agent** | Which agent runs it (not used for execution by command tasks) |
-| **Status** | Live or Draft / Pending review |
+| **Status** | Live (no badge), or a badge: **draft** (never approved yet) or **awaiting review** (approved before, changed since; see [Editing a live task: re-review](#editing-a-live-task-re-review)) |
 | **Tenant** | The tenant the task belongs to, shown as a small badge next to the agent (global admins only, see [Tenants and tasks](#tenants-and-tasks)) |
-| **Actions** | Activate (drafts only) / Run now / Pause / Resume / Run history / Delete; click the row to edit |
+| **Actions** | Activate (draft and awaiting-review tasks only, admins only) / Run now / Pause / Resume / Run history / Delete; click the row to edit |
 
 ---
 
@@ -59,6 +59,8 @@ Tasks can be viewed in three layouts:
    - **Custom** - any cron expression
 8. Select the target agent. When the dialog has a tenant field, the list only offers the agents that serve the picked tenant.
 9. Click **Save**.
+
+Who creates a live task: only a signed-in admin. A task that anyone else creates (a tenant user in the dashboard, a user with an API token, an agent) starts as a **draft** and does not run until a signed-in admin activates it. A tenant can have at most **20** tasks waiting for review (drafts plus tasks awaiting review) at the same time: the 21st draft is refused with a 400 error (token `limit_exceeded`, "This tenant already has N schedules waiting for review (max 20); an admin must activate or delete some first"). Live tasks do not count, deleting a task frees a slot, editing a task the tenant already has is never blocked by the cap, and a signed-in admin creating a live task is not subject to it.
 
 ---
 
@@ -129,7 +131,7 @@ The scheduler does not let a due occurrence of an enabled task disappear without
 
 | Status | Meaning |
 |--------|---------|
-| `skipped_not_live` | The task is enabled but still a Draft or Pending review, so the review gate holds it back. Every due occurrence is recorded. |
+| `skipped_not_live` | The task is enabled but still a draft or awaiting review, so the review gate holds it back. Every due occurrence is recorded. |
 | `skipped_disabled` | The task was switched off together with most of the other tasks at once (see below). Every due occurrence is recorded for as long as it stays off, for at most 24 hours. |
 | `skipped_tenant_mismatch` | The task is enabled and live, but its tenant and agent no longer fit together: the agent was switched off for the task's tenant, the tenant was disabled or its main agent changed, or the agent no longer exists. Every due occurrence is recorded until the pair is valid again. |
 
@@ -149,7 +151,28 @@ The pause or play button in the list row temporarily pauses or resumes a task. A
 
 ## Editing
 
-Click a task row or select its edit icon to open the edit modal. The task name cannot be changed; all other fields can be edited. Global admins can also change the tenant here, which has a consequence: see [Moving a task to another tenant](#moving-a-task-to-another-tenant).
+Click a task row or select its edit icon to open the edit modal. The task name cannot be changed; all other fields can be edited. Global admins can also change the tenant here, which has a consequence: see [Moving a task to another tenant](#moving-a-task-to-another-tenant). Whoever is not a signed-in admin can edit the tasks of their own tenant too, with one consequence for live tasks: see the next section.
+
+---
+
+## Editing a live task: re-review
+
+An approved (live) task is only trusted for the content that was approved. When someone other than a signed-in admin changes what the task executes, the change is saved but the task goes back to review.
+
+**Who triggers it.** Every caller who is not a signed-in admin: a tenant user in the dashboard, a user with an API token, and an agent calling with the shared dashboard token (the shared token carries the admin role, but it is not a person looking at the screen). A device key or a federation principal cannot change scheduled tasks at all. A signed-in admin editing a task never sends it back to review.
+
+**Which changes trigger it.** A change to any of: the prompt, the command, the type, the schedule, the agent, the target session, the timeout, the failure threshold, and the skip-if-busy and force-send options. These do not: the **description** and the **enabled** state (pause and resume). Sending back the values the task already has, which the dashboard does on every save, is not a change and does not trigger it. A task that is not live (a draft, or already awaiting review) keeps its status when edited, and nobody is notified again.
+
+**What happens.**
+
+- The edit is written, so the admin reviews the new content, not a lost one. The task status becomes `pending_review` and the task stops running: the scheduler skips every due occurrence and records each one in the run history as `skipped_not_live` (see [Run history and skipped runs](#run-history-and-skipped-runs)). Run now and Pause are disabled in the dashboard for a task that is not live, and the API refuses a manual run from a non-admin (`409 not_live`); only a signed-in admin may run a task that is not live yet, to preview it. The task stays this way until an admin activates it.
+- The list shows the badge **awaiting review**. After saving, the dashboard says: "Saved. The task is paused until an admin approves the change". Through the API, the save answers `{ ok: true, status: "pending_review", review_required: true, changed: [...] }` with the names of the fields that triggered the review; a save that does not trigger it answers a plain `{ ok: true }`.
+- The main agent gets one message from the system that starts with `[SCHEDULE_REVIEW]` and names the task, the tenant, the reason (`edited`, or `created` for a draft a non-admin created), the changed fields and who made the change. It is sent at most once an hour per task and reason, and a message that cannot be delivered never makes the save fail. What the main agent does with it, for example telling the owner on Telegram, depends on its own instructions.
+- Every task write (create, edit, pause or resume, delete, activate) is recorded in the audit trail with who did it and which fields changed. A task sent back to review is recorded as `review_requested`.
+
+**How an admin approves.** A signed-in admin clicks **Activate** on the row of the draft or awaiting-review task; nobody else can (a non-admin gets 403, with or without the button). The dashboard sends along the content fingerprint it displayed (`contentHash`, which `GET /api/schedules` returns for every task; it covers the prompt, command, type, schedule, agent, target session, timeout, failure threshold and the two busy options, not the description or the enabled state). If the task was edited again after the admin loaded the list, the activation is refused with `409 stale_revision` and nothing changes: the dashboard says "The task changed after you opened it -- review the current version and activate again", reloads the list, and the admin activates what is now on screen. So a task edited between looking at it and clicking cannot be approved unseen. A caller without a screen, for example a script run by an admin, may omit the fingerprint (`expected_hash`, a query parameter of `POST /api/schedules/{name}/activate`); activation then works without the check.
+
+**Moving a task to another tenant** is a separate rule (the task becomes a draft, see below) and does not go through this one.
 
 ---
 
@@ -179,7 +202,7 @@ Only a signed-in global admin can change the tenant of an existing task. The dia
 
 ### Tasks created through a chat or by an agent
 
-Creating and editing tasks in the dashboard is an admin action: for everyone else the **+ Task** button is hidden and the row actions are disabled. A user of a tenant asks their agent in the chat instead, and the agent creates the task through the API. Such a task:
+A tenant user with write access to scheduled tasks (the `agent` role, see [15 - Users](15-users.md)) can create and edit tasks of their own tenant in the dashboard too: the **+ Task** button, the edit dialog and the Run now, Pause and Delete actions are available to them, and every task they create is a draft. Users with a read-only role (`read_only`, `viewer`) see the tasks but the **+ Task** button is hidden and the row actions are disabled. For everyone who is not an admin the **Activate** button is disabled, because activation is the approval step itself. A user can also ask their agent in the chat, and the agent creates the task through the API. A task created by an agent:
 
 - belongs to the tenant of the request the agent is serving at that moment (the tenant the chat is bound to), or to the agent's only tenant when it serves just one;
 - is always created as a **Draft**: it does not run until a signed-in admin activates it. The row shows the tenant badge, and the Activate button's tooltip names the tenant, so the admin sees whose task it is before approving it;
@@ -189,7 +212,7 @@ The tenant is recorded from what the agent reports about itself, which is why th
 
 ### What an edit can change
 
-Besides the tenant move, the fields an edit can change are the description, prompt, schedule, enabled state, type, the busy and send options and the command settings. The review status (Draft, Live), the tenant and the runner script options can only be changed through the dedicated actions (Activate, the tenant move by an admin), never by simply sending them in an edit. The agent of an existing task can only be changed by an admin, and only to one that serves the task's tenant. This holds whether or not role enforcement is switched on; see [15 - Users](15-users.md) for what only enforcement adds.
+Besides the tenant move, the fields an edit can change are the description, prompt, schedule, enabled state, type, the busy and send options, the target session and the command settings. Changing most of these on a live task as a non-admin sends it back to review (see [Editing a live task: re-review](#editing-a-live-task-re-review)). The review status (Draft, Live), the tenant and the runner script options can only be changed through the dedicated actions (Activate, the tenant move by an admin), never by simply sending them in an edit. The agent of an existing task can only be changed by an admin, and only to one that serves the task's tenant. This holds whether or not role enforcement is switched on; see [15 - Users](15-users.md) for what only enforcement adds.
 
 ---
 

@@ -35,9 +35,9 @@ A feladatok háromféle nézetben tekinthetők meg:
 | **Leírás** | Opcionális rövid szöveg |
 | **Ütemezés** | Cron-kifejezés emberi olvasható formában |
 | **Ágens** | Melyik ágens futtatja (a parancs típusú feladatok futtatásához nem használja) |
-| **Státusz** | Aktív (live) vagy Vázlat/Jóváhagyás alatt |
+| **Státusz** | Aktív (live, jelvény nélkül), vagy egy jelvény: **piszkozat** (még sosem hagyták jóvá) vagy **jóváhagyásra vár** (korábban jóváhagyott, azóta módosították; lásd [Élő feladat szerkesztése: újabb jóváhagyás](#élő-feladat-szerkesztése-újabb-jóváhagyás)) |
 | **Tenant** | Melyik tenanthoz tartozik a feladat, kis jelvényként az ágens mellett (csak globális adminnak, lásd [Tenantok és feladatok](#tenantok-és-feladatok)) |
-| **Műveletek** | Aktiválás (csak vázlatnál) / Futtatás most / Szüneteltetés / Folytatás / Futási előzmények / Törlés; szerkeszteni a sorra kattintva lehet |
+| **Műveletek** | Aktiválás (csak vázlatnál és jóváhagyásra váró feladatnál, csak adminnak) / Futtatás most / Szüneteltetés / Folytatás / Futási előzmények / Törlés; szerkeszteni a sorra kattintva lehet |
 
 ---
 
@@ -59,6 +59,8 @@ A feladatok háromféle nézetben tekinthetők meg:
    - **Egyéni** - tetszőleges cron-kifejezés
 8. Válaszd ki a célágenst. Ha az ablakban van tenant-mező, a lista csak a kiválasztott tenantot kiszolgáló ágenseket kínálja.
 9. Kattints a **Mentés** gombra.
+
+Aktív (live) feladatot csak bejelentkezett admin hoz létre. Amit bárki más hoz létre (tenant-felhasználó a dashboardon, API-tokenes felhasználó, ágens), az **piszkozatként** indul, és addig nem fut, amíg egy bejelentkezett admin nem aktiválja. Egy tenantnak egyszerre legfeljebb **20** jóváhagyásra váró feladata lehet (piszkozatok és jóváhagyásra váró feladatok együtt): a 21. piszkozatot a rendszer 400-as hibával elutasítja (token: `limit_exceeded`, "This tenant already has N schedules waiting for review (max 20); an admin must activate or delete some first"). Az aktív feladatok nem számítanak bele, egy feladat törlése helyet szabadít fel, a tenant már meglévő feladatának szerkesztését a korlát sosem akadályozza, és a bejelentkezett admin által létrehozott aktív feladatra nem vonatkozik.
 
 ---
 
@@ -129,7 +131,7 @@ Az ütemező nem hagyja nyomtalanul eltűnni egy engedélyezett feladat esedéke
 
 | Állapot | Jelentés |
 |---------|----------|
-| `skipped_not_live` | A feladat engedélyezett, de még Vázlat vagy Jóváhagyás alatt van, ezért a jóváhagyási kapu visszatartja. Minden esedékes előfordulás rögzítődik. |
+| `skipped_not_live` | A feladat engedélyezett, de még piszkozat vagy jóváhagyásra vár, ezért a jóváhagyási kapu visszatartja. Minden esedékes előfordulás rögzítődik. |
 | `skipped_disabled` | A feladatot a többi feladat többségével egyszerre kapcsolták ki (lásd lent). Amíg kikapcsolva marad, minden esedékes előfordulás rögzítődik, legfeljebb 24 óráig. |
 | `skipped_tenant_mismatch` | A feladat engedélyezett és aktív, de a tenantja és az ágense már nem illik össze: az ágenst kikapcsolták a feladat tenantjánál, a tenantot letiltották vagy megváltozott a fő ágense, esetleg az ágens már nem létezik. Amíg a páros újra nem érvényes, minden esedékes előfordulás rögzítődik. |
 
@@ -149,7 +151,28 @@ A lista sorában a szünet- vagy lejátszás-gombbal az adott feladat ideiglenes
 
 ## Szerkesztés
 
-Egy feladatra kattintva, vagy a sor szerkesztés-ikonját választva megnyílik a szerkesztő-modális. A feladat neve nem módosítható szerkesztés során; minden más mező igen. Globális adminként itt a tenantot is megváltoztathatod, aminek következménye van: lásd [Feladat áthelyezése másik tenantba](#feladat-áthelyezése-másik-tenantba).
+Egy feladatra kattintva, vagy a sor szerkesztés-ikonját választva megnyílik a szerkesztő-modális. A feladat neve nem módosítható szerkesztés során; minden más mező igen. Globális adminként itt a tenantot is megváltoztathatod, aminek következménye van: lásd [Feladat áthelyezése másik tenantba](#feladat-áthelyezése-másik-tenantba). Aki nem bejelentkezett admin, a saját tenantja feladatait szintén szerkesztheti, élő feladatnál egy következménnyel: lásd a következő szakaszt.
+
+---
+
+## Élő feladat szerkesztése: újabb jóváhagyás
+
+Egy jóváhagyott (live) feladatban csak a jóváhagyott tartalom megbízható. Ha a bejelentkezett adminon kívül más módosítja azt, amit a feladat végrehajt, a módosítás elmentődik, de a feladat visszakerül jóváhagyásra.
+
+**Kire vonatkozik.** Minden hívóra, aki nem bejelentkezett admin: tenant-felhasználó a dashboardon, API-tokenes felhasználó, és a megosztott dashboard-tokennel hívó ágens (a megosztott token admin szerepkört hordoz, de nem egy ember ül a képernyő előtt). A bejelentkezett admin szerkesztése sosem küldi vissza a feladatot jóváhagyásra. Eszközkulcs és föderációs principal egyáltalán nem módosíthat ütemezett feladatot.
+
+**Mely módosítások váltják ki.** Ezek bármelyikének megváltoztatása: prompt, parancs, típus, ütemezés, ágens, célsession, időkorlát, hibaküszöb, valamint a "kihagyás, ha foglalt" és a kényszerített küldés opció. Ezek nem váltják ki: a **leírás** és az **engedélyezett** állapot (szüneteltetés, folytatás). Ha a kérés azokat az értékeket küldi vissza, amelyek a feladatnak már megvannak (a dashboard minden mentéskor ezt teszi), az nem módosítás, és nem vált ki semmit. Az a feladat, amely nem aktív (piszkozat vagy már jóváhagyásra vár), szerkesztéskor megtartja a státuszát, és új értesítés sem megy.
+
+**Mi történik.**
+
+- A módosítás elmentődik, így az admin az új tartalmat nézi át, nem egy elveszettet. A feladat státusza `pending_review` lesz, és a feladat leáll: az ütemező minden esedékes előfordulást kihagy, és mindegyiket `skipped_not_live` állapottal rögzíti a futási előzményekben (lásd [Futási előzmények és kihagyott futások](#futási-előzmények-és-kihagyott-futások)). A dashboardon a Futtatás most és a Szüneteltetés le van tiltva a még nem aktív feladatnál, az API pedig elutasítja a nem admin kézi futtatását (`409 not_live`); csak bejelentkezett admin futtathat még nem aktív feladatot, előnézetként. A feladat így marad, amíg egy admin nem aktiválja.
+- A lista a **jóváhagyásra vár** jelvényt mutatja. Mentés után a dashboard ezt írja: "Mentve. A feladat szünetel, amíg egy admin jóvá nem hagyja a változtatást". Az API-n a mentés `{ ok: true, status: "pending_review", review_required: true, changed: [...] }` választ ad a jóváhagyást kiváltó mezők nevével; az a mentés, amely nem vált ki újabb jóváhagyást, sima `{ ok: true }` választ kap.
+- A főágens egyetlen üzenetet kap a rendszertől, amely `[SCHEDULE_REVIEW]` előtaggal indul, és megnevezi a feladatot, a tenantot, az okot (`edited`, vagy `created`, ha nem admin hozott létre piszkozatot), a megváltozott mezőket és a módosítót. Feladatonként és okonként óránként legfeljebb egyszer megy, és egy ki nem kézbesíthető üzenet sosem buktatja el a mentést. Hogy a főágens mit kezd vele (például szól-e a tulajdonosnak Telegramon), a saját utasításain múlik.
+- Minden feladat-írás (létrehozás, szerkesztés, szüneteltetés vagy folytatás, törlés, aktiválás) bekerül az audit nyomvonalba, a végrehajtó és a megváltozott mezők nevével. A jóváhagyásra visszaküldött feladat `review_requested` néven kerül be.
+
+**Hogyan hagyja jóvá az admin.** A bejelentkezett admin az **Aktiválás** gombra kattint a piszkozat vagy a jóváhagyásra váró feladat sorában; más nem teheti (a nem admin 403-at kap, gombbal vagy gomb nélkül). A dashboard elküldi a megjelenített tartalom ujjlenyomatát is (`contentHash`, amelyet a `GET /api/schedules` minden feladatnál visszaad; a promptot, parancsot, típust, ütemezést, ágenst, célsessiont, időkorlátot, hibaküszöböt és a két foglaltsági opciót fedi, a leírást és az engedélyezett állapotot nem). Ha a feladatot azután szerkesztették újra, hogy az admin betöltötte a listát, az aktiválás `409 stale_revision` válasszal elutasítódik, és semmi sem változik: a dashboard azt írja, hogy "A feladat megváltozott, mióta megnyitottad -- nézd át az aktuális változatot, és aktiváld újra", újratölti a listát, az admin pedig azt aktiválja, ami most látszik. Így a megtekintés és a kattintás között szerkesztett feladatot nem lehet látatlanban jóváhagyni. Képernyő nélküli hívó, például egy admin által futtatott szkript, elhagyhatja az ujjlenyomatot (`expected_hash`, a `POST /api/schedules/{name}/activate` lekérdezési paramétere); ilyenkor az aktiválás ellenőrzés nélkül működik.
+
+**A másik tenantba áthelyezés** külön szabály (a feladat piszkozat lesz, lásd lent), és nem ezen a szabályon megy át.
 
 ---
 
@@ -179,7 +202,7 @@ Egy meglévő feladat tenantját csak bejelentkezett globális admin változtath
 
 ### Csevegésen át vagy ágens által létrehozott feladat
 
-A feladatok létrehozása és szerkesztése a dashboardon admin művelet: mindenki másnak a **+ Feladat** gomb rejtett, a sorműveletek pedig le vannak tiltva. A tenant felhasználója ehelyett a csevegésben kéri az ágensét, az ágens pedig az API-n hozza létre a feladatot. Az ilyen feladat:
+Az a tenant-felhasználó, aki az ütemezett feladatokhoz írási joggal rendelkezik (az `agent` szerepkör, lásd [15 - Felhasználók](15-felhasznalok.md)), a saját tenantja feladatait a dashboardon is létrehozhatja és szerkesztheti: a **+ Feladat** gomb, a szerkesztő ablak és a Futtatás most, Szüneteltetés és Törlés művelet elérhető számára, és minden általa létrehozott feladat piszkozat. A csak olvasó szerepkörű felhasználók (`read_only`, `viewer`) látják a feladatokat, de a **+ Feladat** gomb rejtett, a sorműveletek pedig le vannak tiltva. Mindenkinek, aki nem admin, az **Aktiválás** gomb le van tiltva, mert az aktiválás maga a jóváhagyási lépés. A felhasználó a csevegésben az ágensét is megkérheti, az ágens pedig az API-n hozza létre a feladatot. Az ágens által létrehozott feladat:
 
 - annak a tenantnak a része, amelynek a kérését az ágens abban a pillanatban kiszolgálja (amelyikhez a csevegés kötve van), vagy az ágens egyetlen tenantjáé, ha csak egyet szolgál ki;
 - mindig **Vázlat** állapotban jön létre: addig nem fut, amíg egy bejelentkezett admin nem aktiválja. A soron ott a tenant-jelvény, az Aktiválás gomb súgószövege pedig megnevezi a tenantot, így az admin jóváhagyás előtt látja, kié a feladat;
@@ -189,7 +212,7 @@ A tenantot az ágens saját bejelentéséből veszi a rendszer, ezért a feladat
 
 ### Mit változtathat egy szerkesztés
 
-A tenant-áthelyezésen kívül egy szerkesztés ezeket a mezőket változtathatja: leírás, prompt, ütemezés, engedélyezett állapot, típus, a foglaltsági és küldési opciók, valamint a parancs beállításai. A jóváhagyási állapot (Vázlat, Aktív), a tenant és a futtató szkript-opciók csak a megfelelő műveletekkel módosíthatók (Aktiválás, az admin tenant-áthelyezése), a szerkesztésben egyszerű elküldésükkel soha. Egy meglévő feladat ágensét csak admin változtathatja, és csak olyanra, amely kiszolgálja a feladat tenantját. Ez akkor is így van, ha a szerepkör-kikényszerítés nincs bekapcsolva; hogy mit ad hozzá csak a kikényszerítés, azt a [15 - Felhasználók](15-felhasznalok.md) fejezet írja le.
+A tenant-áthelyezésen kívül egy szerkesztés ezeket a mezőket változtathatja: leírás, prompt, ütemezés, engedélyezett állapot, típus, a foglaltsági és küldési opciók, a célsession, valamint a parancs beállításai. Ezek többségének módosítása élő feladaton, nem adminként, visszaküldi a feladatot jóváhagyásra (lásd [Élő feladat szerkesztése: újabb jóváhagyás](#élő-feladat-szerkesztése-újabb-jóváhagyás)). A jóváhagyási állapot (Vázlat, Aktív), a tenant és a futtató szkript-opciók csak a megfelelő műveletekkel módosíthatók (Aktiválás, az admin tenant-áthelyezése), a szerkesztésben egyszerű elküldésükkel soha. Egy meglévő feladat ágensét csak admin változtathatja, és csak olyanra, amely kiszolgálja a feladat tenantját. Ez akkor is így van, ha a szerepkör-kikényszerítés nincs bekapcsolva; hogy mit ad hozzá csak a kikényszerítés, azt a [15 - Felhasználók](15-felhasznalok.md) fejezet írja le.
 
 ---
 
