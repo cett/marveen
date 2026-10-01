@@ -2877,6 +2877,17 @@ paths:
       description: >-
         A non-admin caller gets the tasks of its own tenant. An admin gets all
         of them, or those of the tenant picked with `?tenant=`.
+
+
+        Access to the schedules endpoints: reading needs `schedules:read` and
+        writing (create, edit, toggle, run, delete) `schedules:write`, which
+        the `admin` and `agent` roles hold (`read_only` and `viewer` only
+        read); activation and `tick-status` stay `admin:all`. These permission
+        rows only decide anything in `enforce` mode. Independent of the mode, a
+        caller that is not an admin is refused with 403 when its account has
+        no tenant, and, for any change, when it is a device key or a
+        federation principal, or when its tenant is `default` (the fleet's own
+        tasks stay with the admins).
       parameters:
         - name: tenant
           in: query
@@ -2994,7 +3005,18 @@ paths:
             Validation error (missing name, prompt, schedule or command, bad
             cron, non-positive timeoutMs or failThreshold), an unknown or
             disabled tenant, an agent that does not serve the tenant, or
-            `tenant_required` when the owning tenant cannot be determined
+            `tenant_required` when the owning tenant cannot be determined, or
+            `limit_exceeded` when the tenant already has 20 schedules waiting
+            for review (draft or `pending_review`) and the caller's task would
+            be one more draft
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            The caller is not allowed to create schedules: no tenant, a device
+            key, or the default tenant for a non-admin
           content:
             application/json:
               schema:
