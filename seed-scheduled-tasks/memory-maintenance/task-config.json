@@ -1,9 +1,11 @@
 {
-  "schedule": "0 3 * * *",
+  "schedule": "15 3 * * *",
   "agent": "{{MAIN_AGENT_ID}}",
-  "enabled": false,
-  "type": "task",
-  "skipIfBusy": true,
-  "createdAt": 0,
-  "description": "Napi memória-karbantartás: tier-átsorolás (warm->cold 30 nap olvasatlan, cold->warm 2+ ágens), memory_versions prune (180 nap TTL)"
+  "enabled": true,
+  "type": "command",
+  "description": "Napi memória-karbantartás LLM nélkül: tier-átsorolás és memory_versions prune (POST /api/memories/resort), majd a link-gráf karbantartása (POST /api/memories/links/maintain). Hibánál a command-task health Telegram-riasztást küld.",
+  "command": "TOKEN=$(cat '{{INSTALL_DIR}}/store/.dashboard-token'); curl -sf --max-time 120 -X POST http://localhost:{{WEB_PORT}}/api/memories/resort -H \"Content-Type: application/json\" -H \"Authorization: Bearer $TOKEN\" -d '{}' | grep -q '\"ok\":true' && curl -sf --max-time 300 -X POST http://localhost:{{WEB_PORT}}/api/memories/links/maintain -H \"Content-Type: application/json\" -H \"Authorization: Bearer $TOKEN\" -d '{}' | grep -q '\"ok\":true'",
+  "timeoutMs": 480000,
+  "failThreshold": 1,
+  "createdAt": 0
 }
