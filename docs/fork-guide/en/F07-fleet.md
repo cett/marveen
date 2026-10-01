@@ -123,6 +123,14 @@ An external partner (B2B tenant) receives an `agent`-role token scoped to their 
 4. Isolation test: a query for a `default` tenant memory using the new token must return an empty list
 5. Agree on a rotation process: the partner should request a new token at least 2 weeks before expiry
 
+### Scheduled tasks and tenants
+
+Scheduled tasks are tenant-owned (`schedules.tenant_id`, never empty; see "Tenant ownership of scheduled tasks" below). For the access model this means:
+
+- A non-admin caller only gets the tasks, the selectable agents (`GET /api/v1/schedules/agents`) and the pending retries of its own tenant; another tenant's task answers `404 not_found`, like a missing name.
+- No `/api/v1/schedules` row exists in `ENDPOINT_PERMISSION_TABLE`, so the endpoints fall under the default `admin:all`. **In shadow mode that default is only logged, not enforced**: a tenant user's request to these routes is not stopped by RBAC itself, and only `RBAC_MODE=enforce` makes the whole group answer 403 to non-admins. The tenant rules sit in the route handlers and hold in both modes: other tenants are invisible (404), activation needs a signed-in admin (403), `status`, `tenantId` and the runner script keys of an edit are dropped, a non-admin's `agent` key is ignored, a non-admin naming a different `tenant_id` gets 403, and a task a non-admin creates is a `draft` in its own tenant. What shadow mode leaves open is that, through the API, a tenant user can do more with the tasks of its own tenant than the dashboard allows. Do not give tenant users a login or token that can reach the API before enforce mode is on.
+- The dashboard hides **+ Task** and disables the row actions for non-admins (client side, `admin:all`), in both modes. Tenant users request tasks through their agent: the agent creates a `draft` in the tenant of the request it serves, and a signed-in admin activates it.
+
 ### External system message sending
 
 If a non-agent external system also needs to send messages via `POST /api/messages`, register its ID in `.env`:
@@ -154,7 +162,8 @@ Scheduled tasks are file-based: each task is a directory containing a `SKILL.md`
   "type": "task",
   "skipIfBusy": true,
   "description": "Description (optional)",
-  "timeoutMs": 30000
+  "timeoutMs": 30000,
+  "tenantId": "default"
 }
 ```
 
@@ -162,6 +171,8 @@ Scheduled tasks are file-based: each task is a directory containing a `SKILL.md`
 - `task` -- always sends a notification with the result after each run
 - `heartbeat` -- only notifies when something important or urgent is detected
 - `command` -- runs a shell command directly (no agent session, no prompt); see "Command tasks" below
+
+`tenantId` names the tenant that owns the task. Every write of the mirror records it, and a `task-config.json` without one (an old file, or a seed that does not name a tenant) is filed under `default` when an empty schedules table is seeded from the files (`seedSchedulesFromFilesIfEmpty`, `scripts/migrate-schedules-to-db.ts`), so a reseed can never produce a task without a tenant.
 
 The database row is the source of truth for `enabled`; `task-config.json` is only a mirror of it. The scheduler pulls a drifted `enabled` in the file back to the database value at startup and then once an hour (database to file only, never the other way round). Only that key is rewritten, every other key keeps its value, `SKILL.md` is not touched, and a missing or unparseable file is skipped (the mirror is never created by the sync). Each correction is logged as a warning that names the tasks.
 
@@ -186,16 +197,58 @@ Tasks can be managed graphically from the dashboard Scheduling page. Via the API
 # Create
 POST http://localhost:3420/api/v1/schedules
 
-# Update
-PATCH http://localhost:3420/api/v1/schedules/<id>
+# Update (the editable fields only, see below)
+PUT http://localhost:3420/api/v1/schedules/<name>
 
 # Delete
-DELETE http://localhost:3420/api/v1/schedules/<id>
+DELETE http://localhost:3420/api/v1/schedules/<name>
 ```
+
+Also available: `POST .../<name>/toggle`, `POST .../<name>/activate` (signed-in admin only), `POST .../<name>/run`, `GET .../<name>/runs`, `GET /schedules/agents`, `GET /schedules/pending` and `DELETE /schedules/pending/<id>`; all are in `docs/openapi.yaml`.
 
 For the full cron format and payload reference, see the `dashboard-schedule-crud` skill.
 
 > Do not write directly to the SQLite `scheduled_tasks` table -- that is a deprecated API. Use the dashboard API or the file-based directories.
+
+### Tenant ownership of scheduled tasks
+
+Every task belongs to exactly one tenant: `schedules.tenant_id` is `'default'` or a tenant id, never empty. The column stays nullable in SQLite (it cannot become `NOT NULL` in place) and the application keeps it filled. Migration 0066 gave every row without a tenant the `default` tenant (`UPDATE schedules SET tenant_id = 'default' WHERE tenant_id IS NULL`, idempotent, rows that already name a tenant are untouched). The tenant-context hook already read a missing tenant and `default` the same way, so nothing changed at run time and no task moved. The tenant-less "fleet" scope is gone: `?tenant=fleet` matches nothing, and a stored NULL (a row older than the migration) still reads as `default` everywhere (`rowToTask`, the tenant filter of the list).
+
+Before an upgrade, back up (`scripts/backup.sh`); after the restart, `SELECT tenant_id, count(*) FROM schedules GROUP BY 1` must show no NULL.
+
+**Which tenant a new task gets** (`POST /api/v1/schedules`, first match wins):
+
+1. a non-admin caller: its own tenant (a `tenant_id` in the body is ignored);
+2. an admin that sends `tenant_id`: that tenant (the shared agent token counts as admin);
+3. a signed-in human admin that sends none: `default`;
+4. otherwise (the shared token with no `tenant_id`): the tenant derived from the `X-Agent-Id` header. The header is self-declared, not authentication. The tenant is the one of the request the agent is serving right now: a fresh `bound` context row in `agent_tenant_context` whose tenant the agent still serves, or a fresh `default` row (an unbound source). "Fresh" is `TENANT_CONTEXT_MAX_AGE_SECONDS` (default 43200, 12 hours). Without a usable context, the agent's own tenant counts, but only when it has exactly one (no enabled `tenant_agent_availability` row means `default`). An agent enabled for several tenants and without a context is ambiguous.
+
+When none of that yields a tenant (no `X-Agent-Id`, or an ambiguous shared agent), the answer is `400 tenant_required` (field `tenant_id`) instead of a silent `default`. The task is never filed under a guess, and it stays a `draft` for a non-human caller, so a person activates it with the tenant shown (badge and tooltip in the dashboard). Generated agent `CLAUDE.md` files send `X-Agent-Id` in their create example; instructions generated before that change do not, and their create calls answer `tenant_required` until the header is added.
+
+After the tenant is known: it must exist and not be disabled (`400 invalid_value`, field `tenant_id`).
+
+**The (tenant, agent) pair.** The task's agent has to serve its tenant, because the hook binds the tenant to the agent's session when the task fires. Checked on create and on every edit that moves the tenant or the agent (`400 invalid_value`, field `agent`, or `tenant_id` when the move itself broke the pair); a non-default tenant has no default agent, so `agent` is required there (`400 required`):
+
+| Tenant | Valid agents |
+|--------|--------------|
+| `default` | the fleet main agent, `all`, any known agent with no enabled tenant row, or enabled for `default` |
+| any other | its main agent or an agent enabled for it (`tenant_agent_availability.enabled = 1`) while the tenant is not disabled; never the fleet main agent (no tenant hook, so no isolation) and never `all` (a fan-out cannot be bound to one tenant) |
+
+An unknown agent name is invalid for every tenant.
+
+**Editing (`PUT`).** The handler writes only `description`, `prompt`, `schedule`, `enabled`, `type`, `skipIfBusy`, `forceSend`, `targetSession`, `command`, `timeoutMs`, `failThreshold`. Every other key is dropped, in particular `status` (an edit can no longer turn a draft into a live task: activation stays the signed-in admin's step), `tenantId`, and the runner script keys `preCheck`, `catchUpMaxAgeMinutes`, `stuckAfterMinutes`, `requires`. `agent` is admin-only (ignored for others) and the resulting pair must be valid. `tenant_id` moves the task: signed-in admin only (`403` for anyone else, the shared token included, when it names a different tenant), target must exist and be enabled, the pair is re-checked, the task goes back to `draft` and the answer is `{ ok: true, tenant_id, status: "draft" }`. A `tenant_id` equal to the current one is a no-op. A non-admin only reaches tasks of its own tenant (`404` otherwise), on `PUT`, `DELETE`, toggle, run-now and `runs`.
+
+**Reads.** `GET /schedules` returns every task with `tenantId`: admins get all of them or those of `?tenant=`, everyone else their own tenant. `GET /schedules/agents` returns `{ name, label, avatar }` objects: a non-admin only the agents serving its tenant, an admin all of them or those of `?tenant=` (the dashboard dialog uses it to narrow the selector). `GET /schedules/pending` and `DELETE /schedules/pending/<id>` follow the tenant of the retry's schedule; a retry whose schedule is gone is admin-only.
+
+**Runner.** Each tick, every enabled, live, non-`command` task whose pair no longer holds is not fired, whatever the reason (agent switched off for the tenant, tenant disabled, tenant main agent changed, agent deleted). The check is memoised per distinct pair for one tick, and a failed lookup counts as valid so a database hiccup never stops tasks. Each due occurrence is written to `task_runs` as `skipped_tenant_mismatch` by the same skip ledger as `skipped_not_live` (see "Held-back occurrences"). One notification goes out per breakage: an error log line, an audit row (agent `scheduler`, entity `schedule`, action `skip_tenant_mismatch`, entity id the task name, detail tenant and agent) and a Telegram message to the owner chat when configured (text currently always Hungarian). The flag is in memory: it clears when the pair is valid again, and a restart inside a breakage notifies again. `command` tasks run no agent and are not checked.
+
+**The hook link.** `scripts/hooks/tenant_context_lib.py` resolves a `<scheduled-task source="scheduled-task:NAME">` prompt with `SELECT tenant_id FROM schedules WHERE id = ? AND agent = ?`: missing or `default` is the default tenant, another id is `bound` when the agent serves it and `unknown` otherwise (the skill gate then denies tenant skills), and a row with another agent (or an `all` row) is `unknown`. So setting `tenant_id` is all the tenant skill isolation of a scheduled run needs, and the pair rule above keeps that binding valid. The main agent has no tenant hook, which is why it cannot be given a non-default tenant's task. See F03, "Tenant skill gate".
+
+**Around the edges.**
+- Deleting a tenant (`DELETE /api/v1/admin/tenants/<id>`; `default` cannot be deleted) removes its schedules, their `pending_task_retries` and their file mirror (`~/.claude/scheduled-tasks/<name>`, which an empty-table reseed would otherwise bring back); the `admin.tenant.delete` audit row carries `schedules_deleted` and `schedule_mirrors_removed`.
+- Fleet import re-homes a schedule whose exported `tenant_id` is not an enabled tenant on this machine to `default` (tenants are local to a machine). Schedules still arrive disabled, and the dry run and the apply report count how many were re-homed.
+- Overview `tasksToday` in a tenant view counts the `task_runs` of that tenant's schedules (matched by task name), not the runs of the tenant's agents, so an agent shared by several tenants no longer vanishes from every tenant view. A run whose schedule was deleted since belongs to no tenant and only shows in the fleet-wide count.
+- `tenant_required` is an API error token (`400`) with a dashboard message.
 
 ### Command tasks
 
@@ -236,17 +289,18 @@ Example, a nightly backup that alerts on the first failure (give it a generous t
 
 ### Held-back occurrences and the mass-skip alert
 
-A due occurrence of an enabled task must not be consumed without a trace. Every tick the scheduler sorts each task into one of three states:
+A due occurrence of an enabled task must not be consumed without a trace. Every tick the scheduler sorts each task into one of four states:
 
 | State | Condition | Effect |
 |-------|-----------|--------|
 | runnable | enabled and live | normal fire and catch-up |
 | disabled | `enabled` is off | normally the operator's own switch: no run, no row, never replayed by a catch-up |
 | not live | enabled, but the review gate holds it (`draft` / `pending_review`) | not run; every due occurrence is written to `task_runs` as `skipped_not_live` |
+| tenant mismatch | enabled and live, but its (tenant, agent) pair no longer holds | not run; every due occurrence is written as `skipped_tenant_mismatch`, one notification per breakage (see "Tenant ownership of scheduled tasks") |
 
 One row is written per due occurrence found in the tick window, once for every target agent (the task's agent, the main agent when none is set, or the main agent plus every running agent for an `all` task). The rows show in the run history (`GET /api/v1/schedules/<name>/runs`, latest 10) and the dashboard shows the raw status name.
 
-A disabled task is also recorded, as `skipped_disabled`, when it is part of a **mass event**. A mass event is when at least 4 tasks are in play (the tasks that were runnable on the previous tick plus every task that is enabled now) and more than half of them are held back at once. Held back means not live, or disabled although it was runnable on the previous tick. That is the scheduler reading its own tasks wrongly, not one operator toggling a switch, so each held occurrence is recorded. A task stays in the event until it is runnable again or 24 hours have passed. Tasks that were already disabled before the event are never part of it, and a single toggle never reaches the threshold.
+A disabled task is also recorded, as `skipped_disabled`, when it is part of a **mass event**. A mass event is when at least 4 tasks are in play (the tasks that were runnable on the previous tick plus every task that is enabled now) and more than half of them are held back at once. Held back means not live, a tenant mismatch, or disabled although it was runnable on the previous tick. That is the scheduler reading its own tasks wrongly, not one operator toggling a switch, so each held occurrence is recorded. A task stays in the event until it is runnable again or 24 hours have passed. Tasks that were already disabled before the event are never part of it, and a single toggle never reaches the threshold.
 
 When a mass event starts, one alert goes out:
 

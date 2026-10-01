@@ -36,6 +36,7 @@ A feladatok háromféle nézetben tekinthetők meg:
 | **Ütemezés** | Cron-kifejezés emberi olvasható formában |
 | **Ágens** | Melyik ágens futtatja (a parancs típusú feladatok futtatásához nem használja) |
 | **Státusz** | Aktív (live) vagy Vázlat/Jóváhagyás alatt |
+| **Tenant** | Melyik tenanthoz tartozik a feladat, kis jelvényként az ágens mellett (csak globális adminnak, lásd [Tenantok és feladatok](#tenantok-és-feladatok)) |
 | **Műveletek** | Aktiválás (csak vázlatnál) / Futtatás most / Szüneteltetés / Folytatás / Futási előzmények / Törlés; szerkeszteni a sorra kattintva lehet |
 
 ---
@@ -43,20 +44,21 @@ A feladatok háromféle nézetben tekinthetők meg:
 ## Új feladat létrehozása
 
 1. Kattints az **+ Feladat** gombra.
-2. Add meg a nevet (egyedi, utólag nem módosítható) és az opcionális leírást.
-3. Válaszd ki a feladattípust (Feladat / Szívdobogás / Parancs). A parancs típusú feladat prompt helyett egy shell-parancsot, egy opcionális időkorlátot és azt a számot kéri, ahány egymás utáni hiba után riasztás megy; lásd [Parancs típusú feladatok](#parancs-típusú-feladatok).
-4. Ha szívdobogást választottál, a beépített sablonok közül egyet kiválaszthatod kiindulópontnak:
+2. Globális adminként válaszd ki a **Tenant**et, amelyhez a feladat tartozik (a mező az ablak tetején van; lásd [Tenantok és feladatok](#tenantok-és-feladatok)). Más felhasználónak nincs ilyen mezője, a feladat a saját tenantjához kerül.
+3. Add meg a nevet (egyedi, utólag nem módosítható) és az opcionális leírást.
+4. Válaszd ki a feladattípust (Feladat / Szívdobogás / Parancs). A parancs típusú feladat prompt helyett egy shell-parancsot, egy opcionális időkorlátot és azt a számot kéri, ahány egymás utáni hiba után riasztás megy; lásd [Parancs típusú feladatok](#parancs-típusú-feladatok).
+5. Ha szívdobogást választottál, a beépített sablonok közül egyet kiválaszthatod kiindulópontnak:
    - **Naptár** - közeli esemény figyelése (15 percenként)
    - **E-mail** - sürgős levél figyelése (30 percenként)
    - **Kanban** - lejáró kártyák figyelése (2 óránként)
    - **Teljes** - naptár + e-mail + kanban együtt (15 percenként)
-5. Írd meg az utasítást (prompt), amelyet az ágens kap.
-6. Állítsd be az ütemezést:
+6. Írd meg az utasítást (prompt), amelyet az ágens kap.
+7. Állítsd be az ütemezést:
    - **Naponta** / **Hétköznapokon** / **Hétfőnként** / **Péntekeken** - időponttal
    - **Óránként** / **2 óránként** / **4 óránként** / **30 percenként** - fix intervallum
    - **Egyéni** - tetszőleges cron-kifejezés
-7. Válaszd ki a célágensét.
-8. Kattints a **Mentés** gombra.
+8. Válaszd ki a célágenst. Ha az ablakban van tenant-mező, a lista csak a kiválasztott tenantot kiszolgáló ágenseket kínálja.
+9. Kattints a **Mentés** gombra.
 
 ---
 
@@ -129,10 +131,13 @@ Az ütemező nem hagyja nyomtalanul eltűnni egy engedélyezett feladat esedéke
 |---------|----------|
 | `skipped_not_live` | A feladat engedélyezett, de még Vázlat vagy Jóváhagyás alatt van, ezért a jóváhagyási kapu visszatartja. Minden esedékes előfordulás rögzítődik. |
 | `skipped_disabled` | A feladatot a többi feladat többségével egyszerre kapcsolták ki (lásd lent). Amíg kikapcsolva marad, minden esedékes előfordulás rögzítődik, legfeljebb 24 óráig. |
+| `skipped_tenant_mismatch` | A feladat engedélyezett és aktív, de a tenantja és az ágense már nem illik össze: az ágenst kikapcsolták a feladat tenantjánál, a tenantot letiltották vagy megváltozott a fő ágense, esetleg az ágens már nem létezik. Amíg a páros újra nem érvényes, minden esedékes előfordulás rögzítődik. |
 
 Ezek a sorok csak azt rögzítik, hogy az előfordulást visszatartották; a feladat nem fut le. Az a feladat, amelyet te magad szüneteltetsz, vagy egy különálló kapcsolgatás a megszokott művelet: nem hagy sort maga után.
 
-Ha az engedélyezett feladatok többsége egyszerre van visszatartva (legalább 4 feladat van játékban, és több mint a fele), az ütemező ezt hibának tekinti, nem szándékos szüneteltetésnek. Ilyenkor a tulajdonos egyetlen Telegram-riasztást kap a visszatartott feladatok listájával (ha a Telegram bot token és a tulajdonosi chat be van állítva; a riasztás szövege jelenleg mindig magyar), az esemény pedig az audit naplóba is bekerül. Új riasztás addig nem jön, amíg a helyzet meg nem szűnik. Ha ilyen riasztást látsz, nézd meg a feladatok **Státusz** és engedélyezett állapotát.
+A `skipped_tenant_mismatch` azért van, mert egy tenant feladatának olyan ágensen kell futnia, amely kiszolgálja azt a tenantot: az ágens munkamenete a feladatból veszi át a tenantot, és vele a tenant skilljeit. Ez az ellenőrzés előtt az ilyen feladat tovább futott, a skilljei pedig észrevétlenül zárva maradtak. Most nem fut, a tulajdonos pedig egyetlen értesítést kap, amikor a hiba kezdődik (Telegram-üzenet, ha a Telegram bot token és a tulajdonosi chat be van állítva, a feladat, az ágens és a tenant nevével; a szöveg jelenleg mindig magyar; emellett audit naplóbejegyzés). Az értesítés nem ismétlődik, amíg a feladat hibás marad, egy későbbi újabb hibánál viszont újra jön (és a dashboard újraindítása után is, mert a jelzőt a memória tartja). A javításhoz engedélyezd újra az ágenst a tenantnak, vagy szerkeszd a feladatot, és told át egy hozzá illő tenantba és ágenshez. A parancs típusú feladat nem futtat ágenst, ezért ez az ellenőrzés nem tartja vissza. Az ilyen sorok beleszámítanak az alábbi tömeges visszatartás riasztásba.
+
+Ha az engedélyezett feladatok többsége egyszerre van visszatartva (legalább 4 feladat van játékban, és több mint a fele), az ütemező ezt hibának tekinti, nem szándékos szüneteltetésnek. Ilyenkor a tulajdonos egyetlen Telegram-riasztást kap a visszatartott feladatok listájával (ha a Telegram bot token és a tulajdonosi chat be van állítva; a riasztás szövege jelenleg mindig magyar), az esemény pedig az audit naplóba is bekerül. Új riasztás addig nem jön, amíg a helyzet meg nem szűnik. Ha ilyen riasztást látsz, nézd meg a feladatok **Státusz** és engedélyezett állapotát, valamint hogy minden feladat tenantja és ágense még összeillik-e.
 
 ---
 
@@ -144,16 +149,47 @@ A lista sorában a szünet- vagy lejátszás-gombbal az adott feladat ideiglenes
 
 ## Szerkesztés
 
-Egy feladatra kattintva, vagy a sor szerkesztés-ikonját választva megnyílik a szerkesztő-modális. A feladat neve nem módosítható szerkesztés során; minden más mező igen.
+Egy feladatra kattintva, vagy a sor szerkesztés-ikonját választva megnyílik a szerkesztő-modális. A feladat neve nem módosítható szerkesztés során; minden más mező igen. Globális adminként itt a tenantot is megváltoztathatod, aminek következménye van: lásd [Feladat áthelyezése másik tenantba](#feladat-áthelyezése-másik-tenantba).
 
 ---
 
-## Bérlő-szűrő
+## Tenantok és feladatok
 
-A nézet tetején bérlő-szelektor érhető el:
+Minden ütemezett feladat pontosan egy tenanthoz tartozik. Tenant nélküli, "flotta-szintű" hatókör nincs: a rendszert működtető feladatok (éjszakai adatmentés, memória-karbantartás, a figyelők) a `default` tenanthoz tartoznak, mint minden feladat, amelynek létrehozásakor nem neveztek meg tenantot.
 
-- **Csak flotta-szintű** - az összes bérlőhöz nem kötött feladatot mutatja
-- Egy adott bérlő kiválasztásával csak az ahhoz tartozó feladatok jelennek meg
+### Ki mit lát
+
+- **A globális adminok** tenant-szelektort kapnak a nézet tetején, **Tenant** mezőt a feladat ablakában és tenant-jelvényt minden soron. A szelektor az **Összes tenant** vagy egy adott tenant közül enged választani; a "csak flotta-szintű" opció megszűnt.
+- **Mindenki más** nem lát szelektort, mezőt és jelvényt sem. Csak a saját tenantja feladatait kapja, és amit létrehoz, az is ehhez tartozik. Másik tenant feladata nem jelenik meg, és ha közvetlenül kérnék el, úgy válaszol a rendszer, mintha nem létezne.
+
+### A tenant-mező az ablakban
+
+A mező az Új feladat és a Feladat szerkesztése ablak tetején van (csak globális adminnak). Az új feladat azon a tenanton indul, amelyre a lista éppen szűrve van, vagy `default`-on, ha a szűrő az összes tenantot mutatja. Ha másik tenantot választasz, az ágenslista a tenantot kiszolgáló ágensekre szűkül; a jelenlegi ágens csak akkor marad kiválasztva, ha még szerepel a listán.
+
+Melyik ágenst nevezheti meg egy feladat:
+
+- **`default` tenant** - a fő ágenst, valamint minden olyan ágenst, amely nincs külön tenantra engedélyezve, vagy kifejezetten engedélyezve van a `default` tenantra.
+- **Bármely más tenant** - csak a tenantra engedélyezett ágenst (vagy a tenant saját fő ágensét). A flotta fő ágense itt nem engedett, és az API-n létező `all` érték sem (az összes ágensre szétosztás nem tartozhat egyetlen tenanthoz). Az ilyen tenant feladatának meg kell neveznie az ágensét.
+
+A szerver mentéskor ugyanezt a szabályt ellenőrzi, ezért az érvénytelen kombinációt 400-as hibával elutasítja (adminnak is), ahogy az ismeretlen vagy letiltott tenantot is.
+
+### Feladat áthelyezése másik tenantba
+
+Egy meglévő feladat tenantját csak bejelentkezett globális admin változtathatja meg. Az ablak a következményre azonnal figyelmeztet, amint másik tenantot választasz: **a feladat visszakerül Vázlat állapotba, és újra aktiválni kell**. Mentés után egy üzenet ezt ki is mondja ("Feladat áthelyezve, piszkozat: aktiválni kell"). Az áthelyezést úgy ellenőrzi a rendszer, mint az új feladatot: az ágensnek ki kell szolgálnia az új tenantot, ezért ha a régi ágens nem teszi, a kettőt együtt változtasd. Az a szerkesztés, amely nem érinti a tenantot, nem változtat a feladat tenantján és státuszán.
+
+### Csevegésen át vagy ágens által létrehozott feladat
+
+A feladatok létrehozása és szerkesztése a dashboardon admin művelet: mindenki másnak a **+ Feladat** gomb rejtett, a sorműveletek pedig le vannak tiltva. A tenant felhasználója ehelyett a csevegésben kéri az ágensét, az ágens pedig az API-n hozza létre a feladatot. Az ilyen feladat:
+
+- annak a tenantnak a része, amelynek a kérését az ágens abban a pillanatban kiszolgálja (amelyikhez a csevegés kötve van), vagy az ágens egyetlen tenantjáé, ha csak egyet szolgál ki;
+- mindig **Vázlat** állapotban jön létre: addig nem fut, amíg egy bejelentkezett admin nem aktiválja. A soron ott a tenant-jelvény, az Aktiválás gomb súgószövege pedig megnevezi a tenantot, így az admin jóváhagyás előtt látja, kié a feladat;
+- 400-as hibával elutasítódik ("A feladathoz tenant kell", token: `tenant_required`), ha a tenant nem állapítható meg, például ha több tenantot kiszolgáló ágensnek éppen nincs folyamatban lévő kérése. Ilyenkor az admin a dashboardon hozza létre a feladatot, vagy kérd újra az ágenst egy tenant csevegéséből.
+
+A tenantot az ágens saját bejelentéséből veszi a rendszer, ezért a feladat sosem lesz magától aktív: az aktiválás lépése az, ahol egy téves tenant kiderül.
+
+### Mit változtathat egy szerkesztés
+
+A tenant-áthelyezésen kívül egy szerkesztés ezeket a mezőket változtathatja: leírás, prompt, ütemezés, engedélyezett állapot, típus, a foglaltsági és küldési opciók, valamint a parancs beállításai. A jóváhagyási állapot (Vázlat, Aktív), a tenant és a futtató szkript-opciók csak a megfelelő műveletekkel módosíthatók (Aktiválás, az admin tenant-áthelyezése), a szerkesztésben egyszerű elküldésükkel soha. Egy meglévő feladat ágensét csak admin változtathatja, és csak olyanra, amely kiszolgálja a feladat tenantját. Ez akkor is így van, ha a szerepkör-kikényszerítés nincs bekapcsolva; hogy mit ad hozzá csak a kikényszerítés, azt a [15 - Felhasználók](15-felhasznalok.md) fejezet írja le.
 
 ---
 

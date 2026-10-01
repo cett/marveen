@@ -149,7 +149,7 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 | Table | Contents |
 |-------|---------|
 | `scheduled_tasks` | Scheduled task definitions |
-| `schedules` | Schedule entries |
+| `schedules` | Schedule entries. Each row has a `tenant_id` (`default` or a tenant id; since migration 0066 never NULL in practice, the column stays nullable because SQLite cannot add `NOT NULL` in place) and a review `status` (`draft`, `pending_review`, `live`). The `(tenant_id, agent)` pair must be valid; see F07, "Tenant ownership of scheduled tasks" |
 | `task_runs` | Run log |
 | `background_tasks` | Background tasks (async operations) |
 | `pending_task_retries` | Tasks waiting for retry |

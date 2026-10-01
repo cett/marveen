@@ -2870,6 +2870,14 @@ paths:
       description: >-
         A non-admin caller gets the tasks of its own tenant. An admin gets all
         of them, or those of the tenant picked with `?tenant=`.
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: >-
+            Admin only (ignored for other callers): narrow to this tenant id.
+          schema:
+            type: string
       responses:
         "200":
           description: Task list
@@ -3006,6 +3014,14 @@ paths:
         Busy-skipped tasks waiting for a retry. A retry belongs to the tenant of
         its schedule: a tenant caller sees only its own tenant's retries, an admin
         sees all (or those of `?tenant=`).
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: >-
+            Admin only (ignored for other callers): narrow to this tenant id.
+          schema:
+            type: string
       responses:
         "200":
           description: Due task list
@@ -3024,6 +3040,14 @@ paths:
       description: >-
         A tenant caller only gets the agents that serve its own tenant; an admin
         gets every agent, or those of the tenant picked with `?tenant=`.
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: >-
+            Admin only (ignored for other callers): narrow to this tenant id.
+          schema:
+            type: string
       responses:
         "200":
           description: The agents a schedule may target
@@ -3287,6 +3311,23 @@ paths:
                 type: array
                 items:
                   type: object
+                  properties:
+                    ts:
+                      type: integer
+                      description: Run time, milliseconds since the epoch
+                    status:
+                      type: string
+                      description: >-
+                        Outcome of the run, for example `fired`, `error` or `skipped`. A due
+                        occurrence the scheduler held back is recorded instead
+                        of run: `skipped_not_live` (still a draft),
+                        `skipped_disabled` (switched off in a mass event) and
+                        `skipped_tenant_mismatch` (the task's tenant and agent
+                        no longer fit together: the agent was switched off for
+                        the tenant, the tenant was disabled, or the agent is gone).
+                    tokens_est:
+                      type: integer
+                      description: Estimated token use of the run, null when it cannot be estimated
         "404":
           description: Schedule not found (also for a schedule of another tenant)
           content:
