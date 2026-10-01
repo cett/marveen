@@ -149,7 +149,7 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 | Tábla | Tartalom |
 |-------|---------|
 | `scheduled_tasks` | Ütemezett feladat definíciók |
-| `schedules` | Ütemezési bejegyzések |
+| `schedules` | Ütemezési bejegyzések. Minden sornak van `tenant_id`-ja (`default` vagy egy tenant azonosító; a 0066-os migráció óta a gyakorlatban sosem NULL, az oszlop nullable marad, mert az SQLite helyben nem tud `NOT NULL`-t hozzáadni) és jóváhagyási `status`-a (`draft`, `pending_review`, `live`). A `(tenant_id, agent)` párosnak érvényesnek kell lennie; lásd F07, "Ütemezett feladatok tenant-tulajdonlása" |
 | `task_runs` | Futás-napló |
 | `background_tasks` | Háttérfeladatok (async operációk) |
 | `pending_task_retries` | Retry-sorban váró feladatok |

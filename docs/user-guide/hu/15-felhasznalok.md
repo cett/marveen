@@ -95,6 +95,18 @@ Az enforce fázis bekapcsolása után (`RBAC_MODE=enforce`) a rendszer minden le
 - Az ágensek listája (`/api/v1/agents`) tenant-független -- minden hitelesített felhasználó látja, mely ágensek futnak.
 - A blackboard szintén tenant-független olvasással rendelkezik agent és admin szerepkörök számára.
 
+### Ütemezett feladatok és tenantok
+
+Az ütemezett feladatoknak tenant a tulajdonosa (részletek: [06 - Feladatok](06-feladatok.md)):
+
+- Minden feladat pontosan egy tenanthoz tartozik. A rendszer saját feladatai (adatmentés, karbantartás, figyelők) és minden feladat, amelynek létrehozásakor nem neveztek meg tenantot, a `default` tenanthoz tartoznak.
+- A tenant felhasználója csak a saját tenantja feladatait, a választható ágenseket és a függő újrapróbálkozásokat kapja. Másik tenant feladata úgy válaszol, mintha nem létezne.
+- A dashboardon a feladatok létrehozása, szerkesztése, másik tenantba áthelyezése és aktiválása admin művelet: más felhasználónak a **+ Feladat** gomb rejtett, a sorműveletek pedig le vannak tiltva. A tenant felhasználója a csevegésben kéri az ágensét a feladatra. Az ágens vázlatként hozza létre a felhasználó tenantjában, egy admin pedig aktiválja, miután látta, melyik tenanthoz tartozik.
+- A feladat csak olyan ágensen fut, amely kiszolgálja a tenantját. Ha az ágenst kikapcsolják a tenantnál, vagy a tenantot letiltják, a feladat nem tüzel tovább, és minden kimaradt előfordulás `skipped_tenant_mismatch` állapottal kerül a futási előzményeibe.
+- A tenant törlése a feladatait, azok függő újrapróbálkozásait és a tükrözött fájljaikat is törli.
+
+> **Shadow mód és az ütemezés végpontjai.** Amíg az RBAC shadow módban fut (az `RBAC_MODE` nincs `enforce`-ra állítva), az ütemezés végpontjai még nem csak adminnak szólnak: az RBAC csak naplózza azt az elutasítást, amelyet az enforce mód kiadna, ezért egy tenant-felhasználó egyszerű kérését maga az RBAC nem állítja meg. Az alábbi feladat-szabályok az ütemezés útvonalainak részei, és mindkét módban érvényesek. A tenant felhasználója nem olvashatja és nem módosíthatja másik tenant feladatait (404-gyel válaszolnak); nem aktiválhat feladatot (403, az aktiválás bejelentkezett adminé); nem változtathatja a feladat státuszát, tenantját és a futtató szkript-opciókat (a szerkesztés egyszerűen eldobja ezeket a kulcsokat; másik tenant kérése 403-at ad); nem irányíthatja át a feladatot másik ágensre (számára a kulcs figyelmen kívül marad); és az általa létrehozott feladat mindig vázlat a saját tenantjában. Amit a shadow mód **nem** állít meg: az az API-t közvetlenül hívó tenant-felhasználó a saját tenantja feladatainak többi mezőjét még szerkesztheti, egy aktív feladat promptját és ütemezését is, ki- és bekapcsolhatja, futtathatja, törölheti őket, és vázlatot hozhat létre. Csak az `RBAC_MODE=enforce` teszi úgy, hogy ezek a végpontok az adminokon kívül mindenkinek 403-at adnak.
+
 ### Külső MCP-szerverek és tenant-izoláció
 
 Külső MCP-szervernek (pl. GitHub, Hetzner, fájlrendszer) nincs tenant-fogalma. Ha egy ilyen szervert hordozó ágenshez B2B tenant-tokent rendelnek, az a tenant a hitelesítő adat TELJES hatókörét látja -- ezt adatréteg-szűréssel nem lehet korlátozni, csak policy-val.

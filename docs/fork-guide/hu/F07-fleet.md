@@ -123,6 +123,14 @@ Egy külső partner (B2B tenant) alapvetően az `agent` szerepkörrel kap tokent
 4. Izolációs teszt: az új tokennel egy `default` tenant memória lekérdezésének üres listát kell adnia
 5. Rotációs folyamat egyeztetése: új token igénylése lejárat előtt legalább 2 héttel
 
+### Ütemezett feladatok és tenantok
+
+Az ütemezett feladatoknak tenant a tulajdonosa (`schedules.tenant_id`, sosem üres; lásd lejjebb az "Ütemezett feladatok tenant-tulajdonlása" szakaszt). A hozzáférési modellre ez azt jelenti:
+
+- A nem-admin hívó csak a saját tenantja feladatait, a választható ágenseket (`GET /api/v1/schedules/agents`) és a függő újrapróbálkozásokat kapja; másik tenant feladata `404 not_found` választ ad, mint egy nem létező név.
+- Az `ENDPOINT_PERMISSION_TABLE`-ben nincs `/api/v1/schedules` sor, ezért a végpontokra az alapértelmezett `admin:all` érvényes. **Shadow módban ez az alapértelmezés csak naplózódik, nem kényszerül ki**: egy tenant-viewer egyszerű `PUT`-ját (vagy toggle, törlés, azonnali futtatás, létrehozás hívását) maga az RBAC nem állítja meg, és csak az `RBAC_MODE=enforce` teszi úgy, hogy az egész csoport 403-at ad a nem-adminoknak. A tenant-szabályok az útvonal-kezelőkben vannak, és mindkét módban érvényesek: más tenantok láthatatlanok (404), az aktiválás bejelentkezett admint kér (403), a szerkesztés `status`, `tenantId` és futtató szkript kulcsai eldobódnak, a nem-admin `agent` kulcsa figyelmen kívül marad, a más `tenant_id`-t megnevező nem-admin 403-at kap, és a nem-admin által létrehozott feladat a saját tenantjában `draft`. Amit a shadow mód nyitva hagy, az minden más a hívó saját tenantján belül: a feladatai többi mezőjének szerkesztése (egy aktív feladat promptja és ütemezése is, újabb jóváhagyás nélkül), ki- és bekapcsolás, törlés és futtatás. Amíg az enforce mód nincs bekapcsolva, ne adj tenant-felhasználóknak dashboard-belépést vagy az ütemezés útvonalaira API-hozzáférést adó tokent, hacsak ez a kitettség nem elfogadható.
+- A dashboard a nem-adminoknak elrejti a **+ Feladat** gombot és letiltja a sorműveleteket (kliens oldalon, `admin:all`), mindkét módban. A tenant-felhasználók az ágensükön át kérnek feladatot: az ágens `draft` feladatot hoz létre annak a kérésnek a tenantjában, amelyet kiszolgál, és bejelentkezett admin aktiválja.
+
 ### Külső rendszerek üzenetküldési engedélye
 
 Ha egy nem-ágensként regisztrált külső rendszernek is kell üzeneteket küldenie (`POST /api/messages`), add meg az azonosítóját az `.env`-ben:
@@ -154,7 +162,8 @@ Az ütemezett feladatok fájl-alapúak: minden feladat egy könyvtárból áll, 
   "type": "task",
   "skipIfBusy": true,
   "description": "Leírás (opcionális)",
-  "timeoutMs": 30000
+  "timeoutMs": 30000,
+  "tenantId": "default"
 }
 ```
 
@@ -162,6 +171,8 @@ Az ütemezett feladatok fájl-alapúak: minden feladat egy könyvtárból áll, 
 - `task` -- futás után mindig értesítést küld az eredményről
 - `heartbeat` -- csak akkor küld értesítést, ha fontos vagy sürgős esemény van
 - `command` -- shell parancsot futtat közvetlenül (nincs ágens-session, nincs prompt); lásd lejjebb a "Command feladatok" szakaszt
+
+A `tenantId` a feladat tulajdonos tenantját nevezi meg. A tükör minden írása rögzíti, a `tenantId` nélküli `task-config.json` (régi fájl, vagy olyan seed, amely nem nevez meg tenantot) pedig `default` alá kerül, amikor az üres schedules táblát a fájlokból seedelik (`seedSchedulesFromFilesIfEmpty`, `scripts/migrate-schedules-to-db.ts`), így egy újraseedelés sosem hoz létre tenant nélküli feladatot.
 
 Az `enabled` igazságforrása az adatbázis-sor; a `task-config.json` csak a tükre. Az ütemező az eltérő `enabled` értéket a fájlban indításkor, majd óránként visszahúzza az adatbázis értékére (csak adatbázisból fájlba, soha fordítva). Csak ez az egy kulcs íródik át, a többi kulcs megtartja az értékét, a `SKILL.md`-hez nem nyúl, a hiányzó vagy nem értelmezhető fájlt kihagyja (a tükröt a szinkron sosem hozza létre). Minden javítás figyelmeztetésként naplózódik, a feladatok nevével.
 
@@ -186,16 +197,58 @@ A dashboard Ütemezés oldalán grafikusan kezelhető. API-n:
 # Új feladat
 POST http://localhost:3420/api/v1/schedules
 
-# Módosítás
-PATCH http://localhost:3420/api/v1/schedules/<id>
+# Módosítás (csak a szerkeszthető mezők, lásd lejjebb)
+PUT http://localhost:3420/api/v1/schedules/<name>
 
 # Törlés
-DELETE http://localhost:3420/api/v1/schedules/<id>
+DELETE http://localhost:3420/api/v1/schedules/<name>
 ```
+
+Továbbá elérhető: `POST .../<name>/toggle`, `POST .../<name>/activate` (csak bejelentkezett admin), `POST .../<name>/run`, `GET .../<name>/runs`, `GET /schedules/agents`, `GET /schedules/pending` és `DELETE /schedules/pending/<id>`; mind szerepel a `docs/openapi.yaml`-ban.
 
 Részletes cron-formátum és payload: a `dashboard-schedule-crud` skill tartalmazza.
 
 > Ne írd közvetlenül az SQLite `scheduled_tasks` táblát -- ez egy régi API. Használd a dashboard API-t vagy a fájl-alapú könyvtárakat.
+
+### Ütemezett feladatok tenant-tulajdonlása
+
+Minden feladat pontosan egy tenanthoz tartozik: a `schedules.tenant_id` értéke `'default'` vagy egy tenant azonosító, sosem üres. Az oszlop nullable marad az SQLite-ban (helyben nem lehet `NOT NULL`-ra állítani), az alkalmazás tartja kitöltve. A 0066-os migráció a tenant nélküli sorokat a `default` tenantba tette (`UPDATE schedules SET tenant_id = 'default' WHERE tenant_id IS NULL`, idempotens, a már tenantot megnevező sorokhoz nem nyúl). A tenant-context hook a hiányzó tenantot és a `default`-ot eddig is ugyanúgy olvasta, így futásidőben semmi nem változott, és egyetlen feladat sem költözött. A tenant nélküli "flotta" hatókör megszűnt: a `?tenant=fleet` semmit nem talál, a tárolt NULL (a migráció előtti sor) pedig mindenhol `default`-nak olvasódik (`rowToTask`, a lista tenant-szűrője).
+
+Frissítés előtt készíts mentést (`scripts/backup.sh`); az újraindítás után a `SELECT tenant_id, count(*) FROM schedules GROUP BY 1` nem mutathat NULL-t.
+
+**Melyik tenantot kapja az új feladat** (`POST /api/v1/schedules`, az első egyezés nyer):
+
+1. nem-admin hívó: a saját tenantja (a törzsben küldött `tenant_id`-t figyelmen kívül hagyja);
+2. `tenant_id`-t küldő admin: az a tenant (a megosztott ágens-token adminnak számít);
+3. bejelentkezett emberi admin, aki nem küld ilyet: `default`;
+4. egyébként (a megosztott token `tenant_id` nélkül): az `X-Agent-Id` fejlécből levezetett tenant. A fejléc önbevallott, nem hitelesítés. A tenant annak a kérésnek a tenantja, amelyet az ágens éppen kiszolgál: az `agent_tenant_context` friss `bound` sora, amelynek tenantját az ágens még kiszolgálja, vagy egy friss `default` sor (kötetlen forrás). A "friss" a `TENANT_CONTEXT_MAX_AGE_SECONDS` (alapból 43200, 12 óra). Használható kontextus nélkül az ágens saját tenantja számít, de csak ha pontosan egy van (engedélyezett `tenant_agent_availability` sor nélkül ez `default`). A több tenantra engedélyezett, kontextus nélküli ágens nem egyértelmű.
+
+Ha ebből nem jön ki tenant (nincs `X-Agent-Id`, vagy nem egyértelmű a megosztott ágens), a válasz `400 tenant_required` (mező: `tenant_id`) néma `default` helyett. A feladat sosem kerül sorra találgatás alapján, és nem emberi hívónál `draft` marad, így egy ember aktiválja, látva a tenantot (jelvény és súgószöveg a dashboardon). A generált ágens-`CLAUDE.md` fájlok létrehozási példája küldi az `X-Agent-Id`-t; az e változás előtt generált utasításokban nincs ilyen, és az azokból indított létrehozás `tenant_required` választ kap, amíg a fejléc nem kerül bele.
+
+Miután a tenant ismert: léteznie kell, és nem lehet letiltva (`400 invalid_value`, mező: `tenant_id`).
+
+**A (tenant, ágens) páros.** A feladat ágensének ki kell szolgálnia a feladat tenantját, mert a hook a tenantot az ágens munkamenetéhez köti, amikor a feladat tüzel. Létrehozáskor és minden olyan szerkesztésnél ellenőrzi, amely a tenantot vagy az ágenst mozgatja (`400 invalid_value`, mező: `agent`, vagy `tenant_id`, ha maga az áthelyezés törte meg a párost); nem-default tenantnak nincs alapértelmezett ágense, ezért ott az `agent` kötelező (`400 required`):
+
+| Tenant | Érvényes ágensek |
+|--------|------------------|
+| `default` | a flotta fő ágense, `all`, minden ismert ágens, amely nincs engedélyezett tenant-sorral, vagy engedélyezve van a `default`-ra |
+| bármely más | a fő ágense vagy egy rá engedélyezett ágens (`tenant_agent_availability.enabled = 1`), amíg a tenant nincs letiltva; sosem a flotta fő ágense (nincs tenant-hookja, így nincs izoláció) és sosem az `all` (a szétosztás nem köthető egyetlen tenanthoz) |
+
+Az ismeretlen ágensnév minden tenantnál érvénytelen.
+
+**Szerkesztés (`PUT`).** A kezelő csak ezeket írja: `description`, `prompt`, `schedule`, `enabled`, `type`, `skipIfBusy`, `forceSend`, `targetSession`, `command`, `timeoutMs`, `failThreshold`. Minden más kulcs eldobódik, különösen a `status` (egy szerkesztés már nem tehet éles feladattá egy vázlatot: az aktiválás a bejelentkezett admin lépése marad), a `tenantId`, és a futtató szkript kulcsai: `preCheck`, `catchUpMaxAgeMinutes`, `stuckAfterMinutes`, `requires`. Az `agent` csak adminnak szól (másoknál figyelmen kívül marad), és az eredő párosnak érvényesnek kell lennie. A `tenant_id` áthelyezi a feladatot: csak bejelentkezett admin (mindenki másnak `403`, a megosztott tokennek is, ha más tenantot nevez meg), a célnak léteznie kell és engedélyezettnek kell lennie, a páros újra ellenőrzött, a feladat visszakerül `draft` állapotba, a válasz `{ ok: true, tenant_id, status: "draft" }`. Az aktuálissal egyező `tenant_id` nem csinál semmit. A nem-admin csak a saját tenantja feladatait éri el (egyébként `404`), a `PUT`, `DELETE`, toggle, azonnali futtatás és `runs` hívásoknál.
+
+**Olvasás.** A `GET /schedules` minden feladatot `tenantId`-vel ad vissza: az adminok az összeset vagy a `?tenant=` szerintieket, mindenki más a saját tenantját. A `GET /schedules/agents` `{ name, label, avatar }` objektumokat ad: a nem-admin csak a tenantját kiszolgáló ágenseket, az admin az összeset vagy a `?tenant=` szerintieket (a dashboard-ablak ezzel szűkíti a választót). A `GET /schedules/pending` és a `DELETE /schedules/pending/<id>` az újrapróbálkozás feladatának tenantját követi; az a függő újrapróbálkozás, amelynek a feladata már nincs, csak adminnak szól.
+
+**Futtató.** Minden ütemben az az engedélyezett, éles, nem `command` típusú feladat, amelynek a párosa már nem áll fenn, nem tüzel, bármi is az ok (az ágenst kikapcsolták a tenantnál, a tenantot letiltották, a tenant fő ágense megváltozott, az ágenst törölték). Az ellenőrzés egy ütem erejéig páronként memoizált, a sikertelen lekérdezés érvényesnek számít, így egy adatbázis-hiba sosem állítja le a feladatokat. Minden esedékes előfordulás `skipped_tenant_mismatch` állapottal kerül a `task_runs` táblába, ugyanabban a kihagyási főkönyvben, mint a `skipped_not_live` (lásd "Visszatartott előfordulások"). Hibánként egy értesítés megy ki: egy hiba-naplósor, egy audit sor (ágens: `scheduler`, entitás: `schedule`, művelet: `skip_tenant_mismatch`, entitás-azonosító a feladat neve, részlet a tenant és az ágens) és egy Telegram-üzenet a tulajdonosi chatre, ha be van állítva (a szöveg jelenleg mindig magyar). A jelző memóriában él: a páros újra érvényessé válásakor törlődik, és egy hibán belüli újraindítás újra értesít. A `command` feladatok nem futtatnak ágenst, ezért nincsenek ellenőrizve.
+
+**A hook-kapcsolat.** A `scripts/hooks/tenant_context_lib.py` a `<scheduled-task source="scheduled-task:NAME">` promptot a `SELECT tenant_id FROM schedules WHERE id = ? AND agent = ?` lekérdezéssel oldja fel: a hiányzó vagy `default` érték az alapértelmezett tenant, más azonosító akkor `bound`, ha az ágens kiszolgálja, különben `unknown` (a skill-kapu ilyenkor megtagadja a tenant skilljeit), a más ágenst nevező (vagy `all`) sor pedig `unknown`. Vagyis a `tenant_id` beállítása elég egy ütemezett futás tenant-skill izolációjához, a fenti páros-szabály pedig érvényesen tartja ezt a kötést. A főágensnek nincs tenant-hookja, ezért nem lehet neki nem-default tenant feladatát adni. Lásd F03, "Tenant skill gate".
+
+**A szélek.**
+- A tenant törlése (`DELETE /api/v1/admin/tenants/<id>`; a `default` nem törölhető) eltávolítja a feladatait, azok `pending_task_retries` sorait és fájl-tükrüket (`~/.claude/scheduled-tasks/<name>`, amelyet egy üres-tábla újraseedelés különben visszahozna); az `admin.tenant.delete` audit sor tartalmazza a `schedules_deleted` és `schedule_mirrors_removed` értéket.
+- A flotta-import a `default`-ba teszi azt az ütemezést, amelynek exportált `tenant_id`-ja nem engedélyezett tenant ezen a gépen (a tenantok gépenként helyiek). Az ütemezések továbbra is letiltva érkeznek, a próbafuttatás és az alkalmazási jelentés megszámolja, hányat tettek át.
+- Az Áttekintés `tasksToday` értéke tenant-nézetben a tenant ütemezéseinek `task_runs` sorait számolja (feladatnév alapján), nem a tenant ágenseinek futásait, így a több tenant által megosztott ágens már nem tűnik el minden tenant-nézetből. Az a futás, amelynek az ütemezése azóta törlődött, nem tartozik tenanthoz, és csak a flottaszintű számban látszik.
+- A `tenant_required` API hibatoken (`400`), dashboard-üzenettel.
 
 ### Command feladatok
 
@@ -236,17 +289,18 @@ A `POST /api/v1/schedules/<name>/run` azonnal elindít egy feladatot, figyelmen 
 
 ### Visszatartott előfordulások és a tömeges kihagyás riasztása
 
-Egy engedélyezett feladat esedékes előfordulása nem fogyhat el nyom nélkül. Az ütemező minden ütemben három állapotba sorolja a feladatokat:
+Egy engedélyezett feladat esedékes előfordulása nem fogyhat el nyom nélkül. Az ütemező minden ütemben négy állapotba sorolja a feladatokat:
 
 | Állapot | Feltétel | Hatás |
 |---------|----------|-------|
 | futtatható (runnable) | engedélyezett és éles (live) | normál indítás és catch-up |
 | letiltott (disabled) | az `enabled` ki van kapcsolva | általában az operátor saját kapcsolója: nincs futás, nincs sor, a catch-up sosem játssza újra |
 | nem éles (not live) | engedélyezett, de a jóváhagyási kapu visszatartja (`draft` / `pending_review`) | nem fut; minden esedékes előfordulás `skipped_not_live` állapotú sorként kerül a `task_runs` táblába |
+| tenant-eltérés (tenant mismatch) | engedélyezett és éles, de a (tenant, ágens) párosa már nem áll fenn | nem fut; minden esedékes előfordulás `skipped_tenant_mismatch` állapotú sor, hibánként egy értesítés (lásd "Ütemezett feladatok tenant-tulajdonlása") |
 
 Az ütemben talált minden esedékes előfordulásról egy sor készül, minden célágensre külön (a feladat ágense; ha nincs megadva, a főágens; `all` feladatnál a főágens és minden futó ágens). A sorok a futási előzményekben látszanak (`GET /api/v1/schedules/<name>/runs`, legutóbbi 10), a dashboard a nyers állapotnevet mutatja.
 
-A letiltott feladatot is rögzíti, `skipped_disabled` állapottal, ha egy **tömeges esemény** része. Tömeges esemény az, amikor legalább 4 feladat van játékban (az előző ütemben futtatható feladatok és minden most engedélyezett feladat), és több mint a felük egyszerre van visszatartva. Visszatartott: a nem éles feladat, vagy az a letiltott feladat, amely az előző ütemben még futtatható volt. Ez az ütemező saját feladatainak téves olvasása, nem egy operátor egyetlen kapcsolása, ezért minden visszatartott előfordulás rögzítődik. A feladat addig marad az eseményben, amíg újra futtatható nem lesz, vagy el nem telik 24 óra. Az esemény előtt már letiltott feladatok sosem részei az eseménynek, egy különálló kapcsolgatás pedig sosem éri el a küszöböt.
+A letiltott feladatot is rögzíti, `skipped_disabled` állapottal, ha egy **tömeges esemény** része. Tömeges esemény az, amikor legalább 4 feladat van játékban (az előző ütemben futtatható feladatok és minden most engedélyezett feladat), és több mint a felük egyszerre van visszatartva. Visszatartott: a nem éles feladat, a tenant-eltérésű feladat, vagy az a letiltott feladat, amely az előző ütemben még futtatható volt. Ez az ütemező saját feladatainak téves olvasása, nem egy operátor egyetlen kapcsolása, ezért minden visszatartott előfordulás rögzítődik. A feladat addig marad az eseményben, amíg újra futtatható nem lesz, vagy el nem telik 24 óra. Az esemény előtt már letiltott feladatok sosem részei az eseménynek, egy különálló kapcsolgatás pedig sosem éri el a küszöböt.
 
 Amikor egy tömeges esemény elindul, egyetlen riasztás megy ki:
 

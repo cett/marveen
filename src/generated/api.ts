@@ -472,7 +472,14 @@ export type ListScheduledAgentsResponse = {
   avatar: string;
 }[]
 
-export type ListScheduleRunsResponse = Record<string, unknown>[]
+export type ListScheduleRunsResponse = {
+  /** Run time, milliseconds since the epoch */
+  ts?: number;
+  /** Outcome of the run, for example `fired`, `error` or `skipped`. A due occurrence the scheduler held back is recorded instead of run: `skipped_not_live` (still a draft), `skipped_disabled` (switched off in a mass event) and `skipped_tenant_mismatch` (the task's tenant and agent no longer fit together: the agent was switched off for the tenant, the tenant was disabled, or the agent is gone). */
+  status?: string;
+  /** Estimated token use of the run, null when it cannot be estimated */
+  tokens_est?: number;
+}[]
 
 export type ListIdeasResponse = Record<string, unknown>[]
 

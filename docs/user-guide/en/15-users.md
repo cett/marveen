@@ -95,6 +95,18 @@ After the enforce phase is enabled (`RBAC_MODE=enforce`), the system automatical
 - The agent list (`/api/v1/agents`) is tenant-independent -- all authenticated users can see which agents are running.
 - The blackboard is also tenant-independent for agent and admin roles -- fleet coordination requires agents to see each other's state.
 
+### Scheduled tasks and tenants
+
+Scheduled tasks are owned by a tenant (details in [06 - Tasks](06-tasks.md)):
+
+- Every task belongs to exactly one tenant. The system's own tasks (backup, maintenance, monitors) and every task created without naming a tenant belong to `default`.
+- A tenant user only gets the tasks, the agents to choose from and the pending retries of its own tenant. Another tenant's task answers as if it did not exist.
+- In the dashboard, creating, editing, moving to another tenant and activating tasks is an admin action: for other users the **+ Task** button is hidden and the row actions are disabled. A tenant user requests a task through their agent in the chat. The agent creates it as a draft in that user's tenant, and an admin activates it after seeing which tenant it belongs to.
+- A task only runs on an agent that serves its tenant. If the agent is switched off for the tenant, or the tenant is disabled, the task stops firing and each missed occurrence is recorded as `skipped_tenant_mismatch` in its run history.
+- Deleting a tenant also deletes its tasks, their pending retries and their mirrored files.
+
+> **Shadow mode and the schedules endpoints.** While RBAC runs in shadow mode (`RBAC_MODE` not set to `enforce`), the schedules endpoints are not admin-only yet: RBAC only logs the denial that enforce mode would issue, so a plain request from a tenant user is not stopped by RBAC itself. The task rules below are part of the schedules routes and apply in both modes. A tenant user cannot read or touch another tenant's tasks (they answer 404); cannot activate a task (403, activation is for a signed-in admin); cannot change a task's status, tenant or runner script options (an edit simply drops those keys; asking for a different tenant answers 403); cannot re-point a task to another agent (the key is ignored for them); and a task they create is always a draft in their own tenant. What shadow mode does **not** stop: a tenant user who calls the API directly can still edit the other fields of their own tenant's tasks, including the prompt and schedule of a live one, switch them on and off, run them, delete them and create drafts. Only `RBAC_MODE=enforce` makes these endpoints answer 403 to everyone but admins.
+
 ### External MCP servers and tenant isolation
 
 External MCP servers (e.g. GitHub, Hetzner, filesystem) have no tenant concept. If an agent carrying such a server is assigned to a B2B tenant, that tenant sees the credential's full scope -- this cannot be restricted by data-layer filtering, only by policy.
