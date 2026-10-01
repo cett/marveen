@@ -216,6 +216,65 @@ Besides the tenant move, the fields an edit can change are the description, prom
 
 ---
 
+## Tenant starter pack
+
+Every tenant other than `default` can be given a ready-made scheduled task, the **starter pack**. For now it consists of a single task, a daily summary named `<tenant>-starter-daily-summary`. Only a global admin can create it, on the Tenants tab of the Users view (see [15 - Users](15-users.md#tenant-starter-pack)); after that the task also appears in the Tasks list like any other.
+
+| Setting | Value |
+|---------|-------|
+| Type | Task |
+| Schedule | daily at 21:30 (in the server time zone) |
+| Language | Hungarian |
+| Agent | the tenant's main agent; failing that, the only agent enabled for the tenant; with several candidates the admin picks |
+| Initial state | draft, paused |
+
+### What the task does
+
+1. It reads the tenant's memory with the tenant scope and uses the entries of the last 24 hours (at most 50 rows). It works from no other source: not from recollection, another conversation or another tenant's data.
+2. If there is no new entry, it writes and sends nothing.
+3. If the agent's daily log already holds a "Napi összefoglaló" (daily summary) entry for today, it stops, so at most one summary is made per day.
+4. It writes a 5-8 sentence summary to the agent's daily log.
+5. A channel message goes out only when the runner gave the task a Telegram delivery instruction (see below). The same text is then sent as plain text, at most 1500 characters.
+
+The starter pack does not create a heartbeat task.
+
+### Activation in two steps
+
+The task starts as a draft and paused so that nothing goes out before a person has looked at it.
+
+1. **Activate.** A signed-in admin clicks **Activate** on the draft row in the Tasks list, the usual approval step (see [Editing a live task: re-review](#editing-a-live-task-re-review)).
+2. **Resume.** After activation the task is still paused. The **Resume** button enables it; anyone who may manage the tenant's tasks (the admin or `agent` role) holds the right to do so.
+
+The first channel message can go out at the next 21:30 after both steps.
+
+Until then the draft takes one place in the tenant's limit of 20 tasks waiting for review (see [Creating a new task](#creating-a-new-task)): one slot is taken, 19 remain. Activating or deleting it frees the slot.
+
+### The channel message and its recipients
+
+The summary's channel message goes only to Telegram, to the tenant's own chats. A recipient is someone for whom all of these hold:
+
+- a Telegram channel binding exists for the tenant and the task's agent (see [F03 - Operations](../../fork-guide/en/F03-operations.md#tenant-skill-gate)),
+- the binding is a private chat (group chats are left out), and
+- the same chat is also on the agent's Telegram allowlist.
+
+At most 3 recipients get the message. Another tenant's binding is never a recipient. With no such binding the task sends no message, and the result goes to the daily log only. Only an admin can create a binding (a tenant user cannot), so the admin decides who the recipients are.
+
+This rule holds for the tasks of every tenant other than `default`, not just the starter pack: the result used to go to the first entry of the agent's allowlist, which could be the fleet owner. Tasks of the `default` tenant and heartbeats are unchanged.
+
+### When the tenant's agent changes
+
+The task follows the agent:
+
+- After every change in the Agent access matrix the system re-checks the tenant's starter pack. If the tenant now clearly has a different agent, the task moves to the new agent and **returns to draft and paused**: it has to be activated and resumed again. It touches no other field (prompt, schedule, description), so manual edits stay.
+- If the task's agent no longer serves the tenant and no new one is clear, the task is parked (draft, paused), the agent stays as it was, and the Starter pack panel on the Tenants tab asks for an agent.
+- If the move is triggered by someone other than a signed-in admin (for example an agent calling with the shared token), the main agent gets a `[SCHEDULE_REVIEW]` message with the reason `retargeted`, with the usual one-per-hour limit. A signed-in admin knows from their own action, so no message goes out.
+
+### Editing, deleting, creating again
+
+The task can be edited and deleted like any other. Pressing the Starter pack button again never overwrites the existing task (a manually edited prompt or schedule stays); it does create a deleted task again. Deleting the tenant deletes the starter-pack task too.
+
+---
+
 ## Tips
 
 - For heartbeat prompts, include a clear decision condition ("if X, notify on Telegram; if nothing found, do not write anything") to avoid unnecessary notification noise.

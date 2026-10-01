@@ -216,6 +216,65 @@ A tenant-áthelyezésen kívül egy szerkesztés ezeket a mezőket változtathat
 
 ---
 
+## Tenant alapcsomag
+
+Minden `default`-tól különböző tenantnak létrehozható egy kész ütemezett feladat, az **alapcsomag**. Jelenleg egyetlen feladatból áll, a `<tenant>-starter-daily-summary` nevű napi összefoglalóból. Létrehozni csak globális admin tud, a Felhasználók nézet Tenantok fülén (lásd [15 - Felhasználók](15-felhasznalok.md#tenant-alapcsomag)); a feladat utána a Feladatok listájában is ott van, mint bármelyik másik.
+
+| Beállítás | Érték |
+|-----------|-------|
+| Típus | Feladat |
+| Ütemezés | naponta 21:30 (a szerver időzónájában) |
+| Nyelv | magyar |
+| Ágens | a tenant fő ágense; ha nincs, az egyetlen a tenantnál engedélyezett ágens; több jelölt esetén az admin választ |
+| Kezdő állapot | piszkozat, szüneteltetve |
+
+### Mit csinál a feladat
+
+1. Lekérdezi a tenant memóriáját a tenant hatókörével, és az elmúlt 24 óra bejegyzéseit (legfeljebb 50 sort) használja. Más forrásból nem dolgozik: emlékezetből, másik beszélgetésből vagy másik tenant adataiból nem.
+2. Ha nincs új bejegyzés, nem ír és nem küld semmit.
+3. Ha az ágens napi naplójában aznapra már van "Napi összefoglaló" bejegyzés, kilép, így naponta legfeljebb egy összefoglaló készül.
+4. Egy 5-8 mondatos összefoglalót ír az ágens napi naplójába.
+5. Csatornaüzenet csak akkor megy, ha a futtató Telegram-kézbesítési utasítást adott a feladatnak (lásd lent). Ilyenkor ugyanez a szöveg megy ki sima szövegként, legfeljebb 1500 karakterben.
+
+Szívdobogás típusú feladatot az alapcsomag nem hoz létre.
+
+### Aktiválás két lépésben
+
+A feladat azért indul piszkozatként és szüneteltetve, hogy semmi ne menjen ki, mielőtt egy ember megnézte.
+
+1. **Aktiválás.** Egy bejelentkezett admin a Feladatok listában az **Aktiválás** gombra kattint a piszkozat soron, a szokásos jóváhagyási lépéssel (lásd [Élő feladat szerkesztése: újabb jóváhagyás](#élő-feladat-szerkesztése-újabb-jóváhagyás)).
+2. **Folytatás.** Az aktiválás után a feladat még szüneteltetett. A **Folytatás** gombbal lesz engedélyezett, ehhez a tenant feladatait kezelni tudó felhasználónak (admin vagy `agent` szerepkör) van joga.
+
+Az első csatornaüzenet legkorábban ezek után, a következő 21:30-kor mehet ki.
+
+A piszkozat addig beleszámít a tenant 20 jóváhagyásra váró feladatot engedő korlátjába (lásd [Új feladat létrehozása](#új-feladat-létrehozása)), vagyis egy hely foglalt, 19 marad. Aktiválás vagy törlés felszabadítja.
+
+### Csatornaüzenet és címzettjei
+
+Az összefoglaló csatornaüzenete csak Telegramon, a tenant saját csevegéseibe megy. Címzett az, akire egyszerre igaz, hogy
+
+- van a tenant és a feladat ágense számára létrehozott Telegram csatorna-kötése (lásd [F03 - Üzemeltetés](../../fork-guide/hu/F03-uzemeltetes.md#tenant-skill-kapu)),
+- a kötés magánbeszélgetés (a csoportos csevegések kimaradnak), és
+- ugyanez a csevegés az ágens Telegram engedélyezett listáján is szerepel.
+
+Legfeljebb 3 címzett kap üzenetet. Másik tenant kötése sosem címzett. Ha nincs ilyen kötés, a feladat nem küld üzenetet, az eredmény csak a napi naplóba kerül. Kötést csak admin hozhat létre (tenant-felhasználó nem), ezért a címzettek körét az admin dönti el.
+
+Ez a szabály minden `default`-tól különböző tenant feladatára érvényes, nem csak az alapcsomagéra: korábban az ágens engedélyezett listájának első bejegyzése kapta az eredményt, ami a flotta tulajdonosa is lehetett. A `default` tenant feladatai és a szívdobogások nem változtak.
+
+### Ha a tenant ágense megváltozik
+
+A feladat követi az ágenst:
+
+- Az Agent-hozzáférés mátrix minden módosítása után a rendszer újraellenőrzi a tenant alapcsomagját. Ha a tenantnak egyértelműen más ágense lett, a feladat az új ágensre kerül, és **visszakerül piszkozat és szüneteltetett állapotba**: újra kell aktiválni és folytatni. Más mezőhöz (prompt, ütemezés, leírás) nem nyúl, a kézi szerkesztések megmaradnak.
+- Ha a feladat ágense már nem szolgálja ki a tenantot, és nincs egyértelmű új, a feladat parkol (piszkozat, szüneteltetve), az ágens változatlan marad, a Tenantok fül Alapcsomag panelje pedig ágens-választást kér.
+- Ha az átállítást nem bejelentkezett admin váltja ki (például a megosztott tokennel hívó ágens), a főágens `[SCHEDULE_REVIEW]` üzenetet kap `retargeted` okkal, a szokásos óránkénti korláttal. A bejelentkezett admin a saját műveletéből tudja, neki nem megy üzenet.
+
+### Szerkesztés, törlés, ismételt létrehozás
+
+A feladat szerkeszthető és törölhető, mint bármelyik másik. Az Alapcsomag gomb ismételt megnyomása sosem írja felül a meglévő feladatot (a kézzel módosított prompt vagy ütemezés megmarad); a törölt feladatot viszont újra létrehozza. A tenant törlése az alapcsomag feladatát is viszi.
+
+---
+
 ## Tippek
 
 - A szívdobogás típusú feladatoknál a prompt fogalmaz meg konkrét döntési feltételt ("ha X, szólj Telegramon; ha nincs semmi, ne írj semmit"), hogy ne legyen felesleges értesítési zaj.

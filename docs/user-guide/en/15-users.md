@@ -119,6 +119,40 @@ Scheduled tasks are owned by a tenant (details in [06 - Tasks](06-tasks.md)):
 >
 > Before enforce mode is switched on, do not give tenant users a login or token that can reach the API.
 
+### Tenant starter pack
+
+The starter pack is a ready-made scheduled task (a daily summary) for a tenant. What the task does, how to activate it and who gets the channel message: [06 - Tasks](06-tasks.md#tenant-starter-pack). This section describes where the button is and who can reach what.
+
+**Where the button is.** On the **Tenants** tab, in each tenant's row next to the agent-management button, there is a **Starter pack** button (not on the `default` tenant). Clicking it opens the Starter pack panel below the tenant list. The panel shows:
+
+- the state of the task: not created yet, up to date, waiting to be re-aimed (the agent changed), or parked (the task's agent no longer serves the tenant);
+- the task's name, agent, status (draft or live) and whether it is enabled;
+- which agent the system would choose by itself (the tenant's main agent, failing that the only enabled agent).
+
+The agent picker appears only when the system cannot choose on its own (none or several candidates). An agent that also serves another tenant cannot be chosen. The button reads **Create starter pack** when the task does not exist yet, and **Check / re-aim** otherwise.
+
+**Pressing it again.** The button is idempotent: it never overwrites an existing task, and when nothing changed it does nothing ("Nothing changed"). When the agent changed, it re-aims the task and puts it back to draft and paused. When the task was deleted in the meantime, it creates it again.
+
+**Who sees and may do what.**
+
+| | admin (global) | agent | read_only | viewer |
+|---|:---:|:---:|:---:|:---:|
+| Starter pack button and panel on the Tenants tab | X | | | |
+| Create the starter pack and read its state (API) | X | | | |
+| The starter-pack task in the Tasks list (own tenant) | X | X | X | X |
+| Edit | X | X | | |
+| Activate (draft to live) | X | | | |
+| Resume, pause, delete | X | X | | |
+
+Alongside the table:
+
+- A tenant user does not see the button or the panel: it is not merely hidden, it is not in the page at all. The starter-pack API is also reachable only with the admin role; any other role, a device key and a federation principal get 403. That holds in shadow mode too, because the admin check also lives in the route, not only in the permission table.
+- A tenant user sees the starter-pack task of their own tenant in the Tasks list, with a draft badge until it is activated. They cannot activate it (activation needs a signed-in admin). Resuming after activation is open to the `agent` role, as pausing and resuming any other task is.
+- When a tenant user edits the starter-pack task, the usual rule applies to them too: for a live task the change asks for re-review (see [06 - Tasks](06-tasks.md)).
+- A non-admin account without a tenant is refused by every schedules endpoint, so it does not see the starter-pack task either.
+- The recipients of the channel message are not set by the user: Telegram channel bindings can only be created by an admin (see [F03 - Operations](../../fork-guide/en/F03-operations.md#tenant-skill-gate)). Someone who is not among the tenant's bindings does not receive the summary on a channel, even if they can see the task.
+- The starter-pack task and its daily-summary entry use and write only the tenant's own data; the tenant's memory is read with the tenant scope.
+
 ### External MCP servers and tenant isolation
 
 External MCP servers (e.g. GitHub, Hetzner, filesystem) have no tenant concept. If an agent carrying such a server is assigned to a B2B tenant, that tenant sees the credential's full scope -- this cannot be restricted by data-layer filtering, only by policy.
