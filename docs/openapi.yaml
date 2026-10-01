@@ -172,6 +172,78 @@ components:
             schedule, agent, target session, timeout, fail threshold, busy
             flags). Send it back as `expected_hash` when activating.
 
+    TenantStarterPackResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        tenant_id:
+          type: string
+        agent:
+          type: string
+          nullable: true
+        state:
+          type: string
+          enum: [created, ok, retargeted, needs_agent]
+        reason:
+          type: string
+          description: Why no agent could be chosen (state `needs_agent`).
+        created:
+          type: array
+          items:
+            type: string
+        skipped:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string
+                enum: [exists, name_conflict]
+        retargeted:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              from:
+                type: string
+              to:
+                type: string
+    TenantStarterPackState:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        name:
+          type: string
+        exists:
+          type: boolean
+        state:
+          type: string
+          enum: [absent, ok, retarget_pending, needs_agent]
+        task:
+          type: object
+          nullable: true
+          properties:
+            agent:
+              type: string
+            status:
+              type: string
+            enabled:
+              type: boolean
+        resolution:
+          type: object
+          properties:
+            agent:
+              type: string
+              nullable: true
+            reason:
+              type: string
+              enum: [explicit, main_agent, single_enabled, tenant_unavailable, not_serving, shared, ambiguous]
     Error:
       type: object
       required: [error]
@@ -4410,6 +4482,112 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/tenants/{tenant_id}/starter-pack:
+    get:
+      tags: [admin-tenants]
+      operationId: getTenantStarterPack
+      summary: Read the state of a tenant's starter task
+      description: |
+        Read-only. Reports the tenant's starter task (a daily summary of the tenant's own memories,
+        created as `draft` and disabled) and which agent a create would pick right now. Requires
+        `admin:all`; the route also checks the role itself, so it holds in shadow RBAC mode.
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantStarterPackState"
+        "400":
+          description: "`invalid_value` - the default tenant has no starter pack"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "`forbidden`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`not_found` - unknown or disabled tenant"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [admin-tenants]
+      operationId: createTenantStarterPack
+      summary: Create or repair a tenant's starter task
+      description: |
+        Creates the tenant's starter task, a daily summary of the tenant's own memories, as `draft`
+        and disabled: an admin activates it and then enables it, and nothing is sent before that.
+        The task is named `<tenant>-starter-daily-summary` and runs on one agent that serves this
+        tenant only. The agent is `agent_id` when given, else the tenant's main agent, else the only
+        agent enabled for the tenant. Calling it again never overwrites the task; when the agent
+        behind an existing task changed, it re-aims the task and returns it to `draft` and disabled.
+        Requires `admin:all`; the route also checks the role itself, so it holds in shadow RBAC mode.
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_id:
+                  type: string
+                  description: Agent to run the task; must serve this tenant and no other.
+      responses:
+        "200":
+          description: Nothing was created (the task exists), possibly re-aimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantStarterPackResult"
+        "201":
+          description: The task was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantStarterPackResult"
+        "400":
+          description: "`required` (`agent_id`: no single agent can be chosen) or `invalid_value` (the agent does not serve the tenant, or the default tenant)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "`forbidden`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`not_found` - unknown or disabled tenant"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`conflict` - the agent also serves another tenant, or a schedule of that name belongs to another tenant"
           content:
             application/json:
               schema:

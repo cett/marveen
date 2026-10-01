@@ -19,7 +19,7 @@ import {
   listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask, isTaskLive,
 } from '../scheduled-tasks-io.js'
 import { REVIEWED_FIELDS, reviewTriggerFields, reviewValueSha256, scheduleContentHash } from '../schedule-review.js'
-import { auditScheduleWrite, notifyScheduleReview, scheduleActor } from '../schedule-review-effects.js'
+import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor } from '../schedule-review-effects.js'
 import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
 
@@ -33,10 +33,7 @@ import type { RouteContext } from './types.js'
 // running a non-live task). This deliberately makes agent-token callers
 // weaker here than they are for the rest of this route (which still treats
 // them as admin) -- that gap IS the governance boundary this feature exists
-// to create.
-function isHumanAdmin(ctx: RouteContext): boolean {
-  return ctx.role === 'admin' && ctx.auth?.kind === 'session'
-}
+// to create. The check itself lives in schedule-review-effects.ts (isHumanAdmin).
 
 // Tenant scope helpers (mirrors artifacts/kanban pattern). Every task belongs to a tenant;
 // there is no tenant-less "fleet" scope.

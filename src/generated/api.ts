@@ -62,6 +62,41 @@ export interface Schedule {
   contentHash?: string;
 }
 
+export interface TenantStarterPackResult {
+  ok?: boolean;
+  tenant_id?: string;
+  agent?: string;
+  state?: 'created' | 'ok' | 'retargeted' | 'needs_agent';
+  /** Why no agent could be chosen (state `needs_agent`). */
+  reason?: string;
+  created?: string[];
+  skipped?: ({
+    name?: string;
+    reason?: 'exists' | 'name_conflict';
+  })[];
+  retargeted?: {
+    name?: string;
+    from?: string;
+    to?: string;
+  }[];
+}
+
+export interface TenantStarterPackState {
+  tenant_id?: string;
+  name?: string;
+  exists?: boolean;
+  state?: 'absent' | 'ok' | 'retarget_pending' | 'needs_agent';
+  task?: {
+    agent?: string;
+    status?: string;
+    enabled?: boolean;
+  };
+  resolution?: {
+    agent?: string;
+    reason?: 'explicit' | 'main_agent' | 'single_enabled' | 'tenant_unavailable' | 'not_serving' | 'shared' | 'ambiguous';
+  };
+}
+
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
   error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter' | 'stale_revision';
@@ -529,6 +564,10 @@ export type UpdateModelProfileMapEntryResponse = OkResponse
 export type CreateTenantResponse = Tenant
 
 export type UpdateTenantResponse = Tenant
+
+export type GetTenantStarterPackResponse = TenantStarterPackState
+
+export type CreateTenantStarterPackResponse = TenantStarterPackResult
 
 export type CreateUserResponse = DashboardUserPublic
 

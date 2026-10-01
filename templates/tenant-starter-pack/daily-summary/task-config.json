@@ -1,0 +1,7 @@
+{
+  "schedule": "30 21 * * *",
+  "type": "task",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "Napi összefoglaló a tenant elmúlt 24 órás emlékeiből (alapcsomag)"
+}

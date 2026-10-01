@@ -44,6 +44,7 @@ import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, listAgentNames } from '../agent-config.js'
 import { getHighRiskMcpServersForAgent } from '../mcp-risk-policy.js'
 import { regenTenantSkillFiles } from '../skill-regen.js'
+import { createStarterPack, describeStarterPack, reconcileStarterPack } from '../tenant-starter-pack.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -113,6 +114,40 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   }
 
   const tenantByIdMatch = path.match(/^\/api\/admin\/tenants\/([^/]+)$/)
+
+  // ── Starter pack ───────────────────────────────────────────────────────────
+  // POST /api/admin/tenants/:id/starter-pack  {agent_id?}   create (or repair) the tenant's starter task
+  // GET  /api/admin/tenants/:id/starter-pack                read-only state for the UI
+  //
+  // Admin-only on two layers: the /api/admin/ RBAC prefix, and the role check here, because the
+  // default RBAC mode is shadow (logs, never blocks) and a tenant user must not get through on it.
+  const starterMatch = path.match(/^\/api\/admin\/tenants\/([^/]+)\/starter-pack$/)
+  if (starterMatch && (method === 'POST' || method === 'GET')) {
+    if (ctx.role !== 'admin') { json(res, { error: 'forbidden', hint: 'The starter pack is admin-only' }, 403); return true }
+    const tenantId = starterMatch[1]
+    if (tenantId === 'default') { json(res, { error: 'invalid_value', field: 'id', hint: 'The default tenant has no starter pack' }, 400); return true }
+    const tenant = getTenant(tenantId)
+    if (!tenant || tenant.disabled_at !== null) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found or disabled' }, 404); return true }
+
+    if (method === 'GET') { json(res, describeStarterPack(tenantId)); return true }
+
+    const raw = (await readBody(req)).toString().trim()
+    const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>
+    const agentId = typeof body.agent_id === 'string' && body.agent_id.trim() ? sanitizeAgentIdent(body.agent_id.trim()) : undefined
+    const out = createStarterPack(ctx, tenantId, { agentId })
+    if (!out.ok) {
+      if (out.error === 'tenant_unavailable') json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found or disabled' }, 404)
+      else if (out.error === 'ambiguous') json(res, { error: 'required', field: 'agent_id', hint: 'The tenant has no single agent to run the task: pass agent_id' }, 400)
+      else if (out.error === 'not_serving') json(res, { error: 'invalid_value', field: 'agent_id', hint: 'The agent does not serve this tenant' }, 400)
+      else if (out.error === 'shared') json(res, { error: 'conflict', field: 'agent_id', hint: 'The agent also serves another tenant: the starter task needs an agent of this tenant only' }, 409)
+      else json(res, { error: 'conflict', field: 'id', hint: `A schedule named ${out.name} already belongs to another tenant` }, 409)
+      return true
+    }
+    const r = out.result
+    auditAdmin(ctx, 'admin.tenant.starter_pack', tenantId, { state: r.state, agent: r.agent, created: r.created, retargeted: r.retargeted })
+    json(res, { ok: true, tenant_id: r.tenant_id, agent: r.agent, state: r.state, created: r.created, skipped: r.skipped, retargeted: r.retargeted, ...(r.reason ? { reason: r.reason } : {}) }, r.created.length > 0 ? 201 : 200)
+    return true
+  }
 
   if (tenantByIdMatch && method === 'DELETE') {
     const tenantId = tenantByIdMatch[1]
@@ -533,6 +568,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     auditAdmin(ctx, 'admin.agent_availability.set', `${tenantId}/${agentId}`, { enabled })
     // Tenant skills are generated under the tenant's enabled agents: follow the matrix.
     try { regenTenantSkillFiles(tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant skill files could not be reconciled after an availability change') }
+    // The tenant's starter task follows the agent behind it; a failure here never fails the PUT.
+    try { reconcileStarterPack(ctx, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant starter task could not be reconciled after an availability change') }
     json(res, { tenant_id: row.tenant_id, agent_id: row.agent_id, enabled: row.enabled === 1, updated_at: row.updated_at })
     return true
   }
