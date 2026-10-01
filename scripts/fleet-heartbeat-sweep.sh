@@ -3,8 +3,9 @@
 # Triggered 4-hourly by the main agent scheduled task `memoria-heartbeat-fleet`.
 # Sequentially (staggered) instructs every RUNNING fleet sub-agent to run its own
 # memory-heartbeat (memory save + skill reflection). Fleet membership is discovered
-# live from /api/agents -- NOT hardcoded. Runs in the background so the main agent's
-# turn returns immediately.
+# live from /api/agents -- NOT hardcoded; agents that serve only non-default tenants are
+# skipped (see TENANT_ONLY below). Runs in the background so the main agent's turn returns
+# immediately.
 #
 # Usage: fleet-heartbeat-sweep.sh [stagger_seconds]
 set -euo pipefail
@@ -67,8 +68,21 @@ fi
 
 echo "[$(ts)] fleet-heartbeat sweep start (stagger=${STAGGER}s)" >> "$LOG"
 
-AGENTS="$(curl -s -H "Authorization: Bearer $TOKEN" "$API/api/agents" \
-  | jq -r '.[] | select(.running==true) | .name' | grep -vx "$MAIN_AGENT" || true)"
+# An agent that serves ONLY non-default tenants is left out: the directive reaches it stamped
+# with the default tenant (an admin-sent message always is), so the memories it saves would land
+# in the default tenant, visible to the fleet and surviving the tenant's deletion. An agent counts
+# as tenant-only when it is enabled for tenants and `default` is not among them, or when it is the
+# main agent of a tenant other than `default`. A shared agent (enabled for `default` too) stays in.
+# Missing tenant fields (an older /api/agents) read as "not tenant-only": nothing is skipped.
+TENANT_ONLY='((.tenantIds // []) as $t | (($t | length) > 0 and ($t | index("default")) == null)) or ((.primaryTenantId // "default") != "default")'
+AGENTS_JSON="$(curl -s -H "Authorization: Bearer $TOKEN" "$API/api/agents" || true)"
+AGENTS="$(printf '%s' "$AGENTS_JSON" \
+  | jq -r ".[] | select(.running==true) | select(($TENANT_ONLY) | not) | .name" 2>/dev/null | grep -vx "$MAIN_AGENT" || true)"
+TENANT_SKIPPED="$(printf '%s' "$AGENTS_JSON" \
+  | jq -r ".[] | select(.running==true) | select($TENANT_ONLY) | .name" 2>/dev/null | grep -vx "$MAIN_AGENT" || true)"
+for SKIPPED in $TENANT_SKIPPED; do
+  echo "[$(ts)]   -- $SKIPPED : skipped (serves only non-default tenants)" >> "$LOG"
+done
 
 if [ -z "$AGENTS" ]; then
   echo "[$(ts)] no running sub-agents found, nothing to do" >> "$LOG"

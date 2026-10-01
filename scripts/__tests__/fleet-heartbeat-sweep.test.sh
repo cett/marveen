@@ -91,6 +91,54 @@ OUT="$(QUOTA_STALE_MINUTES=5 run_sweep "$R")"
 case "$OUT" in *"skipping"*) fail "10m old with 5m limit: still skipped";; *) pass "10m old snapshot is stale under QUOTA_STALE_MINUTES=5";; esac
 
 echo ""
+echo "(f) tenant-only agents are left out of the sweep"
+# make_agents_root CASE AGENTS_JSON: a curl stub that serves the agent list and records every POSTed message.
+make_agents_root() {
+  local r; r="$(make_root "$1")"
+  printf '%s' "$2" > "$r/agents.json"
+  cat > "$r/bin/curl" <<STUB
+#!/bin/sh
+post=0; payload=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in -X) [ "\$2" = POST ] && post=1;; -d) payload="\$2";; esac
+  shift
+done
+if [ "\$post" = 1 ]; then printf '%s\n' "\$payload" >> "$r/posts.log"; printf 200; else cat "$r/agents.json"; fi
+STUB
+  chmod +x "$r/bin/curl"
+  echo "$r"
+}
+targets() { [ -f "$1/posts.log" ] && jq -r '.to' "$1/posts.log" | sort | tr '\n' ' ' || true; }
+
+AGENTS_JSON='[
+ {"name":"plain","running":true,"tenantIds":[],"primaryTenantId":null},
+ {"name":"shared","running":true,"tenantIds":["default","acme"],"primaryTenantId":null},
+ {"name":"explicit-default","running":true,"tenantIds":["default"],"primaryTenantId":null},
+ {"name":"only-acme","running":true,"tenantIds":["acme"],"primaryTenantId":null},
+ {"name":"main-of-acme","running":true,"tenantIds":["acme"],"primaryTenantId":"acme"},
+ {"name":"main-only","running":true,"tenantIds":[],"primaryTenantId":"acme"},
+ {"name":"legacy","running":true},
+ {"name":"stopped","running":false,"tenantIds":[],"primaryTenantId":null},
+ {"name":"main","running":true,"tenantIds":[],"primaryTenantId":null}
+]'
+R="$(make_agents_root f "$AGENTS_JSON")"
+OUT="$(run_sweep "$R")"
+GOT="$(targets "$R")"
+[ "$GOT" = "explicit-default legacy plain shared " ] && pass "only default-reachable running agents get the directive ($GOT)" || fail "wrong recipients: '$GOT'"
+for A in only-acme main-of-acme main-only; do
+  case "$GOT" in *"$A "*) fail "$A (tenant-only) received the directive";; *) pass "$A (tenant-only) did not receive it";; esac
+  case "$OUT" in *"$A : skipped (serves only non-default tenants)"*) pass "$A: skip logged";; *) fail "$A: skip not logged: $OUT";; esac
+done
+case "$OUT" in *"(4 agents triggered)"*) pass "trigger count matches the recipients";; *) fail "unexpected trigger count: $OUT";; esac
+
+echo ""
+echo "(g) only tenant-only agents running -> nothing is sent, the sweep ends cleanly"
+R="$(make_agents_root g '[{"name":"only-acme","running":true,"tenantIds":["acme"],"primaryTenantId":null}]')"
+OUT="$(run_sweep "$R")"
+[ -z "$(targets "$R")" ] && pass "no message sent" || fail "a message was sent"
+case "$OUT" in *"no running sub-agents found"*) pass "ends with the nothing-to-do line";; *) fail "no nothing-to-do line: $OUT";; esac
+
+echo ""
 echo "======================================="
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
