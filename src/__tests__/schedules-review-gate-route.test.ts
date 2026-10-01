@@ -126,6 +126,7 @@ function makeCtx(
   }
 }
 
+import { listAgentNames } from '../web/agent-config.js'
 import { tryHandleSchedules } from '../web/routes/schedules.js'
 import { writeScheduledTask } from '../web/scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../web/schedule-runner.js'
@@ -162,10 +163,13 @@ describe('POST /api/schedules -- review-gate status stamping', () => {
   })
 
   it('a non-admin viewer creates status=draft', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/schedules', body, { role: 'viewer', tenantId: 'default' })
+    // A non-default tenant needs an agent that serves it; the agent list is mocked empty above.
+    vi.mocked(listAgentNames).mockReturnValue(['tenant-agent'])
+    const { ctx, out } = makeCtx('POST', '/api/schedules', { ...body, agent: 'tenant-agent' }, { role: 'viewer', tenantId: 'tenant-a', auth: { kind: 'session' } })
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ status: 'draft' })
+    vi.mocked(listAgentNames).mockReturnValue([])
   })
 
   it('an admin caller with no auth info at all (undefined auth.kind) creates status=draft', async () => {

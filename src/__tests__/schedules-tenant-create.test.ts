@@ -119,7 +119,9 @@ describe('a stored NULL tenant (before the migration) reads as the default tenan
     expect(io.rowToTask(dbMod.getScheduleFromDb('legacy')!).tenantId).toBe('default')
     expect(dbMod.listSchedulesFromDb({ tenantId: 'default' }).map(r => r.id)).toEqual(['legacy'])
     expect(dbMod.listSchedulesFromDb({ tenantId: 'tenant-b' })).toEqual([])
-    expect((await call('PUT', '/api/schedules/legacy', { description: 'x' }, { tenant: 'default' })).status).toBe(200)
+    // The default tenant's tasks are written by admins only; a tenant caller sees them as not found.
+    expect((await call('PUT', '/api/schedules/legacy', { description: 'x' }, 'human')).status).toBe(200)
+    expect((await call('PUT', '/api/schedules/legacy', { description: 'x' }, { tenant: 'default' })).status).toBe(403)
     expect((await call('PUT', '/api/schedules/legacy', { description: 'y' }, { tenant: 'tenant-b' })).status).toBe(404)
   })
 

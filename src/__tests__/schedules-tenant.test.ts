@@ -112,7 +112,7 @@ function makeCtx(
   }
   const url = new URL(`http://localhost:3420${rawPath}`)
   const ctx = {
-    req, res, path: url.pathname, method, url, role, tenantId,
+    req, res, path: url.pathname, method, url, role, tenantId, auth: { kind: 'session' },
   } as unknown as RouteContext
   return { ctx, out }
 }

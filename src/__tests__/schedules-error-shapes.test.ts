@@ -98,7 +98,8 @@ function makeCtx(
   }
   const url = new URL(`http://localhost:3420${path}`)
   return {
-    ctx: { req, res, path: url.pathname, method, url } as unknown as RouteContext,
+    // An admin: these tests are about the error shapes, not about who may call.
+    ctx: { req, res, path: url.pathname, method, url, role: 'admin' } as unknown as RouteContext,
     out,
   }
 }

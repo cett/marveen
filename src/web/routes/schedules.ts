@@ -60,6 +60,31 @@ function crossTenantBlocked(ctx: RouteContext, scheduleTenantId: string | null):
   return (scheduleTenantId ?? DEFAULT_SCHEDULE_TENANT) !== (ctx.tenantId ?? 'default')
 }
 
+// Most tasks a tenant may have waiting for a person (draft or pending_review) at once. Without a
+// cap a tenant user, or an agent acting for one, could fill the admin's review queue with
+// proposals; the cap is the cheap answer, and applies to creating a draft only (an edit of a
+// task the tenant already owns cannot raise the number of tasks it has).
+export const MAX_OPEN_REVIEW_PER_TENANT = 20
+
+// Route-level rules for a caller that is not an admin, whatever RBAC_MODE says. They hold in
+// shadow mode too, so the permission rows in rbac.ts only add to them. ctx.role === 'admin' (a
+// signed-in admin or the shared token every fleet agent uses) is exempt: what those callers may
+// write is decided by the review gate, not here.
+//  - no tenant: such an account would otherwise read the default tenant's (system) tasks
+//    through the `?? 'default'` fallback below; the approvals route closes the same hole.
+//  - writes need a signed-in user or an API token. A device key is role 'agent' on tenant
+//    'default', exactly the tenant of the system tasks, and is not a person who can be held to
+//    the review gate.
+//  - writes on the default tenant stay with the admins: its tasks are the fleet's own.
+function nonAdminRefusal(ctx: RouteContext): string | null {
+  if (ctx.role === 'admin') return null
+  if (ctx.tenantId == null) return 'This account is not assigned to a tenant'
+  if (ctx.method === 'GET' || ctx.method === 'HEAD') return null
+  if (ctx.auth?.kind !== 'session' && ctx.auth?.kind !== 'token') return 'Only a signed-in user or an API token can change schedules'
+  if (ctx.tenantId === DEFAULT_SCHEDULE_TENANT) return "Only an admin can change the default tenant's schedules"
+  return null
+}
+
 // Fields a PUT may write. Everything else in the body is dropped before it reaches
 // writeScheduledTask, which would otherwise take any of its keys at face value: the
 // review-gate `status` (a draft made live without the human activation step), the
@@ -112,6 +137,11 @@ function validateCommandFields(
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  if (path === '/api/schedules' || path.startsWith('/api/schedules/')) {
+    const refusal = nonAdminRefusal(ctx)
+    if (refusal) { json(res, { error: 'forbidden', hint: refusal }, 403); return true }
+  }
 
   // Scheduler liveness for the dashboard's heartbeat indicator (schedule-state-ui):
   // whether the schedule-runner's tick loop has stamped schedule_last_tick_ms
@@ -305,6 +335,16 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // an admin human must activate it (PUT .../activate) before the runner
     // will ever fire it.
     const status: 'draft' | 'live' = isHumanAdmin(ctx) ? 'live' : 'draft'
+    if (status === 'draft') {
+      const open = listSchedulesFromDb({ tenantId }).filter(r => r.status !== 'live').length
+      if (open >= MAX_OPEN_REVIEW_PER_TENANT) {
+        json(res, {
+          error: 'limit_exceeded', field: 'name',
+          hint: `This tenant already has ${open} schedules waiting for review (max ${MAX_OPEN_REVIEW_PER_TENANT}); an admin must activate or delete some first`,
+        }, 400)
+        return true
+      }
+    }
 
     writeScheduledTask(name, {
       description: data.description || '',
