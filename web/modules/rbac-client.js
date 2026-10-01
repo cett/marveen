@@ -11,9 +11,10 @@
 //   getAuthStatus()               -- cached /api/auth/status fetch (shared promise)
 //   gate(selector, permission, mode) -- hide/disable matching elements when !can()
 
-/** @typedef {'memories:read'|'memories:write'|'kanban:read'|'kanban:write'|'agents:read'|'messages:write'|'approvals:read'|'approvals:write'|'blackboard:read'|'blackboard:write'|'schedules:read'|'schedules:write'|'admin:all'|'federation:read'|'federation:write'} Permission */
+/** @typedef {'memories:read'|'memories:write'|'kanban:read'|'kanban:write'|'agents:read'|'agents:write'|'messages:write'|'approvals:read'|'approvals:write'|'blackboard:read'|'blackboard:write'|'schedules:read'|'schedules:write'|'admin:all'|'federation:read'|'federation:write'} Permission */
 
-const ROLE_PERMISSIONS = {
+// Exported only so src/__tests__/rbac-client-mirror.test.ts can walk it against rbac.ts.
+export const ROLE_PERMISSIONS = {
   admin: new Set([
     'memories:read', 'memories:write', 'kanban:read', 'kanban:write',
     'agents:read', 'agents:write', 'messages:write', 'approvals:read', 'approvals:write',
