@@ -25,9 +25,9 @@ A rendszer négy hozzáférési szintet különböztet meg.
 
 **Admin** -- teljes hozzáférés minden tenant adatához és az adminisztrációs felülethez. A futó ágensek bearer tokenje admin jogosultsággal fut.
 
-**Agent** -- egy tenant adataihoz teljes olvasási és írási hozzáférés (memóriák, kanban, üzenetváltások, blackboard). Nincs hozzáférés más tenantok adataihoz és az admin felülethez. B2B partnerek alapértelmezett jogköre.
+**Agent** -- egy tenant adataihoz teljes olvasási és írási hozzáférés (memóriák, kanban, üzenetváltások, blackboard, ütemezett feladatok). Nincs hozzáférés más tenantok adataihoz és az admin felülethez. B2B partnerek alapértelmezett jogköre.
 
-**Read-only** -- csak olvasás: memóriák, kanban, ágensek és blackboard listázása. Sem létrehozás, sem törlés.
+**Read-only** -- csak olvasás: memóriák, kanban, ágensek, blackboard és ütemezett feladatok listázása. Sem létrehozás, sem törlés.
 
 **Viewer** -- dashboard megtekintés: memóriák, kanban és ágensek olvasása, blackboard nélkül. Új felhasználó alapértelmezett szerepköre.
 
@@ -45,6 +45,10 @@ A rendszer négy hozzáférési szintet különböztet meg.
 | Jóváhagyások írása | X | | X | X |
 | Blackboard olvasása | X | X | X | X |
 | Blackboard írása | X | X | | |
+| Ütemezett feladatok olvasása | X | X | X | X |
+| Ütemezett feladatok létrehozása/szerkesztése/szüneteltetése/futtatása/törlése | X | X | | |
+| Ütemezett feladatok aktiválása (jóváhagyás) | X | | | |
+| Ágens-beállítások (context-guard, auto-restart) | X | X | | |
 | Föderáció olvasása | X | X | | |
 | Föderáció írása | X | X | | |
 | Admin felület | X | | | |
@@ -101,11 +105,19 @@ Az ütemezett feladatoknak tenant a tulajdonosa (részletek: [06 - Feladatok](06
 
 - Minden feladat pontosan egy tenanthoz tartozik. A rendszer saját feladatai (adatmentés, karbantartás, figyelők) és minden feladat, amelynek létrehozásakor nem neveztek meg tenantot, a `default` tenanthoz tartoznak.
 - A tenant felhasználója csak a saját tenantja feladatait, a választható ágenseket és a függő újrapróbálkozásokat kapja. Másik tenant feladata úgy válaszol, mintha nem létezne.
-- A dashboardon a feladatok létrehozása, szerkesztése, másik tenantba áthelyezése és aktiválása admin művelet: más felhasználónak a **+ Feladat** gomb rejtett, a sorműveletek pedig le vannak tiltva. A tenant felhasználója a csevegésben kéri az ágensét a feladatra. Az ágens vázlatként hozza létre a felhasználó tenantjában, egy admin pedig aktiválja, miután látta, melyik tenanthoz tartozik.
+- A hozzáférést két jogosultság szabályozza: a `schedules:read` (a feladatok, futásaik és a függő újrapróbálkozások listázása) és a `schedules:write` (létrehozás, szerkesztés, szüneteltetés vagy folytatás, futtatás és törlés). Az `admin` és az `agent` szerepkör mindkettővel rendelkezik, így minden tenant-felhasználó kezelheti a saját tenantja feladatait a dashboardon: a **+ Feladat** gomb, a szerkesztő ablak és a Futtatás most, Szüneteltetés és Törlés művelet az övé. A `read_only` és a `viewer` csak `schedules:read` jogot kap: látja a feladatokat, a **+ Feladat** gomb rejtett, a sorműveletek le vannak tiltva. Tenantonkénti kapcsoló nincs; a jogot a szerepkör adja.
+- Az aktiválás és az ütemező-szívverés jelző admin-only marad (`admin:all`), az aktiváláshoz ráadásul bejelentkezett admin kell. A feladat másik tenantba áthelyezése szintén admin művelet. Az a feladat, amelyet a tenant felhasználója (vagy a nevében az ágens a csevegésen át) létrehoz, vázlat a felhasználó tenantjában, egy admin pedig aktiválja, miután látta, melyik tenanthoz tartozik. Egy tenantnak egyszerre legfeljebb 20 jóváhagyásra váró feladata lehet.
+- Ha a tenant felhasználója megváltoztatja, amit egy jóváhagyott feladat végrehajt (prompt, parancs, ütemezés és így tovább), a feladat visszakerül jóváhagyásra: addig nem fut, amíg egy admin újra nem aktiválja. A részletek a pontos mezőkkel: [06 - Feladatok](06-feladatok.md).
+- A `default` tenant a rendszer saját feladatait tartalmazza. Azon a nem admin semmit nem módosíthat, a tenant nélküli nem admin fiókot pedig az ütemezés minden végpontja elutasítja.
 - A feladat csak olyan ágensen fut, amely kiszolgálja a tenantját. Ha az ágenst kikapcsolják a tenantnál, vagy a tenantot letiltják, a feladat nem tüzel tovább, és minden kimaradt előfordulás `skipped_tenant_mismatch` állapottal kerül a futási előzményeibe.
 - A tenant törlése a feladatait, azok függő újrapróbálkozásait és a tükrözött fájljaikat is törli.
 
-> **Shadow mód és az ütemezés végpontjai.** Amíg az RBAC shadow módban fut (az `RBAC_MODE` nincs `enforce`-ra állítva), az ütemezés végpontjai még nem csak adminnak szólnak: az RBAC csak naplózza azt az elutasítást, amelyet az enforce mód kiadna, ezért egy tenant-felhasználó egyszerű kérését maga az RBAC nem állítja meg. Az alábbi feladat-szabályok az ütemezés útvonalainak részei, és mindkét módban érvényesek. A tenant felhasználója nem olvashatja és nem módosíthatja másik tenant feladatait (404-gyel válaszolnak); nem aktiválhat feladatot (403, az aktiválás bejelentkezett adminé); nem változtathatja a feladat státuszát, tenantját és a futtató szkript-opciókat (a szerkesztés egyszerűen eldobja ezeket a kulcsokat; másik tenant kérése 403-at ad); nem irányíthatja át a feladatot másik ágensre (számára a kulcs figyelmen kívül marad); és az általa létrehozott feladat mindig vázlat a saját tenantjában. Amit a shadow mód **nem** állít meg: az API-t közvetlenül hívó tenant-felhasználó a saját tenantja feladataival többet tehet, mint amit a dashboard megenged. Amíg az enforce mód nincs bekapcsolva, ne adj tenant-felhasználóknak API-t elérő belépést; csak az `RBAC_MODE=enforce` teszi úgy, hogy ezek a végpontok az adminokon kívül mindenkinek 403-at adnak.
+> **Az ütemezett feladatok szabályai és az RBAC-mód.** Két réteg dönti el, ki mit tehet az ütemezés végpontjain, és csak az egyik függ a módtól.
+>
+> - **Útvonal-szabályok, mindkét módban** (shadow módban is). Az a nem admin hívó (nem admin dashboard-belépés vagy API-token), akinek a fiókjához nincs tenant rendelve, 403-at kap, olvasásnál is. A nem admin nem módosíthat feladatot a `default` tenanton (a rendszer saját feladatai az adminoknál maradnak), eszközkulcs és föderációs principal pedig semmilyen feladatot nem módosíthat (403). Másik tenant feladata 404-gyel válaszol, mintha nem létezne. Az aktiváláshoz bejelentkezett admin kell (mindenki másnak 403, a megosztott ágens-tokennek is). Egy szerkesztés nem változtathatja a feladat státuszát, tenantját és a futtató szkript-opciókat (ezeket a kulcsokat eldobja; másik tenant kérése 403-at ad), a feladat ágensét csak admin változtatja, a nem admin által létrehozott feladat pedig mindig vázlat a saját tenantjában, tenantonként legfeljebb 20 jóváhagyásra váró feladat keretén belül. Ha egy nem admin azt módosítja, amit egy élő feladat végrehajt, a feladat visszakerül jóváhagyásra (lásd [06 - Feladatok](06-feladatok.md)).
+> - **A jogosultsági tábla, enforce módban.** A `schedules:read`, a `schedules:write` és az aktiváláshoz, valamint az ütemező-szívverés jelzőhöz az `admin:all` jogot az RBAC-kapu csak `RBAC_MODE=enforce` esetén ellenőrzi. Amíg a mód shadow, a kapu csak naplózza, mit utasítana el, ezért a szerepkörök közti különbségek (például hogy a `read_only` és a `viewer` nem írhat) az enforce mód bekapcsolásakor lépnek életbe.
+>
+> Amíg az enforce mód nincs bekapcsolva, ne adj tenant-felhasználóknak API-t elérő belépést vagy tokent.
 
 ### Külső MCP-szerverek és tenant-izoláció
 

@@ -25,9 +25,9 @@ The system defines four access levels.
 
 **Admin** -- full access to all tenant data and the admin interface. Running agents use a bearer token with admin privileges.
 
-**Agent** -- full read and write access to one tenant's data (memories, kanban, messages, blackboard). No access to other tenants' data or the admin interface. Default role for B2B partners.
+**Agent** -- full read and write access to one tenant's data (memories, kanban, messages, blackboard, scheduled tasks). No access to other tenants' data or the admin interface. Default role for B2B partners.
 
-**Read-only** -- read only: list memories, kanban, agents, and blackboard. No create or delete.
+**Read-only** -- read only: list memories, kanban, agents, blackboard, and scheduled tasks. No create or delete.
 
 **Viewer** -- dashboard view: read memories, kanban, and agents, without blackboard. Default role for new users.
 
@@ -45,6 +45,10 @@ The system defines four access levels.
 | Write approvals | X | | X | X |
 | Read blackboard | X | X | X | X |
 | Write blackboard | X | X | | |
+| Read scheduled tasks | X | X | X | X |
+| Create/edit/pause/run/delete scheduled tasks | X | X | | |
+| Activate scheduled tasks (approval) | X | | | |
+| Agent settings (context guard, auto-restart) | X | X | | |
 | Read federation | X | X | | |
 | Write federation | X | X | | |
 | Admin interface | X | | | |
@@ -101,11 +105,19 @@ Scheduled tasks are owned by a tenant (details in [06 - Tasks](06-tasks.md)):
 
 - Every task belongs to exactly one tenant. The system's own tasks (backup, maintenance, monitors) and every task created without naming a tenant belong to `default`.
 - A tenant user only gets the tasks, the agents to choose from and the pending retries of its own tenant. Another tenant's task answers as if it did not exist.
-- In the dashboard, creating, editing, moving to another tenant and activating tasks is an admin action: for other users the **+ Task** button is hidden and the row actions are disabled. A tenant user requests a task through their agent in the chat. The agent creates it as a draft in that user's tenant, and an admin activates it after seeing which tenant it belongs to.
+- Access is governed by two permissions: `schedules:read` (list the tasks, their runs and the pending retries) and `schedules:write` (create, edit, pause or resume, run and delete). The `admin` and `agent` roles have both, so every tenant user can manage the tasks of their own tenant in the dashboard: the **+ Task** button, the edit dialog and the Run now, Pause and Delete actions are theirs. `read_only` and `viewer` only have `schedules:read`: they see the tasks, the **+ Task** button is hidden and the row actions are disabled. There is no per-tenant switch; the role grants the permission.
+- Activation and the scheduler heartbeat indicator stay admin-only (`admin:all`), and activation additionally needs a signed-in admin. Moving a task to another tenant is also an admin action. A task a tenant user (or an agent on their behalf, through the chat) creates is a draft in that user's tenant, and an admin activates it after seeing which tenant it belongs to. A tenant can have at most 20 tasks waiting for review at a time.
+- When a tenant user changes what an approved task executes (prompt, command, schedule and so on), the task goes back to review: it stops running until an admin activates it again. Details, with the exact fields: [06 - Tasks](06-tasks.md).
+- The default tenant holds the system's own tasks. Nothing on it can be changed by a non-admin, and a non-admin account that has no tenant is refused on every schedules endpoint.
 - A task only runs on an agent that serves its tenant. If the agent is switched off for the tenant, or the tenant is disabled, the task stops firing and each missed occurrence is recorded as `skipped_tenant_mismatch` in its run history.
 - Deleting a tenant also deletes its tasks, their pending retries and their mirrored files.
 
-> **Shadow mode and the schedules endpoints.** While RBAC runs in shadow mode (`RBAC_MODE` not set to `enforce`), the schedules endpoints are not admin-only yet: RBAC only logs the denial that enforce mode would issue, so a plain request from a tenant user is not stopped by RBAC itself. The task rules below are part of the schedules routes and apply in both modes. A tenant user cannot read or touch another tenant's tasks (they answer 404); cannot activate a task (403, activation is for a signed-in admin); cannot change a task's status, tenant or runner script options (an edit simply drops those keys; asking for a different tenant answers 403); cannot re-point a task to another agent (the key is ignored for them); and a task they create is always a draft in their own tenant. What shadow mode does **not** stop: a tenant user who calls the API directly can do more with their own tenant's tasks than the dashboard allows. Do not give tenant users a login that can reach the API before enforce mode is on; only `RBAC_MODE=enforce` makes these endpoints answer 403 to everyone but admins.
+> **Scheduled-task rules and the RBAC mode.** Two layers decide who may do what with the schedules endpoints, and only one of them depends on the mode.
+>
+> - **Route rules, in both modes** (shadow mode too). A non-admin caller (a dashboard login or an API token that is not admin) whose account has no tenant is refused with 403, for reads as well. A non-admin cannot change tasks on the `default` tenant (the system's own tasks stay with the admins), and a device key or a federation principal cannot change any task (403). Another tenant's task answers 404, as if it did not exist. Activation needs a signed-in admin (403 for everyone else, the shared agent token included). An edit cannot change a task's status, tenant or runner script options (those keys are dropped; asking for a different tenant answers 403), the agent of a task is changed by admins only, and a task a non-admin creates is always a draft in their own tenant, within the limit of 20 tasks waiting for review per tenant. A non-admin edit of what a live task executes sends it back to review (see [06 - Tasks](06-tasks.md)).
+> - **The permission table, in enforce mode.** `schedules:read`, `schedules:write` and, for activation and the scheduler heartbeat, `admin:all` are checked by the RBAC gate only when `RBAC_MODE=enforce`. While the mode is shadow, the gate only logs what it would refuse, so the differences between the roles (for example that `read_only` and `viewer` do not write) take effect when enforce mode is switched on.
+>
+> Before enforce mode is switched on, do not give tenant users a login or token that can reach the API.
 
 ### External MCP servers and tenant isolation
 
