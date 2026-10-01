@@ -3026,13 +3026,24 @@ paths:
         gets every agent, or those of the tenant picked with `?tenant=`.
       responses:
         "200":
-          description: Agent id list
+          description: The agents a schedule may target
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: string
+                  type: object
+                  required: [name, label, avatar]
+                  properties:
+                    name:
+                      type: string
+                      description: Agent id, the value a schedule's `agent` takes
+                    label:
+                      type: string
+                      description: Display name
+                    avatar:
+                      type: string
+                      description: Avatar URL
 
   /schedules/tick-status:
     get:

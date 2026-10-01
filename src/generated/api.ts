@@ -463,7 +463,14 @@ export type ListSchedulesResponse = Schedule[]
 
 export type ListPendingSchedulesResponse = Record<string, unknown>[]
 
-export type ListScheduledAgentsResponse = string[]
+export type ListScheduledAgentsResponse = {
+  /** Agent id, the value a schedule's `agent` takes */
+  name: string;
+  /** Display name */
+  label: string;
+  /** Avatar URL */
+  avatar: string;
+}[]
 
 export type ListScheduleRunsResponse = Record<string, unknown>[]
 
