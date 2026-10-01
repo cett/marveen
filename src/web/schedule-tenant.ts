@@ -53,3 +53,24 @@ export function creatorTenant(agentId: string): string | null {
   const own = resolveAgentTenant(agentId)
   return own === '_multi_' ? null : own
 }
+
+/**
+ * Does the task's (tenant, agent) pair no longer hold (the agent was switched off for the
+ * tenant, the tenant disabled or its main agent changed)? The runner refuses such a task
+ * because the tenant-context hook would bind nothing for it. Answers are memoised for the
+ * life of the checker (one scheduler tick), so a fleet of tasks costs a lookup per distinct pair.
+ */
+export function createPairOrphanChecker(): (tenantId: string | null | undefined, agent: string | undefined) => boolean {
+  const memo = new Map<string, boolean>()
+  return (tenantId, agent) => {
+    const tenant = tenantId ?? DEFAULT_SCHEDULE_TENANT
+    const name = agent || MAIN_AGENT_ID
+    const key = `${tenant}\u0000${name}`
+    let orphan = memo.get(key)
+    if (orphan === undefined) {
+      try { orphan = !scheduleAgentServesTenant(name, tenant) } catch { orphan = false }  // a failed lookup must not stop tasks from firing
+      memo.set(key, orphan)
+    }
+    return orphan
+  }
+}

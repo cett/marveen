@@ -49,6 +49,7 @@ import {
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { createSkipTracker } from './schedule-skip-ledger.js'
+import { createPairOrphanChecker } from './schedule-tenant.js'
 import { sendTelegramMessage } from './telegram.js'
 import { listAgentNames, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
@@ -344,6 +345,35 @@ export function shouldAlertNotLive(seen: Set<string>, taskName: string): boolean
 }
 const notLiveAlerted = new Set<string>()
 
+// Tasks whose (tenant, agent) pair no longer holds and that already raised their one
+// notification. A task leaves the set when its pair is valid again, so a later
+// breakage notifies again.
+const tenantMismatchAlerted = new Set<string>()
+
+export function shouldAlertTenantMismatch(seen: Set<string>, current: ReadonlySet<string>, taskName: string): boolean {
+  for (const name of [...seen]) if (!current.has(name)) seen.delete(name)
+  if (!current.has(taskName) || seen.has(taskName)) return false
+  seen.add(taskName)
+  return true
+}
+
+function sendTenantMismatchAlert(task: ScheduledTask): void {
+  const tenant = task.tenantId ?? 'default'
+  const agent = task.agent || MAIN_AGENT_ID
+  logger.error(
+    { task: task.name, tenant, agent },
+    'schedule-runner: the (tenant, agent) pair of this task no longer holds -- not running it, occurrences are recorded as skipped_tenant_mismatch',
+  )
+  try {
+    writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: 'skip_tenant_mismatch',
+      entity_id: task.name, detail: { tenant, agent } })
+  } catch { /* audit failure must not block the tick */ }
+  if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) return
+  const text = `\u26a0\ufe0f \u00dctemez\u0151: a(z) ${task.name} feladat nem fut, mert a(z) ${agent} \u00e1gens m\u00e1r nem szolg\u00e1lja ki a(z) ${tenant} tenantot (kikapcsolt \u00e1gens vagy tenant). Az esed\u00e9kess\u00e9gek skipped_tenant_mismatch sork\u00e9nt a task_runs-ban vannak; \u00e1ll\u00edtsd vissza az \u00e1gens enged\u00e9lyez\u00e9s\u00e9t, vagy tedd \u00e1t a feladatot m\u00e1sik tenantba.`
+  sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
+    .catch(err => logger.warn({ err }, 'schedule-runner: tenant-mismatch alert send failed'))
+}
+
 // Skip ledger (schedule-skip-ledger.ts): one task_runs row per held occurrence
 // and one deduped alert per mass-skip event. Lives for the process.
 const skipTracker = createSkipTracker()
@@ -363,7 +393,7 @@ function sendMassSkipAlert(held: string[], taskCount: number): void {
       entity_id: 'scheduler', detail: { held: held.length, taskCount, sample: held.slice(0, 8) } })
   } catch { /* audit failure must not block the tick */ }
   if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) return
-  const text = `\u26a0\ufe0f \u00dctemez\u0151: ${held.length} feladat (a t\u00f6bbs\u00e9g) egyszerre kimarad \u00e9s nem fut: ${shown}. Az esed\u00e9kess\u00e9gek skipped_* sork\u00e9nt a task_runs-ban vannak; ellen\u0151rizd az enabled/status mez\u0151ket.`
+  const text = `\u26a0\ufe0f \u00dctemez\u0151: ${held.length} feladat (a t\u00f6bbs\u00e9g) egyszerre kimarad \u00e9s nem fut: ${shown}. Az esed\u00e9kess\u00e9gek skipped_* sork\u00e9nt a task_runs-ban vannak; ellen\u0151rizd az enabled/status mez\u0151ket \u00e9s a feladatok tenant-\u00e1gens p\u00e1rj\u00e1t.`
   sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
     .catch(err => logger.warn({ err }, 'schedule-runner: mass-skip alert send failed'))
 }
@@ -1527,6 +1557,15 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // a fresh array every tick, so the in-place sort leaks nowhere.
     tasks.sort((a, b) => taskInjectionRank(a) - taskInjectionRank(b))
 
+    // A runnable task whose (tenant, agent) pair no longer holds is not fired: the
+    // tenant-context hook would bind nothing for it and the agent would run it with
+    // the tenant's skills locked out, unseen. A command task runs no agent, so the
+    // pair means nothing to it.
+    const pairOrphan = createPairOrphanChecker()
+    const tenantMismatch = new Set(
+      tasks.filter(t => t.enabled && isTaskLive(t) && t.type !== 'command' && pairOrphan(t.tenantId, t.agent)).map(t => t.name),
+    )
+
     // Skip ledger: a due occurrence of a task that is held back (not live, or
     // part of a mass disable) leaves a task_runs row instead of vanishing with
     // the tick window, and a mass skip alerts once. Must never break the tick.
@@ -1538,6 +1577,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           : [t.agent || MAIN_AGENT_ID],
         appendTaskRun,
         dbRunnable: listDbRunnableTaskNames,
+        tenantMismatch: t => tenantMismatch.has(t.name),
       })
       if (skipScan.alert) sendMassSkipAlert(skipScan.massHeld, tasks.length)
     } catch (err) {
@@ -1569,6 +1609,11 @@ export function startScheduleRunner(): NodeJS.Timeout {
               entity_id: task.name, detail: { reason: !task.enabled ? 'disabled' : 'not_live' } })
           } catch { /* audit failure must not block the tick */ }
         }
+        continue
+      }
+      if (tenantMismatch.has(task.name)) {
+        // The ledger above already recorded the due occurrence; tell the operator once.
+        if (shouldAlertTenantMismatch(tenantMismatchAlerted, tenantMismatch, task.name)) sendTenantMismatchAlert(task)
         continue
       }
       const occurrenceMs = cronPrevOccurrence(task.schedule, fromMs, now)
