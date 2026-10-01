@@ -2232,6 +2232,28 @@ window._i18n.en = {
 
   // B2B Admin page -- loading/empty states that never had an i18n key
   'admin.b2b.agent.empty':           'No known agents.',
+  // Tenant starter pack panel (admin B2B page)
+  'admin.b2b.starter.title': 'Starter pack',
+  'admin.b2b.starter.open': 'Starter pack',
+  'admin.b2b.starter.agent': 'Agent',
+  'admin.b2b.starter.enabled': 'enabled',
+  'admin.b2b.starter.disabled': 'disabled',
+  'admin.b2b.starter.next_agent': 'Agent chosen automatically',
+  'admin.b2b.starter.state.absent': 'Not created yet.',
+  'admin.b2b.starter.state.ok': 'Created, up to date.',
+  'admin.b2b.starter.state.retarget_pending': 'The agent changed: the button re-aims the task (it returns to draft and disabled).',
+  'admin.b2b.starter.state.needs_agent': 'The agent of the task no longer serves the tenant, so the task is parked. Pick an agent.',
+  'admin.b2b.starter.reason.ambiguous': 'Several agents qualify, or none: pick one.',
+  'admin.b2b.starter.reason.shared': 'The candidate agent also serves another tenant: pick one that serves only this tenant.',
+  'admin.b2b.starter.reason.not_serving': 'The candidate agent does not serve this tenant.',
+  'admin.b2b.starter.reason.tenant_unavailable': 'The tenant is unavailable or disabled.',
+  'admin.b2b.starter.hint.activate': 'The task is a draft and disabled: activate it on the Tasks page, then enable it.',
+  'admin.b2b.starter.hint.channel': 'A channel message is sent only when the agent of the tenant has a Telegram DM binding (channel-binding API).',
+  'admin.b2b.starter.btn.create': 'Create starter pack',
+  'admin.b2b.starter.btn.check': 'Check / re-aim',
+  'admin.b2b.starter.toast.created': 'Starter pack created',
+  'admin.b2b.starter.toast.retargeted': 'Starter pack re-aimed',
+  'admin.b2b.starter.toast.unchanged': 'Nothing changed',
   'admin.b2b.user.empty':            'No users.',
   'admin.b2b.device_key.empty':      'No device keys.',
 

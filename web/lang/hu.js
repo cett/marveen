@@ -2233,6 +2233,28 @@ window._i18n.hu = {
 
   // B2B Admin page -- loading/empty states that never had an i18n key
   'admin.b2b.agent.empty':           'Nincs ismert agent.',
+  // Tenant starter pack panel (admin B2B page)
+  'admin.b2b.starter.title': 'Alapcsomag',
+  'admin.b2b.starter.open': 'Alapcsomag',
+  'admin.b2b.starter.agent': 'Ágens',
+  'admin.b2b.starter.enabled': 'engedélyezve',
+  'admin.b2b.starter.disabled': 'letiltva',
+  'admin.b2b.starter.next_agent': 'Automatikusan választott ágens',
+  'admin.b2b.starter.state.absent': 'Még nincs létrehozva.',
+  'admin.b2b.starter.state.ok': 'Létrehozva, rendben.',
+  'admin.b2b.starter.state.retarget_pending': 'Az ágens megváltozott: a gomb újracélozza a feladatot (piszkozat és letiltott állapotba kerül).',
+  'admin.b2b.starter.state.needs_agent': 'A feladat ágense már nem szolgálja ki a tenantot, a feladat parkol. Válassz ágenst.',
+  'admin.b2b.starter.reason.ambiguous': 'Több ágens is szóba jön, vagy egy sem: válassz egyet.',
+  'admin.b2b.starter.reason.shared': 'A jelölt ágens más tenantot is kiszolgál: válassz olyat, amelyik csak ezt.',
+  'admin.b2b.starter.reason.not_serving': 'A jelölt ágens nem szolgálja ki ezt a tenantot.',
+  'admin.b2b.starter.reason.tenant_unavailable': 'A tenant nem érhető el vagy le van tiltva.',
+  'admin.b2b.starter.hint.activate': 'A feladat piszkozat és le van tiltva: a Feladatok oldalon aktiváld, utána engedélyezd.',
+  'admin.b2b.starter.hint.channel': 'Csatornaüzenet csak akkor megy, ha a tenant ágenséhez van Telegram DM kötés (csatorna-kötés API).',
+  'admin.b2b.starter.btn.create': 'Alapcsomag létrehozása',
+  'admin.b2b.starter.btn.check': 'Ellenőrzés / újracélzás',
+  'admin.b2b.starter.toast.created': 'Alapcsomag létrehozva',
+  'admin.b2b.starter.toast.retargeted': 'Alapcsomag újracélozva',
+  'admin.b2b.starter.toast.unchanged': 'Nincs változás',
   'admin.b2b.user.empty':            'Nincs felhasználó.',
   'admin.b2b.device_key.empty':      'Nincs eszközkulcs.',
 

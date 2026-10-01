@@ -175,6 +175,9 @@ function renderScreenAccessMatrix() {
 
 let _tenants = []
 let _selectedTenantId = null
+// True only for a global admin (role admin, no tenant). The starter-pack controls are rendered and wired
+// for that caller alone: a tenant user never gets the button in the DOM.
+let _globalAdmin = false
 
 async function loadTenants() {
   const list = $('tenantList')
@@ -214,6 +217,9 @@ function renderTenantList() {
         <button class="btn" data-variant="secondary" data-size="compact" data-action="show-agents" data-id="${esc(ten.id)}">
           Agentkezelés
         </button>
+        ${_globalAdmin && ten.id !== 'default' ? `<button class="btn" data-variant="secondary" data-size="compact" data-action="show-starter" data-id="${esc(ten.id)}">
+          ${esc(t('admin.b2b.starter.open', 'Alapcsomag'))}
+        </button>` : ''}
         <button class="btn" data-variant="secondary" data-size="compact" data-action="delete-tenant" data-id="${esc(ten.id)}" ${ten.id === 'default' ? 'disabled' : ''} style="color:var(--danger)">
           Törlés
         </button>
@@ -251,6 +257,8 @@ async function deleteTenant(id) {
 
 async function showAgentMatrix(tenantId) {
   _selectedTenantId = tenantId
+  const starterBox = $('starterPackContainer')
+  if (starterBox && starterBox.dataset.tenant !== tenantId) starterBox.hidden = true
   renderTenantList()
   const container = $('agentMatrixContainer')
   if (!container) return
@@ -311,6 +319,91 @@ async function setAgentAvailability(tenantId, agentId, enabled, confirmed = fals
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
     showToast(`${agentId}: ${enabled ? 'engedélyezve' : 'letiltva'}`)
     await showAgentMatrix(tenantId)
+    // The server re-aims or parks the tenant's starter task after an availability change.
+    if ($('starterPackContainer')?.dataset.tenant === tenantId && !$('starterPackContainer').hidden) await showStarterPack(tenantId)
+  } catch (err) {
+    showToast('Hiba: ' + err.message, 'error')
+  }
+}
+
+// ── Starter pack ─────────────────────────────────────────────────────────────
+// One scheduled task per tenant (a daily summary), created draft + disabled. GET reads the state,
+// POST creates it or re-aims it after the agent behind it changed. Global admin only.
+
+async function showStarterPack(tenantId) {
+  if (!_globalAdmin) return
+  _selectedTenantId = tenantId
+  renderTenantList()
+  const box = $('starterPackContainer')
+  const status = $('starterPackStatus')
+  if (!box || !status) return
+  box.hidden = false
+  box.dataset.tenant = tenantId
+  status.innerHTML = `<p style="color:var(--text-muted)">${t('common.loading', 'Betöltés...')}</p>`
+  try {
+    const enc = encodeURIComponent(tenantId)
+    const [r, a] = await Promise.all([
+      fetch(`/api/admin/tenants/${enc}/starter-pack`),
+      fetch(`/api/admin/agent-availability?tenant_id=${enc}`),
+    ])
+    if (!r.ok) throw new Error(r.status)
+    const state = await r.json()
+    const enabledAgents = a.ok ? ((await a.json()).items ?? []).filter(i => i.enabled).map(i => i.agent_id) : []
+    renderStarterPack(state, enabledAgents)
+  } catch (err) {
+    status.innerHTML = `<p style="color:var(--danger)">Hiba: ${esc(String(err))}</p>`
+  }
+}
+
+function renderStarterPack(state, enabledAgents) {
+  const status = $('starterPackStatus')
+  const select = $('starterPackAgent')
+  const btn = $('starterPackBtn')
+  if (!status || !select || !btn) return
+  const lines = [`<p class="admin-b2b-starter-state" data-state="${esc(state.state)}">${esc(t('admin.b2b.starter.state.' + state.state, state.state))}</p>`]
+  if (state.task) {
+    lines.push(`<p><code>${esc(state.name)}</code> · ${esc(t('admin.b2b.starter.agent', 'Ágens'))}: <strong>${esc(state.task.agent)}</strong> · ${esc(state.task.status)} · ${esc(t(state.task.enabled ? 'admin.b2b.starter.enabled' : 'admin.b2b.starter.disabled', state.task.enabled ? 'engedélyezve' : 'letiltva'))}</p>`)
+    if (state.task.status !== 'live' || !state.task.enabled) {
+      lines.push(`<p class="admin-b2b-starter-hint">${esc(t('admin.b2b.starter.hint.activate', 'A feladat piszkozat és le van tiltva: a Feladatok oldalon aktiváld, utána engedélyezd.'))}</p>`)
+    }
+  }
+  const pick = state.resolution?.agent
+  if (pick) {
+    lines.push(`<p>${esc(t('admin.b2b.starter.next_agent', 'Automatikusan választott ágens'))}: <strong>${esc(pick)}</strong></p>`)
+  } else {
+    lines.push(`<p class="admin-b2b-starter-hint">${esc(t('admin.b2b.starter.reason.' + (state.resolution?.reason ?? 'ambiguous'), 'Nem választható ágens automatikusan.'))}</p>`)
+  }
+  lines.push(`<p class="admin-b2b-starter-hint">${esc(t('admin.b2b.starter.hint.channel', 'Csatornaüzenet csak akkor megy, ha a tenant ágenséhez van Telegram DM kötés (csatorna-kötés API).'))}</p>`)
+  status.innerHTML = lines.join('')
+
+  // The agent picker is offered only when the server cannot choose on its own.
+  const needsChoice = !pick
+  select.hidden = !needsChoice
+  select.innerHTML = enabledAgents.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('')
+  btn.textContent = state.exists
+    ? t('admin.b2b.starter.btn.check', 'Ellenőrzés / újracélzás')
+    : t('admin.b2b.starter.btn.create', 'Alapcsomag létrehozása')
+  btn.disabled = needsChoice && enabledAgents.length === 0
+}
+
+async function createStarterPack() {
+  const box = $('starterPackContainer')
+  const tenantId = box?.dataset.tenant
+  if (!_globalAdmin || !tenantId) return
+  const select = $('starterPackAgent')
+  const body = select && !select.hidden && select.value ? { agent_id: select.value } : {}
+  try {
+    const r = await fetch(`/api/admin/tenants/${encodeURIComponent(tenantId)}/starter-pack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(data.hint || data.error || r.status)
+    const key = data.created?.length ? 'created' : data.retargeted?.length ? 'retargeted' : 'unchanged'
+    const fallback = { created: 'Alapcsomag létrehozva', retargeted: 'Alapcsomag újracélozva', unchanged: 'Nincs változás' }[key]
+    showToast(t('admin.b2b.starter.toast.' + key, fallback))
+    await showStarterPack(tenantId)
   } catch (err) {
     showToast('Hiba: ' + err.message, 'error')
   }
@@ -595,6 +688,7 @@ export async function initAdminB2b() {
 
   const auth = await fetchAuth()
   const isB2bAdmin = isGlobalAdmin(auth)
+  _globalAdmin = isB2bAdmin
 
   // Tab switching is wired unconditionally -- the RBAC tabs (below) use a
   // separate, broader gate (can('admin:all')) than the strict role==='admin'
@@ -618,6 +712,7 @@ export async function initAdminB2b() {
       const id = btn.dataset.id
       if (btn.dataset.action === 'toggle-tenant') await toggleTenant(id, btn.dataset.disabled === '1')
       if (btn.dataset.action === 'show-agents') await showAgentMatrix(id)
+      if (btn.dataset.action === 'show-starter') await showStarterPack(id)
       if (btn.dataset.action === 'delete-tenant') await deleteTenant(id)
     })
 
@@ -626,6 +721,8 @@ export async function initAdminB2b() {
       if (!cb) return
       await setAgentAvailability(cb.dataset.tenant, cb.dataset.agent, cb.checked)
     })
+
+    $('starterPackBtn')?.addEventListener('click', createStarterPack)
 
     // Tenant add modal
     $('tenantAddBtn')?.addEventListener('click', () => openModal('tenantAddModal'))
@@ -666,6 +763,7 @@ export async function initAdminB2b() {
 
 export async function loadAdminB2b() {
   const auth = await fetchAuth()
+  _globalAdmin = isGlobalAdmin(auth)
   if (isGlobalAdmin(auth)) {
     // Ensure tenants are loaded first (device keys and user filter need them).
     await loadTenants()

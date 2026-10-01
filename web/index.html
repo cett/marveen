@@ -2395,6 +2395,15 @@
           <div class="admin-b2b-section-title" data-i18n="admin.b2b.agent.matrix">Agent-hozzáférés</div>
           <div id="agentMatrix" class="admin-b2b-matrix"></div>
         </div>
+        <!-- Starter pack (per selected tenant, global admin only; the controls are wired in admin-b2b.js) -->
+        <div id="starterPackContainer" hidden>
+          <div class="admin-b2b-section-title" data-i18n="admin.b2b.starter.title">Alapcsomag</div>
+          <div id="starterPackStatus" class="admin-b2b-starter-lines"></div>
+          <div class="admin-b2b-starter-actions">
+            <select id="starterPackAgent" class="admin-b2b-select" hidden></select>
+            <button id="starterPackBtn" class="btn" data-variant="primary" data-size="compact" type="button"></button>
+          </div>
+        </div>
       </div>
 
       <!-- Felhasználók fül -->
