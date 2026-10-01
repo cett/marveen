@@ -20,6 +20,7 @@ export const ERROR_TOKENS = [
   // Domain tokens (canonicalized; a distinct token is justified):
   'sender_not_in_allowlist', // not forbidden: actionable differently -- add to allowlist vs acquire permission
   'federation_disabled',     // not not_supported: actionable differently -- admin enable vs API version change
+  'tenant_required', // a schedule create could not tell which tenant owns the task (send tenant_id or X-Agent-Id)
   'unknown_query_parameter', // not invalid_value: parameter NAME unknown (remove/rename), vs VALUE wrong (fix value)
 ] as const
 
@@ -32,7 +33,7 @@ export const VALID_TOKENS = new Set<string>(ERROR_TOKENS)
 export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = {
   400: [
     'required', 'invalid_value', 'parse_error', 'not_supported',
-    'not_found', 'unknown_query_parameter', 'federation_disabled',
+    'not_found', 'unknown_query_parameter', 'federation_disabled', 'tenant_required',
     // size-limit violation (body too large, quota exceeded, etc.); rate-limit stays at 429
     'limit_exceeded',
   ],

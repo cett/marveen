@@ -19,6 +19,7 @@ const ERROR_I18N = {
   sender_not_in_allowlist:  'errors.sender_not_in_allowlist',
   federation_disabled:      'errors.federation_disabled',
   unknown_query_parameter:  'errors.unknown_query_parameter',
+  tenant_required:          'errors.tenant_required',
 }
 
 export function getErrorMessage(data, fallback = '') {

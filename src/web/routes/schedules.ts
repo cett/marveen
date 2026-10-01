@@ -13,7 +13,7 @@ import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
-import { DEFAULT_SCHEDULE_TENANT, scheduleAgentNamesForTenant, scheduleAgentServesTenant } from '../schedule-tenant.js'
+import { DEFAULT_SCHEDULE_TENANT, creatorTenant, scheduleAgentNamesForTenant, scheduleAgentServesTenant } from '../schedule-tenant.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask,
@@ -36,35 +36,26 @@ function isHumanAdmin(ctx: RouteContext): boolean {
   return ctx.role === 'admin' && ctx.auth?.kind === 'session'
 }
 
-// Tenant scope helpers (mirrors artifacts/kanban pattern):
+// Tenant scope helpers (mirrors artifacts/kanban pattern). Every task belongs to a tenant;
+// there is no tenant-less "fleet" scope.
 // - Admin with no ?tenant= filter sees all tenants (effectiveTenantId = null → all).
 // - Admin with ?tenant=<id> sees only that tenant.
-// - Non-admin is restricted to their own tenant; fleet tasks (tenant_id IS NULL) hidden.
-function effectiveTenant(ctx: RouteContext): string | null | 'fleet' {
-  if (ctx.role === 'admin') {
-    const param = ctx.url.searchParams.get('tenant')
-    if (param === 'fleet') return 'fleet'
-    return param ?? null  // null = all
-  }
+// - Non-admin is restricted to their own tenant.
+function effectiveTenant(ctx: RouteContext): string | null {
+  if (ctx.role === 'admin') return ctx.url.searchParams.get('tenant') ?? null  // null = all
   return ctx.tenantId ?? 'default'
 }
 
 // Does a schedule row fall in the tenant scope effectiveTenant() computed? A missing
-// row never matches. 'fleet' keeps its current meaning (tenant_id IS NULL) until the
-// tenant model drops it.
+// row never matches. A stored NULL (a row older than migration 0066) is the default tenant.
 function scheduleTenantMatches(scope: string | null, row: { tenant_id: string | null } | undefined): boolean {
   if (!row) return false
-  if (scope === null) return true
-  if (scope === 'fleet') return row.tenant_id === null
-  return row.tenant_id === scope
+  return scope === null || (row.tenant_id ?? DEFAULT_SCHEDULE_TENANT) === scope
 }
 
 function crossTenantBlocked(ctx: RouteContext, scheduleTenantId: string | null): boolean {
   if (ctx.role === 'admin') return false
-  const callerTenant = ctx.tenantId ?? 'default'
-  // Fleet tasks (tenant_id IS NULL) are not visible to non-admin tenant users
-  if (scheduleTenantId === null) return true
-  return scheduleTenantId !== callerTenant
+  return (scheduleTenantId ?? DEFAULT_SCHEDULE_TENANT) !== (ctx.tenantId ?? 'default')
 }
 
 // Fields a PUT may write. Everything else in the body is dropped before it reaches
@@ -138,7 +129,7 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
     // not theirs to enumerate otherwise); an admin sees every agent, or those of the
     // tenant picked with ?tenant=.
     const scope = effectiveTenant(ctx)
-    const allowed = new Set(scheduleAgentNamesForTenant(scope === null || scope === 'fleet' ? null : scope))
+    const allowed = new Set(scheduleAgentNamesForTenant(scope))
     const agents = [
       { name: MAIN_AGENT_ID, label: currentBotName(), avatar: '/api/marveen/avatar' },
       ...listAgentNames().map(n => ({ name: n, label: n, avatar: `/api/agents/${encodeURIComponent(n)}/avatar` }))
@@ -212,14 +203,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const useDb = countSchedules() > 0
     if (useDb) {
       const scope = effectiveTenant(ctx)
-      let rows
-      if (scope === null) {
-        rows = listSchedulesFromDb({ includeFleet: true })
-      } else if (scope === 'fleet') {
-        rows = listSchedulesFromDb({ includeFleet: false })
-      } else {
-        rows = listSchedulesFromDb({ tenantId: scope })
-      }
+      const rows = scope === null ? listSchedulesFromDb({ includeFleet: true }) : listSchedulesFromDb({ tenantId: scope })
       // DB rows key on `id`; the frontend (and the file-based branch below)
       // expect `name` -- without this mapping, delete/toggle/run/edit send
       // requests to /api/schedules/undefined and silently 404.
@@ -271,12 +255,41 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const existing = useDb ? getScheduleFromDb(name) : existsSync(join(SCHEDULED_TASKS_DIR, name))
     if (existing) { json(res, { error: 'conflict', hint: 'Schedule already exists' }, 409); return true }
 
-    // Tenant stamp: non-admin callers always get their own tenant_id;
-    // admin may pass explicit tenant_id (or omit for fleet/null scope).
+    // Which tenant owns the task, first match wins:
+    //  1. an admin names one (tenant_id);
+    //  2. a non-admin caller: its own tenant;
+    //  3. an agent on the shared token (X-Agent-Id, self-declared, not authentication): the tenant
+    //     of the request it is serving. The task is only ever a draft and a person activates it,
+    //     with the tenant shown, so a wrong claim is caught there;
+    //  4. a human at the dashboard names none: the default tenant.
+    // Anything else (a shared token with no X-Agent-Id, or an agent whose tenant is ambiguous) is
+    // refused instead of guessed.
     const isAdmin = ctx.role === 'admin'
-    const tenantId: string | null = isAdmin
-      ? (data.tenant_id?.trim() || null)
-      : (ctx.tenantId ?? 'default')
+    const claimedAgent = String(req.headers['x-agent-id'] ?? '').trim()
+    let tenantId: string | null
+    if (!isAdmin) tenantId = ctx.tenantId ?? DEFAULT_SCHEDULE_TENANT
+    else if (typeof data.tenant_id === 'string' && data.tenant_id.trim()) tenantId = data.tenant_id.trim()
+    else if (isHumanAdmin(ctx)) tenantId = DEFAULT_SCHEDULE_TENANT
+    else tenantId = claimedAgent ? creatorTenant(claimedAgent) : null
+    if (!tenantId) {
+      json(res, {
+        error: 'tenant_required', field: 'tenant_id',
+        hint: 'Send tenant_id, or X-Agent-Id when the agent serves a request of one tenant. A shared agent with no request context has no tenant of its own.',
+      }, 400)
+      return true
+    }
+    const tenant = getTenant(tenantId)
+    if (!tenant || tenant.disabled_at) {
+      json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'Unknown or disabled tenant' }, 400)
+      return true
+    }
+    // A tenant other than the default has no default agent: the fleet main agent may not serve it.
+    const agent = data.agent || (tenantId === DEFAULT_SCHEDULE_TENANT ? MAIN_AGENT_ID : '')
+    if (!agent) { json(res, { error: 'required', field: 'agent', hint: 'A task of a non-default tenant needs an agent that serves it' }, 400); return true }
+    if (!scheduleAgentServesTenant(agent, tenantId)) {
+      json(res, { error: 'invalid_value', field: 'agent', hint: `Agent '${agent}' does not serve tenant '${tenantId}'` }, 400)
+      return true
+    }
 
     // Review-gate: only a real human dashboard
     // login creates a task directly as 'live'. Every other caller -- which,
@@ -290,7 +303,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       description: data.description || '',
       prompt: (data.prompt ?? '').trim(),
       schedule: data.schedule.trim(),
-      agent: data.agent || MAIN_AGENT_ID,
+      agent,
       enabled: true,
       type: data.type || 'task',
       skipIfBusy: data.skipIfBusy === true,

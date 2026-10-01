@@ -95,6 +95,29 @@ export function agentServesTenant(agentId: string, tenantId: string): boolean {
 const DEFAULT_CONTEXT_MAX_AGE_SECONDS = 43200
 
 /**
+ * The tenant of the request an agent is serving right now, when that is unambiguous: a
+ * fresh `bound` context whose tenant the agent still serves, or a fresh `default` context
+ * (a source that carries no tenant, i.e. the local operator). Anything else (no row, unknown,
+ * conflict, stale, the agent no longer serving the tenant, a DB error) is null: the caller
+ * must not guess. Unlike getDelegationTenant this does not fold those cases into 'default'.
+ */
+export function getServingTenant(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): string | null {
+  try {
+    const row = db
+      .prepare('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?')
+      .get(agentId) as { tenant_id: string | null; status: string; updated_at: number } | undefined
+    if (!row || (row.status !== 'bound' && row.status !== 'default') || !row.tenant_id) return null
+    const parsed = Number.parseInt(process.env['TENANT_CONTEXT_MAX_AGE_SECONDS'] ?? '', 10)
+    const maxAge = Number.isFinite(parsed) ? parsed : DEFAULT_CONTEXT_MAX_AGE_SECONDS
+    if (maxAge > 0 && nowSeconds - (row.updated_at ?? 0) > maxAge) return null
+    if (row.status === 'default') return row.tenant_id
+    return agentServesTenant(agentId, row.tenant_id) ? row.tenant_id : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Tenant a message sent BY this agent is stamped with: the tenant of the request the agent is serving
  * (agent_tenant_context, status 'bound') so a delegation inherits it. Anything else (no context, default,
  * unknown, conflict, stale, the agent no longer serving the tenant, a DB error) is 'default', the

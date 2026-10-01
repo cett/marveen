@@ -274,8 +274,9 @@ export function countSchedules(): number {
 
 export function listSchedulesFromDb(opts: { tenantId?: string | null; includeFleet?: boolean } = {}): ScheduleRow[] {
   if (opts.tenantId !== undefined && opts.tenantId !== null) {
-    // Non-admin: only their own tenant's tasks
-    return db.prepare('SELECT * FROM schedules WHERE tenant_id = ? ORDER BY created_at DESC').all(opts.tenantId) as ScheduleRow[]
+    // Only this tenant's tasks. A row with no tenant (older than migration 0066) is the default tenant's.
+    return db.prepare("SELECT * FROM schedules WHERE tenant_id = ? OR (tenant_id IS NULL AND ? = 'default') ORDER BY created_at DESC")
+      .all(opts.tenantId, opts.tenantId) as ScheduleRow[]
   }
   if (opts.includeFleet) {
     // Admin with no filter: all rows

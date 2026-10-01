@@ -1549,7 +1549,7 @@ export function importFleet(
            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           s.id, s.prompt ?? '', s.description ?? '', s.schedule, s.agent, s.type,
-          s.tenant_id ?? null, s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
+          s.tenant_id ?? 'default', s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
           s.command ?? null, s.timeout_ms ?? null, s.fail_threshold ?? null, s.pre_check ?? null,
           s.catch_up_max_age_minutes ?? null, s.stuck_after_minutes ?? null, s.requires ?? null,
           s.created_at, s.updated_at,

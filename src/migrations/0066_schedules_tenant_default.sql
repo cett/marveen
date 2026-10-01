@@ -1,0 +1,14 @@
+-- Migration 0066: every schedule belongs to a tenant.
+--
+-- schedules.tenant_id was nullable and NULL meant "fleet scope", a category that
+-- belonged to nobody: invisible to every tenant caller, un-assignable from the API,
+-- and re-created by every path that wrote a task without naming a tenant. Tasks now
+-- always carry a tenant and the default tenant is the home of the fleet's own system
+-- tasks (backup, memory maintenance, hygiene monitors, ...).
+--
+-- The scheduler's tenant-context hook already reads NULL and 'default' as the same
+-- tenant, so nothing changes at run time and no task moves to another tenant. Rows
+-- that already name a tenant are untouched; running this twice changes nothing more.
+-- The column itself stays nullable (SQLite cannot add NOT NULL in place); the
+-- application keeps it filled.
+UPDATE schedules SET tenant_id = 'default' WHERE tenant_id IS NULL;

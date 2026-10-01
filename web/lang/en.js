@@ -2075,6 +2075,7 @@ window._i18n.en = {
   'errors.sender_not_in_allowlist':  'Sender is not in the allowlist',
   'errors.federation_disabled':      'Federation is disabled',
   'errors.unknown_query_parameter':  'Unknown query parameter',
+  'errors.tenant_required':          'The task needs a tenant',
 
   'tenant.selector.label':           'Tenant:',
   'tenant.selector.all':             'All tenants',

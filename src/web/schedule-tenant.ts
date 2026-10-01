@@ -1,5 +1,5 @@
 import { MAIN_AGENT_ID } from '../config.js'
-import { getTenantsForAgent, agentServesTenant } from '../db.js'
+import { getTenantsForAgent, agentServesTenant, getServingTenant, resolveAgentTenant } from '../db.js'
 import { listAgentNames } from './agent-config.js'
 
 // The (tenant, agent) pair rule for scheduled tasks: a task owned by a tenant may only
@@ -38,4 +38,18 @@ export function scheduleAgentServesTenant(agent: string, tenantId: string | null
 export function scheduleAgentNamesForTenant(tenantId: string | null): string[] {
   const names = knownScheduleAgents()
   return tenantId === null ? names : names.filter(n => scheduleAgentServesTenant(n, tenantId))
+}
+
+/**
+ * The tenant a task proposed by `agentId` on the shared token belongs to: the tenant of the
+ * request that agent is serving right now (its recorded context). Without a usable context the
+ * agent's own tenant counts, but only when it has exactly one; a shared agent (enabled for
+ * several tenants) with no context is ambiguous, so the answer is null and the caller must
+ * refuse rather than file the task under a guess.
+ */
+export function creatorTenant(agentId: string): string | null {
+  const serving = getServingTenant(agentId)
+  if (serving) return serving
+  const own = resolveAgentTenant(agentId)
+  return own === '_multi_' ? null : own
 }

@@ -2076,6 +2076,7 @@ window._i18n.hu = {
   'errors.sender_not_in_allowlist':  'A küldő nincs az engedélyezett listán',
   'errors.federation_disabled':      'A föderáció ki van kapcsolva',
   'errors.unknown_query_parameter':  'Ismeretlen lekérdezési paraméter',
+  'errors.tenant_required':          'A feladathoz tenant kell',
 
   'tenant.selector.label':           'Tenant:',
   'tenant.selector.all':             'Összes tenant',

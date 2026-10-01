@@ -41,6 +41,9 @@ export interface ScheduledTask {
   agent: string
   enabled: boolean
   createdAt: number
+  // The tenant the task belongs to. Every task has one: a stored NULL (pre-migration row) reads
+  // as 'default', and a file-based task that does not name one is seeded as 'default'.
+  tenantId?: string
   type?: 'task' | 'heartbeat' | 'command'  // heartbeat = silent unless important; command = raw shell, no LLM
   // When true, a tick whose target session is busy is dropped silently
   // instead of queued. Use ONLY for cron schedules that fire often enough
@@ -142,7 +145,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; status?: string } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; tenantId?: string; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; status?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -162,6 +165,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     command: config.command,
     timeoutMs: config.timeoutMs,
     failThreshold: config.failThreshold,
+    tenantId: typeof config.tenantId === 'string' && config.tenantId.trim() ? config.tenantId.trim() : undefined,
     preCheck: config.preCheck,
     catchUpMaxAgeMinutes: parseCatchUpMaxAge(config.catchUpMaxAgeMinutes),
     stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
@@ -215,7 +219,7 @@ export function seedSchedulesFromFilesIfEmpty(): number {
       agent:                    task.agent,
       type:                     task.type ?? 'task',
       enabled:                  task.enabled,
-      tenant_id:                null,
+      tenant_id:                task.tenantId ?? 'default',
       skip_if_busy:             task.skipIfBusy ?? false,
       force_send:               task.forceSend ?? false,
       target_session:           task.targetSession ?? null,
@@ -289,6 +293,7 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
     command: row.command ?? undefined,
     timeoutMs: row.timeout_ms ?? undefined,
     failThreshold: row.fail_threshold ?? undefined,
+    tenantId: row.tenant_id ?? 'default',
     preCheck: row.pre_check ?? undefined,
     catchUpMaxAgeMinutes: row.catch_up_max_age_minutes ?? undefined,
     stuckAfterMinutes: row.stuck_after_minutes ?? undefined,
@@ -363,13 +368,10 @@ export function writeScheduledTask(
     requires:                 data.requires !== undefined
                                 ? (data.requires ? JSON.stringify(data.requires) : null)
                                 : (existing?.requires ? JSON.stringify(existing.requires) : null),
-    // ScheduledTask (the `existing` shape above) carries no tenant_id --
-    // it's the file-based task representation, and tenant scoping is a
-    // DB-only concept. Without falling back to the raw dbRow here, every
-    // write that doesn't explicitly pass tenantId (toggle's file-mirror
-    // call, the PUT edit handler) would silently reset a tenant-owned
-    // schedule's tenant_id to NULL (fleet scope) on next edit/toggle.
-    tenant_id:                data.tenantId !== undefined ? (data.tenantId ?? null) : (dbRow?.tenant_id ?? null),
+    // A task always has a tenant. An edit that names none (toggle's file-mirror call, the PUT
+    // edit handler) keeps the stored one, and a stored NULL (a row older than migration 0066)
+    // reads as 'default', so a write can never put a task back into "no tenant".
+    tenant_id:                data.tenantId ?? existing?.tenantId ?? 'default',
     status:                   data.status ?? existing?.status ?? 'live',
   }
 
@@ -388,6 +390,7 @@ function _writeScheduledTaskFiles(
     timeout_ms: number | null | undefined; fail_threshold: number | null | undefined;
     pre_check: string | null | undefined; catch_up_max_age_minutes: number | null | undefined;
     stuck_after_minutes: number | null | undefined;
+    tenant_id?: string | null;
     status?: 'draft' | 'pending_review' | 'live';
   },
 ): void {
@@ -404,6 +407,7 @@ function _writeScheduledTaskFiles(
     forceSend:             merged.force_send,
     description:           merged.description,
     status:                merged.status ?? 'live',
+    tenantId:              merged.tenant_id ?? 'default',
     createdAt:             Math.floor(Date.now() / 1000),
   }
   if (merged.target_session)           config.targetSession           = merged.target_session

@@ -58,6 +58,7 @@ def make_db(path):
     con.execute("INSERT INTO agent_messages VALUES (13,'partner-bot','agent-a',NULL)")
     con.execute("INSERT INTO schedules VALUES ('nightly','agent-a',NULL)")
     con.execute("INSERT INTO schedules VALUES ('tenant-job','agent-a','tenant-y')")
+    con.execute("INSERT INTO schedules VALUES ('default-job','agent-a','default')")
     con.execute("INSERT INTO tenants VALUES ('tenant-x','main-x',NULL)")
     con.execute("INSERT INTO tenants VALUES ('tenant-y',NULL,NULL)")
     con.execute("INSERT INTO tenant_agent_availability VALUES ('tenant-x','agent-a',1)")
@@ -126,7 +127,8 @@ class TestResolve(unittest.TestCase):
 
     def test_scheduled_task(self):
         st = '<scheduled-task source="scheduled-task:%s">\nbody\n</scheduled-task>'
-        self.assertEqual(self.r(st % "nightly"), ("default", "default"))       # NULL = fleet
+        self.assertEqual(self.r(st % "nightly"), ("default", "default"))       # a row older than migration 0066: NULL = default
+        self.assertEqual(self.r(st % "default-job"), ("default", "default"))   # every task has a tenant now
         self.assertEqual(self.r(st % "tenant-job"), ("bound", "tenant-y"))
         self.assertEqual(self.r(st % "nope")[0], "unknown")
 
