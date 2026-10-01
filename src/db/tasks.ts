@@ -110,18 +110,17 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
   })
 }
 
-// agentIds, when provided, narrows the count to task_runs whose agent is in
-// that list (tenant scoping -- see agentsForTenant() in overview.ts). An empty
-// array means the tenant has no agents at all, so the count is 0 without
-// even querying. undefined (the default) means unfiltered, fleet-wide.
-export function countTaskRunsBetween(fromTs: number, toTs?: number, agentIds?: string[]): number {
-  if (agentIds !== undefined && agentIds.length === 0) return 0
+// tenantId, when provided, narrows the count to runs of schedules that belong to that
+// tenant (schedules.tenant_id, matched by task name). The run's agent says nothing about
+// the tenant: a shared agent serves several. A run whose schedule has since been deleted
+// belongs to no tenant, so it only shows in the unfiltered, fleet-wide count.
+export function countTaskRunsBetween(fromTs: number, toTs?: number, tenantId?: string): number {
   const conditions = ['ts >= ?']
   const params: (number | string)[] = [fromTs]
   if (toTs !== undefined) { conditions.push('ts < ?'); params.push(toTs) }
-  if (agentIds !== undefined) {
-    conditions.push(`agent IN (${agentIds.map(() => '?').join(',')})`)
-    params.push(...agentIds)
+  if (tenantId !== undefined) {
+    conditions.push('name IN (SELECT id FROM schedules WHERE tenant_id = ?)')
+    params.push(tenantId)
   }
   const row = db.prepare(`SELECT COUNT(*) as c FROM task_runs WHERE ${conditions.join(' AND ')}`).get(...params) as { c: number }
   return row.c

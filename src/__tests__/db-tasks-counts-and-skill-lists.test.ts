@@ -10,12 +10,16 @@ beforeEach(() => {
   initDatabase(':memory:')
 })
 
+function insertSchedule(id: string, tenantId: string): void {
+  getDb().prepare("INSERT INTO schedules (id, schedule, agent, tenant_id, created_at, updated_at) VALUES (?, '0 9 * * *', 'agent-a', ?, 0, 0)").run(id, tenantId)
+}
+
 function insertTaskRun(name: string, agent: string, ts: number, status = 'fired'): void {
   getDb().prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, ts, status)
 }
 
 describe('countTaskRunsBetween', () => {
-  it('counts every run at or after fromTs when no upper bound or agent filter is given', () => {
+  it('counts every run at or after fromTs when no upper bound or tenant filter is given', () => {
     insertTaskRun('t1', 'agent-a', 1000)
     insertTaskRun('t2', 'agent-b', 2000)
     insertTaskRun('t3', 'agent-a', 500) // before fromTs, excluded
@@ -29,19 +33,36 @@ describe('countTaskRunsBetween', () => {
     expect(countTaskRunsBetween(1000, 2000)).toBe(2)
   })
 
-  it('narrows to the given agentIds', () => {
-    insertTaskRun('t1', 'agent-a', 1000)
-    insertTaskRun('t2', 'agent-b', 1000)
-    insertTaskRun('t3', 'agent-c', 1000)
-    expect(countTaskRunsBetween(0, undefined, ['agent-a', 'agent-c'])).toBe(2)
+  it('narrows to runs of the given tenant\'s schedules, whatever agent ran them', () => {
+    insertSchedule('s-a', 'tenant-a'); insertSchedule('s-a2', 'tenant-a'); insertSchedule('s-b', 'tenant-b')
+    insertTaskRun('s-a', 'agent-a', 1000)
+    insertTaskRun('s-a2', 'shared-agent', 1000) // a shared agent counts for the schedule's tenant
+    insertTaskRun('s-b', 'shared-agent', 1000)
+    expect(countTaskRunsBetween(0, undefined, 'tenant-a')).toBe(2)
+    expect(countTaskRunsBetween(0, undefined, 'tenant-b')).toBe(1)
   })
 
-  it('returns 0 without querying when agentIds is an explicit empty array (tenant has no agents)', () => {
-    insertTaskRun('t1', 'agent-a', 1000)
-    expect(countTaskRunsBetween(0, undefined, [])).toBe(0)
+  it('a tenant with no schedules counts 0', () => {
+    insertSchedule('s-a', 'tenant-a')
+    insertTaskRun('s-a', 'agent-a', 1000)
+    expect(countTaskRunsBetween(0, undefined, 'tenant-empty')).toBe(0)
   })
 
-  it('undefined agentIds means unfiltered, fleet-wide', () => {
+  it('a run whose schedule is gone belongs to no tenant (fleet-wide count only)', () => {
+    insertTaskRun('deleted-task', 'agent-a', 1000)
+    expect(countTaskRunsBetween(0, undefined, 'tenant-a')).toBe(0)
+    expect(countTaskRunsBetween(0)).toBe(1)
+  })
+
+  it('the tenant filter composes with the time window', () => {
+    insertSchedule('s-a', 'tenant-a')
+    insertTaskRun('s-a', 'agent-a', 500)
+    insertTaskRun('s-a', 'agent-a', 1500)
+    insertTaskRun('s-a', 'agent-a', 2500)
+    expect(countTaskRunsBetween(1000, 2000, 'tenant-a')).toBe(1)
+  })
+
+  it('no tenant means unfiltered, fleet-wide', () => {
     insertTaskRun('t1', 'agent-a', 1000)
     insertTaskRun('t2', 'agent-b', 1000)
     expect(countTaskRunsBetween(0, undefined, undefined)).toBe(2)
