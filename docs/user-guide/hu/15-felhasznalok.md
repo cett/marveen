@@ -119,6 +119,40 @@ Az ütemezett feladatoknak tenant a tulajdonosa (részletek: [06 - Feladatok](06
 >
 > Amíg az enforce mód nincs bekapcsolva, ne adj tenant-felhasználóknak API-t elérő belépést vagy tokent.
 
+### Tenant alapcsomag
+
+Az alapcsomag egy kész ütemezett feladat (napi összefoglaló) egy tenantnak. Hogy mit csinál a feladat, hogyan kell aktiválni és kinek megy a csatornaüzenet: [06 - Feladatok](06-feladatok.md#tenant-alapcsomag). Ez a szakasz azt írja le, hol van a gomb, és kinek mi érhető el.
+
+**A gomb helye.** A **Tenantok** fülön minden tenant sorában, az **Agentkezelés** gomb mellett van az **Alapcsomag** gomb (a `default` tenantnál nincs). A gombra kattintva a tenant-lista alatt megnyílik az Alapcsomag panel, amely megmutatja:
+
+- a feladat állapotát: még nincs létrehozva, rendben van, újracélozásra vár (az ágens megváltozott), vagy parkol (a feladat ágense már nem szolgálja ki a tenantot);
+- a feladat nevét, ágensét, státuszát (piszkozat vagy aktív) és hogy engedélyezett-e;
+- melyik ágenst választaná a rendszer automatikusan (a tenant fő ágense, ennek hiányában az egyetlen engedélyezett ágens).
+
+Az ágens-választó csak akkor jelenik meg, ha a rendszer nem tud egyedül választani (nincs vagy több jelölt van). Olyan ágens nem választható, amely más tenantot is kiszolgál. A gomb neve **Alapcsomag létrehozása**, ha a feladat még nincs meg, egyébként **Ellenőrzés / újracélozás**.
+
+**Ismételt megnyomás.** A gomb idempotens: létező feladatot sosem ír felül, és ha semmi nem változott, nem csinál semmit ("Nincs változás"). Ha az ágens megváltozott, újracélozza a feladatot, és visszateszi piszkozat és szüneteltetett állapotba. Ha a feladatot időközben törölték, újra létrehozza.
+
+**Ki mit lát és tehet.**
+
+| | admin (globális) | agent | read_only | viewer |
+|---|:---:|:---:|:---:|:---:|
+| Alapcsomag gomb és panel a Tenantok fülön | X | | | |
+| Alapcsomag létrehozása és állapotának lekérdezése (API) | X | | | |
+| Az alapcsomag feladata a Feladatok listában (saját tenant) | X | X | X | X |
+| Szerkesztés | X | X | | |
+| Aktiválás (piszkozatból aktívvá) | X | | | |
+| Folytatás, szüneteltetés, törlés | X | X | | |
+
+A táblázat mellé:
+
+- A tenant-felhasználó nem látja a gombot és a panelt: nem csak rejtve van, a lap felépítésében sincs ott. Az alapcsomag API-ját is csak admin szerepkör éri el; más szerepkör, az eszközkulcs és a föderációs principal 403-at kap. Ez shadow módban is így van, mert az admin-ellenőrzés az útvonalban is él, nem csak a jogosultsági táblában.
+- A tenant-felhasználó a saját tenantja alapcsomag-feladatát a Feladatok listában látja, piszkozat jelvénnyel, amíg nincs aktiválva. Nem aktiválhatja (az aktiváláshoz bejelentkezett admin kell). Az aktiválás utáni Folytatásra az `agent` szerepkör is jogosult, ahogy bármelyik másik feladat szüneteltetésére és folytatására.
+- Ha a tenant-felhasználó szerkeszti az alapcsomag feladatát, rá is a szokásos szabály vonatkozik: élő feladatnál a módosítás újabb jóváhagyást kér (lásd [06 - Feladatok](06-feladatok.md)).
+- A tenant nélküli nem admin fiókot az ütemezés minden végpontja elutasítja, így az alapcsomag feladatát sem látja.
+- A csatornaüzenet címzettjeit nem a felhasználó adja meg: a Telegram csatorna-kötéseket csak admin hozhatja létre (lásd [F03 - Üzemeltetés](../../fork-guide/hu/F03-uzemeltetes.md#tenant-skill-kapu)). Aki nem szerepel a tenant kötései között, az az összefoglalót csatornán nem kapja meg, még ha látja is a feladatot.
+- Az alapcsomag feladata és a napi összefoglaló bejegyzése csak a tenant saját adatait használja és írja, a tenant memóriáját a tenant hatókörével olvassa.
+
 ### Külső MCP-szerverek és tenant-izoláció
 
 Külső MCP-szervernek (pl. GitHub, Hetzner, fájlrendszer) nincs tenant-fogalma. Ha egy ilyen szervert hordozó ágenshez B2B tenant-tokent rendelnek, az a tenant a hitelesítő adat TELJES hatókörét látja -- ezt adatréteg-szűréssel nem lehet korlátozni, csak policy-val.

@@ -142,6 +142,25 @@ A főágens szándékosan nincs a kapu alatt: a fail-closed prompt-hook adatbáz
 
 Korlátok: ez a tenant-skillek **használatát** kényszeríti ki, a shell oldalán best-effort (a változókból összeállított útvonalat nem fogja meg). Nem adat-izoláció: az ágens közös sessionje az előző tenant üzeneteit továbbra is tartalmazza.
 
+### Alapcsomag egy meglévő tenantra
+
+Az alapcsomag (egy napi összefoglaló ütemezett feladat, részletek: F07 "Tenant alapcsomag") nem jön létre magától: sem új tenantnál, sem a már meglévőknél nincs automatikus utólagos létrehozás. Az admin kéri, tenantonként, bármikor; a kérés idempotens, ismétlése sosem ír felül semmit. A dashboardon a Tenantok fül **Alapcsomag** gombja végzi, API-n:
+
+```bash
+curl -s -X POST http://localhost:3420/api/v1/admin/tenants/<tenant>/starter-pack \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
+  -d '{"agent_id":"<ágens>"}'
+# a törzs elhagyható: az ágens a tenant fő ágense, ennek hiányában az egyetlen engedélyezett ágens
+# GET ugyanezen az útvonalon csak olvas: az állapotot és azt az ágenst adja, amelyet a létrehozás választana
+```
+
+A lépések:
+
+1. Az ágensnek engedélyezettnek kell lennie a tenantnál (vagy annak fő ágensének kell lennie), és nem szolgálhat ki más tenantot is. Ha ez nem teljesül, a kérés `409`-et ad; ha nincs egyértelmű ágens, `400 required` (ilyenkor add meg az `agent_id`-t).
+2. A kérés `draft` és letiltott feladatot hoz létre. Aktiválni egy bejelentkezett adminnak kell (Feladatok oldal), utána a **Folytatás** engedélyezi.
+3. Csatornaüzenet csak akkor megy a tenant felhasználóinak, ha van Telegram csatorna-kötésük az ágenshez (a fenti `channel-bindings` hívás, magánbeszélgetés), és ugyanez a chat az ágens `access.json` `allowFrom` listájában is szerepel. Legfeljebb 3 címzett kap üzenetet, a csoportos csevegések kimaradnak. Kötés nélkül a feladat csak a napi naplóba ír.
+4. Ha később a tenant ágense megváltozik, az ágens-hozzáférés módosítása automatikusan újracélozza a feladatot (és visszateszi `draft` és letiltott állapotba). Ágens törlése vagy átnevezése után, illetve a tenant fő ágensének SQL-es cseréjekor nincs automatika: a kérés ismétlése (vagy a gomb) javítja.
+
 ## Watchdog
 
 A csatorna-kapcsolatot egy független watchdog felügyeli (`scripts/channel-watchdog.sh`), amely a dashboard folyamattól függetlenül fut (systemd timer, 5 percenként). Ha a csatorna-munkamenet elakad vagy leáll, a watchdog `tmux respawn-pane`-nel állítja helyre -- kizárólag a csatorna-munkamenetet, a többi ágenst nem érinti.

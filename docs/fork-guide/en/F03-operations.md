@@ -142,6 +142,25 @@ The main agent is intentionally not under the gate: a fail-closed prompt hook co
 
 Limits: this enforces the **use** of tenant skills, best-effort on the shell side (a command that builds a path from variables is not caught). It is not data isolation: an agent's shared session still holds the earlier tenant's messages in its context.
 
+### Starter pack for an existing tenant
+
+The starter pack (one daily-summary scheduled task, details: F07 "Tenant starter pack") is not created by itself: neither a new tenant nor an existing one gets it automatically. An admin asks for it, per tenant, at any time; the request is idempotent, and repeating it never overwrites anything. On the dashboard the **Starter pack** button on the Tenants tab does it; through the API:
+
+```bash
+curl -s -X POST http://localhost:3420/api/v1/admin/tenants/<tenant>/starter-pack \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
+  -d '{"agent_id":"<agent>"}'
+# the body may be omitted: the agent is the tenant's main agent, failing that the only enabled agent
+# GET on the same path only reads: the state, and the agent a create would choose
+```
+
+The steps:
+
+1. The agent has to be enabled for the tenant (or be its main agent) and must not serve another tenant as well. If that does not hold, the request answers `409`; if there is no single agent, `400 required` (pass `agent_id` then).
+2. The request creates a `draft` and disabled task. A signed-in admin has to activate it (Tasks page), and then **Resume** enables it.
+3. A channel message goes to the tenant's users only when they have a Telegram channel binding to the agent (the `channel-bindings` call above, a private chat) and the same chat is on the `allowFrom` list of the agent's `access.json`. At most 3 recipients get the message, group chats are left out. With no binding the task only writes the daily log.
+4. If the tenant's agent changes later, changing the agent availability re-aims the task automatically (and puts it back to `draft` and disabled). After an agent is deleted or renamed, or when the tenant's main agent is replaced from SQL, there is no automation: repeating the request (or the button) fixes it.
+
 ## Watchdog
 
 The channel connection is supervised by an independent watchdog (`scripts/channel-watchdog.sh`) that runs separately from the dashboard process (systemd timer, every 5 minutes). If the channel session gets stuck or exits, the watchdog recovers it with `tmux respawn-pane` — only the channel session, not any other agent sessions.
