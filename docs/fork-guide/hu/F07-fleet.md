@@ -163,6 +163,8 @@ Az ütemezett feladatok fájl-alapúak: minden feladat egy könyvtárból áll, 
 - `heartbeat` -- csak akkor küld értesítést, ha fontos vagy sürgős esemény van
 - `command` -- shell parancsot futtat közvetlenül (nincs ágens-session, nincs prompt); lásd lejjebb a "Command feladatok" szakaszt
 
+Az `enabled` igazságforrása az adatbázis-sor; a `task-config.json` csak a tükre. Az ütemező az eltérő `enabled` értéket a fájlban indításkor, majd óránként visszahúzza az adatbázis értékére (csak adatbázisból fájlba, soha fordítva). Csak ez az egy kulcs íródik át, a többi kulcs megtartja az értékét, a `SKILL.md`-hez nem nyúl, a hiányzó vagy nem értelmezhető fájlt kihagyja (a tükröt a szinkron sosem hozza létre). Minden javítás figyelmeztetésként naplózódik, a feladatok nevével.
+
 ### Beépített feladatok
 
 A Marveen telepítéskor seed-feladatokat hoz létre:
@@ -230,6 +232,30 @@ A `POST /api/v1/schedules/<name>/run` azonnal elindít egy feladatot, figyelmen 
 
 - Prompt-feladatok (`task`, `heartbeat`): a prompt a cél-ágens session-jébe kerül, mint egy cron-indításnál. A leállt ágenst elindítja, a foglalt session pedig sorba állított újrapróbálkozást kap. A válasz ágensenként egy eredményt sorol fel, például `<agent>: fired`.
 - Command feladatok: a shell parancs közvetlenül fut, ahogy a cron-ciklusban is, és rögzítődik az utolsó futás ideje. A hívás nem várja meg a parancsot, azonnal `command: started (outcome in store/command-task-health.json)` választ ad.
+
+### Visszatartott előfordulások és a tömeges kihagyás riasztása
+
+Egy engedélyezett feladat esedékes előfordulása nem fogyhat el nyom nélkül. Az ütemező minden ütemben három állapotba sorolja a feladatokat:
+
+| Állapot | Feltétel | Hatás |
+|---------|----------|-------|
+| futtatható (runnable) | engedélyezett és éles (live) | normál indítás és catch-up |
+| letiltott (disabled) | az `enabled` ki van kapcsolva | általában az operátor saját kapcsolója: nincs futás, nincs sor, a catch-up sosem játssza újra |
+| nem éles (not live) | engedélyezett, de a jóváhagyási kapu visszatartja (`draft` / `pending_review`) | nem fut; minden esedékes előfordulás `skipped_not_live` állapotú sorként kerül a `task_runs` táblába |
+
+Az ütemben talált minden esedékes előfordulásról egy sor készül, minden célágensre külön (a feladat ágense; ha nincs megadva, a főágens; `all` feladatnál a főágens és minden futó ágens). A sorok a futási előzményekben látszanak (`GET /api/v1/schedules/<name>/runs`, legutóbbi 10), a dashboard a nyers állapotnevet mutatja.
+
+A letiltott feladatot is rögzíti, `skipped_disabled` állapottal, ha egy **tömeges esemény** része. Tömeges esemény az, amikor legalább 4 feladat van játékban (az előző ütemben futtatható feladatok és minden most engedélyezett feladat), és több mint a felük egyszerre van visszatartva. Visszatartott: a nem éles feladat, vagy az a letiltott feladat, amely az előző ütemben még futtatható volt. Ez az ütemező saját feladatainak téves olvasása, nem egy operátor egyetlen kapcsolása, ezért minden visszatartott előfordulás rögzítődik. A feladat addig marad az eseményben, amíg újra futtatható nem lesz, vagy el nem telik 24 óra. Az esemény előtt már letiltott feladatok sosem részei az eseménynek, egy különálló kapcsolgatás pedig sosem éri el a küszöböt.
+
+Amikor egy tömeges esemény elindul, egyetlen riasztás megy ki:
+
+- egy hibasor a dashboard naplójában;
+- egy audit sor (ágens `scheduler`, entitás `schedule`, művelet `mass_skip`, részletek: a visszatartott feladatok száma, a feladatok száma, legfeljebb 8 név), amely a dashboard audit naplójában látszik;
+- egy Telegram-üzenet a tulajdonos chatjébe a visszatartott feladatok számával és legfeljebb 8 névvel (a többi `+N`), ha a bot token és a tulajdonos chat azonosítója be van állítva. A szöveg jelenleg mindig magyar.
+
+A riasztás duplikátumszűrt, időben nem korlátozott: a jelző addig áll, amíg az esemény tart, és újra élesedik, amint a feltétel megszűnik. A jelző memóriában van, így egy olyan újraindítás, amely még az eseményen belül van, újra riaszt.
+
+Az észlelés túléli az újraindítást. Az "előző ütemben futtatható" alapállapot memóriában van, így egy frissen indult folyamatnak nincs előzménye, és normálisnak vehetné azt az állapotot, amelyben minden feladat már letiltottnak látszik. Az első vizsgálatnál ezért az alapállapotot maguk az adatbázis-sorok adják (engedélyezett és éles, az ütem saját feladatlistájától függetlenül olvasva), így az a folyamat, amely egy tömeges eseményen belül indul, az első ütemtől rögzíti a visszatartott előfordulásokat és elküldi a riasztást. Az adatbázisban letiltott feladatok nincsenek az alapállapotban, és nem hagynak sort. Ha az alapállapot olvasása hibázik, a vizsgálat az ütem saját bizonyítékára támaszkodik. A teljes kihagyási napló hibája figyelmeztetésként naplózódik, és sosem töri meg az ütemet.
 
 ### MCP előellenőrzés
 
