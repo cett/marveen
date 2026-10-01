@@ -388,6 +388,17 @@ How a server is recognised: the runner merges the MCP configs the session can se
 
 The sweep multiplies one scheduled decision into one model turn per agent, so it has its own quota guard. It reads `store/claude-usage.json` and skips the whole sweep when the higher of `sessionPct` and `weeklyPct` reaches `QUOTA_THRESHOLD` (default `75`). The guard only trusts a **fresh** snapshot: if `fetchedAt` is older than `QUOTA_STALE_MINUTES` (default `20`), or missing, the guard logs the reason and lets the sweep run (fail-open). A usage number that stopped updating therefore cannot silence the sweep for weeks.
 
+**An agent that serves only tenants other than `default` is left out.** The tenant stamp of a message sent as an admin is always `default`, so the sweep directive would reach such an agent in the `default` context, and the memories the agent saves during the heartbeat would land in the `default` tenant: visible to the fleet, and not removed when the tenant is deleted. The sweep therefore decides who is left out from the `/api/agents` fields. A running agent is left out when
+
+- its `tenantIds` list (the tenants it is enabled for) is not empty and does not contain `default`, or
+- its `primaryTenantId` (the id of the tenant it is the main agent of) is not `default`.
+
+A shared agent, one that is also enabled for the `default` tenant, stays in, unless it is also another tenant's main agent: the second condition leaves it out then. An agent that serves no tenant at all (empty `tenantIds`, no `primaryTenantId`) stays in. A missing field (an older `/api/agents` answer) also reads as "not left out": nothing is skipped and the sweep runs as before. The main agent is still always left out, and the quota guard decides first; the tenant filter only matters after it.
+
+Each skipped running agent gets one line in `store/fleet-heartbeat-sweep.log` (`-- <agent> : skipped (serves only non-default tenants)`) and is not counted in the "triggered" total. If no running agent is left after the filter, the log ends with the `no running sub-agents found, nothing to do` line.
+
+Side effect: the main agent of a tenant other than `default` (a tenant's coordinator, for example), or any agent serving only such tenants, gets no automatic memory heartbeat from the sweep. Keeping that tenant's memory tidy is then up to the agent's own session; the tenant starter pack does not make up for it (it writes a daily summary, not a heartbeat).
+
 ### Timezone
 
 Cron expressions are evaluated in the server's timezone (`SCHEDULER_TZ` in `.env`; default: the OS timezone). Check the current setting:

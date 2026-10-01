@@ -388,6 +388,17 @@ A `scripts/fleet-heartbeat-sweep.sh [stagger_masodperc]` megkéri minden futó a
 
 A sweep egy ütemezett döntésből ágensenként egy modell-fordulót csinál, ezért saját kvóta-őre van. A `store/claude-usage.json`-t olvassa, és az egész sweepet kihagyja, ha a `sessionPct` és a `weeklyPct` nagyobbika eléri a `QUOTA_THRESHOLD`-ot (alapból `75`). Az őr csak **friss** pillanatképnek hisz: ha a `fetchedAt` régebbi, mint a `QUOTA_STALE_MINUTES` (alapból `20`), vagy hiányzik, az őr naplózza az okot és átengedi a sweepet (fail-open). Egy megállt használati érték így nem némíthatja el hetekre a sweepet.
 
+**Csak nem `default` tenantot kiszolgáló ágens kimarad.** Az adminként küldött üzenet tenant-bélyege mindig `default`, így a sweep direktívája egy ilyen ágenshez is `default` kontextusban érkezne, és a memóriák, amelyeket az ágens a heartbeat során ment, a `default` tenantba kerülnének: a flotta látná őket, és a tenant törlése nem vinné el őket. A sweep ezért az `/api/agents` mezőiből dönti el, ki marad ki. Egy futó ágens kimarad, ha
+
+- a `tenantIds` listája (a tenantok, amelyekre engedélyezett) nem üres, és nem tartalmazza a `default`-ot, vagy
+- a `primaryTenantId` (annak a tenantnak az azonosítója, amelynek ő a fő ágense) nem `default`.
+
+A megosztott ágens, vagyis amelyik a `default` tenantra is engedélyezett, bent marad, kivéve ha egy másik tenant fő ágense is: a második feltétel ilyenkor is kizárja. A tenantot egyáltalán nem kiszolgáló ágens (üres `tenantIds`, nincs `primaryTenantId`) bent marad. Hiányzó mező (régebbi `/api/agents` válasz) is "nem kihagyott": ilyenkor semmi nem marad ki, a sweep a korábbi módon fut. A főágens továbbra is mindig kimarad, és a kvóta-őr előtte dönt, a tenant-szűrés csak azután számít.
+
+Minden kihagyott, futó ágensről egy sor kerül a `store/fleet-heartbeat-sweep.log`-ba (`-- <ágens> : skipped (serves only non-default tenants)`), és nem számít bele a "triggered" darabszámba. Ha a szűrés után nincs futó ágens, a napló `no running sub-agents found, nothing to do` sora zár.
+
+Mellékhatás: a csak nem `default` tenantot kiszolgáló fő ágensnek (például egy tenant koordinátorának) a sweepből nincs automatikus memória-heartbeatje. A tenant memóriájának karbantartása nála az ágens saját munkamenetén múlik; a tenant alapcsomagja ezt nem pótolja (az napi összefoglalót ír, nem heartbeatet).
+
 ### Időzóna
 
 A cron kifejezések a szerver időzónájában értendők (`SCHEDULER_TZ` az `.env`-ben, alapértelmezés: az OS időzónája). Ellenőrzés:
