@@ -168,7 +168,7 @@ describe('POST /api/schedules/expand-questions', () => {
 
   it('parses the AI-generated question array on success', async () => {
     mockRunAgent.mockResolvedValueOnce({ text: '[{"question":"Mikor?","options":["Ma","Holnap"]}]' } as never)
-    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: 'napi jelentes', agent: 'jarvis' }, 'admin')
+    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: 'napi jelentes', agent: 'main-agent' }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual([{ question: 'Mikor?', options: ['Ma', 'Holnap'] }])
