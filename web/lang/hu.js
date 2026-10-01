@@ -590,6 +590,7 @@ window._i18n.hu = {
   'tasks.status.active':         'aktív',
   'tasks.status.paused':         'szünet',
   'tasks.status.draft':          'piszkozat',
+  'tasks.status.pending_review': 'jóváhagyásra vár',
   'tasks.btn.run_now':           'Futtatás most',
   'tasks.btn.toggle_pause':      'Szüneteltetés',
   'tasks.btn.toggle_resume':     'Folytatás',
@@ -1587,6 +1588,7 @@ window._i18n.hu = {
   // --- Tasks toasts ---
   'tasks.toast.select_schedule': 'Válassz ütemezést',
   'tasks.toast.updated':         'Feladat frissítve',
+  'tasks.toast.review_required': 'Mentve. A feladat szünetel, amíg egy admin jóvá nem hagyja a változtatást',
   'tasks.toast.moved_draft':     'Feladat áthelyezve ({tenant}), piszkozat: aktiválni kell',
   'tasks.toast.created':         'Feladat létrehozva!',
 

@@ -14,13 +14,14 @@ const EN = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
 
 describe('schedules.js: draft-status review-gate UI', () => {
-  it('a non-live task gets the draft badge (data-variant="warning")', () => {
-    expect(APP).toMatch(/!isLive \? `<span class="badge" data-variant="warning">\$\{t\('tasks\.status\.draft'\)\}<\/span>` : ''/)
+  it('a non-live task gets a status badge (data-variant="warning"), labelled by statusBadgeKey()', () => {
+    expect(APP).toMatch(/!isLive \? `<span class="badge" data-variant="warning">\$\{t\(statusBadgeKey\(task\.status\)\)\}<\/span>` : ''/)
   })
 
   it('the activate button is wired to POST /api/schedules/{name}/activate', () => {
     expect(APP).toMatch(/data-action="activate"/)
-    expect(APP).toMatch(/\/api\/schedules\/\$\{encodeURIComponent\(task\.name\)\}\/activate/)
+    // The URL, and the expected_hash it carries, is built by schedule-review-ui.js's activateUrl().
+    expect(APP).toContain("fetch(activateUrl(task.name, task.contentHash), { method: 'POST' })")
     expect(APP).toMatch(/method: 'POST' \}\)\s*\n\s*const data = await r\.json\(\)\.catch\(\(\) => \(\{\}\)\)\s*\n\s*if \(r\.ok\) showToast\(t\('tasks\.toast\.activated'\)\)/)
   })
 

@@ -71,7 +71,9 @@ describe('schedules.js: tenant field in the task dialog', () => {
 
   it('moving a task shows the draft hint and the draft toast', () => {
     expect(APP).toMatch(/const moving = _editTenant !== null && tenant !== _editTenant/)
-    expect(APP).toMatch(/saved\.status === 'draft' && saved\.tenant_id \? t\('tasks\.toast\.moved_draft'/)
+    // The choice of toast is saveToastKey() (unit-tested in schedule-review-ui.test.ts); the dialog
+    // only renders the moved-draft one with the tenant's label.
+    expect(APP).toMatch(/toast\.key === 'tasks\.toast\.moved_draft' \? t\(toast\.key, \{ tenant: tenantLabel\(toast\.tenant\) \}\)/)
   })
 })
 

@@ -14,6 +14,7 @@ import { avatarBust } from './agents.js'
 import { initTenantSelector, fetchAdminTenants } from './tenant-selector.js'
 import { can } from './rbac-client.js'
 import { buildSchedulePayload } from './schedule-payload.js'
+import { statusBadgeKey, activateUrl, saveToastKey } from './schedule-review-ui.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
 
@@ -617,7 +618,7 @@ function makeScheduleRow(task) {
           ${escapeHtml(task.description || task.name)}
           ${task.type === 'heartbeat' ? '<span class="badge" data-variant="info">💓 heartbeat</span>' : ''}
           <span class="badge" data-variant="${task.enabled ? 'success' : 'accent'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
-          ${!isLive ? `<span class="badge" data-variant="warning">${t('tasks.status.draft')}</span>` : ''}
+          ${!isLive ? `<span class="badge" data-variant="warning">${t(statusBadgeKey(task.status))}</span>` : ''}
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
@@ -668,7 +669,7 @@ function makeScheduleRow(task) {
       row.querySelector('[data-action="activate"]').addEventListener('click', async (e) => {
         e.stopPropagation()
         try {
-          const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/activate`, { method: 'POST' })
+          const r = await fetch(activateUrl(task.name, task.contentHash), { method: 'POST' })
           const data = await r.json().catch(() => ({}))
           if (r.ok) showToast(t('tasks.toast.activated'))
           else showToast('Hiba: ' + getErrorMessage(data, String(r.status)))
@@ -1209,8 +1210,10 @@ saveScheduleBtn.addEventListener('click', async () => {
         throw Object.assign(new Error('api call failed'), { apiData: err })
       }
       const saved = await res.json().catch(() => ({}))
-      // A tenant move comes back as a draft: say so, the task needs re-activating.
-      showToast(saved.status === 'draft' && saved.tenant_id ? t('tasks.toast.moved_draft', { tenant: tenantLabel(saved.tenant_id) }) : t('tasks.toast.updated'))
+      // A tenant move comes back as a draft, and a change a non-admin made to a live task comes
+      // back as review_required: say so, the task needs an admin to activate it again.
+      const toast = saveToastKey(saved)
+      showToast(toast.key === 'tasks.toast.moved_draft' ? t(toast.key, { tenant: tenantLabel(toast.tenant) }) : t(toast.key))
     } else {
       // Create
       const res = await fetch('/api/schedules', {
