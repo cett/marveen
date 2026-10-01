@@ -6,27 +6,12 @@
 // hasPermission() from the real rbac.ts. If rbac.ts changes without updating
 // the mirror, this test fails in CI.
 import { describe, it, expect } from 'vitest'
-import { ALL_ROLES, hasPermission, type Permission, type Role } from '../web/rbac.js'
+import { ALL_PERMISSIONS, ALL_ROLES, hasPermission, type Permission, type Role } from '../web/rbac.js'
 import {
   PERMISSION_MATRIX_ROLES,
   PERMISSION_MATRIX_CATEGORIES,
 } from '../../web/modules/rbac-permission-matrix-data.js'
 
-const ALL_PERMISSIONS: Permission[] = [
-  'memories:read',
-  'memories:write',
-  'kanban:read',
-  'kanban:write',
-  'agents:read',
-  'messages:write',
-  'approvals:read',
-  'approvals:write',
-  'blackboard:read',
-  'blackboard:write',
-  'admin:all',
-  'federation:read',
-  'federation:write',
-]
 
 describe('rbac-permission-matrix-data mirror vs rbac.ts (drift guard)', () => {
   it('mirrors ALL_ROLES exactly', () => {
@@ -35,6 +20,8 @@ describe('rbac-permission-matrix-data mirror vs rbac.ts (drift guard)', () => {
 
   it('covers every Permission exactly once, and no unknown permission', () => {
     const mirrored = PERMISSION_MATRIX_CATEGORIES.flatMap((c) => c.permissions.map((p) => p.key))
+    // ALL_PERMISSIONS is the tuple the Permission type is derived from, so a permission added to
+    // rbac.ts without a matrix row fails here instead of silently missing from the dashboard.
     expect([...mirrored].sort()).toEqual([...ALL_PERMISSIONS].sort())
   })
 

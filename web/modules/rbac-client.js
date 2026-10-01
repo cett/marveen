@@ -11,27 +11,27 @@
 //   getAuthStatus()               -- cached /api/auth/status fetch (shared promise)
 //   gate(selector, permission, mode) -- hide/disable matching elements when !can()
 
-/** @typedef {'memories:read'|'memories:write'|'kanban:read'|'kanban:write'|'agents:read'|'messages:write'|'approvals:read'|'approvals:write'|'blackboard:read'|'blackboard:write'|'admin:all'|'federation:read'|'federation:write'} Permission */
+/** @typedef {'memories:read'|'memories:write'|'kanban:read'|'kanban:write'|'agents:read'|'messages:write'|'approvals:read'|'approvals:write'|'blackboard:read'|'blackboard:write'|'schedules:read'|'schedules:write'|'admin:all'|'federation:read'|'federation:write'} Permission */
 
 const ROLE_PERMISSIONS = {
   admin: new Set([
     'memories:read', 'memories:write', 'kanban:read', 'kanban:write',
-    'agents:read', 'messages:write', 'approvals:read', 'approvals:write',
-    'blackboard:read', 'blackboard:write', 'admin:all',
+    'agents:read', 'agents:write', 'messages:write', 'approvals:read', 'approvals:write',
+    'blackboard:read', 'blackboard:write', 'schedules:read', 'schedules:write', 'admin:all',
     'federation:read', 'federation:write',
   ]),
   agent: new Set([
     'memories:read', 'memories:write', 'kanban:read', 'kanban:write',
-    'agents:read', 'messages:write', 'approvals:read',
-    'blackboard:read', 'blackboard:write',
+    'agents:read', 'agents:write', 'messages:write', 'approvals:read',
+    'blackboard:read', 'blackboard:write', 'schedules:read', 'schedules:write',
     'federation:read', 'federation:write',
   ]),
   read_only: new Set([
-    'memories:read', 'kanban:read', 'agents:read', 'blackboard:read',
+    'memories:read', 'kanban:read', 'agents:read', 'blackboard:read', 'schedules:read',
     'approvals:read', 'approvals:write',
   ]),
   viewer: new Set([
-    'memories:read', 'kanban:read', 'agents:read', 'blackboard:read',
+    'memories:read', 'kanban:read', 'agents:read', 'blackboard:read', 'schedules:read',
     'approvals:read', 'approvals:write',
   ]),
 }
