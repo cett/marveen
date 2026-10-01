@@ -126,6 +126,66 @@ describe('importFleet -- schedules', () => {
     expect(row.schedule).toBe('*/15 * * * *')
   })
 
+  describe('tenant of an imported schedule', () => {
+    async function exportWithTenants() {
+      const { exportFleet } = await import('../web/fleet-transfer.js')
+      insertSchedule({ id: 'job-local', tenant_id: 'tenant-known' })
+      insertSchedule({ id: 'job-foreign', tenant_id: 'tenant-elsewhere' })
+      insertSchedule({ id: 'job-default', tenant_id: 'default' })
+      insertSchedule({ id: 'job-none', tenant_id: null })
+      return exportFleet()
+    }
+    const tenantOf = (id: string) => (getDb().prepare('SELECT tenant_id FROM schedules WHERE id = ?').get(id) as any).tenant_id
+
+    it('keeps a tenant this machine has, re-homes one it does not have to default (disabled either way)', async () => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const exported = await exportWithTenants()
+      initDatabase(':memory:')
+      const { createTenant } = await import('../db.js')
+      createTenant('tenant-known', 'Known')
+
+      const applied = importFleet(exported.data, { apply: true }) as any
+      expect(applied.ok).toBe(true)
+      expect(tenantOf('job-local')).toBe('tenant-known')
+      // Fix-revert proof: without the validation the foreign id would be stored verbatim.
+      expect(tenantOf('job-foreign')).toBe('default')
+      expect(tenantOf('job-default')).toBe('default')
+      expect(tenantOf('job-none')).toBe('default')
+      const enabled = getDb().prepare('SELECT COUNT(*) AS c FROM schedules WHERE enabled = 1').get() as any
+      expect(enabled.c).toBe(0)
+    })
+
+    it('a tenant that is disabled here counts as missing', async () => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const exported = await exportWithTenants()
+      initDatabase(':memory:')
+      const { createTenant, updateTenant } = await import('../db.js')
+      createTenant('tenant-known', 'Known')
+      updateTenant('tenant-known', { disabled: true })
+
+      importFleet(exported.data, { apply: true })
+      expect(tenantOf('job-local')).toBe('default')
+    })
+
+    it('the dry run warns how many schedules would be re-homed, and says nothing when none would', async () => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const exported = await exportWithTenants()
+      initDatabase(':memory:')
+      const { createTenant } = await import('../db.js')
+      createTenant('tenant-known', 'Known')
+
+      const dry = importFleet(exported.data, { apply: false }) as any
+      expect(dry.warnings.filter((w: string) => w.includes('default tenantba kerül'))).toEqual([
+        expect.stringContaining('1 ütemezés tenantja nem létezik'),
+      ])
+
+      initDatabase(':memory:')
+      createTenant('tenant-known', 'Known'); createTenant('tenant-elsewhere', 'Elsewhere')
+      const clean = importFleet(exported.data, { apply: false }) as any
+      expect(clean.warnings.some((w: string) => w.includes('default tenantba kerül'))).toBe(false)
+    })
+  })
+
   it('is idempotent on id -- re-applying the same export does not duplicate the row', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     insertSchedule({ id: 'daily-digest' })
