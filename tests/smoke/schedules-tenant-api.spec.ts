@@ -132,6 +132,23 @@ test.describe('Schedules API: tenant rules over HTTP', () => {
     expect(moved?.status).toBe('draft')
   })
 
+  // RBAC runs in shadow mode by default (a would-deny is only logged), so whether a viewer's
+  // plain edit is refused depends on RBAC_MODE. What must hold in both modes: the keys that
+  // decide ownership and review (status, agent, tenant) never change through a viewer's PUT.
+  test('tenant-bound viewer PUT: status, agent and tenant keys change nothing, a tenant move is refused', async () => {
+    const before = await row(admin, agentTask)
+    for (const data of [{ status: 'live', enabled: true }, { agent: MAIN_AGENT }]) {
+      const res = await viewer.put(`/api/schedules/${agentTask}`, { data })
+      expect([200, 400, 403], JSON.stringify(data)).toContain(res.status())
+    }
+    const move = await viewer.put(`/api/schedules/${agentTask}`, { data: { tenant_id: 'default' } })
+    expect(move.status()).toBe(403)
+    const after = await row(admin, agentTask)
+    expect(after?.status).toBe(before?.status)
+    expect(after?.agent).toBe(before?.agent)
+    expect(after?.tenantId).toBe(before?.tenantId)
+  })
+
   test('tenant-bound viewer: sees only its tenant, never another tenant\'s task, agents or history', async () => {
     const listed = await viewer.get('/api/schedules')
     const rows = (await listed.json()) as Array<{ name: string; tenantId: string }>
