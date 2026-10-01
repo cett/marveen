@@ -29,6 +29,7 @@ import {
   getFallbackOverride,
   setFallbackOverride,
   clearFallbackOverride,
+  listFallbackOverrides,
   type FallbackOverride,
 } from './model-fallback-state.js'
 
@@ -102,9 +103,29 @@ function restartFor(name: string): void {
   }
 }
 
-function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: string[]): void {
+// `allowDowngrade` is the feature flag: with it off no NEW downgrade is ever
+// started, but an overlay that already exists is still driven back to the
+// operator's model by the very same revert path (same window, same clear-then-
+// restart order). Otherwise switching the feature off while an agent is
+// downgraded would pin it to the fallback model for good.
+function checkAgent(
+  name: string,
+  nowMs: number,
+  revertAfterMs: number,
+  chain: string[],
+  allowDowngrade: boolean,
+): void {
   // Sub-agents must be up; the main session is launchd-managed (always present).
-  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
+  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') {
+    // A stopped agent has nothing to restart: once its overlay is due, just
+    // drop it so the next start launches on the operator's model.
+    const stale = getFallbackOverride(name)
+    if (stale && (stale.current === configuredModelFor(name) || nowMs - stale.downgradedAt >= revertAfterMs)) {
+      clearFallbackOverride(name)
+      logger.info({ name, primary: stale.primary, was: stale.current }, 'model-fallback: dropped due overlay of a stopped agent')
+    }
+    return
+  }
 
   const session = sessionFor(name)
   const host = name === MAIN_AGENT_ID ? null : readAgentRemoteHost(name)
@@ -116,14 +137,14 @@ function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: s
   }
 
   const usageLimitDetected = detectsUsageLimit(pane)
-  const rawModelUnavailable = detectsModelUnavailable(pane)
+  const rawModelUnavailable = allowDowngrade && detectsModelUnavailable(pane)
   const prevStreak = modelUnavailableStreak.get(name) ?? 0
   const newStreak = rawModelUnavailable ? prevStreak + 1 : 0
   modelUnavailableStreak.set(name, newStreak)
   if (newStreak >= MODEL_UNAVAILABLE_MIN_CONSECUTIVE) {
     logger.info({ name, streak: newStreak }, 'model-fallback: model-unavailable confirmed by consecutive detection')
   }
-  const limitDetected = usageLimitDetected || (newStreak >= MODEL_UNAVAILABLE_MIN_CONSECUTIVE)
+  const limitDetected = allowDowngrade && (usageLimitDetected || (newStreak >= MODEL_UNAVAILABLE_MIN_CONSECUTIVE))
   // The operator's model is the agent's primary. The overlay (when present) is
   // what it actually runs on right now.
   const primary = configuredModelFor(name)
@@ -190,14 +211,20 @@ export function startModelFallbackRunner(): NodeJS.Timeout {
     if (!cfg.enabled) {
       if (lastSwitchAt.size > 0) lastSwitchAt.clear() // re-seed cleanly if re-enabled
       if (modelUnavailableStreak.size > 0) modelUnavailableStreak.clear()
-      return
     }
     const now = Date.now()
     const revertAfterMs = cfg.revertAfterMinutes * 60_000
-    try { checkAgent(MAIN_AGENT_ID, now, revertAfterMs, cfg.chain) }
-    catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
+    // Flag off: only agents that still carry an overlay are visited (to revert
+    // them); the rest of the fleet is not touched.
+    const pinned = cfg.enabled ? null : new Set(Object.keys(listFallbackOverrides()))
+    const wanted = (name: string) => pinned === null || pinned.has(name)
+    if (wanted(MAIN_AGENT_ID)) {
+      try { checkAgent(MAIN_AGENT_ID, now, revertAfterMs, cfg.chain, cfg.enabled) }
+      catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
+    }
     for (const name of listAgentNames()) {
-      try { checkAgent(name, now, revertAfterMs, cfg.chain) }
+      if (!wanted(name)) continue
+      try { checkAgent(name, now, revertAfterMs, cfg.chain, cfg.enabled) }
       catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
     }
   }
