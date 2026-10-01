@@ -196,6 +196,7 @@ components:
             - federation_disabled
             - tenant_required
             - unknown_query_parameter
+            - stale_revision
         hint:
           type: string
           description: >-

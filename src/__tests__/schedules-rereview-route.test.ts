@@ -65,10 +65,10 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true })
 })
 
-async function put(name: string, body: object, who: Principal) {
-  const buf = Buffer.from(JSON.stringify(body))
+async function call(method: string, pathAndQuery: string, body: object | undefined, who: Principal) {
+  const buf = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body))
   const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string>; destroy: () => void }
-  req.method = 'PUT'
+  req.method = method
   req.headers = {}
   req.destroy = () => {}
   setImmediate(() => { req.emit('data', buf); req.emit('end') })
@@ -81,10 +81,11 @@ async function put(name: string, body: object, who: Principal) {
       try { out.body = JSON.parse(Buffer.isBuffer(b) ? b.toString('utf-8') : b) } catch { /* ignore */ }
     },
   }
-  const url = new URL(`http://localhost:3420/api/schedules/${name}`)
-  await route.tryHandleSchedules({ req, res, path: url.pathname, method: 'PUT', url, ...who } as unknown as RouteContext)
+  const url = new URL(`http://localhost:3420${pathAndQuery}`)
+  await route.tryHandleSchedules({ req, res, path: url.pathname, method, url, ...who } as unknown as RouteContext)
   return out
 }
+const put = (name: string, body: object, who: Principal) => call('PUT', `/api/schedules/${name}`, body, who)
 
 const stored = (name: string) => dbMod.getScheduleFromDb(name)!
 // The runner's own question, asked of the real task listing: would this task be fired?
@@ -239,5 +240,95 @@ describe('audit trail and notification', () => {
     spy.mockRestore()
     expect(out.status).toBe(200)
     expect(stored('t-live').status).toBe('pending_review')
+  })
+})
+
+describe('activation checks the content the admin looked at', () => {
+  const listedHash = async (name: string) => {
+    const out = await call('GET', '/api/schedules', undefined, human)
+    const rows = out.body as unknown as Array<{ name: string; contentHash: string }>
+    return rows.find(r => r.name === name)!.contentHash
+  }
+
+  it('the list carries a contentHash that moves when an executed field changes, and not for a label', async () => {
+    const h0 = await listedHash('t-draft')
+    await put('t-draft', { description: 'only a label' }, tenantUser('tenant-b'))
+    expect(await listedHash('t-draft')).toBe(h0)
+    await put('t-draft', { prompt: 'something else' }, tenantUser('tenant-b'))
+    expect(await listedHash('t-draft')).not.toBe(h0)
+  })
+
+  it('activating with the hash the admin saw succeeds and the task runs', async () => {
+    const hash = await listedHash('t-draft')
+    const out = await call('POST', `/api/schedules/t-draft/activate?expected_hash=${hash}`, undefined, human)
+    expect(out.status).toBe(200)
+    expect(stored('t-draft').status).toBe('live')
+    expect(runnerWouldFire('t-draft')).toBe(true)
+  })
+
+  it('a draft edited after the admin opened it is refused with 409 stale_revision and stays a draft', async () => {
+    const hash = await listedHash('t-draft')
+    await put('t-draft', { prompt: 'swapped after the admin looked' }, tenantUser('tenant-b'))
+    const out = await call('POST', `/api/schedules/t-draft/activate?expected_hash=${hash}`, undefined, human)
+    expect(out.status).toBe(409)
+    expect(out.body).toMatchObject({ error: 'stale_revision', content_hash: await listedHash('t-draft') })
+    expect(stored('t-draft').status).toBe('draft')
+    expect(runnerWouldFire('t-draft')).toBe(false)
+  })
+
+  it('a held (pending_review) task is covered the same way, and the fresh hash then activates it', async () => {
+    const seen = await listedHash('t-live')
+    await put('t-live', { prompt: 'first edit' }, tenantUser('tenant-b'))
+    expect((await call('POST', `/api/schedules/t-live/activate?expected_hash=${seen}`, undefined, human)).status).toBe(409)
+    expect(stored('t-live').status).toBe('pending_review')
+    const fresh = await listedHash('t-live')
+    expect((await call('POST', `/api/schedules/t-live/activate?expected_hash=${fresh}`, undefined, human)).status).toBe(200)
+    expect(stored('t-live').status).toBe('live')
+  })
+
+  it('without an expected_hash activation still works (a caller with no screen, e.g. the CRUD recipe)', async () => {
+    expect((await call('POST', '/api/schedules/t-draft/activate', undefined, human)).status).toBe(200)
+  })
+
+  it('a non-human still cannot activate, with or without a hash', async () => {
+    const hash = await listedHash('t-draft')
+    expect((await call('POST', `/api/schedules/t-draft/activate?expected_hash=${hash}`, undefined, tenantUser('tenant-b'))).status).toBe(403)
+    expect((await call('POST', '/api/schedules/t-draft/activate', undefined, sharedToken('x'))).status).toBe(403)
+    expect(stored('t-draft').status).toBe('draft')
+  })
+})
+
+describe('every other schedule write is audited too', () => {
+  it('activate, toggle and delete each leave exactly one row, with the actor', async () => {
+    await call('POST', '/api/schedules/t-draft/activate', undefined, human)
+    await call('POST', '/api/schedules/t-draft/toggle', undefined, tenantUser('tenant-b'))
+    await call('DELETE', '/api/schedules/t-draft', undefined, tenantUser('tenant-b'))
+    const rows = auditRows('t-draft')
+    expect(rows.map(r => [r.agent_id, r.action])).toEqual([
+      ['owner', 'activate'], ['tenant-user', 'toggle'], ['tenant-user', 'delete'],
+    ])
+    expect(JSON.parse(rows[0]!.detail)).toMatchObject({ tenant: 'tenant-b', status_before: 'draft' })
+    expect(JSON.parse(rows[1]!.detail)).toMatchObject({ enabled: false })
+  })
+
+  it("a refused write (another tenant's task) leaves no row", async () => {
+    await call('POST', '/api/schedules/t-other/toggle', undefined, tenantUser('tenant-b'))
+    await call('DELETE', '/api/schedules/t-other', undefined, tenantUser('tenant-b'))
+    expect(auditRows('t-other')).toHaveLength(0)
+    expect(stored('t-other')).toBeDefined()
+  })
+
+  it('a non-human create is a draft, is audited, and tells the main agent; a human create does not', async () => {
+    const body = (n: string) => ({ name: n, prompt: 'do it', schedule: '0 9 * * *', agent: 'tenant-agent', type: 'task' })
+    const asTenant = await call('POST', '/api/schedules', body('made-by-tenant'), tenantUser('tenant-b'))
+    expect(asTenant.body).toMatchObject({ status: 'draft' })
+    expect(auditRows('made-by-tenant').map(r => r.action)).toEqual(['create'])
+    expect(reviewMessages().map(m => m.content)).toEqual([
+      '[SCHEDULE_REVIEW] task=made-by-tenant tenant=tenant-b reason=created by=tenant-user',
+    ])
+    const asHuman = await call('POST', '/api/schedules', { ...body('made-by-human'), tenant_id: 'tenant-b' }, human)
+    expect(asHuman.body).toMatchObject({ status: 'live' })
+    expect(auditRows('made-by-human').map(r => r.action)).toEqual(['create'])
+    expect(reviewMessages()).toHaveLength(1)
   })
 })

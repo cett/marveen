@@ -18,7 +18,7 @@ import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask, isTaskLive,
 } from '../scheduled-tasks-io.js'
-import { reviewTriggerFields, reviewValueSha256 } from '../schedule-review.js'
+import { REVIEWED_FIELDS, reviewTriggerFields, reviewValueSha256, scheduleContentHash } from '../schedule-review.js'
 import { auditScheduleWrite, notifyScheduleReview, scheduleActor } from '../schedule-review-effects.js'
 import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
@@ -209,7 +209,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       // DB rows key on `id`; the frontend (and the file-based branch below)
       // expect `name` -- without this mapping, delete/toggle/run/edit send
       // requests to /api/schedules/undefined and silently 404.
-      json(res, rows.map(rowToTask))
+      // contentHash fingerprints what an approval covers; the dashboard sends it back as
+      // expected_hash on activation so an admin approves what they were looking at.
+      json(res, rows.map(r => {
+        const task = rowToTask(r)
+        return { ...task, contentHash: scheduleContentHash({ ...task }, REVIEWED_FIELDS) }
+      }))
     } else {
       json(res, listScheduledTasksFromFiles())
     }
@@ -315,6 +320,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       tenantId,
       status,
     })
+    auditScheduleWrite(ctx, 'create', name, tenantId, { status, type: data.type || 'task', agent })
+    if (status === 'draft') notifyScheduleReview({ name, tenant: tenantId, reason: 'created', by: scheduleActor(ctx).agentId })
     logger.info({ name, schedule: data.schedule, tenantId, status }, 'Scheduled task created')
     json(res, { ok: true, name, status })
     return true
@@ -330,8 +337,26 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleActivateMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name } = resolved
+    const current = getScheduleFromDb(name)
+    if (!current) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    // The admin's screen was rendered from a content hash (see the list above). If the task
+    // changed since -- the tenant edited the draft or the held task before the click --
+    // activating would approve content nobody looked at. Optional so a caller that has no
+    // screen (the CRUD recipe) keeps working; it is a human-only route either way.
+    const currentHash = scheduleContentHash({ ...rowToTask(current) }, REVIEWED_FIELDS)
+    const expectedHash = ctx.url.searchParams.get('expected_hash')
+    if (expectedHash !== null && expectedHash !== currentHash) {
+      json(res, {
+        error: 'stale_revision', content_hash: currentHash,
+        hint: 'The schedule changed since it was loaded; review the current content and activate again',
+      }, 409)
+      return true
+    }
     const row = activateSchedule(name)
     if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
+      status_before: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+    })
     // Mirror to file (same pattern as toggle's file-mirror call) so a
     // rollback to the file-based fallback keeps the activated state.
     writeScheduledTask(name, { status: 'live' })
@@ -484,6 +509,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (useDb) deleteSchedule(name)
     // Always remove files too (keeps FS in sync with DB; noop if files missing)
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+    auditScheduleWrite(ctx, 'delete', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: dbRow?.status ?? null })
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
     return true
@@ -516,6 +542,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       newEnabled = !(config.enabled !== false)
       writeScheduledTask(name, { enabled: newEnabled })
     }
+    auditScheduleWrite(ctx, 'toggle', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { enabled: newEnabled })
     logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
     json(res, { ok: true, enabled: newEnabled })
     return true
