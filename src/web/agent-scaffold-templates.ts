@@ -324,9 +324,10 @@ curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/m
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
 Feladat létrehozása API-n keresztül:
-curl -s -X POST ${dashboardOrigin}/api/schedules -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "AGENT_NAME", "type": "heartbeat"}'
+curl -s -X POST ${dashboardOrigin}/api/schedules -H "Content-Type: application/json" -H "X-Agent-Id: AGENT_NAME" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "AGENT_NAME", "type": "heartbeat"}'
 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
+Az X-Agent-Id fejléc kötelező: a feladat annak a tenantnak lesz a része, amelynek a kérését éppen kiszolgálod. Ha több tenantot kiszolgáló (megosztott) ágens vagy és nincs aktív kérés-kontextusod, a szerver 400 tenant_required hibát ad: ilyenkor kérd a koordinátort, hogy hozza létre a feladatot.
 Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 
