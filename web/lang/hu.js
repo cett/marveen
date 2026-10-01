@@ -596,6 +596,10 @@ window._i18n.hu = {
   'tasks.btn.history':           'Futtatási előzmények',
   'tasks.btn.delete':            'Törlés',
   'tasks.btn.activate':          'Aktiválás',
+  'tasks.btn.activate_tenant':   'Aktiválás ({tenant} tenant)',
+  'tasks.tenant.label':          'Tenant',
+  'tasks.tenant.badge_title':    'Tenant: {tenant}',
+  'tasks.tenant.move_hint':      'Más tenantba áthelyezve a feladat piszkozat lesz, és újra kell aktiválni.',
   'tasks.toast.activated':       'Feladat aktiválva',
   'tasks.last_run':              'Utoljára futott: {time}',
   'tasks.last_run_never':        'Még nem futott',
@@ -1583,6 +1587,7 @@ window._i18n.hu = {
   // --- Tasks toasts ---
   'tasks.toast.select_schedule': 'Válassz ütemezést',
   'tasks.toast.updated':         'Feladat frissítve',
+  'tasks.toast.moved_draft':     'Feladat áthelyezve ({tenant}), piszkozat: aktiválni kell',
   'tasks.toast.created':         'Feladat létrehozva!',
 
   // --- Memory toasts ---
@@ -2080,7 +2085,6 @@ window._i18n.hu = {
 
   'tenant.selector.label':           'Tenant:',
   'tenant.selector.all':             'Összes tenant',
-  'tenant.selector.fleet_only':      'Csak flotta-szintű',
 
   'common.working':                  'Feldolgozás...',
 

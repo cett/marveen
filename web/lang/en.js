@@ -393,6 +393,10 @@ window._i18n.en = {
   'tasks.btn.history':           'Run history',
   'tasks.btn.delete':            'Delete',
   'tasks.btn.activate':          'Activate',
+  'tasks.btn.activate_tenant':   'Activate (tenant {tenant})',
+  'tasks.tenant.label':          'Tenant',
+  'tasks.tenant.badge_title':    'Tenant: {tenant}',
+  'tasks.tenant.move_hint':      'Moved to another tenant, the task becomes a draft and has to be activated again.',
   'tasks.toast.activated':       'Task activated',
   'tasks.last_run':              'Last run: {time}',
   'tasks.last_run_never':        'Never run',
@@ -1581,6 +1585,7 @@ window._i18n.en = {
   // --- Tasks toasts ---
   'tasks.toast.select_schedule': 'Select a schedule',
   'tasks.toast.updated':         'Task updated',
+  'tasks.toast.moved_draft':     'Task moved ({tenant}), now a draft: activate it again',
   'tasks.toast.created':         'Task created!',
 
   // --- Memory toasts ---
@@ -2079,7 +2084,6 @@ window._i18n.en = {
 
   'tenant.selector.label':           'Tenant:',
   'tenant.selector.all':             'All tenants',
-  'tenant.selector.fleet_only':      'Fleet-scoped only',
 
   'common.working':                  'Working...',
 

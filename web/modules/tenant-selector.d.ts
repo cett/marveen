@@ -9,3 +9,8 @@ export function initTenantSelector(
   containerId: string,
   onChange: (tenantId: string | null) => void,
 ): Promise<(() => string | null) | null>
+
+/**
+ * Enabled tenants for a global admin session; [] for any other caller.
+ */
+export function fetchAdminTenants(): Promise<{ id: string; display_name?: string }[]>

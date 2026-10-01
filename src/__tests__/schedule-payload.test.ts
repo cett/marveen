@@ -80,3 +80,24 @@ describe('buildSchedulePayload: prompt tasks keep their old behavior', () => {
     expect(buildSchedulePayload({ ...base, prompt: 'p', schedule: '' }, { editing: false })).toEqual({ ok: false, focus: 'schedule' })
   })
 })
+
+describe('buildSchedulePayload: tenant', () => {
+  const task = { ...base, prompt: 'check the thing' }
+
+  it('sends tenant_id when the form carries one (global admin)', () => {
+    const r = buildSchedulePayload({ ...task, tenantId: 'tenant-b' }, { editing: false })
+    expect(r.ok && r.body.tenant_id).toBe('tenant-b')
+  })
+
+  it('sends no tenant_id when the field is empty or absent (non-admin, or an edit that keeps the tenant)', () => {
+    for (const f of [task, { ...task, tenantId: '' }]) {
+      const r = buildSchedulePayload(f, { editing: true })
+      expect(r.ok && 'tenant_id' in r.body).toBe(false)
+    }
+  })
+
+  it('sends tenant_id for a command task too', () => {
+    const r = buildSchedulePayload({ ...base, type: 'command', command: 'echo hi', tenantId: 'tenant-b' }, { editing: true })
+    expect(r.ok && r.body.tenant_id).toBe('tenant-b')
+  })
+})
