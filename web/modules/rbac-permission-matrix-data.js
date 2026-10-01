@@ -29,9 +29,18 @@ export const PERMISSION_MATRIX_CATEGORIES = [
     key: 'agents',
     permissions: [
       { key: 'agents:read', roles: { admin: true, agent: true, read_only: true, viewer: true } },
+      // Narrow on purpose: only the per-agent context-guard / auto-restart settings of the caller's own tenant.
+      { key: 'agents:write', roles: { admin: true, agent: true, read_only: false, viewer: false } },
       { key: 'messages:write', roles: { admin: true, agent: true, read_only: false, viewer: false } },
       { key: 'blackboard:read', roles: { admin: true, agent: true, read_only: true, viewer: true } },
       { key: 'blackboard:write', roles: { admin: true, agent: true, read_only: false, viewer: false } },
+    ],
+  },
+  {
+    key: 'schedules',
+    permissions: [
+      { key: 'schedules:read', roles: { admin: true, agent: true, read_only: true, viewer: true } },
+      { key: 'schedules:write', roles: { admin: true, agent: true, read_only: false, viewer: false } },
     ],
   },
   {

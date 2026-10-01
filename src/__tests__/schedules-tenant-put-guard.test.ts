@@ -110,10 +110,9 @@ describe('PUT body allowlist', () => {
   })
 
   it('a tenant caller cannot re-point a task at another agent', async () => {
-    const before = row('t-default')
-    await call('PUT', '/api/schedules/t-default', { agent: 'shared-agent', description: 'x' }, { tenant: 'default' })
-    // (t-default has tenant_id 'default', so the tenant caller reaches it.)
-    expect(row('t-default')).toEqual({ ...before, description: 'x' })
+    const before = row('t-tenant-b')
+    await call('PUT', '/api/schedules/t-tenant-b', { agent: 'shared-agent', description: 'x' }, { tenant: 'tenant-b' })
+    expect(row('t-tenant-b')).toEqual({ ...before, description: 'x' })
   })
 
   const everyField = {

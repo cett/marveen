@@ -61,7 +61,11 @@ function tenantLabel(id) {
 // Schedules have no dedicated Permission in src/web/rbac.ts (no /api/schedules
 // row in ENDPOINT_PERMISSION_TABLE), so resolveRequiredPermission() falls
 // through to the table's documented default of admin:all -- mirrored here.
+// Two separate permissions: schedules:write (a tenant user: create, edit, pause, run, delete their
+// own tasks) and admin:all (activation, the scheduler heartbeat). Activation stays with the admins
+// because it is the approval a tenant user's change is waiting for.
 let _canWriteSchedules = true
+let _canActivateSchedules = true
 
 export async function initSchedules({ openModal, closeModal } = {}) {
   _openModal = openModal
@@ -404,7 +408,8 @@ export async function loadSchedules() {
     // without awaiting it, so on the very first page-enter this call can race
     // ahead of that check. can()'s underlying fetch is cached/shared, so this
     // costs nothing once resolved.
-    _canWriteSchedules = await can('admin:all')
+    _canWriteSchedules = await can('schedules:write')
+    _canActivateSchedules = await can('admin:all')
     document.getElementById('addScheduleBtn').hidden = !_canWriteSchedules
     saveScheduleBtn.disabled = !_canWriteSchedules
 
@@ -430,11 +435,11 @@ export async function loadSchedules() {
 
 // schedule_last_tick_ms liveness (schedule-state-ui, /api/schedules/tick-status,
 // admin-only). Skipped for a non-admin caller -- the route would just 403 --
-// same _canWriteSchedules gate the "Új feladat" button already uses.
+// _canActivateSchedules (admin:all) gate.
 async function loadSchedulerHeartbeat() {
   const container = document.getElementById('schedulerHeartbeatSection')
   if (!container) return
-  if (!_canWriteSchedules) { container.hidden = true; return }
+  if (!_canActivateSchedules) { container.hidden = true; return }
   try {
     const res = await fetch('/api/schedules/tick-status')
     if (!res.ok) { container.hidden = true; return }
@@ -655,13 +660,15 @@ function makeScheduleRow(task) {
       openEditSchedule(task)
     })
 
-    if (!_canWriteSchedules) {
-      for (const action of ['activate', 'run', 'toggle', 'delete']) {
-        const btn = row.querySelector(`[data-action="${action}"]`)
-        if (!btn) continue
-        btn.disabled = true
-        btn.setAttribute('data-rbac-disabled', '')
-      }
+    const disabledActions = [
+      ...(_canWriteSchedules ? [] : ['run', 'toggle', 'delete']),
+      ...(_canActivateSchedules ? [] : ['activate']),
+    ]
+    for (const action of disabledActions) {
+      const btn = row.querySelector(`[data-action="${action}"]`)
+      if (!btn) continue
+      btn.disabled = true
+      btn.setAttribute('data-rbac-disabled', '')
     }
 
     // Action buttons

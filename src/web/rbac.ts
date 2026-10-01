@@ -21,21 +21,29 @@ export const ALL_ROLES: readonly Role[] = ['admin', 'agent', 'read_only', 'viewe
 
 // Each permission maps to one or more HTTP operations on a resource group.
 // Naming: <resource>:<action>  -- kebab-case resource, colon separator.
-export type Permission =
-  | 'memories:read'
-  | 'memories:write'
-  | 'kanban:read'
-  | 'kanban:write'
-  | 'agents:read'
-  | 'agents:write'
-  | 'messages:write'
-  | 'approvals:read'
-  | 'approvals:write'
-  | 'blackboard:read'
-  | 'blackboard:write'
-  | 'admin:all'
-  | 'federation:read'
-  | 'federation:write'
+// The tuple is the single list of permissions; the type is derived from it, so a test (and the
+// dashboard mirror's drift guard) can walk every permission at runtime instead of keeping a
+// second hand-written list that falls behind.
+export const ALL_PERMISSIONS = [
+  'memories:read',
+  'memories:write',
+  'kanban:read',
+  'kanban:write',
+  'agents:read',
+  'agents:write',
+  'messages:write',
+  'approvals:read',
+  'approvals:write',
+  'blackboard:read',
+  'blackboard:write',
+  'schedules:read',
+  'schedules:write',
+  'admin:all',
+  'federation:read',
+  'federation:write',
+] as const
+
+export type Permission = typeof ALL_PERMISSIONS[number]
 
 // ── Permission sets per role ────────────────────────────────────────────────
 
@@ -55,6 +63,8 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'approvals:write',
     'blackboard:read',
     'blackboard:write',
+    'schedules:read',
+    'schedules:write',
     'admin:all',
     'federation:read',
     'federation:write',
@@ -77,6 +87,12 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'approvals:read',
     'blackboard:read',
     'blackboard:write',
+    // schedules:write is granted to every tenant user (the 'agent' role), automatically: there is
+    // no per-tenant switch. What makes that safe is the review gate (an edit of a live task by a
+    // non-admin sends it back to pending_review, only a signed-in admin activates) and the route
+    // guards in routes/schedules.ts (own non-default tenant only, no device key, draft cap).
+    'schedules:read',
+    'schedules:write',
     'federation:read',
     'federation:write',
   ]),
@@ -85,6 +101,7 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'kanban:read',
     'agents:read',
     'blackboard:read',
+    'schedules:read',
     'approvals:read',
     'approvals:write',
   ]),
@@ -93,6 +110,7 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'kanban:read',
     'agents:read',
     'blackboard:read',
+    'schedules:read',
     'approvals:read',
     'approvals:write',
   ]),
@@ -147,6 +165,17 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'POST', pathPattern: '/api/blackboard', prefix: true, permission: 'blackboard:write' },
   { method: 'GET', pathPattern: '/api/v1/blackboard', prefix: true, permission: 'blackboard:read' },
   { method: 'POST', pathPattern: '/api/v1/blackboard', prefix: true, permission: 'blackboard:write' },
+
+  // Schedules. Paths reach this table already normalised (/api/v1 -> /api, see versioning.ts), so
+  // there are no /api/v1 rows. Order matters inside the group: tick-status is admin-only and must
+  // be matched before the GET prefix below, and activate (regex table, first match) before the POST
+  // prefix, which would otherwise cover it. Create, toggle, run, expand-* are POSTs, a delete of a
+  // task or of a pending retry is a DELETE: all schedules:write.
+  { method: 'GET', pathPattern: '/api/schedules/tick-status', prefix: false, permission: 'admin:all' },
+  { method: 'GET', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:read' },
+  { method: 'POST', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },
+  { method: 'PUT', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },
+  { method: 'DELETE', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },
 
   // Messages.
   { method: 'POST', pathPattern: '/api/messages', prefix: true, permission: 'messages:write' },
@@ -237,6 +266,10 @@ const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
   // 'agent' role reach the route; agents-process.ts itself still enforces
   // own-tenant-vs-cross-tenant (403) for both GET and PUT.
   { method: 'PUT', regex: /^\/api\/agents\/[^/]+\/(context-guard|auto-restart)$/, permission: 'agents:write' },
+  // Activating a draft / held schedule is the approval step itself: admin only, even though the
+  // POST prefix row for /api/schedules is schedules:write. (The route additionally requires a
+  // signed-in admin, not just the admin role, because the shared token also carries it.)
+  { method: 'POST', regex: /^\/api\/schedules\/[^/]+\/activate$/, permission: 'admin:all' },
 ]
 
 /**

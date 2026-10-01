@@ -29,7 +29,7 @@ export const SCREEN_ACCESS_ROWS = [
   { key: 'memories', backend: 'memories:read/write', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
   { key: 'federation', backend: 'federation:read/write; read_only/viewer have neither', roles: { admin: 'full', agent: 'full', read_only: 'gap', viewer: 'gap' } },
   { key: 'messages', backend: 'GET: admin:all; POST: messages:write (agent)', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
-  { key: 'tasks', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
+  { key: 'tasks', backend: 'schedules:read/write (activation and tick-status: admin:all)', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
   { key: 'skills', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'ideas', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
   { key: 'artifacts', backend: 'admin:all', roles: { admin: 'full', agent: 'gap', read_only: 'gap', viewer: 'gap' } },
@@ -49,7 +49,7 @@ export const SCREEN_ACCESS_ROWS = [
 // truth above (the 'gap' cells) -- tracked for the later RBAC-enforce nav-gate
 // work, not implemented by this display-only matrix.
 export const SCREEN_ACCESS_GAPS = [
-  'messages', 'tasks', 'skills', 'ideas', 'artifacts', 'tokenUsage',
+  'messages', 'skills', 'ideas', 'artifacts', 'tokenUsage',
   'updates', 'settings', 'backups', 'connectors', 'import',
   'federation',
 ]

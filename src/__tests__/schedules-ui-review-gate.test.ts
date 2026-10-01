@@ -43,8 +43,9 @@ describe('schedules.js: draft-status review-gate UI', () => {
     expect(toggleTag).toMatch(/\$\{!isLive \? 'disabled' : ''\}/)
   })
 
-  it('the RBAC-disable loop also covers the activate action, guarded against a missing element', () => {
-    const idx = APP.indexOf("for (const action of ['activate', 'run', 'toggle', 'delete'])")
+  it('the RBAC-disable loop covers the activate action (admin:all) as well as run/toggle/delete, guarded against a missing element', () => {
+    expect(APP).toContain("...(_canActivateSchedules ? [] : ['activate'])")
+    const idx = APP.indexOf('for (const action of disabledActions)')
     expect(idx).toBeGreaterThan(0)
     const block = APP.slice(idx, idx + 250)
     expect(block).toMatch(/if \(!btn\) continue/)

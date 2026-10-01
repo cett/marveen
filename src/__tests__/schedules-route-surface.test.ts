@@ -109,7 +109,7 @@ function makeCtx(
   }
   const url = new URL(`http://localhost:3420${rawPath}`)
   return {
-    ctx: { req, res, path: url.pathname, method, url, role, tenantId } as unknown as RouteContext,
+    ctx: { req, res, path: url.pathname, method, url, role, tenantId, auth: { kind: 'session' } } as unknown as RouteContext,
     out,
   }
 }
@@ -159,7 +159,7 @@ describe('GET /api/schedules/agents', () => {
 
 describe('POST /api/schedules/expand-questions', () => {
   it('returns required+prompt when prompt is missing', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: '  ' })
+    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: '  ' }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('required')
@@ -168,7 +168,7 @@ describe('POST /api/schedules/expand-questions', () => {
 
   it('parses the AI-generated question array on success', async () => {
     mockRunAgent.mockResolvedValueOnce({ text: '[{"question":"Mikor?","options":["Ma","Holnap"]}]' } as never)
-    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: 'napi jelentes', agent: 'jarvis' })
+    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: 'napi jelentes', agent: 'main-agent' }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual([{ question: 'Mikor?', options: ['Ma', 'Holnap'] }])
@@ -176,7 +176,7 @@ describe('POST /api/schedules/expand-questions', () => {
 
   it('returns internal_error when the AI call fails', async () => {
     mockRunAgent.mockRejectedValueOnce(new Error('boom'))
-    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: 'napi jelentes' })
+    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-questions', { prompt: 'napi jelentes' }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(500)
     expect(out.body.error).toBe('internal_error')
@@ -187,7 +187,7 @@ describe('POST /api/schedules/expand-questions', () => {
 
 describe('POST /api/schedules/expand-prompt', () => {
   it('returns required+prompt when prompt is missing', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-prompt', { prompt: '', answers: [] })
+    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-prompt', { prompt: '', answers: [] }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('required')
@@ -198,7 +198,7 @@ describe('POST /api/schedules/expand-prompt', () => {
     mockRunAgent.mockResolvedValueOnce({ text: '```\nReszletes utasitas.\n```' } as never)
     const { ctx, out } = makeCtx('POST', '/api/schedules/expand-prompt', {
       prompt: 'napi jelentes', answers: [{ question: 'Mikor?', answer: 'Ma' }],
-    })
+    }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body.prompt).toBe('Reszletes utasitas.')
@@ -206,7 +206,7 @@ describe('POST /api/schedules/expand-prompt', () => {
 
   it('returns internal_error when the AI call fails', async () => {
     mockRunAgent.mockRejectedValueOnce(new Error('boom'))
-    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-prompt', { prompt: 'napi jelentes', answers: [] })
+    const { ctx, out } = makeCtx('POST', '/api/schedules/expand-prompt', { prompt: 'napi jelentes', answers: [] }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(500)
     expect(out.body.error).toBe('internal_error')
@@ -230,7 +230,7 @@ describe('GET /api/schedules -- file-mode (countSchedules === 0)', () => {
 describe('POST /api/schedules -- request body too large', () => {
   it('returns 413 limit_exceeded before any JSON parsing', async () => {
     const hugeBody = JSON.stringify({ name: 'x', prompt: 'y'.repeat(300_000), schedule: '* * * * *' })
-    const { ctx, out } = makeCtx('POST', '/api/schedules', hugeBody)
+    const { ctx, out } = makeCtx('POST', '/api/schedules', hugeBody, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(413)
     expect(out.body.error).toBe('limit_exceeded')
@@ -241,7 +241,7 @@ describe('POST /api/schedules -- request body too large', () => {
 
 describe('PUT /api/schedules/:name -- file-mode', () => {
   it('writes the update and returns ok:true', async () => {
-    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-task', { description: 'updated' })
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-task', { description: 'updated' }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true })
@@ -250,7 +250,7 @@ describe('PUT /api/schedules/:name -- file-mode', () => {
 
   it('returns 413 when the body is too large', async () => {
     const hugeBody = JSON.stringify({ prompt: 'y'.repeat(300_000) })
-    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-task', hugeBody)
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-task', hugeBody, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(413)
     expect(out.body.error).toBe('limit_exceeded')
@@ -258,7 +258,7 @@ describe('PUT /api/schedules/:name -- file-mode', () => {
 
   it('returns invalid_value+schedule for a bad cron expression', async () => {
     mockIsValidCron.mockReturnValue(false)
-    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-task', { schedule: 'not-a-cron' })
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-task', { schedule: 'not-a-cron' }, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('invalid_value')
@@ -283,7 +283,7 @@ describe('PUT /api/schedules/:name -- DB-mode cross-tenant guard', () => {
 describe('POST /api/schedules/:name/toggle -- file-mode', () => {
   it('reads the on-disk config and flips enabled', async () => {
     mockReadFileOr.mockReturnValue('{"enabled":false}')
-    const { ctx, out } = makeCtx('POST', '/api/schedules/my-task/toggle')
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-task/toggle', undefined, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, enabled: true })
@@ -295,7 +295,7 @@ describe('POST /api/schedules/:name/toggle -- file-mode', () => {
 
 describe('POST /api/schedules/:name/run -- success', () => {
   it('returns the runner result', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/schedules/my-task/run')
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-task/run', undefined, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, result: 'ran' })
@@ -341,7 +341,7 @@ describe('GET /api/schedules/:name/runs -- success', () => {
 
 describe('DELETE /api/schedules/pending/:id -- success', () => {
   it('returns ok:true when the pending retry is removed', async () => {
-    const { ctx, out } = makeCtx('DELETE', '/api/schedules/pending/42')
+    const { ctx, out } = makeCtx('DELETE', '/api/schedules/pending/42', undefined, 'admin')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true })

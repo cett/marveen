@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { hasPermission, type Role } from '../web/rbac.js'
 import {
   SCREEN_ACCESS_ROLES,
   SCREEN_ACCESS_ROWS,
@@ -87,5 +88,18 @@ describe('rbac-screen-access-data vs the actual (reference, unchanged) frontend 
       expect(row!.roles.read_only).toBe('none')
       expect(row!.roles.viewer).toBe('none')
     }
+  })
+})
+
+describe('the Tasks screen follows the schedules permissions', () => {
+  it('each role reads full / ro / none from schedules:write and schedules:read, and has no gap', () => {
+    const row = SCREEN_ACCESS_ROWS.find((r) => r.key === 'tasks')!
+    expect(row).toBeTruthy()
+    for (const role of SCREEN_ACCESS_ROLES as Role[]) {
+      const level = hasPermission(role, 'schedules:write') ? 'full'
+        : hasPermission(role, 'schedules:read') ? 'ro' : 'none'
+      expect(row.roles[role], role).toBe(level)
+    }
+    expect(SCREEN_ACCESS_GAPS).not.toContain('tasks')
   })
 })
