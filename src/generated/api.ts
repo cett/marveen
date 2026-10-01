@@ -58,6 +58,8 @@ export interface Schedule {
   forceSend?: boolean;
   targetSession?: string;
   createdAt?: number;
+  /** Fingerprint of the fields an approval covers (prompt, command, type, schedule, agent, target session, timeout, fail threshold, busy flags). Send it back as `expected_hash` when activating. */
+  contentHash?: string;
 }
 
 export interface Error {
