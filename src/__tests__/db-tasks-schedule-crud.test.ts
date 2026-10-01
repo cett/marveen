@@ -66,21 +66,18 @@ describe('listSchedulesFromDb', () => {
     expect(rows.some(r => r.id === 'test-crud-list-tenant-b')).toBe(false)
   })
 
-  it('returns only fleet-owned (tenant_id IS NULL) rows by default', () => {
-    upsertSchedule('test-crud-list-fleet', { ...baseOpts, tenant_id: null })
-    upsertSchedule('test-crud-list-tenanted', { ...baseOpts, tenant_id: 'tenant-crud-c' })
+  it('returns every row, whatever its tenant, when no tenantId is given', () => {
+    upsertSchedule('test-crud-list-all-a', { ...baseOpts, tenant_id: 'tenant-crud-c' })
+    upsertSchedule('test-crud-list-all-b', { ...baseOpts, tenant_id: 'tenant-crud-d' })
     const rows = listSchedulesFromDb()
-    expect(rows.some(r => r.id === 'test-crud-list-fleet')).toBe(true)
-    expect(rows.some(r => r.id === 'test-crud-list-tenanted')).toBe(false)
-    expect(rows.every(r => r.tenant_id === null)).toBe(true)
+    expect(rows.some(r => r.id === 'test-crud-list-all-a')).toBe(true)
+    expect(rows.some(r => r.id === 'test-crud-list-all-b')).toBe(true)
   })
 
-  it('returns every row (fleet + tenant) when includeFleet is set with no tenantId', () => {
-    upsertSchedule('test-crud-list-all-fleet', { ...baseOpts, tenant_id: null })
-    upsertSchedule('test-crud-list-all-tenanted', { ...baseOpts, tenant_id: 'tenant-crud-d' })
-    const rows = listSchedulesFromDb({ includeFleet: true })
-    expect(rows.some(r => r.id === 'test-crud-list-all-fleet')).toBe(true)
-    expect(rows.some(r => r.id === 'test-crud-list-all-tenanted')).toBe(true)
+  it('a row with no tenant (older than the tenant migration) belongs to the default tenant only', () => {
+    upsertSchedule('test-crud-list-legacy', { ...baseOpts, tenant_id: null })
+    expect(listSchedulesFromDb({ tenantId: 'default' }).some(r => r.id === 'test-crud-list-legacy')).toBe(true)
+    expect(listSchedulesFromDb({ tenantId: 'tenant-crud-a' }).some(r => r.id === 'test-crud-list-legacy')).toBe(false)
   })
 })
 

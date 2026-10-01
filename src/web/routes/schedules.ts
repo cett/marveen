@@ -203,7 +203,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const useDb = countSchedules() > 0
     if (useDb) {
       const scope = effectiveTenant(ctx)
-      const rows = scope === null ? listSchedulesFromDb({ includeFleet: true }) : listSchedulesFromDb({ tenantId: scope })
+      const rows = scope === null ? listSchedulesFromDb() : listSchedulesFromDb({ tenantId: scope })
       // DB rows key on `id`; the frontend (and the file-based branch below)
       // expect `name` -- without this mapping, delete/toggle/run/edit send
       // requests to /api/schedules/undefined and silently 404.

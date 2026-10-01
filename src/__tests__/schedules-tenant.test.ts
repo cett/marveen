@@ -126,12 +126,12 @@ const otherRow  = { id: 'other-report', tenant_id: 'tenant-b', enabled: 1, sched
 describe('GET /api/schedules', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('admin with no filter gets all rows (includeFleet=true)', async () => {
+  it('admin with no filter gets all rows', async () => {
     mockListSchedulesDb.mockReturnValue([fleetRow, tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'admin', null)
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
-    expect(mockListSchedulesDb).toHaveBeenCalledWith({ includeFleet: true })
+    expect(mockListSchedulesDb).toHaveBeenCalledWith()
   })
 
 

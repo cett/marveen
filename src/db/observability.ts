@@ -421,7 +421,7 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //   6. Drop kanban child tables before kanban_cards.
 //   7. Drop memories row-by-row with vec0 sync (safe path chosen 2026-08-30).
 //   8. Drop artifacts (vec_artifacts cleaned by DELETE trigger).
-//   9. Drop schedules (tenant_id IS NULL = fleet scope, untouched).
+//   9. Drop schedules, with their pending retries.
 //  10. Drop skill_tenant_access before skills (FK; foreign_keys is on by default, so the order matters).
 //  11. Drop skills.
 //  12. Drop vec_workspace_docs then workspace_docs (app-level vec sync, no trigger).

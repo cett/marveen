@@ -264,7 +264,7 @@ export function seedSchedulesFromFilesIfEmpty(): number {
 // transition window and after a rollback (just clear the schedules table).
 export function listScheduledTasks(): ScheduledTask[] {
   if (countSchedules() > 0) {
-    return listSchedulesFromDb({ includeFleet: true }).map(rowToTask)
+    return listSchedulesFromDb().map(rowToTask)
   }
   return listScheduledTasksFromFiles()
 }
@@ -273,7 +273,7 @@ export function listScheduledTasks(): ScheduledTask[] {
  *  itself (never the task-config.json mirror), so it is the scheduler's baseline
  *  of what SHOULD be running no matter how the tick's own task list was read. */
 export function listDbRunnableTaskNames(): string[] {
-  return listSchedulesFromDb({ includeFleet: true })
+  return listSchedulesFromDb()
     .map(rowToTask)
     .filter(t => t.enabled && isTaskLive(t))
     .map(t => t.name)
@@ -334,7 +334,7 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
  * Returns the names of the tasks whose file was rewritten.
  */
 export function syncTaskConfigEnabledFromDb(
-  rows: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>> = listSchedulesFromDb({ includeFleet: true }),
+  rows: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>> = listSchedulesFromDb(),
   dir: string = SCHEDULED_TASKS_DIR,
 ): string[] {
   const fixed: string[] = []
