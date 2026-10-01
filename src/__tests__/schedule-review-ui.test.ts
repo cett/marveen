@@ -56,3 +56,18 @@ describe('dashboard wiring', () => {
     }
   })
 })
+
+describe('dashboard permission wiring', () => {
+  const app = readFileSync(join(__dirname, '../../web/modules/schedules.js'), 'utf-8')
+
+  it('editing is gated by schedules:write, and activation and the scheduler heartbeat by admin:all', () => {
+    expect(app).toContain("_canWriteSchedules = await can('schedules:write')")
+    expect(app).toContain("_canActivateSchedules = await can('admin:all')")
+    expect(app).toMatch(/if \(!_canActivateSchedules\) \{ container\.hidden = true; return \}/)
+  })
+
+  it('a user who can write but not activate keeps run/toggle/delete and loses only activate', () => {
+    expect(app).toContain("...(_canWriteSchedules ? [] : ['run', 'toggle', 'delete'])")
+    expect(app).toContain("...(_canActivateSchedules ? [] : ['activate'])")
+  })
+})

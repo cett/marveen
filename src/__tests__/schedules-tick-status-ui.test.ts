@@ -47,10 +47,10 @@ describe('schedules.js: scheduler tick-status heartbeat', () => {
     expect(idx).toBeGreaterThan(0)
   })
 
-  it('the heartbeat fetch is admin-gated, same as the "new task" button', () => {
+  it('the heartbeat fetch is admin-gated (activation permission), unlike the editing buttons', () => {
     const idx = APP.indexOf('async function loadSchedulerHeartbeat')
     const body = APP.slice(idx, idx + 400)
-    expect(body).toMatch(/if \(!_canWriteSchedules\) \{ container\.hidden = true; return \}/)
+    expect(body).toMatch(/if \(!_canActivateSchedules\) \{ container\.hidden = true; return \}/)
     expect(body).toMatch(/fetch\('\/api\/schedules\/tick-status'\)/)
     expect(body).toMatch(/if \(!res\.ok\) \{ container\.hidden = true; return \}/)
   })
