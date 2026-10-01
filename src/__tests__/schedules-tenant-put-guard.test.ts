@@ -116,14 +116,27 @@ describe('PUT body allowlist', () => {
     expect(row('t-default')).toEqual({ ...before, description: 'x' })
   })
 
-  it('an admin may still edit every allowed field and the agent', async () => {
-    const out = await call('PUT', '/api/schedules/t-default', {
-      description: 'a', prompt: 'b', schedule: '5 4 * * *', agent: 'shared-agent', skipIfBusy: true, forceSend: true, enabled: false,
-    }, 'agent-token')
+  const everyField = {
+    description: 'a', prompt: 'b', schedule: '5 4 * * *', agent: 'shared-agent', skipIfBusy: true, forceSend: true, enabled: false,
+  }
+
+  it('a human admin may edit every allowed field and the agent, and the task stays live', async () => {
+    const out = await call('PUT', '/api/schedules/t-default', everyField, 'human')
     expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true })
     expect(row('t-default')).toMatchObject({
       description: 'a', prompt: 'b', schedule: '5 4 * * *', agent: 'shared-agent', skip_if_busy: 1, force_send: 1, enabled: 0,
       status: 'live', tenant_id: 'default',
+    })
+  })
+
+  it('an agent on the shared token may write the same fields, but the task goes back to review', async () => {
+    const out = await call('PUT', '/api/schedules/t-default', everyField, 'agent-token')
+    expect(out.status).toBe(200)
+    expect(out.body).toMatchObject({ ok: true, status: 'pending_review', review_required: true })
+    expect(row('t-default')).toMatchObject({
+      description: 'a', prompt: 'b', schedule: '5 4 * * *', agent: 'shared-agent', skip_if_busy: 1, force_send: 1, enabled: 0,
+      status: 'pending_review', tenant_id: 'default',
     })
   })
 })
