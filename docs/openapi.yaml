@@ -143,6 +143,29 @@ components:
           type: string
           nullable: true
 
+    Schedule:
+      type: object
+      description: A scheduled task. Every task belongs to a tenant.
+      properties:
+        name: { type: string }
+        description: { type: string }
+        prompt: { type: string }
+        schedule: { type: string, description: Cron expression }
+        agent: { type: string }
+        enabled: { type: boolean }
+        type: { type: string, enum: [task, heartbeat, command] }
+        status: { type: string, enum: [draft, pending_review, live] }
+        tenantId:
+          type: string
+          description: The tenant the task belongs to (`default` unless another was assigned).
+        command: { type: string }
+        timeoutMs: { type: integer }
+        failThreshold: { type: integer }
+        skipIfBusy: { type: boolean }
+        forceSend: { type: boolean }
+        targetSession: { type: string }
+        createdAt: { type: integer }
+
     Error:
       type: object
       required: [error]
@@ -171,6 +194,7 @@ components:
             - upstream_error
             - sender_not_in_allowlist
             - federation_disabled
+            - tenant_required
             - unknown_query_parameter
         hint:
           type: string
@@ -2843,6 +2867,9 @@ paths:
       tags: [schedules]
       operationId: listSchedules
       summary: List scheduled tasks
+      description: >-
+        A non-admin caller gets the tasks of its own tenant. An admin gets all
+        of them, or those of the tenant picked with `?tenant=`.
       responses:
         "200":
           description: Task list
@@ -2851,7 +2878,7 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
+                  $ref: "#/components/schemas/Schedule"
     post:
       tags: [schedules]
       operationId: createSchedule
@@ -2861,8 +2888,27 @@ paths:
         any other caller (including agents on the shared token) gets a `draft`
         that an admin must activate before the runner fires it. `prompt` is
         required for `task` and `heartbeat`; a `command` task needs `command`
-        instead and the prompt is optional. A non-admin caller always gets its
-        own tenant.
+        instead and the prompt is optional.
+
+
+        Every task belongs to a tenant, chosen in this order: (1) an admin names
+        it with `tenant_id`; (2) a non-admin caller always gets its own tenant;
+        (3) an agent on the shared token that sends `X-Agent-Id` gets the tenant
+        of the request it is serving, or its own tenant when it has exactly one;
+        (4) a human at the dashboard who names none gets `default`. Anything else
+        (the shared token with neither `tenant_id` nor `X-Agent-Id`, or a shared
+        agent with no request context) answers 400 `tenant_required`. The
+        tenant must exist and not be disabled, and the agent must serve it: a
+        tenant other than `default` cannot name the fleet main agent or `all`.
+      parameters:
+        - name: X-Agent-Id
+          in: header
+          required: false
+          description: >-
+            The calling agent's id on the shared token. Self-declared, not
+            authentication: the task stays a draft that a person activates.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -2884,7 +2930,9 @@ paths:
                   description: Cron expression (node local TZ, Europe/Budapest)
                 agent:
                   type: string
-                  description: Target agent (defaults to the main agent)
+                  description: >-
+                    Target agent. Defaults to the main agent on the default
+                    tenant; required on any other tenant.
                 type:
                   type: string
                   enum: [task, heartbeat, command]
@@ -2908,7 +2956,7 @@ paths:
                   description: Consecutive failures before an alert (command tasks)
                 tenant_id:
                   type: string
-                  description: Admin only; omitted means fleet scope
+                  description: "Admin only (ignored for other callers). The tenant that owns the task."
       responses:
         "200":
           description: Task created
@@ -2927,7 +2975,11 @@ paths:
                     type: string
                     enum: [draft, live]
         "400":
-          description: Validation error (missing name, prompt, schedule or command, bad cron, non-positive timeoutMs or failThreshold)
+          description: >-
+            Validation error (missing name, prompt, schedule or command, bad
+            cron, non-positive timeoutMs or failThreshold), an unknown or
+            disabled tenant, an agent that does not serve the tenant, or
+            `tenant_required` when the owning tenant cannot be determined
           content:
             application/json:
               schema:
@@ -2950,6 +3002,10 @@ paths:
       tags: [schedules]
       operationId: listPendingSchedules
       summary: List tasks due for execution now
+      description: >-
+        Busy-skipped tasks waiting for a retry. A retry belongs to the tenant of
+        its schedule: a tenant caller sees only its own tenant's retries, an admin
+        sees all (or those of `?tenant=`).
       responses:
         "200":
           description: Due task list
@@ -2965,15 +3021,29 @@ paths:
       tags: [schedules]
       operationId: listScheduledAgents
       summary: List agents that have scheduled tasks
+      description: >-
+        A tenant caller only gets the agents that serve its own tenant; an admin
+        gets every agent, or those of the tenant picked with `?tenant=`.
       responses:
         "200":
-          description: Agent id list
+          description: The agents a schedule may target
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: string
+                  type: object
+                  required: [name, label, avatar]
+                  properties:
+                    name:
+                      type: string
+                      description: Agent id, the value a schedule's `agent` takes
+                    label:
+                      type: string
+                      description: Display name
+                    avatar:
+                      type: string
+                      description: Avatar URL
 
   /schedules/tick-status:
     get:
@@ -3002,6 +3072,227 @@ paths:
                     type: boolean
         "403":
           description: Caller is not admin
+
+  /schedules/pending/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    delete:
+      tags: [schedules]
+      operationId: cancelPendingScheduleRetry
+      summary: Cancel a pending scheduled-task retry
+      description: >-
+        A tenant caller can only cancel a retry of its own tenant's schedule;
+        anything else answers 404.
+      responses:
+        "200":
+          description: Retry cancelled
+        "400":
+          description: Invalid id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Retry not found (also for another tenant's retry)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /schedules/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      tags: [schedules]
+      operationId: updateSchedule
+      summary: Edit a scheduled task
+      description: >-
+        Only the fields listed in the request body are written; any other key
+        (`status`, `tenantId`, `preCheck`, `catchUpMaxAgeMinutes`,
+        `stuckAfterMinutes`, `requires`) is ignored, so an edit can never make a
+        draft live (that is the activation endpoint) or point the runner at a
+        script. `agent` is admin-only (ignored for others) and must serve the
+        task's tenant: an agent of another tenant, the fleet main agent on a
+        non-default tenant, or `all` on a non-default tenant answers 400.
+        `tenant_id` moves the task to another tenant: authenticated admin only
+        (403 otherwise), the target must exist and not be disabled, the
+        resulting (tenant, agent) pair is re-checked, and the task goes back to
+        `draft` so a person re-activates it. A command task cannot be changed to
+        another type without `allowTypeChange: true`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+                prompt: { type: string }
+                schedule: { type: string, description: Cron expression }
+                agent: { type: string }
+                enabled: { type: boolean }
+                type: { type: string, enum: [task, heartbeat, command] }
+                skipIfBusy: { type: boolean }
+                forceSend: { type: boolean }
+                targetSession: { type: string }
+                command: { type: string }
+                timeoutMs: { type: integer, minimum: 1 }
+                failThreshold: { type: integer, minimum: 1 }
+                allowTypeChange: { type: boolean }
+                tenant_id:
+                  type: string
+                  description: Move the task to this tenant (authenticated admin only; resets the task to draft).
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  tenant_id: { type: string, description: Present only after a tenant move. }
+                  status: { type: string, enum: [draft], description: Present only after a tenant move. }
+        "400":
+          description: Invalid field, or the (tenant, agent) pair is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: A tenant move by a caller that is not an authenticated admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Schedule not found (also for a schedule of another tenant)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: Request body or prompt too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [schedules]
+      operationId: deleteSchedule
+      summary: Delete a scheduled task
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Schedule not found (also for a schedule of another tenant)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /schedules/{name}/toggle:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [schedules]
+      operationId: toggleSchedule
+      summary: Enable or disable a scheduled task
+      responses:
+        "200":
+          description: New state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, enabled]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  enabled: { type: boolean }
+        "404":
+          description: Schedule not found (also for a schedule of another tenant)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /schedules/{name}/activate:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [schedules]
+      operationId: activateSchedule
+      summary: Activate a draft scheduled task
+      description: >-
+        The only way a `draft` task becomes `live`. Authenticated admin only: an
+        agent on the shared token cannot approve its own proposal.
+      responses:
+        "200":
+          description: Activated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  status: { type: string, enum: [live] }
+        "403":
+          description: Caller is not an authenticated admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /schedules/{name}/runs:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [schedules]
+      operationId: listScheduleRuns
+      summary: Recent runs of a scheduled task
+      responses:
+        "200":
+          description: The last 10 runs, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        "404":
+          description: Schedule not found (also for a schedule of another tenant)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /schedules/{name}/run:
     parameters:

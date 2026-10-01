@@ -11,7 +11,7 @@ import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
 import { avatarBust } from './agents.js'
-import { initTenantSelector } from './tenant-selector.js'
+import { initTenantSelector, fetchAdminTenants } from './tenant-selector.js'
 import { can } from './rbac-client.js'
 import { buildSchedulePayload } from './schedule-payload.js'
 
@@ -44,6 +44,19 @@ let _openModal = null
 let _closeModal = null
 let _tenantGetter = null
 
+// Enabled tenants, filled for a global admin only (empty for everyone else, whose
+// tasks all belong to their own tenant: no tenant field, no tenant badge).
+let _tenants = []
+// Tenant of the task open in the edit modal (null while creating): a different
+// pick in the tenant field is a move, which the server files back as a draft.
+let _editTenant = null
+const DEFAULT_TENANT = 'default'
+
+function tenantLabel(id) {
+  const ten = _tenants.find(x => x.id === id)
+  return ten?.display_name || id
+}
+
 // Schedules have no dedicated Permission in src/web/rbac.ts (no /api/schedules
 // row in ENDPOINT_PERMISSION_TABLE), so resolveRequiredPermission() falls
 // through to the table's documented default of admin:all -- mirrored here.
@@ -52,15 +65,9 @@ let _canWriteSchedules = true
 export async function initSchedules({ openModal, closeModal } = {}) {
   _openModal = openModal
   _closeModal = closeModal
-  // 'fleet' is a distinct scope from any real tenant id -- it selects the
-  // tenant_id IS NULL schedules (flotta-szintű, not owned by a B2B tenant),
-  // which effectiveTenant() in src/web/routes/schedules.ts already handles
-  // via the literal 'fleet' string. Without this option the selector could
-  // only ever send a real tenant id (e.g. the seeded 'default' tenant),
-  // which is a different thing and always returned zero fleet schedules.
-  _tenantGetter = await initTenantSelector('schedulesTenantSelectorContainer', () => loadSchedules(), [
-    { value: 'fleet', label: t('tenant.selector.fleet_only') || 'Csak flotta-szintű' },
-  ])
+  // Every task belongs to a tenant (there is no tenant-less fleet scope), so the
+  // filter is just "all tenants" or one of them.
+  _tenantGetter = await initTenantSelector('schedulesTenantSelectorContainer', () => loadSchedules())
   // The actual gate check lives in loadSchedules(), which app.js always calls
   // right after this (see the note there) -- no need to duplicate it here.
 }
@@ -81,14 +88,15 @@ let scheduleAgents = []
 let currentScheduleView = 'list'
 
 // Modal wiring
-document.getElementById('addScheduleBtn').addEventListener('click', () => {
+document.getElementById('addScheduleBtn').addEventListener('click', async () => {
   resetScheduleForm()
   document.getElementById('scheduleModalTitle').textContent = t('tasks.modal.new_title')
   document.getElementById('scheduleName').disabled = false
   _openModal?.(scheduleModalOverlay)
-  loadScheduleAgents().then(() => {
-    setTimeout(() => document.getElementById('scheduleName').focus(), 200)
-  })
+  // New tasks default to the tenant the list is filtered to, else the default tenant.
+  const tenant = await prepareTenantField(_tenantGetter?.() || DEFAULT_TENANT)
+  await loadScheduleAgents(tenant)
+  setTimeout(() => document.getElementById('scheduleName').focus(), 200)
 })
 document.getElementById('scheduleModalClose').addEventListener('click', () => _closeModal?.(scheduleModalOverlay))
 scheduleModalOverlay.addEventListener('click', (e) => { if (e.target === scheduleModalOverlay) _closeModal?.(scheduleModalOverlay) })
@@ -181,7 +189,43 @@ document.querySelectorAll('.view-btn[data-view]').forEach(btn => {
   })
 })
 
+// Fill the modal's tenant <select> (global admin only; hidden otherwise) and return
+// the tenant now selected, or null when the field is hidden.
+async function prepareTenantField(wanted) {
+  const group = document.getElementById('scheduleTenantGroup')
+  const sel = document.getElementById('scheduleTenant')
+  _tenants = await fetchAdminTenants()
+  group.hidden = _tenants.length === 0
+  sel.innerHTML = ''
+  document.getElementById('scheduleTenantHint').hidden = true
+  if (!_tenants.length) return null
+  const ids = _tenants.map(x => x.id)
+  // A task of a since-disabled tenant keeps its tenant as a one-off option.
+  if (wanted && !ids.includes(wanted)) ids.push(wanted)
+  for (const id of ids) {
+    const opt = document.createElement('option')
+    opt.value = id
+    opt.textContent = tenantLabel(id)
+    sel.appendChild(opt)
+  }
+  sel.value = ids.includes(wanted) ? wanted : ids[0]
+  return sel.value
+}
+
+// Another tenant has other agents: narrow the agent list to it, keep the current agent
+// when it still serves the tenant, and warn on an edit that this is a move.
+document.getElementById('scheduleTenant').addEventListener('change', async (e) => {
+  const tenant = e.target.value
+  const agentSel = document.getElementById('scheduleAgent')
+  const keep = agentSel.value
+  await loadScheduleAgents(tenant)
+  if (keep && agentSel.querySelector(`option[value="${CSS.escape(keep)}"]`)) agentSel.value = keep
+  const moving = _editTenant !== null && tenant !== _editTenant
+  document.getElementById('scheduleTenantHint').hidden = !moving
+})
+
 function resetScheduleForm() {
+  _editTenant = null
   document.getElementById('scheduleName').value = ''
   document.getElementById('scheduleDesc').value = ''
   document.getElementById('schedulePrompt').value = ''
@@ -313,13 +357,36 @@ function cronToMinute(cron) {
   return isNaN(m) ? 0 : m
 }
 
-export async function loadScheduleAgents() {
+async function fetchScheduleAgents(tenant) {
+  const res = await fetch(tenant ? `/api/schedules/agents?tenant=${encodeURIComponent(tenant)}` : '/api/schedules/agents')
+  return res.json()
+}
+
+// Label/avatar lookup of the list rows: always the full, tenant-agnostic list. Kept apart
+// from the modal's selector so a background list refresh cannot overwrite what the open
+// dialog shows (the selector may be narrowed to one tenant).
+async function refreshScheduleAgentLookup() {
   try {
-    const res = await fetch('/api/schedules/agents')
-    scheduleAgents = await res.json()
+    scheduleAgents = await fetchScheduleAgents(null)
+  } catch (err) {
+    console.error('Ügynök lista hiba:', err)
+  }
+}
+
+// Newest selector load wins: switching tenant twice quickly must not end on the first answer.
+let _agentSelectSeq = 0
+
+// Fill the dialog's agent selector. With a tenant (global admin picking one in the dialog)
+// it shows only the agents that serve it.
+export async function loadScheduleAgents(tenant = null) {
+  const seq = ++_agentSelectSeq
+  try {
+    const agents = await fetchScheduleAgents(tenant)
+    if (seq !== _agentSelectSeq) return
+    if (!tenant) scheduleAgents = agents
     const sel = document.getElementById('scheduleAgent')
     sel.innerHTML = ''
-    for (const a of scheduleAgents) {
+    for (const a of agents) {
       const opt = document.createElement('option')
       opt.value = a.name
       opt.textContent = a.label || a.name
@@ -344,10 +411,12 @@ export async function loadSchedules() {
     const tenant = _tenantGetter?.()
     if (tenant) params.set('tenant', tenant)
     const url = params.size ? `/api/schedules?${params}` : '/api/schedules'
-    const [schedulesRes] = await Promise.all([
+    const [schedulesRes, tenants] = await Promise.all([
       fetch(url),
-      loadScheduleAgents(),
+      fetchAdminTenants(),
+      refreshScheduleAgentLookup(),
     ])
+    _tenants = tenants
     schedules = await schedulesRes.json()
     renderScheduleList(schedules)
     if (currentScheduleView === 'timeline') renderTimeline(schedules)
@@ -554,13 +623,14 @@ function makeScheduleRow(task) {
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
           <span>${describeCron(task.schedule)}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
+          ${_tenants.length && task.tenantId ? `<span class="badge" data-size="sm" data-variant="neutral" title="${escapeHtml(t('tasks.tenant.badge_title', { tenant: task.tenantId }))}">${escapeHtml(tenantLabel(task.tenantId))}</span>` : ''}
           <span class="schedule-last-run" title="${task.lastRunAt ? escapeHtml(new Date(task.lastRunAt).toLocaleString()) : ''}">${task.lastRunAt ? escapeHtml(t('tasks.last_run', { time: formatLastRun(task.lastRunAt) })) : escapeHtml(t('tasks.last_run_never'))}</span>
           ${task.lastRunAt && LAST_RUN_RESULT_LABEL[task.lastRunResult] ? `<span class="badge" data-size="sm" data-variant="${LAST_RUN_RESULT_VARIANT[task.lastRunResult]}">${escapeHtml(LAST_RUN_RESULT_LABEL[task.lastRunResult]())}</span>` : ''}
         </div>
       </div>
       <div class="schedule-actions">
         ${!isLive ? `
-        <button class="btn" data-variant="icon" data-action="activate" title="${t('tasks.btn.activate')}">
+        <button class="btn" data-variant="icon" data-action="activate" title="${_tenants.length && task.tenantId ? escapeHtml(t('tasks.btn.activate_tenant', { tenant: tenantLabel(task.tenantId) })) : t('tasks.btn.activate')}">
           ${checkIcon()}
         </button>` : ''}
         <button class="btn" data-variant="icon" data-action="run" title="${t('tasks.btn.run_now')}" ${!isLive ? 'disabled' : ''}>
@@ -937,49 +1007,51 @@ function renderWeekView(data) {
   }
 }
 
-export function openEditSchedule(task) {
-  loadScheduleAgents().then(() => {
-    resetScheduleForm()
-    document.getElementById('scheduleModalTitle').textContent = t('tasks.modal.edit_title')
-    document.getElementById('scheduleName').value = task.name
-    document.getElementById('scheduleName').disabled = true
-    document.getElementById('scheduleDesc').value = task.description || ''
-    document.getElementById('schedulePrompt').value = task.prompt || ''
-    document.getElementById('scheduleEditName').value = task.name
-    document.getElementById('scheduleSkipIfBusy').checked = !!task.skipIfBusy
-    document.getElementById('scheduleForceSend').checked = !!task.forceSend
-    document.getElementById('scheduleTargetSession').value = task.targetSession || ''
+export async function openEditSchedule(task) {
+  resetScheduleForm()
+  const taskTenant = task.tenantId || DEFAULT_TENANT
+  const tenant = await prepareTenantField(taskTenant)
+  if (tenant) _editTenant = taskTenant
+  await loadScheduleAgents(tenant)
+  document.getElementById('scheduleModalTitle').textContent = t('tasks.modal.edit_title')
+  document.getElementById('scheduleName').value = task.name
+  document.getElementById('scheduleName').disabled = true
+  document.getElementById('scheduleDesc').value = task.description || ''
+  document.getElementById('schedulePrompt').value = task.prompt || ''
+  document.getElementById('scheduleEditName').value = task.name
+  document.getElementById('scheduleSkipIfBusy').checked = !!task.skipIfBusy
+  document.getElementById('scheduleForceSend').checked = !!task.forceSend
+  document.getElementById('scheduleTargetSession').value = task.targetSession || ''
 
-    // Set type (heartbeat, command or task; custom types fall back to task)
-    const typeEl = document.getElementById('scheduleType')
-    typeEl.value = (task.type === 'heartbeat' || task.type === 'command') ? task.type : 'task'
-    // A command task stays a command task here: the server refuses an implicit
-    // type change, and the shell command is not something to retype as a prompt.
-    typeEl.disabled = task.type === 'command'
-    document.getElementById('scheduleCommand').value = task.command || ''
-    document.getElementById('scheduleTimeoutMs').value = task.timeoutMs != null ? String(task.timeoutMs) : ''
-    document.getElementById('scheduleFailThreshold').value = task.failThreshold != null ? String(task.failThreshold) : ''
-    syncScheduleTypeFields()
+  // Set type (heartbeat, command or task; custom types fall back to task)
+  const typeEl = document.getElementById('scheduleType')
+  typeEl.value = (task.type === 'heartbeat' || task.type === 'command') ? task.type : 'task'
+  // A command task stays a command task here: the server refuses an implicit
+  // type change, and the shell command is not something to retype as a prompt.
+  typeEl.disabled = task.type === 'command'
+  document.getElementById('scheduleCommand').value = task.command || ''
+  document.getElementById('scheduleTimeoutMs').value = task.timeoutMs != null ? String(task.timeoutMs) : ''
+  document.getElementById('scheduleFailThreshold').value = task.failThreshold != null ? String(task.failThreshold) : ''
+  syncScheduleTypeFields()
 
-    // Set agent
-    const agentSel = document.getElementById('scheduleAgent')
-    if (agentSel.querySelector(`option[value="${task.agent}"]`)) {
-      agentSel.value = task.agent
-    } else if (task.agent) {
-      // Not in the selector (agent not running/listed): keep it as a one-off
-      // option, otherwise saving silently reassigns the task to the first agent.
-      const keep = document.createElement('option')
-      keep.value = task.agent
-      keep.textContent = task.agent
-      agentSel.appendChild(keep)
-      agentSel.value = task.agent
-    }
+  // Set agent
+  const agentSel = document.getElementById('scheduleAgent')
+  if (agentSel.querySelector(`option[value="${task.agent}"]`)) {
+    agentSel.value = task.agent
+  } else if (task.agent) {
+    // Not in the selector (agent not running/listed): keep it as a one-off
+    // option, otherwise saving silently reassigns the task to the first agent.
+    const keep = document.createElement('option')
+    keep.value = task.agent
+    keep.textContent = task.agent
+    agentSel.appendChild(keep)
+    agentSel.value = task.agent
+  }
 
-    // Parse cron back to frequency + time
-    parseCronToForm(task.schedule)
+  // Parse cron back to frequency + time
+  parseCronToForm(task.schedule)
 
-    _openModal?.(scheduleModalOverlay)
-  })
+  _openModal?.(scheduleModalOverlay)
 }
 
 // Save schedule (create or update)
@@ -1084,6 +1156,14 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
   }
 })
 
+// Tenant to send with the save: nothing for a non-admin (hidden field, the server uses
+// the session's tenant) and nothing for an edit that leaves the tenant alone.
+function pickedTenantForSave(editing) {
+  if (document.getElementById('scheduleTenantGroup').hidden) return ''
+  const picked = document.getElementById('scheduleTenant').value
+  return editing && picked === _editTenant ? '' : picked
+}
+
 saveScheduleBtn.addEventListener('click', async () => {
   const editName = document.getElementById('scheduleEditName').value
   const built = buildSchedulePayload({
@@ -1099,6 +1179,7 @@ saveScheduleBtn.addEventListener('click', async () => {
     command: document.getElementById('scheduleCommand').value,
     timeoutMs: document.getElementById('scheduleTimeoutMs').value,
     failThreshold: document.getElementById('scheduleFailThreshold').value,
+    tenantId: pickedTenantForSave(!!editName),
   }, { editing: !!editName })
   if (!built.ok) {
     if (built.focus === 'schedule') { showToast(t('tasks.toast.select_schedule')); return }
@@ -1127,7 +1208,9 @@ saveScheduleBtn.addEventListener('click', async () => {
         // apiData carries the full response object for getErrorMessage(); do NOT use err.message
         throw Object.assign(new Error('api call failed'), { apiData: err })
       }
-      showToast(t('tasks.toast.updated'))
+      const saved = await res.json().catch(() => ({}))
+      // A tenant move comes back as a draft: say so, the task needs re-activating.
+      showToast(saved.status === 'draft' && saved.tenant_id ? t('tasks.toast.moved_draft', { tenant: tenantLabel(saved.tenant_id) }) : t('tasks.toast.updated'))
     } else {
       // Create
       const res = await fetch('/api/schedules', {

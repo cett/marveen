@@ -136,7 +136,7 @@ describe('seeding into the schedules DB', () => {
     const backup = dbMod.getScheduleFromDb('nightly-backup')
     expect(backup).toMatchObject({
       type: 'command', prompt: '', enabled: 1, agent: 'main-agent',
-      schedule: '0 3 * * *', timeout_ms: 120000, fail_threshold: 1, status: 'live',
+      schedule: '0 3 * * *', timeout_ms: 120000, fail_threshold: 1, status: 'live', tenant_id: 'default',
       command: "bash '/opt/marveen/scripts/backup.sh'",
     })
 

@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { sanitizeScheduleName, safeJoin } from './sanitize.js'
 import {
   countSchedules, listSchedulesFromDb, getScheduleFromDb, upsertSchedule, deleteSchedule,
   setScheduleEnabled, patchSchedule, seedScheduleIfAbsent,
@@ -41,6 +42,9 @@ export interface ScheduledTask {
   agent: string
   enabled: boolean
   createdAt: number
+  // The tenant the task belongs to. Every task has one: a stored NULL (pre-migration row) reads
+  // as 'default', and a file-based task that does not name one is seeded as 'default'.
+  tenantId?: string
   type?: 'task' | 'heartbeat' | 'command'  // heartbeat = silent unless important; command = raw shell, no LLM
   // When true, a tick whose target session is busy is dropped silently
   // instead of queued. Use ONLY for cron schedules that fire often enough
@@ -108,6 +112,25 @@ export interface ScheduledTask {
 // at all (legacy file-based task, or a caller that never set one) is treated
 // as live -- the review-gate only restricts tasks that were explicitly
 // created in a non-live state.
+/**
+ * Remove the file mirror (SKILL.md + task-config.json) of the named tasks. The files are only a
+ * mirror of the schedules table, but a leftover one would put the task back the next time an
+ * empty table is re-seeded from the files. Returns how many directories were removed.
+ */
+export function removeScheduledTaskFiles(names: ReadonlyArray<string>): number {
+  let removed = 0
+  for (const raw of names) {
+    const name = sanitizeScheduleName(raw)
+    if (!name) continue
+    let dir: string
+    try { dir = safeJoin(SCHEDULED_TASKS_DIR, name) } catch { continue }
+    if (!existsSync(dir)) continue
+    rmSync(dir, { recursive: true, force: true })
+    removed++
+  }
+  return removed
+}
+
 export function isTaskLive(task: Pick<ScheduledTask, 'status'>): boolean {
   return task.status === undefined || task.status === 'live'
 }
@@ -142,7 +165,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; status?: string } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; tenantId?: string; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; status?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -162,6 +185,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     command: config.command,
     timeoutMs: config.timeoutMs,
     failThreshold: config.failThreshold,
+    tenantId: typeof config.tenantId === 'string' && config.tenantId.trim() ? config.tenantId.trim() : undefined,
     preCheck: config.preCheck,
     catchUpMaxAgeMinutes: parseCatchUpMaxAge(config.catchUpMaxAgeMinutes),
     stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
@@ -215,7 +239,7 @@ export function seedSchedulesFromFilesIfEmpty(): number {
       agent:                    task.agent,
       type:                     task.type ?? 'task',
       enabled:                  task.enabled,
-      tenant_id:                null,
+      tenant_id:                task.tenantId ?? 'default',
       skip_if_busy:             task.skipIfBusy ?? false,
       force_send:               task.forceSend ?? false,
       target_session:           task.targetSession ?? null,
@@ -240,7 +264,7 @@ export function seedSchedulesFromFilesIfEmpty(): number {
 // transition window and after a rollback (just clear the schedules table).
 export function listScheduledTasks(): ScheduledTask[] {
   if (countSchedules() > 0) {
-    return listSchedulesFromDb({ includeFleet: true }).map(rowToTask)
+    return listSchedulesFromDb().map(rowToTask)
   }
   return listScheduledTasksFromFiles()
 }
@@ -249,7 +273,7 @@ export function listScheduledTasks(): ScheduledTask[] {
  *  itself (never the task-config.json mirror), so it is the scheduler's baseline
  *  of what SHOULD be running no matter how the tick's own task list was read. */
 export function listDbRunnableTaskNames(): string[] {
-  return listSchedulesFromDb({ includeFleet: true })
+  return listSchedulesFromDb()
     .map(rowToTask)
     .filter(t => t.enabled && isTaskLive(t))
     .map(t => t.name)
@@ -289,6 +313,7 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
     command: row.command ?? undefined,
     timeoutMs: row.timeout_ms ?? undefined,
     failThreshold: row.fail_threshold ?? undefined,
+    tenantId: row.tenant_id ?? 'default',
     preCheck: row.pre_check ?? undefined,
     catchUpMaxAgeMinutes: row.catch_up_max_age_minutes ?? undefined,
     stuckAfterMinutes: row.stuck_after_minutes ?? undefined,
@@ -309,7 +334,7 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
  * Returns the names of the tasks whose file was rewritten.
  */
 export function syncTaskConfigEnabledFromDb(
-  rows: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>> = listSchedulesFromDb({ includeFleet: true }),
+  rows: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>> = listSchedulesFromDb(),
   dir: string = SCHEDULED_TASKS_DIR,
 ): string[] {
   const fixed: string[] = []
@@ -363,13 +388,10 @@ export function writeScheduledTask(
     requires:                 data.requires !== undefined
                                 ? (data.requires ? JSON.stringify(data.requires) : null)
                                 : (existing?.requires ? JSON.stringify(existing.requires) : null),
-    // ScheduledTask (the `existing` shape above) carries no tenant_id --
-    // it's the file-based task representation, and tenant scoping is a
-    // DB-only concept. Without falling back to the raw dbRow here, every
-    // write that doesn't explicitly pass tenantId (toggle's file-mirror
-    // call, the PUT edit handler) would silently reset a tenant-owned
-    // schedule's tenant_id to NULL (fleet scope) on next edit/toggle.
-    tenant_id:                data.tenantId !== undefined ? (data.tenantId ?? null) : (dbRow?.tenant_id ?? null),
+    // A task always has a tenant. An edit that names none (toggle's file-mirror call, the PUT
+    // edit handler) keeps the stored one, and a stored NULL (a row older than migration 0066)
+    // reads as 'default', so a write can never put a task back into "no tenant".
+    tenant_id:                data.tenantId ?? existing?.tenantId ?? 'default',
     status:                   data.status ?? existing?.status ?? 'live',
   }
 
@@ -388,6 +410,7 @@ function _writeScheduledTaskFiles(
     timeout_ms: number | null | undefined; fail_threshold: number | null | undefined;
     pre_check: string | null | undefined; catch_up_max_age_minutes: number | null | undefined;
     stuck_after_minutes: number | null | undefined;
+    tenant_id?: string | null;
     status?: 'draft' | 'pending_review' | 'live';
   },
 ): void {
@@ -404,6 +427,7 @@ function _writeScheduledTaskFiles(
     forceSend:             merged.force_send,
     description:           merged.description,
     status:                merged.status ?? 'live',
+    tenantId:              merged.tenant_id ?? 'default',
     createdAt:             Math.floor(Date.now() / 1000),
   }
   if (merged.target_session)           config.targetSession           = merged.target_session

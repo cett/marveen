@@ -11,6 +11,8 @@ export interface ScheduleFormFields {
   command: string
   timeoutMs: string
   failThreshold: string
+  /** Global admin only; empty or absent = let the server pick the tenant (create) or keep it (edit). */
+  tenantId?: string
 }
 
 export type SchedulePayloadResult =

@@ -174,7 +174,7 @@ describe('scheduled-tasks-io', () => {
       vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
     })
 
-    it('still honors an explicit tenantId (including explicit null) from the caller', async () => {
+    it('honors an explicit tenantId, and an explicit null never un-tenants a task', async () => {
       const db = await import('../db.js')
       vi.mocked(db.countSchedules).mockReturnValue(1)
       vi.mocked(db.getScheduleFromDb).mockReturnValue({
@@ -186,15 +186,20 @@ describe('scheduled-tasks-io', () => {
         created_at: 1700000000, updated_at: 1700000000,
       } as any)
 
-      writeScheduledTask('tenant-task-2', { tenantId: null })
-
-      expect(vi.mocked(db.upsertSchedule)).toHaveBeenCalledWith(
-        'tenant-task-2',
-        expect.objectContaining({ tenant_id: null }),
-      )
-
-      vi.mocked(db.countSchedules).mockReturnValue(0)
-      vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+      try {
+        writeScheduledTask('tenant-task-2', { tenantId: 'tenant-b' })
+        expect(vi.mocked(db.upsertSchedule)).toHaveBeenLastCalledWith(
+          'tenant-task-2', expect.objectContaining({ tenant_id: 'tenant-b' }),
+        )
+        // No tenant is not a state a task can be written into: null keeps the stored tenant.
+        writeScheduledTask('tenant-task-2', { tenantId: null })
+        expect(vi.mocked(db.upsertSchedule)).toHaveBeenLastCalledWith(
+          'tenant-task-2', expect.objectContaining({ tenant_id: 'tenant-a' }),
+        )
+      } finally {
+        vi.mocked(db.countSchedules).mockReturnValue(0)
+        vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+      }
     })
   })
 

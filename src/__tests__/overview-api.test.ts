@@ -185,48 +185,55 @@ describe('GET /api/overview — tokensToday', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /api/overview — tasksToday tenant scoping', () => {
-  it('admin with ?tenant filter counts only that tenant\'s task_runs', async () => {
-    const db = getDb()
+  function seedSchedule(id: string, tenantId: string, agent: string): void {
+    getDb().prepare("INSERT INTO schedules (id, schedule, agent, tenant_id, created_at, updated_at) VALUES (?, '0 9 * * *', ?, ?, 0, 0)").run(id, agent, tenantId)
+  }
+  function seedRun(name: string, agent: string): void {
+    getDb().prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, 'fired')").run(name, agent, Date.now())
+  }
+
+  it('admin with ?tenant filter counts only the runs of that tenant\'s schedules', async () => {
     createTenant('tenant-a', 'Tenant A')
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    const now = Date.now()
-    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t1','agent-a',?,'fired')").run(now)
-    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t2','other-agent',?,'fired')").run(now)
+    createTenant('tenant-b', 'Tenant B')
+    seedSchedule('t1', 'tenant-a', 'agent-a')
+    seedSchedule('t2', 'tenant-b', 'agent-b')
+    seedRun('t1', 'agent-a')
+    seedRun('t2', 'agent-b')
 
     const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
-    // Fix-revert proof: without agentsForTenant() scoping this would be 2 (both agents),
+    // Fix-revert proof: without the schedules.tenant_id scoping this would be 2 (both tenants),
     // and without the countUserTurns(...) guard it could also pick up unrelated real
     // session turns from this machine's ~/.claude/projects.
     expect(out.body.tasksToday).toBe(1)
   })
 
-  it('a tenant with no agents granted at all returns 0 tasksToday, not an error', async () => {
-    const db = getDb()
+  it('a tenant with no schedules returns 0 tasksToday, not an error', async () => {
     createTenant('tenant-empty', 'Empty Tenant')
-    const now = Date.now()
-    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t1','agent-a',?,'fired')").run(now)
+    seedSchedule('t1', 'default', 'agent-a')
+    seedRun('t1', 'agent-a')
 
     const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-empty', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
     expect(out.body.tasksToday).toBe(0)
   })
 
-  it('multi-tenant agent\'s task_runs are excluded from a single tenant\'s scoped view', async () => {
-    const db = getDb()
+  it('a shared agent\'s runs count for the tenant of each schedule (the old agent-based scoping lost them in every tenant)', async () => {
     createTenant('tenant-a', 'Tenant A')
     createTenant('tenant-b', 'Tenant B')
     setTenantAgentAvailability('tenant-a', 'shared-agent', true)
     setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    const now = Date.now()
-    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t1','agent-a',?,'fired')").run(now)
-    db.prepare("INSERT INTO task_runs (name, agent, ts, status) VALUES ('t2','shared-agent',?,'fired')").run(now)
+    seedSchedule('ta', 'tenant-a', 'shared-agent')
+    seedSchedule('tb', 'tenant-b', 'shared-agent')
+    seedRun('ta', 'shared-agent')
+    seedRun('tb', 'shared-agent')
 
-    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
-    await tryHandleOverview(ctx)
-    // Fix-revert proof: if shared-agent were mistakenly included, this would be 2.
-    expect(out.body.tasksToday).toBe(1)
+    const a = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(a.ctx)
+    expect(a.out.body.tasksToday).toBe(1)
+    const b = fakeCtx('/api/overview?tenant=tenant-b', 'GET', { role: 'admin' })
+    await tryHandleOverview(b.ctx)
+    expect(b.out.body.tasksToday).toBe(1)
   })
 })
 

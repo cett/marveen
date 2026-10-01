@@ -69,6 +69,11 @@ vi.mock('../db.js', () => ({
   setScheduleEnabled: vi.fn(),
   patchSchedule: vi.fn(),
   upsertSchedule: vi.fn(),
+  // Tenant lookups behind the (tenant, agent) pair rule: every agent is a fleet
+  // agent (enabled for no tenant), no non-default tenant serves anyone.
+  getTenant: vi.fn(),
+  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  agentServesTenant: vi.fn().mockReturnValue(false),
 }))
 
 vi.mock('../agent.js', () => ({
@@ -306,6 +311,8 @@ describe('GET /api/schedules/pending', () => {
       first_attempt: 1000, last_attempt: 1000, attempt_count: 1,
       last_reason: 'busy', alert_sent_at: null,
     } as never])
+    // The default-tenant caller makeCtx() builds only sees retries of its own tenant's tasks.
+    mockGetScheduleFromDb.mockReturnValue({ id: 'my-task', tenant_id: 'default' })
     const { ctx, out } = makeCtx('GET', '/api/schedules/pending')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)

@@ -9,6 +9,7 @@ vi.mock('../web/vault.js', () => ({
 
 import {
   initDatabase,
+  getDb,
   createTenant,
   getTenant,
   listTenants,
@@ -93,8 +94,25 @@ describe('tenant CRUD', () => {
   it('deleteTenant removes an empty tenant and reports zero deletions', () => {
     createTenant('empty-tenant', 'Empty')
     const result = deleteTenant('empty-tenant')
-    expect(result).toEqual({ memoriesDeleted: 0, secretsDeleted: 0 })
+    expect(result).toEqual({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [] })
     expect(getTenant('empty-tenant')).toBeUndefined()
+  })
+
+  it('deleteTenant drops the tenant\'s schedules and their pending retries, and names them for the file-mirror cleanup', () => {
+    createTenant('acme-s', 'Acme S')
+    const d = getDb()
+    const ins = d.prepare("INSERT INTO schedules (id, schedule, agent, tenant_id, created_at, updated_at) VALUES (?, '0 9 * * *', 'agent-a', ?, 0, 0)")
+    ins.run('acme-job', 'acme-s'); ins.run('acme-job-2', 'acme-s'); ins.run('other-job', 'default')
+    const retry = d.prepare("INSERT INTO pending_task_retries (task_name, agent_name, first_attempt, last_attempt) VALUES (?, 'agent-a', 1, 1)")
+    retry.run('acme-job'); retry.run('other-job')
+
+    const result = deleteTenant('acme-s')
+
+    expect([...result.scheduleNames].sort()).toEqual(['acme-job', 'acme-job-2'])
+    expect(d.prepare("SELECT id FROM schedules WHERE tenant_id = 'acme-s'").all()).toEqual([])
+    // Fix-revert proof: without the retry cleanup the acme-job row would survive.
+    expect(d.prepare('SELECT task_name FROM pending_task_retries ORDER BY task_name').all()).toEqual([{ task_name: 'other-job' }])
+    expect(d.prepare("SELECT id FROM schedules WHERE id = 'other-job'").get()).toBeDefined()
   })
 
   it('deleteTenant cascades to the tenant\'s dashboard users and partner senders', () => {

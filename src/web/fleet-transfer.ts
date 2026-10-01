@@ -931,6 +931,20 @@ function validateNames(fleet: FleetJson): string[] {
   return errors
 }
 
+// Tenant an imported schedule lands in. Tenants are local to a machine: an exported tenant_id
+// that this machine does not have (or has disabled) cannot be honoured, and a task must belong
+// to a tenant, so it is re-homed to the default tenant. It arrives disabled either way, so a
+// person reviews it before it can fire.
+function importedScheduleTenant(localTenants: ReadonlySet<string>, raw: unknown): string {
+  return typeof raw === 'string' && localTenants.has(raw) ? raw : 'default'
+}
+
+function enabledLocalTenantIds(db: ReturnType<typeof getDb>): Set<string> {
+  const ids = new Set<string>(['default'])
+  for (const r of db.prepare('SELECT id FROM tenants WHERE disabled_at IS NULL').all() as { id: string }[]) ids.add(r.id)
+  return ids
+}
+
 function buildDiffReport(fleet: FleetJson): DiffReport {
   const db = getDb()
   const warnings: string[] = []
@@ -969,11 +983,19 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
   }
 
   let newSchedules = 0
+  let rehomedSchedules = 0
+  const localTenants = enabledLocalTenantIds(db)
   for (const sch of fleet.schedules ?? []) {
-    if (!db.prepare('SELECT 1 FROM schedules WHERE id = ?').get((sch as any).id)) newSchedules++
+    if (db.prepare('SELECT 1 FROM schedules WHERE id = ?').get((sch as any).id)) continue
+    newSchedules++
+    const exported = (sch as any).tenant_id
+    if (exported != null && importedScheduleTenant(localTenants, exported) !== exported) rehomedSchedules++
   }
   if (newSchedules > 0) {
     warnings.push(`${newSchedules} ütemezés importálva -- letiltva érkezik, kézi átvizsgálás és engedélyezés szükséges célgépen.`)
+  }
+  if (rehomedSchedules > 0) {
+    warnings.push(`${rehomedSchedules} ütemezés tenantja nem létezik (vagy le van tiltva) a célgépen, ezért a default tenantba kerül -- ellenőrizd, melyik tenantba és ágenshez tartozzon, mielőtt engeded.`)
   }
 
   let newImportSources = 0
@@ -1536,6 +1558,7 @@ export function importFleet(
       // exported value (defense in depth -- mirrors the file-based scheduledTasks
       // pause-on-import above): a migrated fleet must never start firing a source
       // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
+      const scheduleTenants = enabledLocalTenantIds(db)
       for (const sch of fleet.schedules ?? []) {
         const s = sch as any
         if (!s.id || !s.schedule || !s.agent || !s.type) {
@@ -1549,7 +1572,7 @@ export function importFleet(
            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           s.id, s.prompt ?? '', s.description ?? '', s.schedule, s.agent, s.type,
-          s.tenant_id ?? null, s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
+          importedScheduleTenant(scheduleTenants, s.tenant_id), s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
           s.command ?? null, s.timeout_ms ?? null, s.fail_threshold ?? null, s.pre_check ?? null,
           s.catch_up_max_age_minutes ?? null, s.stuck_after_minutes ?? null, s.requires ?? null,
           s.created_at, s.updated_at,

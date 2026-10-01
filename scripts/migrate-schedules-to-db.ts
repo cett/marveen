@@ -5,7 +5,7 @@
  *
  * Idempotent: uses INSERT OR IGNORE (seedScheduleIfAbsent) so re-running
  * never overwrites rows that have been hand-edited in the DB since the last run.
- * Fleet tasks get tenant_id = NULL.
+ * A task that does not name a tenant (task-config.json `tenantId`) belongs to the default tenant.
  *
  * Usage:
  *   npx tsx scripts/migrate-schedules-to-db.ts [--dry-run]
@@ -34,7 +34,7 @@ for (const t of tasks) {
       agent:                    t.agent,
       type:                     t.type ?? 'task',
       enabled:                  t.enabled,
-      tenant_id:                null,   // fleet tasks
+      tenant_id:                t.tenantId ?? 'default',
       skip_if_busy:             t.skipIfBusy ?? false,
       force_send:               t.forceSend ?? false,
       target_session:           t.targetSession ?? null,

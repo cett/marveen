@@ -26,6 +26,12 @@ vi.mock('../db.js', () => ({
   setScheduleEnabled:        (...a: unknown[]) => mockSetScheduleEnabled(...a),
   patchSchedule:             vi.fn(),
   upsertSchedule:            vi.fn(),
+  // Tenant lookups behind the create/edit rules: every tenant exists, every agent is a fleet agent.
+  getTenant: vi.fn((id: string) => ({ id, disabled_at: null })),
+  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  agentServesTenant: vi.fn().mockReturnValue(true),
+  getServingTenant: vi.fn().mockReturnValue(null),
+  resolveAgentTenant: vi.fn().mockReturnValue('default'),
 }))
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({
@@ -72,7 +78,7 @@ vi.mock('../web/sanitize.js', () => ({
   safeJoin:             (_b: string, n: string) => `/fake/tasks/${n}`,
 }))
 vi.mock('../web/agent-config.js', () => ({
-  listAgentNames: vi.fn().mockReturnValue([]),
+  listAgentNames: vi.fn().mockReturnValue(['sub-a']),
   readFileOr:     vi.fn().mockReturnValue('{}'),
 }))
 vi.mock('../pending-retries.js', () => ({
@@ -120,21 +126,14 @@ const otherRow  = { id: 'other-report', tenant_id: 'tenant-b', enabled: 1, sched
 describe('GET /api/schedules', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('admin with no filter gets all rows (includeFleet=true)', async () => {
+  it('admin with no filter gets all rows', async () => {
     mockListSchedulesDb.mockReturnValue([fleetRow, tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'admin', null)
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
-    expect(mockListSchedulesDb).toHaveBeenCalledWith({ includeFleet: true })
+    expect(mockListSchedulesDb).toHaveBeenCalledWith()
   })
 
-  it('admin with ?tenant=fleet gets fleet rows only', async () => {
-    mockListSchedulesDb.mockReturnValue([fleetRow])
-    const { ctx, out } = makeCtx('GET', '/api/schedules?tenant=fleet', undefined, 'admin', null)
-    await tryHandleSchedules(ctx)
-    expect(out.status).toBe(200)
-    expect(mockListSchedulesDb).toHaveBeenCalledWith({ includeFleet: false })
-  })
 
   it('non-admin gets only their tenant rows', async () => {
     mockListSchedulesDb.mockReturnValue([tenantRow])
@@ -212,7 +211,7 @@ describe('POST /api/schedules', () => {
     mockGetScheduleDb.mockReturnValue(undefined)
     const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
     const { ctx } = makeCtx('POST', '/api/schedules', {
-      name: 'my-report', prompt: 'Do the thing', schedule: '0 9 * * 1',
+      name: 'my-report', prompt: 'Do the thing', schedule: '0 9 * * 1', agent: 'sub-a',
     }, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(vi.mocked(writeScheduledTask)).toHaveBeenCalledWith('my-report', expect.objectContaining({ tenantId: 'tenant-a' }))
@@ -222,21 +221,12 @@ describe('POST /api/schedules', () => {
     mockGetScheduleDb.mockReturnValue(undefined)
     const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
     const { ctx } = makeCtx('POST', '/api/schedules', {
-      name: 'admin-task', prompt: 'Do admin stuff', schedule: '0 9 * * 1', tenant_id: 'tenant-b',
+      name: 'admin-task', prompt: 'Do admin stuff', schedule: '0 9 * * 1', tenant_id: 'tenant-b', agent: 'sub-a',
     }, 'admin', null)
     await tryHandleSchedules(ctx)
     expect(vi.mocked(writeScheduledTask)).toHaveBeenCalledWith('admin-task', expect.objectContaining({ tenantId: 'tenant-b' }))
   })
 
-  it('admin: omitting tenant_id creates fleet task (null)', async () => {
-    mockGetScheduleDb.mockReturnValue(undefined)
-    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
-    const { ctx } = makeCtx('POST', '/api/schedules', {
-      name: 'fleet-task', prompt: 'Fleet work', schedule: '0 9 * * 1',
-    }, 'admin', null)
-    await tryHandleSchedules(ctx)
-    expect(vi.mocked(writeScheduledTask)).toHaveBeenCalledWith('fleet-task', expect.objectContaining({ tenantId: null }))
-  })
 })
 
 // ── DELETE /api/schedules/:name ───────────────────────────────────────────────

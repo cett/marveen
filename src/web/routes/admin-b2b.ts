@@ -10,6 +10,7 @@
 // PATCH cross-field validation uses FINAL STATE (DB row + submitted fields
 // merged) per standard PATCH semantics -- confirmed 2026-08-24.
 
+import { removeScheduledTaskFiles } from '../scheduled-tasks-io.js'
 import {
   getDb,
   createTenant,
@@ -122,7 +123,10 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const existing = getTenant(tenantId)
     if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
     const result = deleteTenant(tenantId)
-    auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted })
+    // The tenant's schedules are gone from the table; their file mirror must go too, or an
+    // empty-table re-seed would bring them back.
+    const mirrorsRemoved = removeScheduledTaskFiles(result.scheduleNames ?? [])
+    auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted, schedules_deleted: result.scheduleNames?.length ?? 0, schedule_mirrors_removed: mirrorsRemoved })
     json(res, { ok: true, tenant_id: tenantId, memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted })
     return true
   }

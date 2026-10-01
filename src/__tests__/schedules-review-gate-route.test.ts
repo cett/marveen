@@ -74,6 +74,12 @@ vi.mock('../db.js', () => ({
   patchSchedule: vi.fn(),
   upsertSchedule: vi.fn(),
   activateSchedule: (...a: unknown[]) => mockActivateSchedule(...a),
+  // Tenant lookups behind the create/edit rules: every tenant exists, every agent is a fleet agent.
+  getTenant: vi.fn((id: string) => ({ id, disabled_at: null })),
+  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  agentServesTenant: vi.fn().mockReturnValue(true),
+  getServingTenant: vi.fn().mockReturnValue(null),
+  resolveAgentTenant: vi.fn().mockReturnValue('default'),
 }))
 
 vi.mock('../agent.js', () => ({
@@ -137,7 +143,7 @@ beforeEach(() => {
 // ── POST /api/schedules -- draft/live stamping ──────────────────────────────
 
 describe('POST /api/schedules -- review-gate status stamping', () => {
-  const body = { name: 'new-task', prompt: 'Do the thing', schedule: '0 9 * * *' }
+  const body = { name: 'new-task', prompt: 'Do the thing', schedule: '0 9 * * *', tenant_id: 'default' }
 
   it('a human dashboard login (role admin + auth.kind session) creates status=live', async () => {
     const { ctx, out } = makeCtx('POST', '/api/schedules', body, { role: 'admin', auth: { kind: 'session' } })
@@ -156,7 +162,7 @@ describe('POST /api/schedules -- review-gate status stamping', () => {
   })
 
   it('a non-admin viewer creates status=draft', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/schedules', body, { role: 'viewer', tenantId: 'tenant-a' })
+    const { ctx, out } = makeCtx('POST', '/api/schedules', body, { role: 'viewer', tenantId: 'default' })
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ status: 'draft' })

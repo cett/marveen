@@ -58,16 +58,6 @@ function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY)
   return total
 }
 
-// The agent ids that belong to a given tenant, derived from
-// resolveAgentTenant() (src/db.ts) -- the inverse of that function, applied
-// over the fleet's full agent universe (main agent + every configured
-// sub-agent). Used to scope task_runs (which only carries a plain agent
-// string, no tenant_id) to the Overview tenant selector.
-function agentsForTenant(tenantId: string): string[] {
-  const allAgentIds = [MAIN_AGENT_ID, ...listAgentNames()]
-  return allAgentIds.filter((id) => resolveAgentTenant(id) === tenantId)
-}
-
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -101,14 +91,15 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const yesterday = startTs - 24 * 60 * 60 * 1000
     const fourHoursAgo = nowMs - 4 * 60 * 60 * 1000
 
-    // Tenant scoping for tasksToday: task_runs.agent has no tenant_id column,
-    // so narrow by agent-id membership instead (agentsForTenant()). Session
-    // JSONL turns (countUserTurns) have no per-agent/tenant attribution at
-    // all -- fleet-global by construction -- so they're meaningless in a
-    // tenant-scoped view and excluded rather than mis-attributed to 'default'.
-    const tenantAgentIds = effectiveTenantId ? agentsForTenant(effectiveTenantId) : undefined
-    const schedToday = countTaskRunsBetween(startTs, undefined, tenantAgentIds)
-    const schedYesterday = countTaskRunsBetween(yesterday, startTs, tenantAgentIds)
+    // Tenant scoping for tasksToday: a run belongs to the tenant of its schedule
+    // (schedules.tenant_id). The run's agent says nothing about it, a shared agent
+    // serves several tenants. Session JSONL turns (countUserTurns) have no
+    // per-agent/tenant attribution at all -- fleet-global by construction -- so
+    // they're meaningless in a tenant-scoped view and excluded rather than
+    // mis-attributed to 'default'.
+    const tenantScope = effectiveTenantId ?? undefined
+    const schedToday = countTaskRunsBetween(startTs, undefined, tenantScope)
+    const schedYesterday = countTaskRunsBetween(yesterday, startTs, tenantScope)
     const userTurns = effectiveTenantId ? 0 : countUserTurns(startTs)
     const userTurnsPrev = effectiveTenantId ? 0 : countUserTurns(yesterday, startTs)
     const tasksToday = schedToday + userTurns

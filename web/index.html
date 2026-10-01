@@ -3759,6 +3759,15 @@
         <button class="modal-close" id="scheduleModalClose">&times;</button>
       </div>
       <div class="modal-body">
+        <div id="scheduleTenantGroup" hidden>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="scheduleTenant" data-i18n="tasks.tenant.label">Tenant</label>
+              <select id="scheduleTenant"></select>
+              <p class="hint" id="scheduleTenantHint" hidden data-i18n="tasks.tenant.move_hint">Más tenantba áthelyezve a feladat piszkozat lesz, és újra kell aktiválni.</p>
+            </div>
+          </div>
+        </div>
         <div class="form-row">
           <div class="form-group form-half">
             <label for="scheduleName" data-i18n="common.name">Név</label>

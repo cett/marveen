@@ -6,6 +6,10 @@
 // prompt is optional and is NOT sent (an edit keeps whatever prompt is stored),
 // and it carries its own timeoutMs / failThreshold. Every other type needs a
 // prompt and never sends the command fields.
+//
+// tenantId is set only for a global admin (the form's tenant field is hidden for
+// everyone else, whose tenant the server takes from the session) and, on an edit,
+// only when the admin picked a different tenant than the task has.
 
 function positiveInt(raw) {
   const s = String(raw ?? '').trim()
@@ -18,7 +22,7 @@ function positiveInt(raw) {
  * @param {{
  *   name: string, description: string, prompt: string, schedule: string, agent: string,
  *   type: string, skipIfBusy: boolean, forceSend: boolean, targetSession: string,
- *   command: string, timeoutMs: string, failThreshold: string,
+ *   command: string, timeoutMs: string, failThreshold: string, tenantId?: string,
  * }} f
  * @param {{ editing: boolean }} opts
  * @returns {{ ok: true, body: Record<string, unknown> } | { ok: false, focus: string }}
@@ -39,6 +43,7 @@ export function buildSchedulePayload(f, { editing }) {
   if (!isCommand) body.prompt = f.prompt
   body.schedule = f.schedule
   body.agent = f.agent
+  if (f.tenantId) body.tenant_id = f.tenantId
   body.type = f.type
   if (isCommand) {
     body.command = f.command.trim()

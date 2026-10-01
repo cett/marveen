@@ -38,9 +38,31 @@ export interface UserProfilePatch {
   tenant_id?: string;
 }
 
+/** A scheduled task. Every task belongs to a tenant. */
+export interface Schedule {
+  name?: string;
+  description?: string;
+  prompt?: string;
+  /** Cron expression */
+  schedule?: string;
+  agent?: string;
+  enabled?: boolean;
+  type?: 'task' | 'heartbeat' | 'command';
+  status?: 'draft' | 'pending_review' | 'live';
+  /** The tenant the task belongs to (`default` unless another was assigned). */
+  tenantId?: string;
+  command?: string;
+  timeoutMs?: number;
+  failThreshold?: number;
+  skipIfBusy?: boolean;
+  forceSend?: boolean;
+  targetSession?: string;
+  createdAt?: number;
+}
+
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
-  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'unknown_query_parameter';
+  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter';
   /** Optional human-readable debugging note. Present when the server has extra context that helps the caller fix the request (e.g. which parameter name the filter expects, or why a value was rejected). Clients must not rely on its exact text; treat it as informational. */
   hint?: string;
   /** Name of the request field that caused the validation failure. Present on 4xx validation errors when the problem can be attributed to a single input field. */
@@ -437,11 +459,20 @@ export type UpdateAgentConfigResponse = OkResponse
 
 export type DeleteAgentResponse = OkResponse
 
-export type ListSchedulesResponse = Record<string, unknown>[]
+export type ListSchedulesResponse = Schedule[]
 
 export type ListPendingSchedulesResponse = Record<string, unknown>[]
 
-export type ListScheduledAgentsResponse = string[]
+export type ListScheduledAgentsResponse = {
+  /** Agent id, the value a schedule's `agent` takes */
+  name: string;
+  /** Display name */
+  label: string;
+  /** Avatar URL */
+  avatar: string;
+}[]
+
+export type ListScheduleRunsResponse = Record<string, unknown>[]
 
 export type ListIdeasResponse = Record<string, unknown>[]
 

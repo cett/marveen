@@ -49,7 +49,7 @@ beforeEach(async () => {
     timeout_ms: 120000,
     fail_threshold: 1,
     status: 'live',
-    tenant_id: null,
+    tenant_id: 'default',
   })
 })
 
@@ -154,7 +154,7 @@ describe('PUT refuses an implicit type change away from command', () => {
   it('converting a prompt task to a command task needs a command', async () => {
     dbMod.upsertSchedule('plain', {
       prompt: 'p', description: '', schedule: '0 9 * * *', agent: 'main-agent', type: 'task',
-      enabled: true, skip_if_busy: false, force_send: false, status: 'live', tenant_id: null,
+      enabled: true, skip_if_busy: false, force_send: false, status: 'live', tenant_id: 'default',
     })
     expect((await call('PUT', '/api/schedules/plain', { type: 'command' })).status).toBe(400)
     expect((await call('PUT', '/api/schedules/plain', { type: 'command', command: 'echo hi' })).status).toBe(200)
@@ -190,7 +190,7 @@ describe('POST /api/schedules with type=command', () => {
   })
 
   it('an agent-token caller still gets draft (the review gate applies to command tasks too)', async () => {
-    const out = await call('POST', '/api/schedules', body, 'token')
+    const out = await call('POST', '/api/schedules', { ...body, tenant_id: 'default' }, 'token')
     expect(out.body).toMatchObject({ status: 'draft' })
   })
 

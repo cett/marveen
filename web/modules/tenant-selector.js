@@ -15,6 +15,23 @@ function _fetchAuthStatus() {
 }
 
 /**
+ * Enabled tenants, for a global admin only ([] for every other caller or on a
+ * failed fetch). Not cached: a form that opens later should see a tenant that
+ * was created since the page loaded.
+ *
+ * @returns {Promise<{id: string, display_name?: string}[]>}
+ */
+export async function fetchAdminTenants() {
+  const auth = await _fetchAuthStatus()
+  if (!(auth?.role === 'admin' && auth?.tenant_id === null)) return []
+  try {
+    const r = await fetch('/api/admin/tenants')
+    if (r.ok) return (await r.json()).items ?? []
+  } catch {}
+  return []
+}
+
+/**
  * Insert a tenant-filter <select> into containerId and wire onChange.
  *
  * Returns a getter `() => string | null` for the current selection
@@ -22,26 +39,12 @@ function _fetchAuthStatus() {
  *
  * @param {string}   containerId   id of the wrapping <div> element
  * @param {Function} onChange      called with (tenantId: string|null) on change
- * @param {{value: string, label: string}[]} [extraOptions]
- *   Extra <option>s inserted between "All tenants" and the per-tenant list,
- *   for callers whose backend route recognizes a scope value that isn't a
- *   real tenant id (e.g. schedules' 'fleet' = tenant_id IS NULL rows, which
- *   is NOT the same thing as the seeded 'default' tenant). Most callers
- *   don't need this and can omit it.
  */
-export async function initTenantSelector(containerId, onChange, extraOptions = []) {
-  const auth = await _fetchAuthStatus()
-  if (!(auth?.role === 'admin' && auth?.tenant_id === null)) return null
-
+export async function initTenantSelector(containerId, onChange) {
   const container = document.getElementById(containerId)
   if (!container) return null
 
-  let tenants = []
-  try {
-    const r = await fetch('/api/admin/tenants')
-    if (r.ok) tenants = (await r.json()).items ?? []
-  } catch {}
-
+  const tenants = await fetchAdminTenants()
   if (!tenants.length) return null
 
   const bar = document.createElement('div')
@@ -60,13 +63,6 @@ export async function initTenantSelector(containerId, onChange, extraOptions = [
   allOpt.value = ''
   allOpt.textContent = (typeof window.t === 'function' ? window.t('tenant.selector.all') : '') || 'Összes tenant'
   sel.appendChild(allOpt)
-
-  extraOptions.forEach(({ value, label }) => {
-    const opt = document.createElement('option')
-    opt.value = value
-    opt.textContent = label
-    sel.appendChild(opt)
-  })
 
   tenants.forEach(ten => {
     const opt = document.createElement('option')
