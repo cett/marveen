@@ -42,6 +42,7 @@ import {
 } from '../agent-process.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
+import { getFallbackOverride, type FallbackOverride } from '../model-fallback-state.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
@@ -157,6 +158,13 @@ export interface AgentSummary {
   modelProfile: string | null
   modelSource: 'explicit_model' | 'model_profile' | 'default'
   modelProfileError: string | null
+  /** The model-fallback overlay currently pinning this agent, or null. While
+   *  it is set `model` is still the operator's configured X and
+   *  `fallback.current` is the downgraded Y the agent actually runs on. */
+  fallback: FallbackOverride | null
+  /** What the agent launches with right now: the fallback model while an
+   *  overlay is active, otherwise the same as `model`. */
+  effectiveModel: string
   activeModel: string | null
   runningSince: number | null
   authMode: AuthMode
@@ -246,6 +254,7 @@ export function getAgentSummary(name: string): AgentSummary {
   let agentModelConfig: { model?: unknown; modelProfile?: unknown } = {}
   try { agentModelConfig = JSON.parse(readFileOr(join(dir, 'agent-config.json'), '{}')) } catch { /* defaults */ }
   const modelResolution = resolveAgentModelDetailed(name)
+  const fallback = getFallbackOverride(name)
 
   return {
     name,
@@ -255,6 +264,8 @@ export function getAgentSummary(name: string): AgentSummary {
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
     modelSource: modelResolution.source,
     modelProfileError: modelResolution.error ?? null,
+    fallback,
+    effectiveModel: fallback?.current ?? modelResolution.model,
     activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),

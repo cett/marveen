@@ -1477,6 +1477,8 @@ window._i18n.hu = {
   'agents.model.card_title':     'Modell-váltás: {agent}',
   'agents.model.card_desc':      'Jelenlegi: {current}\nJavasolt: {suggested}\n\nIndoklás: {reason}',
   'agents.model.toast_active':   'Új modell aktív: {model}',
+  'agents.model.fallback_active': 'fallback aktív: {model}',
+  'agents.model.fallback_hint':   'A beállított modell marad érvényben, a fallback lejártakor visszaáll. Másik modell mentése felülírja a fallbacket.',
   'agents.model.toast_restarted':'Újraindítva: {model}',
 
   // --- Channel toasts ---

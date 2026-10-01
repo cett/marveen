@@ -8,6 +8,7 @@ import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 import { escapeHtml, mainAgentId } from './util.js'
 import { getErrorMessage } from './error-message.js'
+import { selectorModelFor, fallbackModelOf, isNoopModelSave } from './agent-model-selection.js'
 import {
   AVATARS, _closeModal, _loadSkills, _openModal, _renderTeamEditor,
   agentDetailOverlay, agentName, agents, applyMarveenReadonlyMode,
@@ -55,6 +56,7 @@ export async function openAgentDetail(agentName) {
   document.getElementById('agentDetailDesc').textContent = currentAgent.description || ''
   document.getElementById('agentDetailModel').textContent = currentAgent.activeModel || currentAgent.model || 'inherit'
   document.getElementById('agentDetailModelRestarting').hidden = true
+  renderModelFallback(currentAgent)
 
   const chConnected = agentIsConnected(currentAgent)
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
@@ -63,7 +65,7 @@ export async function openAgentDetail(agentName) {
   loadAvailableModels()
   loadOllamaModels().then(() => {
     const sel = document.getElementById('editAgentModel')
-    const mv = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
+    const mv = selectorModelFor(currentAgent)
     // The model <select> is one shared element reused per agent. A manual
     // OpenRouter id (or openrouter-auto:tier) may not be among the static/auto
     // options, so setting .value would silently show nothing. Inject THIS
@@ -751,6 +753,8 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
           currentAgent.activeModel = data.activeModel
           currentAgent.runningSince = data.runningSince
           currentAgent.model = data.model
+          currentAgent.fallback = data.fallback ?? null
+          renderModelFallback(currentAgent)
           currentAgent.running = !!data.running
           currentAgent.session = data.session
           display.textContent = displayModel
@@ -768,10 +772,30 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
   }, 2000)
 }
 
+// "fallback active: Y" marker next to the model (overview badge + settings hint);
+// hidden when no model-fallback overlay pins the agent.
+function renderModelFallback(agent) {
+  const badge = document.getElementById('agentDetailModelFallback')
+  const hint = document.getElementById('agentModelFallbackHint')
+  const y = agent ? fallbackModelOf(agent) : null
+  if (badge) {
+    badge.hidden = !y
+    badge.textContent = y ? t('agents.model.fallback_active', { model: y }) : ''
+  }
+  if (hint) {
+    hint.hidden = !y
+    hint.textContent = y ? `${t('agents.model.fallback_active', { model: y })}. ${t('agents.model.fallback_hint')}` : ''
+  }
+}
+
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
   const newModel = document.getElementById('editAgentModel').value
   const name = currentAgent.name
+  // On a fallback the selector holds the configured model: an unchanged Save
+  // must not PUT it (the server would treat it as an operator change) nor
+  // restart the agent for nothing.
+  if (isNoopModelSave(currentAgent, newModel)) return
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
@@ -780,6 +804,9 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
+    // A different model supersedes the fallback server-side (the overlay is dropped).
+    currentAgent.fallback = null
+    renderModelFallback(currentAgent)
     const triggeredAt = Math.floor(Date.now() / 1000)
     document.getElementById('agentDetailModelRestarting').hidden = false
     document.getElementById('processLabel').textContent = t('agents.process_label')
