@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import {
   listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
   getScheduleFromDb, listSchedulesFromDb, deleteSchedule, setScheduleEnabled, countSchedules,
-  activateSchedule,
+  activateSchedule, getTenant,
 } from '../../db.js'
 import { MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { runAgent } from '../../agent.js'
@@ -13,6 +13,7 @@ import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
+import { DEFAULT_SCHEDULE_TENANT, scheduleAgentNamesForTenant, scheduleAgentServesTenant } from '../schedule-tenant.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask,
@@ -48,6 +49,16 @@ function effectiveTenant(ctx: RouteContext): string | null | 'fleet' {
   return ctx.tenantId ?? 'default'
 }
 
+// Does a schedule row fall in the tenant scope effectiveTenant() computed? A missing
+// row never matches. 'fleet' keeps its current meaning (tenant_id IS NULL) until the
+// tenant model drops it.
+function scheduleTenantMatches(scope: string | null, row: { tenant_id: string | null } | undefined): boolean {
+  if (!row) return false
+  if (scope === null) return true
+  if (scope === 'fleet') return row.tenant_id === null
+  return row.tenant_id === scope
+}
+
 function crossTenantBlocked(ctx: RouteContext, scheduleTenantId: string | null): boolean {
   if (ctx.role === 'admin') return false
   const callerTenant = ctx.tenantId ?? 'default'
@@ -55,6 +66,18 @@ function crossTenantBlocked(ctx: RouteContext, scheduleTenantId: string | null):
   if (scheduleTenantId === null) return true
   return scheduleTenantId !== callerTenant
 }
+
+// Fields a PUT may write. Everything else in the body is dropped before it reaches
+// writeScheduledTask, which would otherwise take any of its keys at face value: the
+// review-gate `status` (a draft made live without the human activation step), the
+// raw `tenantId`, and the keys that point the runner at a script or change its
+// catch-up/stuck handling (`preCheck`, `catchUpMaxAgeMinutes`, `stuckAfterMinutes`,
+// `requires`), none of which the dashboard or the CRUD recipe edits. `agent` is
+// admin-only and `tenant_id` is human-admin-only: see the PUT handler.
+const PUT_FIELDS = [
+  'description', 'prompt', 'schedule', 'enabled', 'type', 'skipIfBusy', 'forceSend',
+  'targetSession', 'command', 'timeoutMs', 'failThreshold',
+] as const
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
 // traversal. sanitizeScheduleName strips everything outside [a-z0-9-] (so no
@@ -111,11 +134,15 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/schedules/agents' && method === 'GET') {
-    const agentNames = listAgentNames()
+    // A tenant caller only sees the agents that serve their tenant (an agent's name is
+    // not theirs to enumerate otherwise); an admin sees every agent, or those of the
+    // tenant picked with ?tenant=.
+    const scope = effectiveTenant(ctx)
+    const allowed = new Set(scheduleAgentNamesForTenant(scope === null || scope === 'fleet' ? null : scope))
     const agents = [
       { name: MAIN_AGENT_ID, label: currentBotName(), avatar: '/api/marveen/avatar' },
-      ...agentNames.map(n => ({ name: n, label: n, avatar: `/api/agents/${encodeURIComponent(n)}/avatar` }))
-    ]
+      ...listAgentNames().map(n => ({ name: n, label: n, avatar: `/api/agents/${encodeURIComponent(n)}/avatar` }))
+    ].filter(a => allowed.has(a.name))
     json(res, agents)
     return true
   }
@@ -321,7 +348,38 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     const data = JSON.parse(body.toString()) as {
       description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
-      command?: string; timeoutMs?: number; failThreshold?: number; allowTypeChange?: boolean
+      command?: string; timeoutMs?: number; failThreshold?: number; allowTypeChange?: boolean; tenant_id?: string
+    }
+    const currentTenant = dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT
+    // Tenant move: human admin only. Any other caller asking for it is told so rather
+    // than silently ignored, because the move is the one write here that has a sanctioned
+    // path. It re-checks the (tenant, agent) pair and sends the task back to draft, so a
+    // person re-activates it knowing which tenant it now belongs to.
+    let newTenant: string | undefined
+    if (data.tenant_id !== undefined && data.tenant_id !== currentTenant) {
+      if (!isHumanAdmin(ctx)) {
+        json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Only an authenticated admin can move a schedule to another tenant' }, 403)
+        return true
+      }
+      const target = typeof data.tenant_id === 'string' ? getTenant(data.tenant_id) : undefined
+      if (!target || target.disabled_at) {
+        json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'Unknown or disabled tenant' }, 400)
+        return true
+      }
+      newTenant = target.id
+    }
+    // Agent change: admin only (a tenant caller cannot re-point a task), and the pair
+    // (resulting tenant, resulting agent) must be valid whenever either side moves.
+    const newAgent = ctx.role === 'admin' && typeof data.agent === 'string' && data.agent !== dbRow?.agent ? data.agent : undefined
+    if (newAgent !== undefined || newTenant !== undefined) {
+      const agent = newAgent ?? dbRow?.agent
+      if (agent && !scheduleAgentServesTenant(agent, newTenant ?? currentTenant)) {
+        json(res, {
+          error: 'invalid_value', field: newAgent !== undefined ? 'agent' : 'tenant_id',
+          hint: `Agent '${agent}' does not serve tenant '${newTenant ?? currentTenant}'`,
+        }, 400)
+        return true
+      }
     }
     // A command task is a shell command, not a prompt: switching it to another
     // type by accident (an old client that only knows task/heartbeat sends
@@ -355,9 +413,13 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { error: 'invalid_value', field: 'schedule', hint: 'Invalid cron expression' }, 400)
       return true
     }
-    writeScheduledTask(name, data)
-    logger.info({ name }, 'Scheduled task updated')
-    json(res, { ok: true })
+    const update: Record<string, unknown> = {}
+    for (const f of PUT_FIELDS) if (data[f] !== undefined) update[f] = data[f]
+    if (newAgent !== undefined) update.agent = newAgent
+    if (newTenant !== undefined) { update.tenantId = newTenant; update.status = 'draft' }
+    writeScheduledTask(name, update)
+    logger.info({ name, ...(newTenant !== undefined ? { tenantId: newTenant } : {}) }, 'Scheduled task updated')
+    json(res, { ok: true, ...(newTenant !== undefined ? { tenant_id: newTenant, status: 'draft' } : {}) })
     return true
   }
 
@@ -438,7 +500,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
   if (path === '/api/schedules/pending' && method === 'GET') {
     const now = Date.now()
-    const rows = listPendingTaskRetries().map(r => toPendingRetryView(r, now))
+    // A retry belongs to the tenant of its schedule; one whose schedule is gone, or in
+    // another tenant, is not a tenant caller's to see.
+    const scope = effectiveTenant(ctx)
+    const rows = listPendingTaskRetries()
+      .filter(r => scope === null || scheduleTenantMatches(scope, getScheduleFromDb(r.task_name)))
+      .map(r => toPendingRetryView(r, now))
     json(res, rows)
     return true
   }
@@ -463,6 +530,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   if (pendingCancelMatch && method === 'DELETE') {
     const id = parseInt(pendingCancelMatch[1], 10)
     if (!Number.isFinite(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'Invalid id' }, 400); return true }
+    const pending = listPendingTaskRetries().find(r => r.id === id)
+    if (pending && ctx.role !== 'admin' && !scheduleTenantMatches(effectiveTenant(ctx), getScheduleFromDb(pending.task_name))) {
+      json(res, { error: 'not_found', hint: 'Pending retry not found' }, 404)
+      return true
+    }
     const removed = deletePendingTaskRetryById(id)
     if (!removed) { json(res, { error: 'not_found', hint: 'Pending retry not found' }, 404); return true }
     logger.info({ id }, 'Pending scheduled-task retry cancelled via API')

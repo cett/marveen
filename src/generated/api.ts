@@ -443,6 +443,8 @@ export type ListPendingSchedulesResponse = Record<string, unknown>[]
 
 export type ListScheduledAgentsResponse = string[]
 
+export type ListScheduleRunsResponse = Record<string, unknown>[]
+
 export type ListIdeasResponse = Record<string, unknown>[]
 
 export type ListIdeaCategoriesResponse = string[]
