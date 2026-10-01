@@ -434,10 +434,10 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //      runs and the whole SQL transaction rolls back consistently.
 //  17. Drop the tenant row itself.
 // The 'default' tenant is permanently guarded and throws if passed.
-export function deleteTenant(tenantId: string): { memoriesDeleted: number, secretsDeleted: number } {
+export function deleteTenant(tenantId: string): { memoriesDeleted: number, secretsDeleted: number, scheduleNames: string[] } {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  return db.transaction((): { memoriesDeleted: number, secretsDeleted: number } => {
+  return db.transaction((): { memoriesDeleted: number, secretsDeleted: number, scheduleNames: string[] } => {
     // 1. Reject pending approvals
     db.prepare(
       "UPDATE approvals SET status = 'rejected', resolved_at = unixepoch() WHERE tenant_id = ? AND status = 'pending'",
@@ -482,7 +482,13 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number, secre
     // 8. Drop artifacts (vec_artifacts kept in sync by the vec_artifacts_ad DELETE trigger)
     db.prepare('DELETE FROM artifacts WHERE tenant_id = ?').run(tenantId)
 
-    // 9. Drop schedules (tenant_id IS NULL = fleet scope, those are untouched)
+    // 9. Drop schedules, with the retries still pending for them (a retry of a task that no
+    //    longer exists would be re-injected into its agent). The names go back to the caller:
+    //    the file mirror under ~/.claude/scheduled-tasks is outside this transaction.
+    const scheduleNames = (
+      db.prepare('SELECT id FROM schedules WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+    ).map((r) => r.id)
+    db.prepare('DELETE FROM pending_task_retries WHERE task_name IN (SELECT id FROM schedules WHERE tenant_id = ?)').run(tenantId)
     db.prepare('DELETE FROM schedules WHERE tenant_id = ?').run(tenantId)
 
     // 10 & 11. Drop skill_tenant_access before skills (foreign_keys is on by default, so the order matters;
@@ -520,7 +526,7 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number, secre
     // 17. Drop the tenant row
     db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
 
-    return { memoriesDeleted: memIds.length, secretsDeleted }
+    return { memoriesDeleted: memIds.length, secretsDeleted, scheduleNames }
   })()
 }
 

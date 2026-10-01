@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { sanitizeScheduleName, safeJoin } from './sanitize.js'
 import {
   countSchedules, listSchedulesFromDb, getScheduleFromDb, upsertSchedule, deleteSchedule,
   setScheduleEnabled, patchSchedule, seedScheduleIfAbsent,
@@ -111,6 +112,25 @@ export interface ScheduledTask {
 // at all (legacy file-based task, or a caller that never set one) is treated
 // as live -- the review-gate only restricts tasks that were explicitly
 // created in a non-live state.
+/**
+ * Remove the file mirror (SKILL.md + task-config.json) of the named tasks. The files are only a
+ * mirror of the schedules table, but a leftover one would put the task back the next time an
+ * empty table is re-seeded from the files. Returns how many directories were removed.
+ */
+export function removeScheduledTaskFiles(names: ReadonlyArray<string>): number {
+  let removed = 0
+  for (const raw of names) {
+    const name = sanitizeScheduleName(raw)
+    if (!name) continue
+    let dir: string
+    try { dir = safeJoin(SCHEDULED_TASKS_DIR, name) } catch { continue }
+    if (!existsSync(dir)) continue
+    rmSync(dir, { recursive: true, force: true })
+    removed++
+  }
+  return removed
+}
+
 export function isTaskLive(task: Pick<ScheduledTask, 'status'>): boolean {
   return task.status === undefined || task.status === 'live'
 }
