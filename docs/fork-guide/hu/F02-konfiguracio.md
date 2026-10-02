@@ -164,7 +164,14 @@ Egy kategória mezői (a `GET /api/autonomy` válasz `categories` tömbjének el
 
 - `locked: true` -- a szint nem emelhető (biztonsági korlát)
 - `maxLevel` -- a maximálisan beállítható szint
-- `timeout_minutes` (DB-mező, a `GET /api/autonomy` válaszban nem szerepel) -- jóváhagyás-kérés timeout percben, csak level 2-nél
+- `timeout_minutes` -- a jóváhagyás-kérés lejárata percben; a `GET /api/autonomy` válaszban `timeoutMinutes`. A 0067-es migráció 60 percre állítja minden olyan kategóriánál, amely jóváhagyást kérhet (`maxLevel` legalább 2) és még nem volt értéke; a már beállított érték megmarad, a zárolt (level 1) kategóriák NULL-on maradnak, náluk nem keletkezik kérés. A NULL nem "korlátlan", hanem a 24 órás plafont jelenti (1440 perc)
+
+**Jóváhagyás-lejárat.**
+- Minden új kérés kap `timeout_at`-ot: a kategória értékét, vagy a 24 órás plafont, ha a kategória ismeretlen (például `github_pr`) vagy az értéke NULL.
+- A `POST /api/approvals` törzsének `timeout_seconds` mezője (amelyet az ágens-sablon és a flotta promptjai mindig is küldtek) csak rövidíthet a fenti értéken, nem hosszabbíthat. A hiányzó, nulla, negatív vagy nem szám értéket a szerver figyelmen kívül hagyja.
+- A lejárt kérésre a `PATCH /api/approvals/<id>` 409-et ad (`Approval has expired`), akkor is, ha a söprés (60 másodpercenként fut) még nem jelölte `timeout`-nak; magának a `timeout` státusznak a rögzítése megengedett. A söprés `resolved_by = system:timeout` értéket ír, így a lejárat megkülönböztethető az emberi elutasítástól. Lejáratkor nem megy Telegram-értesítés, csak az eddig is írt összesített audit bejegyzés készül.
+- A migráció a `timeout_at` nélküli, még függő kérésnek is ad határidőt: `requested_at` + 60 perc.
+- A `POST /api/autonomy` a `level` mellett (vagy helyett) `timeout_minutes`-t is fogad: 1 és 10080 közötti egész szám, vagy `null` (a 24 órás plafon). Csak admin (más 403-at kap), írás előtt validált, és minden módosítás audit bejegyzést ír a régi és az új értékkel. Dashboard-mező hozzá egyelőre nincs.
 
 Az ágensek (a CLAUDE.md-instrukció szerint) a `GET /api/autonomy`-t hívják egy kategória aktuális szintjének lekérdezéséhez, nem fájlt olvasnak -- ha a dashboard nem elérhető, a biztonságos alapállapot level 1 (csak jelez).
 

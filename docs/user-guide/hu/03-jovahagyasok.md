@@ -27,7 +27,7 @@ A Jóváhagyások nézet a 2. szintű kéréseket mutatja.
 | **Kategória** | A művelet típusa (pl. `file_write`, `external_message`) |
 | **Tevékenység** | Rövid leírás, hogy mit szeretne végrehajtani |
 | **Státusz** | Várakozó / Jóváhagyott / Elutasított / Lejárt |
-| **Határidő** | Meddig vár a kérés döntésre; lejárat után automatikusan `Lejárt` státuszba kerül |
+| **Határidő** | Meddig vár a kérés döntésre; alapesetben 60 perc a létrehozástól, ha a kategóriának nincs saját értéke, legfeljebb 24 óra. Lejárat után automatikusan `Lejárt` státuszba kerül |
 | **Döntés** | Jóváhagyás vagy Elutasítás gomb (csak Várakozó kéréseknél aktív) |
 
 ---
@@ -64,6 +64,6 @@ Egy sorra kattintva megnyílik a részlet-panel, amely tartalmazza:
 
 ## Tippek
 
-- Ha egy kérés lejár (timeout), az ágens nem hajtja végre a műveletet; nem kell külön elutasítani.
+- Ha egy kérés lejár (timeout), az ágens nem hajtja végre a műveletet; nem kell külön elutasítani. A lejárt kérést már sem jóváhagyni, sem elutasítani nem lehet: ha a művelet még kell, az ágensnek új kérést kell indítania. Lejáratkor nem megy Telegram-értesítés, az előzményekben a `Lejárt` státusz látszik.
 - Sürgős kérések az autonómia-konfiguráció alapján megjelenhetnek Telegramon is - a dashboard az összes előzményt mutatja.
 - Az autonómia-szintek konfigurálása a Beállítások nézetben érhető el.

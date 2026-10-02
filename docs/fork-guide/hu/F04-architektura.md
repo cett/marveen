@@ -175,7 +175,7 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 | `device_keys` | Eszközkulcsok (agent device auth) |
 | `vault_ssh_keys` | SSH kulcsok a Vault-ban |
 | `vault_ssh_servers` | SSH szerverek a Vault-ban |
-| `approvals` | Autonómia-jóváhagyási kérések |
+| `approvals` | Autonómia-jóváhagyási kérések (a `timeout_at` mindig kitöltött: kategória-érték vagy 24 órás plafon) |
 
 **Konfiguráció**
 
@@ -183,7 +183,7 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 |-------|---------|
 | `system_config` | Dashboard-on tárolt konfiguráció (felülírja az .env-t) |
 | `config_change_log` | Konfigurációs változtatások naplója |
-| `autonomy_categories` | Ágensek autonómia-szintjei kategóriánként |
+| `autonomy_categories` | Ágensek autonómia-szintjei és jóváhagyás-lejárata (`timeout_minutes`) kategóriánként |
 | `model_profile_map` | Modell-profil azonosító -> konkrét modell-id térkép |
 
 **Skilletek és tenant-kezelés**
@@ -197,6 +197,8 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 | `dashboard_users` | Dashboard felhasználók (per-tenant) |
 | `tenant_agent_availability` | Tenant-ágens hozzárendelés |
 | `partner_senders` | Külső (nem ágens) üzenetküldők |
+
+**Tenant-törlés és a purge-registry.** A `deleteTenant` (`src/db/observability.ts`) egy tranzakcióban töröl, és a `tenant_id` oszlopos táblákat négy kiegészítő halmazba sorolja: `TENANT_PURGE_SIMPLE_TABLES` (egyszerű `DELETE ... WHERE tenant_id = ?`), `TENANT_PURGE_AGENT_KEYED_TABLES` (`agent_settings`, `agent_state`, `fleet_blackboard`), `TENANT_PURGE_HANDLED_TABLES` (a függvény más lépései kezelik) és `TENANT_PURGE_EXEMPT_TABLES` (`api_tokens`: visszavont tombstone marad). Az ágens-kulcsolt táblákban a `tenant_id` azt jelöli, ki írta a sort, nem a tulajdont: a törlés csak a tenant kizárólagos ágenseinek sorait viszi (az ágenslista a `tenant_agent_availability` törlése ELŐTT készül), a megosztott ágenseké `default` címkét kap. Az `import_audit_log` az `import_sources` előtt, kifejezetten törlődik, nem az FK-kaszkádon át. A `token_usage_daily` és `token_usage_monthly` összesítőnek nincs `tenant_id` oszlopa, ezért maradnak. A visszatérési érték `purged` (táblánkénti sorszám, `<tábla>_retagged` az átcímkézésre) és `exclusiveAgents`; az admin útvonal ezeket `purged` és `exclusive_agents` néven adja vissza és az audit bejegyzésbe is beírja. Drift-teszt végigmegy minden `tenant_id` oszlopos táblán, és a build elbukik, ha egy későbbi migráció új táblája nincs a fenti halmazok egyikében.
 
 **Audit és megfigyelés**
 
