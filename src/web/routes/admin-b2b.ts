@@ -161,8 +161,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     // The tenant's schedules are gone from the table; their file mirror must go too, or an
     // empty-table re-seed would bring them back.
     const mirrorsRemoved = removeScheduledTaskFiles(result.scheduleNames ?? [])
-    auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted, schedules_deleted: result.scheduleNames?.length ?? 0, schedule_mirrors_removed: mirrorsRemoved })
-    json(res, { ok: true, tenant_id: tenantId, memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted })
+    auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted, schedules_deleted: result.scheduleNames?.length ?? 0, schedule_mirrors_removed: mirrorsRemoved, purged: result.purged, exclusive_agents: result.exclusiveAgents })
+    json(res, { ok: true, tenant_id: tenantId, memories_deleted: result.memoriesDeleted, secrets_deleted: result.secretsDeleted, purged: result.purged ?? {}, exclusive_agents: result.exclusiveAgents ?? [] })
     return true
   }
 

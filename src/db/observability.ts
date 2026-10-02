@@ -411,6 +411,45 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
   return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant
 }
 
+// Tables whose rows belong to a tenant by a plain `tenant_id` column and are purged with one
+// `DELETE ... WHERE tenant_id = ?` (no children, no vector sync, no agent keying). The drift guard
+// in the tests walks every `tenant_id` table against the three sets below, so a table added by a
+// later migration is a red test until someone decides where it belongs.
+export const TENANT_PURGE_SIMPLE_TABLES = [
+  'cost_budgets',
+  'egress_allowlist',
+  'idea_box',
+  'vault_bindings',
+  'token_usage',
+  'fleet_blackboard_history',
+] as const
+
+// Agent-keyed tables: `tenant_id` says who wrote the row, not who owns it, so the purge decides per
+// agent (see the exclusive-agent rule in deleteTenant).
+export const TENANT_PURGE_AGENT_KEYED_TABLES = ['agent_settings', 'agent_state', 'fleet_blackboard'] as const
+
+// Tables deleteTenant handles with its own statements (children, vec0 sync, FK order, file I/O).
+export const TENANT_PURGE_HANDLED_TABLES = [
+  'approvals', 'agent_messages', 'agent_tenant_context', 'artifacts', 'dashboard_users', 'device_keys',
+  'import_audit_log', 'import_memories', 'import_sources', 'kanban_cards', 'memories', 'partner_senders',
+  'schedules', 'skill_tenant_access', 'skills', 'tenant_agent_availability', 'tenant_channel_bindings',
+  'vault_ssh_keys', 'vault_ssh_servers', 'workspace_docs',
+] as const
+
+// Tables that deliberately keep their rows. api_tokens is a tombstone: the row stays for the access
+// history (hash only, not reversible, the rotated_from chain stays intact) and revoked_at is set.
+export const TENANT_PURGE_EXEMPT_TABLES = ['api_tokens'] as const
+
+export interface TenantDeleteResult {
+  memoriesDeleted: number
+  secretsDeleted: number
+  scheduleNames: string[]
+  /** Rows removed per table by the tenant-keyed cleanups added on top of the original cascade. */
+  purged: Record<string, number>
+  /** Agents enabled for this tenant and for no other: their agent-keyed rows went with the tenant. */
+  exclusiveAgents: string[]
+}
+
 // Permanently delete a tenant and all its associated data.
 // Deletion order respects FK constraints and audit requirements:
 //   1. Reject pending approvals first (before dashboard_users are gone).
@@ -425,7 +464,8 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //  10. Drop skill_tenant_access before skills (FK; foreign_keys is on by default, so the order matters).
 //  11. Drop skills.
 //  12. Drop vec_workspace_docs then workspace_docs (app-level vec sync, no trigger).
-//  13. Drop tenant_agent_availability, tenant_channel_bindings and agent_tenant_context.
+//  13. Drop tenant_agent_availability, tenant_channel_bindings and agent_tenant_context
+//      (the agents exclusive to the tenant are read BEFORE this step, the step erases the evidence).
 //  14. Drop vault_ssh_servers (child of vault_ssh_keys by FK direction).
 //  15. Drop vault_ssh_keys.
 //  16. Purge vault.json secrets -- the one non-transactional step (file I/O,
@@ -433,11 +473,28 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //      tenant-row delete so if it throws, that last SQL statement never
 //      runs and the whole SQL transaction rolls back consistently.
 //  17. Drop the tenant row itself.
+// The tenant-keyed leftovers (TENANT_PURGE_SIMPLE_TABLES, import_audit_log before import_sources)
+// and the agent-keyed rows (agent_settings, agent_state, fleet_blackboard) are cleaned right before
+// step 16. An agent-keyed row tagged with this tenant is deleted when its agent is exclusive to the
+// tenant, and re-tagged to `default` when the agent also serves another tenant (its configuration
+// outlives the tenant). token_usage_daily / _monthly have no tenant_id and stay (numbers only).
 // The 'default' tenant is permanently guarded and throws if passed.
-export function deleteTenant(tenantId: string): { memoriesDeleted: number, secretsDeleted: number, scheduleNames: string[] } {
+export function deleteTenant(tenantId: string): TenantDeleteResult {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  return db.transaction((): { memoriesDeleted: number, secretsDeleted: number, scheduleNames: string[] } => {
+  return db.transaction((): TenantDeleteResult => {
+    // 0. Agents exclusive to this tenant: exactly one enabled availability row, and it is this tenant's
+    //    (the same reading as resolveAgentTenant). Must run before step 13 deletes the availability rows.
+    const exclusiveAgents = (
+      db.prepare(
+        `SELECT agent_id FROM tenant_agent_availability
+          WHERE tenant_id = ? AND enabled = 1
+            AND (SELECT COUNT(*) FROM tenant_agent_availability o WHERE o.agent_id = tenant_agent_availability.agent_id AND o.enabled = 1) = 1
+          ORDER BY agent_id`,
+      ).all(tenantId) as { agent_id: string }[]
+    ).map((r) => r.agent_id)
+    const purged: Record<string, number> = {}
+
     // 1. Reject pending approvals
     db.prepare(
       "UPDATE approvals SET status = 'rejected', resolved_at = unixepoch() WHERE tenant_id = ? AND status = 'pending'",
@@ -520,13 +577,30 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number, secre
     db.prepare('DELETE FROM vault_ssh_servers WHERE tenant_id = ?').run(tenantId)
     db.prepare('DELETE FROM vault_ssh_keys WHERE tenant_id = ?').run(tenantId)
 
+    // 15b. Tenant-keyed leftovers. import_audit_log goes before import_sources on purpose: the FK would
+    //      cascade it, but a silent cascade is how 0041 once lost audit rows, so it is explicit and counted.
+    purged.import_audit_log = db.prepare('DELETE FROM import_audit_log WHERE tenant_id = ?').run(tenantId).changes
+    purged.import_sources = db.prepare('DELETE FROM import_sources WHERE tenant_id = ?').run(tenantId).changes
+    for (const table of TENANT_PURGE_SIMPLE_TABLES) {
+      purged[table] = db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId).changes
+    }
+
+    // 15c. Agent-keyed rows tagged with this tenant: exclusive agent -> delete, anyone else -> re-tag.
+    const exclusivePh = exclusiveAgents.map(() => '?').join(', ')
+    for (const table of TENANT_PURGE_AGENT_KEYED_TABLES) {
+      purged[table] = exclusiveAgents.length > 0
+        ? db.prepare(`DELETE FROM ${table} WHERE tenant_id = ? AND agent_id IN (${exclusivePh})`).run(tenantId, ...exclusiveAgents).changes
+        : 0
+      purged[`${table}_retagged`] = db.prepare(`UPDATE ${table} SET tenant_id = 'default' WHERE tenant_id = ?`).run(tenantId).changes
+    }
+
     // 16. Purge vault.json secrets (non-transactional file I/O -- see comment above)
     const secretsDeleted = purgeSecretsForTenant(tenantId)
 
     // 17. Drop the tenant row
     db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
 
-    return { memoriesDeleted: memIds.length, secretsDeleted, scheduleNames }
+    return { memoriesDeleted: memIds.length, secretsDeleted, scheduleNames, purged, exclusiveAgents }
   })()
 }
 

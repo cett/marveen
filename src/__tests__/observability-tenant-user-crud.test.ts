@@ -94,7 +94,7 @@ describe('tenant CRUD', () => {
   it('deleteTenant removes an empty tenant and reports zero deletions', () => {
     createTenant('empty-tenant', 'Empty')
     const result = deleteTenant('empty-tenant')
-    expect(result).toEqual({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [] })
+    expect(result).toMatchObject({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [], exclusiveAgents: [] })
     expect(getTenant('empty-tenant')).toBeUndefined()
   })
 
