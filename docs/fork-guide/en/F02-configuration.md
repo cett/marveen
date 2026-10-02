@@ -164,7 +164,14 @@ A category's fields (as returned in the `categories` array of `GET /api/autonomy
 
 - `locked: true` — level cannot be raised (safety constraint)
 - `maxLevel` — highest level that can be configured
-- `timeout_minutes` (DB field, not in the `GET /api/autonomy` response) — approval request timeout in minutes, level 2 only
+- `timeout_minutes` -- approval request lifetime in minutes; reported as `timeoutMinutes` in the `GET /api/autonomy` response. Migration 0067 sets it to 60 on every category that can raise an approval (`maxLevel` at least 2) and has no value yet; a value that was already set is kept, and the locked (level 1) categories stay NULL because they never raise a request. NULL does not mean unlimited, it means the 24 hour ceiling (1440 minutes)
+
+**Approval expiry.**
+- Every new request gets a `timeout_at`: the category's value, or the 24 hour ceiling when the category is unknown (for example `github_pr`) or its value is NULL.
+- The `timeout_seconds` field of the `POST /api/approvals` body (which the agent template and the fleet's prompts have always sent) can only shorten that value, never extend it. A missing, zero, negative or non-numeric value is ignored by the server.
+- `PATCH /api/approvals/<id>` answers 409 (`Approval has expired`) for an expired request, even when the sweeper (it runs every 60 seconds) has not marked it `timeout` yet; recording the `timeout` status itself is allowed. The sweeper writes `resolved_by = system:timeout`, so an expiry can be told apart from a human rejection. No Telegram message is sent on expiry, only the aggregated audit entry that was already written.
+- The migration also gives a still-pending request that has no `timeout_at` a deadline: `requested_at` + 60 minutes.
+- `POST /api/autonomy` accepts `timeout_minutes` next to (or instead of) `level`: a whole number from 1 to 10080, or `null` (the 24 hour ceiling). Admin only (anyone else gets 403), validated before anything is written, and each change writes an audit entry with the old and new value. There is no dashboard field for it yet.
 
 Agents (per the CLAUDE.md instruction) query a category's current level via `GET /api/autonomy` rather than reading a file — if the dashboard is unreachable, the safe default is level 1 (notify only).
 

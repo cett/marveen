@@ -99,6 +99,14 @@ After the enforce phase is enabled (`RBAC_MODE=enforce`), the system automatical
 - The agent list (`/api/v1/agents`) is tenant-independent -- all authenticated users can see which agents are running.
 - The blackboard is also tenant-independent for agent and admin roles -- fleet coordination requires agents to see each other's state.
 
+### Deleting a tenant
+
+Deleting a tenant (`DELETE /api/v1/admin/tenants/<tenant_id>`, admin only; the `default` tenant cannot be deleted) is permanent and cannot be undone. The delete removes the tenant's data in one transaction: memories, kanban, messages, working documents, skills, scheduled tasks, secrets (vault), imported knowledge, and the following, which earlier versions used to leave behind: cost budgets, egress allowlist entries, ideas, vault bindings, import sources with their audit log, the raw token usage rows (content previews and task titles included) and the blackboard history.
+
+- **Agent-level settings follow the agent, not the tenant.** An agent's settings, state and blackboard row are tagged with the tenant that wrote them, but they are not owned by it. If the agent was enabled for the deleted tenant and no other, those rows are deleted. If it also serves another tenant (a shared agent), its settings stay, re-tagged to `default`.
+- **What stays.** API tokens, as revoked tombstones kept for the audit trail; the daily and monthly token rollups (numbers only, no tenant identifier).
+- **The response** lists the rows removed per table in `purged` (`<table>_retagged` for re-tagged rows) and, in `exclusive_agents`, the agents left without a tenant. The delete does not touch an agent's process, bot or directory: stopping or removing them is a separate step. The `admin.tenant.delete` audit entry carries the same fields.
+
 ### Scheduled tasks and tenants
 
 Scheduled tasks are owned by a tenant (details in [06 - Tasks](06-tasks.md)):

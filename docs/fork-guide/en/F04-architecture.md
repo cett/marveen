@@ -175,7 +175,7 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 | `device_keys` | Device keys (agent device auth) |
 | `vault_ssh_keys` | SSH keys stored in Vault |
 | `vault_ssh_servers` | SSH servers stored in Vault |
-| `approvals` | Autonomy approval requests |
+| `approvals` | Autonomy approval requests (`timeout_at` is always set: the category value or a 24 hour ceiling) |
 
 **Configuration**
 
@@ -183,7 +183,7 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 |-------|---------|
 | `system_config` | Dashboard-managed configuration (overrides .env) |
 | `config_change_log` | Configuration change audit log |
-| `autonomy_categories` | Per-category autonomy levels for agents |
+| `autonomy_categories` | Per-category autonomy levels and approval expiry (`timeout_minutes`) for agents |
 | `model_profile_map` | Model-profile-id to concrete model-id mapping |
 
 **Skills and tenants**
@@ -197,6 +197,8 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 | `dashboard_users` | Dashboard users (per-tenant) |
 | `tenant_agent_availability` | Tenant-agent assignment |
 | `partner_senders` | External (non-agent) message senders |
+
+**Tenant delete and the purge registry.** `deleteTenant` (`src/db/observability.ts`) deletes in one transaction and assigns every table with a `tenant_id` column to one of four sets: `TENANT_PURGE_SIMPLE_TABLES` (plain `DELETE ... WHERE tenant_id = ?`), `TENANT_PURGE_AGENT_KEYED_TABLES` (`agent_settings`, `agent_state`, `fleet_blackboard`), `TENANT_PURGE_HANDLED_TABLES` (handled by other steps of the function) and `TENANT_PURGE_EXEMPT_TABLES` (`api_tokens`: a revoked tombstone stays). In the agent-keyed tables `tenant_id` records who wrote the row, not who owns it: the delete removes only the rows of the tenant's exclusive agents (the agent list is taken BEFORE `tenant_agent_availability` is deleted), and a shared agent's rows are re-tagged to `default`. `import_audit_log` is deleted explicitly before `import_sources`, not through the FK cascade. `token_usage_daily` and `token_usage_monthly` have no `tenant_id` column, so they stay. The return value carries `purged` (row count per table, `<table>_retagged` for re-tags) and `exclusiveAgents`; the admin route returns them as `purged` and `exclusive_agents` and writes them into the audit entry. A drift test walks every table that has a `tenant_id` column and fails the build when a table added by a later migration is in none of the sets.
 
 **Audit and observability**
 

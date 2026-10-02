@@ -99,6 +99,14 @@ Az enforce fázis bekapcsolása után (`RBAC_MODE=enforce`) a rendszer minden le
 - Az ágensek listája (`/api/v1/agents`) tenant-független -- minden hitelesített felhasználó látja, mely ágensek futnak.
 - A blackboard szintén tenant-független olvasással rendelkezik agent és admin szerepkörök számára.
 
+### Tenant törlése
+
+A tenant törlése (`DELETE /api/v1/admin/tenants/<tenant_id>`, csak admin; a `default` tenant nem törölhető) végleges, nem visszavonható. A törlés egy tranzakcióban eltávolítja a tenant adatait: memóriák, kanban, üzenetek, munkadokumentumok, skillek, ütemezett feladatok, titkok (vault), importált tudás, valamint az alábbiak, amelyeket a korábbi változatok még megtartottak: költségkeretek, a kimenő-hozzáférés (egress) engedélyezőlista bejegyzései, ötletek, vault-kötések, import-források a hozzájuk tartozó naplóval, a nyers token-használati sorok (az üzenet-előnézettel és a feladatcímmel együtt) és a blackboard-előzmények.
+
+- **Ágens-szintű beállítások az ágenst követik, nem a tenantot.** Az ágens beállításai, állapota és blackboard-sora azzal a tenanttal van megcímkézve, amelyik írta, de nem az övé. Ha az ágens csak a törölt tenantnál volt engedélyezett, ezek a sorok törlődnek. Ha más tenantot is kiszolgál (megosztott ágens), a beállításai megmaradnak, `default` címkével.
+- **Ami megmarad.** Az API-tokenek visszavont (revoked) jelzéssel, naplózási célból; a napi és havi token-összesítők (csak számok, nincs bennük tenant-azonosító).
+- **A válasz** a `purged` mezőben táblánként megadja a törölt sorok számát (`<tábla>_retagged` az átcímkézett sorokra), az `exclusive_agents` pedig azokat az ágenseket, amelyek a törlés után tenant nélkül maradtak. Az ágens folyamatát, botját és könyvtárát a törlés nem érinti: a leállításuk vagy eltávolításuk külön lépés. Az `admin.tenant.delete` audit bejegyzés ugyanezeket tartalmazza.
+
 ### Ütemezett feladatok és tenantok
 
 Az ütemezett feladatoknak tenant a tulajdonosa (részletek: [06 - Feladatok](06-feladatok.md)):

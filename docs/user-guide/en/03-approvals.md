@@ -27,7 +27,7 @@ The Approvals view shows level-2 requests.
 | **Category** | Type of operation (e.g. `file_write`, `external_message`) |
 | **Action** | Short description of what the agent wants to do |
 | **Status** | Pending / Approved / Rejected / Timed out |
-| **Deadline** | How long the request waits for a decision; after expiry it automatically moves to `Timed out` |
+| **Deadline** | How long the request waits for a decision; 60 minutes from creation by default, at most 24 hours when the category has no value of its own. After expiry it automatically moves to `Timed out` |
 | **Decision** | Approve or Reject button (active only for Pending requests) |
 
 ---
@@ -64,6 +64,6 @@ Clicking a row opens the detail panel, which shows:
 
 ## Tips
 
-- If a request times out, the agent does not carry out the operation; no separate rejection is needed.
+- If a request times out, the agent does not carry out the operation; no separate rejection is needed. An expired request can no longer be approved or rejected: if the operation is still wanted, the agent has to raise a new request. No Telegram message is sent on expiry, the history shows the `Timed out` status.
 - Urgent requests may also appear on Telegram depending on the autonomy configuration - the dashboard shows the full history.
 - Autonomy levels are configured in the Settings view.
