@@ -16,6 +16,7 @@ import { writeTaskState, clearTaskState } from '../web/agent-taskstate.js'
 import {
   hasLiveChildProcesses,
   claudeSessionStartMs,
+  resolveClaudeSessionStart,
   getLiveWorkChildArgs,
   hasLiveTaskStateFile,
   getMcpJsonPatterns,
@@ -285,5 +286,31 @@ describe('extractMcpPackageNames edge cases', () => {
     expect(extractMcpPackageNames({
       weird: { command: 'node', args: [null, 0, '', 'gmail-mcp-server@1.0.30'] },
     })).toEqual(['gmail-mcp-server'])
+  })
+})
+
+describe('resolveClaudeSessionStart: says why the start is unknown', () => {
+  const NOW = 1_800_000_000_000
+
+  it('known start carries no reason', async () => {
+    await mockProcessTree({ panePid: 100, comm: { 100: 'claude' }, children: { 100: [] }, age: { 100: 600 } })
+    expect(resolveClaudeSessionStart(SESSION, NOW)).toEqual({ startMs: NOW - 600_000, reason: null })
+  })
+
+  it('no tmux pane -> reason names the session', async () => {
+    await mockProcessTree({})
+    const r = resolveClaudeSessionStart(SESSION, NOW)
+    expect(r.startMs).toBeNull()
+    expect(r.reason).toContain(SESSION)
+  })
+
+  it('claude not under the pane -> its own reason', async () => {
+    await mockProcessTree({ panePid: 100, comm: { 100: 'bash' }, children: { 100: [] } })
+    expect(resolveClaudeSessionStart(SESSION, NOW).reason).toMatch(/claude process not found/)
+  })
+
+  it('ps cannot read the age -> its own reason', async () => {
+    await mockProcessTree({ panePid: 100, comm: { 100: 'claude' }, children: { 100: [] }, age: { 100: 'fail' } })
+    expect(resolveClaudeSessionStart(SESSION, NOW).reason).toMatch(/could not read the age/)
   })
 })
