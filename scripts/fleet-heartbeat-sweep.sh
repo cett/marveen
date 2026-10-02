@@ -42,24 +42,44 @@ EOF
 # Fan-out quota guard. The per-task quota gate sees ONE gate decision, but this sweep
 # multiplies it into N sub-agent heartbeat turns (1 decision -> N model calls) that the
 # gate cannot account for. Above a fan-out-adjusted threshold, skip the whole sweep so a
-# high-quota window is never blown by background heartbeats. Reads the same usage snapshot
-# the dashboard maintains (store/claude-usage.json: sessionPct / weeklyPct).
+# high-quota window is never blown by background heartbeats.
+# Reads the rate-limit block the statusLine writes on every render
+# (scripts/statusline-ratelimit.sh -> store/.claude-rate-limits.json, the file the dashboard
+# quota strip reads too, src/web/quota.ts): {"written_at": <unix SEC>, "rate_limits":
+# {"five_hour": {"used_percentage", "resets_at"}, "seven_day": {...}}}. Same rules as
+# readQuotaSnapshot: a window counts only when used_percentage is a number and its resets_at
+# (unix sec) is still in the future, since a rolled-over window describes a period that is gone;
+# PCT is the larger of the counting windows.
 # Like the per-task gate (src/quota-gate.ts, staleAfterMs) it only trusts a FRESH snapshot:
-# a number older than QUOTA_STALE_MINUTES says nothing about now, so the guard fails open.
-# Without this check a snapshot frozen at 83% (2026-06-15) skipped every sweep for 40 days.
+# a number older than QUOTA_STALE_MINUTES says nothing about now. Whenever there is no usable
+# reading (no file, unreadable JSON, no written_at, stale, no counting window) the guard fails
+# open and says exactly why in the log.
 QUOTA_THRESHOLD="${QUOTA_THRESHOLD:-75}"
 QUOTA_STALE_MINUTES="${QUOTA_STALE_MINUTES:-20}"
-USAGE_FILE="$ROOT/store/claude-usage.json"
-if [ -f "$USAGE_FILE" ]; then
-  FETCHED_MS="$(jq -r '.fetchedAt // empty' "$USAGE_FILE" 2>/dev/null || true)"
-  NOW_MS=$(( $(date +%s) * 1000 ))
-  if ! [[ "$FETCHED_MS" =~ ^[0-9]+$ ]]; then
-    echo "[$(ts)] usage snapshot has no fetchedAt -- fan-out guard fails open" >> "$LOG"
-  elif [ $(( NOW_MS - FETCHED_MS )) -gt $(( QUOTA_STALE_MINUTES * 60000 )) ]; then
-    echo "[$(ts)] usage snapshot stale ($(( (NOW_MS - FETCHED_MS) / 60000 ))m > ${QUOTA_STALE_MINUTES}m) -- fan-out guard fails open" >> "$LOG"
+RATE_FILE="$ROOT/store/.claude-rate-limits.json"
+if [ ! -f "$RATE_FILE" ]; then
+  echo "[$(ts)] rate-limit snapshot missing ($RATE_FILE) -- fan-out guard fails open" >> "$LOG"
+elif ! jq -e 'type == "object"' "$RATE_FILE" >/dev/null 2>&1; then
+  echo "[$(ts)] rate-limit snapshot unreadable (not a JSON object) -- fan-out guard fails open" >> "$LOG"
+else
+  NOW_S="$(date +%s)"
+  WRITTEN_S="$(jq -r 'if (.written_at | type) == "number" then (.written_at | floor) else empty end' "$RATE_FILE" 2>/dev/null || true)"
+  if ! [[ "$WRITTEN_S" =~ ^[0-9]+$ ]]; then
+    echo "[$(ts)] rate-limit snapshot has no written_at -- fan-out guard fails open" >> "$LOG"
+  elif [ $(( NOW_S - WRITTEN_S )) -gt $(( QUOTA_STALE_MINUTES * 60 )) ]; then
+    echo "[$(ts)] rate-limit snapshot stale ($(( (NOW_S - WRITTEN_S) / 60 ))m > ${QUOTA_STALE_MINUTES}m) -- fan-out guard fails open" >> "$LOG"
   else
-    PCT="$(jq -r '[(.sessionPct // 0), (.weeklyPct // 0)] | max | floor' "$USAGE_FILE" 2>/dev/null || echo 0)"
-    if [ -n "$PCT" ] && [ "$PCT" != "null" ] && [ "$PCT" -ge "$QUOTA_THRESHOLD" ] 2>/dev/null; then
+    PCT="$(jq -r --argjson now "$NOW_S" '
+      (.rate_limits | if type == "object" then . else {} end) as $rl
+      | [$rl.five_hour, $rl.seven_day]
+      | map(select(type == "object"
+                   and (.used_percentage | type) == "number"
+                   and ((.resets_at | type) != "number" or .resets_at > $now))
+            | .used_percentage)
+      | if length == 0 then empty else (max | floor) end' "$RATE_FILE" 2>/dev/null || true)"
+    if ! [[ "$PCT" =~ ^[0-9]+$ ]]; then
+      echo "[$(ts)] rate-limit snapshot has no live rate_limits window (missing, malformed or already reset) -- fan-out guard fails open" >> "$LOG"
+    elif [ "$PCT" -ge "$QUOTA_THRESHOLD" ]; then
       echo "[$(ts)] quota ${PCT}% >= ${QUOTA_THRESHOLD}% (fan-out guard) -- skipping fleet heartbeat sweep" >> "$LOG"
       exit 0
     fi
