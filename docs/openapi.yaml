@@ -4452,8 +4452,13 @@ paths:
       summary: Hard-delete a tenant
       description: |
         Permanently deletes a tenant and all associated data (memories, artifacts,
-        users, partner senders, device-key assignments). The `default` tenant
-        cannot be deleted. Requires `admin:all` role.
+        users, partner senders, device-key assignments, tenant-keyed cost budgets,
+        egress allowlist entries, ideas, vault bindings, import sources with their
+        audit log, token usage rows and blackboard history). Agent-keyed rows
+        (settings, state, blackboard) of an agent that serves only this tenant are
+        deleted; those of an agent that also serves another tenant are kept and
+        re-tagged to `default`. API tokens stay as revoked tombstones. The `default`
+        tenant cannot be deleted. Requires `admin:all` role.
       parameters:
         - name: tenant_id
           in: path
@@ -4474,6 +4479,18 @@ paths:
                     type: string
                   memories_deleted:
                     type: integer
+                  secrets_deleted:
+                    type: integer
+                  purged:
+                    type: object
+                    description: Rows removed (or re-tagged, `<table>_retagged`) per table by the tenant-keyed cleanup.
+                    additionalProperties:
+                      type: integer
+                  exclusive_agents:
+                    type: array
+                    description: Agents that served only this tenant. Their agent-keyed rows were deleted; the agent process, bot and directory are not touched.
+                    items:
+                      type: string
         "403":
           description: "`forbidden` — cannot delete the default tenant"
           content:

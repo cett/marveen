@@ -133,7 +133,7 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
 
   it('returns 200 with ok and cascade summary for a valid tenant', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 7, secretsDeleted: 2, scheduleNames: [] })
+    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 7, secretsDeleted: 2, scheduleNames: [], purged: { token_usage: 3 }, exclusiveAgents: ['agent-x'] })
     const { ctx, out } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
@@ -141,11 +141,14 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
     expect(out.body.tenant_id).toBe('acme-corp')
     expect(out.body.memories_deleted).toBe(7)
     expect(out.body.secrets_deleted).toBe(2)
+    // The cleanup counts and the orphaned agents are part of the answer, so the admin sees what is left to do.
+    expect(out.body.purged).toEqual({ token_usage: 3 })
+    expect(out.body.exclusive_agents).toEqual(['agent-x'])
   })
 
   it('removes the file mirror of exactly the schedules the tenant delete dropped', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: ['job-a', 'job-b'] })
+    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: ['job-a', 'job-b'], purged: {}, exclusiveAgents: [] })
     mockRemoveFiles.mockClear()
     const { ctx, out } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
@@ -156,7 +159,7 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
 
   it('calls deleteTenant with the correct tenantId', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [] })
+    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [], purged: {}, exclusiveAgents: [] })
     const { ctx } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
     expect(vi.mocked(db.deleteTenant)).toHaveBeenCalledOnce()
