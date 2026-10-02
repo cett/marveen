@@ -63,6 +63,14 @@ describe('autonomy_categories read/write helpers', () => {
     expect(row.label).toBe('Y')
   })
 
+  it('setAutonomyCategoryTimeout sets and clears timeout_minutes, leaves level and label untouched', () => {
+    dbMod.upsertAutonomyCategory({ key: 'tm', label: 'TM', level: 2, locked: 0, max_level: 3, timeout_minutes: 60, updated_by: 'system' })
+    dbMod.setAutonomyCategoryTimeout('tm', 240, 'dashboard')
+    expect(dbMod.getAutonomyCategory('tm')).toMatchObject({ timeout_minutes: 240, level: 2, label: 'TM', updated_by: 'dashboard' })
+    dbMod.setAutonomyCategoryTimeout('tm', null, 'dashboard')
+    expect(dbMod.getAutonomyCategory('tm')!.timeout_minutes).toBeNull()
+  })
+
   it('listAutonomyCategories returns rows ordered by key', () => {
     dbMod.upsertAutonomyCategory({ key: 'zz_key', label: 'ZZ', level: 1, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })
     dbMod.upsertAutonomyCategory({ key: 'aa_key', label: 'AA', level: 1, locked: 0, max_level: 3, timeout_minutes: null, updated_by: 'db' })

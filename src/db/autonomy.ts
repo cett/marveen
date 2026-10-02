@@ -34,6 +34,13 @@ export function setAutonomyCategoryLevel(key: string, level: number, updatedBy: 
   ).run(level, updatedBy, key)
 }
 
+/** Set (or, with null, clear back to the server's 24 h ceiling) a category's approval timeout. */
+export function setAutonomyCategoryTimeout(key: string, timeoutMinutes: number | null, updatedBy: string): void {
+  db.prepare(
+    `UPDATE autonomy_categories SET timeout_minutes = ?, updated_at = unixepoch(), updated_by = ? WHERE key = ?`
+  ).run(timeoutMinutes, updatedBy, key)
+}
+
 // Full row upsert, used by fleet-transfer.ts import (replaces the whole
 // category set from an imported snapshot).
 export function upsertAutonomyCategory(row: Omit<AutonomyCategoryRow, 'updated_at'> & { updated_at?: number }): void {

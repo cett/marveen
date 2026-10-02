@@ -2232,7 +2232,11 @@ paths:
                   description: Optional JSON payload for the action
                 timeout_seconds:
                   type: integer
-                  description: Override the category default timeout
+                  description: |
+                    Shorten how long the request stays open. The category's `timeout_minutes`
+                    (24 hours for an unknown category or a category without one) is the ceiling:
+                    a longer value is capped to it, a missing, zero, negative or non-numeric
+                    value is ignored. The response `timeout_at` is always set.
             example:
               agent_id: "agent-b"
               category: "code_deploy"
@@ -2282,7 +2286,7 @@ paths:
       tags: [approvals]
       operationId: resolveApproval
       summary: Resolve an approval (approve / reject / timeout)
-      description: Self-approval guard — the requesting agent cannot approve its own request.
+      description: Self-approval guard — the requesting agent cannot approve its own request. A request past its `timeout_at` cannot be approved or rejected any more.
       requestBody:
         required: true
         content:
@@ -2327,7 +2331,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Already resolved
+          description: Already resolved, or past its deadline (`Approval has expired`; the sweeper then records it as `timeout` with `resolved_by` `system:timeout`)
           content:
             application/json:
               schema:
@@ -4252,6 +4256,7 @@ paths:
       tags: [autonomy]
       operationId: getAutonomyConfig
       summary: Current autonomy level configuration
+      description: Each category carries `level`, `locked`, `maxLevel` and `timeoutMinutes` (null means the 24-hour ceiling applies).
       responses:
         "200":
           description: Autonomy config
@@ -4269,14 +4274,24 @@ paths:
           application/json:
             schema:
               type: object
-              required: [category, level]
+              required: [key]
+              description: At least one of `level` and `timeout_minutes` is required.
               properties:
-                category:
+                key:
                   type: string
+                  description: The category key
                 level:
                   type: integer
                   minimum: 1
                   maximum: 3
+                timeout_minutes:
+                  type: integer
+                  nullable: true
+                  minimum: 1
+                  maximum: 10080
+                  description: |
+                    How long an approval of this category stays open. `null` clears it back to the
+                    24-hour ceiling. Admin only (`403` otherwise).
       responses:
         "200":
           description: Updated

@@ -10,17 +10,18 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
+import { resolveApprovalTimeoutSeconds } from '../approval-timeout.js'
 
-// DB unavailable (or category missing timeout_minutes) -> null, unchanged
-// behavior from the JSON side-car days (no timeout limit).
-function getTimeoutAt(category: string): number | null {
+// Every approval gets a deadline: the category's timeout_minutes, or the 24 h ceiling for an unknown
+// category / NULL value / unreadable DB. The caller's timeout_seconds can only shorten it.
+function getTimeoutAt(category: string, requestedSeconds: unknown): number {
+  let categoryMinutes: number | null = null
   try {
-    const cat = getAutonomyCategory(category)
-    if (!cat || cat.timeout_minutes == null) return null
-    return Math.floor(Date.now() / 1000) + cat.timeout_minutes * 60
-  } catch {
-    return null
+    categoryMinutes = getAutonomyCategory(category)?.timeout_minutes ?? null
+  } catch (err) {
+    logger.warn({ err, category }, 'Autonomy category lookup failed, using the default approval timeout')
   }
+  return Math.floor(Date.now() / 1000) + resolveApprovalTimeoutSeconds(categoryMinutes, requestedSeconds)
 }
 
 function notifyMainAgent(approval: Approval): void {
@@ -67,7 +68,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; tenant_id?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; tenant_id?: unknown; timeout_seconds?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -75,7 +76,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, tenant_id } = body
+    const { agent_id, category, action_description, action_payload, tenant_id, timeout_seconds } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'required', field: 'agent_id', hint: 'agent_id is required' }, 400)
       return true
@@ -98,7 +99,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const id = randomUUID()
-    const timeout_at = getTimeoutAt(category)
+    const timeout_at = getTimeoutAt(category.trim(), timeout_seconds)
     const approval = createApproval({
       id,
       agent_id: agent_id.trim(),
@@ -231,6 +232,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       const existing = getApproval(idMatch[1])
       if (!existing) {
         json(res, { error: 'not_found', hint: 'Not found' }, 404)
+      } else if (existing.status === 'pending') {
+        // Still pending, so the refusal came from the deadline: expired, but not swept yet.
+        json(res, { error: 'conflict', hint: 'Approval has expired' }, 409)
       } else {
         json(res, { error: 'conflict', hint: `Already resolved as ${existing.status}` }, 409)
       }
