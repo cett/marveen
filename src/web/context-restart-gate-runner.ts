@@ -7,7 +7,7 @@ import { listAgentNames, readAgentClaudeConfigDir } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
-import { readContextTokensFromProjectDir } from './active-model.js'
+import { readContextTokensDetailed } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { getHardGuardPhase } from './context-guard-runner.js'
@@ -20,7 +20,8 @@ import {
 import {
   decideGate,
   shouldForceRestart,
-  streakBelongsToPreviousSession,
+  describeUnmeasurableContext,
+  resetStreakIfPreviousSession,
   type GateInputs,
 } from '../context-restart-gate.js'
 
@@ -286,28 +287,77 @@ export function isMcpProcess(childArgs: string, mcpPatterns: string[]): boolean 
 }
 
 /**
- * Wall-clock start time (ms) of the live claude process behind `session`, or
- * null when it cannot be determined (no pane, claude not in the tree, ps
+ * Wall-clock start time (ms) of the live claude process behind `session`, plus
+ * the reason when it cannot be determined (no pane, claude not in the tree, ps
  * failed). Two things hang off it: the context measurement is pinned to the
  * ACTIVE session's transcript, and a blocking streak that began before it
  * belongs to a previous session. Unlike the child check this signal is never
  * load-bearing for safety, so null just means "cannot tell" (old behaviour).
  */
-export function claudeSessionStartMs(session: string, nowMs: number): number | null {
+export function resolveClaudeSessionStart(
+  session: string,
+  nowMs: number,
+): { startMs: number | null; reason: string | null } {
   try {
     const panePid = getPanePid(session)
-    if (panePid === null) return null
+    if (panePid === null) return { startMs: null, reason: `tmux pane of ${session} not found` }
     const claudePid = findClaudePidInTree(
       panePid,
       getCommForPid(panePid),
       getChildPids(panePid).map(pid => ({ pid, comm: getCommForPid(pid) })),
     )
-    if (claudePid === null) return null
+    if (claudePid === null) return { startMs: null, reason: 'claude process not found under the tmux pane' }
     const age = getPidAgeSeconds(claudePid)
-    return age === null ? null : nowMs - age * 1000
-  } catch { return null }
+    if (age === null) return { startMs: null, reason: `ps could not read the age of claude pid ${claudePid}` }
+    return { startMs: nowMs - age * 1000, reason: null }
+  } catch (err) {
+    return { startMs: null, reason: `process lookup failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
 }
 
+/** Start of the live claude process, or null when it cannot be determined. */
+export function claudeSessionStartMs(session: string, nowMs: number): number | null {
+  return resolveClaudeSessionStart(session, nowMs).startMs
+}
+
+// Agents whose unknown session start was already logged (value = the logged
+// reason). One warn per agent per reason: the sweep runs every few minutes and
+// the cause is usually stable, so repeating it would only bury the log. A
+// successful lookup clears the entry, so a LATER recurrence is logged again.
+const loggedSessionStartUnknown = new Map<string, string>()
+
+/**
+ * Log why the session start is unknown, once per (agent, reason). Returns true
+ * when it logged. Pass reason=null on a successful lookup to re-arm the log.
+ */
+export function noteSessionStartUnknown(agent: string, reason: string | null): boolean {
+  if (reason === null) {
+    loggedSessionStartUnknown.delete(agent)
+    return false
+  }
+  if (loggedSessionStartUnknown.get(agent) === reason) return false
+  loggedSessionStartUnknown.set(agent, reason)
+  logger.warn({ agent, reason },
+    'context-restart-gate: session start unknown, stale block streaks of a previous session cannot be detected and the context reading is not pinned to the active session')
+  return true
+}
+
+/**
+ * Load the persisted run state and drop a block/alert streak that belongs to a
+ * previous session (the agent was restarted since), writing the reset back to
+ * agent_state so it does not return on the next sweep. Returns the state to
+ * evaluate the gate with.
+ */
+export function reconcileRunState(name: string, sessionStartMs: number | null) {
+  const stored = readGateRunState(name)
+  const reconciled = resetStreakIfPreviousSession(stored, sessionStartMs)
+  if (reconciled !== stored) {
+    logger.info({ agent: name, firstBlockedAt: stored.firstBlockedAt, lastAlertAt: stored.lastAlertAt, sessionStartMs },
+      'context-restart-gate: block streak predates the current session, resetting')
+    writeGateRunState(name, reconciled)
+  }
+  return reconciled
+}
 
 /**
  * Returns true if the session's claude process has live children that look
@@ -422,6 +472,27 @@ async function sendClear(session: string): Promise<void> {
   })
 }
 
+/**
+ * Pure: the persistent-block alert sent to the coordinator. For an unmeasurable
+ * context it says WHAT could not be measured and why, instead of the bare
+ * "unmeasurable" that sent operators hunting for a problem that was only a
+ * fresh session with no usage line yet.
+ */
+export function persistentBlockAlertText(a: {
+  name: string
+  blockedSinceMin: number | string
+  reason: string
+  thresholdTokens: number
+  childInfo: string
+  unmeasurableReason: string | null
+  sessionStartReason: string | null
+}): string {
+  const detail = a.reason.startsWith('context-tokens-unmeasurable')
+    ? ` ${describeUnmeasurableContext(a.unmeasurableReason, a.sessionStartReason)}`
+    : ''
+  return `[CONTEXT-RESTART-GATE] A(z) "${a.name}" agens kapuja ${a.blockedSinceMin} perce folyamatosan blokkolt. Ok: ${a.reason}.${detail}${a.childInfo} A(z) ${Math.round(a.thresholdTokens / 1000)}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.`
+}
+
 // ---- Gate check for one agent -----------------------------------------------
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
@@ -439,8 +510,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const hardGuardPhase = getHardGuardPhase(name)
 
   // Start of the live claude process = start of the ACTIVE session.
-  const sessionStartMs = claudeSessionStartMs(session, nowMs)
-  const contextTokens = readContextTokensFromProjectDir(workingDir, configDirFor(name), { sessionStartMs })
+  const { startMs: sessionStartMs, reason: sessionStartReason } = resolveClaudeSessionStart(session, nowMs)
+  noteSessionStartUnknown(name, sessionStartReason)
+  const { tokens: contextTokens, unmeasurableReason } =
+    readContextTokensDetailed(workingDir, configDirFor(name), { sessionStartMs })
 
   const dispatchedStats = (() => {
     try { return getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
@@ -479,15 +552,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     hasLiveTaskState:       liveTaskState,
   }
 
-  let runState = readGateRunState(name)
-  if (streakBelongsToPreviousSession(runState.firstBlockedAt, sessionStartMs)) {
-    // The agent was restarted since this streak began: the new session must not
-    // inherit the old one's block clock (alert / forced-/clear eligibility).
-    logger.info({ agent: name, firstBlockedAt: runState.firstBlockedAt, sessionStartMs },
-      'context-restart-gate: block streak predates the current session, resetting')
-    runState = { ...runState, firstBlockedAt: null }
-    writeGateRunState(name, runState)
-  }
+  const runState = reconcileRunState(name, sessionStartMs)
   const decision = decideGate(inputs, cfg, runState.firstBlockedAt)
 
   logger.debug({ agent: name, action: decision.action, reason: decision.reason,
@@ -574,7 +639,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           createAgentMessage(
             name,
             MAIN_AGENT_ID,
-            `[CONTEXT-RESTART-GATE] A(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt. Ok: ${decision.reason}.${childInfo} A(z) ${Math.round(cfg.thresholdTokens / 1000)}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.`,
+            persistentBlockAlertText({
+              name, blockedSinceMin, reason: decision.reason, thresholdTokens: cfg.thresholdTokens,
+              childInfo, unmeasurableReason, sessionStartReason,
+            }),
             'context-restart-gate persistent-block alert',
           )
           logger.warn({ agent: name, reason: decision.reason, blockedSinceMin },

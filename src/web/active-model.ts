@@ -73,7 +73,14 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
   return value
 }
 
-const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
+export interface ContextTokensReading {
+  /** Tokens, or null when the context cannot be measured. */
+  tokens: number | null
+  /** Why `tokens` is null (diagnostic, shown in the gate's alert); null when measured. */
+  unmeasurableReason: string | null
+}
+
+const ctxCache = new Map<string, { value: ContextTokensReading; expiresAt: number }>()
 
 // Current context size of the live session, in tokens. Claude Code records a
 // `usage` object on each assistant turn; the context that gets re-read every
@@ -92,48 +99,77 @@ const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
 // made the gate see a huge context in a brand-new session. A session with no
 // transcript of its own yet has accumulated nothing: 0, not null (null means
 // "cannot measure", which the gate fail-closes on and eventually alerts about).
+//
+// The same holds once the session HAS a transcript but it carries no usage line
+// yet (the first turn is still running, or only non-assistant lines so far):
+// pinned to the active session that is 0 too. null stays reserved for what is
+// genuinely unreadable -- missing project dir, a read error, or a non-empty
+// transcript in which no line parses. Without a session start the newest file
+// cannot be attributed to the live session, so there "no usage" stays null.
 export function readContextTokensFromProjectDir(
   workingDir: string,
   configDir?: string,
   opts: { sessionStartMs?: number | null } = {},
 ): number | null {
+  return readContextTokensDetailed(workingDir, configDir, opts).tokens
+}
+
+/** Same measurement as readContextTokensFromProjectDir, plus why it is null. */
+export function readContextTokensDetailed(
+  workingDir: string,
+  configDir?: string,
+  opts: { sessionStartMs?: number | null } = {},
+): ContextTokensReading {
   const now = Date.now()
   const sessionStartMs = opts.sessionStartMs ?? null
   const cacheKey = `${workingDir}:${configDir ?? ''}:${sessionStartMs ?? ''}`
   const cached = ctxCache.get(cacheKey)
   if (cached && cached.expiresAt > now) return cached.value
-  let value: number | null = null
+  let value: ContextTokensReading
   try {
-    const dir = projectsDirFor(workingDir, configDir)
-    if (existsSync(dir)) {
-      const jsonls = readdirSync(dir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)
-      if (sessionStartMs !== null && (jsonls.length === 0 || jsonls[0].mtime < sessionStartMs)) {
-        value = 0
-      } else if (jsonls.length > 0) {
-        const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
-        const lines = content.split('\n')
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i].trim()
-          if (!line) continue
-          try {
-            const u = JSON.parse(line)?.message?.usage
-            if (u && typeof u === 'object') {
-              const inp = Number(u.input_tokens) || 0
-              const cr = Number(u.cache_read_input_tokens) || 0
-              const cc = Number(u.cache_creation_input_tokens) || 0
-              const total = inp + cr + cc
-              if (total > 0) { value = total; break }
-            }
-          } catch { /* skip malformed JSON line */ }
-        }
-      }
-    }
-  } catch { /* fall through */ }
+    value = measureContext(workingDir, configDir, sessionStartMs)
+  } catch (err) {
+    value = { tokens: null, unmeasurableReason: `transcript read error: ${err instanceof Error ? err.message : String(err)}` }
+  }
   ctxCache.set(cacheKey, { value, expiresAt: now + TTL_MS })
   return value
+}
+
+function measureContext(workingDir: string, configDir: string | undefined, sessionStartMs: number | null): ContextTokensReading {
+  const unmeasurable = (reason: string): ContextTokensReading => ({ tokens: null, unmeasurableReason: reason })
+  const dir = projectsDirFor(workingDir, configDir)
+  if (!existsSync(dir)) return unmeasurable(`transcript directory missing (${dir})`)
+  const jsonls = readdirSync(dir)
+    .filter(f => f.endsWith('.jsonl'))
+    .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime)
+  if (sessionStartMs !== null && (jsonls.length === 0 || jsonls[0].mtime < sessionStartMs)) {
+    return { tokens: 0, unmeasurableReason: null }
+  }
+  if (jsonls.length === 0) return unmeasurable('no transcript file in the project directory')
+  const lines = readFileSync(join(dir, jsonls[0].f), 'utf-8').split('\n')
+  let nonEmpty = 0
+  let parsed = 0
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    nonEmpty++
+    try {
+      const entry = JSON.parse(line)
+      parsed++
+      const u = entry?.message?.usage
+      if (u && typeof u === 'object') {
+        const total = (Number(u.input_tokens) || 0)
+          + (Number(u.cache_read_input_tokens) || 0)
+          + (Number(u.cache_creation_input_tokens) || 0)
+        if (total > 0) return { tokens: total, unmeasurableReason: null }
+      }
+    } catch { /* skip malformed JSON line */ }
+  }
+  if (nonEmpty > 0 && parsed === 0) return unmeasurable(`newest transcript ${jsonls[0].f} is not parseable`)
+  // The newest transcript is readable but holds no usage line.
+  if (sessionStartMs !== null) return { tokens: 0, unmeasurableReason: null }
+  return unmeasurable('newest transcript has no usage line and the session start is unknown')
 }
 
 /**

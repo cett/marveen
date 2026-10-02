@@ -22,7 +22,7 @@ import {
   getDb,
 } from '../db.js'
 import { streakBelongsToPreviousSession, SESSION_START_TOLERANCE_MS } from '../context-restart-gate.js'
-import { readContextTokensFromProjectDir } from '../web/active-model.js'
+import { readContextTokensFromProjectDir, readContextTokensDetailed } from '../web/active-model.js'
 
 beforeAll(() => { initDatabase(':memory:') })
 
@@ -178,5 +178,107 @@ describe('readContextTokensFromProjectDir: pinned to the active session', () => 
 
   it('a missing projects dir stays null (fail-closed, misconfigured config root), even with a session start', () => {
     expect(readContextTokensFromProjectDir(join(tmp, 'miss'), join(tmp, 'nope'), { sessionStartMs: Date.now() })).toBeNull()
+  })
+})
+
+describe('readContextTokensFromProjectDir: a live session without a usage line yet is 0, not unmeasurable', () => {
+  let tmp: string
+  beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'ctx-no-usage-')) })
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }))
+
+  const USAGE = JSON.stringify({ message: { usage: { input_tokens: 5_000, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 0 } } })
+  const NO_USAGE = [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }),
+    JSON.stringify({ type: 'summary', summary: 'x' }),
+  ].join('\n')
+
+  function layout(): { configDir: string; workDir: string; dir: string } {
+    const configDir = join(tmp, '.claude')
+    const workDir = join(tmp, 'work')
+    const dir = join(configDir, 'projects', workDir.replace(/[/.]/g, '-'))
+    mkdirSync(dir, { recursive: true })
+    return { configDir, workDir, dir }
+  }
+  function write(dir: string, name: string, body: string, mtimeMs: number): void {
+    const f = join(dir, name)
+    writeFileSync(f, body)
+    utimesSync(f, mtimeMs / 1000, mtimeMs / 1000)
+  }
+  const start = () => Date.now() - 10 * 60_000
+
+  it('transcript of the active session, no usage line: 0 and no unmeasurable reason', () => {
+    const { configDir, workDir, dir } = layout()
+    const sessionStartMs = start()
+    write(dir, 's.jsonl', NO_USAGE, sessionStartMs + 60_000)
+    expect(readContextTokensDetailed(workDir, configDir, { sessionStartMs })).toEqual({ tokens: 0, unmeasurableReason: null })
+  })
+
+  it('empty (just created) transcript of the active session: 0', () => {
+    const { configDir, workDir, dir } = layout()
+    const sessionStartMs = start()
+    write(dir, 's.jsonl', '', sessionStartMs + 1_000)
+    expect(readContextTokensFromProjectDir(workDir, configDir, { sessionStartMs })).toBe(0)
+  })
+
+  it('a torn last line next to readable lines does not make it unmeasurable', () => {
+    const { configDir, workDir, dir } = layout()
+    const sessionStartMs = start()
+    write(dir, 's.jsonl', `${NO_USAGE}\n{"type":"assist`, sessionStartMs + 1_000)
+    expect(readContextTokensFromProjectDir(workDir, configDir, { sessionStartMs })).toBe(0)
+  })
+
+  it('usage that sums to zero counts as no usage: 0', () => {
+    const { configDir, workDir, dir } = layout()
+    const sessionStartMs = start()
+    write(dir, 's.jsonl', JSON.stringify({ message: { usage: { input_tokens: 0, output_tokens: 7 } } }), sessionStartMs + 1_000)
+    expect(readContextTokensFromProjectDir(workDir, configDir, { sessionStartMs })).toBe(0)
+  })
+
+  it('an earlier usage line still wins over later lines without one (no regression of the measurement)', () => {
+    const { configDir, workDir, dir } = layout()
+    const sessionStartMs = start()
+    write(dir, 's.jsonl', `${USAGE}\n${NO_USAGE}`, sessionStartMs + 1_000)
+    expect(readContextTokensFromProjectDir(workDir, configDir, { sessionStartMs })).toBe(6_000)
+  })
+
+  it('a non-empty transcript in which NO line parses stays null, with a reason', () => {
+    const { configDir, workDir, dir } = layout()
+    const sessionStartMs = start()
+    write(dir, 's.jsonl', 'not json at all\nstill not json', sessionStartMs + 1_000)
+    const r = readContextTokensDetailed(workDir, configDir, { sessionStartMs })
+    expect(r.tokens).toBeNull()
+    expect(r.unmeasurableReason).toMatch(/not parseable/)
+  })
+
+  it('a transcript that cannot be read stays null, with the error as the reason', () => {
+    const { configDir, workDir, dir } = layout()
+    const sessionStartMs = start()
+    // A directory named like a transcript: stat works, readFile throws EISDIR.
+    mkdirSync(join(dir, 'broken.jsonl'))
+    utimesSync(join(dir, 'broken.jsonl'), (sessionStartMs + 1_000) / 1000, (sessionStartMs + 1_000) / 1000)
+    const r = readContextTokensDetailed(workDir, configDir, { sessionStartMs })
+    expect(r.tokens).toBeNull()
+    expect(r.unmeasurableReason).toMatch(/read error/)
+  })
+
+  it('missing project directory stays null, with the path in the reason', () => {
+    const r = readContextTokensDetailed(join(tmp, 'miss'), join(tmp, 'nope'), { sessionStartMs: Date.now() })
+    expect(r.tokens).toBeNull()
+    expect(r.unmeasurableReason).toMatch(/directory missing/)
+  })
+
+  it('without a session start the no-usage transcript cannot be attributed to the live session: null, says why', () => {
+    const { configDir, workDir, dir } = layout()
+    write(dir, 's.jsonl', NO_USAGE, Date.now() - 60_000)
+    const r = readContextTokensDetailed(workDir, configDir)
+    expect(r.tokens).toBeNull()
+    expect(r.unmeasurableReason).toMatch(/session start is unknown/)
+  })
+
+  it('no transcript at all and no session start stays null', () => {
+    const { configDir, workDir } = layout()
+    const r = readContextTokensDetailed(workDir, configDir)
+    expect(r.tokens).toBeNull()
+    expect(r.unmeasurableReason).toMatch(/no transcript file/)
   })
 })

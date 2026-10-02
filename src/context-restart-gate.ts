@@ -314,3 +314,38 @@ export function streakBelongsToPreviousSession(
   if (firstBlockedAt === null || sessionStartMs === null) return false
   return firstBlockedAt < sessionStartMs - toleranceMs
 }
+
+/**
+ * Pure: drop the block clock AND the alert clock when the recorded streak
+ * belongs to a previous session. Both go together: leaving lastAlertAt behind
+ * would let the old session's alert timestamp throttle the first genuine alert
+ * of the new one, while keeping firstBlockedAt would raise a persistent-block
+ * alert for a block the new session never had. Returns the SAME object when
+ * nothing changes so callers can tell "reset" from "kept" by identity.
+ */
+export function resetStreakIfPreviousSession<T extends { firstBlockedAt: number | null; lastAlertAt: number | null }>(
+  state: T,
+  sessionStartMs: number | null,
+): T {
+  if (!streakBelongsToPreviousSession(state.firstBlockedAt, sessionStartMs)) return state
+  return { ...state, firstBlockedAt: null, lastAlertAt: null }
+}
+
+/**
+ * Pure: the operator-facing explanation appended to the persistent-block alert
+ * when the block reason is an unmeasurable context. The bare "unmeasurable"
+ * says nothing about WHAT could not be measured; name the cause of the null
+ * reading and, when it is the reason the stale-streak guard could not run,
+ * why the session start is unknown too.
+ */
+export function describeUnmeasurableContext(
+  tokenReason: string | null,
+  sessionStartReason: string | null,
+): string {
+  const parts: string[] = []
+  parts.push(`Meres: ${tokenReason ?? 'ismeretlen ok (a transcript olvasasa nem adott erteket)'}.`)
+  if (sessionStartReason !== null) {
+    parts.push(`A session inditasi ideje ismeretlen (${sessionStartReason}), ezert a regi session blokk-sorozata sem azonosithato.`)
+  }
+  return parts.join(' ')
+}
