@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   initDatabase,
+  getDb,
   createApproval,
   getApproval,
   resolveApproval,
@@ -221,9 +222,11 @@ describe('expireTimedOutApprovals', () => {
       agent_id: 'agent-a',
       category: 'email_send',
       action_description: 'X',
-      timeout_at: Math.floor(Date.now() / 1000) - 1,
+      timeout_at: Math.floor(Date.now() / 1000) + 3600,
     })
     resolveApproval('e-4', 'approved', 'telegram_callback')
+    // The deadline passes after the approval (resolveApproval itself refuses an already expired one)
+    getDb().prepare("UPDATE approvals SET timeout_at = ? WHERE id = 'e-4'").run(Math.floor(Date.now() / 1000) - 1)
     // Already approved -- expirer must not change it to timeout
     expect(expireTimedOutApprovals()).toBe(0)
     expect(getApproval('e-4')?.status).toBe('approved')

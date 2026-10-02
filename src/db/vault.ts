@@ -165,6 +165,8 @@ export function getApproval(id: string): Approval | undefined {
   return db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Approval | undefined
 }
 
+// Approving or rejecting a request whose deadline has passed is refused even in the up-to-60 s window
+// before the sweeper marks it `timeout`; recording the `timeout` status itself stays allowed.
 export function resolveApproval(id: string, status: 'approved' | 'rejected' | 'timeout', resolvedBy: string, telegramMessageId?: number | null): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
@@ -172,7 +174,8 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
     SET status = ?, resolved_at = ?, resolved_by = ?,
         telegram_message_id = COALESCE(?, telegram_message_id)
     WHERE id = ? AND status = 'pending'
-  `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
+      AND (? = 'timeout' OR timeout_at IS NULL OR timeout_at > ?)
+  `).run(status, now, resolvedBy, telegramMessageId ?? null, id, status, now).changes > 0
 }
 
 // agent_id/category use LIKE substring matching, not exact equality -- this
@@ -271,7 +274,7 @@ export function stampMessageTrace(
 export function expireTimedOutApprovals(): number {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
-    UPDATE approvals SET status = 'timeout', resolved_at = ?
+    UPDATE approvals SET status = 'timeout', resolved_at = ?, resolved_by = 'system:timeout'
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
   `).run(now, now).changes
 }
