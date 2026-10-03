@@ -81,9 +81,7 @@ A **Tokenek** fülön további tokeneket hozhatsz létre. Minden tokennek van:
 
 ---
 
-## Tenant-kezelés `[tervezett]`
-
-> A tenant-kezelési API következő fejlesztési fázisban élesedik.
+## Tenant-kezelés
 
 Egy tenant egy önálló adatszigetet jelent. Minden adat (memóriák, kanban, üzenetek, import-tartalmak) egy konkrét tenanthoz tartozik. Más tenant tokenjével ezek az adatok nem láthatók és nem módosíthatók.
 
@@ -91,13 +89,35 @@ Egy tenant egy önálló adatszigetet jelent. Minden adat (memóriák, kanban, �
 
 **Tenant letiltása:** a PATCH endpoint a tokent visszavonja és a tenant hozzáférést megszünteti -- az adatok megmaradnak.
 
-### Tenant-izoláció `[tervezett]`
+### Tenant-izoláció és az RBAC-mód
 
-Az enforce fázis bekapcsolása után (`RBAC_MODE=enforce`) a rendszer minden lekérdezésbe automatikusan beleszűr a token tenant-hatóköre alapján. Jelenleg az izoláció naplózó (shadow) módban fut -- minden kérés átmegy, de a rendszer rögzíti, mit utasítana el.
+Az RBAC-kapu **enforce módban fut** (`RBAC_MODE=enforce`): amit a hívó szerepköre nem engedélyez, azt a rendszer elutasítja (403), és a lekérdezések a hívó tenant-hatóköre szerint szűrnek. A korábbi shadow mód csak naplózott, és minden kérést átengedett; ma már csak visszaállítási állapot (lásd lent).
 
-**Ami tudatosan nem izolált:**
-- Az ágensek listája (`/api/v1/agents`) tenant-független -- minden hitelesített felhasználó látja, mely ágensek futnak.
-- A blackboard szintén tenant-független olvasással rendelkezik agent és admin szerepkörök számára.
+**Mit lát a nem admin hívó:**
+- Az ágensek listáját és a szervezeti ábrát (org chart) a rendszer a saját tenantjára engedélyezett ágensekre szűri. Nincs benne főágens-csomópont, más tenant azonosítója vagy neve, és olyan kapcsolat sem, amely rejtett ágensre mutat.
+- A blackboard a saját tenantra szűkül; a flotta teljes képe az adminé.
+- A márka és a nyelv minden bejelentkezett szerepkörnek elérhető (`GET /api/marveen`, `GET /api/settings`), de a nem admin csak engedélyezőlistás mezőket kap: a nevet, a márkanevet, az ágens-azonosítót, a szerepkört, a csatorna-szolgáltatót és a kanban megjelenítési beállításait, a beállításokból pedig kizárólag a `DASHBOARD_LANG` értékét. Utasításfájlok, MCP-konfiguráció, a tulajdonos neve, a modell és a session nem látszik. Az írás (`PUT /api/marveen`, `POST /api/settings`) admin marad.
+- Az ágens-export (`/api/agents/export-all`, `/api/agents/<név>/export`) csak adminnak érhető el.
+- A dashboard elrejti azokat a menüpontokat, amelyeket a szerepkör nem használhat: az Üzenetek, Skillek, Ötletek, Artifactok, Token-monitor, Frissítések, Beállítások, Mentések, MCP-csatlakozók és Import (mind `admin:all`) a nem adminnak nem látszik, a Föderációt (`federation:read`) pedig a `read_only` és a `viewer` nem látja. Egy begépelt hash vagy könyvjelző ilyen oldalra az áttekintőre visz. Ez csak kezelőfelületi réteg: a szerver 403-a marad a végső szó.
+
+**Megfigyelés: a shadow-napló.** A kapu minden döntését a `rbac_shadow_log` táblába írja, mindkét módban:
+
+| Döntés | Jelentés |
+|--------|----------|
+| `would-deny` | shadow módban átengedte, enforce módban elutasítaná |
+| `denied` | enforce módban elutasította |
+| `permitted` | nem admin kérés, amely átment (az admin forgalmat nem rögzíti, mert nem hordoz jelet) |
+
+A 30 napnál régebbi sorokat a rendszer törli, a tenant törlése pedig a tenant sorait is. Lekérdezés: `GET /api/v1/rbac/shadow-log` (csak admin) a `decision`, `tenant`, `principal`, `role`, `permission`, `route`, `from`, `to`, `since_hours`, `limit` és `offset` szűrőkkel, vagy `summary=1` esetén döntésenkénti összesítéssel és a leggyakoribb elutasítási mintákkal.
+
+A `rbac-shadow-monitor` ütemezett parancs-feladat (naponta 07:30, LLM nélkül) az elmúlt 24 órát összesíti, és riaszt, ha van `would-deny` vagy `denied` sor, illetve ha az összesítés nem olvasható. Enforce módban egy `denied` sor a kapu normális működése is lehet (például egy `viewer` írási kísérlete), ezért a riasztás átnézésre hív: jogos elutasítás volt, vagy hamis pozitív. Az üres ablak azt jelenti, hogy nem érkezett nem admin forgalom, nem azt, hogy minden rendben van.
+
+**Visszaállítás.** Ha az enforce hibás elutasítást okoz, állítsd a szerver környezetében (`.env`) `RBAC_MODE=shadow` értékre, és indítsd újra a dashboardot (a mód induláskor olvasódik). A módtól független útvonal-szabályok (ütemezés, alapcsomag, ágens-export admin-ellenőrzése) shadow módban is érvényben maradnak.
+
+**Elfogadott kockázatok:**
+- A flotta bearer tokenje (`store/.dashboard-token`) admin szerepkörű, ezért a futó ágensek nem tenant-korlátosak. A tenant-határt a tenant-felhasználók saját tokenje és belépése kapja.
+- A főágens szándékosan kívül van a tenant-skill kapun: egy fail-closed hook leállíthatná a flotta koordinációját.
+- A Marveen nem üzemeltet saját MCP-szervert, ezért MCP-szinten nincs tenant-szűrés. A katalógus szerverei külsők, és nem ismerik a tenant-azonosítót.
 
 ### Tenant törlése
 
@@ -123,9 +143,9 @@ Az ütemezett feladatoknak tenant a tulajdonosa (részletek: [06 - Feladatok](06
 > **Az ütemezett feladatok szabályai és az RBAC-mód.** Két réteg dönti el, ki mit tehet az ütemezés végpontjain, és csak az egyik függ a módtól.
 >
 > - **Útvonal-szabályok, mindkét módban** (shadow módban is). Az a nem admin hívó (nem admin dashboard-belépés vagy API-token), akinek a fiókjához nincs tenant rendelve, 403-at kap, olvasásnál is. A nem admin nem módosíthat feladatot a `default` tenanton (a rendszer saját feladatai az adminoknál maradnak), eszközkulcs és föderációs principal pedig semmilyen feladatot nem módosíthat (403). Másik tenant feladata 404-gyel válaszol, mintha nem létezne. Az aktiváláshoz bejelentkezett admin kell (mindenki másnak 403, a megosztott ágens-tokennek is). Egy szerkesztés nem változtathatja a feladat státuszát, tenantját és a futtató szkript-opciókat (ezeket a kulcsokat eldobja; másik tenant kérése 403-at ad), a feladat ágensét csak admin változtatja, a nem admin által létrehozott feladat pedig mindig vázlat a saját tenantjában, tenantonként legfeljebb 20 jóváhagyásra váró feladat keretén belül. Ha egy nem admin azt módosítja, amit egy élő feladat végrehajt, a feladat visszakerül jóváhagyásra (lásd [06 - Feladatok](06-feladatok.md)).
-> - **A jogosultsági tábla, enforce módban.** A `schedules:read`, a `schedules:write` és az aktiváláshoz, valamint az ütemező-szívverés jelzőhöz az `admin:all` jogot az RBAC-kapu csak `RBAC_MODE=enforce` esetén ellenőrzi. Amíg a mód shadow, a kapu csak naplózza, mit utasítana el, ezért a szerepkörök közti különbségek (például hogy a `read_only` és a `viewer` nem írhat) az enforce mód bekapcsolásakor lépnek életbe.
+> - **A jogosultsági tábla, enforce módban.** A `schedules:read`, a `schedules:write` és az aktiváláshoz, valamint az ütemező-szívverés jelzőhöz az `admin:all` jogot az RBAC-kapu csak `RBAC_MODE=enforce` esetén ellenőrzi. Enforce módban a szerepkörök közti különbségek (például hogy a `read_only` és a `viewer` nem írhat) elutasításként jelennek meg. Ha a módot visszaállítod shadow-ra, a kapu csak naplózza, mit utasítana el, és ezek a különbségek nem érvényesülnek.
 >
-> Amíg az enforce mód nincs bekapcsolva, ne adj tenant-felhasználóknak API-t elérő belépést vagy tokent.
+> Ha a módot visszaállítod shadow-ra, addig ne adj tenant-felhasználóknak API-t elérő belépést vagy tokent, amíg az enforce vissza nincs kapcsolva.
 
 ### Tenant alapcsomag
 
@@ -154,7 +174,7 @@ Az ágens-választó csak akkor jelenik meg, ha a rendszer nem tud egyedül vál
 
 A táblázat mellé:
 
-- A tenant-felhasználó nem látja a gombot és a panelt: nem csak rejtve van, a lap felépítésében sincs ott. Az alapcsomag API-ját is csak admin szerepkör éri el; más szerepkör, az eszközkulcs és a föderációs principal 403-at kap. Ez shadow módban is így van, mert az admin-ellenőrzés az útvonalban is él, nem csak a jogosultsági táblában.
+- A tenant-felhasználó nem látja a gombot és a panelt: nem csak rejtve van, a lap felépítésében sincs ott. Az alapcsomag API-ját is csak admin szerepkör éri el; más szerepkör, az eszközkulcs és a föderációs principal 403-at kap. Ez módtól függetlenül így van (visszaállított shadow módban is), mert az admin-ellenőrzés az útvonalban is él, nem csak a jogosultsági táblában.
 - A tenant-felhasználó a saját tenantja alapcsomag-feladatát a Feladatok listában látja, piszkozat jelvénnyel, amíg nincs aktiválva. Nem aktiválhatja (az aktiváláshoz bejelentkezett admin kell). Az aktiválás utáni Folytatásra az `agent` szerepkör is jogosult, ahogy bármelyik másik feladat szüneteltetésére és folytatására.
 - Ha a tenant-felhasználó szerkeszti az alapcsomag feladatát, rá is a szokásos szabály vonatkozik: élő feladatnál a módosítás újabb jóváhagyást kér (lásd [06 - Feladatok](06-feladatok.md)).
 - A tenant nélküli nem admin fiókot az ütemezés minden végpontja elutasítja, így az alapcsomag feladatát sem látja.
