@@ -165,6 +165,23 @@ agents/
 
 Fordítva: ha egy connector mindenkinek szükséges, a projekt gyökerében `.mcp.json`-ban definálld.
 
+## Tenant-izoláció az MCP rétegben
+
+Ebben a repóban nincs saját hosztolt Marveen MCP szerver, a katalógus szerverei pedig külsők: egyiknek sincs
+`tenant_id` fogalma, ezért náluk az MCP rétegben `WHERE tenant_id = ?` nem kényszeríthető ki. Ma a tenantet az
+MCP szerverek körüli réteg védi:
+
+- **Csak-fleet ágensek.** Az az ágens, amelyik tenant-tudatlan MCP szervert hordoz (Hetzner, GitHub/GitLab
+  tokenek, GA4, filesystem szerver, személyes adatot kezelő szerverek), nem engedélyezhető tenantnak. Az
+  elérhetőség végpont `409`-cel elutasítja, a kockázatos szerverek felsorolásával, és csak `confirm: true`-val
+  újraküldve fogadja el; a megerősítés auditált (`admin.agent_availability.risky_confirmed`).
+- **Ágensenkénti scope.** Az ágens csak a `mcpScope`-jában szereplő MCP eszközöket kapja, a többit név szerint tiltja a rendszer.
+
+Ha valaha épül Marveen-hosztolt MCP szerver (például az adatbázis fölé), a tenant-szűrés abban a rétegben
+**kötelező**: minden lekérdezés a hitelesített kérésből veszi a hívó tenantjét, soha nem az eszköz paramétereiből, és
+csak egy admin-only eszköz juthat ezen túl. Akkor ezt a mintát kell alkalmazni; amíg ilyen szerver nincs, az MCP
+rétegben nincs mit szűrni.
+
 ## Hibaelhárítás
 
 ### Az MCP szerver nem indul el

@@ -28,7 +28,7 @@ vi.mock('node:os', async (importOriginal) => {
 })
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
-  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen', SKILL_SQL_REGEN: true, TENANT_SKILL_FILES: 'all' }
+  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen', SKILL_SQL_REGEN: true, TENANT_SKILL_FILES: 'single' }
 })
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: join(FAKE_PROJECT, 'agents'),
@@ -47,6 +47,7 @@ vi.mock('../db.js', () => ({
   listAllSkills: vi.fn(() => [...store.values()]),
   listSkillAccess: vi.fn().mockReturnValue([]),
   getEnabledAgentsForTenant: vi.fn((t: string) => avail.get(t) ?? []),
+  getTenantsForAgent: vi.fn((a: string) => [...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t)),
   listSkillFiles: vi.fn((id: string) => [...files.values()].filter(f => f.skill_id === id).sort((a, b) => a.rel_path.localeCompare(b.rel_path))),
   getSkillFile: vi.fn((id: string, rel: string) => files.get(fk(id, rel))),
   putSkillFile: vi.fn((id: string, rel: string, content: Buffer, mode?: number) => {

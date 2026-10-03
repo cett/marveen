@@ -20,7 +20,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
   listAgentNames: vi.fn().mockReturnValue(['acme-lead', 'acme-aux', 'beta-one', 'g-one', 'g-two', 'co-a', 'co-b', 'shared-agent', 'fleet-agent']),
   isKnownAgent: (n: string) => ['acme-lead', 'acme-aux', 'beta-one', 'g-one', 'g-two', 'co-a', 'co-b', 'shared-agent', 'fleet-agent'].includes(n),
 }))
-vi.mock('../web/skill-regen.js', () => ({ regenTenantSkillFiles: vi.fn() }))
+vi.mock('../web/skill-regen.js', () => ({ regenTenantSkillFilesForAgentChange: vi.fn() }))
 vi.mock('../web/mcp-risk-policy.js', () => ({ getHighRiskMcpServersForAgent: () => [] }))
 vi.mock('../web/schedule-runner.js', () => ({
   runScheduledTaskNow: vi.fn(),

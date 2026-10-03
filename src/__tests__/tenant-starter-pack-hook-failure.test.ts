@@ -16,7 +16,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),
   isKnownAgent: (n: string) => n === 'beta-one',
 }))
-vi.mock('../web/skill-regen.js', () => ({ regenTenantSkillFiles: vi.fn() }))
+vi.mock('../web/skill-regen.js', () => ({ regenTenantSkillFilesForAgentChange: vi.fn() }))
 vi.mock('../web/mcp-risk-policy.js', () => ({ getHighRiskMcpServersForAgent: () => [] }))
 
 let tmp: string

@@ -520,17 +520,25 @@ export const SKILL_SQL_REGEN = parseSkillSqlRegen(process.env['SKILL_SQL_REGEN']
 //   off    none: tenant skills stay DB-only
 //   single only agents enabled for exactly ONE tenant (default): no other tenant's requests reach
 //          that agent, so the copy (and its companion scripts) cannot cross a tenant boundary
-//   all    every enabled agent of the owning/granted tenants, including agents shared by several
-//          tenants. Cross-tenant exposure: only with the use-time isolation in place.
+// An agent shared by several tenants NEVER gets a file copy: its tenant skills are DB-only (the
+// owner's decision, see docs/fork-guide F02 "Shared agents and tenant skills"). The former `all`
+// value, which wrote them anyway, is gone: it is read as single, with a startup warning.
 // Anything unrecognised (or unset/empty) means single, the safe default.
-export type TenantSkillFilesMode = 'off' | 'single' | 'all'
+export type TenantSkillFilesMode = 'off' | 'single'
 export function parseTenantSkillFiles(raw: string | undefined): TenantSkillFilesMode {
   const v = (raw ?? '').trim().toLowerCase()
   if (['off', '0', 'false', 'no', 'none'].includes(v)) return 'off'
-  if (v === 'all') return 'all'
   return 'single'
 }
-export const TENANT_SKILL_FILES = parseTenantSkillFiles(process.env['TENANT_SKILL_FILES'] ?? env['TENANT_SKILL_FILES'])
+/** True when the removed `all` value is configured (it now behaves as single and deserves a warning). */
+export function tenantSkillFilesAllRequested(raw: string | undefined): boolean {
+  return (raw ?? '').trim().toLowerCase() === 'all'
+}
+const _tenantSkillFilesRaw = process.env['TENANT_SKILL_FILES'] ?? env['TENANT_SKILL_FILES']
+export const TENANT_SKILL_FILES = parseTenantSkillFiles(_tenantSkillFilesRaw)
+if (tenantSkillFilesAllRequested(_tenantSkillFilesRaw)) {
+  console.warn('TENANT_SKILL_FILES=all is no longer supported: agents shared by several tenants never get tenant skill files. Treating it as "single". Remove the value to silence this warning.')
+}
 
 // Boot-time Zod validation: additive side-effect only.
 // Warns on recoverable format errors; throws on FATAL misconfiguration in prod.

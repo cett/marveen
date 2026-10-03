@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { existsSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { parseTenantSkillFiles } from '../config.js'
+import { parseTenantSkillFiles, tenantSkillFilesAllRequested } from '../config.js'
 
 // TENANT_SKILL_FILES decides which agents get a generated copy of a tenant skill:
-// off = none, single (default) = only agents enabled for exactly one tenant, all = every
-// enabled agent. An agent shared by several tenants must not receive a tenant's skill (nor its
-// companion scripts) in single mode. Real skill-regen + real filesystem, only the DB is faked.
+// off = none, single (default) = only agents enabled for exactly one tenant. An agent shared by
+// several tenants never receives a tenant's skill (nor its companion scripts): it is DB-only, and
+// there is no mode that writes one anyway (the former `all` is read as single). Real skill-regen +
+// real filesystem, only the DB is faked.
 
 const { FAKE_HOME, FAKE_PROJECT, flag, store, files, grants, avail } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -19,7 +20,7 @@ const { FAKE_HOME, FAKE_PROJECT, flag, store, files, grants, avail } = vi.hoiste
   return {
     FAKE_HOME: fakeHome,
     FAKE_PROJECT: path.join(fakeHome, 'project'),
-    flag: { mode: 'single' as 'off' | 'single' | 'all' },
+    flag: { mode: 'single' as 'off' | 'single' },
     store: new Map<string, any>(),
     files: new Map<string, Array<{ rel_path: string; content: Buffer; mode: number }>>(),
     grants: new Map<string, string[]>(),
@@ -52,6 +53,7 @@ vi.mock('../db.js', () => ({
 import {
   regenSingleSkillFile, regenSkillFilesFromSQL, findSkillFileGaps,
   setTenantSkillAgentProbe, generateTenantSkillFilesForAgent, removeGeneratedTenantSkillFilesForAgent,
+  regenTenantSkillFilesForAgentChange, regenTenantSkillFiles,
 } from '../web/skill-regen.js'
 
 afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
@@ -59,6 +61,13 @@ afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
 const ID = 'acme-demo'
 const copy = (agent: string, rel = 'SKILL.md') => join(FAKE_PROJECT, 'agents', agent, '.claude', 'skills', ID, rel)
 const mkAgent = (n: string) => mkdirSync(join(FAKE_PROJECT, 'agents', n), { recursive: true })
+/** Legacy state: bob holds a generated copy from when it served acme only, and has been shared with beta since. */
+function legacyCopyOnSharedBob() {
+  avail.set('beta', ['cy'])
+  regenSingleSkillFile(ID)
+  expect(existsSync(copy('bob'))).toBe(true)   // guard: the fixture really produced the stale copy
+  avail.set('beta', ['bob', 'cy'])
+}
 
 beforeEach(() => {
   rmSync(FAKE_PROJECT, { recursive: true, force: true })
@@ -79,9 +88,45 @@ describe('parseTenantSkillFiles', () => {
   it('off for the explicit off values (case and whitespace tolerant)', () => {
     for (const v of ['off', 'OFF', ' 0 ', 'false', 'no', 'none']) expect(parseTenantSkillFiles(v)).toBe('off')
   })
-  it('all only for the explicit all', () => {
-    expect(parseTenantSkillFiles('all')).toBe('all')
-    expect(parseTenantSkillFiles(' ALL ')).toBe('all')
+  it('the removed all value is read as single, and flagged so a startup warning can be raised', () => {
+    expect(parseTenantSkillFiles('all')).toBe('single')
+    expect(parseTenantSkillFiles(' ALL ')).toBe('single')
+    expect(tenantSkillFilesAllRequested('all')).toBe(true)
+    expect(tenantSkillFilesAllRequested(' ALL ')).toBe(true)
+    for (const v of [undefined, '', 'single', 'off', 'garbage']) expect(tenantSkillFilesAllRequested(v)).toBe(false)
+  })
+})
+
+describe('availability change follows the agent, not only the changed tenant', () => {
+  it('enabling a second tenant on a single-tenant agent removes the first tenant\'s copy from it', () => {
+    regenSingleSkillFile(ID)
+    expect(existsSync(copy('ann'))).toBe(true)
+    avail.set('beta', ['bob', 'cy', 'ann'])             // ann is now shared by acme and beta
+    // the tenant-only reconcile (what the route used to do) leaves acme's skill on ann
+    regenTenantSkillFiles('beta')
+    expect(existsSync(copy('ann'))).toBe(true)
+    const r = regenTenantSkillFilesForAgentChange('ann', 'beta')
+    expect(r.errors).toBe(0)
+    expect(existsSync(copy('ann'))).toBe(false)
+    expect(existsSync(copy('ann', 'scripts/run.sh'))).toBe(false)
+  })
+
+  it('disabling the second tenant makes the agent single-tenant again: the remaining tenant\'s copy is written', () => {
+    avail.set('beta', ['bob', 'cy', 'ann'])             // ann shared: no copy
+    regenSkillFilesFromSQL()
+    expect(existsSync(copy('ann'))).toBe(false)
+    avail.set('beta', ['bob', 'cy'])                    // beta dropped ann
+    regenTenantSkillFilesForAgentChange('ann', 'beta')
+    expect(existsSync(copy('ann'))).toBe(true)
+    expect(existsSync(copy('ann', 'scripts/run.sh'))).toBe(true)
+  })
+
+  it('other agents and other tenants\' skills are left alone', () => {
+    regenSingleSkillFile(ID)
+    avail.set('beta', ['bob', 'cy', 'ann'])
+    regenTenantSkillFilesForAgentChange('ann', 'beta')
+    expect(existsSync(copy('bob'))).toBe(false)
+    expect(existsSync(copy('cy'))).toBe(false)
   })
 })
 
@@ -110,18 +155,24 @@ describe('TENANT_SKILL_FILES modes', () => {
     for (const a of ['ann', 'bob', 'cy']) expect(existsSync(copy(a))).toBe(false)
   })
 
-  it('all: every enabled agent of the tenant, shared ones included', () => {
-    flag.mode = 'all'
+  it('a shared agent never gets a copy, by any path: live edit, bulk regen, agent start', () => {
     regenSingleSkillFile(ID)
+    regenSkillFilesFromSQL()
+    generateTenantSkillFilesForAgent('bob')
+    expect(existsSync(copy('bob'))).toBe(false)
+    expect(existsSync(copy('bob', 'scripts/run.sh'))).toBe(false)
     expect(existsSync(copy('ann'))).toBe(true)
-    expect(existsSync(copy('bob'))).toBe(true)
-    expect(existsSync(copy('bob', 'scripts/run.sh'))).toBe(true)
   })
 
-  it('tightening the mode removes the generated copies that are no longer allowed (all -> single -> off)', () => {
-    flag.mode = 'all'
+  it('a grant to a tenant the shared agent serves still leaves the shared agent without a copy', () => {
+    grants.set(ID, ['beta'])
     regenSingleSkillFile(ID)
-    flag.mode = 'single'
+    generateTenantSkillFilesForAgent('bob')
+    expect(existsSync(copy('bob'))).toBe(false)
+  })
+
+  it('a copy left on an agent that has since become shared is removed by the startup pass, and by off', () => {
+    legacyCopyOnSharedBob()
     regenSkillFilesFromSQL()   // the startup pass
     expect(existsSync(copy('ann'))).toBe(true)
     expect(existsSync(copy('bob'))).toBe(false)
@@ -130,33 +181,27 @@ describe('TENANT_SKILL_FILES modes', () => {
     expect(existsSync(copy('ann'))).toBe(false)
   })
 
-  it('tightening keeps a hand-edited SKILL.md but still removes the generated companion script', () => {
-    flag.mode = 'all'
-    regenSingleSkillFile(ID)
+  it('a stale copy on a shared agent: a hand-edited SKILL.md is kept but the generated companion script is removed', () => {
+    legacyCopyOnSharedBob()
     const bobMd = copy('bob')
     writeFileSync(bobMd, readFileSync(bobMd, 'utf8') + '\nhand-written addition\n')
     expect(existsSync(copy('bob', 'scripts/run.sh'))).toBe(true)
-    flag.mode = 'single'
     regenSkillFilesFromSQL()
     expect(existsSync(bobMd)).toBe(true)                            // hand edit is never deleted
     expect(existsSync(copy('bob', 'scripts/run.sh'))).toBe(false)   // generated script must not stay on the shared agent
     expect(existsSync(copy('ann', 'scripts/run.sh'))).toBe(true)    // single-tenant agent keeps its copy
   })
 
-  it('tightening leaves a hand-edited companion script alone', () => {
-    flag.mode = 'all'
-    regenSingleSkillFile(ID)
+  it('a stale copy on a shared agent: a hand-edited companion script is left alone', () => {
+    legacyCopyOnSharedBob()
     writeFileSync(copy('bob', 'scripts/run.sh'), '#!/bin/sh\necho mine\n')
-    flag.mode = 'single'
     regenSkillFilesFromSQL()
     expect(existsSync(copy('bob'))).toBe(false)
     expect(readFileSync(copy('bob', 'scripts/run.sh'), 'utf8')).toContain('echo mine')
   })
 
   it('the gap check follows the mode: a copy the mode excludes is not a gap', () => {
-    expect(findSkillFileGaps().tenantCopies).toEqual([`${ID}@ann`])   // single: only ann is expected
-    flag.mode = 'all'
-    expect(findSkillFileGaps().tenantCopies.sort()).toEqual([`${ID}@ann`, `${ID}@bob`])
+    expect(findSkillFileGaps().tenantCopies).toEqual([`${ID}@ann`])   // single: only ann is expected, never the shared bob
     flag.mode = 'off'
     expect(findSkillFileGaps().tenantCopies).toEqual([])
   })
@@ -203,10 +248,6 @@ describe('tenant skill files follow the agent lifecycle', () => {
   it('agent start follows the mode: a shared agent gets nothing in single, off gets nothing at all', () => {
     generateTenantSkillFilesForAgent('bob')
     expect(existsSync(md('bob'))).toBe(false)
-    flag.mode = 'all'
-    generateTenantSkillFilesForAgent('bob')
-    expect(existsSync(md('bob'))).toBe(true)
-    rmSync(join(FAKE_PROJECT, 'agents', 'bob', '.claude'), { recursive: true, force: true })
     flag.mode = 'off'
     generateTenantSkillFilesForAgent('ann')
     expect(existsSync(md('ann'))).toBe(false)
@@ -220,8 +261,7 @@ describe('tenant skill files follow the agent lifecycle', () => {
   })
 
   it('agent stop: removes the generated SKILL.md and companion script, leaves other agents alone', () => {
-    flag.mode = 'all'
-    regenSingleSkillFile(ID)
+    legacyCopyOnSharedBob()
     const r = removeGeneratedTenantSkillFilesForAgent('ann')
     expect(r).toEqual({ removed: 1, kept: 0, errors: 0 })
     expect(existsSync(md('ann'))).toBe(false)
