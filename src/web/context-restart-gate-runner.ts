@@ -11,7 +11,7 @@ import { readContextTokensDetailed } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { getHardGuardPhase } from './context-guard-runner.js'
-import { readGateConfig, readGateRunState, writeGateRunState } from './context-restart-gate-store.js'
+import { readGateConfig, readGateRunState, writeGateRunState, type GateRunState } from './context-restart-gate-store.js'
 import {
   getDispatchedPendingStats,
   hasOpenInboundQuestion,
@@ -22,6 +22,7 @@ import {
   shouldForceRestart,
   describeUnmeasurableContext,
   resetStreakIfPreviousSession,
+  resetStreakIfBelowThreshold,
   type GateInputs,
 } from '../context-restart-gate.js'
 
@@ -360,6 +361,26 @@ export function reconcileRunState(name: string, sessionStartMs: number | null) {
 }
 
 /**
+ * Drop a block/alert streak whose context has since fallen back under the
+ * threshold (compacted or cleared by something other than this gate), writing
+ * the reset back to agent_state so it does not return on the next sweep.
+ */
+export function reconcileStreakWithContext(
+  name: string,
+  state: GateRunState,
+  contextTokens: number | null,
+  thresholdTokens: number,
+): GateRunState {
+  const reconciled = resetStreakIfBelowThreshold(state, contextTokens, thresholdTokens)
+  if (reconciled !== state) {
+    logger.info({ agent: name, firstBlockedAt: state.firstBlockedAt, lastAlertAt: state.lastAlertAt, contextTokens, thresholdTokens },
+      'context-restart-gate: context is back under the threshold, ending the stale block streak')
+    writeGateRunState(name, reconciled)
+  }
+  return reconciled
+}
+
+/**
  * Returns true if the session's claude process has live children that look
  * like in-flight work (Task-tool subagents, background Bash), false if only
  * infrastructure children are found, null if the check cannot be completed
@@ -552,7 +573,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     hasLiveTaskState:       liveTaskState,
   }
 
-  const runState = reconcileRunState(name, sessionStartMs)
+  const runState = reconcileStreakWithContext(
+    name, reconcileRunState(name, sessionStartMs), inputs.contextTokens, cfg.thresholdTokens)
   const decision = decideGate(inputs, cfg, runState.firstBlockedAt)
 
   logger.debug({ agent: name, action: decision.action, reason: decision.reason,

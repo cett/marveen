@@ -332,6 +332,32 @@ export function resetStreakIfPreviousSession<T extends { firstBlockedAt: number 
 }
 
 /**
+ * Pure: end the block streak when the measured context is back under the
+ * threshold. A streak is "continuously blocked while the context is at or above
+ * the threshold"; the only things that ended it were this gate's own /clear and
+ * a restart. A context that drops by any other road (auto-compact, a manual
+ * /clear or /compact, the hard guard) ended the situation the streak describes,
+ * but left firstBlockedAt behind, so days later, when the context climbed over
+ * the threshold again and the pane happened to be mid-turn, the old clock made
+ * the very first block a persistent-block alert ("blocked for 6101 minutes")
+ * for an agent that was working normally. Both clocks go together, as in
+ * resetStreakIfPreviousSession.
+ *
+ * Pure. An unmeasurable context (null) says nothing about the streak, so it is
+ * kept (that is the unmeasurable-context block's own escalation path). Returns
+ * the SAME object when nothing changes.
+ */
+export function resetStreakIfBelowThreshold<T extends { firstBlockedAt: number | null; lastAlertAt: number | null }>(
+  state: T,
+  contextTokens: number | null,
+  thresholdTokens: number,
+): T {
+  if (contextTokens === null || contextTokens >= thresholdTokens) return state
+  if (state.firstBlockedAt === null && state.lastAlertAt === null) return state
+  return { ...state, firstBlockedAt: null, lastAlertAt: null }
+}
+
+/**
  * Pure: the operator-facing explanation appended to the persistent-block alert
  * when the block reason is an unmeasurable context. The bare "unmeasurable"
  * says nothing about WHAT could not be measured; name the cause of the null
