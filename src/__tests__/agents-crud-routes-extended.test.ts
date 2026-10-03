@@ -174,7 +174,6 @@ vi.mock('../web/atomic-write.js', () => ({
 import { tryHandleAgentsCrud } from '../web/routes/agents-crud.js'
 import { getAgentDetail, listAgentSummaries } from '../web/routes/agents-helpers.js'
 import { isTenantAgentEnabled, getEnabledAgentsForTenant } from '../db.js'
-import { exportAgentBundle, exportAllAgentsBundle } from '../web/agent-bundle.js'
 
 function makeCtx(opts: { method: string; path: string; body?: string; role?: RouteContext['role']; tenantId?: RouteContext['tenantId'] }): {
   ctx: RouteContext; statusCode: () => number; responseBody: () => unknown
@@ -209,7 +208,7 @@ const WEB_DIR = '/tmp/web-test'
 
 describe('agents-crud routes (extended)', () => {
   it('GET /api/agents/activity returns 200 with empty entries', async () => {
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -225,7 +224,7 @@ describe('agents-crud routes (extended)', () => {
   })
 
   it('GET /api/team/graph returns 200 with nodes and edges', async () => {
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -236,7 +235,7 @@ describe('agents-crud routes (extended)', () => {
   it('GET /api/team/graph nodes carry tenantIds/tenantNames alongside primaryTenantId (#857)', async () => {
     const agentConfig = await import('../web/agent-config.js')
     vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
-    const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph' })
+    const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph', role: 'admin' })
     await tryHandleAgentsCrud(ctx, WEB_DIR)
     const body = responseBody() as any
     const agentNode = body.nodes.find((n: any) => n.id !== body.mainAgentId)
@@ -550,7 +549,7 @@ describe('agents-crud routes (extended)', () => {
   it('GET /api/agents/activity returns running state for main agent', async () => {
     const { capturePane } = await import('../web/agent-process.js')
     vi.mocked(capturePane).mockReturnValueOnce('$ cmd\nsome output line')
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -569,7 +568,7 @@ describe('agents-crud routes (extended)', () => {
     vi.mocked(capturePane)
       .mockReturnValueOnce(null)                    // main agent: not running
       .mockReturnValueOnce('$ task\nresult here')   // sub-agent pane
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -618,7 +617,7 @@ describe('agents-crud routes (extended)', () => {
     const helpers = await import('../web/routes/agents-helpers.js')
     vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
     vi.mocked(helpers.agentRunStateCached).mockReturnValueOnce('unreachable')
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -676,7 +675,7 @@ describe('agents-crud routes (extended)', () => {
     vi.mocked(capturePane)
       .mockReturnValueOnce(null) // main agent not running
       .mockReturnValueOnce(null) // sub-agent running but pane null
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -691,7 +690,7 @@ describe('agents-crud routes (extended)', () => {
     const { detectPaneState } = await import('../pane-state.js')
     vi.mocked(capturePane).mockReturnValueOnce('$ long running task...')
     vi.mocked(detectPaneState).mockReturnValueOnce('busy')
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -703,7 +702,7 @@ describe('agents-crud routes (extended)', () => {
     const { detectPaneState } = await import('../pane-state.js')
     vi.mocked(capturePane).mockReturnValueOnce('error output')
     vi.mocked(detectPaneState).mockReturnValueOnce('error')
-    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
@@ -745,41 +744,228 @@ describe('agents-crud routes (extended)', () => {
   })
 })
 
-import * as agentConfigForExportMod from '../web/agent-config.js'
-const agentConfigForExport = () => agentConfigForExportMod
+// Tenant scoping of the agent readers: the org chart used to list every agent
+// (with every tenant's name on it) while the Agents grid was already scoped.
+describe('agent readers are tenant-scoped like GET /api/agents', async () => {
+  const agentConfig = await import('../web/agent-config.js')
+  const agentTeam = await import('../web/agent-team.js')
+  const helpers = await import('../web/routes/agents-helpers.js')
 
-describe('agent export is admin-only in the handler (not only in the RBAC table)', () => {
-  const PATHS = ['/api/agents/export-all', '/api/agents/test-agent/export']
-  const ask = (path: string, role: RouteContext['role'], secrets: boolean) => {
-    const m = makeCtx({ method: 'GET', path, role, tenantId: 'acme' })
-    const qs = secrets ? '?secrets=1' : ''
-    m.ctx.url = new URL(`http://localhost${path}${qs}`)
-    ;(m.ctx.req as { url?: string }).url = `${path}${qs}`
-    return m
+  const TEAMS: Record<string, { role: 'leader' | 'member'; reportsTo: string | null; delegatesTo: string[] }> = {
+    'lead-a': { role: 'leader', reportsTo: null, delegatesTo: ['member-a', 'hidden-agent'] },
+    'member-a': { role: 'member', reportsTo: 'lead-a', delegatesTo: [] },
+    'member-b': { role: 'member', reportsTo: 'hidden-agent', delegatesTo: [] },
+    'hidden-agent': { role: 'leader', reportsTo: null, delegatesTo: ['member-b'] },
+  }
+  const ENABLED: Record<string, string[]> = {
+    acme: ['lead-a', 'member-a', 'member-b'],
+    default: ['member-a'],
   }
 
-  for (const role of ['agent', 'viewer', 'read_only', undefined] as const) {
-    for (const secrets of [true, false]) {
-      it(`role ${role}${secrets ? ' with ?secrets=1' : ''}: 403, and no bundle is built`, async () => {
-        vi.mocked(exportAgentBundle).mockClear()
-        vi.mocked(exportAllAgentsBundle).mockClear()
-        for (const path of PATHS) {
-          const { ctx, statusCode } = ask(path, role, secrets)
+  function seed(): void {
+    vi.mocked(agentConfig.listAgentNames).mockReturnValue(Object.keys(TEAMS))
+    vi.mocked(agentTeam.readAgentTeam).mockImplementation(((n: string) => ({
+      ...TEAMS[n], autoDelegation: false, trustFrom: [], trustSources: [],
+    })) as never)
+    vi.mocked(getEnabledAgentsForTenant).mockImplementation((t: string) => ENABLED[t] ?? [])
+    vi.mocked(isTenantAgentEnabled).mockImplementation((t: string, a: string) => (ENABLED[t] ?? []).includes(a))
+  }
+  // The file-level mock's default, captured before any test overrides it.
+  const FILE_TENANT_FIELDS = helpers.tenantSummaryFields('any')
+  function reset(): void {
+    vi.mocked(helpers.tenantSummaryFields).mockReturnValue(FILE_TENANT_FIELDS)
+    vi.mocked(agentConfig.listAgentNames).mockReturnValue([])
+    vi.mocked(getEnabledAgentsForTenant).mockReturnValue([])
+    vi.mocked(isTenantAgentEnabled).mockReturnValue(true)
+  }
+
+  async function graph(role: RouteContext['role'], tenantId?: RouteContext['tenantId']) {
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph', role, tenantId })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    return responseBody() as { nodes: any[]; edges: { from: string; to: string }[]; mainAgentId: string | null }
+  }
+
+  describe('GET /api/team/graph', () => {
+    it('non-admin sees only the agents enabled for their tenant, and no main node', async () => {
+      seed()
+      try {
+        const g = await graph('agent', 'acme')
+        expect(g.nodes.map(n => n.id).sort()).toEqual(['lead-a', 'member-a', 'member-b'])
+        expect(g.mainAgentId).toBeNull()
+      } finally { reset() }
+    })
+
+    it('non-admin nodes carry no tenant-membership fields (no other tenant name leaks)', async () => {
+      seed()
+      try {
+        const g = await graph('agent', 'acme')
+        for (const n of g.nodes) {
+          expect(n).not.toHaveProperty('tenantIds')
+          expect(n).not.toHaveProperty('tenantNames')
+          expect(n).not.toHaveProperty('primaryTenantId')
+          expect(n).not.toHaveProperty('primaryTenantName')
+        }
+        expect(JSON.stringify(g)).not.toContain('Fleet (default)')
+      } finally { reset() }
+    })
+
+    it('non-admin edges and delegatesTo never reference a hidden agent', async () => {
+      seed()
+      try {
+        const g = await graph('agent', 'acme')
+        const ids = new Set(g.nodes.map(n => n.id))
+        for (const e of g.edges) { expect(ids.has(e.from)).toBe(true); expect(ids.has(e.to)).toBe(true) }
+        expect(g.edges).toEqual([{ from: 'lead-a', to: 'member-a' }])
+        expect(g.nodes.find(n => n.id === 'lead-a').delegatesTo).toEqual(['member-a'])
+        // member-b's manager is hidden: she becomes a root, not a dangling edge.
+        expect(g.nodes.find(n => n.id === 'member-b').reportsTo).toBeNull()
+        expect(JSON.stringify(g)).not.toContain('hidden-agent')
+      } finally { reset() }
+    })
+
+    it('a different tenant sees its own set', async () => {
+      seed()
+      try {
+        const g = await graph('viewer', 'default')
+        expect(g.nodes.map(n => n.id)).toEqual(['member-a'])
+        expect(g.edges).toEqual([])
+      } finally { reset() }
+    })
+
+    it('a non-admin with tenantId null is scoped to the default tenant, not treated as admin', async () => {
+      seed()
+      try {
+        const g = await graph('viewer', null)
+        expect(g.nodes.map(n => n.id)).toEqual(['member-a'])
+      } finally { reset() }
+    })
+
+    it('an unresolved role is denied by default (no admin bypass)', async () => {
+      seed()
+      try {
+        const g = await graph(undefined, undefined)
+        expect(g.nodes.map(n => n.id)).toEqual(['member-a'])
+        expect(g.nodes.some(n => n.role === 'main')).toBe(false)
+      } finally { reset() }
+    })
+
+    it('admin sees every agent, the main node, and the tenant fields', async () => {
+      seed()
+      vi.mocked(helpers.tenantSummaryFields).mockReturnValue({
+        primaryTenantId: 'acme',
+        tenantIds: ['default', 'acme'],
+        tenantNames: { default: 'Fleet (default)', acme: 'Acme tenant' },
+      })
+      try {
+        const g = await graph('admin', null)
+        expect(g.nodes.map(n => n.id).sort()).toEqual(['lead-a', 'member-a', 'hidden-agent', 'member-b'].concat(g.mainAgentId as string).sort())
+        expect(g.nodes.find(n => n.role === 'main')).toBeDefined()
+        const memberA = g.nodes.find(n => n.id === 'member-a')
+        expect(memberA.tenantIds).toEqual(['default', 'acme'])
+        expect(memberA.primaryTenantId).toBe('acme')
+        expect(g.edges).toContainEqual({ from: 'lead-a', to: 'member-a' })
+        expect(g.edges).toContainEqual({ from: 'hidden-agent', to: 'member-b' })
+      } finally { reset() }
+    })
+  })
+
+  describe('GET /api/agents (+ /:name) tenant fields', () => {
+    const summary = (name: string) => ({
+      name,
+      primaryTenantId: 'default',
+      tenantIds: ['default', 'acme'],
+      tenantNames: { default: 'Fleet (default)', acme: 'Acme tenant' },
+    })
+
+    it('list: a shared agent shows the caller their own tenant only', async () => {
+      seed()
+      vi.mocked(helpers.listAgentSummaries).mockReturnValueOnce([summary('member-a'), summary('hidden-agent')] as never)
+      try {
+        const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents', role: 'agent', tenantId: 'acme' })
+        expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+        const body = responseBody() as any[]
+        expect(body.map(a => a.name)).toEqual(['member-a'])
+        expect(body[0].tenantIds).toEqual(['acme'])
+        expect(body[0].tenantNames).toEqual({ acme: 'Acme tenant' })
+        expect(body[0].primaryTenantId).toBeNull()
+        expect(JSON.stringify(body)).not.toContain('Fleet (default)')
+      } finally { reset() }
+    })
+
+    it('list: admin keeps every tenant field', async () => {
+      vi.mocked(helpers.listAgentSummaries).mockReturnValueOnce([summary('member-a')] as never)
+      const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents', role: 'admin' })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      const body = responseBody() as any[]
+      expect(body[0].tenantIds).toEqual(['default', 'acme'])
+      expect(body[0].primaryTenantId).toBe('default')
+    })
+
+    it('detail: a shared agent shows the caller their own tenant only', async () => {
+      seed()
+      vi.mocked(isTenantAgentEnabled).mockReturnValue(true)
+      vi.mocked(helpers.getAgentDetail).mockReturnValueOnce(summary('test-agent') as never)
+      try {
+        const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/test-agent', role: 'agent', tenantId: 'acme' })
+        expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+        const body = responseBody() as any
+        expect(body.tenantIds).toEqual(['acme'])
+        expect(JSON.stringify(body)).not.toContain('Fleet (default)')
+      } finally { reset() }
+    })
+  })
+
+  describe('through the real enforce-mode gate', () => {
+    it('agent and viewer roles get 200 and the filtered chart, not a 403', async () => {
+      const { applyRbacGate } = await import('../web/authz.js')
+      seed()
+      try {
+        for (const role of ['agent', 'viewer'] as const) {
+          const gateRes = { writeHead: vi.fn(), end: vi.fn() } as unknown as http.ServerResponse
+          expect(applyRbacGate({ kind: 'token', role } as never, 'GET', '/api/team/graph', gateRes, 'enforce')).toBe(true)
+          const g = await graph(role, 'acme')
+          expect(g.nodes.map(n => n.id).sort()).toEqual(['lead-a', 'member-a', 'member-b'])
+        }
+      } finally { reset() }
+    })
+  })
+
+  describe('GET /api/agents/activity', () => {
+    it('non-admin gets only their tenant agents and never the main agent pane', async () => {
+      seed()
+      try {
+        const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'agent', tenantId: 'acme' })
+        expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+        const body = responseBody() as { name: string; isMain: boolean }[]
+        expect(body.map(e => e.name).sort()).toEqual(['lead-a', 'member-a', 'member-b'])
+        expect(body.some(e => e.isMain)).toBe(false)
+      } finally { reset() }
+    })
+
+    it('admin still gets the main agent and every sub-agent', async () => {
+      seed()
+      try {
+        const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
+        expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+        const body = responseBody() as { name: string; isMain: boolean }[]
+        expect(body).toHaveLength(5)
+        expect(body.some(e => e.isMain)).toBe(true)
+      } finally { reset() }
+    })
+  })
+
+  describe('agent export is admin-only', () => {
+    for (const role of ['agent', 'viewer', 'read_only', undefined] as const) {
+      it(`export-all and export?secrets=1 answer 403 for role ${role}`, async () => {
+        for (const path of ['/api/agents/export-all', '/api/agents/test-agent/export']) {
+          const { ctx, statusCode } = makeCtx({ method: 'GET', path, role, tenantId: 'acme' })
+          ctx.url = new URL(`http://localhost${path}?secrets=1`)
+          ;(ctx.req as { url?: string }).url = `${path}?secrets=1`
           expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
           expect(statusCode()).toBe(403)
         }
-        expect(exportAgentBundle).not.toHaveBeenCalled()
-        expect(exportAllAgentsBundle).not.toHaveBeenCalled()
       })
     }
-  }
-
-  it('admin with ?secrets=1 still reaches the bundle builder, with secrets included', async () => {
-    vi.mocked(agentConfigForExport().listAgentNames).mockReturnValueOnce(['test-agent'])
-    vi.mocked(exportAgentBundle).mockClear()
-    const { ctx, statusCode } = ask('/api/agents/test-agent/export', 'admin', true)
-    await tryHandleAgentsCrud(ctx, WEB_DIR)
-    expect(statusCode()).not.toBe(403)
-    expect(exportAgentBundle).toHaveBeenCalledWith('test-agent', expect.any(String), expect.objectContaining({ includeSecrets: true }))
   })
 })

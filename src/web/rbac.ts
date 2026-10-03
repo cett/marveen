@@ -194,6 +194,12 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Agents -- read-only for broad roles.
   { method: 'GET', pathPattern: '/api/agents', prefix: true, permission: 'agents:read' },
   { method: 'GET', pathPattern: '/api/v1/agents', prefix: true, permission: 'agents:read' },
+  // The org chart behind the Agents page's tree view. The route filters to the
+  // caller's tenant (agent-tenant-scope.ts) exactly as GET /api/agents does, so it
+  // is readable by every role that can read the agent list. prefix:false: the PUT
+  // that rewires reporting lines lives under /api/agents/:name/team, not here.
+  { method: 'GET', pathPattern: '/api/team/graph', prefix: false, permission: 'agents:read' },
+  { method: 'GET', pathPattern: '/api/v1/team/graph', prefix: false, permission: 'agents:read' },
 
   // Kanban.
   { method: 'GET', pathPattern: '/api/kanban', prefix: true, permission: 'kanban:read' },
