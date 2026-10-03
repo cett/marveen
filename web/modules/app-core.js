@@ -39,6 +39,14 @@ let _pages = null
 let _pageSwitchHook = null
 export function setPageSwitchHook(fn) { _pageSwitchHook = fn }
 
+// Router guard: (pageId) => boolean. false sends the navigation to the overview
+// (always allowed, so this cannot loop). Used by the role-based nav gating.
+let _pageGuard = null
+export function setPageGuard(fn) { _pageGuard = fn }
+
+/** The page the router is currently on (null before the first navigation). */
+export function getCurrentPage() { return _currentPage }
+
 /**
  * Register lifecycle hooks for a page.
  * - leave({ to }) can return false to abort navigation.
@@ -124,6 +132,7 @@ export function switchPage(pageId) {
     alias.before?.()
     pageId = alias.to
   }
+  if (pageId !== 'overview' && _pageGuard?.(pageId) === false) pageId = 'overview'
 
   // Leave hook: skipped when re-navigating to the same page (e.g. lang-change re-render).
   if (_currentPage !== null && _currentPage !== pageId) {

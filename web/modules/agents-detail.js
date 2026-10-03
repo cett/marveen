@@ -4,6 +4,7 @@
 // -- see HANDOFF.md for why this lives here rather than in agents.js despite
 // being read at page-load time). Excludes the Channel/MCP tab (agents-channels.js).
 
+import { can } from './rbac-client.js'
 import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 import { escapeHtml, mainAgentId } from './util.js'
@@ -503,6 +504,8 @@ async function loadOllamaModels() {
 // case we hide the optgroup and surface a hint pointing to the Vault page.
 export async function loadAvailableModels() {
   try {
+    // GET /api/models/available is admin:all (the list feeds the agent create/edit forms only).
+    if (!(await can('admin:all'))) return
     const res = await fetch('/api/models/available')
     if (!res.ok) return
     const data = await res.json()

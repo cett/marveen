@@ -2,6 +2,7 @@ import { escapeHtml, mainAgentId } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { agentApiName } from './agents.js'
+import { can } from './rbac-client.js'
 
 
 
@@ -14,6 +15,8 @@ import { agentApiName } from './agents.js'
 const ONBOARDING_DISMISS_KEY = 'mvOnboardingDismissed'
 
 async function fetchOnboardingStatus() {
+  // GET /api/onboarding/status is admin:all and the overlay is the install owner's setup flow.
+  if (!(await can('admin:all'))) return null
   try { return await (await fetch('/api/onboarding/status')).json() } catch { return null }
 }
 

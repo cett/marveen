@@ -132,7 +132,7 @@ document.getElementById('scheduleType').addEventListener('change', () => {
 // window.location.port which reflects the browser-side URL (e.g. 8443 for a
 // tailscale-serve HTTPS PWA) and would be wrong in agent curl prompts.
 let __serverPort = 3420
-fetch('/api/network-info').then(r => r.ok ? r.json() : {}).then(info => {
+can('admin:all').then(ok => (ok ? fetch('/api/network-info') : null)).then(r => (r && r.ok ? r.json() : {})).then(info => {
   if (info.port) __serverPort = info.port
 }).catch(() => {})
 

@@ -58,8 +58,12 @@ describe('federation UI wiring', () => {
   it('the federation status fetches are failure-proof (must never blank Agents/Messages)', () => {
     // loadAgents is in agents.js (S-6); loadFederationPage is in federation.js (S-13b)
     const combined = AGENTS_MOD + FEDERATION_MOD
-    const guarded = combined.match(/fetch\('\/api\/federation\/status'\)\.then\(\(r\) => \(r\.ok \? r\.json\(\) : null\)\)\.catch\(\(\) => null\)/g) || []
-    expect(guarded.length).toBeGreaterThanOrEqual(2) // loadAgents + loadFederationPage
+    const plain = combined.match(/fetch\('\/api\/federation\/status'\)\.then\(\(r\) => \(r\.ok \? r\.json\(\) : null\)\)\.catch\(\(\) => null\)/g) || []
+    // loadAgents gates the call on federation:read (a role without it must not fire a request the server
+    // refuses); the chain must still end in a catch that yields null.
+    const gated = combined.match(/can\('federation:read'\)[\s\S]{0,160}fetch\('\/api\/federation\/status'\)[\s\S]{0,160}\.catch\(\(\) => null\)/g) || []
+    expect(plain.length + gated.length).toBeGreaterThanOrEqual(2) // loadAgents + loadFederationPage
+    expect(gated.length).toBe(1)
   })
 
   it('federated agents live in a SEPARATE store from the local `agents` global', () => {
