@@ -1,4 +1,5 @@
 import { readBody, json } from '../http-helpers.js'
+import { NON_ADMIN_SETTING_KEYS, NON_ADMIN_SETTING_ROW_FIELDS, pickFields } from '../non-admin-views.js'
 import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
@@ -15,7 +16,11 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
     // secret:true entries are included so the UI can show/edit them, but the
     // real value never leaves this process -- getEffectiveSettingValue() is
     // never called for a secret key, the row always reports the mask.
-    const settings = SETTINGS_REGISTRY.map((def) => ({
+    // Every session reads the language at boot. Anyone but the admin gets only the allowlisted keys and
+    // row fields; the filter runs BEFORE the values are read, so nothing else is even resolved for them.
+    const isAdmin = ctx.role === 'admin'
+    const visible = isAdmin ? SETTINGS_REGISTRY : SETTINGS_REGISTRY.filter((def) => NON_ADMIN_SETTING_KEYS.includes(def.key))
+    const rows = visible.map((def) => ({
       key: def.key,
       type: def.type,
       value: def.secret ? SECRET_MASK : getEffectiveSettingValue(def.key),
@@ -28,7 +33,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       max: def.max,
       secret: def.secret,
     }))
-    json(res, { settings })
+    json(res, { settings: isAdmin ? rows : rows.map((r) => pickFields(r, NON_ADMIN_SETTING_ROW_FIELDS)) })
     return true
   }
 

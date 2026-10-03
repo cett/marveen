@@ -58,7 +58,7 @@ function makeCtx(opts: { method: string; path: string; body?: object | string; r
   }
   const url = new URL(`http://localhost${opts.path}`)
   return {
-    ctx: { req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: opts.method, url, auth: { kind: 'token' }, role: opts.role } as RouteContext,
+    ctx: { req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: opts.method, url, auth: { kind: 'token' }, role: ('role' in opts ? opts.role : 'admin') } as RouteContext,
     status: () => code,
     body: () => { try { return JSON.parse(resBody) } catch { return resBody } },
   }

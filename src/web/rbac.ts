@@ -143,6 +143,13 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Admin namespace -- must be checked before generic /api/* entries.
   { method: '*', pathPattern: '/api/admin/', prefix: true, permission: 'admin:all' },
   { method: '*', pathPattern: '/api/v1/admin/', prefix: true, permission: 'admin:all' },
+  // Boot-time reads of every dashboard session: brand/agent name and the UI language. Every role may
+  // read; the route returns the full response to the admin and an allowlist to anyone else
+  // (src/web/non-admin-views.ts). memories:read is the permission every role has and the overview
+  // already uses for fleet-filtered data. Writes (PUT /api/marveen, POST /api/settings) stay unmapped,
+  // so admin:all.
+  { method: 'GET', pathPattern: '/api/marveen', prefix: false, permission: 'memories:read' },
+  { method: 'GET', pathPattern: '/api/settings', prefix: false, permission: 'memories:read' },
   // RBAC observability (shadow-log). Listed explicitly even though the unmapped-path
   // fallback is also admin:all, so a later broad /api/* entry cannot widen it by accident.
   { method: '*', pathPattern: '/api/rbac/', prefix: true, permission: 'admin:all' },
