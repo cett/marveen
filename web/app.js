@@ -1,7 +1,7 @@
 // ES module imports (issue #3 modularization). app.js is type="module".
 import { showToast } from './modules/toast.js'
 import { t, setLang, getLang, onLangChange } from './modules/i18n.js'
-import { registerPage, registerAlias, switchPage, boot, renderNav, renderStaticI18n, setPageSwitchHook } from './modules/app-core.js'
+import { registerPage, registerAlias, switchPage, boot, renderNav, renderStaticI18n, setPageSwitchHook, setPageGuard, getCurrentPage } from './modules/app-core.js'
 import { loadKanban, startKanbanRefresh, stopKanbanRefresh, initKanban, kanbanState } from './modules/kanban.js'
 import { wireKanbanColumnDnD, wireKanbanCardTouchDnD } from './modules/kanban-dnd.js'
 import {
@@ -21,6 +21,7 @@ import { wireBranchDriftBanner, initUpdates, loadUpdates } from './modules/updat
 // Static: showSudoModal/dismissOnboarding/initChannelSetup used at boot.
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
 import { can } from './modules/rbac-client.js'
+import { isPageAllowed, isTabAllowed, initNavGating, STATUS_BLOCK_PERMISSION } from './modules/nav-gate.js'
 import { renderPaginator } from './modules/paginator.js'
 import { initGlobalKanbanSearch } from './modules/kanban-search.js'
 
@@ -388,6 +389,9 @@ function openSidebarGroupForPage(pageId) {
   })
 }
 setPageSwitchHook(openSidebarGroupForPage)
+// Role-based nav gating (modules/nav-gate.js): the router sends a gated page to the overview
+// for a role that cannot use it. UX layer only, the server's 403 stays the last word.
+setPageGuard(isPageAllowed)
 
 {
   const openKeys = loadSidebarGroupState()
@@ -548,6 +552,11 @@ initSidebarBrand()
   } catch {}
 })()
 
+// Role-based nav gating: hide the sidebar links, tabs and blocks the session's role cannot use
+// ([data-rbac-perm] in index.html) and leave a gated page that was opened by a deep link before
+// the role was known. Runs once the same auth status the reveal functions above read is in.
+initNavGating({ currentPage: getCurrentPage, switchPage })
+
 // In an installed (standalone) PWA, lock the zoom: iOS otherwise auto-zooms when
 // a small-text input is focused and allows stray pinch-zoom, neither of which
 // suits an app-like control panel. Left untouched in a normal browser tab so
@@ -686,7 +695,8 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
     tokenInput.addEventListener('keydown', e => { if (e.key === 'Enter') configureBtn && configureBtn.click() })
   }
 
-  checkStatus()
+  // The banner installs/configures an MCP connector (admin:all endpoints): a role without it neither sees it nor fires its status call.
+  can('admin:all').then((ok) => { if (ok) checkStatus(); else banner.hidden = true })
 })()
 
 // ── Page registration + boot ──────────────────────────────────────────────────
@@ -702,6 +712,8 @@ registerAlias('status', 'overview')
 
 async function loadOverviewPage() {
   loadOverview()
+  // The Claude-status block calls GET /api/status (admin:all): skip the call, and the module, for a role without it.
+  if (!(await can(STATUS_BLOCK_PERMISSION))) return
   const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js'))
   if (!_moduleCache.get('status_inited')) {
     m.initStatus()
@@ -777,7 +789,10 @@ registerPage('tasks', {
       _moduleCache.set('tasksTabs_wired', true)
     }
 
-    const targetTab = _tasksPendingTab || 'scheduled'
+    // The "once" tab (background tasks, GET /api/background-tasks) needs admin:all: a #bgTasks link
+    // lands on the scheduled tab for a role without it.
+    let targetTab = _tasksPendingTab || 'scheduled'
+    if (!isTabAllowed('tasks', targetTab)) targetTab = 'scheduled'
     _tasksPendingTab = null
     activateTasksTab(targetTab)
     if (targetTab === 'once') await loadTasksOnceTab()
@@ -884,7 +899,8 @@ registerPage('import', {
       _moduleCache.set('importTabs_wired', true)
     }
 
-    const targetTab = _importPendingTab || 'sources'
+    let targetTab = _importPendingTab || 'sources'
+    if (!isTabAllowed('import', targetTab)) targetTab = 'sources'
     _importPendingTab = null
     activateImportTab(targetTab)
     if (targetTab === 'migrate') await loadMigrateTab()

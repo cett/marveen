@@ -141,6 +141,8 @@ export function resolveTenantId(auth: AuthResult): string | null {
 //   shadow  -- logs a would-deny via `onWouldDeny`, never writes a 4xx response.
 //              The request always proceeds. Default for safe rollout.
 //   enforce -- calls enforcePermission, writes 401/403/503, returns false on deny.
+//              `onDenied` fires (with the reason) just before the refusal is written,
+//              so the refusal can be recorded durably.
 
 export type RbacMode = 'shadow' | 'enforce'
 
@@ -151,11 +153,13 @@ export function applyRbacGate(
   res: http.ServerResponse,
   mode: RbacMode,
   onWouldDeny?: (reason: string) => void,
+  onDenied?: (reason: string) => void,
 ): boolean {
   const decision = checkPermission(auth, method, path)
   if (decision.allowed) return true
 
   if (mode === 'enforce') {
+    onDenied?.(decision.reason)
     return enforcePermission(auth, method, path, res)
   }
 

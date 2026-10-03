@@ -165,6 +165,23 @@ agents/
 
 Conversely, a connector needed by all agents belongs in the project-root `.mcp.json`.
 
+## Tenant isolation at the MCP layer
+
+There is no self-hosted Marveen MCP server in this repository, and the servers in the catalog are external:
+none of them has a notion of `tenant_id`, so a `WHERE tenant_id = ?` cannot be enforced at the MCP layer for
+them. What protects a tenant today is the layer around the MCP servers:
+
+- **Fleet-only agents.** An agent that carries an MCP server with no tenant awareness (Hetzner, GitHub/GitLab
+  tokens, GA4, the filesystem server, personal-data servers) must not be enabled for a tenant. The availability
+  endpoint refuses it with `409` and the risky servers listed, and accepts it only when resent with
+  `confirm: true`; the confirmation is audited (`admin.agent_availability.risky_confirmed`).
+- **Per-agent scope.** An agent only gets the MCP tools in its `mcpScope`; the rest are denied by name.
+
+If a Marveen-hosted MCP server is ever built (for example over the database), tenant filtering at that layer is
+**mandatory**: every query takes the caller's tenant from the authenticated request, never from tool arguments,
+and an admin-only tool is the only way past it. That is the pattern to apply then; until such a server exists
+there is nothing to filter in the MCP layer.
+
 ## Troubleshooting
 
 ### MCP server fails to start

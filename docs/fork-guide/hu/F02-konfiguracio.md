@@ -124,8 +124,9 @@ A rendszer öt helyen keresi a hitelesítést, ebben a sorrendben (az első tal�
 # SKILL_SQL_REGEN=0
 
 # A tenant-skillek generált másolata az ágensek saját skills könyvtárában (alapérték: single)
-#   single = csak a PONTOSAN EGY tenantnál engedélyezett ágensek; off = a tenant-skillek csak DB-ben élnek;
-#   all = minden engedélyezett ágens, a több tenant között megosztottak is (kereszt-tenant kitettség)
+#   single = csak a PONTOSAN EGY tenantnál engedélyezett ágensek; off = a tenant-skillek csak DB-ben élnek.
+#   A több tenant között megosztott ágens soha nem kap másolatot. A korábbi `all` érték megszűnt:
+#   single-ként értelmeződik, és induláskor figyelmeztetést ír.
 # TENANT_SKILL_FILES=single
 
 # Használat-kori tenant-kontextus (alapérték: 43200 = 12 óra, 0 = nincs korhatár)
@@ -135,6 +136,38 @@ A rendszer öt helyen keresi a hitelesítést, ebben a sorrendben (az első tal�
 #   törli az érintett kontextust.
 # TENANT_CONTEXT_MAX_AGE_SECONDS=43200
 ```
+
+## Megosztott ágensek és tenant-skillek
+
+Az egynél több tenantnál engedélyezett ágens (**megosztott** ágens) mindegyik tenant kéréseit egyetlen skills
+könyvtárból szolgálja ki. A tenant A skilljének fájlmásolata (a `SKILL.md` és a kísérő scriptek) abban a
+könyvtárban olvasható és futtatható lenne akkor is, amikor az ágens a tenant B-nek válaszol, ezért a szabály:
+
+- **A megosztott ágens soha nem kap fájlmásolatot tenant-skillről. A tenant-skillek nála csak DB-ben élnek.**
+  Ez minden író útvonalra áll: az élő skill-szerkesztésre, az induláskori regenre és az ágens-indításkori
+  generálásra. A fleet-skillekre (`tenant_id='fleet'`) nem vonatkozik.
+- A `TENANT_SKILL_FILES=single` (alapérték) csak a pontosan egy tenantnál engedélyezett ágensekhez másol;
+  az `off` senkihez. A korábbi `all` érték, amely a megosztott ágensekhez is másolt, megszűnt:
+  `single`-ként értelmeződik, és induláskor figyelmeztetést ír.
+- Az elérhetőség-változtatás (`PUT /api/admin/agent-availability`) az ágens **minden tenantjának** fájljait
+  egyezteti, nem csak a módosítottét: egy egy-tenantos ágens második tenantra engedélyezése megosztottá teszi, és
+  leveszi róla az első tenant generált másolatát; egy tenant letiltása visszaváltoztathatja egy-tenantossá, ekkor
+  a megmaradó tenant másolatai íródnak. A kézzel szerkesztett `SKILL.md` megmarad (csak a generált kísérő fájlok
+  törlődnek).
+
+### Elfogadott kockázat
+
+A DB-only fájlszintű garancia, nem teljes izoláció. A tulajdonos 2026-10-03-án a következőket elfogadta:
+
+- A megosztott ágens a fleet bearer tokent használja, amely `admin` szerepre oldódik, így a `/api/skills/sql/*`
+  végponton át bármely tenant skill-sorát továbbra is olvashatja. Hogy a B tenant skillje ne kerüljön az A tenant
+  válaszaiba, azt a használat-kori tenant-kontextus és a `tenant-skill-gate.py` tartja: ez a `Skill` eszközt és a
+  tenant-skill könyvtárba mutató fájlhozzáférést fedi, a shellből a dashboard API-ra küldött `curl`-t nem.
+- A kapu shell-oldala best effort (egy parancs közvetve is felépíthet útvonalat).
+- Az ágens saját skills könyvtárában kézzel létrehozott skill minden tenant számára látható, amelyet az ágens
+  kiszolgál; a generált másolatokra szóló szabály a kézi fájlokra nem vonatkozik.
+
+Akkor érdemes újranyitni, ha az ágensek tenantonkénti hitelesítő adatot kapnak, mert az a skill API-t tenant-tudatossá tenné számukra.
 
 ## Autonómia-konfiguráció
 

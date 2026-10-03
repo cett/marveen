@@ -67,7 +67,7 @@ function makeCtx(opts: { method: string; path: string; body?: object; role?: str
   }
   const url = new URL(`http://localhost${opts.path}`)
   return {
-    ctx: { req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: opts.method, url, auth: { kind: 'token' }, role: opts.role } as RouteContext,
+    ctx: { req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: opts.method, url, auth: { kind: 'token' }, role: ('role' in opts ? opts.role : 'admin') } as RouteContext,
     status: () => code,
     body: () => { try { return JSON.parse(resBody) } catch { return resBody } },
   }
@@ -115,7 +115,7 @@ describe('POST /api/settings: DB-only write for the new non-secret keys', () => 
 
 describe('POST /api/settings: secret keys require admin role (S6)', () => {
   it('TELEGRAM_BOT_TOKEN: 403 for a non-admin caller, DB untouched', async () => {
-    const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'TELEGRAM_BOT_TOKEN', value: 'x' } })
+    const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'TELEGRAM_BOT_TOKEN', value: 'x' }, role: 'viewer' })
     expect(await routesMod.tryHandleSettings(ctx)).toBe(true)
     expect(status()).toBe(403)
     expect((body() as any).error).toBe('forbidden')
@@ -123,7 +123,7 @@ describe('POST /api/settings: secret keys require admin role (S6)', () => {
   })
 
   it('ALLOWED_CHAT_ID: 403 for a non-admin caller, DB untouched', async () => {
-    const { ctx, status } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'ALLOWED_CHAT_ID', value: '12345' } })
+    const { ctx, status } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'ALLOWED_CHAT_ID', value: '12345' }, role: 'viewer' })
     expect(await routesMod.tryHandleSettings(ctx)).toBe(true)
     expect(status()).toBe(403)
     expect(dbMod.getSystemConfig('ALLOWED_CHAT_ID')).toBeUndefined()

@@ -69,7 +69,8 @@ function makeCtx(method: string, path: string, body?: object, headers?: Record<s
     end(b?: string) { try { out.body = JSON.parse(b?.toString() || 'null') } catch { out.body = b } },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+  // role admin: what the gate resolves for the bearer token and an admin session (GET /api/marveen filters for anyone else)
+  return { ctx: { req, res, path: url.pathname, method, url, role: 'admin' } as RouteContext, out }
 }
 
 describe('tryHandleMarveen', () => {

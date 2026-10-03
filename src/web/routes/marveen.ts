@@ -1,4 +1,5 @@
 import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
+import { NON_ADMIN_MARVEEN_FIELDS, pickFields } from '../non-admin-views.js'
 import { join, extname } from 'node:path'
 import {
   PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, CHANNEL_PROVIDER,
@@ -70,7 +71,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     // legacy backend), `agentId` = canonical MAIN_AGENT_ID so the dashboard can
     // hit /api/agents/<id>/skills for the main agent.
     const idCore = buildMarveenIdentityCore(currentBotName(), currentBrandName(), MAIN_AGENT_ID)
-    json(res, {
+    const full = {
       ...idCore,
       // Configured owner display name (OWNER_NAME). The dashboard chat view uses
       // this to pin/label the owner's own message thread instead of a hardcoded
@@ -134,7 +135,10 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       kanbanLabels: {
         colors: KANBAN_LABEL_COLORS,
       },
-    })
+    }
+    // Every session reads this at boot (brand and agent name). Only the admin gets the instruction files,
+    // MCP config, owner name and channel details: anyone else gets the allowlisted display fields.
+    json(res, ctx.role === 'admin' ? full : pickFields(full, NON_ADMIN_MARVEEN_FIELDS))
     return true
   }
 

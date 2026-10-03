@@ -51,7 +51,7 @@ vi.mock('../web/mcp-risk-policy.js', () => ({
 }))
 
 vi.mock('../web/skill-regen.js', () => ({
-  regenTenantSkillFiles: vi.fn(),
+  regenTenantSkillFilesForAgentChange: vi.fn(),
 }))
 
 vi.mock('../logger.js', () => ({
@@ -524,17 +524,17 @@ describe('PUT /api/v1/admin/agent-availability', () => {
     expect(vi.mocked(db.setTenantAgentAvailability)).toHaveBeenCalledWith('acme-corp', 'jarvis', true)
   })
 
-  it('re-reconciles the tenant skill files after an availability change, and survives a failing regen', async () => {
+  it('re-reconciles the tenant skill files of the tenants the agent serves after an availability change, and survives a failing regen', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
     vi.mocked(agentConfig.isKnownAgent).mockReturnValue(true)
     vi.mocked(db.setTenantAgentAvailability).mockReturnValue({ tenant_id: 'acme-corp', agent_id: 'demo-agent', enabled: 0 as const, updated_at: 1787000002 })
-    vi.mocked(skillRegen.regenTenantSkillFiles).mockClear()
+    vi.mocked(skillRegen.regenTenantSkillFilesForAgentChange).mockClear()
     const a = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'demo-agent', enabled: false })
     await tryHandleAdminB2b(a.ctx)
     expect(a.out.status).toBe(200)
-    expect(skillRegen.regenTenantSkillFiles).toHaveBeenCalledWith('acme-corp')
+    expect(skillRegen.regenTenantSkillFilesForAgentChange).toHaveBeenCalledWith('demo-agent', 'acme-corp')
 
-    vi.mocked(skillRegen.regenTenantSkillFiles).mockImplementationOnce(() => { throw new Error('disk full') })
+    vi.mocked(skillRegen.regenTenantSkillFilesForAgentChange).mockImplementationOnce(() => { throw new Error('disk full') })
     const b = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'demo-agent', enabled: false })
     await tryHandleAdminB2b(b.ctx)
     expect(b.out.status).toBe(200)   // the matrix change itself stands

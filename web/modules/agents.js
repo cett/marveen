@@ -186,7 +186,11 @@ export async function loadAgents() {
     const [agentsRes, marveenRes, fedStatus, isAdminView] = await Promise.all([
       fetch('/api/agents'),
       fetch('/api/marveen'),
-      fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      // federation:read only: a role without it (read_only, viewer) must not fire a request the server refuses.
+      can('federation:read')
+        .then((ok) => (ok ? fetch('/api/federation/status') : null))
+        .then((r) => (r && r.ok ? r.json() : null))
+        .catch(() => null),
       can('admin:all'),
     ])
     _isAdminView = isAdminView

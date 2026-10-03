@@ -2,6 +2,7 @@ import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
+import { can } from './rbac-client.js'
 
 // ============================================================
 // === Updates page ===
@@ -87,6 +88,9 @@ function renderBranchNotice(status) {
 }
 
 async function pollUpdatesBadge() {
+  // GET /api/updates is admin:all. A role without it has no Updates link either (nav-gate.js), and
+  // a poll it cannot be served would only write a would-deny row to the RBAC shadow log every 5 min.
+  if (!(await can('admin:all'))) return
   try {
     const res = await fetch('/api/updates')
     if (!res.ok) return

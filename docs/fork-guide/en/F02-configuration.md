@@ -124,8 +124,9 @@ The system looks for credentials in five places, in this order (first match wins
 # SKILL_SQL_REGEN=0
 
 # Generated copies of tenant skills in the agents' own skills directories (default: single)
-#   single = only agents enabled for exactly ONE tenant; off = tenant skills stay DB-only;
-#   all = every enabled agent, including agents shared by several tenants (cross-tenant exposure)
+#   single = only agents enabled for exactly ONE tenant; off = tenant skills stay DB-only.
+#   An agent shared by several tenants never gets a copy. The former value `all` is gone: it is read as
+#   single and a warning is printed at startup.
 # TENANT_SKILL_FILES=single
 
 # Use-time tenant context (default: 43200 = 12 h, 0 = no age limit)
@@ -135,6 +136,38 @@ The system looks for credentials in five places, in this order (first match wins
 #   the affected context at once.
 # TENANT_CONTEXT_MAX_AGE_SECONDS=43200
 ```
+
+## Shared agents and tenant skills
+
+An agent enabled for more than one tenant (a **shared** agent) serves requests of all of them from one
+skills directory. A file copy of tenant A's skill (its `SKILL.md` and companion scripts) in that directory
+would be readable and runnable while the agent answers tenant B, so the rule is:
+
+- **A shared agent never gets a file copy of a tenant skill. Its tenant skills are DB-only.** This holds
+  for every writer: the live skill edit, the startup regen and the agent-start generation. Fleet skills
+  (`tenant_id='fleet'`) are not affected.
+- `TENANT_SKILL_FILES=single` (default) copies a tenant skill only to agents enabled for exactly one
+  tenant; `off` copies to none. The `all` value that used to write copies to shared agents too was removed;
+  it is read as `single` and a warning is printed at startup.
+- An availability change (`PUT /api/admin/agent-availability`) reconciles the files of **every tenant the
+  agent serves**, not only the changed one: enabling a second tenant on a single-tenant agent turns it into a
+  shared agent and removes the first tenant's generated copy from it; disabling one can turn it back into a
+  single-tenant agent and its remaining tenant's copies are written. A hand-edited `SKILL.md` is kept (only
+  the generated companion files go).
+
+### Accepted risk
+
+DB-only is a file-level guarantee, not full isolation. The owner accepted the following, 2026-10-03:
+
+- A shared agent holds the fleet bearer token, which resolves to the `admin` role, so it can still read any
+  tenant's skill rows through `/api/skills/sql/*`. Keeping tenant B's skills out of tenant A's answers is up
+  to the use-time tenant context and `tenant-skill-gate.py`, which covers the `Skill` tool and file access
+  into a tenant skill directory; it does not cover a `curl` to the dashboard API issued from a shell.
+- The shell side of the gate is best effort (a command can build a path indirectly).
+- A skill an operator creates by hand in a shared agent's own skills directory is visible to every tenant that
+  agent serves; the generated-copy rule does not apply to hand-made files.
+
+Revisit this when agents get per-tenant credentials, which would make the skill API tenant-aware for them.
 
 ## Autonomy configuration
 

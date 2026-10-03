@@ -422,6 +422,8 @@ export const TENANT_PURGE_SIMPLE_TABLES = [
   'vault_bindings',
   'token_usage',
   'fleet_blackboard_history',
+  // Names the tenant's users (principal column): tenant data, not fleet-wide audit evidence.
+  'rbac_shadow_log',
 ] as const
 
 // Agent-keyed tables: `tenant_id` says who wrote the row, not who owns it, so the purge decides per

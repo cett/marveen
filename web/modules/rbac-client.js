@@ -8,6 +8,7 @@
 //
 // Exports:
 //   can(permission)              -- true/false for the current session's role
+//   roleHas(role, permission)     -- the synchronous core of can()
 //   getAuthStatus()               -- cached /api/auth/status fetch (shared promise)
 //   gate(selector, permission, mode) -- hide/disable matching elements when !can()
 
@@ -65,8 +66,17 @@ export function getAuthStatus() {
  */
 export async function can(permission) {
   const auth = await getAuthStatus()
-  if (!auth || !auth.role) return true
-  const perms = ROLE_PERMISSIONS[auth.role]
+  return roleHas(auth?.role, permission)
+}
+
+/**
+ * Synchronous core of can(): does `role` grant `permission`? A null/undefined
+ * role resolves to true for the reason documented on can() above; an unknown
+ * role string resolves to false (fail closed for the UI layer).
+ */
+export function roleHas(role, permission) {
+  if (!role) return true
+  const perms = ROLE_PERMISSIONS[role]
   return perms ? perms.has(permission) : false
 }
 

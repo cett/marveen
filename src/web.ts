@@ -10,7 +10,8 @@ import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHead
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
-import { applyRbacGate, resolveRole, resolveTenantId } from './web/authz.js'
+import { resolveRole, resolveTenantId } from './web/authz.js'
+import { runRbacGate } from './web/rbac-shadow-log.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
@@ -83,6 +84,7 @@ import { tryHandleCostopsBudgets } from './web/routes/costops-budgets.js'
 import { tryHandleEgressAllowlist } from './web/routes/egress-allowlist.js'
 import { tryHandleModelFallback } from './web/routes/model-fallback.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
+import { tryHandleRbacShadowLog } from './web/routes/rbac-shadow-log.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
@@ -159,6 +161,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleVaultSshKeys)
   .add(tryHandleVaultSsh)
   .add(tryHandleAuditLog)
+  .add(tryHandleRbacShadowLog)
   .add(tryHandleHookAudit)
   .add(tryHandleFleetQ)
   .add(tryHandleFleet)
@@ -256,27 +259,15 @@ export function startWebServer(port = 3420): http.Server {
       return
     }
     // RBAC gate: role + permission enforcement, shadow or hard, controlled by
-    // RBAC_MODE env ('shadow' default). In shadow mode the gate only logs
+    // RBAC_MODE env ('shadow' default). In shadow mode the gate only records
     // would-deny entries so Fázis 1 observation can surface unexpected denials
     // without blocking any real traffic. Switch to 'enforce' via env override
     // after observing the shadow logs confirm no false positives.
+    // runRbacGate also persists the decisions worth observing to rbac_shadow_log
+    // (in BOTH modes), so the observation window is measurable from the database.
     // Runs only for gated, authenticated requests (kind !== 'none').
     if (requiresAuth(path, method) && auth.kind !== 'none') {
-      let wouldDeny = false
-      const passed = applyRbacGate(auth, method, path, res, RBAC_MODE, (reason) => {
-        wouldDeny = true
-        logger.warn({ path, method, authKind: auth.kind, reason, outcome: 'would-deny' }, 'rbac:shadow')
-      })
-      if (!passed) return
-      // Phase 1: log non-admin allowed requests so the observation window can
-      // distinguish "no non-admin traffic arrived" from "gate never fired".
-      // Admin (token + legacy file-token) excluded: they are 100% of current
-      // traffic and produce no useful signal about session/device/federation auth.
-      // Skipped when wouldDeny is set -- that case already has a row, and the
-      // two outcomes are mutually exclusive: would-deny XOR permitted.
-      if (RBAC_MODE === 'shadow' && resolveRole(auth) !== 'admin' && !wouldDeny) {
-        logger.info({ path, method, authKind: auth.kind, role: resolveRole(auth), outcome: 'permitted' }, 'rbac:shadow')
-      }
+      if (!runRbacGate(getDb(), auth, method, path, res, RBAC_MODE)) return
     }
 
     const role = auth.kind !== 'none' ? resolveRole(auth) : undefined

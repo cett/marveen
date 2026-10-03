@@ -545,9 +545,9 @@ function tenantSkillQualifiers(row: SkillRow): string[] {
   // The main agent's skills dir is the project-wide one, not a tenant's own.
   return [...agents].filter(a =>
     a !== MAIN_AGENT_ID && SAFE_SEGMENT.test(a) && isDir(join(AGENTS_BASE_DIR, a)) &&
-    // single: an agent shared by several tenants would expose this tenant's skill (and its
-    // companion scripts) to requests of the other tenants.
-    (mode === 'all' || getTenantsForAgent(a).length === 1))
+    // An agent shared by several tenants would expose this tenant's skill (and its companion
+    // scripts) to requests of the other tenants: shared agents are DB-only, always.
+    getTenantsForAgent(a).length === 1)
 }
 
 /** Agents that hold a generated copy right now: the qualifiers that are running. */
@@ -742,6 +742,23 @@ export function regenTenantSkillFiles(tenantId: string, forceEnabled = false): {
     total.written += t.written
     total.removed += t.removed
     total.errors += t.errors
+  }
+  return total
+}
+
+/**
+ * An availability change moves ONE agent between tenants, which changes whether it is single-tenant
+ * for EVERY tenant it serves: enabling a second tenant turns the agent into a shared one (the other
+ * tenants' copies on it must go), disabling one can turn it back into a single-tenant agent (its
+ * remaining tenant's copies are due). So reconcile the changed tenant AND every tenant the agent
+ * serves now, not just the changed one.
+ */
+export function regenTenantSkillFilesForAgentChange(agentId: string, tenantId: string, forceEnabled = false): { written: number; removed: number; errors: number } {
+  const total = { written: 0, removed: 0, errors: 0 }
+  const tenants = new Set<string>([tenantId, ...getTenantsForAgent(agentId)])
+  for (const t of tenants) {
+    const r = regenTenantSkillFiles(t, forceEnabled)
+    total.written += r.written; total.removed += r.removed; total.errors += r.errors
   }
   return total
 }
