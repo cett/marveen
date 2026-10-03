@@ -43,6 +43,7 @@ import { startContextRestartGateRunner } from './web/context-restart-gate-runner
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
+import { tryGuardAgentTenantReads } from './web/routes/agent-tenant-guard.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
 import { tryHandleFederation } from './web/routes/federation.js'
@@ -111,6 +112,7 @@ import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
 const dispatcher = new RouteDispatcher()
+  .add(tryGuardAgentTenantReads)
   .add(tryHandleAuth)
   .add(tryHandleSecurity)
   .add(tryHandleProfiles)

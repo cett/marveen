@@ -194,6 +194,12 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Agents -- read-only for broad roles.
   { method: 'GET', pathPattern: '/api/agents', prefix: true, permission: 'agents:read' },
   { method: 'GET', pathPattern: '/api/v1/agents', prefix: true, permission: 'agents:read' },
+  // The org chart behind the Agents page's tree view. The route filters to the
+  // caller's tenant (agent-tenant-scope.ts) exactly as GET /api/agents does, so it
+  // is readable by every role that can read the agent list. prefix:false: the PUT
+  // that rewires reporting lines lives under /api/agents/:name/team, not here.
+  { method: 'GET', pathPattern: '/api/team/graph', prefix: false, permission: 'agents:read' },
+  { method: 'GET', pathPattern: '/api/v1/team/graph', prefix: false, permission: 'agents:read' },
 
   // Kanban.
   { method: 'GET', pathPattern: '/api/kanban', prefix: true, permission: 'kanban:read' },
@@ -266,6 +272,11 @@ interface RegexPermissionEntry {
 }
 
 const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
+  // Agent bundles (a whole agent's CLAUDE.md/SOUL.md/MCP config and, with
+  // ?secrets=1, its vault secrets). They sit under the GET /api/agents prefix row
+  // below, which would make them agents:read for every role; this row, checked
+  // first, keeps them admin-only (the routes also refuse a non-admin themselves).
+  { method: 'GET', regex: /^\/api\/(v1\/)?agents\/(export-all|[^/]+\/export)$/, permission: 'admin:all' },
   // Per-agent context-guard / auto-restart settings (agent_settings,
   // migration 0058, #985 group 3/8). Unlike egress_allowlist (group 1,
   // admin-only writes -- a hook OUTSIDE this process unions every tenant's

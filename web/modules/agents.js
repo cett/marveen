@@ -537,7 +537,7 @@ function renderAgents() {
         <span class="process-indicator" title="${t('agents.marveen_process_tip')}"><span class="process-dot running"></span>${t('agents.status.running')}</span>
         <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
-      <div class="agent-card-actions">
+      ${_isAdminView ? `      <div class="agent-card-actions">
         <button class="btn agent-conversation-btn" data-variant="secondary" data-size="compact" title="${t('agents.btn.conversation')}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           ${t('agents.btn.conversation')}
@@ -546,7 +546,7 @@ function renderAgents() {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           Terminal
         </button>
-      </div>
+      </div>`: ''}
     `
     mCard.querySelector('.agent-terminal-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); _openTerminalModal?.(mainAgentId())
@@ -554,7 +554,9 @@ function renderAgents() {
     mCard.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); _openConversationModal?.(mainAgentId(), t('agents.marveen_boss'))
     })
-    mCard.addEventListener('click', () => openMarveenDetail())
+    // The main agent's pane, conversation and settings are admin-only on the server
+    // (it is in no tenant's agent list), so a tenant role gets a brand card only.
+    if (_isAdminView) mCard.addEventListener('click', () => openMarveenDetail())
     agentsGrid.insertBefore(mCard, addBtn)
   }
 

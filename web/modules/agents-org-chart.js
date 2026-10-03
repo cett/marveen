@@ -184,7 +184,12 @@ function renderTeamGraph(container, data, opts = {}) {
     mainRow.appendChild(renderNode(mainNode))
     container.appendChild(mainRow)
   }
-  const directs = (childrenOf.get(mainAgentId) || []).filter(c => !seen.has(c) && byId.has(c))
+  // A tenant role gets no main node (the server only sends the agents its
+  // tenant may see), so the roots are whoever has no visible manager.
+  const rootIds = mainNode
+    ? (childrenOf.get(mainAgentId) || [])
+    : nodes.filter(n => !byId.has(parentOf.get(n.id))).map(n => n.id)
+  const directs = rootIds.filter(c => !seen.has(c) && byId.has(c))
   for (const c of directs) seen.add(c)
   if (directs.length) {
     const conn = document.createElement('div')
@@ -207,7 +212,7 @@ function renderTeamGraph(container, data, opts = {}) {
     for (const n of orphans) row.appendChild(renderNode(n))
     container.appendChild(row)
   }
-  if (nodes.length === 1) {
+  if (!nodes.some(n => n.id !== mainAgentId)) {
     const empty = document.createElement('div')
     empty.className = 'team-empty'
     empty.textContent = t('team.empty')

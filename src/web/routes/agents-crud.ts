@@ -139,7 +139,17 @@ import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists, tenantSummaryFields } from './agents-helpers.js'
-import { getEnabledAgentsForTenant, isTenantAgentEnabled } from '../../db.js'
+import { visibleAgentSet, callerCanSeeAgent, scopeTenantFieldsToCaller, isAdminCaller } from './agent-tenant-scope.js'
+
+// A bundle carries the agent's CLAUDE.md/SOUL.md/MCP config and, with
+// ?secrets=1, its vault secrets. Role-wide `agents:read` (which every tenant
+// role holds) must never reach that, so the export routes are admin-only no
+// matter what the RBAC table says.
+function requireAdminForExport(ctx: RouteContext): boolean {
+  if (isAdminCaller(ctx)) return true
+  json(ctx.res, { error: 'forbidden', hint: 'agent export is admin-only' }, 403)
+  return false
+}
 
 export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -147,14 +157,15 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   if (path === '/api/agents' && method === 'GET') {
     // Non-admin: deny-by-default tenant scoping via tenant_agent_availability
     // (see 0026_tenant_agent_availability.sql) -- only agents explicitly
-    // enabled=1 for this tenant are visible. Admin bypasses (role check, not
-    // tenantId === null -- see RouteContext).
-    if (ctx.role === 'admin') {
-      jsonMaybeGzip(req, res, listAgentSummaries())
-    } else {
-      const enabled = new Set(getEnabledAgentsForTenant(ctx.tenantId ?? 'default'))
-      jsonMaybeGzip(req, res, listAgentSummaries().filter(a => enabled.has(a.name)))
-    }
+    // enabled=1 for this tenant are visible, and another tenant's id/name never
+    // rides along on a shared agent. Admin bypasses (role check, not
+    // tenantId === null -- see RouteContext). Same rule as /api/team/graph via
+    // agent-tenant-scope.ts.
+    const visible = visibleAgentSet(ctx)
+    const list = listAgentSummaries()
+    jsonMaybeGzip(req, res, visible === null
+      ? list
+      : list.filter(a => visible.has(a.name)).map(a => scopeTenantFieldsToCaller(a, ctx)))
     return true
   }
 
@@ -192,8 +203,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
     const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; tail: string[] }> = []
 
+    // Non-admin: only the agents their tenant may see, and never the main
+    // agent's channels session (the tail is live pane output).
+    const visible = visibleAgentSet(ctx)
+
     // Main agent runs in the --channels session, not agent-<name>.
-    {
+    if (visible === null) {
       const mainPane = capturePane(MAIN_CHANNELS_SESSION)
       const running = mainPane !== null
       entries.push({
@@ -207,6 +222,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
 
     for (const name of listAgentNames()) {
+      if (visible !== null && !visible.has(name)) continue
       // Remote agents: resolve run state + pane through the short-TTL caches so
       // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
       const host = readAgentRemoteHost(name)
@@ -531,26 +547,39 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       tenantIds?: string[]
       tenantNames?: Record<string, string>
     }> = []
-    nodes.push({
-      id: MAIN_AGENT_ID,
-      label: currentBotName(),
-      role: 'main',
-      reportsTo: null,
-      delegatesTo: [],
-      running: true,
-    })
-    for (const agentName of listAgentNames()) {
-      const team = readAgentTeam(agentName)
-      const { primaryTenantId, tenantIds, tenantNames } = tenantSummaryFields(agentName)
-      const primaryTenantName = primaryTenantId ? tenantNames[primaryTenantId] : undefined
+    // Non-admin sees the same agent set as GET /api/agents (tenant_agent_availability,
+    // deny-by-default): no main-agent node (it is not in their agent list either),
+    // no tenant-membership fields (another tenant's name must not leak), and no
+    // edge or delegatesTo entry pointing at an agent they cannot see. An agent
+    // whose manager is hidden simply becomes a root of their chart.
+    const visible = visibleAgentSet(ctx)
+    if (visible === null) {
       nodes.push({
+        id: MAIN_AGENT_ID,
+        label: currentBotName(),
+        role: 'main',
+        reportsTo: null,
+        delegatesTo: [],
+        running: true,
+      })
+    }
+    for (const agentName of listAgentNames()) {
+      if (visible !== null && !visible.has(agentName)) continue
+      const team = readAgentTeam(agentName)
+      const base = {
         id: agentName,
         label: readAgentDisplayName(agentName),
         role: team.role,
-        reportsTo: team.reportsTo,
-        delegatesTo: team.delegatesTo,
+        reportsTo: visible === null || (team.reportsTo && visible.has(team.reportsTo)) ? team.reportsTo : null,
+        delegatesTo: visible === null ? team.delegatesTo : team.delegatesTo.filter(d => visible.has(d)),
         running: isAgentRunning(agentName),
         securityProfile: readAgentSecurityProfile(agentName),
+      }
+      if (visible !== null) { nodes.push(base); continue }
+      const { primaryTenantId, tenantIds, tenantNames } = tenantSummaryFields(agentName)
+      const primaryTenantName = primaryTenantId ? tenantNames[primaryTenantId] : undefined
+      nodes.push({
+        ...base,
         ...(primaryTenantId ? { primaryTenantId, primaryTenantName } : {}),
         tenantIds,
         tenantNames,
@@ -561,10 +590,10 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     for (const n of nodes) {
       const reports = n.reportsTo && knownIds.has(n.reportsTo)
         ? n.reportsTo
-        : (n.id === MAIN_AGENT_ID ? null : MAIN_AGENT_ID)
+        : (n.id === MAIN_AGENT_ID || visible !== null ? null : MAIN_AGENT_ID)
       if (reports) edges.push({ from: reports, to: n.id })
     }
-    jsonMaybeGzip(req, res, { nodes, edges, mainAgentId: MAIN_AGENT_ID })
+    jsonMaybeGzip(req, res, { nodes, edges, mainAgentId: visible === null ? MAIN_AGENT_ID : null })
     return true
   }
 
@@ -627,6 +656,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   // before the generic /api/agents/:name GET further down, or "export-all"
   // would be read as an agent name.
   if (path === '/api/agents/export-all' && method === 'GET') {
+    if (!requireAdminForExport(ctx)) return true
     const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
     if (names.length === 0) { json(res, { error: 'not_found', hint: 'no agents available to export' }, 404); return true }
     const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
@@ -657,6 +687,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
   const exportMatch = path.match(/^\/api\/agents\/([^/]+)\/export$/)
   if (exportMatch && method === 'GET') {
+    if (!requireAdminForExport(ctx)) return true
     const name = decodeURIComponent(exportMatch[1])
     if (name === MAIN_AGENT_ID) {
       json(res, { error: 'not_supported', hint: 'the main agent cannot be exported as a bundle; use scripts/backup.sh for a whole-host move' }, 400)
@@ -788,15 +819,15 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
-    const isAdmin = ctx.role === 'admin'
+    const isAdmin = isAdminCaller(ctx)
     // Non-admin: same deny-by-default scoping as the list endpoint -- 404
     // (not 403) so the tenant can't distinguish "not mine" from "doesn't
     // exist". mcpJson is always redacted for non-admin, even when the agent
     // is enabled for their tenant (may hold credentials/endpoints).
-    if (!isAdmin && !isTenantAgentEnabled(ctx.tenantId ?? 'default', name)) {
+    if (!callerCanSeeAgent(ctx, name)) {
       json(res, { error: 'not_found', field: 'name' }, 404); return true
     }
-    json(res, getAgentDetail(name, !isAdmin))
+    json(res, scopeTenantFieldsToCaller(getAgentDetail(name, !isAdmin), ctx))
     return true
   }
 
