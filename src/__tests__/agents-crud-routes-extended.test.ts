@@ -174,6 +174,7 @@ vi.mock('../web/atomic-write.js', () => ({
 import { tryHandleAgentsCrud } from '../web/routes/agents-crud.js'
 import { getAgentDetail, listAgentSummaries } from '../web/routes/agents-helpers.js'
 import { isTenantAgentEnabled, getEnabledAgentsForTenant } from '../db.js'
+import { exportAgentBundle, exportAllAgentsBundle } from '../web/agent-bundle.js'
 
 function makeCtx(opts: { method: string; path: string; body?: string; role?: RouteContext['role']; tenantId?: RouteContext['tenantId'] }): {
   ctx: RouteContext; statusCode: () => number; responseBody: () => unknown
@@ -395,7 +396,7 @@ describe('agents-crud routes (extended)', () => {
   })
 
   it('GET /api/agents/:name/export returns 404 for unknown agent dir', async () => {
-    const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/ghost-xyz/export' })
+    const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/ghost-xyz/export', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(404)
   })
@@ -741,5 +742,44 @@ describe('agents-crud routes (extended)', () => {
       expect(body.error).toBe('parse_error')
       expect(body.error).not.toContain('Request body')
     })
+  })
+})
+
+import * as agentConfigForExportMod from '../web/agent-config.js'
+const agentConfigForExport = () => agentConfigForExportMod
+
+describe('agent export is admin-only in the handler (not only in the RBAC table)', () => {
+  const PATHS = ['/api/agents/export-all', '/api/agents/test-agent/export']
+  const ask = (path: string, role: RouteContext['role'], secrets: boolean) => {
+    const m = makeCtx({ method: 'GET', path, role, tenantId: 'acme' })
+    const qs = secrets ? '?secrets=1' : ''
+    m.ctx.url = new URL(`http://localhost${path}${qs}`)
+    ;(m.ctx.req as { url?: string }).url = `${path}${qs}`
+    return m
+  }
+
+  for (const role of ['agent', 'viewer', 'read_only', undefined] as const) {
+    for (const secrets of [true, false]) {
+      it(`role ${role}${secrets ? ' with ?secrets=1' : ''}: 403, and no bundle is built`, async () => {
+        vi.mocked(exportAgentBundle).mockClear()
+        vi.mocked(exportAllAgentsBundle).mockClear()
+        for (const path of PATHS) {
+          const { ctx, statusCode } = ask(path, role, secrets)
+          expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+          expect(statusCode()).toBe(403)
+        }
+        expect(exportAgentBundle).not.toHaveBeenCalled()
+        expect(exportAllAgentsBundle).not.toHaveBeenCalled()
+      })
+    }
+  }
+
+  it('admin with ?secrets=1 still reaches the bundle builder, with secrets included', async () => {
+    vi.mocked(agentConfigForExport().listAgentNames).mockReturnValueOnce(['test-agent'])
+    vi.mocked(exportAgentBundle).mockClear()
+    const { ctx, statusCode } = ask('/api/agents/test-agent/export', 'admin', true)
+    await tryHandleAgentsCrud(ctx, WEB_DIR)
+    expect(statusCode()).not.toBe(403)
+    expect(exportAgentBundle).toHaveBeenCalledWith('test-agent', expect.any(String), expect.objectContaining({ includeSecrets: true }))
   })
 })

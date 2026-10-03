@@ -141,6 +141,16 @@ import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists, tenantSummaryFields } from './agents-helpers.js'
 import { getEnabledAgentsForTenant, isTenantAgentEnabled } from '../../db.js'
 
+// A bundle carries the agent's CLAUDE.md/SOUL.md/MCP config and, with
+// ?secrets=1, its vault secrets. Role-wide `agents:read` (which every tenant
+// role holds) must never reach that. The check lives in the handler on purpose,
+// not only in the RBAC table: in RBAC_MODE=shadow the table does not block.
+function requireAdminForExport(ctx: RouteContext): boolean {
+  if (ctx.role === 'admin') return true
+  json(ctx.res, { error: 'forbidden', hint: 'agent export is admin-only' }, 403)
+  return false
+}
+
 export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -627,6 +637,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   // before the generic /api/agents/:name GET further down, or "export-all"
   // would be read as an agent name.
   if (path === '/api/agents/export-all' && method === 'GET') {
+    if (!requireAdminForExport(ctx)) return true
     const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
     if (names.length === 0) { json(res, { error: 'not_found', hint: 'no agents available to export' }, 404); return true }
     const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
@@ -657,6 +668,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
   const exportMatch = path.match(/^\/api\/agents\/([^/]+)\/export$/)
   if (exportMatch && method === 'GET') {
+    if (!requireAdminForExport(ctx)) return true
     const name = decodeURIComponent(exportMatch[1])
     if (name === MAIN_AGENT_ID) {
       json(res, { error: 'not_supported', hint: 'the main agent cannot be exported as a bundle; use scripts/backup.sh for a whole-host move' }, 400)

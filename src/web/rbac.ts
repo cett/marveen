@@ -266,6 +266,11 @@ interface RegexPermissionEntry {
 }
 
 const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
+  // Agent bundles (a whole agent's CLAUDE.md/SOUL.md/MCP config and, with
+  // ?secrets=1, its vault secrets). They sit under the GET /api/agents prefix row
+  // below, which would make them agents:read for every role; this row, checked
+  // first, keeps them admin-only (the routes also refuse a non-admin themselves).
+  { method: 'GET', regex: /^\/api\/(v1\/)?agents\/(export-all|[^/]+\/export)$/, permission: 'admin:all' },
   // Per-agent context-guard / auto-restart settings (agent_settings,
   // migration 0058, #985 group 3/8). Unlike egress_allowlist (group 1,
   // admin-only writes -- a hook OUTSIDE this process unions every tenant's
