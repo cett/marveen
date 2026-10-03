@@ -143,6 +143,9 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Admin namespace -- must be checked before generic /api/* entries.
   { method: '*', pathPattern: '/api/admin/', prefix: true, permission: 'admin:all' },
   { method: '*', pathPattern: '/api/v1/admin/', prefix: true, permission: 'admin:all' },
+  // RBAC observability (shadow-log). Listed explicitly even though the unmapped-path
+  // fallback is also admin:all, so a later broad /api/* entry cannot widen it by accident.
+  { method: '*', pathPattern: '/api/rbac/', prefix: true, permission: 'admin:all' },
 
   // Federation wire endpoints.
   { method: 'GET', pathPattern: '/api/federation/', prefix: true, permission: 'federation:read' },

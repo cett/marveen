@@ -37,6 +37,7 @@ const SEEDERS: Record<string, (t: string) => void> = {
   vault_bindings: (t) => db().prepare("INSERT INTO vault_bindings (vault_secret_id, env_var, tenant_id) VALUES ('s1', 'E', ?)").run(t),
   token_usage: (t) => db().prepare("INSERT INTO token_usage (agent, session_id, timestamp, content_preview, tenant_id) VALUES ('a', 's', ?, 'secret text', ?)").run(OTHERS.concat(TARGET).indexOf(t) + 1, t),
   fleet_blackboard_history: (t) => db().prepare("INSERT INTO fleet_blackboard_history (agent_id, status, summary, tenant_id) VALUES ('a', 'done', 'x', ?)").run(t),
+  rbac_shadow_log: (t) => db().prepare("INSERT INTO rbac_shadow_log (tenant_id, principal_kind, principal, role, method, route, permission, decision) VALUES (?, 'session', 'user-a', 'viewer', 'GET', '/api/memories', 'memories:read', 'permitted')").run(t),
   import_sources: (t) => db().prepare("INSERT INTO import_sources (id, type, path, created_at, updated_at, tenant_id) VALUES (?, 'local', '/x', 0, 0, ?)").run(`src-${t}`, t),
   import_audit_log: (t) => db().prepare('INSERT INTO import_audit_log (source_id, run_at, tenant_id) VALUES (?, 0, ?)').run(`src-${t}`, t),
 }

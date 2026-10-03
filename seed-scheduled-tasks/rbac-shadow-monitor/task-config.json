@@ -1,0 +1,11 @@
+{
+  "schedule": "30 7 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "command",
+  "description": "Napi RBAC shadow-napló összesítő LLM nélkül: az elmúlt 24 óra would-deny / denied sorai (hamis-pozitív jelzés az enforce-váltás előtt). Hibánál (talált denial vagy olvasási hiba) a command-task health Telegram-riasztást küld; üres ablak a stdout-on jelzett, az nem bizonyíték.",
+  "command": "MARVEEN_DASHBOARD_BASE='http://localhost:{{WEB_PORT}}' python3 '{{INSTALL_DIR}}/scripts/rbac-shadow-summary.py' --hours 24",
+  "timeoutMs": 60000,
+  "failThreshold": 1,
+  "createdAt": 0
+}
