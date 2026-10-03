@@ -81,9 +81,7 @@ The **Tokens** tab lets you create additional tokens. Each token has:
 
 ---
 
-## Tenant management `[planned]`
-
-> The tenant management API is coming in the next development phase.
+## Tenant management
 
 A tenant is an isolated data island. All data (memories, kanban, messages, imported content) belongs to a specific tenant. That data is not visible or modifiable with another tenant's token.
 
@@ -91,13 +89,35 @@ A tenant is an isolated data island. All data (memories, kanban, messages, impor
 
 **Disable a tenant:** revokes the token and removes access -- data is retained.
 
-### Tenant isolation `[planned]`
+### Tenant isolation and the RBAC mode
 
-After the enforce phase is enabled (`RBAC_MODE=enforce`), the system automatically filters every query by the token's tenant scope. Currently isolation runs in shadow mode -- all requests pass, but the system logs what it would reject.
+The RBAC gate **runs in enforce mode** (`RBAC_MODE=enforce`): what the caller's role does not allow is refused (403), and queries are filtered by the caller's tenant scope. The earlier shadow mode only logged and let every request through; it is now just a fallback state (see below).
 
-**Intentionally not isolated:**
-- The agent list (`/api/v1/agents`) is tenant-independent -- all authenticated users can see which agents are running.
-- The blackboard is also tenant-independent for agent and admin roles -- fleet coordination requires agents to see each other's state.
+**What a non-admin caller sees:**
+- The agent list and the org chart are narrowed to the agents enabled for the caller's own tenant. There is no main-agent node, no other tenant's id or name, and no link that points at a hidden agent.
+- The blackboard narrows to the caller's own tenant; the whole-fleet picture is the admin's.
+- The brand and the language are readable by every signed-in role (`GET /api/marveen`, `GET /api/settings`), but a non-admin receives only an allowlist: the name, the brand name, the agent id, the role, the channel provider and the kanban display settings, and from the settings only the value of `DASHBOARD_LANG`. Instruction files, MCP configuration, the owner's name, the model and the session are not shown. Writing (`PUT /api/marveen`, `POST /api/settings`) stays admin-only.
+- The agent export (`/api/agents/export-all`, `/api/agents/<name>/export`) is admin-only.
+- The dashboard hides the pages a role cannot use: Messages, Skills, Ideas, Artifacts, Token monitor, Updates, Settings, Backups, MCP connectors and Import (all `admin:all`) are not shown to a non-admin, and Federation (`federation:read`) is not shown to `read_only` and `viewer`. A typed hash or a bookmark to such a page lands on the overview. This is a UI layer only: the server's 403 stays the last word.
+
+**Observation: the shadow log.** The gate writes every decision to the `rbac_shadow_log` table, in both modes:
+
+| Decision | Meaning |
+|----------|---------|
+| `would-deny` | shadow mode let it through, enforce mode would refuse it |
+| `denied` | enforce mode refused it |
+| `permitted` | a non-admin request that passed (admin traffic is not recorded, it carries no signal) |
+
+Rows older than 30 days are pruned, and a tenant delete purges the tenant's rows. To read it: `GET /api/v1/rbac/shadow-log` (admin only) with the filters `decision`, `tenant`, `principal`, `role`, `permission`, `route`, `from`, `to`, `since_hours`, `limit` and `offset`, or with `summary=1` for the counts per decision and the most frequent refusal shapes.
+
+The `rbac-shadow-monitor` scheduled command task (daily at 07:30, no LLM) summarises the last 24 hours and alerts when there is any `would-deny` or `denied` row, or when the summary cannot be read. In enforce mode a `denied` row can also be the gate working as intended (for example a `viewer` trying to write), so the alert is a call to review: was it a legitimate refusal or a false positive. An empty window means no non-admin traffic arrived, not that everything is fine.
+
+**Rollback.** If enforce causes a wrong refusal, set `RBAC_MODE=shadow` in the server environment (`.env`) and restart the dashboard (the mode is read at startup). The route rules that do not depend on the mode (schedules, starter pack, the agent export's admin check) stay in force in shadow mode as well.
+
+**Accepted risks:**
+- The fleet bearer token (`store/.dashboard-token`) has the admin role, so the running agents are not tenant-limited. The tenant boundary applies to tenant users' own tokens and logins.
+- The main agent is deliberately outside the tenant skill gate: a fail-closed hook could stop the fleet's coordination.
+- Marveen does not run an MCP server of its own, so there is no tenant filter at the MCP layer. The catalog servers are external and do not know the tenant id.
 
 ### Deleting a tenant
 
@@ -123,9 +143,9 @@ Scheduled tasks are owned by a tenant (details in [06 - Tasks](06-tasks.md)):
 > **Scheduled-task rules and the RBAC mode.** Two layers decide who may do what with the schedules endpoints, and only one of them depends on the mode.
 >
 > - **Route rules, in both modes** (shadow mode too). A non-admin caller (a dashboard login or an API token that is not admin) whose account has no tenant is refused with 403, for reads as well. A non-admin cannot change tasks on the `default` tenant (the system's own tasks stay with the admins), and a device key or a federation principal cannot change any task (403). Another tenant's task answers 404, as if it did not exist. Activation needs a signed-in admin (403 for everyone else, the shared agent token included). An edit cannot change a task's status, tenant or runner script options (those keys are dropped; asking for a different tenant answers 403), the agent of a task is changed by admins only, and a task a non-admin creates is always a draft in their own tenant, within the limit of 20 tasks waiting for review per tenant. A non-admin edit of what a live task executes sends it back to review (see [06 - Tasks](06-tasks.md)).
-> - **The permission table, in enforce mode.** `schedules:read`, `schedules:write` and, for activation and the scheduler heartbeat, `admin:all` are checked by the RBAC gate only when `RBAC_MODE=enforce`. While the mode is shadow, the gate only logs what it would refuse, so the differences between the roles (for example that `read_only` and `viewer` do not write) take effect when enforce mode is switched on.
+> - **The permission table, in enforce mode.** `schedules:read`, `schedules:write` and, for activation and the scheduler heartbeat, `admin:all` are checked by the RBAC gate only when `RBAC_MODE=enforce`. In enforce mode the differences between the roles (for example that `read_only` and `viewer` do not write) show up as refusals. If you roll the mode back to shadow, the gate only logs what it would refuse and those differences no longer apply.
 >
-> Before enforce mode is switched on, do not give tenant users a login or token that can reach the API.
+> If you roll the mode back to shadow, do not give tenant users a login or token that can reach the API until enforce is switched back on.
 
 ### Tenant starter pack
 
@@ -154,7 +174,7 @@ The agent picker appears only when the system cannot choose on its own (none or 
 
 Alongside the table:
 
-- A tenant user does not see the button or the panel: it is not merely hidden, it is not in the page at all. The starter-pack API is also reachable only with the admin role; any other role, a device key and a federation principal get 403. That holds in shadow mode too, because the admin check also lives in the route, not only in the permission table.
+- A tenant user does not see the button or the panel: it is not merely hidden, it is not in the page at all. The starter-pack API is also reachable only with the admin role; any other role, a device key and a federation principal get 403. That holds whatever the mode (in a rolled-back shadow mode too), because the admin check also lives in the route, not only in the permission table.
 - A tenant user sees the starter-pack task of their own tenant in the Tasks list, with a draft badge until it is activated. They cannot activate it (activation needs a signed-in admin). Resuming after activation is open to the `agent` role, as pausing and resuming any other task is.
 - When a tenant user edits the starter-pack task, the usual rule applies to them too: for a live task the change asks for re-review (see [06 - Tasks](06-tasks.md)).
 - A non-admin account without a tenant is refused by every schedules endpoint, so it does not see the starter-pack task either.
