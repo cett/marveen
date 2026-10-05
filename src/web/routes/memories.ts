@@ -10,6 +10,7 @@ import {
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { hybridSearchDocs, type WorkspaceDocSearchResult } from '../../workspace-store.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
@@ -88,7 +89,16 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (mismatch) {
       logger.warn({ headerAgentId: ctx.agentId, claimedAgentId }, 'memories: X-Agent-Id header disagrees with claimed owner')
     }
-    json(res, { ok: true, id: result.id, ...(mismatch ? { owner_mismatch: true } : {}) })
+    // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already happened -- legitimate
+    // Cyrillic/Greek content (quotes, foreign records) must never be lost, so the finding rides the
+    // response instead of a 4xx.
+    const homoglyphs = detectHomoglyphs(data.content)
+    let homoglyphWarning: string | undefined
+    if (homoglyphs.length > 0) {
+      homoglyphWarning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ agent: claimedAgentId, memoryId: result.id }, `memory saved with ${homoglyphWarning}`)
+    }
+    json(res, { ok: true, id: result.id, ...(mismatch ? { owner_mismatch: true } : {}), ...(homoglyphWarning ? { homoglyph_warning: homoglyphWarning } : {}) })
     return true
   }
 

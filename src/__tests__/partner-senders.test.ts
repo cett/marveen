@@ -146,6 +146,9 @@ describe('POST /api/messages -- partner tenant auth', () => {
 
   it('accepts a partner send when sender is in allowlist', async () => {
     vi.mocked(db.isAuthorizedPartnerSender).mockReturnValue(true)
+    // the recipient is a registered agent (UNKNOWNTO924); the partner sender is not a fleet agent
+    const { isKnownAgent } = await import('../web/agent-config.js')
+    vi.mocked(isKnownAgent).mockImplementation((n: string) => n === 'agent-a')
     vi.mocked(db.createAgentMessage).mockReturnValue({ id: 7, from_agent: 'partner-bot', to_agent: 'agent-a', origin_note: null } as any)
 
     const { ctx, out } = makeCtx('POST', '/api/messages',
@@ -188,7 +191,7 @@ describe('POST /api/messages -- partner tenant auth', () => {
   it('uses fleet-auth path for default-tenant token (no partner check)', async () => {
     // tenantId = null -> not a partner tenant; use fleet auth path
     const { isKnownAgent } = await import('../web/agent-config.js')
-    vi.mocked(isKnownAgent).mockReturnValueOnce(true)
+    vi.mocked(isKnownAgent).mockImplementation((n: string) => n === 'agent-a' || n === 'agent-b')
 
     vi.mocked(db.createAgentMessage).mockReturnValue({ id: 8, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
 

@@ -56,6 +56,7 @@ import { tryHandleAgentConversation } from './web/routes/agent-conversation.js'
 import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
+import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
@@ -120,6 +121,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleMessages)
   .add(tryHandleFederation)
   .add(tryHandleDailyLog)
+  .add(tryHandleHomoglyphs)
   .add(tryHandleMemories)
   .add(tryHandleImportMemories)
   .add(tryHandleBackups)

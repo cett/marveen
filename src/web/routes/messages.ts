@@ -12,6 +12,7 @@ import {
   upsertBlackboard,
   type AgentMessage,
 } from '../../db.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent, scrubPiiFromContent } from '../../prompt-safety.js'
@@ -234,6 +235,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'recipient', hint: 'use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
       return true
     }
+    // Unknown LOCAL recipient (UNKNOWNTO924): reject at once. A placeholder recipient ('PLACEHOLDER',
+    // '<agent>_placeholder') used to get 200 and only turned 'failed' after the ~65 min retry window,
+    // so the sender believed it had been delivered. A registered agent that is merely not running is a
+    // different case and keeps the retry path. Measured on this install over 60 days: every recipient
+    // was a registered agent, so nothing legitimate is refused by this.
+    if (!storedTo.includes('/') && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
+      json(res, { error: 'invalid_value', field: 'to', hint: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
+      return true
+    }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its
     // human-facing `#<seq>` form before persistence, so the dashboard and
@@ -313,6 +324,18 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
           task_ref: senderRow.task_ref,
         })
       }
+    }
+    // Warn-only homoglyph check, same contract as memories / daily-log / the kanban triggers. The
+    // inter-agent queue is the busiest of those paths, and agents search it with `content LIKE`: one
+    // Cyrillic letter inside a name or an id makes every later search return zero while the text
+    // looks right. Warn, never block: the message is already created and a delivery that fails on a
+    // cosmetic check would be worse than a look-alike letter.
+    const homoglyphs = detectHomoglyphs(normalizedContent)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
+      json(res, { ...msg, homoglyph_warning: warning })
+      return true
     }
     json(res, msg)
     return true

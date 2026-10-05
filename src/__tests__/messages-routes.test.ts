@@ -137,15 +137,20 @@ describe('tryHandleMessages', () => {
     // The human operator (OWNER_NAME) is not a fleet agent (no agents/<id>/ dir)
     // but must be allowed to send from the dashboard Messages page.
     const { isKnownAgent } = await import('../web/agent-config.js')
-    vi.mocked(isKnownAgent).mockReturnValueOnce(false)
-    const { ctx, out } = makeCtx('POST', '/api/messages', {
-      from: 'test-owner',
-      to: 'agent-a',
-      content: 'Hello from dashboard',
-    })
-    const handled = await tryHandleMessages(ctx)
-    expect(handled).toBe(true)
-    expect(out.status).toBe(200)
+    // Only the owner is unknown; the recipient is a registered agent (UNKNOWNTO924 rejects an unknown one).
+    vi.mocked(isKnownAgent).mockImplementation((n: string) => n !== 'test-owner')
+    try {
+      const { ctx, out } = makeCtx('POST', '/api/messages', {
+        from: 'test-owner',
+        to: 'agent-a',
+        content: 'Hello from dashboard',
+      })
+      const handled = await tryHandleMessages(ctx)
+      expect(handled).toBe(true)
+      expect(out.status).toBe(200)
+    } finally {
+      vi.mocked(isKnownAgent).mockReset().mockReturnValue(true)
+    }
   })
 
   it('POST /api/messages returns 404 for unknown non-owner sender', async () => {
