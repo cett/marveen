@@ -10,7 +10,6 @@
       "Bash(*/sudo *)",
       "Bash(rm -rf ~:*)",
       "Bash(rm -rf /:*)",
-      "Bash(curl -X POST:*)",
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
       "mcp__playwright__browser_run_code_unsafe"

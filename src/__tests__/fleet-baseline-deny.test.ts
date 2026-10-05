@@ -53,6 +53,11 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
     const deny = readDeny()
     for (const rule of ['Bash(sudo:*)', 'Bash(rm:*)']) expect(deny.filter(r => r === rule)).toHaveLength(1)
   })
+  it('does NOT carry Bash(curl -X POST:*): a weak guard that would deny the localhost dashboard recipes', () => {
+    expect(FLEET_BASELINE_DENY.filter(r => r.includes('curl'))).toEqual([])
+    writeAgentSettingsFromProfile(NAME, loadProfileTemplate('default'))
+    expect(readDeny()).not.toContain('Bash(curl -X POST:*)')
+  })
   it('pairs the sudo name rule with its absolute-path form', () => {
     expect(FLEET_BASELINE_DENY).toContain('Bash(sudo:*)')
     expect(FLEET_BASELINE_DENY).toContain('Bash(*/sudo *)')
@@ -76,7 +81,7 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
     expect(start).toBeGreaterThan(0)
     expect(end).toBeGreaterThan(start)
     const comment = src.slice(start, end).replace(/\n\/\/\s*/g, ' ') // line breaks and `//` markers must not decide
-    for (const phrase of ['DECORATION', 'FRICTION against a slip', 'git push --quiet --force', 'NO `*/` partner', '/usr/bin/rm -rf /', 'NOT in the floor']) {
+    for (const phrase of ['curl -X POST:*) is deliberately NOT in the floor', 'FRICTION against a slip', 'git push --quiet --force', 'NO `*/` partner', '/usr/bin/rm -rf /', 'NOT in the floor']) {
       expect(comment).toContain(phrase)
     }
   })
@@ -97,9 +102,9 @@ describe('(B) the main agent gets the baseline from the repo project settings', 
     // the file alone would exist nowhere else, a rule missing from it would leave the main agent bare.
     expect(deny).toEqual(FLEET_BASELINE_DENY.map(r => r.replace('${HOME}', '~')))
   })
-  it('ships the sudo partner and the narrow rm forms, and neither the broad rm ban nor */git', () => {
+  it('ships the sudo partner and the narrow rm forms, and neither the broad rm ban, */git nor curl -X POST', () => {
     for (const r of ['Bash(sudo:*)', 'Bash(*/sudo *)', 'Bash(rm -rf ~:*)', 'Bash(rm -rf /:*)']) expect(deny).toContain(r)
-    for (const r of ['Bash(rm:*)', 'Bash(*/rm *)', 'Bash(*/git *)']) expect(deny).not.toContain(r)
+    for (const r of ['Bash(rm:*)', 'Bash(*/rm *)', 'Bash(*/git *)', 'Bash(curl -X POST:*)']) expect(deny).not.toContain(r)
   })
   it('never hardcodes a developer machine home', () => {
     for (const rule of deny) expect(rule).not.toMatch(/\/(?:home|Users)\//)

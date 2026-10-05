@@ -475,9 +475,12 @@ const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'Cron
 // .claude/settings.json, which the scaffold never writes (`~` in place of ${HOME}); a test keeps the
 // two in step.
 //
+// Bash(curl -X POST:*) is deliberately NOT in the floor (owner decision): an argument-bearing rule matches
+// the command's leading words exactly, so `curl -s -X POST` walks past it, which makes it a weak guard, and
+// it would deny the fleet's own `curl -X POST http://localhost:...` dashboard recipes. A profile may still
+// carry it itself (marketer and researcher do).
+//
 // Two rules are deliberately weaker than they look, kept for the owner's posture and not as protection:
-//   Bash(curl -X POST:*) is DECORATION. An argument-bearing rule matches the command's leading words
-//     exactly, so `curl -s -X POST` walks past it. Do not read it as coverage.
 //   Bash(git push --force:*) and Bash(git push -f:*) are FRICTION against a slip, not a guard:
 //     `git push --quiet --force <remote>` and `/usr/bin/git push --force <remote>` both run on a list
 //     carrying them (an inserted flag, `git -C <path>` or an absolute path moves the words out from
@@ -509,7 +512,6 @@ export const FLEET_BASELINE_DENY = [
   'Bash(*/sudo *)',
   'Bash(rm -rf ${HOME}:*)',
   'Bash(rm -rf /:*)',
-  'Bash(curl -X POST:*)',
   'Bash(git push --force:*)',
   'Bash(git push -f:*)',
   'mcp__playwright__browser_run_code_unsafe',
