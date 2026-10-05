@@ -251,27 +251,39 @@ export function protectedSet(opts = {}) {
 // kind of a REAL path: 'egress-allowlist' | 'gate-scripts' | null. `ancestor` paths only count for
 // commands that move or remove things (any command that is not a plain read).
 function kindOf(real, prot) {
+  // Compared without regard to case, for every entry: a path that does not exist yet keeps the case it is
+  // spelled with (the nearest existing ancestor is canonical, the rest is not), and a case-insensitive
+  // filesystem opens `Settings.Local.json` or `Store/Egress-Allowlist.json` as the real file. The price
+  // on a case-sensitive one is a false deny for a differently-cased sibling name, which is harmless.
+  const lc = real.toLowerCase()
   for (const e of prot.entries) {
-    if (e.dir ? (real === e.real || real.startsWith(e.real + sep)) : real === e.real) return e.kind
-    // the settings entries match without regard to case: a file that does not exist yet keeps the case
-    // it is spelled with, and a case-insensitive filesystem opens `Settings.Local.json` as the real one
-    if (e.kind === 'agent-settings' && !e.dir && real.toLowerCase() === e.real.toLowerCase()) return e.kind
+    const er = e.real.toLowerCase()
+    if (e.dir ? (lc === er || lc.startsWith(er + sep)) : lc === er) return e.kind
   }
   return agentSettingsKind(real, prot)
 }
+const underAgents = (real, prot) => Boolean(prot.agentsDir) && real.toLowerCase().startsWith(prot.agentsDir.toLowerCase() + sep)
 // agents/<any name>/{.claude,.claude-config}/settings.json | settings.local.json, as a REAL path under
 // THIS install's agents/ directory. A pattern, not a list: an agent that does not exist yet has none.
 function agentSettingsKind(real, prot) {
-  if (!prot.agentsDir || !real.startsWith(prot.agentsDir + sep)) return null
+  if (!underAgents(real, prot)) return null
   const rel = real.slice(prot.agentsDir.length + 1).split(sep)
   return rel.length === 3 && AGENT_CONFIG_DIRS.includes(rel[1].toLowerCase()) && SETTINGS_FILES.includes(rel[2].toLowerCase()) ? 'agent-settings' : null
 }
 // agents/<name>/.claude and agents/<name>/.claude-config: moving, removing or re-linking one (then
 // writing through the new link) would walk past the pattern above.
 function agentConfigDirKind(real, prot) {
-  if (!prot.agentsDir || !real.startsWith(prot.agentsDir + sep)) return null
+  if (!underAgents(real, prot)) return null
   const rel = real.slice(prot.agentsDir.length + 1).split(sep)
   return rel.length === 2 && AGENT_CONFIG_DIRS.includes(rel[1].toLowerCase()) ? 'agent-settings' : null
+}
+// agents/ and agents/<name>: a directory that CONTAINS the config dirs. Merging a tree into one (rsync,
+// tar -x, cp -r of a source that carries a .claude) would create settings.local.json without naming it.
+function agentDirKind(real, prot) {
+  if (!prot.agentsDir) return null
+  const lc = real.toLowerCase(); const ad = prot.agentsDir.toLowerCase()
+  if (lc === ad) return 'agent-settings'
+  return lc.startsWith(ad + sep) && lc.slice(ad.length + 1).split(sep).length === 1 ? 'agent-settings' : null
 }
 // The settings files / config dirs of the agents that exist now (for globs and unresolved prefixes).
 function settingsCandidates(prot) {
@@ -279,17 +291,21 @@ function settingsCandidates(prot) {
   const dirs = []; const files = []
   let names = []
   try { names = readdirSync(prot.agentsDir) } catch { /* no agents/ yet */ }
-  for (const n of names) for (const d of AGENT_CONFIG_DIRS) {
-    const dir = join(prot.agentsDir, n, d); dirs.push(dir)
-    for (const f of SETTINGS_FILES) files.push(join(dir, f))
+  for (const n of names) {
+    dirs.push(join(prot.agentsDir, n))
+    for (const d of AGENT_CONFIG_DIRS) {
+      const dir = join(prot.agentsDir, n, d); dirs.push(dir)
+      for (const f of SETTINGS_FILES) files.push(join(dir, f))
+    }
   }
   return (prot.settingsCache = { dirs, files })
 }
 // 'anc-strict:<kind>' | 'anc-loose:<kind>' | null
 const ancestorOf = (real, prot) => {
-  const a = prot.ancestors.find((x) => x.real === real || (x.kind === 'agent-settings' && x.real.toLowerCase() === real.toLowerCase()))
+  const lc = real.toLowerCase()
+  const a = prot.ancestors.find((x) => x.real.toLowerCase() === lc)
   if (a) return `anc-${a.strict ? 'strict' : 'loose'}:${a.kind}`
-  const k = agentConfigDirKind(real, prot)
+  const k = agentConfigDirKind(real, prot) ?? agentDirKind(real, prot)
   return k ? `anc-loose:${k}` : null
 }
 const isAnc = (k) => typeof k === 'string' && k.startsWith('anc-')
@@ -666,6 +682,7 @@ function gitSafe(args) {
 // glob that could match) counts as the protected name when the directory holds one.
 function copyIntoDirKind(args, ctx) {
   let targetDir = null; const operands = []; let opts = true
+  const recursive = args.some((a) => /^-[A-Za-z]*[rRa]/.test(a) || /^--(recursive|archive)$/.test(a))
   for (let k = 0; k < args.length; k++) {
     const a = args[k]
     if (opts && a === '--') { opts = false; continue }
@@ -709,9 +726,23 @@ function copyIntoDirKind(args, ctx) {
         for (const [name, kind] of children) if (re.test(name)) return kind
         continue
       }
-      const k = kindOf(join(realD, base), ctx.prot)
+      const target = join(realD, base)
+      const k = kindOf(target, ctx.prot)
       if (k) return k
       for (const [name, kind] of children) if (name.toLowerCase() === base.toLowerCase()) return kind
+      // a recursive copy of a directory creates (or merges into) DIR/<base> with everything below it, so
+      // a target that IS or CONTAINS a protected path (the agents/ tree, an agent dir, its config dir, the
+      // store, scripts/, the install root) takes the protected names along from the source
+      if (recursive) {
+        const lt = target.toLowerCase()
+        const holds = (p) => { const lp = p.toLowerCase(); return lp === lt || lp.startsWith(lt + sep) }
+        const e = ctx.prot.entries.find((x) => holds(x.real))
+        if (e) return e.kind
+        const a = ctx.prot.ancestors.find((x) => holds(x.real))
+        if (a) return a.kind
+        const ak = agentConfigDirKind(target, ctx.prot) ?? agentDirKind(target, ctx.prot)
+        if (ak) return ak
+      }
     }
   }
   return null

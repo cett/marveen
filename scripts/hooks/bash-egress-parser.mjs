@@ -846,7 +846,10 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       const { ow, k } = commandIndex(shellWords(expand(marked.slice(a, b), menv).replace(/\$(['"])/g, '$1')))
       if (k === -1) continue
       const w = ow[k]
-      if (!(w.includes('\u0001') || (w.includes('$') && !/^\$\{?HOME\}?\//.test(w)))) continue
+      // a plain `$HOME/...` path is the only $ that stays: what follows the prefix must be free of any
+      // variable, substitution or backtick (`$HOME/$X`, `$HOME/$(...)` name nothing the hook can read)
+      const homePath = /^(?:\$HOME|\$\{HOME\})\//.exec(w)
+      if (!(w.includes('\u0001') || (w.includes('$') && !(homePath && !/[$`\u0001]/.test(w.slice(homePath[0].length)))))) continue
       const hs = ow.slice(k + 1).map((x) => externalHostOf(x, isExt)).filter(Boolean)
       if (hs.length) return { deny: true, reason: 'unresolved-command-word', hosts: [...new Set(hs)] }
     }

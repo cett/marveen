@@ -516,6 +516,12 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     'cp -f /tmp/settings.json agents/boris/.claude/', 'cp /tmp/settings.json .claude/', 'cd agents/boris/.claude && cp /tmp/settings.json .', 'cd agents/boris/.claude && cp /tmp/settings.local.json ./',
     'cp /tmp/*.json agents/boris/.claude/', 'cp /tmp/settings.* agents/boris/.claude/', 'cp "$SRC" agents/boris/.claude/', 'cp /tmp/$NAME agents/boris/.claude-config/',
     // the names compare without regard to case (a file that does not exist yet keeps its spelling)
+    // a recursive copy of a directory that carries (or is) a protected path merges it in
+    'cp -r /tmp/evil/.claude agents/boris/', 'cp -R /tmp/evil/.claude-config agents/boris/', 'cp -a /tmp/boris agents/', 'cp -r /tmp/agents .',
+    'cp -r -t agents/boris /tmp/evil/.claude', 'cp -r /tmp/evil/.CLAUDE agents/boris/',
+    // agents/ and agents/<name> hold the config dirs: merging a tree into one is refused as the dir itself is
+    'cp -r /tmp/docs agents/boris/', 'cp -r /tmp/notes agents/',
+    'rsync -a /tmp/evil/ agents/boris/', 'rsync -a /tmp/evil/ agents/', 'tar -xf /tmp/evil.tar -C agents/boris', 'ditto /tmp/evil agents/boris', 'mv /tmp/evil agents/boris', 'rm -rf agents/boris',
     'cp /tmp/x agents/boris/.CLAUDE/Settings.Local.json', 'echo x > agents/boris/.Claude/SETTINGS.JSON', 'echo x > agents/boris/.claude/Settings.json', 'cp /tmp/Settings.json agents/boris/.claude/',
     'echo x > agents/newone/.CLAUDE/SETTINGS.LOCAL.JSON', 'echo x > .CLAUDE/Settings.Local.json', 'echo x > .claude/SETTINGS.local.json', 'mv agents/boris/.CLAUDE agents/boris/gone', 'cp /tmp/x agents/*/.CLAUDE/SETTINGS.JSON',
   ]
@@ -535,6 +541,8 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     // a copy into a directory that holds them is fine while the new name is not a settings file
     'cp /tmp/x.md agents/boris/.claude/', 'cp /tmp/a.md /tmp/b.md agents/boris/.claude/skills/', 'cp -t agents/boris/.claude /tmp/other.json', 'cp /tmp/settings.json agents/boris/', 'cp /tmp/settings.json agents/boris/notes/',
     'cp /tmp/settings.json /tmp/copy.json', 'cp /tmp/*.md agents/boris/.claude/', 'cd agents/boris/.claude && cp /tmp/x.md .',
+    // plain work inside an agent directory, and a recursive copy into a directory that holds nothing protected
+    'cp -r /tmp/docs agents/boris/notes/', 'cp -r /tmp/skills agents/boris/.claude/skills/', 'ls agents/boris', 'cat agents/boris/CLAUDE.md', 'cd agents/boris', 'git diff -- agents/boris/CLAUDE.md', 'mkdir -p agents/boris/notes', 'rsync -a /tmp/docs/ agents/boris/notes/',
   ]
   it.each(ALLOWED)('allows: %s', (command) => {
     expect(bash(command)).toEqual({ deny: false })
@@ -564,5 +572,23 @@ describe('a copy into the store directory creates a file named like the source',
     expect(bash('cp /tmp/*.json store/')).toEqual({ deny: true, reason: 'egress-allowlist' })
     expect(bash('cp /tmp/x.json store/')).toEqual({ deny: false })
     expect(bash('cp /tmp/x.json store')).toEqual({ deny: false })
+  })
+  it('a recursive copy that carries or is a protected tree is refused with that tree\'s reason', () => {
+    expect(bash('cp -r /tmp/evil/store .')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('cp -r /tmp/hooks scripts/')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp -r /tmp/docs store/')).toEqual({ deny: true, reason: 'egress-allowlist' }) // the store itself is a loose ancestor
+    // the parent of the install: the copy would land ON the install root
+    expect(bash(`cp -r /tmp/marveen ${base}/`)).toMatchObject({ deny: true })
+    expect(bash(`cp -R /tmp/marveen ${base}`)).toMatchObject({ deny: true })
+    expect(bash(`cp /tmp/marveen ${base}/`)).toEqual({ deny: false }) // not recursive: a file named marveen
+  })
+  it('every protected entry compares without regard to case, one that does not exist yet included', () => {
+    expect(bash('echo x > store/EGRESS-ALLOWLIST.JSON')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('echo x > store/Egress-Vendor-Hosts.History/new.json')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('echo x > Scripts/Hooks/new-hook.mjs')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('echo x > scripts/SELF-PACE-GATE.MJS')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(file('Write', join(root, 'Scripts', 'Hooks', 'Another.MJS')).reason).toBe('gate-scripts')
+    expect(file('Write', join(root, 'Agents', 'newone', '.Claude', 'Settings.Local.Json')).reason).toBe('agent-settings')
+    expect(bash('echo x > scripts/unrelated2.sh')).toEqual({ deny: false })
   })
 })

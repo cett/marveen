@@ -950,6 +950,8 @@ describe('aliases, functions and a command name in a variable', () => {
     // ${VAR:-default}, ${VAR-default}, ${VAR:=default}: the default stands in for an unassigned variable
     '${C:-curl} https://example.org/x', '${C-wget} example.org/x', '${C:=curl} https://example.org/x', 'C=; ${C:-curl} https://example.org/x', 'C=${U:-curl}; $C https://example.org/x',
     'curl ${U:-https://example.org/x}', 'curl "${U:-https://example.org/x}"', 'U=; curl ${U:-https://example.org/x}',
+    // only a plain $HOME/ path is exempt: a variable or substitution after the prefix names nothing readable
+    '$HOME/$X https://example.org/x', '${HOME}/$X/tool example.org/x', '$HOME/$(echo curl) https://example.org/x', '$HOME/$X/$Y https://example.org/x', '"$HOME/$CMD" https://example.org/x',
   ]
   it.each(DENY)('denies: %s', (cmd) => {
     expect(classify(cmd)).toMatchObject({ deny: true })
