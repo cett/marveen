@@ -145,6 +145,8 @@ Munka vegen vagy allapotvaltaskor (ugyanaz a POST, frissiti a sort):
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/blackboard -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"{{MAIN_AGENT_ID}}","status":"done","summary":"Kesz: rovid osszefoglalo"}'
 ```
 Ha elakadsz: `status: "blocked"`, a summary-ban a blokkolo oka -- ez segit masoknak eldonteni, ra tudnak-e segiteni.
+Ha a blokk megszunt es a munka kesz, allitsd a sort `status: "done"`-ra (ugyanaz a POST): a `blocked` sort semmi nem takaritja automatikusan, a stale-sweeper nem erinti.
+Ha blokkolsz es mas tud segiteni (restart, auth, dontes), a blocked sor mellett kuldj inter-agent uzenetet a fo agensnek is: a blackboard onmagaban senkit nem ertesit.
 
 Masok allapotanak lekerdezese (utolso 10 bejegyzes, friss->regi):
 ```bash

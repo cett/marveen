@@ -11,6 +11,15 @@ An agent is LAGGING when it is active on its pane AND one of:
   - its row is status done/blocked and older than DONE_GRACE_SECONDS (a row
     that was set to done moments ago is an honest "just finished", not lag),
   - its row is older than STALE_SECONDS.
+
+A second case covers IDLE agents (pane not active) whose row is 'blocked' and
+older than BLOCKED_IDLE_SECONDS: nothing else ever cleans a blocked row, so a
+finished-but-forgotten block (or a real block nobody was told about) would
+sit there forever. Such an agent is nudged with a different text (set done if
+the block is gone, message the coordinator if still blocked) and counted and
+escalated exactly like a lagging one. An agent gets at most one message per
+round: if it is active and blocked, the lagging branch decides.
+
 The coordinator (MAIN_AGENT_ID: env, then .env, then the same "marveen"
 fallback src/config.ts uses) is never nudged.
 
@@ -72,6 +81,7 @@ STATE_KEY = "blackboard_hygiene_nudges"
 
 DONE_GRACE_SECONDS = 15 * 60
 STALE_SECONDS = 2 * 60 * 60
+BLOCKED_IDLE_SECONDS = 60 * 60
 ESCALATE_AT = 2
 PANE_LINES = 20
 
@@ -85,6 +95,12 @@ NUDGE_TEXT = (
     "[blackboard-hygiene] Aktivan dolgozol, de a Fleet Blackboard sorod elavult vagy done. "
     "Frissitsd MOST: POST /api/blackboard status:active + summary arrol, min dolgozol epp. "
     "Ez kotelezo a 3+ tool-hivasos munkanal (CLAUDE.md Fleet Blackboard)."
+)
+
+BLOCKED_IDLE_NUDGE_TEXT = (
+    "[blackboard-hygiene] A Fleet Blackboard sorod mar legalabb 1 oraja blocked, es nem dolgozol aktivan. "
+    "Ha a blokk megszunt es a munka kesz, allitsd done-ra MOST: POST /api/blackboard status:done + rovid summary. "
+    "Ha meg blokkolt vagy es mas tud segiteni (restart, auth, dontes), irj inter-agent uzenetet a fo agensnek."
 )
 
 
@@ -101,6 +117,13 @@ def is_lagging(row, now):
     if row.get("status") in ("done", "blocked") and age > DONE_GRACE_SECONDS:
         return True
     return age > STALE_SECONDS
+
+
+def is_stale_blocked(row, now):
+    """True when a blackboard row is 'blocked' and older than BLOCKED_IDLE_SECONDS."""
+    if row is None or row.get("status") != "blocked":
+        return False
+    return now - int(row.get("updated_at") or 0) > BLOCKED_IDLE_SECONDS
 
 
 def next_counters(counters, lagging):
@@ -214,22 +237,38 @@ def main(argv):
 
     active = [a for a in agents if pane_is_active(capture_pane(a))]
     lagging = [a for a in active if is_lagging(blackboard_row(a, board), now)]
+    # Idle agents with a long-standing blocked row. Active agents are excluded
+    # here, so nobody gets two messages in one round.
+    blocked_idle = [a for a in agents if a not in active and is_stale_blocked(blackboard_row(a, board), now)]
+    nudged = lagging + blocked_idle
 
     # mode=rw/ro: never create an empty DB file if the path is wrong.
     conn = sqlite3.connect("file:%s?mode=%s" % (DB_PATH, "ro" if dry_run else "rw"), uri=True, timeout=10)
     send_failures = 0
     try:
         counters = read_counters(conn)
-        new_counters, escalate = next_counters(counters, lagging)
+        new_counters, escalate = next_counters(counters, nudged)
 
         if not dry_run:
-            outbox = [(a, NUDGE_TEXT) for a in lagging] + [
-                (
-                    COORDINATOR,
+            escalation = {
+                a: (
                     "[ESZKALACIO] blackboard-hygiene: %s ket blackboard-hygiene kor ota aktivan dolgozik, "
-                    "de nem frissiti a blackboardot a nudge ellenere. Tovabbitsd az ownernek Telegramon." % a,
+                    "de nem frissiti a blackboardot a nudge ellenere. Tovabbitsd az ownernek Telegramon." % a
                 )
-                for a in escalate
+                for a in lagging
+            }
+            escalation.update(
+                {
+                    a: (
+                        "[ESZKALACIO] blackboard-hygiene (blocked-idle): %s sora ket blackboard-hygiene kor ota "
+                        "blocked es az agens tetlen, a nudge ellenere sem frissitette. Lehet, hogy beragadt "
+                        "blokk, vagy valaki segitsegere var. Tovabbitsd az ownernek Telegramon." % a
+                    )
+                    for a in blocked_idle
+                }
+            )
+            outbox = [(a, NUDGE_TEXT) for a in lagging] + [(a, BLOCKED_IDLE_NUDGE_TEXT) for a in blocked_idle] + [
+                (COORDINATOR, escalation[a]) for a in escalate
             ]
             for to, content in outbox:
                 try:
@@ -243,8 +282,15 @@ def main(argv):
         conn.close()
 
     print(
-        "%s running=%d active=%d lagging=%s escalated=%s"
-        % ("DRY" if dry_run else "OK", len(agents), len(active), ",".join(lagging) or "-", ",".join(escalate) or "-")
+        "%s running=%d active=%d lagging=%s blocked_idle=%s escalated=%s"
+        % (
+            "DRY" if dry_run else "OK",
+            len(agents),
+            len(active),
+            ",".join(lagging) or "-",
+            ",".join(blocked_idle) or "-",
+            ",".join(escalate) or "-",
+        )
     )
     return 1 if send_failures else 0
 
