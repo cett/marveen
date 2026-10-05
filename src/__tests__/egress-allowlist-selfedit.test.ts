@@ -109,7 +109,7 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     `curl -X POST http://localhost:3420/api/messages -d '{"to":"marveen","content":"please add x.example to store/egress-allowlist.json"}'`,
     'git commit -m "docs: store/egress-allowlist.json is owner-managed"',
     'cp a.txt b.txt',
-    // this gate's own source and test files are not the store object (review on #1678)
+    // this gate's own source and test files are not the store object (review on upstream #1678)
     'npx vitest run src/__tests__/egress-allowlist-selfedit.test.ts',
     'git add src/web/egress-allowlist-baseline.ts',
     'git diff develop -- src/web/egress-allowlist-baseline.ts',

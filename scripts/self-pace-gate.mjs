@@ -121,6 +121,16 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 //     any of them (Edit/Write, or `cat /dev/null > scripts/self-pace-gate.mjs`) disables a gate
 //     for every later call.
 //
+//  3. The Claude Code SETTINGS files that wire those gates: agents/<any name>/.claude/settings.json
+//     and settings.local.json, the same two under agents/<name>/.claude-config/ (the CLAUDE_CONFIG_DIR
+//     of an isolated agent), and <repo root>/.claude/settings.json and settings.local.json. A
+//     settings.local.json with {"disableAllHooks": true} (or a permissions or hooks edit) turns every
+//     gate off from the next session. The agents/*/ part is a PATTERN on real paths under THIS install's
+//     agents/ directory (an agent that does not exist yet has no file to list), and the .claude /
+//     .claude-config directories themselves cannot be moved, removed or re-linked. NOT protected, said
+//     here on purpose: the user-global ~/.claude/settings.json (it is the owner's, shared by every
+//     agent and the main one; protecting it needs an owner decision), and the server's own writes
+//     (agent-scaffold, the dashboard), which are a different process and never pass this gate.
 // Their legitimate writers are the MAIN agent (on the owner's go) and the owner by hand -- neither
 // runs this gate (it is wired for sub-agents only), so neither is affected.
 //
@@ -137,8 +147,10 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 // against the cwd of the payload and every directory a `cd` in the same command visits (after
 // ~, $HOME, assigned variables, brace expansion and globs). A command that names a protected path
 // may only be:
-//   - a plain READ: cat/grep/head/tail/wc/ls/stat/shasum/diff/jq/..., sed without -i, find without
-//     -delete/-exec, a safe git subcommand (status/diff/log/show/add/commit ...);
+//   - a plain READ: cat/grep/head/tail/wc/ls/stat/shasum/diff/jq/..., each judged by readerOk() (a
+//     listed name is not a promise: sort -o, uniq IN OUT, xxd IN OUT, a sed w/e/r command or -f,
+//     file -C, rg --pre and find -fprint write or exec and are denied), or a safe git subcommand
+//     (status/diff/log/show/add/commit ...) without --out*, -c, --config-env, grep -O;
 //   - a plain RUN of the file: `node scripts/hooks/x.mjs`, `python3 scripts/hooks/x.py`, `bash x.sh`,
 //     `./scripts/hooks/x.sh args` -- the protected file as the SCRIPT operand of an interpreter with
 //     no inline-code flag (-c/-e/-p/-r/-m), or as the command word. Running a hook is how the fleet
@@ -165,15 +177,19 @@ const ALLOWLIST_BASENAME = 'egress-allowlist.json'
 // The allowlist STORE objects by name, not the concept: the file and its history directory, or a
 // glob that starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
 // matched this gate's own source and test names (egress-allowlist-baseline.ts), so no sub-agent
-// could run, stage or diff them -- review on #1678.
+// could run, stage or diff them -- review on upstream #1678.
 const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]/i
 const READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
   'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
-  'less', 'more', 'bat', 'nl', 'sort', 'uniq', 'cut', 'tr', 'tac', 'od', 'xxd', 'hexdump', 'strings',
+  'nl', 'sort', 'uniq', 'cut', 'tr', 'tac', 'od', 'xxd', 'hexdump', 'strings',
   'realpath', 'readlink', 'dirname', 'basename', 'du', 'test', '[', 'cd', 'pushd', 'popd', 'true', 'false',
-  'sed', 'find', // checked below: no -i / no -delete -exec
+  'sed', 'find', // both are checked in readerOk below
 ])
+// READERS is a list of NAMES, and a name is not a promise: sort -o, uniq IN OUT, xxd IN OUT, sed's w
+// command and file -C write files, rg --pre execs a program, find -fprint writes. readerOk() states
+// per command what a plain read is; anything it cannot show safe is not a read. A pager (less, more,
+// bat) can log (-o) or run commands, so none is listed.
 const SAFE_GIT = new Set([
   'status', 'diff', 'log', 'show', 'blame', 'ls-files', 'add', 'grep', 'rev-parse', 'cat-file', 'check-ignore',
   'diff-tree', 'show-ref', 'ls-tree', 'shortlog', 'commit', 'diff-index', 'diff-files', 'rev-list', 'describe',
@@ -182,6 +198,10 @@ const WRAPPER_WORDS = new Set(['env', 'time', 'nohup', 'command', 'builtin', 'ex
 const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|bash|sh|zsh|dash|ksh|perl|ruby|php|deno|bun|tsx|ts-node|source|\.)$/
 const INLINE_FLAGS = new Set(['-c', '-e', '-E', '-p', '-r', '-m', '-', '--eval', '--print', '--require', '--import', '--loader', '-pe', '-ne', '-le'])
 const DEFAULT_SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url))
+const SETTINGS_FILES = ['settings.json', 'settings.local.json']
+// agents/<name>/.claude (project settings) and agents/<name>/.claude-config (the CLAUDE_CONFIG_DIR of
+// an isolated agent, see agent-process-config.ts) both hold settings files Claude Code reads.
+const AGENT_CONFIG_DIRS = ['.claude', '.claude-config']
 
 function expandHome(p) {
   return p === '~' ? homedir() : p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
@@ -213,7 +233,20 @@ export function protectedSet(opts = {}) {
   if (opts.allowlistPath) add(opts.allowlistPath, false, 'egress-allowlist')
   for (const f of ['self-pace-gate.mjs', 'email-send-gate.mjs']) add(join(scriptsDir, f), false, 'gate-scripts')
   for (const d of ['hooks', 'lib']) add(join(scriptsDir, d), true, 'gate-scripts')
-  return { entries, ancestors: [scriptsDir], scriptsDir }
+  // Directories that CONTAIN protected paths. Moving, removing or re-linking one removes or replaces
+  // them. `strict`: any command that is not a plain read is denied (scripts/ also holds the gates by
+  // name). `loose`: only commands that move, remove, link, extract or rewrite (see DESTRUCTIVE), so
+  // `cp file store/`, `ls`, `cd` and a script run in the repo root keep working.
+  const ancestors = [{ real: scriptsDir, strict: true, kind: 'gate-scripts' }]
+  for (const s of storeDirs) ancestors.push({ real: s, strict: false, kind: 'egress-allowlist' })
+  const root = dirname(scriptsDir)
+  ancestors.push({ real: root, strict: false, kind: 'gate-scripts' })
+  // The Claude Code settings files of the sub-agents (and of the install root): a settings.local.json
+  // with {"disableAllHooks": true} switches every gate off. Per agent, by PATTERN under agents/ (see
+  // agentSettingsKind), because an agent may not exist yet; the root ones are plain entries.
+  for (const f of SETTINGS_FILES) add(join(root, '.claude', f), false, 'agent-settings')
+  ancestors.push({ real: realOrSelf(join(root, '.claude')), strict: false, kind: 'agent-settings' })
+  return { entries, ancestors, scriptsDir, agentsDir: realOrSelf(join(root, 'agents')) }
 }
 // kind of a REAL path: 'egress-allowlist' | 'gate-scripts' | null. `ancestor` paths only count for
 // commands that move or remove things (any command that is not a plain read).
@@ -221,9 +254,42 @@ function kindOf(real, prot) {
   for (const e of prot.entries) {
     if (e.dir ? (real === e.real || real.startsWith(e.real + sep)) : real === e.real) return e.kind
   }
-  return null
+  return agentSettingsKind(real, prot)
 }
-const isAncestor = (real, prot) => prot.ancestors.includes(real)
+// agents/<any name>/{.claude,.claude-config}/settings.json | settings.local.json, as a REAL path under
+// THIS install's agents/ directory. A pattern, not a list: an agent that does not exist yet has none.
+function agentSettingsKind(real, prot) {
+  if (!prot.agentsDir || !real.startsWith(prot.agentsDir + sep)) return null
+  const rel = real.slice(prot.agentsDir.length + 1).split(sep)
+  return rel.length === 3 && AGENT_CONFIG_DIRS.includes(rel[1]) && SETTINGS_FILES.includes(rel[2]) ? 'agent-settings' : null
+}
+// agents/<name>/.claude and agents/<name>/.claude-config: moving, removing or re-linking one (then
+// writing through the new link) would walk past the pattern above.
+function agentConfigDirKind(real, prot) {
+  if (!prot.agentsDir || !real.startsWith(prot.agentsDir + sep)) return null
+  const rel = real.slice(prot.agentsDir.length + 1).split(sep)
+  return rel.length === 2 && AGENT_CONFIG_DIRS.includes(rel[1]) ? 'agent-settings' : null
+}
+// The settings files / config dirs of the agents that exist now (for globs and unresolved prefixes).
+function settingsCandidates(prot) {
+  if (prot.settingsCache) return prot.settingsCache
+  const dirs = []; const files = []
+  let names = []
+  try { names = readdirSync(prot.agentsDir) } catch { /* no agents/ yet */ }
+  for (const n of names) for (const d of AGENT_CONFIG_DIRS) {
+    const dir = join(prot.agentsDir, n, d); dirs.push(dir)
+    for (const f of SETTINGS_FILES) files.push(join(dir, f))
+  }
+  return (prot.settingsCache = { dirs, files })
+}
+// 'anc-strict:<kind>' | 'anc-loose:<kind>' | null
+const ancestorOf = (real, prot) => {
+  const a = prot.ancestors.find((x) => x.real === real)
+  if (a) return `anc-${a.strict ? 'strict' : 'loose'}:${a.kind}`
+  const k = agentConfigDirKind(real, prot)
+  return k ? `anc-loose:${k}` : null
+}
+const isAnc = (k) => typeof k === 'string' && k.startsWith('anc-')
 
 // Does a native file-tool call target a protected path? Returns the kind or null.
 export function fileToolProtectedKind(toolInput, prot, cwd = process.cwd()) {
@@ -400,20 +466,27 @@ function protectedBasenames(ctx) {
   if (ctx.listing) return ctx.listing
   const set = new Map()
   for (const e of ctx.prot.entries) {
+    if (e.kind === 'agent-settings') continue // settings.json is too common a name to match after an unknown cd
     set.set(basename(e.real), e.kind)
     if (e.dir) for (const p of listDir(e.real, ctx)) set.set(basename(p), e.kind)
   }
   return (ctx.listing = set)
 }
-// kind of ONE shell word ('egress-allowlist' | 'gate-scripts' | null); ancestor words give 'ancestor'.
+// kind of ONE shell word ('egress-allowlist' | 'gate-scripts' | null); a directory that holds protected paths gives 'anc-strict:<kind>' or 'anc-loose:<kind>'.
 function wordKind(word, ctx) {
   const results = []
   // A word that is not a plain path (inline code, a quoted command line) is also read piece by piece.
   const PATH_JUNK = /[^\w./~$@+\-*?[\]{},=:%#!^]+/
-  const candidates = PATH_JUNK.test(word) ? [word, ...word.split(PATH_JUNK).filter(Boolean)] : [word]
+  const candidates = PATH_JUNK.test(word) || /^[^{]*,/.test(word)
+    ? [word, ...word.split(PATH_JUNK).filter(Boolean), ...word.split(/[^\w./~$@+\-*?[\]{}=:%#!^]+/).filter(Boolean)]
+    : [word]
   for (const alt of candidates.flatMap((c) => expandBraces(c))) {
-    const stripped = alt
-    if (stripped.startsWith('-') && !stripped.includes('=')) continue
+    let stripped = alt
+    if (stripped.startsWith('-') && !stripped.includes('=')) {
+      // an option has no path in it, except one with its value attached: -oPATH
+      if (!/^-[A-Za-z]./.test(stripped)) continue
+      stripped = stripped.slice(2)
+    }
     if (ALLOWLIST_MENTION_RX.test(stripped)) { results.push('egress-allowlist'); continue }
     const parts = [stripped]
     const eq = stripped.indexOf('=')
@@ -431,7 +504,12 @@ function wordKind(word, ctx) {
             const hits = [e.real, ...(e.dir ? listDir(e.real, ctx) : [])]
             if (hits.some((p) => re.test(p))) { results.push(e.kind); break }
           }
-          if (ctx.prot.ancestors.some((a) => re.test(a))) results.push('ancestor')
+          const ga = ctx.prot.ancestors.find((a) => re.test(a.real))
+          if (ga) results.push(ancestorOf(ga.real, ctx.prot))
+          const sc = settingsCandidates(ctx.prot)
+          if (sc.files.some((f) => re.test(f))) results.push('agent-settings')
+          const sd = sc.dirs.find((d) => re.test(d))
+          if (sd) results.push(ancestorOf(sd, ctx.prot))
           continue
         }
         if (w.includes('$')) {
@@ -440,6 +518,7 @@ function wordKind(word, ctx) {
           const vm = [...w.matchAll(/\$\{?[A-Za-z_]\w*\}?/g)].pop()
           const tail = vm ? w.slice(vm.index + vm[0].length) : ''
           if ((tail.match(/\//g) ?? []).length >= 2) {
+            if (settingsCandidates(ctx.prot).files.some((f) => f.endsWith(tail))) results.push('agent-settings')
             for (const e of ctx.prot.entries) {
               if (e.real.endsWith(tail) || (e.dir && listDir(e.real, ctx).some((pth) => pth.endsWith(tail)))) { results.push(e.kind); break }
             }
@@ -449,13 +528,13 @@ function wordKind(word, ctx) {
         const real = realOrSelf(isAbsolute(w) ? w : join(cwd, w))
         const k = kindOf(real, ctx.prot)
         if (k) results.push(k)
-        else if (isAncestor(real, ctx.prot)) results.push('ancestor')
+        else { const an = ancestorOf(real, ctx.prot); if (an) results.push(an) }
       }
       if (ctx.unknownCwd && !part.includes('/') && protectedBasenames(ctx).has(part)) results.push(protectedBasenames(ctx).get(part))
     }
   }
-  const first = results.find((k) => k !== 'ancestor')
-  return first ?? (results.includes('ancestor') ? 'ancestor' : null)
+  const first = results.find((k) => !isAnc(k))
+  return first ?? results.find((k) => k.startsWith('anc-strict')) ?? results.find(isAnc) ?? null
 }
 function commandWordIndex(words) {
   let k = 0
@@ -471,19 +550,111 @@ function commandWordIndex(words) {
     return k
   }
 }
-function readerOk(cmd, args) {
-  if (cmd === 'sed') return !args.some((a) => /^-[A-Za-z]*i|^--in-place/.test(a))
-  if (cmd === 'find') return !args.some((a) => /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(a))
-  return true
+const ADDR = String.raw`(?:\d+|\$|\/(?:[^\/\\]|\\.)*\/)`
+const SED_PRINT = new RegExp(String.raw`^(?:${ADDR}(?:,${ADDR})?)?\s*!?\s*[pPdqnNlxgGhH=]$`)
+const SED_SUBST = new RegExp(String.raw`^(?:${ADDR}(?:,${ADDR})?)?\s*!?\s*s([\/|#,@])((?:(?!\1)[^\\]|\\.)*)\1((?:(?!\1)[^\\]|\\.)*)\1[gpiI0-9]*$`)
+// A sed script is "safe" only when every command in it is a print / delete / quit style command or an
+// s/// whose flags carry no w and no e. The w, W, e, r, R commands, a {block}, a label and a -f script
+// file all fail this shape and therefore deny: whether they write cannot be read off a short string.
+export function sedScriptSafe(script) {
+  if (/[\n{}]/.test(script)) return false
+  return String(script).split(';').map((s) => s.trim()).filter(Boolean).every((s) => SED_PRINT.test(s) || SED_SUBST.test(s))
+}
+// Operands of a command: the words that are not options and not the value of a value-taking option.
+function operandsOf(args, valueFlags = new Set()) {
+  const out = []; let opts = true
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (opts && a === '--') { opts = false; continue }
+    if (opts && a.startsWith('-') && a.length > 1) { if (valueFlags.has(a)) k++; continue }
+    out.push(a)
+  }
+  return out
+}
+// Is this plain read of its (protected) operands really only a read?
+function readerOk(cmd, args, ctx) {
+  // an option that names an output file is never a read, on any listed command
+  if (args.some((a) => /^--out/.test(a))) return false
+  switch (cmd) {
+    case 'sed': {
+      const scripts = []; let haveE = false; let k = 0
+      const operands = []
+      for (; k < args.length; k++) {
+        const a = args[k]
+        if (a === '--') { operands.push(...args.slice(k + 1)); break }
+        if (a.startsWith('--')) {
+          if (/^--expression(=|$)/.test(a)) { haveE = true; scripts.push(a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++k] ?? ''); continue }
+          if (/^--(quiet|silent|regexp-extended|null-data|separate|unbuffered|posix|debug|sandbox|binary|follow-symlinks|line-length=\d+)$/.test(a)) continue
+          return false // --in-place, --file, anything unknown
+        }
+        if (a.startsWith('-') && a.length > 1) {
+          for (let q = 1; q < a.length; q++) {
+            const c = a[q]
+            if (c === 'e') { haveE = true; scripts.push(q + 1 < a.length ? a.slice(q + 1) : args[++k] ?? ''); break }
+            if (c === 'l') { if (q + 1 >= a.length) k++; break }
+            if (!'nErzsu'.includes(c)) return false // -i, -f and anything unknown
+          }
+          continue
+        }
+        operands.push(a)
+      }
+      if (!haveE) { if (!operands.length) return false; scripts.push(operands.shift()) }
+      for (const s of scripts) {
+        if (!sedScriptSafe(s)) return false
+        const wk = wordKind(s, ctx); if (wk && !isAnc(wk)) return false
+      }
+      return true
+    }
+    case 'find': return !args.some((a) => /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(a))
+    case 'sort':
+      // -o FILE / --output writes, --compress-program execs, -T DIR creates temp files
+      return !args.some((a) => (/^-[^-]/.test(a) && /[oT]/.test(a)) || /^--[oct]/.test(a))
+    case 'uniq': return operandsOf(args, new Set(['-f', '-s', '-w', '--skip-fields', '--skip-chars', '--check-chars'])).length <= 1 // the second operand is an OUTPUT file
+    case 'xxd': return operandsOf(args, new Set(['-l', '-s', '-c', '-g', '-o', '-len', '-seek', '-cols', '-groupsize', '-offset'])).length <= 1 // the second operand is an OUTPUT file
+    case 'file': return !args.some((a) => (/^-[^-]/.test(a) && /C/.test(a)) || /^--compile/.test(a)) // -C writes <magic>.mgc
+    case 'rg': return !args.some((a) => /^--(pre|hostname-bin)(=|$)/.test(a)) // --pre execs a program
+    default: return true
+  }
+}
+const SAFE_ENV_RX = /^(?:GIT_|PAGER=|LESS|LD_|DYLD_|BASH_ENV=|ENV=|PATH=|SHELLOPTS=|IFS=|EDITOR=|VISUAL=)/
+// Commands that move, remove, link, extract or rewrite a directory (loose ancestors, see protectedSet).
+const DESTRUCTIVE = new Set(['mv', 'rm', 'rmdir', 'ln', 'rename', 'unlink', 'rsync', 'ditto', 'chmod', 'chown', 'chgrp', 'chflags', 'trash', 'shred', 'truncate', 'install', 'tar', 'unzip', 'zip', 'pax', 'cpio', 'patch', 'dd', 'mkdir', 'touch', 'tee', 'sponge'])
+function destructiveCmd(cmd, args) {
+  if (DESTRUCTIVE.has(cmd)) return true
+  if (cmd === 'cp') return args.some((a) => /^-[A-Za-z]*[rRa]/.test(a) || /^--(recursive|archive)/.test(a))
+  if (cmd === 'git') return ['rm', 'mv', 'clean', 'checkout', 'restore', 'reset', 'stash', 'apply', 'am', 'worktree'].includes(gitSubcommand(args) ?? '')
+  if (cmd === 'find') return !readerOk('find', args)
+  if (INTERPRETERS.test(cmd)) return args.some((a) => INLINE_FLAGS.has(a))
+  return false
 }
 function gitSubcommand(args) {
   for (let k = 0; k < args.length; k++) {
     const a = args[k]
-    if (a === '-C' || a === '-c' || a === '--git-dir' || a === '--work-tree') { k++; continue }
+    if (a === '-C' || a === '-c' || a === '--git-dir' || a === '--work-tree' || a === '--namespace') { k++; continue }
     if (a.startsWith('-')) continue
     return a
   }
   return null
+}
+// A safe git subcommand is safe only without an option that writes a file or runs a program:
+// --output=FILE (and any abbreviation of it: git accepts --outp=), -c key=value / --config-env (core.pager,
+// diff.external, alias.*), --exec-path, grep -O / --open-files-in-pager.
+function gitSafe(args) {
+  const sub = gitSubcommand(args)
+  if (!SAFE_GIT.has(sub ?? '')) return false
+  const subAt = args.indexOf(sub)
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (k < subAt) {
+      if (a === '-C' || a === '--git-dir' || a === '--work-tree' || a === '--namespace') { k++; continue }
+      if (a === '-c' || /^-c./.test(a) || /^--(config-env|exec-path|super-prefix)/.test(a)) return false
+      continue
+    }
+    if (a === '--') break
+    if (/^--ou/.test(a)) return false
+    if (sub === 'grep' && (/^-O/.test(a) || /^--open/.test(a))) return false
+  }
+  return true
 }
 // Fail-closed decision for a whole Bash command. Returns { deny: false } or { deny: true, reason }.
 export function bashProtectedDecision(command, opts = {}) {
@@ -512,16 +683,17 @@ export function bashProtectedDecision(command, opts = {}) {
       if (arg === '-' || target.includes('$') || /[*?[`]/.test(target)) ctx.unknownCwd = true
       else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)) }
     }
-    const hit = kinds.find((k) => k && k !== 'ancestor') ?? rKinds.find((k) => k && k !== 'ancestor') ?? null
-    const ancestorHit = !hit && (kinds.includes('ancestor') || rKinds.includes('ancestor'))
+    const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
+    const ancKinds = [...kinds, ...rKinds].filter(isAnc)
+    const ancestorHit = !hit && ancKinds.length > 0
     if (!hit && !ancestorHit) {
       // a redirect target with an unresolvable shape is only a problem next to a protected word (below)
       continue
     }
-    const kind = hit ?? 'gate-scripts'
+    const kind = hit ?? ancKinds[0].split(':')[1]
     const deny = () => ({ deny: true, reason: kind })
     // 1. a redirect that lands on a protected path, or whose target cannot be read
-    if (rKinds.some((k) => k && k !== 'ancestor')) return deny()
+    if (rKinds.some((k) => k && !isAnc(k))) return deny()
     for (const r of redirects) {
       if (/^&?\d+$/.test(r) || r === '/dev/null') continue
       if (/[$`]/.test(r) && hit) return deny()
@@ -529,17 +701,25 @@ export function bashProtectedDecision(command, opts = {}) {
     // 2. substitutions next to a protected word
     if (/\$\(|`|[<>]\(/.test(seg)) return deny()
     // 3. ambiguous mention: quotes / backslash inside a protected word AND a redirect operator
-    if (hasRedirect && seg.split(/\s+/).some((raw) => /['"\\]/.test(raw) && tokenizeShell(raw).words.some((w) => { const k = wordKind(w, ctx); return k && k !== 'ancestor' }))) return deny()
+    if (hasRedirect && seg.split(/\s+/).some((raw) => /['"\\]/.test(raw) && tokenizeShell(raw).words.some((w) => { const k = wordKind(w, ctx); return k && !isAnc(k) }))) return deny()
     if (ci === -1) return deny()
     const args = words.slice(ci + 1)
-    // 4. an ancestor directory (scripts/) is only fine for a plain read
-    if (ancestorHit) { if (READERS.has(cmd) && readerOk(cmd, args) && !feedsNonReader(si)) continue; return deny() }
+    // an environment that makes a reader or git run a program or write a file (GIT_EXTERNAL_DIFF, PAGER, LD_PRELOAD ...)
+    const envUnsafe = words.slice(0, ci).some((w) => SAFE_ENV_RX.test(w))
+    // 4. a directory that CONTAINS protected paths: a plain read, a listing and a cd are fine. The
+    //    strict one (scripts/) denies everything else; the loose ones (store/, the repo root) deny
+    //    only what moves, removes, links, extracts or rewrites.
+    if (ancestorHit) {
+      if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !feedsNonReader(si) && !envUnsafe) continue
+      if (!ancKinds.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
+      return deny()
+    }
     // 5. plain reads
     // (a reader whose output is piped into anything but another reader may be handing paths to xargs / sh)
-    if (READERS.has(cmd) && readerOk(cmd, args)) { if (feedsNonReader(si)) return deny(); continue }
-    if (cmd === 'git' && SAFE_GIT.has(gitSubcommand(args) ?? '')) continue
+    if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !envUnsafe) { if (feedsNonReader(si)) return deny(); continue }
+    if (cmd === 'git' && gitSafe(args) && !envUnsafe) continue
     // 6. plain runs: the protected file is the command word, or the SCRIPT operand of an interpreter
-    const hitIdx = kinds.map((k, idx) => (k && k !== 'ancestor' ? idx : -1)).filter((idx) => idx !== -1)
+    const hitIdx = kinds.map((k, idx) => (k && !isAnc(k) ? idx : -1)).filter((idx) => idx !== -1)
     if (hitIdx.length === 1 && hitIdx[0] === ci && !INTERPRETERS.test(cmd)) continue
     if (INTERPRETERS.test(cmd)) {
       let operand = -1
@@ -556,7 +736,7 @@ export function bashProtectedDecision(command, opts = {}) {
     // an unterminated quote hides the structure: deny only when some word names a protected path
     const all = String(command)
     const probe = tokenizeShell(all.replace(/['"`]/g, ' ')).words
-    const k = probe.map((w) => wordKind(w, ctx)).find((x) => x && x !== 'ancestor')
+    const k = probe.map((w) => wordKind(w, ctx)).find((x) => x && !isAnc(x))
     if (k) return { deny: true, reason: k }
   }
   return { deny: false }
@@ -850,6 +1030,13 @@ const SCRIPTS_GATE_MSG =
   'Olvasni (cat / grep / diff) es futtatni (node scripts/hooks/x.mjs, python3 scripts/hooks/x.py) szabad; ' +
   'a sajat worktree masolat szerkesztheto.'
 
+const SETTINGS_GATE_MSG =
+  'Agent-settings fajlok vedve (governance hard-gate). Sub-agentkent NEM irhatod a Claude Code settings.json / ' +
+  'settings.local.json fajlokat (agents/*/.claude, agents/*/.claude-config, a telepites .claude mappaja): ' +
+  'egy {"disableAllHooks": true} minden kaput kikapcsolna, ami RAD vonatkozik. Ha egy beallitas kell ' +
+  '(plugin, hook, permission), kerd a fo agenst vagy a tulajdonost (inter-agent uzenet: fajl + miert). ' +
+  'Olvasni (cat / jq / grep) szabad; a sajat worktree masolat szerkesztheto.'
+
 function allow() { process.exit(0) }
 
 function deny(reason) {
@@ -880,6 +1067,6 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
-  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : GATE_MSG)
+  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : GATE_MSG)
   allow()
 }

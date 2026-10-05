@@ -344,3 +344,204 @@ describe('the hook end to end, and where it is wired', () => {
     expect(gateDecision('Read', { file_path: join(root, 'scripts', 'self-pace-gate.mjs') }, opts(root))).toEqual({ deny: false })
   })
 })
+
+describe('"readers" that can write: the listed names are not a promise', () => {
+  const P = 'scripts/hooks/egress-gate.mjs'
+  const DENIED = [
+    // sort
+    `sort -o ${P} /tmp/in.txt`, `sort -ro ${P} /tmp/in.txt`, `sort /tmp/in.txt -o${P}`, `sort --output=${P} /tmp/in.txt`, `sort --output ${P} /tmp/in.txt`,
+    `sort --out=${P} /tmp/in.txt`, `sort --compress-program=/tmp/evil ${P}`, `sort -T scripts/hooks ${P}`,
+    // uniq: the second operand is an output file
+    `uniq /tmp/in.txt ${P}`, `uniq -f 1 /tmp/in.txt ${P}`,
+    // xxd: infile outfile, with or without -r
+    `xxd -r /tmp/in.hex ${P}`, `xxd /tmp/in.bin ${P}`, `xxd -l 8 -r /tmp/in.hex ${P}`,
+    // sed: w / W / s///w / e / r commands, -f script file, -i, a protected word in the script
+    `sed -n 'w ${P}' /tmp/in.txt`, `sed 'W ${P}' /tmp/in.txt`, `sed 's/a/b/w ${P}' /tmp/in.txt`, `sed -n -e 'w scripts/hooks/x' /tmp/in.txt`,
+    `sed --expression='w ${P}' /tmp/in.txt`, `sed 's/a/b/;w ${P}' /tmp/in.txt`, `sed -f /tmp/s.sed ${P}`, `sed -n '1e /tmp/evil' ${P}`, `sed 's/a/b/e' ${P}`,
+    `sed -n 's|scripts/hooks/egress-gate.mjs|x|p' /tmp/in.txt`, `sed -n -e p -f /tmp/s.sed ${P}`,
+    `sed '1r ${P}' /tmp/in.txt`, `sed -n '1{p;w /tmp/o}' ${P}`, `sed -i s/a/b/ ${P}`,
+    // other listed names that write or exec
+    `file -C -m ${P}`, `file -C ${P}`, `rg --pre /tmp/evil x ${P}`, `rg --pre=/tmp/evil x scripts/hooks`,
+    `find scripts/hooks -fprint ${P}`, `find scripts/hooks -fprintf ${P} x`, `find scripts/hooks -fls ${P}`, `find scripts/hooks -exec sh -c x {} +`,
+    `diff --output=${P} a b`, `cat --output=${P} a`, `ls --output=${P}`,
+    // pagers are no longer treated as readers
+    `less -o ${P} /tmp/in.txt`, `more ${P}`, `bat ${P}`,
+  ]
+  it.each(DENIED)('denies: %s', (command) => {
+    expect(bash(command)).toMatchObject({ deny: true })
+  })
+  const ALLOWED = [
+    `sort ${P}`, `sort -u ${P}`, `sort -rn -k2,2 -t, ${P}`, `sort ${P} | head -3`, `uniq ${P}`, `uniq -c ${P}`, `uniq -f 1 ${P}`, `xxd ${P}`, `xxd -l 16 -c 8 ${P}`, 'xxd -r -p < /tmp/in.hex',
+    `sed -n '1,5p' ${P}`, `sed -n 5p ${P}`, `sed -n -e '1p' -e '3p' ${P}`, `sed 's/a/b/g' ${P}`, `sed -n '/error/p' ${P}`, `sed -E 's|a|b|' ${P}`, `sed '$d' ${P}`, `sed -n '2,$p' ${P}`,
+    `file ${P}`, `file -b ${P}`, `rg -n egress ${P}`, 'rg -c x scripts/hooks', "find scripts/hooks -name '*.mjs'", 'find scripts/hooks -type f -newer scripts/lib/homoglyph.py',
+    `diff ${P} /tmp/other.mjs`, `diff -u ${P} /tmp/other.mjs`, `cat ${P} | sort | uniq -c`,
+  ]
+  it.each(ALLOWED)('allows: %s', (command) => {
+    expect(bash(command)).toEqual({ deny: false })
+  })
+})
+
+describe('git: a safe subcommand is safe only without an option that writes a file or runs a program', () => {
+  const P = 'scripts/hooks/egress-gate.mjs'
+  const DENIED = [
+    `git diff --output=${P}`, `git diff --output ${P}`, `git log --output=${P}`, `git show --output=${P} HEAD`, `git diff --outp=${P}`, `git diff --out=${P}`,
+    `git diff-tree --output=${P} HEAD`, `git rev-list --output=${P} HEAD`,
+    `git -c core.pager='sh -c x' diff ${P}`, `git -ccore.pager=evil diff ${P}`, `git --config-env=core.pager=X diff ${P}`, `git --exec-path=/tmp/e status ${P}`,
+    `git grep -O/tmp/evil x ${P}`, 'git grep --open-files-in-pager=/tmp/evil x -- scripts/hooks',
+    `GIT_EXTERNAL_DIFF=/tmp/evil git diff ${P}`, `GIT_PAGER=/tmp/evil git log ${P}`, `PAGER=/tmp/evil git log ${P}`, `LD_PRELOAD=/tmp/x.so cat ${P}`, `PATH=/tmp/evil cat ${P}`,
+  ]
+  it.each(DENIED)('denies: %s', (command) => {
+    expect(bash(command)).toMatchObject({ deny: true })
+  })
+  const ALLOWED = [
+    `git add ${P}`, 'git add scripts/hooks', 'git diff -- scripts/hooks', `git diff develop -- ${P}`, 'git diff --stat -- scripts/hooks', `git log --oneline -3 -- ${P}`,
+    `git show HEAD:${P}`, 'git status --short scripts/hooks', 'git -C /some/worktree diff -- scripts/hooks', `git blame ${P}`, 'git ls-files scripts/hooks', 'git ls-files -o scripts/hooks',
+    `git commit -m "wip" -- ${P}`, 'git grep -n egress -- scripts/hooks',
+    `git diff HEAD -- scripts/hooks --output=${P}`, // after -- it is a pathspec, not an option
+  ]
+  it.each(ALLOWED)('allows: %s', (command) => {
+    expect(bash(command)).toEqual({ deny: false })
+  })
+})
+
+describe('directories that hold protected files: moved, removed or re-linked is denied; read, listed, entered is not', () => {
+  const DENIED = [
+    // the store directory (egress config lives in it)
+    'mv store store.bak', 'rm -rf store', 'rm -r store/', 'ln -sfn /tmp/evil store', 'rename store store2', 'rsync -a /tmp/evil/ store/', 'tar -C store -xf /tmp/x.tar',
+    'cp -r /tmp/evil store', 'cp -a /tmp/evil/. store', 'cd store && rm -rf .', 'cd store; mv . ../gone', 'chmod 000 store', 'find store -delete',
+    `python3 -c "import shutil; shutil.rmtree('store')"`, 'git clean -fdx store', 'git rm -r store',
+    // the install root
+    'rm -rf .', 'mv . ../elsewhere', 'ln -sfn /tmp/evil .', 'rsync -a /tmp/evil/ ./', 'cp -r /tmp/evil/. .',
+    // the scripts directory (strict: any non-read)
+    'mv scripts scripts.bak', 'cp -r /tmp/new scripts', 'ln -sfn /tmp/evil scripts',
+  ]
+  it.each(DENIED)('denies: %s', (command) => {
+    expect(bash(command)).toMatchObject({ deny: true })
+  })
+  const ALLOWED = [
+    'ls store', 'ls -la store/', 'ls .', 'ls', 'cd store', 'cd store && ls', 'cd . && pwd', 'cat store/other.json', 'du -sh store', 'stat store', 'find store -name "*.json"', 'find . -maxdepth 1',
+    'cp /tmp/notes.json store/', 'cp /tmp/a.txt .', 'touch /tmp/x', 'node scripts/unrelated-tool.mjs', 'git status', 'git diff', 'npm test', 'echo hi > /tmp/x',
+    'python3 tools/run.py .', 'mkdir -p /tmp/work', 'rm store/other.json',
+  ]
+  it.each(ALLOWED)('allows: %s', (command) => {
+    expect(bash(command)).toEqual({ deny: false })
+  })
+  it('the same moves inside a worktree copy are allowed (a different real path)', () => {
+    for (const command of ['mv scripts scripts.bak', 'rm -rf .', 'ln -sfn /tmp/evil scripts', 'rm -rf scripts/hooks']) {
+      expect({ command, r: bash(command, wt) }).toEqual({ command, r: { deny: false } })
+    }
+  })
+  it('the deny reason of a store directory is the egress config, of the scripts directory the gate scripts', () => {
+    expect(bash('mv store store.bak')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('mv scripts scripts.bak')).toEqual({ deny: true, reason: 'gate-scripts' })
+  })
+})
+
+describe('Claude Code settings files: a sub-agent cannot switch its own gates off', () => {
+  const HOOKS_OFF = '{"disableAllHooks": true}'
+  const L = 'agents/boris/.claude/settings.local.json' // an agent that exists
+  const S = 'agents/boris/.claude/settings.json'
+  const C = 'agents/boris/.claude-config/settings.json'
+  const NEW = 'agents/not-created-yet/.claude/settings.local.json' // an agent (and a .claude) that does not exist yet
+  const ROOT_S = '.claude/settings.json'
+  const ROOT_L = '.claude/settings.local.json'
+  beforeEach(() => {
+    for (const r of [root, wt]) {
+      touch(join(r, 'agents', 'boris', '.claude', 'settings.json'), '{}')
+      touch(join(r, 'agents', 'boris', '.claude', 'settings.local.json'), '{}')
+      touch(join(r, 'agents', 'boris', '.claude', 'skills', 'x', 'SKILL.md'), '# x')
+      touch(join(r, 'agents', 'boris', '.claude-config', 'settings.json'), '{}')
+      touch(join(r, 'agents', 'boris', 'CLAUDE.md'), '# boris')
+      touch(join(r, '.claude', 'settings.json'), '{}')
+    }
+  })
+
+  const PATHS = [L, S, C, NEW, ROOT_S, ROOT_L, 'agents/boris/.claude-config/settings.local.json']
+  for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+    it.each(PATHS)(`${tool} on %s is denied as agent settings (absolute path)`, (rel) => {
+      const input = tool === 'NotebookEdit' ? { notebook_path: join(root, rel) } : { file_path: join(root, rel), content: HOOKS_OFF }
+      expect(gateDecision(tool, input, opts(root))).toEqual({ deny: true, reason: 'agent-settings' })
+    })
+  }
+  it('a relative path is resolved against the payload cwd, a symlink is followed', () => {
+    expect(file('Write', '.claude/settings.local.json', join(root, 'agents', 'boris')).reason).toBe('agent-settings')
+    expect(file('Write', 'settings.local.json', join(root, 'agents', 'boris', '.claude')).reason).toBe('agent-settings')
+    expect(file('Edit', '../../../.claude/settings.json', join(root, 'agents', 'boris', '.claude')).reason).toBe('agent-settings')
+    const link = join(base, 'innocent.json')
+    symlinkSync(join(root, L), link)
+    expect(file('Write', link).reason).toBe('agent-settings')
+    const dirLink = join(base, 'cfg')
+    symlinkSync(join(root, 'agents', 'boris', '.claude'), dirLink)
+    expect(file('Write', join(dirLink, 'settings.local.json')).reason).toBe('agent-settings')
+  })
+  it('creating settings.local.json where none exists yet is denied, in any agent directory', () => {
+    expect(file('Write', join(root, 'agents', 'brand-new', '.claude', 'settings.local.json')).reason).toBe('agent-settings')
+    expect(file('Write', join(root, 'agents', 'brand-new', '.claude-config', 'settings.local.json')).reason).toBe('agent-settings')
+  })
+  it('other files under an agent directory are not protected', () => {
+    for (const rel of ['agents/boris/CLAUDE.md', 'agents/boris/.claude/skills/x/SKILL.md', 'agents/boris/.claude/other.json', 'agents/boris/notes/settings.json', 'agents/boris/settings.json', 'agents/boris/.claude/sub/settings.json', 'agents/boris/.claude-config/projects/p/settings.json']) {
+      expect({ rel, r: file('Write', join(root, rel)) }).toEqual({ rel, r: { deny: false } })
+    }
+  })
+  it('the same files in a git worktree copy are editable', () => {
+    for (const rel of [...PATHS]) expect({ rel, r: file('Write', join(wt, rel), wt) }).toEqual({ rel, r: { deny: false } })
+    expect(bash(`echo '${HOOKS_OFF}' > ${L}`, wt)).toEqual({ deny: false })
+  })
+  it('the user-global ~/.claude/settings.json is NOT covered (documented residual)', () => {
+    expect(file('Write', '~/.claude/settings.json')).toEqual({ deny: false })
+  })
+
+  const DENIED = [
+    `echo '${HOOKS_OFF}' > ${L}`, `echo '${HOOKS_OFF}' >> ${S}`, `echo '${HOOKS_OFF}' >| ${C}`, `echo '${HOOKS_OFF}' > ${NEW}`, `echo '${HOOKS_OFF}' > ${ROOT_L}`,
+    `echo '${HOOKS_OFF}' &> ${L}`, `echo x >& ${L}`, `exec 3<> ${L}`, `printf '%s' '${HOOKS_OFF}' > "${L}"`, `echo x > '${L}'`,
+    `echo '${HOOKS_OFF}' | tee ${L}`, `echo '${HOOKS_OFF}' | tee -a ${NEW}`, `tee ${S} < /tmp/x.json`,
+    `cp /tmp/x.json ${L}`, `cp /tmp/x.json ${NEW}`, `mv /tmp/x.json ${S}`, `mv ${L} /tmp/gone.json`, `install -m 644 /tmp/x.json ${C}`, `rm ${L}`, `ln -sf /tmp/x.json ${L}`,
+    `sed -i '' 's/a/b/' ${S}`, `sed -i.bak 's/a/b/' ${L}`, `perl -pi -e 's/a/b/' ${S}`, `truncate -s 0 ${L}`, `dd if=/tmp/x of=${L}`,
+    `python3 -c "open('${L}','w').write('${HOOKS_OFF}')"`, `python3 -c "import json; json.dump({'disableAllHooks': True}, open('${NEW}','w'))"`,
+    `node -e "require('fs').writeFileSync('${L}','${HOOKS_OFF}')"`, `ruby -e 'File.write("${S}","{}")'`, `python3 - <<PY\nopen("${L}","w").write("x")\nPY`,
+    // jq reading is fine, jq writing through a redirect or a move is not
+    `jq '.disableAllHooks=true' ${S} > ${S}`, `jq '.a=1' ${S} > /tmp/x.json && mv /tmp/x.json ${S}`, `jq -n '${HOOKS_OFF}' > ${L}`,
+    // cwd, variables, globs, braces
+    `cd agents/boris/.claude && echo '${HOOKS_OFF}' > settings.local.json`, `cd agents/boris/.claude-config; cp /tmp/x settings.json`, `cd agents/boris && echo x > .claude/settings.local.json`,
+    `D=agents/boris/.claude; echo x > ${'$'}D/settings.local.json`, `cp /tmp/x agents/*/.claude/settings.local.json`, `cp /tmp/x agents/boris/.claude/settings.*`, `cp /tmp/x agents/boris/.claude/settings.{json,local.json}`,
+    `cp /tmp/x agents/boris/.claude/settings.local.js?n`, `cp /tmp/x ${'$'}UNKNOWN/agents/boris/.claude/settings.local.json`,
+    // the directories that hold them
+    'mv agents/boris/.claude agents/boris/.claude.bak', 'rm -rf agents/boris/.claude-config', 'ln -sfn /tmp/evil agents/boris/.claude', 'rsync -a /tmp/evil/ agents/boris/.claude/', 'cp -r /tmp/evil agents/boris/.claude',
+    'mv .claude .claude.bak', 'ln -sfn /tmp/evil .claude',
+    // substitutions and ambiguous quoting next to a protected word
+    `echo $(cp /tmp/x ${L})`, `cat '${L}' 2>&1`,
+  ]
+  it.each(DENIED)('denies: %s', (command) => {
+    expect(bash(command)).toEqual({ deny: true, reason: 'agent-settings' })
+  })
+
+  const ALLOWED = [
+    `cat ${L}`, `cat ${S} 2>/dev/null`, `cat ${C} | jq .enabledPlugins`, `jq . ${S}`, `jq -r '.hooks | keys[]' ${S}`, `jq '.permissions' ${L} > /tmp/perm.json`,
+    `grep -n disableAllHooks ${L}`, `grep -rn hooks agents/boris/.claude`, `head -5 ${S}`, `wc -l ${C}`, `ls -la agents/boris/.claude`, `ls agents/boris/.claude-config`, `stat ${L}`, `shasum -a 256 ${S}`,
+    `diff ${S} ${C}`, `diff ${S} /tmp/other.json`, `cd agents/boris/.claude && cat settings.json`, `cd agents/boris/.claude && ls`, 'cd agents/boris/.claude',
+    `git diff -- ${S}`, `git log --oneline -3 -- ${ROOT_S}`, `git status --short ${L}`,
+    `sed -n '1,5p' ${S}`, 'find agents/boris/.claude -name "*.md"', 'cat agents/boris/CLAUDE.md', 'echo notes > agents/boris/notes.md',
+    'cp /tmp/x.md agents/boris/.claude/skills/x/SKILL.md', 'echo x > agents/boris/.claude/other.json', 'mkdir -p agents/boris/.claude/skills/y', 'touch agents/boris/.claude/skills/y/SKILL.md',
+    // the user-global file is the owner's: not covered, said in the gate header
+    'cat ~/.claude/settings.json', 'jq .model ~/.claude/settings.json',
+  ]
+  it.each(ALLOWED)('allows: %s', (command) => {
+    expect(bash(command)).toEqual({ deny: false })
+  })
+
+  it('the hook end to end: a Write of {"disableAllHooks": true} is denied, with the settings message, and the owner is named', () => {
+    const hook = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'self-pace-gate.mjs')
+    const installRoot = dirname(dirname(hook))
+    const run = (payload: unknown) => spawnSync(process.execPath, [hook], { input: JSON.stringify(payload), encoding: 'utf-8' })
+    const target = join(installRoot, 'agents', 'someone', '.claude', 'settings.local.json')
+    const out = JSON.parse(run({ tool_name: 'Write', tool_input: { file_path: target, content: HOOKS_OFF }, cwd: installRoot }).stdout)
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('fo agenst')
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('tulajdonost')
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('disableAllHooks')
+    const bashOut = JSON.parse(run({ tool_name: 'Bash', tool_input: { command: `echo '${HOOKS_OFF}' > agents/someone/.claude/settings.local.json` }, cwd: installRoot }).stdout)
+    expect(bashOut.hookSpecificOutput.permissionDecision).toBe('deny')
+    const read = run({ tool_name: 'Bash', tool_input: { command: 'cat agents/someone/.claude/settings.local.json' }, cwd: installRoot })
+    expect(read.stdout).toBe('')
+  })
+})

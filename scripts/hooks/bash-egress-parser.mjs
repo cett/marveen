@@ -25,6 +25,12 @@
 //      nice, ionice, stdbuf, setsid, caffeinate, unbuffer, watch, timeout DURATION, xargs).
 //      xargs reads its arguments from stdin, which cannot be seen: an xargs-fed network client with
 //      no literal destination in the command is denied.
+//   4b. an alias or function defined in the SAME command line (`alias c=curl; c https://x`,
+//      `c(){ curl "$@"; }; c https://x`, `function c { ...; }`) is judged as what a call to it expands
+//      to; `command` and `builtin` are seen through; a command name held in a variable assigned in the
+//      same line is expanded; a command word that stays unresolved ($VAR nobody assigned here, `$(...)`,
+//      a backtick) followed by an external-looking URL or host argument is denied
+//      (reason `unresolved-command-word`).
 //   5. a command that cannot be PARSED (unterminated quote or heredoc) and carries any of the above,
 //      or a URL, is denied (fail closed); an unparseable command with nothing network-capable passes.
 // localhost / 127.0.0.1 / [::1] ALWAYS pass: the dashboard's own calls (memory, kanban, message
@@ -32,7 +38,7 @@
 // Hosts are cut with a regex, not URL(), so http://localhost:$PORT stays local, while
 // localhost.evil.com and localhost@evil.com are external.
 //
-// PRIVATE NETWORK (maintainer decision on #1611, 2026-09-27): agents may reach private network
+// PRIVATE NETWORK (maintainer decision on upstream #1611, 2026-09-27): agents may reach private network
 // targets from the shell. Local, besides the loopback names above, is decided by the LITERAL host
 // string only, never by DNS: a canonical dotted-quad IPv4 in 10/8, 172.16/12, 192.168/16 or 127/8, a
 // bracketed IPv6 in fc00::/7 (ULA) or fe80::/10 (link-local), or a name whose LAST label is `local`
@@ -52,7 +58,9 @@
 // (`bash x.sh`, `python3 x.py` -- the hook sees only the outer command); heredoc-fed interpreters
 // (`python3 - <<'PY'`, `bash <<EOF`); a URL or command name built at runtime (concatenation, read
 // from a file, the environment, a previous command, a curl -K config, a `$(...)` command word, a
-// computed `exec(...)` string, `curl $(echo https://x)`); stdin-fed clients other than xargs
+// computed `exec(...)` string, `curl $(echo https://x)`); an alias or function defined in an EARLIER
+// tool call or in a sourced file (`source x.sh`, `. x.sh`, `export -f`, BASH_ENV, a shell rc file)
+// and called here, and any command name the line does not spell or assign; stdin-fed clients other than xargs
 // (`echo evil.com | nc`, `-i urls.txt`); other runners (find -exec, parallel, ssh host cmd);
 // every other network-capable binary, deliberately NOT denied wholesale because they are everyday
 // development tools: git, pip, npm, ssh, scp, rsync, dig, nslookup, ping. A scheme-less argument of
@@ -88,7 +96,7 @@ export function parseVendorHosts(raw) {
 export function loadVendorHosts(path = VENDOR_HOSTS_PATH) {
   try { return parseVendorHosts(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
 }
-// OPTIONAL, opt-in (#1611, a policy proposal): the same file may also carry
+// OPTIONAL, opt-in (upstream #1611, a policy proposal): the same file may also carry
 // `"domains": ["example.com"]` -- a listed domain OR any subdomain of it passes. The match is on a
 // LABEL boundary: `api.example.com` matches `example.com`, while `evilexample.com`,
 // `example.com.evil.net` and `example.com@evil.net` (whose host is evil.net) do not. Entries are
@@ -239,17 +247,17 @@ function backtickEnd(text, i) { // text[i] is ` -> index just past the closing `
   while (j < text.length && text[j] !== '`') j += text[j] === '\\' ? 2 : 1
   return Math.min(j + 1, text.length)
 }
-export function liftSubstitutions(text) {
+export function liftSubstitutions(text, fill = ' ') {
   const inners = []; let out = ''; let i = 0
   // A live substitution at `at` is lifted (blanked, inner kept); returns the next index or -1.
   const lift = (at) => {
     if (text[at] === '$' && text[at + 1] === '(') {
       const j = substEnd(text, at)
-      inners.push(text.slice(at + 2, j - 1)); out += ' '.repeat(j - at); return j
+      inners.push(text.slice(at + 2, j - 1)); out += fill.repeat(j - at); return j
     }
     if (text[at] === '`') {
       const j = backtickEnd(text, at)
-      inners.push(text.slice(at + 1, j - 1)); out += ' '.repeat(j - at); return j
+      inners.push(text.slice(at + 1, j - 1)); out += fill.repeat(j - at); return j
     }
     return -1
   }
@@ -283,7 +291,7 @@ export function liftSubstitutions(text) {
       if (nl === -1) { copyLive(i, text.length); break }
       // the rest of the heredoc line is ordinary shell text; hand it back to the main loop
       // by processing it recursively, then continue with the body
-      const lineRest = liftSubstitutions(text.slice(i, nl + 1))
+      const lineRest = liftSubstitutions(text.slice(i, nl + 1), fill)
       out += lineRest.stripped; inners.push(...lineRest.inners); i = nl + 1
       const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
       const rel = endRx.exec(text.slice(i))
@@ -581,7 +589,6 @@ function stringLiterals(code) {
   }
   return out
 }
-const shq = (w) => `'${String(w).replace(/'/g, "'\\''")}'`
 function embeddedCheck(code, depth, vendorHosts, vendorDomains) {
   if (depth >= 4) return null
   const sub = (cmd) => classify(cmd, depth + 1, vendorHosts, vendorDomains)
@@ -615,8 +622,9 @@ function embeddedCheck(code, depth, vendorHosts, vendorDomains) {
 // `v` lists the short letters that take a separate value, `long` the long names, `positional` the
 // number of plain arguments before the command (timeout DURATION).
 const WRAPPERS = {
-  env: { v: 'uCS', long: names('unset chdir split-string') },
-  sudo: { v: 'ughpCrtUDRT', long: names('user group host prompt close-from role type other-user chdir chroot command-timeout') },
+  // env -S / --split-string VALUE execs a command line: it is split and read as the command itself.
+  env: { v: 'uCS', long: names('unset chdir split-string'), splitFlag: 'S', splitLong: 'split-string' },
+  sudo: { v: 'ughpCrtUDRT', long: names('user group host prompt close-from role type other-user chdir chroot command-timeout'), shellRestFlags: 'si' },
   doas: { v: 'uC', long: new Set() },
   command: { v: '', long: new Set() },
   exec: { v: 'a', long: new Set() },
@@ -628,42 +636,149 @@ const WRAPPERS = {
   setsid: { v: '', long: new Set() },
   caffeinate: { v: 'tw', long: new Set() },
   unbuffer: { v: '', long: new Set() },
-  watch: { v: 'n', long: names('interval') },
+  chronic: { v: '', long: new Set() },
+  busybox: { v: '', long: new Set() },
+  toybox: { v: '', long: new Set() },
   builtin: { v: '', long: new Set() },
   timeout: { v: 'ks', long: names('kill-after signal'), positional: 1 },
   xargs: { v: 'ILnPsdEaJRS', long: names('max-args max-procs max-chars delimiter arg-file process-slot-var') },
+  chroot: { v: '', long: names('userspec groups'), positional: 1 },
+  // These run their operand THROUGH A SHELL: the words are joined and read as a shell command line.
+  watch: { v: 'n', long: names('interval'), shellJoin: true },
+  // `-c COMMAND` is a shell command line, wherever it stands among the arguments.
+  su: { v: 'csgGw', long: names('command shell group supp-group whitelist-environment'), shellFlag: 'c', shellLong: 'command', scanAll: true, alwaysEnds: true },
+  runuser: { v: 'cugGs', long: names('command user group supp-group shell'), shellFlag: 'c', shellLong: 'command', scanAll: true },
+  script: { v: 'cFEIOBmoT', long: names('command'), shellFlag: 'c', shellLong: 'command', scanAll: true, positionalUnlessShell: 1 },
+  flock: { v: 'wEc', long: names('timeout wait conflict-exit-code command'), shellFlag: 'c', shellLong: 'command', scanAll: true, positionalUnlessShell: 1 },
 }
 const assignment = (w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)
+// Skips a wrapper's own flags. Returns where its operand starts (`i`), the shell command lines it
+// carries (`inline`, to be classified as commands), whether nothing is left to run (`ends`), and an
+// env -S value (`split`) whose words replace the wrapper and become the command.
 function skipWrapper(ow, from, spec) {
-  let i = from
+  let i = from; let split = null; let shellRest = false
+  const inline = []
   while (i < ow.length) {
     const x = ow[i]
     if (x === '--') { i++; break }
-    if (x.startsWith('--') && x.length > 2) { i += !x.includes('=') && spec.long.has(x.slice(2)) ? 2 : 1; continue }
+    if (x.startsWith('--') && x.length > 2) {
+      const [nm, inl] = x.slice(2).split(/=(.*)/s)
+      const takes = spec.long.has(nm)
+      const val = inl !== undefined ? inl : takes ? ow[i + 1] : undefined
+      if (val !== undefined && spec.shellLong === nm) inline.push(val)
+      if (val !== undefined && spec.splitLong === nm) split = val
+      i += inl === undefined && takes ? 2 : 1
+      if (split !== null) break
+      continue
+    }
     if (/^-[^-]/.test(x)) {
       let consumed = false
-      for (let q = 1; q < x.length; q++) if (spec.v.includes(x[q])) { consumed = q + 1 >= x.length; break }
-      i += consumed ? 2 : 1; continue
+      for (let q = 1; q < x.length; q++) {
+        if (spec.shellRestFlags?.includes(x[q])) shellRest = true
+        if (!spec.v.includes(x[q])) continue
+        const val = q + 1 < x.length ? x.slice(q + 1) : ow[i + 1]
+        if (val !== undefined && spec.shellFlag === x[q]) inline.push(val)
+        if (val !== undefined && spec.splitFlag === x[q]) split = val
+        consumed = q + 1 >= x.length
+        break
+      }
+      i += consumed ? 2 : 1
+      if (split !== null) break
+      continue
     }
     break
   }
-  return Math.min(i + (spec.positional ?? 0), ow.length)
+  if (split !== null) return { i, inline, ends: false, split }
+  if (spec.scanAll) {
+    for (let j = from; j < ow.length; j++) {
+      const x = ow[j]
+      if ((x === '-c' || x === '--command') && ow[j + 1] !== undefined) inline.push(ow[j + 1])
+      else if (x.startsWith('--command=')) inline.push(x.slice(10))
+      else if (/^-[A-Za-z]+c$/.test(x) && ow[j + 1] !== undefined) inline.push(ow[j + 1])
+    }
+  }
+  const uniq = [...new Set(inline)]
+  const skip = (spec.positional ?? 0) + (uniq.length ? 0 : spec.positionalUnlessShell ?? 0)
+  i = Math.min(i + skip, ow.length)
+  if (shellRest || spec.shellJoin) uniq.push(ow.slice(i).join(' '))
+  return { i, inline: uniq, ends: Boolean(spec.alwaysEnds || spec.shellJoin || shellRest || (spec.shellFlag && uniq.length)), split: null }
 }
-// The index of the real command word in a word list, or -1; `viaXargs` when xargs stood in front (its
-// input comes from stdin, which this hook cannot read).
+// The index of the real command word in a word list (in the list returned, which differs from the
+// input when an env -S value was spliced in), or -1; `viaXargs` when xargs stood in front (its input
+// comes from stdin, which this hook cannot read); `inline` = shell command lines a wrapper carried.
 function commandIndex(ow) {
-  let k = 0; let viaXargs = false
+  let k = 0; let viaXargs = false; const inline = []
   for (;;) {
     const w = ow[k]
-    if (w === undefined) return { k: -1, viaXargs }
+    if (w === undefined) return { ow, k: -1, viaXargs, inline }
     if (assignment(w)) { k++; continue }
     if (PREFIX_WORDS.has(w)) { k++; continue }
     const base = w.split('/').pop()
-    if (Object.hasOwn(WRAPPERS, base)) { if (base === 'xargs') viaXargs = true; k = skipWrapper(ow, k + 1, WRAPPERS[base]); continue }
-    return { k, viaXargs }
+    if (Object.hasOwn(WRAPPERS, base)) {
+      if (base === 'xargs') viaXargs = true
+      const r = skipWrapper(ow, k + 1, WRAPPERS[base])
+      inline.push(...r.inline)
+      if (r.split !== null) {
+        const sub = commandIndex([...shellWords(r.split), ...ow.slice(r.i)])
+        return { ...sub, viaXargs: viaXargs || sub.viaXargs, inline: [...inline, ...sub.inline] }
+      }
+      if (r.ends) return { ow, k: -1, viaXargs, inline }
+      k = r.i; continue
+    }
+    return { ow, k, viaXargs, inline }
   }
 }
 
+// ---- aliases, functions, a command name in a variable ------------------------------------------
+// `alias c=curl; c https://x` and `c(){ curl "$@"; }; c https://x` hide the tool name behind a word
+// this hook has never heard of. Definitions made in the SAME command line are collected and a call to
+// the defined name is judged as what it expands to: an alias is replaced by its value, a function body
+// is read with "$@", $* and $1..$9 replaced by the call's arguments. A command word that stays
+// unresolved (a $VAR nobody assigned here, a $(...) or backtick) next to an external-looking URL or
+// host argument is denied: the tool cannot be known, the destination can.
+function shq(w) { return `'${String(w).replace(/'/g, "'\\''")}'` }
+const FILE_EXT = new Set('txt json md sh py js ts mjs cjs log csv yml yaml html htm png jpg jpeg gif svg pdf zip tar gz tgz bz2 xz conf cfg ini toml xml sql db lock bak tmp map css jsx tsx rb pl php java go rs c h cc cpp hpp o a so dylib exe bin dat out err pid sock key pem crt cer env'.split(' '))
+function externalHostOf(w, isExt) {
+  const u = (String(w).match(URL_RE) ?? [])[0]
+  if (u) { const h = hostOf(u); return h && isExt(h) ? h : null }
+  if (w.startsWith('-')) return null
+  const h = destHost(w)
+  if (!h || !/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/.test(h) || FILE_EXT.has(h.split('.').pop())) return null
+  return isExt(h) ? h : null
+}
+function substituteParams(body, args) {
+  const all = args.map(shq).join(' ')
+  return body
+    .replace(/"\$[@*]"|\$[@*]|"\$\{[@*]\}"|\$\{[@*]\}/g, () => all)
+    .replace(/\$\{?([1-9])\}?/g, (_, d) => args[Number(d) - 1] ?? '')
+    .replace(/\$#/g, String(args.length))
+}
+// Function definitions in the MASKED text: `name() {`, `name () {`, `function name {`, `function name() {`.
+function collectFunctions(orig, masked) {
+  const funcs = new Map()
+  const rxs = [
+    /(?:^|[\s;&|(){])(?:function\s+)?([A-Za-z_][\w:.-]*)\s*\(\s*\)\s*\{/g,
+    /(?:^|[\s;&|(){])function\s+([A-Za-z_][\w:.-]*)\s*\{/g,
+  ]
+  for (const rx of rxs) {
+    for (const m of masked.matchAll(rx)) {
+      const brace = m.index + m[0].length - 1
+      let depth = 1; let j = brace + 1
+      while (j < masked.length && depth > 0) { if (masked[j] === '{') depth++; else if (masked[j] === '}') depth--; j++ }
+      funcs.set(m[1], { body: orig.slice(brace + 1, depth === 0 ? j - 1 : orig.length), head: [m.index, brace + 1] })
+    }
+  }
+  return funcs
+}
+function collectAliases(orig, masked, env) {
+  const aliases = new Map()
+  for (const [a, b] of spans(masked)) {
+    const { ow, k } = commandIndex(shellWords(expand(orig.slice(a, b), env)))
+    if (k === -1 || ow[k] !== 'alias') continue
+    for (const w of ow.slice(k + 1)) { const m = /^([^=\s]+)=([\s\S]*)$/.exec(w); if (m) aliases.set(m[1], m[2]) }
+  }
+  return aliases
+}
 // A command that cannot be PARSED (an unterminated quote or heredoc) is not judged blind: when it
 // carries anything network-capable, a covered tool, a URL, /dev/tcp, an interpreter or shell with a
 // code flag, it is denied. A command with none of those may still pass.
@@ -690,7 +805,29 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   const env = collectAssignments(orig, masked)
   const loops = collectLoops(orig, masked, env)
   const external = (hosts) => [...new Set(hosts)].filter((h) => !isLocalHost(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+  const isExt = (h) => external([h]).length > 0
+  const aliases = collectAliases(orig, masked, env)
+  const funcs = collectFunctions(orig, masked)
+  const inHeader = (a, b) => [...funcs.values()].some((f) => a >= f.head[0] && b <= f.head[1])
+  // A command word that cannot be resolved here: a $VAR nobody assigned in this command, a $(...) or a
+  // backtick (each substitution is marked with \u0001, the real text is judged on its own above).
+  const marked = liftSubstitutions(norm, '\u0001').stripped
+  const markedMask = maskInertLiterals(marked)
+  if (markedMask !== null && markedMask.length === marked.length) {
+    const menv = collectAssignments(marked, markedMask)
+    for (const [a, b] of spans(markedMask)) {
+      const ms0 = markedMask.slice(a, b)
+      if (inHeader(a, b) || /\n/.test(marked.slice(a, b).slice(0, Math.max(ms0.search(/\S/), 0)))) continue
+      const { ow, k } = commandIndex(shellWords(expand(marked.slice(a, b), menv).replace(/\$(['"])/g, '$1')))
+      if (k === -1) continue
+      const w = ow[k]
+      if (!(w.includes('\u0001') || /^\$\{?[A-Za-z_]\w*\}?$/.test(w))) continue
+      const hs = ow.slice(k + 1).map((x) => externalHostOf(x, isExt)).filter(Boolean)
+      if (hs.length) return { deny: true, reason: 'unresolved-command-word', hosts: [...new Set(hs)] }
+    }
+  }
   for (const [a, b] of spans(masked)) {
+    if (inHeader(a, b)) continue // `name()` of a function definition is not a call
     const ms = masked.slice(a, b)
     const mw = words(ms)
     // Every loop reading AND the plain one: a loop variable can share its name with an assignment
@@ -710,11 +847,20 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     for (const text of [plain, ...(variants ?? [])]) {
       // The command word is read from the DEQUOTED words (`c"ur"l`, `\curl`, `'curl'`, `$'curl'`, a
       // loop or assigned variable) behind any wrappers (env, sudo, timeout, xargs, stdbuf, nice ...).
-      const ow = heredocTail ? mw : shellWords(text.replace(/\$(['"])/g, '$1'))
-      const { k, viaXargs } = commandIndex(ow)
+      const ow0 = heredocTail ? mw : shellWords(text.replace(/\$(['"])/g, '$1'))
+      const { ow, k, viaXargs, inline } = commandIndex(ow0)
+      // A wrapper that hands its operand to a shell (watch, su -c, flock -c, sudo -i ...) or splits a
+      // command line (env -S): the line is judged as a command of its own.
+      if (depth < 4) for (const line of inline) { const r = classify(line, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
       if (k === -1) continue
       const cmd = ow[k].split('/').pop()
       const rest = ow.slice(k + 1)
+      // A call to an alias or function defined in THIS command line is judged as what it expands to.
+      if (depth < 4) {
+        if (aliases.has(ow[k])) { const r = classify(`${aliases.get(ow[k])} ${rest.map(shq).join(' ')}`, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
+        const fn = funcs.get(ow[k])
+        if (fn) { const r = classify(substituteParams(fn.body, rest), depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
+      }
       if (SHELL.test(cmd) || cmd === 'eval') {
         const j = cmd === 'eval' ? -1 : rest.findIndex(isShellCFlag)
         const inner = cmd === 'eval' ? rest.join(' ') : rest[j + 1]
@@ -727,7 +873,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         // The destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a JSON
         // payload) is data sent to wherever the tool connects, not a destination. The fleet reports PR
         // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole
-        // text with URL_RE denied exactly that (#1514 re-review, measured on the merged head).
+        // text with URL_RE denied exactly that (upstream #1514 re-review, measured on the merged head).
         target = cmd
         const all = argvHosts(rest, spec)
         // xargs reads its arguments from stdin, which this hook cannot see: `echo evil.com | xargs wget`.
