@@ -16,6 +16,7 @@ import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant } from '../vault.js'
+import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -738,6 +739,21 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
+    // VAULTSZELES826 F0: one audit row per value read (id, kind, principal, allowlist verdict) BEFORE
+    // anything is answered, a refused or missing id included, so an attempt stays visible. Audit only:
+    // the verdict never blocks here. `found` is what THIS caller could read (a secret of another tenant
+    // is not found for a scoped caller, same as the 404 below). The value is never passed to the logger.
+    const auditOwner = findSecretTenant(id)
+    logVaultRead(id, ctx.auth, auditOwner !== null && (vaultIsAdmin || auditOwner === vaultEffectiveTenantId))
+    // SSH private keys are NEVER served by this generic value route. The SSH feature reads them
+    // in-process (vault-ssh-keys.ts) and has its own routes; the list route only HIDES them from the
+    // secret cards (display, not protection), and the sub-resource list above names literal ids, not
+    // this prefix, so without this branch GET /api/vault/ssh-key-<id> returned the private key to any
+    // holder of the dashboard token. The key is not even decrypted.
+    if (isSshPrivateKeyId(id)) {
+      json(res, { error: 'forbidden', hint: 'SSH private keys are not served by this route' }, 403)
+      return true
+    }
     const ownerTenantId = resolveVaultAccess(id)
     if (ownerTenantId === null) return true
     const val = getSecret(id, ownerTenantId)
@@ -771,6 +787,16 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
     if (!data.vaultSecretId || !data.envVar) {
       json(res, { error: 'required', hint: 'vaultSecretId and envVar required' }, 400)
+      return true
+    }
+
+    // VAULTSZELES826: an SSH private key must never be bound. A binding hands the value to a child
+    // process (env var) or, through the header injector, to a REMOTE server; refused before any write
+    // or sync runs. The refusal leaves a server-side trace (who, which id), never a value.
+    if (isSshPrivateKeyId(data.vaultSecretId)) {
+      const { kind, principal } = principalOf(ctx.auth)
+      logger.warn({ event: 'vault-binding-refused', vaultSecretId: data.vaultSecretId, kind, principal, via: 'env' }, 'vault: SSH private key binding refused')
+      json(res, { error: 'invalid_value', hint: 'SSH private keys cannot be bound to an env var or a header' }, 400)
       return true
     }
 

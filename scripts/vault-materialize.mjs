@@ -18,6 +18,11 @@ if (mode === 'get') {
     process.stderr.write('usage: vault-materialize.mjs get <vaultId>\n')
     process.exit(1)
   }
+  // VAULTSZELES826: an SSH private key is consumed only in-process by the SSH feature, never handed out here.
+  if (vaultId.trim().startsWith('ssh-key-')) {
+    process.stderr.write(`vault-materialize: refused, SSH private keys are not materialized: ${vaultId}\n`)
+    process.exit(4)
+  }
   const value = getSecret(vaultId)
   if (value === null) {
     process.stderr.write(`vault-materialize: secret "${vaultId}" not found\n`)

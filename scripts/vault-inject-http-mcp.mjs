@@ -77,15 +77,19 @@ async function inject(target, templatePath) {
 
   const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
   const missing = []
+  const refused = []
   const changed = walkHeaders(parsed.mcpServers, (value) => {
     if (!value.includes('vault:')) return undefined
     return value.replace(VAULT_REF, (whole, id) => {
+      // VAULTSZELES826: an SSH private key must never become an HTTP header sent to a remote server.
+      if (id.trim().startsWith('ssh-key-')) { refused.push(id); return whole }
       const secret = getSecret(id)
       if (secret === null) { missing.push(id); return whole }
       return secret
     })
   })
 
+  if (refused.length) fail(`SSH private keys are not injectable, leaving ${target} untouched: ${refused.join(', ')}`)
   if (missing.length) fail(`unresolved vault id(s), leaving ${target} untouched: ${missing.join(', ')}`)
   if (!changed) return // no vault: references in any header, nothing to do
 
