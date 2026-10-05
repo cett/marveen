@@ -5,12 +5,28 @@
 // The deny list (agent-scaffold.ts, BASH_EGRESS_DENY) matches COMMAND NAMES with globs and has no
 // negation, so it cannot say "any http EXCEPT localhost". Its own comment names what passes:
 // plain-http external fetches, interpreter one-liners (python3 -c, node -e), and a URL hidden in a
-// shell variable. This hook closes exactly those three shapes by PARSING the command:
-//   1. curl to an EXTERNAL destination: a scheme-bearing URL (http:// included, which the deny list
-//      cannot cover), and any positional / --url / proxy argument even WITHOUT a scheme;
-//   2. an interpreter one-liner (python/node/perl/ruby/php/deno/bun with -c/-e/-r/--eval) whose code
-//      carries an EXTERNAL URL;
-//   3. either of the above when the URL sits in a variable ASSIGNED IN THE SAME COMMAND.
+// shell variable. This hook closes those shapes, and the common network clients the name list never
+// covered, by PARSING the command. COVERED (an external destination denies, localhost and the local
+// network pass, a listed vendor host passes):
+//   1. argv-read network clients, destinations from the argv with each tool's value-taking flags
+//      skipped: curl, wget, aria2c, axel, lynx, w3m, links, elinks, http / https (httpie), xh / xhs,
+//      ftp, sftp, tftp, telnet, nc / ncat / netcat, socat (address words), `openssl s_client` /
+//      `s_time` (-connect / -host / -proxy). A scheme-less positional counts as a host.
+//   2. an interpreter one-liner (python/node/perl/ruby/php/deno/bun with -c/-e/-r/--eval, also
+//      combined flags such as -pe) whose code carries an EXTERNAL URL next to a network primitive,
+//      and one whose code SPAWNS a process (subprocess, os.system, execSync, system(), backticks):
+//      the curl / wget command line or argv list inside it is read the same way as in (1).
+//   3. `osascript -e 'do shell script ...'` (URLs and embedded command lines), gawk `/inet/` files,
+//      and bash `/dev/tcp/HOST/PORT` / `/dev/udp/...` redirects.
+//   4. the commands above when the URL sits in a variable ASSIGNED IN THE SAME COMMAND or a loop
+//      variable, behind `bash -c '...'`, `sh -c`, `eval`, a subshell `( )`, a group `{ }`, a background
+//      `&`, a shell keyword (if / while / until / do / then), a quoted or escaped command word
+//      (`c"ur"l`, `\curl`), or a wrapper with its flags (env, sudo, doas, command, exec, time, nohup,
+//      nice, ionice, stdbuf, setsid, caffeinate, unbuffer, watch, timeout DURATION, xargs).
+//      xargs reads its arguments from stdin, which cannot be seen: an xargs-fed network client with
+//      no literal destination in the command is denied.
+//   5. a command that cannot be PARSED (unterminated quote or heredoc) and carries any of the above,
+//      or a URL, is denied (fail closed); an unparseable command with nothing network-capable passes.
 // localhost / 127.0.0.1 / [::1] ALWAYS pass: the dashboard's own calls (memory, kanban, message
 // queue, approvals) go over http://localhost and a gate that cut them would silence the fleet.
 // Hosts are cut with a regex, not URL(), so http://localhost:$PORT stays local, while
@@ -32,17 +48,21 @@
 // is not a command; the URL from the ORIGINAL text of the same span.
 //
 // WHAT THIS DOES NOT CLOSE -- said here so nobody reads "merged" as "closed" (owner/Marveen 29047):
-// the name-and-shape list will never be complete. Still open after (a): network calls INSIDE a script
-// file (`bash x.sh`, `python3 x.py` -- the hook sees only the outer command); heredoc-fed interpreters
-// (`python3 - <<'PY'`, `bash <<EOF`); a URL whose host is not literally in the command (read from a
-// file, the environment, a previous command, a curl -K config, or computed by a substitution such as
-// `curl $(echo https://x)`); every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
-// Closing those is direction (b): an allowlist / network-level gate, not this hook.
+// the name-and-shape list will never be complete. Still OPEN: network calls INSIDE a script file
+// (`bash x.sh`, `python3 x.py` -- the hook sees only the outer command); heredoc-fed interpreters
+// (`python3 - <<'PY'`, `bash <<EOF`); a URL or command name built at runtime (concatenation, read
+// from a file, the environment, a previous command, a curl -K config, a `$(...)` command word, a
+// computed `exec(...)` string, `curl $(echo https://x)`); stdin-fed clients other than xargs
+// (`echo evil.com | nc`, `-i urls.txt`); other runners (find -exec, parallel, ssh host cmd);
+// every other network-capable binary, deliberately NOT denied wholesale because they are everyday
+// development tools: git, pip, npm, ssh, scp, rsync, dig, nslookup, ping. A scheme-less argument of
+// a text browser is a host unless it exists as a file in the hook's working directory.
+// Closing those is an allowlist / network-level gate, not this hook.
 //
 // FORK DEVIATION from upstream: FAIL-CLOSED on unparseable input or an internal error (exit 2, the
 // reason on stderr). The fork's hook policy is fail-closed everywhere; upstream allows and logs.
 // Every DENY is appended to the block log.
-import { readFileSync, appendFileSync, realpathSync, mkdirSync } from 'node:fs'
+import { readFileSync, appendFileSync, realpathSync, mkdirSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { maskInertLiterals } from '../self-pace-gate.mjs'
@@ -95,11 +115,11 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 const URL_RE = /\b(?:https?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp):\/\/[^\s'"`<>\\)]+/gi
 const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun)$/
 const CODE_FLAG = new Set(['-c', '-e', '-E', '-r', '--eval', '-p', '--print', 'eval'])
-// Words that can stand before the real command word of a sub-command. The shell keywords are here
+// Shell keywords that can stand before the real command word of a sub-command. They are here
 // because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
-// them a curl inside a loop or an if/then body was never looked at.
-const PREFIX_WORDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice',
-  'do', 'then', 'else', 'elif', '{', '(', '!'])
+// them a curl inside a loop or an if/then body was never looked at. Commands that WRAP another
+// command (env, sudo, timeout, xargs ...) are in WRAPPERS below, with their flags.
+const PREFIX_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', 'coproc', '{', '(', '!'])
 // A one-liner is a DOWNLOADER only when its code uses a network primitive of the language itself.
 // Measured on 7 days of fleet commands: a one-liner that merely CARRIES a URL as data (an
 // inter-agent message built with subprocess + curl to localhost) must not be denied -- that was 4 of
@@ -135,7 +155,9 @@ export function isExternal(url) {
 }
 function spans(masked) {
   const out = []; let start = 0
-  const re = /&&|\|\||;|\||\n/g; let m
+  // Separators: && || ; | newline, a single & (not &&, >&, &>), a subshell ( ), and a standalone group
+  // brace `{` (never the `${` of a parameter expansion or a {a,b} brace expansion).
+  const re = /&&|\|\||;|\||\n|(?<![<>])&(?!>)|[()]|(?<!\S)\{(?!\S)/g; let m
   while ((m = re.exec(masked))) { out.push([start, m.index]); start = m.index + m[0].length }
   out.push([start, masked.length])
   return out
@@ -366,36 +388,294 @@ export function destHost(value) {
   // Only plain literal tokens qualify, so a $VAR, a glob or a relative path still yields null.
   return /^(?=[^.]*[a-z0-9])[a-z0-9][a-z0-9._-]*$/.test(h) ? h : null
 }
-// Every external destination host in a curl argv (the words AFTER `curl`).
-export function curlDestinations(args) {
-  const dests = []
-  const addUrl = (v) => { const h = destHost(v); if (h) dests.push(h) }
-  const addParts = (v) => { for (const p of String(v).split(':')) if (HOSTNAME.test(p)) dests.push(p.toLowerCase()) }
+// ---------------------------------------------------------------------------------------------
+// ONE argv reader for every network client the hook judges. Each tool is a small spec on top of the
+// curl machinery above: which short letters / long names TAKE a value (skipped, so `wget -O out.txt`
+// or `-H "Host: x"` is never read as a destination), which of them carry a destination (proxy, --url),
+// and how a positional argument is read. Anything a spec does not list is assumed to take no value:
+// if that is wrong its value is read as a destination, which errs toward a deny, never toward a pass.
+const letters = (s) => new Set(s.split(''))
+const names = (s) => new Set(s.split(/\s+/).filter(Boolean))
+const isPort = (w) => /^\d{1,5}(?:-\d{1,5})?$/.test(w) && w.split('-').every((p) => Number(p) <= 65535)
+const hostPos = (w) => (isPort(w) ? null : destHost(w)) // `nc host 443`, `telnet host 23`: the port is not a host
+const firstPos = (w, st) => (st.n === 0 ? destHost(w) : null) // sftp destination, openssl host:port
+// The text browsers open local files too (`w3m -dump page.html`). A scheme-less argument that exists
+// as a file where the hook runs is a file; anything else is read as a host (fail closed).
+const browserPos = (w) => {
+  if (w === '-') return null
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(w)) { try { if (existsSync(w)) return null } catch { /* fall through: a host */ } }
+  return destHost(w)
+}
+const HTTP_METHOD = /^(?:get|post|put|patch|delete|head|options|trace|connect)$/i
+// httpie / xh: `http [flags] [METHOD] URL [REQUEST_ITEM...]`. The items (a=b, h:v, q==v, f@file) come
+// AFTER the URL and are never destinations.
+const httpiePos = (w, st) => {
+  if (st.done) return null
+  if (st.n === 0 && HTTP_METHOD.test(w)) return null
+  st.done = true
+  return destHost(w)
+}
+const SPECS = {
+  curl: { short: CURL_SHORT_WITH_VALUE, long: CURL_LONG_WITH_VALUE, dest: CURL_DEST_URL, parts: CURL_DEST_PARTS },
+  wget: {
+    short: letters('OoaePtTwQiBUlIXARDY'),
+    long: names(`output-document output-file append-output execute directory-prefix tries timeout dns-timeout
+      connect-timeout read-timeout wait waitretry quota input-file base user-agent header post-data post-file
+      body-data body-file method referer load-cookies save-cookies user password http-user http-password
+      ftp-user ftp-password proxy-user proxy-password limit-rate level include-directories exclude-directories
+      accept reject accept-regex reject-regex regex-type domains exclude-domains follow-tags ignore-tags
+      bind-address certificate private-key ca-certificate ca-directory crl-file secure-protocol default-page
+      local-encoding remote-encoding restrict-file-names backups config bind-dns-address dns-servers
+      certificate-type private-key-type egd-file random-file preferred-location warc-file warc-header
+      warc-max-size warc-tempdir retry-on-http-error report-speed max-redirect prefer-family hsts-file
+      metalink-index input-metalink pinnedpubkey use-askpass`),
+    exec: names('e execute'), // -e http_proxy=host:3128
+  },
+  aria2c: {
+    short: letters('dijlsxkmtoUTMOu'),
+    long: names(`dir out input-file log max-concurrent-downloads split max-connection-per-server min-split-size
+      max-tries retry-wait timeout connect-timeout user-agent header referer load-cookies save-cookies log-level
+      conf-path http-user http-passwd ftp-user ftp-passwd checksum max-download-limit max-overall-download-limit
+      lowest-speed-limit file-allocation select-file torrent-file metalink-file index-out no-proxy
+      all-proxy http-proxy https-proxy ftp-proxy async-dns-server interface`),
+    dest: names('all-proxy http-proxy https-proxy ftp-proxy async-dns-server'),
+  },
+  axel: { short: letters('snoHUT'), long: names('max-speed num-connections output header user-agent timeout') },
+  lynx: { short: new Set(), long: new Set(), dashLong: true, pos: browserPos },
+  w3m: {
+    short: new Set(), dashLong: true, pos: browserPos,
+    long: names('T I O o cols ppc ppl config bookmark post header l t'),
+    exec: names('o'),
+  },
+  links: {
+    short: new Set(), dashLong: true, pos: browserPos,
+    long: names(`width codepage http-proxy ftp-proxy https-proxy socks-proxy download-dir lookup bind-address
+      bind-address-ipv6 max-connections retries receive-timeout unrestartable-receive-timeout driver mode display`),
+    dest: names('http-proxy ftp-proxy https-proxy socks-proxy lookup'),
+  },
+  elinks: {
+    short: new Set(), dashLong: true, pos: browserPos,
+    long: names('remote config-dir default-mime-type eval lookup session-ring verbose dump-width dump-color-mode'),
+    dest: names('lookup'),
+  },
+  httpie: {
+    short: letters('aAopPsy'),
+    long: names(`auth auth-type output print history-print style pretty format-options verify cert cert-key ssl
+      ciphers timeout max-redirects max-headers session session-read-only default-scheme proxy response-charset
+      response-mime boundary raw unix-socket path-as-is-no`),
+    proxyValue: names('proxy'), // --proxy http:http://host:3128
+    pos: httpiePos,
+  },
+  ftp: { short: letters('NoPrTqu'), long: new Set(), dest: letters('u'), pos: hostPos },
+  sftp: {
+    short: letters('BbcDFiJlOoPRSs'), long: new Set(), dest: letters('J'), list: letters('J'),
+    sshOpt: letters('o'), pos: firstPos,
+  },
+  tftp: { short: letters('mR'), long: new Set(), stop: new Set(['-c']), pos: hostPos },
+  telnet: { short: letters('SXelnbks'), long: new Set(), pos: hostPos },
+  nc: {
+    short: letters('bgGiIKmMoOpPqsTVwWXx'),
+    long: names(`proxy proxy-type proxy-auth source exec sh-exec lua-exec delay wait idle-timeout ssl-cert ssl-key
+      ssl-trustfile ssl-ciphers ssl-servername ssl-alpn source-port output hex-dump allow allowfile deny denyfile max-conns`),
+    dest: names('x proxy'),
+    listen: 'l', listenLong: names('listen'), // a listener is no egress
+    pos: hostPos,
+  },
+  openssl: {
+    short: new Set(), dashLong: true, pos: firstPos,
+    long: names(`connect host port proxy bind cert key CAfile CApath cipher ciphersuites servername starttls name
+      pass alpn nextprotoneg msgfile timeout keylogfile sess_out sess_in psk psk_identity verify verifyCAfile
+      verifyCApath cert_chain chainCAfile chainCApath crl_download rev unix xmpphost proto`),
+    dest: names('connect host proxy'),
+  },
+}
+const ARGV_TOOLS = new Map([
+  ['curl', SPECS.curl], ['wget', SPECS.wget], ['aria2c', SPECS.aria2c], ['axel', SPECS.axel],
+  ['lynx', SPECS.lynx], ['w3m', SPECS.w3m], ['links', SPECS.links], ['links2', SPECS.links], ['elinks', SPECS.elinks],
+  ['http', SPECS.httpie], ['https', SPECS.httpie], ['xh', SPECS.httpie], ['xhs', SPECS.httpie],
+  ['ftp', SPECS.ftp], ['sftp', SPECS.sftp], ['tftp', SPECS.tftp], ['telnet', SPECS.telnet],
+  ['nc', SPECS.nc], ['ncat', SPECS.nc], ['netcat', SPECS.nc], ['nc.openbsd', SPECS.nc], ['nc.traditional', SPECS.nc],
+])
+// Every host in an argv, local or not (the caller filters): [] when the tool is only LISTENING.
+export function argvHosts(args, spec) {
+  const hosts = []
+  const st = { n: 0 }
+  const addUrl = (v) => { const h = destHost(v); if (h) hosts.push(h) }
+  const addParts = (v) => { for (const p of String(v).split(':')) if (HOSTNAME.test(p)) hosts.push(p.toLowerCase()) }
+  const addValue = (name, v) => {
+    if (v === undefined) return
+    if (spec.dest?.has(name)) { for (const part of spec.list?.has(name) ? String(v).split(',') : [v]) addUrl(part) }
+    else if (spec.parts?.has(name)) addParts(v)
+    else if (spec.exec?.has(name)) { const m = /(?:^|[\s;,])\w*proxy\s*=\s*(\S+)/i.exec(v); if (m) addUrl(m[1]) }
+    else if (spec.sshOpt?.has(name)) { const m = /^(?:HostName|ProxyJump)\s*[= ]\s*(.+)$/i.exec(v); if (m) for (const p of m[1].split(',')) addUrl(p) }
+    else if (spec.proxyValue?.has(name)) { const m = /^[a-z]+:(.+)$/i.exec(v); addUrl(m ? m[1] : v) }
+  }
+  let listening = false
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
-    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
-    if (w === '--' ) continue
-    if (w.startsWith('--')) {
-      const [name, inline] = w.slice(2).split(/=(.*)/s)
-      if (!CURL_LONG_WITH_VALUE.has(name)) continue
-      const v = inline !== undefined ? inline : args[++k]
-      if (CURL_DEST_URL.has(name)) addUrl(v)
-      else if (CURL_DEST_PARTS.has(name)) addParts(v)
+    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<<?|<>)&?$/.test(w)) k++; continue } // redirection
+    if (w === '--') continue
+    if (spec.stop?.has(w)) break
+    if (w.startsWith('--') || (spec.dashLong && w.startsWith('-') && w.length > 1)) {
+      const [name, inline] = w.replace(/^--?/, '').split(/=(.*)/s)
+      if (spec.listenLong?.has(name)) listening = true
+      if (!spec.long.has(name)) continue
+      addValue(name, inline !== undefined ? inline : args[++k])
       continue
     }
     if (w.startsWith('-') && w.length > 1) {
       for (let q = 1; q < w.length; q++) {
-        if (!CURL_SHORT_WITH_VALUE.has(w[q])) continue
-        const v = q + 1 < w.length ? w.slice(q + 1) : args[++k]
-        if (CURL_DEST_URL.has(w[q])) addUrl(v)
+        if (spec.listen === w[q]) listening = true
+        if (!spec.short.has(w[q])) continue
+        addValue(w[q], q + 1 < w.length ? w.slice(q + 1) : args[++k])
         break
       }
       continue
     }
-    addUrl(w) // positional: always a URL to curl
+    const h = spec.pos ? spec.pos(w, st) : destHost(w) // positional
+    st.n++
+    if (h) hosts.push(h)
   }
-  return dests.filter((h) => !isLocalHost(h))
+  return listening ? [] : hosts
 }
+// Every external destination host in a curl argv (the words AFTER `curl`).
+export function curlDestinations(args) {
+  return argvHosts(args, SPECS.curl).filter((h) => !isLocalHost(h))
+}
+// socat: the destination is inside the ADDRESS word, `TCP:host:port`, `OPENSSL:host:443,verify=0`,
+// `PROXY:proxy:host:port`. Listening addresses (TCP-LISTEN ...) and files / exec / stdio are no egress.
+export function socatHosts(args) {
+  const hosts = []
+  for (const w of args) {
+    const m = /^([A-Za-z][A-Za-z0-9-]*):(.*)$/s.exec(w)
+    if (!m) continue
+    const kw = m[1].toUpperCase()
+    if (/LISTEN|RECV|SERVER/.test(kw) || !/^(?:TCP|UDP|SCTP|DCCP|OPENSSL|SSL|DTLS|SOCKS|PROXY|IP|RAWIP)/.test(kw)) continue
+    const fields = m[2].split(',')[0].match(/\[[^\]]*\]|[^:]+/g) ?? []
+    for (const f of fields.slice(0, Math.max(fields.length - 1, 1))) { const h = destHost(f); if (h) hosts.push(h) } // the last field is the port / protocol
+  }
+  return hosts
+}
+
+// A one-liner whose code SPAWNS a process can run curl / wget inside: `subprocess.run(["curl", ...])`,
+// `os.system("wget ...")`, `execSync('curl ...')`, a backtick. The code is not parsed as a program;
+// its string literals are read for the two shapes that name a tool: a literal that IS a command line
+// (`"curl -s http://x"`) and a literal that heads an argv list (`"curl","-s","http://x"`). A list that
+// goes on with something that is not a literal (`json.dumps(...)`) is judged on the literals before
+// it, and when none of them is a destination the call is denied: `["curl", url]` hides its host.
+// A one-liner that only CARRIES a localhost curl, with an external URL in the payload, still passes.
+const SPAWN_PRIMITIVE = /\b(?:subprocess|os\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|Popen|popen|child_process|exec(?:File)?(?:Sync)?\s*\(|spawn(?:Sync)?\s*\(|system\s*\(|shell_exec|proc_open|passthru|pcntl_exec|Open3|IO\.popen|Bun\.spawn|Deno\.Command)|`[^`]+`/
+const TOOL_NAMES = [...ARGV_TOOLS.keys(), 'socat', 'openssl']
+const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const TOOL_ALT = TOOL_NAMES.map(escapeRx).join('|')
+const CMD_LINE_START = new RegExp(`^\\s*(?:[\\w.~-]*/)*(?:${TOOL_ALT})(?![\\w.-])`)
+function stringLiterals(code) {
+  const out = []; let i = 0
+  while (i < code.length) {
+    const q = code[i]
+    if (q !== '"' && q !== "'") { i++; continue }
+    let j = i + 1; let value = ''
+    while (j < code.length && code[j] !== q) { if (code[j] === '\\' && j + 1 < code.length) { value += code[j + 1]; j += 2 } else { value += code[j]; j++ } }
+    out.push({ value, start: i, end: Math.min(j + 1, code.length) })
+    i = j + 1
+  }
+  return out
+}
+const shq = (w) => `'${String(w).replace(/'/g, "'\\''")}'`
+function embeddedCheck(code, depth, vendorHosts, vendorDomains) {
+  if (depth >= 4) return null
+  const sub = (cmd) => classify(cmd, depth + 1, vendorHosts, vendorDomains)
+  for (const m of code.matchAll(/`([^`]+)`/g)) { const r = sub(m[1]); if (r.deny) return r }
+  const lits = stringLiterals(code)
+  for (let x = 0; x < lits.length; x++) {
+    const v = lits[x].value
+    if (CMD_LINE_START.test(v)) { const r = sub(v); if (r.deny) return r }
+    const head = v.split('/').pop()
+    if (!TOOL_NAMES.includes(head)) continue
+    // the literals that follow the head in the same list / call, up to the first non-literal element
+    const words = []; let pos = lits[x].end; let y = x + 1
+    const lead = /^\s*,?\s*\[?\s*/.exec(code.slice(pos))
+    pos += lead[0].length
+    while (y < lits.length && lits[y].start === pos) {
+      words.push(lits[y].value); pos = lits[y].end
+      const sep = /^\s*,\s*/.exec(code.slice(pos))
+      if (!sep) break
+      pos += sep[0].length; y++
+    }
+    const open = !/^\s*(?:[\])]|$)/.test(code.slice(pos))
+    const r = sub([head, ...words].map(shq).join(' '))
+    if (r.deny) return r
+    const spec = ARGV_TOOLS.get(head)
+    if (open && spec && argvHosts(words, spec).length === 0) return { deny: true, reason: 'one-liner-unresolved-destination', hosts: [] }
+  }
+  return null
+}
+
+// Wrappers that run another command: the real command word is behind them, with or without flags.
+// `v` lists the short letters that take a separate value, `long` the long names, `positional` the
+// number of plain arguments before the command (timeout DURATION).
+const WRAPPERS = {
+  env: { v: 'uCS', long: names('unset chdir split-string') },
+  sudo: { v: 'ughpCrtUDRT', long: names('user group host prompt close-from role type other-user chdir chroot command-timeout') },
+  doas: { v: 'uC', long: new Set() },
+  command: { v: '', long: new Set() },
+  exec: { v: 'a', long: new Set() },
+  time: { v: 'fo', long: names('format output') },
+  nohup: { v: '', long: new Set() },
+  nice: { v: 'n', long: names('adjustment') },
+  ionice: { v: 'cnpt', long: names('class classdata pid') },
+  stdbuf: { v: 'ioe', long: names('input output error') },
+  setsid: { v: '', long: new Set() },
+  caffeinate: { v: 'tw', long: new Set() },
+  unbuffer: { v: '', long: new Set() },
+  watch: { v: 'n', long: names('interval') },
+  builtin: { v: '', long: new Set() },
+  timeout: { v: 'ks', long: names('kill-after signal'), positional: 1 },
+  xargs: { v: 'ILnPsdEaJRS', long: names('max-args max-procs max-chars delimiter arg-file process-slot-var') },
+}
+const assignment = (w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)
+function skipWrapper(ow, from, spec) {
+  let i = from
+  while (i < ow.length) {
+    const x = ow[i]
+    if (x === '--') { i++; break }
+    if (x.startsWith('--') && x.length > 2) { i += !x.includes('=') && spec.long.has(x.slice(2)) ? 2 : 1; continue }
+    if (/^-[^-]/.test(x)) {
+      let consumed = false
+      for (let q = 1; q < x.length; q++) if (spec.v.includes(x[q])) { consumed = q + 1 >= x.length; break }
+      i += consumed ? 2 : 1; continue
+    }
+    break
+  }
+  return Math.min(i + (spec.positional ?? 0), ow.length)
+}
+// The index of the real command word in a word list, or -1; `viaXargs` when xargs stood in front (its
+// input comes from stdin, which this hook cannot read).
+function commandIndex(ow) {
+  let k = 0; let viaXargs = false
+  for (;;) {
+    const w = ow[k]
+    if (w === undefined) return { k: -1, viaXargs }
+    if (assignment(w)) { k++; continue }
+    if (PREFIX_WORDS.has(w)) { k++; continue }
+    const base = w.split('/').pop()
+    if (Object.hasOwn(WRAPPERS, base)) { if (base === 'xargs') viaXargs = true; k = skipWrapper(ow, k + 1, WRAPPERS[base]); continue }
+    return { k, viaXargs }
+  }
+}
+
+// A command that cannot be PARSED (an unterminated quote or heredoc) is not judged blind: when it
+// carries anything network-capable, a covered tool, a URL, /dev/tcp, an interpreter or shell with a
+// code flag, it is denied. A command with none of those may still pass.
+const NETWORK_TOKEN = new RegExp(
+  `(?:^|[^\\w.-])(?:${[...TOOL_NAMES, 'osascript', 'awk', 'gawk', 'eval'].map(escapeRx).join('|')})(?![\\w.-])` +
+  '|[a-z][a-z0-9+.-]*:\\/\\/|\\/dev\\/(?:tcp|udp)\\/' +
+  '|\\b(?:python[\\d.]*|node(?:js)?|perl|ruby|php|deno|bun|(?:ba|z|da|k|c|tc)?sh)\\b[^\\n]*?\\s-[A-Za-z]*[cerEp]\\b|--eval',
+  'i',
+)
+const SHELL = /^(?:ba|z|da|k|c|tc|fi)?sh$/
+const isCodeFlag = (w) => CODE_FLAG.has(w) || (/^-[A-Za-z]{1,4}$/.test(w) && /[ceEp]$/.test(w))
+const isShellCFlag = (w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w)
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
@@ -403,38 +683,85 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
   }
   const masked = maskInertLiterals(orig)
-  if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
+  if (masked === null || masked.length !== orig.length) {
+    // FAIL CLOSED: not parseable AND network-capable -> deny; nothing network-capable -> pass.
+    return NETWORK_TOKEN.test(norm) ? { deny: true, reason: 'unparseable', hosts: [] } : { deny: false, reason: 'unparseable', hosts: [] }
+  }
   const env = collectAssignments(orig, masked)
   const loops = collectLoops(orig, masked, env)
+  const external = (hosts) => [...new Set(hosts)].filter((h) => !isLocalHost(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
   for (const [a, b] of spans(masked)) {
-    const mw = words(masked.slice(a, b))
-    let i = 0
-    while (i < mw.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(mw[i]) || PREFIX_WORDS.has(mw[i]))) i++
-    if (i >= mw.length) continue
+    const ms = masked.slice(a, b)
+    const mw = words(ms)
     // Every loop reading AND the plain one: a loop variable can share its name with an assignment
     // elsewhere in the command (`for u in <local>; do ...; done; u=<external>; curl "$u"`), and a
     // loop-only reading would let the assigned value go unjudged.
     const plain = expand(orig.slice(a, b), env)
     const variants = loopVariants(orig.slice(a, b), env, loops)
+    // bash /dev/tcp and /dev/udp: a redirect, not a command, so no tool name gives it away.
+    if (/\/dev\/(?:tcp|udp)\//.test(ms)) {
+      const hs = [...plain.matchAll(/\/dev\/(?:tcp|udp)\/([^/\s'"]*)\//g)].map((m) => m[1].toLowerCase())
+      const bad = hs.filter((h) => h.includes('$') || external([h]).length)
+      if (bad.length) return { deny: true, reason: 'dev-tcp-external', hosts: bad }
+    }
+    // A span that starts with a blanked heredoc body (the tag line that closes it) is read from the
+    // masked text only: the body is data, and its first word must not become a command.
+    const heredocTail = /\n/.test(orig.slice(a, b).slice(0, Math.max(ms.search(/\S/), 0)))
     for (const text of [plain, ...(variants ?? [])]) {
-      const cmd = mw[i].split('/').pop()
-      let target = null
-      if (cmd === 'curl') target = 'curl'
-      else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
+      // The command word is read from the DEQUOTED words (`c"ur"l`, `\curl`, `'curl'`, `$'curl'`, a
+      // loop or assigned variable) behind any wrappers (env, sudo, timeout, xargs, stdbuf, nice ...).
+      const ow = heredocTail ? mw : shellWords(text.replace(/\$(['"])/g, '$1'))
+      const { k, viaXargs } = commandIndex(ow)
+      if (k === -1) continue
+      const cmd = ow[k].split('/').pop()
+      const rest = ow.slice(k + 1)
+      if (SHELL.test(cmd) || cmd === 'eval') {
+        const j = cmd === 'eval' ? -1 : rest.findIndex(isShellCFlag)
+        const inner = cmd === 'eval' ? rest.join(' ') : rest[j + 1]
+        if ((cmd === 'eval' || j !== -1) && inner && depth < 4) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
+        continue
+      }
+      let target = null; let found = []
+      const spec = ARGV_TOOLS.get(cmd)
+      if (spec) {
+        // The destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a JSON
+        // payload) is data sent to wherever the tool connects, not a destination. The fleet reports PR
+        // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole
+        // text with URL_RE denied exactly that (#1514 re-review, measured on the merged head).
+        target = cmd
+        const all = argvHosts(rest, spec)
+        // xargs reads its arguments from stdin, which this hook cannot see: `echo evil.com | xargs wget`.
+        if (viaXargs && !all.length) return { deny: true, reason: `${cmd}-xargs-stdin`, hosts: [] }
+        found = all
+      } else if (cmd === 'socat') { target = cmd; found = socatHosts(rest) }
+      else if (cmd === 'openssl') {
+        const si = rest.findIndex((w) => w === 's_client' || w === 's_time')
+        if (si !== -1) { target = cmd; found = argvHosts(rest.slice(si + 1), SPECS.openssl) }
+      } else if (/^g?awk$/.test(cmd)) {
+        // gawk's /inet/ special files: "/inet/tcp/0/host/80"
+        const hs = [...text.matchAll(/\/inet[46]?\/(?:tcp|udp|raw)\/[^/\s'"]*\/([^/\s'"]+)/gi)].map((m) => m[1].toLowerCase())
+        if (hs.length) { target = cmd; found = hs }
+      } else if (cmd === 'osascript') {
+        // `do shell script "..."` runs a shell: URLs and embedded command lines in the script text.
+        for (let j = 0; j < rest.length; j++) {
+          if (rest[j] !== '-e' || !/do\s+shell\s+script/i.test(rest[j + 1] ?? '')) continue
+          target = cmd
+          found.push(...[...rest[j + 1].matchAll(URL_RE)].map((m) => hostOf(m[0])).filter(Boolean))
+          const r = embeddedCheck(rest[j + 1], depth, vendorHosts, vendorDomains); if (r) return r
+        }
+      } else if (INTERPRETER.test(cmd)) {
+        const ci = rest.findIndex(isCodeFlag)
+        if (ci !== -1) {
+          // An interpreter one-liner has no argv to read, so its code is scanned with URL_RE ...
+          if (NET_PRIMITIVE.test(text)) { target = 'one-liner'; found = [...text.matchAll(URL_RE)].map((m) => hostOf(m[0])).filter(Boolean) }
+          // ... and when it spawns a process, the curl / wget argv inside it is read.
+          if (SPAWN_PRIMITIVE.test(rest[ci + 1] ?? '')) { const r = embeddedCheck(rest[ci + 1], depth, vendorHosts, vendorDomains); if (r) return r }
+        }
+      }
       if (!target) continue
-      // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
-      // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
-      // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole text
-      // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
-      // one-liner has no argv to read, so its code is still scanned with URL_RE.
-      let found
-      const argv = target === 'curl' ? shellWords(text) : null
-      const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
-      if (at !== -1) found = curlDestinations(argv.slice(at + 1))
-      else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
       // A listed vendor host (or a host under a listed domain) passes only by itself: any other
       // destination in the same call still denies.
-      const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+      const hosts = external(found)
       if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
       if (variants === null) return { deny: true, reason: `${target}-loop-unbounded`, hosts: [] }
     }
@@ -443,8 +770,8 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
 }
 
 const GATE_MSG =
-  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl vagy interpreter-egysoros kulso URL-re, ' +
-  'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
+  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl, wget, nc, socat, telnet, ftp, httpie es ' +
+  'tarsaik vagy interpreter-egysoros kulso celra, akkor is, ha a cel valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
   '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
 function isInvokedDirectly() {

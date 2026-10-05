@@ -1,6 +1,9 @@
 // EGRESSSELFEDIT824: a hash baseline for store/egress-allowlist.json, and a report of every
 // change to it, whoever made it and by whatever route.
 //
+// The vendor-hosts list (store/egress-vendor-hosts.json) is watched the same way, into its own
+// history directory (egress-vendor-hosts.history).
+//
 // WHY: the allowlist is the gate egress-gate.mjs applies to every agent, and it is a plain
 // file in the agents' own tree. On 2026-08-24 a nested sub-agent added a domain to it and
 // removed it again. Afterwards nobody could prove the file was back to its old bytes: store/
@@ -28,7 +31,29 @@ import { createAgentMessage } from '../db.js'
 import { logger } from '../logger.js'
 
 export const HISTORY_DIRNAME = 'egress-allowlist.history'
+export const VENDOR_HISTORY_DIRNAME = 'egress-vendor-hosts.history'
 const MISSING = 'missing'
+
+/** A store config file whose changes are recorded: the allowlist and the vendor-hosts list. */
+export interface BaselineTarget {
+  /** file name inside the store directory */
+  file: string
+  /** history directory name inside the store directory */
+  historyDir: string
+  /** tag at the head of the report */
+  tag: string
+  /** what the change widens, for the report */
+  what: string
+}
+export const ALLOWLIST_TARGET: BaselineTarget = {
+  file: 'egress-allowlist.json', historyDir: HISTORY_DIRNAME, tag: 'EGRESS-ALLOWLIST', what: 'the WebFetch / quarantine-reader allowlist',
+}
+// store/egress-vendor-hosts.json decides which hosts the Bash egress parser lets through, so a
+// sub-agent that could edit it could whitelist any host for its own curl: it is watched like the
+// allowlist.
+export const VENDOR_HOSTS_TARGET: BaselineTarget = {
+  file: 'egress-vendor-hosts.json', historyDir: VENDOR_HISTORY_DIRNAME, tag: 'EGRESS-VENDOR-HOSTS', what: 'the hosts the Bash egress parser lets through',
+}
 
 export interface BaselineResult {
   /** sha256 of the current bytes, or 'missing' */
@@ -106,9 +131,10 @@ export function checkEgressAllowlistBaseline(
   storeDir: string,
   notify: (report: string) => void,
   now: Date = new Date(),
+  target: BaselineTarget = ALLOWLIST_TARGET,
 ): BaselineResult {
-  const file = join(storeDir, 'egress-allowlist.json')
-  const historyDir = join(storeDir, HISTORY_DIRNAME)
+  const file = join(storeDir, target.file)
+  const historyDir = join(storeDir, target.historyDir)
   const bytes = existsSync(file) ? readFileSync(file) : null
   const sha = bytes ? sha256(bytes) : MISSING
   const prev = lastEntry(historyDir)
@@ -123,8 +149,9 @@ export function checkEgressAllowlistBaseline(
 
   const before = prev.sha === MISSING ? null : readFileSync(join(historyDir, prev.name), 'utf-8')
   const report =
-    `[EGRESS-ALLOWLIST] store/egress-allowlist.json CHANGED (${describeAllowlistChange(before, bytes ? bytes.toString('utf-8') : null)}). ` +
-    `sha ${prev.sha.slice(0, 12)} -> ${sha.slice(0, 12)}. Previous version: store/${HISTORY_DIRNAME}/${prev.name}. ` +
+    `[${target.tag}] store/${target.file} CHANGED (${describeAllowlistChange(before, bytes ? bytes.toString('utf-8') : null)}). ` +
+    `It controls ${target.what}. ` +
+    `sha ${prev.sha.slice(0, 12)} -> ${sha.slice(0, 12)}. Previous version: store/${target.historyDir}/${prev.name}. ` +
     'If you did not make or approve this change, restore the previous version and find out who wrote it: ' +
     'sub-agents may not edit this file (EGRESSSELFEDIT824).'
   try { notify(report) } catch { /* the record above stands even if the report fails */ }
@@ -134,20 +161,25 @@ export function checkEgressAllowlistBaseline(
 /**
  * Check once now (catches a change made while the dashboard was down), then on every change
  * the poller sees. fs.watchFile (mtime polling) for the same reason as the reader re-render
- * watcher: it survives the file being replaced. Returns a stop function.
+ * watcher: it survives the file being replaced. Watches the allowlist AND the vendor-hosts list.
+ * Returns a stop function.
  */
 export function watchEgressAllowlistBaseline(
   storeDir: string,
   notify: (report: string) => void,
   intervalMs = 5000,
 ): () => void {
-  const file = join(storeDir, 'egress-allowlist.json')
-  const run = () => {
-    try { checkEgressAllowlistBaseline(storeDir, notify) } catch { /* a failed check must not crash the server */ }
+  const stops: Array<() => void> = []
+  for (const target of [ALLOWLIST_TARGET, VENDOR_HOSTS_TARGET]) {
+    const file = join(storeDir, target.file)
+    const run = () => {
+      try { checkEgressAllowlistBaseline(storeDir, notify, new Date(), target) } catch { /* a failed check must not crash the server */ }
+    }
+    run()
+    watchFile(file, { interval: intervalMs }, run)
+    stops.push(() => unwatchFile(file, run))
   }
-  run()
-  watchFile(file, { interval: intervalMs }, run)
-  return () => unwatchFile(file, run)
+  return () => { for (const s of stops) s() }
 }
 
 /**
@@ -156,6 +188,6 @@ export function watchEgressAllowlistBaseline(
  * later (same OS user) does not take back a message that has been sent.
  */
 export function queueAllowlistReport(report: string): void {
-  logger.warn({ report }, 'egress-allowlist.json changed')
+  logger.warn({ report }, 'egress config changed (allowlist or vendor hosts)')
   createAgentMessage('system', MAIN_AGENT_ID, report)
 }

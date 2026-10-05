@@ -7,6 +7,8 @@ import { agentGetsGovernanceGates, ensureGovernanceGateCommands } from '../web/a
 import { initDatabase, getPendingMessages } from '../db.js'
 import {
   checkEgressAllowlistBaseline,
+  VENDOR_HOSTS_TARGET,
+  VENDOR_HISTORY_DIRNAME,
   describeAllowlistChange,
   watchEgressAllowlistBaseline,
   queueAllowlistReport,
@@ -74,6 +76,22 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'cp /tmp/x store/egress-allowlist.*',
     'rm -rf store/egress-allowlist.history',
     'echo x > store/egress-allowlist.history/history.log',
+    // redirect forms the first matcher missed: >&word, N>&word, <>, and a name split by quoting
+    'cat /tmp/x >& store/egress-allowlist.json',
+    'cat /tmp/x >&store/egress-allowlist.json',
+    'echo x 2>&store/egress-allowlist.json',
+    'exec 3<> store/egress-allowlist.json',
+    'exec 3<>store/egress-allowlist.json',
+    'echo x &>> store/egress-allowlist.json',
+    'echo x > "store/egress-allow"list.json',
+    "echo x > store/egress-allow''list.json",
+    'echo x > store/egress-allow\\list.json',
+    "echo x > 'store/egress-allowlist.json'",
+    // quotes next to the name together with ANY redirect operator: ambiguous, so denied (even a read)
+    "cat 'store/egress-allowlist.json' 2>&1",
+    'cat "store/egress-allowlist.json" > /tmp/copy.json',
+    // a reader piped into something that may act on the path
+    'ls store/egress-allowlist.history | xargs rm',
   ]
   it.each(denied)('denies: %s', (command) => {
     expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
@@ -97,6 +115,9 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'git diff develop -- src/web/egress-allowlist-baseline.ts',
     'npx tsc --noEmit -p . && npx vitest run src/__tests__/egress-allowlist-selfedit.test.ts',
     'cat store/egress-allowlist.history/history.log',
+    'cat store/egress-allowlist.json 2>&1',
+    'cat store/egress-allowlist.json | jq .domains | head -3',
+    'jq .domains store/egress-allowlist.json 2>&1 | tee /tmp/domains.txt',
   ]
   it.each(allowed)('allows: %s', (command) => {
     expect(decide('Bash', { command }).deny).toBe(false)
@@ -217,6 +238,39 @@ describe('baseline: every change is recorded and reported, whatever the route', 
       .toBe('quarantine_reader_posture: allowlist -> denylist')
     expect(describeAllowlistChange('{"domains":["a"]}', 'not json')).toContain('NOT valid JSON')
     expect(describeAllowlistChange('{"domains":["a"]}', '{ "domains": ["a"] }')).toContain('formatting only')
+  })
+})
+
+describe('baseline: the vendor-hosts list is watched like the allowlist', () => {
+  const reports: string[] = []
+  const notify = (r: string) => { reports.push(r) }
+  beforeEach(() => { reports.length = 0 })
+  const vendor = () => join(store, 'egress-vendor-hosts.json')
+
+  it('a hosts entry added by any route is reported with the diff, into its own history directory', () => {
+    writeFileSync(vendor(), JSON.stringify({ hosts: ['api.elevenlabs.io'] }))
+    checkEgressAllowlistBaseline(store, notify, new Date('2026-10-03T08:00:00.000Z'), VENDOR_HOSTS_TARGET)
+    writeFileSync(vendor(), JSON.stringify({ hosts: ['api.elevenlabs.io', 'evil.example'] }))
+    const r = checkEgressAllowlistBaseline(store, notify, new Date('2026-10-03T08:00:05.000Z'), VENDOR_HOSTS_TARGET)
+    expect(r.recorded).toBe(true)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toContain('[EGRESS-VENDOR-HOSTS] store/egress-vendor-hosts.json CHANGED')
+    expect(reports[0]).toContain('hosts +evil.example')
+    expect(reports[0]).toContain(VENDOR_HISTORY_DIRNAME)
+    expect(readdirSync(join(store, VENDOR_HISTORY_DIRNAME)).filter((n) => n !== 'history.log')).toHaveLength(2)
+    // the allowlist's own history is untouched
+    expect(() => readdirSync(join(store, HISTORY_DIRNAME))).toThrow()
+  })
+
+  it('the watcher boot check reports a vendor-hosts change made while nothing was watching', () => {
+    writeFileSync(vendor(), JSON.stringify({ hosts: [] }))
+    const stop1 = watchEgressAllowlistBaseline(store, notify, 60_000)
+    stop1()
+    writeFileSync(vendor(), JSON.stringify({ hosts: ['offline-vendor.example'] }))
+    const stop2 = watchEgressAllowlistBaseline(store, notify, 60_000)
+    stop2()
+    expect(reports.filter((r) => r.startsWith('[EGRESS-VENDOR-HOSTS]'))).toHaveLength(1)
+    expect(reports.join('\n')).toContain('+offline-vendor.example')
   })
 })
 

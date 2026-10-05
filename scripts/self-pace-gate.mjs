@@ -27,13 +27,10 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-// The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
-const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
 
 // Claude Code runtime self-pace / scheduling tools. A sub-agent has no
 // legitimate need to schedule its own future turns -- it is input-driven.
@@ -110,69 +107,463 @@ const WRITE_INTENT_RX = /(>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
 const SCHEDULE_API_RX = /\/api\/schedules\b/i
 const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH|DELETE)|(^|\s)(--data\b|--data-\w+\b|-d\b))/i
 
-// THE EGRESS ALLOWLIST IS A GATE ON THE SUB-AGENT ITSELF (EGRESSSELFEDIT824).
-// store/egress-allowlist.json decides which hosts egress-gate.mjs lets through, and it
-// was a plain writable file in the sub-agent's own tree: on 2026-08-24 a nested
-// sub-agent added a domain to reach it and removed it afterwards. Its legitimate
-// writers are the MAIN agent (on the owner's go) and the owner by hand -- neither runs
-// this gate (it is wired for sub-agents only), so neither is affected.
+// THE GATES AND THEIR CONFIG ARE A GATE ON THE SUB-AGENT ITSELF (EGRESSSELFEDIT824, extended).
+// Two families of files decide what a sub-agent may do, and both were plain writable files in its
+// own tree. A sub-agent may not edit either (it may READ both and RUN the scripts):
 //
-// Native file tools: denied on the file name AND on the resolved real path, so a
-// relative path or a symlink created earlier does not walk past the name check.
-// Bash: FAIL-CLOSED. A segment that mentions the file may only be a plain READ
-// (cat/grep/jq/...), and an output redirect in it may not point at the file. An
-// interpreter (python/node/...), cp/mv/tee/sed/ln/... or anything else that names the
-// file is denied, because whether it writes cannot be read off the command string.
+//  1. STORE CONFIG that widens egress: store/egress-allowlist.json (WebFetch list; on 2026-08-24 a
+//     nested sub-agent added a domain to reach it and removed it afterwards), store/egress-vendor-
+//     hosts.json (the hosts the Bash egress parser lets through), the runtime cache
+//     store/.egress-allowlist-cache.json (egress-gate.mjs trusts it for 30 s), and the history
+//     directories of the first two.
+//  2. The gate and hook EXECUTABLES of THIS install: scripts/self-pace-gate.mjs,
+//     scripts/email-send-gate.mjs and everything under scripts/hooks/ and scripts/lib/. Overwriting
+//     any of them (Edit/Write, or `cat /dev/null > scripts/self-pace-gate.mjs`) disables a gate
+//     for every later call.
 //
-// What this gate CANNOT see -- a script that builds the path at runtime, a glob that
-// does not spell the name -- is written down, not hidden: the dashboard keeps a hash
-// baseline of the file and reports every change, whoever made it, by whatever route
-// (src/egress-allowlist-baseline.ts). This gate narrows the casual route; that one
-// catches the rest after the fact.
+// Their legitimate writers are the MAIN agent (on the owner's go) and the owner by hand -- neither
+// runs this gate (it is wired for sub-agents only), so neither is affected.
+//
+// WHAT IS PROTECTED is a set of REAL PATHS derived from this script's own location (scripts/ ->
+// repo root -> store/), the way the allowlist path always was; MARVEEN_STORE_DIR adds the store
+// of an isolated instance. It is NOT a name pattern: developers work in git worktrees such as
+// <home>/worktrees/<x>/scripts/hooks/foo.mjs, and a worktree copy is a different real path, so
+// editing it, staging it, running it stay allowed. (The one exception, kept from the first version:
+// a file NAMED egress-allowlist.json is protected wherever it is.)
+//
+// Native file tools: denied on the resolved real path (relative path against the payload cwd,
+// symlink, a file that does not exist yet inside a protected directory).
+// Bash: FAIL-CLOSED. The command is split quote-aware into simple commands; a path word is resolved
+// against the cwd of the payload and every directory a `cd` in the same command visits (after
+// ~, $HOME, assigned variables, brace expansion and globs). A command that names a protected path
+// may only be:
+//   - a plain READ: cat/grep/head/tail/wc/ls/stat/shasum/diff/jq/..., sed without -i, find without
+//     -delete/-exec, a safe git subcommand (status/diff/log/show/add/commit ...);
+//   - a plain RUN of the file: `node scripts/hooks/x.mjs`, `python3 scripts/hooks/x.py`, `bash x.sh`,
+//     `./scripts/hooks/x.sh args` -- the protected file as the SCRIPT operand of an interpreter with
+//     no inline-code flag (-c/-e/-p/-r/-m), or as the command word. Running a hook is how the fleet
+//     tests it; whatever the script does is the script's own code. Any OTHER protected word in a
+//     run (an argument, an option value) denies.
+//   and in both cases no output redirect may point at a protected path (`>`, `>>`, `>|`, `&>`,
+//   `>&file`, `N>&file`, `<>`, matched on the unquoted, unescaped word). cp/mv/tee/sed -i/ln/rm/
+//   truncate/dd/chmod, an interpreter with inline code, xargs, or anything else that names a
+//   protected path is denied, because whether it writes cannot be read off the command string.
+//   Extra rules: a protected word next to a command substitution / process substitution is denied;
+//   quotes or a backslash inside a protected name together with ANY redirect operator in the same
+//   simple command is denied (the mention check is ambiguous there); an unterminated quote is denied
+//   when the command names a protected path.
+//
+// What this gate CANNOT see -- written down, not hidden: a script that builds the path at runtime
+// (`python3 x.py` that writes it, `P=$(echo ...)`, a glob that never spells a protected directory),
+// a `cd` into a variable (then only the BASENAMES of the protected files are matched), a symlink
+// chain created by another route, a heredoc fed to an interpreter that is not a plain reader (that
+// IS denied when it names a protected path, but not when it spells it in pieces). The dashboard
+// keeps a hash baseline of the two store config files and reports every change, whoever made it, by
+// whatever route (src/web/egress-allowlist-baseline.ts). The script files have no baseline: they
+// change legitimately on every deploy, and `git status` / `git diff` on the install shows an edit.
 const ALLOWLIST_BASENAME = 'egress-allowlist.json'
-// The STORE objects, not the concept: the file and its history directory, or a glob that
-// starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
-// matched this gate's own source and test names (egress-allowlist-baseline.ts), so no
-// sub-agent could run, stage or diff them -- review on #1678.
+// The allowlist STORE objects by name, not the concept: the file and its history directory, or a
+// glob that starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
+// matched this gate's own source and test names (egress-allowlist-baseline.ts), so no sub-agent
+// could run, stage or diff them -- review on #1678.
 const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]/i
-const ALLOWLIST_READERS = new Set([
+const READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
   'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
+  'less', 'more', 'bat', 'nl', 'sort', 'uniq', 'cut', 'tr', 'tac', 'od', 'xxd', 'hexdump', 'strings',
+  'realpath', 'readlink', 'dirname', 'basename', 'du', 'test', '[', 'cd', 'pushd', 'popd', 'true', 'false',
+  'sed', 'find', // checked below: no -i / no -delete -exec
 ])
-// Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
-const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
-
-export function allowlistBashSegmentAllowed(seg) {
-  const s = String(seg ?? '').trim()
-  if (!ALLOWLIST_MENTION_RX.test(s)) return true
-  const words = s.split(/\s+/)
-  let i = 0
-  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
-  const cmd = (words[i] ?? '').replace(/^.*\//, '')
-  if (!ALLOWLIST_READERS.has(cmd)) return false
-  for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
-    const target = m[1]
-    if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
-    if (ALLOWLIST_MENTION_RX.test(target) || /[$`]/.test(target)) return false
-  }
-  return true
-}
+const SAFE_GIT = new Set([
+  'status', 'diff', 'log', 'show', 'blame', 'ls-files', 'add', 'grep', 'rev-parse', 'cat-file', 'check-ignore',
+  'diff-tree', 'show-ref', 'ls-tree', 'shortlog', 'commit', 'diff-index', 'diff-files', 'rev-list', 'describe',
+])
+const WRAPPER_WORDS = new Set(['env', 'time', 'nohup', 'command', 'builtin', 'exec', 'nice', 'sudo', 'doas', 'stdbuf', 'setsid'])
+const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|bash|sh|zsh|dash|ksh|perl|ruby|php|deno|bun|tsx|ts-node|source|\.)$/
+const INLINE_FLAGS = new Set(['-c', '-e', '-E', '-p', '-r', '-m', '-', '--eval', '--print', '--require', '--import', '--loader', '-pe', '-ne', '-le'])
+const DEFAULT_SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url))
 
 function expandHome(p) {
-  return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
+  return p === '~' ? homedir() : p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
 }
+// realpath that also works for a path that does not exist yet: the nearest existing ancestor is
+// resolved (macOS: case and /tmp -> /private/tmp included) and the rest appended.
 function realOrSelf(p) {
-  try { return realpathSync(p) } catch { return p }
+  try { return realpathSync.native(p) } catch { /* not there (yet) */ }
+  const parent = dirname(p)
+  return parent === p ? p : join(realOrSelf(parent), basename(p))
 }
 
-// Does a native file-tool call target the allowlist? `allowlistPath` is the real file
-// this install's egress-gate reads; tests pass a tmp one.
-export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
+// The protected set of an install. `entries` are real paths (dir: true = the directory and all below);
+// `ancestors` are the directories that CONTAIN protected paths (a move/remove of one removes them).
+export function protectedSet(opts = {}) {
+  const scriptsDir = realOrSelf(opts.scriptsDir ?? DEFAULT_SCRIPTS_DIR)
+  const storeDirs = opts.storeDir
+    ? [realOrSelf(opts.storeDir)]
+    : [...new Set([join(scriptsDir, '..', 'store'), ...(process.env.MARVEEN_STORE_DIR ? [process.env.MARVEEN_STORE_DIR] : [])].map(realOrSelf))]
+  const entries = []
+  const add = (path, dir, kind) => entries.push({ real: realOrSelf(path), dir, kind })
+  for (const s of storeDirs) {
+    add(join(s, ALLOWLIST_BASENAME), false, 'egress-allowlist')
+    add(join(s, 'egress-allowlist.history'), true, 'egress-allowlist')
+    add(join(s, 'egress-vendor-hosts.json'), false, 'egress-allowlist')
+    add(join(s, 'egress-vendor-hosts.history'), true, 'egress-allowlist')
+    add(join(s, '.egress-allowlist-cache.json'), false, 'egress-allowlist')
+  }
+  if (opts.allowlistPath) add(opts.allowlistPath, false, 'egress-allowlist')
+  for (const f of ['self-pace-gate.mjs', 'email-send-gate.mjs']) add(join(scriptsDir, f), false, 'gate-scripts')
+  for (const d of ['hooks', 'lib']) add(join(scriptsDir, d), true, 'gate-scripts')
+  return { entries, ancestors: [scriptsDir], scriptsDir }
+}
+// kind of a REAL path: 'egress-allowlist' | 'gate-scripts' | null. `ancestor` paths only count for
+// commands that move or remove things (any command that is not a plain read).
+function kindOf(real, prot) {
+  for (const e of prot.entries) {
+    if (e.dir ? (real === e.real || real.startsWith(e.real + sep)) : real === e.real) return e.kind
+  }
+  return null
+}
+const isAncestor = (real, prot) => prot.ancestors.includes(real)
+
+// Does a native file-tool call target a protected path? Returns the kind or null.
+export function fileToolProtectedKind(toolInput, prot, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
-  if (!raw) return false
-  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return true
-  const abs = resolve(cwd, expandHome(raw))
-  return realOrSelf(abs) === realOrSelf(allowlistPath)
+  if (!raw) return null
+  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return 'egress-allowlist'
+  return kindOf(realOrSelf(resolve(cwd, expandHome(raw))), prot)
+}
+// Kept for callers and tests that ask only about the allowlist.
+export function fileToolTargetsAllowlist(toolInput, allowlistPath = join(DEFAULT_SCRIPTS_DIR, '..', 'store', ALLOWLIST_BASENAME), cwd = process.cwd()) {
+  return fileToolProtectedKind(toolInput, protectedSet({ allowlistPath }), cwd) === 'egress-allowlist'
+}
+
+// ---- shell reading ----------------------------------------------------------------------------
+// Quote-aware split into simple commands. Separators: newline ; && || | & ( ) and a standalone
+// { }. NOT split: inside quotes, inside $( ) <( ) >( ) and backticks (kept in the segment, which
+// then denies if it names a protected path), >& &> >| <&. A heredoc body is not parsed for quotes:
+// each body line becomes a segment of its own. `unterminated` = a quote or $( never closed.
+export function splitShell(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  const segs = []; const seps = []; let cur = ''; let i = 0; let depth = 0; let q = null; let unterminated = false
+  const pending = []
+  const push = (s = '') => { if (cur.trim()) { segs.push(cur); seps.push(s) } cur = '' }
+  const n = src.length
+  while (i < n) {
+    const c = src[i]
+    if (q) {
+      cur += c
+      if (c === '\\' && q === '"' && i + 1 < n) { cur += src[i + 1]; i += 2; continue }
+      if (c === q) q = null
+      i++; continue
+    }
+    if (c === '\\' && i + 1 < n) { cur += c + src[i + 1]; i += 2; continue }
+    if (c === "'" || c === '"') { q = c; cur += c; i++; continue }
+    if (c === '`') {
+      const e = src.indexOf('`', i + 1)
+      if (e === -1) { unterminated = true; cur += src.slice(i); i = n; continue }
+      cur += src.slice(i, e + 1); i = e + 1; continue
+    }
+    if ((c === '$' || c === '<' || c === '>') && src[i + 1] === '(') { depth++; cur += c + '('; i += 2; continue }
+    if (depth > 0) { if (c === '(') depth++; else if (c === ')') depth--; cur += c; i++; continue }
+    const here = c === '<' && src[i + 1] === '<' && src[i + 2] !== '<' ? /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i)) : null
+    if (here) { pending.push(here[1] ?? here[2] ?? here[3]); cur += here[0]; i += here[0].length; continue }
+    if (c === '\n') {
+      push(); i++
+      while (pending.length) { // heredoc bodies: lines up to the terminator, each its own segment
+        const tag = pending.shift()
+        for (;;) {
+          if (i >= n) break
+          let e = src.indexOf('\n', i); if (e === -1) e = n
+          const line = src.slice(i, e); i = Math.min(e + 1, n)
+          if (line.trim() === tag) break
+          if (line.trim()) { segs.push(line); seps.push('\n') }
+        }
+      }
+      continue
+    }
+    if (c === ';') { push(';'); i++; continue }
+    if (c === '&') {
+      if (src[i + 1] === '&') { push('&&'); i += 2; continue }
+      if (src[i - 1] === '>' || src[i - 1] === '<' || src[i + 1] === '>') { cur += c; i++; continue }
+      push('&'); i++; continue
+    }
+    if (c === '|') {
+      if (src[i - 1] === '>') { cur += c; i++; continue }
+      const two = src[i + 1] === '|'
+      push(two ? '||' : '|'); i += two || src[i + 1] === '&' ? 2 : 1; continue
+    }
+    if (c === '(' || c === ')') { push(); i++; continue }
+    if ((c === '{' || c === '}') && (i === 0 || /\s/.test(src[i - 1])) && (i + 1 >= n || /\s/.test(src[i + 1]))) { push(); i++; continue }
+    cur += c; i++
+  }
+  if (q || depth > 0) unterminated = true
+  push()
+  return { segs, seps, unterminated }
+}
+// Words and redirect targets of one simple command, unquoted and unescaped. `hasRedirect` = any
+// redirect operator at all (including fd duplication and input).
+export function tokenizeShell(seg) {
+  const words = []; const redirects = []; let hasRedirect = false; let i = 0
+  const n = seg.length
+  const readWord = () => {
+    while (i < n && /\s/.test(seg[i])) i++
+    let cur = ''; let any = false
+    while (i < n) {
+      const c = seg[i]
+      if (/\s/.test(c) || c === '>' || c === '<' || c === '|' || c === ';' || c === '&' || c === '(' || c === ')') break
+      if (c === "'") { const e = seg.indexOf("'", i + 1); const end = e === -1 ? n : e; cur += seg.slice(i + 1, end); i = end + 1; any = true; continue }
+      if (c === '"') {
+        let j = i + 1
+        while (j < n && seg[j] !== '"') { if (seg[j] === '\\' && j + 1 < n) { cur += seg[j + 1]; j += 2 } else { cur += seg[j]; j++ } }
+        i = j + 1; any = true; continue
+      }
+      if (c === '\\' && i + 1 < n) { cur += seg[i + 1]; i += 2; any = true; continue }
+      cur += c; i++; any = true
+    }
+    return any ? cur : null
+  }
+  while (i < n) {
+    if (/\s/.test(seg[i])) { i++; continue }
+    const m = /^(\d*)(&>>|&>|>>|>\||>&|>|<>|<<<|<<-|<<|<&|<)/.exec(seg.slice(i))
+    if (m) {
+      hasRedirect = true; i += m[0].length
+      const op = m[2]
+      const target = readWord()
+      if (target === null) continue
+      if (op === '<' || op === '<&' || op === '<<' || op === '<<-' || op === '<<<') continue // input / heredoc: not a write
+      if (op === '>&' && /^(\d+|-)$/.test(target)) continue // fd duplication
+      redirects.push(target)
+      continue
+    }
+    if (/[|;&()]/.test(seg[i])) { i++; continue }
+    const w = readWord()
+    if (w !== null) words.push(w)
+    else i++
+  }
+  return { words, redirects, hasRedirect }
+}
+function expandBraces(tok, cap = 256) {
+  const m = /^(.*?)\{([^{}]*,[^{}]*)\}(.*)$/s.exec(tok)
+  if (!m) return [tok]
+  const out = []
+  for (const alt of m[2].split(',')) {
+    for (const rest of expandBraces(m[1] + alt + m[3], cap)) { out.push(rest); if (out.length >= cap) return out }
+  }
+  return out
+}
+function collectVars(command) {
+  const vars = {}
+  for (const m of String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+)?([A-Za-z_]\w*)=("([^"]*)"|'([^']*)'|[^\s;&|()]*)/g)) {
+    vars[m[1]] = m[3] ?? m[4] ?? m[2]
+  }
+  return vars
+}
+function expandWord(w, vars, cwd) {
+  let s = w
+  if (s === '~' || s.startsWith('~/')) s = homedir() + s.slice(1)
+  const table = { ...vars, HOME: homedir(), PWD: cwd }
+  for (let k = 0; k < 3; k++) {
+    s = s.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (all, a, b) => (table[a ?? b] ?? all))
+  }
+  return s
+}
+function globToRegex(abs) {
+  let out = '^'
+  for (let i = 0; i < abs.length; i++) {
+    const c = abs[i]
+    if (c === '*') { if (abs[i + 1] === '*') { out += '.*'; i++ } else out += '[^/]*' }
+    else if (c === '?') out += '[^/]'
+    else if (c === '[') { const e = abs.indexOf(']', i + 2); if (e === -1) out += '\\['; else { out += abs.slice(i, e + 1); i = e } }
+    else out += c.replace(/[.+^${}()|\\]/g, '\\$&')
+  }
+  return new RegExp(out + '$')
+}
+function listDir(dir, ctx, depth = 0, out = []) {
+  if (depth === 0 && ctx.cache.has(dir)) return ctx.cache.get(dir)
+  if (depth > 3 || out.length > 2000) return out
+  let names = []
+  try { names = readdirSync(dir, { withFileTypes: true }) } catch { return out }
+  for (const d of names) {
+    const p = join(dir, d.name); out.push(p)
+    if (d.isDirectory()) listDir(p, ctx, depth + 1, out)
+  }
+  if (depth === 0) ctx.cache.set(dir, out)
+  return out
+}
+
+// The context of one Bash command: every cwd a word may be relative to, the assigned variables, and
+// whether a `cd` went somewhere unknowable.
+function makeContext(command, cwd, prot) {
+  return { cwds: new Set([resolve(cwd)]), current: resolve(cwd), vars: collectVars(command), unknownCwd: false, prot, listing: null, cache: new Map() }
+}
+function protectedBasenames(ctx) {
+  if (ctx.listing) return ctx.listing
+  const set = new Map()
+  for (const e of ctx.prot.entries) {
+    set.set(basename(e.real), e.kind)
+    if (e.dir) for (const p of listDir(e.real, ctx)) set.set(basename(p), e.kind)
+  }
+  return (ctx.listing = set)
+}
+// kind of ONE shell word ('egress-allowlist' | 'gate-scripts' | null); ancestor words give 'ancestor'.
+function wordKind(word, ctx) {
+  const results = []
+  // A word that is not a plain path (inline code, a quoted command line) is also read piece by piece.
+  const PATH_JUNK = /[^\w./~$@+\-*?[\]{},=:%#!^]+/
+  const candidates = PATH_JUNK.test(word) ? [word, ...word.split(PATH_JUNK).filter(Boolean)] : [word]
+  for (const alt of candidates.flatMap((c) => expandBraces(c))) {
+    const stripped = alt
+    if (stripped.startsWith('-') && !stripped.includes('=')) continue
+    if (ALLOWLIST_MENTION_RX.test(stripped)) { results.push('egress-allowlist'); continue }
+    const parts = [stripped]
+    const eq = stripped.indexOf('=')
+    if (eq > 0 && eq < stripped.length - 1) parts.push(stripped.slice(eq + 1)) // of=PATH, --out=PATH
+    for (const part of parts) {
+      for (const cwd of ctx.cwds) {
+        const w = expandWord(part, ctx.vars, cwd)
+        if (!w) continue
+        if (/[*?[]/.test(w)) {
+          const abs = isAbsolute(w) ? w : join(cwd, w)
+          const firstGlob = abs.search(/[*?[]/)
+          const dirPrefix = abs.slice(0, abs.lastIndexOf('/', firstGlob) + 1) || '/'
+          const re = globToRegex(join(realOrSelf(dirPrefix), abs.slice(dirPrefix.length)))
+          for (const e of ctx.prot.entries) {
+            const hits = [e.real, ...(e.dir ? listDir(e.real, ctx) : [])]
+            if (hits.some((p) => re.test(p))) { results.push(e.kind); break }
+          }
+          if (ctx.prot.ancestors.some((a) => re.test(a))) results.push('ancestor')
+          continue
+        }
+        if (w.includes('$')) {
+          // an unresolved variable in front of a literal tail (`$WT/scripts/hooks/x.mjs`): the tail
+          // is matched as a SUFFIX of the protected paths, two path segments at least.
+          const vm = [...w.matchAll(/\$\{?[A-Za-z_]\w*\}?/g)].pop()
+          const tail = vm ? w.slice(vm.index + vm[0].length) : ''
+          if ((tail.match(/\//g) ?? []).length >= 2) {
+            for (const e of ctx.prot.entries) {
+              if (e.real.endsWith(tail) || (e.dir && listDir(e.real, ctx).some((pth) => pth.endsWith(tail)))) { results.push(e.kind); break }
+            }
+          }
+          continue
+        }
+        const real = realOrSelf(isAbsolute(w) ? w : join(cwd, w))
+        const k = kindOf(real, ctx.prot)
+        if (k) results.push(k)
+        else if (isAncestor(real, ctx.prot)) results.push('ancestor')
+      }
+      if (ctx.unknownCwd && !part.includes('/') && protectedBasenames(ctx).has(part)) results.push(protectedBasenames(ctx).get(part))
+    }
+  }
+  const first = results.find((k) => k !== 'ancestor')
+  return first ?? (results.includes('ancestor') ? 'ancestor' : null)
+}
+function commandWordIndex(words) {
+  let k = 0
+  for (;;) {
+    const w = words[k]
+    if (w === undefined) return -1
+    if (/^[A-Za-z_]\w*=/.test(w)) { k++; continue }
+    if (WRAPPER_WORDS.has(w.split('/').pop())) {
+      k++
+      while (k < words.length && words[k].startsWith('-')) k++
+      continue
+    }
+    return k
+  }
+}
+function readerOk(cmd, args) {
+  if (cmd === 'sed') return !args.some((a) => /^-[A-Za-z]*i|^--in-place/.test(a))
+  if (cmd === 'find') return !args.some((a) => /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(a))
+  return true
+}
+function gitSubcommand(args) {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (a === '-C' || a === '-c' || a === '--git-dir' || a === '--work-tree') { k++; continue }
+    if (a.startsWith('-')) continue
+    return a
+  }
+  return null
+}
+// Fail-closed decision for a whole Bash command. Returns { deny: false } or { deny: true, reason }.
+export function bashProtectedDecision(command, opts = {}) {
+  const prot = opts.prot ?? protectedSet(opts)
+  const cwd = opts.cwd || process.cwd()
+  const ctx = makeContext(command, cwd, prot)
+  const { segs, seps, unterminated } = splitShell(command)
+  const feedsNonReader = (idx) => {
+    if (seps[idx] !== '|' || idx + 1 >= segs.length) return false
+    const nw = tokenizeShell(segs[idx + 1]).words
+    const nc = commandWordIndex(nw)
+    const name = nc === -1 ? '' : nw[nc].split('/').pop()
+    return !(READERS.has(name) || name === 'tee')
+  }
+  for (let si = 0; si < segs.length; si++) {
+    const seg = segs[si]
+    const { words, redirects, hasRedirect } = tokenizeShell(seg)
+    const kinds = words.map((w) => wordKind(w, ctx))
+    const rKinds = redirects.map((r) => wordKind(r, ctx))
+    // `cd` moves the base of every later relative word (conservatively: the old base stays too).
+    const ci = commandWordIndex(words)
+    const cmd = ci === -1 ? '' : words[ci].split('/').pop()
+    if (cmd === 'cd' || cmd === 'pushd') {
+      const arg = words.slice(ci + 1).find((a) => !a.startsWith('-'))
+      const target = arg === undefined ? homedir() : expandWord(arg, ctx.vars, ctx.current)
+      if (arg === '-' || target.includes('$') || /[*?[`]/.test(target)) ctx.unknownCwd = true
+      else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)) }
+    }
+    const hit = kinds.find((k) => k && k !== 'ancestor') ?? rKinds.find((k) => k && k !== 'ancestor') ?? null
+    const ancestorHit = !hit && (kinds.includes('ancestor') || rKinds.includes('ancestor'))
+    if (!hit && !ancestorHit) {
+      // a redirect target with an unresolvable shape is only a problem next to a protected word (below)
+      continue
+    }
+    const kind = hit ?? 'gate-scripts'
+    const deny = () => ({ deny: true, reason: kind })
+    // 1. a redirect that lands on a protected path, or whose target cannot be read
+    if (rKinds.some((k) => k && k !== 'ancestor')) return deny()
+    for (const r of redirects) {
+      if (/^&?\d+$/.test(r) || r === '/dev/null') continue
+      if (/[$`]/.test(r) && hit) return deny()
+    }
+    // 2. substitutions next to a protected word
+    if (/\$\(|`|[<>]\(/.test(seg)) return deny()
+    // 3. ambiguous mention: quotes / backslash inside a protected word AND a redirect operator
+    if (hasRedirect && seg.split(/\s+/).some((raw) => /['"\\]/.test(raw) && tokenizeShell(raw).words.some((w) => { const k = wordKind(w, ctx); return k && k !== 'ancestor' }))) return deny()
+    if (ci === -1) return deny()
+    const args = words.slice(ci + 1)
+    // 4. an ancestor directory (scripts/) is only fine for a plain read
+    if (ancestorHit) { if (READERS.has(cmd) && readerOk(cmd, args) && !feedsNonReader(si)) continue; return deny() }
+    // 5. plain reads
+    // (a reader whose output is piped into anything but another reader may be handing paths to xargs / sh)
+    if (READERS.has(cmd) && readerOk(cmd, args)) { if (feedsNonReader(si)) return deny(); continue }
+    if (cmd === 'git' && SAFE_GIT.has(gitSubcommand(args) ?? '')) continue
+    // 6. plain runs: the protected file is the command word, or the SCRIPT operand of an interpreter
+    const hitIdx = kinds.map((k, idx) => (k && k !== 'ancestor' ? idx : -1)).filter((idx) => idx !== -1)
+    if (hitIdx.length === 1 && hitIdx[0] === ci && !INTERPRETERS.test(cmd)) continue
+    if (INTERPRETERS.test(cmd)) {
+      let operand = -1
+      for (let k = ci + 1; k < words.length; k++) {
+        const a = words[k]
+        if (a.startsWith('-') && a.length > 1) { if (INLINE_FLAGS.has(a)) { operand = -2; break } continue }
+        operand = k; break
+      }
+      if (operand >= 0 && hitIdx.length === 1 && hitIdx[0] === operand) continue
+    }
+    return deny()
+  }
+  if (unterminated) {
+    // an unterminated quote hides the structure: deny only when some word names a protected path
+    const all = String(command)
+    const probe = tokenizeShell(all.replace(/['"`]/g, ' ')).words
+    const k = probe.map((w) => wordKind(w, ctx)).find((x) => x && x !== 'ancestor')
+    if (k) return { deny: true, reason: k }
+  }
+  return { deny: false }
+}
+// Segment-level check kept for callers and tests: a plain reader with no redirect at the file passes.
+export function allowlistBashSegmentAllowed(seg) {
+  return !bashProtectedDecision(String(seg ?? '')).deny
 }
 
 // Split a compound command into individual simple commands, so a token in one
@@ -403,7 +794,8 @@ export function gateDecision(toolName, toolInput, opts = {}) {
   if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
-    if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
+    const kind = fileToolProtectedKind(toolInput, protectedSet(opts), opts.cwd || process.cwd())
+    if (kind) return { deny: true, reason: kind }
   }
   if (name === 'Bash') {
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
@@ -427,9 +819,11 @@ export function gateDecision(toolName, toolInput, opts = {}) {
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
-      // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
-      if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
     }
+    // the egress config and the gate / hook scripts of this install: reads and runs only
+    // (EGRESSSELFEDIT824). Judged on the whole command: a `cd` in one segment moves the next.
+    const protectedDecision = bashProtectedDecision(safeCommand, { ...opts, prot: protectedSet(opts) })
+    if (protectedDecision.deny) return protectedDecision
   }
   return { deny: false }
 }
@@ -444,9 +838,17 @@ const GATE_MSG =
 
 const ALLOWLIST_GATE_MSG =
   'Egress-engedelylista TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
-  'store/egress-allowlist.json-t: ez a kapu RAD vonatkozik. Ha egy domain kell, kerd a fo ' +
+  'store/egress-allowlist.json-t, a store/egress-vendor-hosts.json-t es a ' +
+  'store/.egress-allowlist-cache.json-t: ez a kapu RAD vonatkozik. Ha egy domain vagy vendor-host kell, kerd a fo ' +
   'agenst (inter-agent uzenet: domain + miert); o a gazda jovahagyasaval veszi fel. ' +
   'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
+
+const SCRIPTS_GATE_MSG =
+  'Kapu- es hook-scriptek vedve (governance hard-gate). Sub-agentkent NEM irhatod ennek a telepitesnek a ' +
+  'scripts/self-pace-gate.mjs, scripts/email-send-gate.mjs, scripts/hooks/ es scripts/lib/ fajljait: ezek RAD ' +
+  'vonatkozo kapuk. Ha egy kapu hibas vagy modositani kell, kerd a fo agenst (inter-agent uzenet: fajl + miert). ' +
+  'Olvasni (cat / grep / diff) es futtatni (node scripts/hooks/x.mjs, python3 scripts/hooks/x.py) szabad; ' +
+  'a sajat worktree masolat szerkesztheto.'
 
 function allow() { process.exit(0) }
 
@@ -478,6 +880,6 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
-  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : GATE_MSG)
+  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : GATE_MSG)
   allow()
 }

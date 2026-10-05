@@ -81,3 +81,14 @@ describe('resolveRuntimeAllowlist -- cache-hit path', () => {
     // after this test must re-fetch, never read the canary back.
   })
 })
+
+describe('resolveRuntimeAllowlist -- a cache stamped in the future is not fresh', () => {
+  it('ignores a cache whose fetchedAt lies ahead of now and goes to the source instead', async () => {
+    const forged = { fetchedAt: Date.now() + 3_600_000, domains: ['forged-future-canary.invalid'], prefixes: [], quarantineDomains: [] }
+    writeFileSync(CACHE_PATH, JSON.stringify(forged), 'utf-8')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
+    const result = await resolveRuntimeAllowlist()
+    expect(result.domains).not.toContain('forged-future-canary.invalid')
+    expect(result).toEqual(loadRuntimeAllowlist())
+  })
+})
