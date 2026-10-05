@@ -27,10 +27,11 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, realpathSync, statSync, lstatSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 // Claude Code runtime self-pace / scheduling tools. A sub-agent has no
 // legitimate need to schedule its own future turns -- it is input-driven.
@@ -292,7 +293,6 @@ function settingsCandidates(prot) {
   let names = []
   try { names = readdirSync(prot.agentsDir) } catch { /* no agents/ yet */ }
   for (const n of names) {
-    dirs.push(join(prot.agentsDir, n))
     for (const d of AGENT_CONFIG_DIRS) {
       const dir = join(prot.agentsDir, n, d); dirs.push(dir)
       for (const f of SETTINGS_FILES) files.push(join(dir, f))
@@ -305,8 +305,12 @@ const ancestorOf = (real, prot) => {
   const lc = real.toLowerCase()
   const a = prot.ancestors.find((x) => x.real.toLowerCase() === lc)
   if (a) return `anc-${a.strict ? 'strict' : 'loose'}:${a.kind}`
-  const k = agentConfigDirKind(real, prot) ?? agentDirKind(real, prot)
-  return k ? `anc-loose:${k}` : null
+  const k = agentConfigDirKind(real, prot)
+  if (k) return `anc-loose:${k}`
+  // agents/ and agents/<name> hold the config dirs but are also where agents are created and arranged:
+  // their own flavour, decided by what the operation can actually put into or take out of them
+  const d = agentDirKind(real, prot)
+  return d ? `anc-agentdir:${d}` : null
 }
 const isAnc = (k) => typeof k === 'string' && k.startsWith('anc-')
 
@@ -556,6 +560,135 @@ function wordKind(word, ctx) {
   const first = results.find((k) => !isAnc(k))
   return first ?? results.find((k) => k.startsWith('anc-strict')) ?? results.find(isAnc) ?? null
 }
+// `env -S "cmd args"` / `env --split-string=...` hands ONE word to env, which splits it and runs it: the
+// value is spliced into the word list as the words it becomes, so the rest of the gate reads the command
+// that really runs (the same reading as skipWrapper in hooks/bash-egress-parser.mjs). Other options of env
+// (-i, -u NAME, -C DIR ...) stay in front of the spliced words.
+const ENV_VALUE_OPTS = new Set(['-u', '-C', '-P', '--unset', '--chdir', '--default-signal', '--ignore-signal', '--block-signal'])
+export function spliceEnvSplit(words, depth = 0) {
+  if (depth > 4) return words
+  let k = 0
+  for (;;) {
+    const w = words[k]
+    if (w === undefined) return words
+    if (/^[A-Za-z_]\w*=/.test(w)) { k++; continue }
+    const base = w.split('/').pop()
+    if (!WRAPPER_WORDS.has(base)) return words
+    k++
+    if (base !== 'env') { while (k < words.length && words[k].startsWith('-')) k++; continue }
+    while (k < words.length && words[k].startsWith('-') && words[k] !== '-') {
+      const o = words[k]
+      if (o === '--') { k++; break }
+      let value = null; let used = 1
+      if (o === '--split-string') { value = words[k + 1] ?? ''; used = 2 }
+      else if (o.startsWith('--split-string=')) value = o.slice('--split-string='.length)
+      else if (!o.startsWith('--') && /^-[A-Za-z]*S/.test(o)) {
+        const attached = o.slice(o.indexOf('S') + 1)
+        if (attached) value = attached; else { value = words[k + 1] ?? ''; used = 2 }
+      } else if (ENV_VALUE_OPTS.has(o)) used = 2
+      if (value !== null) {
+        const spliced = [...words.slice(0, k), ...tokenizeShell(value).words, ...words.slice(k + used)]
+        return spliceEnvSplit(spliced, depth + 1)
+      }
+      k += used
+    }
+  }
+}
+
+// ---- agents/ and agents/<name>: what an operation can put into them ------------------------------------
+// The directories themselves are not protected, only the settings files below their config dirs. So
+// mkdir -p agents/new, a copy of an ordinary template, an extraction of an archive with no settings
+// file in it and a move of a directory in are fine; a source that carries (or may carry) a settings file
+// is not, and neither is anything that removes, moves away or re-links the directory.
+const isSettingsPair = (parent, name) => AGENT_CONFIG_DIRS.includes(parent.toLowerCase()) && SETTINGS_FILES.includes(name.toLowerCase())
+// Does the tree at `src` (a path word) carry a settings file under a config dir, a symlink (which could
+// point anywhere), or something that cannot be read? Not there at all: nothing to carry.
+function sourceCarriesSettings(src, ctx) {
+  let found = false; let seen = 0
+  for (const cwd of ctx.cwds) {
+    const w = expandWord(src, ctx.vars, cwd)
+    if (!w || /[$`*?[]/.test(w)) return true // not a path the gate can read
+    const abs = isAbsolute(w) ? w : join(cwd, w)
+    let st
+    try { st = lstatSync(abs) } catch { continue }
+    if (st.isSymbolicLink()) return true
+    if (!st.isDirectory()) { if (isSettingsPair(basename(dirname(abs)), basename(abs))) found = true; continue }
+    const walk = (dir, depth) => {
+      if (found) return
+      if (depth > 8 || seen > 5000) { found = true; return }
+      let ents = []
+      try { ents = readdirSync(dir, { withFileTypes: true }) } catch { found = true; return }
+      for (const d of ents) {
+        seen++
+        if (d.isSymbolicLink()) { found = true; return }
+        if (d.isDirectory()) walk(join(dir, d.name), depth + 1)
+        else if (isSettingsPair(basename(dir), d.name)) { found = true; return }
+      }
+    }
+    if (isSettingsPair(basename(dirname(abs)), basename(abs))) found = true
+    walk(abs, 0)
+  }
+  return found
+}
+// Does the archive carry a settings file under a config dir? An archive that is not there extracts nothing;
+// one that cannot be listed counts as carrying one.
+function archiveCarriesSettings(archive, ctx) {
+  for (const cwd of ctx.cwds) {
+    const w = expandWord(archive, ctx.vars, cwd)
+    if (!w || /[$`*?[]/.test(w)) return true
+    const abs = isAbsolute(w) ? w : join(cwd, w)
+    try { statSync(abs) } catch { continue }
+    const lower = abs.toLowerCase()
+    const cmd = /\.zip$/.test(lower) ? ['unzip', ['-Z1', abs]] : ['tar', ['-tf', abs]]
+    const r = spawnSync(cmd[0], cmd[1], { encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024 * 1024 })
+    if (r.status !== 0 || typeof r.stdout !== 'string') return true
+    for (const line of r.stdout.split('\n')) {
+      const parts = line.replace(/\/+$/, '').split('/').filter(Boolean)
+      if (parts.length >= 2 && isSettingsPair(parts[parts.length - 2], parts[parts.length - 1])) return true
+      if (parts.includes('..') || line.startsWith('/')) return true // a path that leaves the extraction root
+    }
+  }
+  return false
+}
+// May this command, with agents/ or agents/<name> among its words, touch a protected settings file?
+// `agentWords` are the indexes into `words` of the agent-directory words.
+function agentDirOpHarmless(cmd, words, ci, agentWords, ctx) {
+  const args = words.slice(ci + 1)
+  if (cmd === 'mkdir' || cmd === 'touch') return true // creates, never replaces
+  const ops = operandsOf(args, new Set(['-t', '-C', '-d', '-f', '-T', '--target-directory', '--directory']))
+  const optVal = (...names) => { for (let k = 0; k < args.length; k++) { const a = args[k]; for (const n of names) { if (a === n) return args[k + 1]; if (a.startsWith(n + '=')) return a.slice(n.length + 1) } } return undefined }
+  const isAgent = (word) => agentWords.some((i) => words[i] === word)
+  if (cmd === 'cp' || cmd === 'ditto' || cmd === 'rsync' || cmd === 'mv' || cmd === 'install') {
+    const td = optVal('-t', '--target-directory')
+    const dest = td ?? ops[ops.length - 1]
+    const sources = td !== undefined ? ops : ops.slice(0, -1)
+    if (!dest || !isAgent(dest)) {
+      // the agent directory is a SOURCE: copying out of it reads; moving it away or removing the source takes the settings along
+      if (cmd === 'mv' || cmd === 'install' || args.some((a) => /^--(remove-source|delete)/.test(a))) return false
+      return true
+    }
+    if (sources.some((src) => isAgent(src))) return false // a copy or move of the agent directory onto itself
+    return !sources.some((src) => sourceCarriesSettings(src, ctx))
+  }
+  if (cmd === 'tar' || cmd === 'bsdtar' || cmd === 'gtar') {
+    const extract = args.some((a, k) => (k === 0 && /^[A-Za-z]*x/.test(a) && !a.startsWith('-')) || /^-[A-Za-z]*x/.test(a) || a === '--extract' || a === '--get')
+    if (!extract) return true // create / list: the agent directory is read
+    let archive = optVal('-f', '--file')
+    if (archive === undefined) {
+      // `tar xf FILE` (first word, no dash) and a cluster ending in f (-xzf FILE)
+      if (args[0] && !args[0].startsWith('-') && /f/.test(args[0])) archive = args[1]
+      else { const k = args.findIndex((a) => /^-[A-Za-z]*f$/.test(a)); if (k !== -1) archive = args[k + 1] }
+    }
+    if (archive === undefined) return false
+    return !archiveCarriesSettings(archive, ctx)
+  }
+  if (cmd === 'unzip') {
+    const archive = ops.find((o) => !isAgent(o))
+    return archive !== undefined && !args.includes('-l') ? !archiveCarriesSettings(archive, ctx) : true
+  }
+  return false // rm, ln, rename, chmod ..., anything else that moves, removes, links or rewrites
+}
+
 function commandWordIndex(words) {
   let k = 0
   for (;;) {
@@ -740,8 +873,11 @@ function copyIntoDirKind(args, ctx) {
         if (e) return e.kind
         const a = ctx.prot.ancestors.find((x) => holds(x.real))
         if (a) return a.kind
-        const ak = agentConfigDirKind(target, ctx.prot) ?? agentDirKind(target, ctx.prot)
+        const ak = agentConfigDirKind(target, ctx.prot)
         if (ak) return ak
+        // agents/ or agents/<name> as the target: only a source that carries a settings file matters
+        const ad = agentDirKind(target, ctx.prot)
+        if (ad && sourceCarriesSettings(src, ctx)) return ad
       }
     }
   }
@@ -755,14 +891,16 @@ export function bashProtectedDecision(command, opts = {}) {
   const { segs, seps, unterminated } = splitShell(command)
   const feedsNonReader = (idx) => {
     if (seps[idx] !== '|' || idx + 1 >= segs.length) return false
-    const nw = tokenizeShell(segs[idx + 1]).words
+    const nw = spliceEnvSplit(tokenizeShell(segs[idx + 1]).words)
     const nc = commandWordIndex(nw)
     const name = nc === -1 ? '' : nw[nc].split('/').pop()
     return !(READERS.has(name) || name === 'tee')
   }
   for (let si = 0; si < segs.length; si++) {
     const seg = segs[si]
-    const { words, redirects, hasRedirect } = tokenizeShell(seg)
+    const tokenized = tokenizeShell(seg)
+    const { redirects, hasRedirect } = tokenized
+    const words = spliceEnvSplit(tokenized.words)
     const kinds = words.map((w) => wordKind(w, ctx))
     const rKinds = redirects.map((r) => wordKind(r, ctx))
     // `cd` moves the base of every later relative word (conservatively: the old base stays too).
@@ -807,6 +945,12 @@ export function bashProtectedDecision(command, opts = {}) {
     if (ancestorHit) {
       if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !feedsNonReader(si) && !envUnsafe) continue
       if (!ancKinds.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
+      // agents/ and agents/<name> alone: only an operation that can put a settings file in (or take the
+      // directory away) is refused
+      if (ancKinds.every((k) => k.startsWith('anc-agentdir'))) {
+        const agentWords = kinds.map((k, idx) => (typeof k === 'string' && k.startsWith('anc-agentdir') ? idx : -1)).filter((idx) => idx !== -1)
+        if (agentDirOpHarmless(cmd, words, ci, agentWords, ctx)) continue
+      }
       return deny()
     }
     // 5. plain reads

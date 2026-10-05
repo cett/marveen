@@ -508,6 +508,9 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     // the directories that hold them
     'mv agents/boris/.claude agents/boris/.claude.bak', 'rm -rf agents/boris/.claude-config', 'ln -sfn /tmp/evil agents/boris/.claude', 'rsync -a /tmp/evil/ agents/boris/.claude/', 'cp -r /tmp/evil agents/boris/.claude',
     'mv .claude .claude.bak', 'ln -sfn /tmp/evil .claude',
+    // env -S / --split-string runs its value as a command line
+    `env -S "sed -i s/x/y/ ${S}"`, `env --split-string="sed -i s/x/y/ ${L}"`, `env --split-string 'cp /tmp/x ${L}'`, `env -iS 'tee ${S}'`,
+    `env -S"sed -i s/x/y/ ${L}"`, `env -i -S "rm ${L}"`, `sudo env -S "cp /tmp/x ${C}"`, `env -S "env -S 'rm ${S}'"`, `env FOO=1 -S "sed -i s/x/y/ ${L}"`,
     // substitutions and ambiguous quoting next to a protected word
     `echo $(cp /tmp/x ${L})`, `cat '${L}' 2>&1`,
     // a copy into the directory creates <dir>/<basename of the source>: no word names the protected file
@@ -516,12 +519,10 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     'cp -f /tmp/settings.json agents/boris/.claude/', 'cp /tmp/settings.json .claude/', 'cd agents/boris/.claude && cp /tmp/settings.json .', 'cd agents/boris/.claude && cp /tmp/settings.local.json ./',
     'cp /tmp/*.json agents/boris/.claude/', 'cp /tmp/settings.* agents/boris/.claude/', 'cp "$SRC" agents/boris/.claude/', 'cp /tmp/$NAME agents/boris/.claude-config/',
     // the names compare without regard to case (a file that does not exist yet keeps its spelling)
-    // a recursive copy of a directory that carries (or is) a protected path merges it in
-    'cp -r /tmp/evil/.claude agents/boris/', 'cp -R /tmp/evil/.claude-config agents/boris/', 'cp -a /tmp/boris agents/', 'cp -r /tmp/agents .',
-    'cp -r -t agents/boris /tmp/evil/.claude', 'cp -r /tmp/evil/.CLAUDE agents/boris/',
-    // agents/ and agents/<name> hold the config dirs: merging a tree into one is refused as the dir itself is
-    'cp -r /tmp/docs agents/boris/', 'cp -r /tmp/notes agents/',
-    'rsync -a /tmp/evil/ agents/boris/', 'rsync -a /tmp/evil/ agents/', 'tar -xf /tmp/evil.tar -C agents/boris', 'ditto /tmp/evil agents/boris', 'mv /tmp/evil agents/boris', 'rm -rf agents/boris',
+    // a recursive copy of a directory NAMED like a config dir creates it, whatever is inside
+    'cp -r /tmp/evil/.claude agents/boris/', 'cp -R /tmp/evil/.claude-config agents/boris/', 'cp -r -t agents/boris /tmp/evil/.claude', 'cp -r /tmp/evil/.CLAUDE agents/boris/',
+    // the agent directory itself leaves, is removed or re-linked: the settings go with it
+    'mv agents/boris /tmp/gone', 'mv agents/boris agents/other', 'rm -rf agents/boris', 'rm -rf agents', 'ln -sfn /tmp/evil agents/boris', 'rsync -a --remove-source-files agents/boris/ /tmp/x/',
     'cp /tmp/x agents/boris/.CLAUDE/Settings.Local.json', 'echo x > agents/boris/.Claude/SETTINGS.JSON', 'echo x > agents/boris/.claude/Settings.json', 'cp /tmp/Settings.json agents/boris/.claude/',
     'echo x > agents/newone/.CLAUDE/SETTINGS.LOCAL.JSON', 'echo x > .CLAUDE/Settings.Local.json', 'echo x > .claude/SETTINGS.local.json', 'mv agents/boris/.CLAUDE agents/boris/gone', 'cp /tmp/x agents/*/.CLAUDE/SETTINGS.JSON',
   ]
@@ -541,6 +542,8 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     // a copy into a directory that holds them is fine while the new name is not a settings file
     'cp /tmp/x.md agents/boris/.claude/', 'cp /tmp/a.md /tmp/b.md agents/boris/.claude/skills/', 'cp -t agents/boris/.claude /tmp/other.json', 'cp /tmp/settings.json agents/boris/', 'cp /tmp/settings.json agents/boris/notes/',
     'cp /tmp/settings.json /tmp/copy.json', 'cp /tmp/*.md agents/boris/.claude/', 'cd agents/boris/.claude && cp /tmp/x.md .',
+    // env -S with nothing protected in the command it runs, and -S next to ordinary env use
+    `env -S "ls -la agents/boris"`, `env -S "sed -n 1,5p ${S}"`, 'env -S "echo hi"', 'env -i ls', 'env FOO=1 ls', `env -S "cat ${L}"`,
     // plain work inside an agent directory, and a recursive copy into a directory that holds nothing protected
     'cp -r /tmp/docs agents/boris/notes/', 'cp -r /tmp/skills agents/boris/.claude/skills/', 'ls agents/boris', 'cat agents/boris/CLAUDE.md', 'cd agents/boris', 'git diff -- agents/boris/CLAUDE.md', 'mkdir -p agents/boris/notes', 'rsync -a /tmp/docs/ agents/boris/notes/',
   ]
@@ -590,5 +593,55 @@ describe('a copy into the store directory creates a file named like the source',
     expect(file('Write', join(root, 'Scripts', 'Hooks', 'Another.MJS')).reason).toBe('gate-scripts')
     expect(file('Write', join(root, 'Agents', 'newone', '.Claude', 'Settings.Local.Json')).reason).toBe('agent-settings')
     expect(bash('echo x > scripts/unrelated2.sh')).toEqual({ deny: false })
+  })
+})
+
+describe('agents/ and agents/<name>: refused only when a settings file can move in, or the directory goes away', () => {
+  const sh = (cmd: string) => spawnSync('sh', ['-c', cmd], { encoding: 'utf8' })
+  let tpl: string; let evil: string; let evilNoSettings: string
+  beforeEach(() => {
+    touch(join(root, 'agents', 'boris', '.claude', 'settings.json'), '{}')
+    touch(join(root, 'agents', 'boris', 'CLAUDE.md'), '# boris')
+    tpl = join(base, 'tpl'); touch(join(tpl, 'CLAUDE.md'), '# t'); touch(join(tpl, 'notes', 'a.md'), 'a')
+    evil = join(base, 'evil'); touch(join(evil, '.claude', 'settings.local.json'), '{"disableAllHooks": true}')
+    evilNoSettings = join(base, 'evil2'); touch(join(evilNoSettings, '.claude', 'skills', 'x', 'SKILL.md'), '# s')
+    touch(join(base, 'nested', 'x', '.claude-config', 'settings.json'), '{}')
+    sh(`cd ${base} && tar -cf harmless.tar -C tpl . && tar -cf evil.tar -C evil . && tar -czf evil.tgz -C evil . && tar -cf skills.tar -C evil2 .`)
+  })
+  const ALLOWED = (): string[] => [
+    'mkdir -p agents/newagent', 'mkdir agents/newagent', 'touch agents/newagent',
+    `cp -r ${tpl} agents/newagent`, `cp -r ${tpl} agents/`, `cp -R ${tpl}/ agents/boris/`, `rsync -a ${tpl}/ agents/boris/`, `rsync -a ${tpl}/ agents/`, `ditto ${tpl} agents/boris`,
+    `mv ${tpl} agents/moved`, `mv ${tpl} agents/`, `cp -r ${evilNoSettings} agents/boris/`, `cp -r ${evilNoSettings} agents/newagent`,
+    `tar -xf ${base}/harmless.tar -C agents/`, `tar -xf ${base}/harmless.tar -C agents/boris`, `tar xf ${base}/harmless.tar -C agents/boris`, `tar -xf ${base}/skills.tar -C agents/boris`,
+    `tar -xf ${base}/not-there.tar -C agents/`, 'cp -r agents/boris /tmp/backup-boris', 'rsync -a agents/boris/ /tmp/backup-boris/', 'tar -cf /tmp/b.tar agents/boris',
+    'ls agents/boris', 'cat agents/boris/CLAUDE.md', 'cd agents/boris',
+  ]
+  const DENIED = (): string[] => [
+    `cp -r ${evil} agents/newagent`, `cp -r ${evil}/ agents/boris/`, `cp -a ${evil} agents/`, `rsync -a ${evil}/ agents/boris/`, `rsync -a ${evil}/ agents/`, `ditto ${evil} agents/boris`,
+    `mv ${evil} agents/boris`, `mv ${evil} agents/`, `cp -r ${base}/nested agents/`, `cp -r ${base}/nested/x agents/boris`,
+    `tar -xf ${base}/evil.tar -C agents/boris`, `tar -xf ${base}/evil.tar -C agents/`, `tar xf ${base}/evil.tar -C agents/boris`, `tar -xzf ${base}/evil.tgz -C agents/boris`, `tar --extract --file=${base}/evil.tar -C agents/boris`,
+    `cp -r ${base}/sub* agents/boris`, 'cp -r $SRC agents/boris', 'tar -xf $A -C agents/boris', `tar -xf ${base}/harmless.tar.not-an-archive-but-exists -C agents/boris`,
+    'mv agents/boris /tmp/gone', 'rm -rf agents/boris', 'rm -rf agents', 'ln -sfn /tmp/evil agents/boris', 'chmod -R 000 agents/boris',
+  ]
+  it('allows the harmless ones', () => {
+    for (const c of ALLOWED()) expect({ c, r: bash(c) }).toEqual({ c, r: { deny: false } })
+  })
+  it('denies the ones that can put a settings file in or take the directory away', () => {
+    writeFileSync(join(base, 'harmless.tar.not-an-archive-but-exists'), 'not a tar')
+    for (const c of DENIED()) expect({ c, r: bash(c) }).toEqual({ c, r: { deny: true, reason: 'agent-settings' } })
+  })
+  it('a symlink in the source counts as carrying a settings file', () => {
+    symlinkSync(join(root, 'agents', 'boris', '.claude'), join(tpl, 'link'))
+    expect(bash(`cp -r ${tpl} agents/newagent`)).toEqual({ deny: true, reason: 'agent-settings' })
+  })
+})
+
+describe('env -S on the gate scripts and the allowlist', () => {
+  it('the value is read as the command that runs', () => {
+    expect(bash('env -S "sed -i s/x/y/ scripts/self-pace-gate.mjs"')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('env --split-string="tee scripts/hooks/egress-gate.mjs"')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('env -S "cp /tmp/x store/egress-allowlist.json"')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('env -S "cat scripts/self-pace-gate.mjs"')).toEqual({ deny: false })
+    expect(bash('env -S "node scripts/hooks/egress-gate.mjs"')).toEqual({ deny: false })
   })
 })
