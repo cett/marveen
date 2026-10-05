@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE, STORE_DIR } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
@@ -16,7 +16,8 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureDestructiveGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -610,6 +611,7 @@ export function startWebServer(port = 3420): http.Server {
       const patched: string[] = []
       const stalePatched: string[] = []
       const egressPatched: string[] = []
+      const bashParserPatched: string[] = []
       const destructivePatched: string[] = []
       const tenantPatched: string[] = []
       const govPatched: string[] = []
@@ -625,6 +627,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureAgentHooks(agentName)) patched.push(agentName)
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
+        if (ensureBashEgressParser(agentName)) bashParserPatched.push(agentName)
         if (ensureDestructiveGate(agentName)) destructivePatched.push(agentName)
         if (ensureTenantHooks(agentName)) tenantPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
@@ -633,10 +636,15 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureContextWatchdogHook(agentName)) watchdogPatched.push(agentName)
         ensureQuarantineReader(agentName)
       }
+      // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
+      // route. Inside the hook-registration branch on purpose: only the instance that owns the
+      // hooks watches the shared store, a worktree / WEB_ONLY instance does not.
+      watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
+      if (bashParserPatched.length) logger.info({ patched: bashParserPatched }, 'bash-egress-parser Bash hook backfilled into agent settings.json')
       if (tenantPatched.length) logger.info({ patched: tenantPatched }, 'tenant-context + tenant-skill-gate hooks backfilled into agent settings.json')
       if (destructivePatched.length) logger.info({ patched: destructivePatched }, 'destructive-gate Bash hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')

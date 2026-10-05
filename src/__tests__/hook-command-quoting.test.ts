@@ -10,6 +10,7 @@ import {
   injectEgressGate,
   ensureEgressGate,
   ensureGovernanceGateCommands,
+  ensureBashEgressParser,
 } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
 
@@ -141,5 +142,43 @@ describe('ensure* migrations are idempotent (true, then false)', () => {
       expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
       expect(cmd).not.toMatch(/^node /)
     }
+  })
+
+  it('ensureGovernanceGateCommands widens a CURRENT-command self-pace entry whose matcher predates MultiEdit, then settles', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    const settingsPath = join(testAgentDir, '.claude', 'settings.json')
+    const cmd = hookCommand(join(SCRIPTS_DIR, 'scripts', 'self-pace-gate.mjs'))
+    const emailCmd = hookCommand(join(SCRIPTS_DIR, 'scripts', 'email-send-gate.mjs'))
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash|send_email', hooks: [{ type: 'command', command: emailCmd, timeout: 10 }] },
+          { matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit', hooks: [{ type: 'command', command: cmd, timeout: 10 }] },
+        ],
+      },
+    }, null, 2))
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(true)
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(false)
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const pace = (written.hooks.PreToolUse as Array<{ matcher: string }>).filter((e) => JSON.stringify(e).includes('self-pace-gate.mjs'))
+    expect(pace).toHaveLength(1)
+    expect(pace[0].matcher.split('|')).toContain('MultiEdit')
+  })
+
+  it('ensureBashEgressParser wires a sub-agent once, replaces a stale command in place, and never writes a missing settings file', () => {
+    // no settings file: not created (a never-spawned agent gets the hook on its first spawn)
+    expect(ensureBashEgressParser(TEST_AGENT)).toBe(false)
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    const settingsPath = join(testAgentDir, '.claude', 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs')}`, timeout: 10 }] }] },
+    }, null, 2))
+    expect(ensureBashEgressParser(TEST_AGENT)).toBe(true)
+    expect(ensureBashEgressParser(TEST_AGENT)).toBe(false)
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const parser = (written.hooks.PreToolUse as Array<Record<string, unknown>>).filter((e) => JSON.stringify(e).includes('bash-egress-parser.mjs'))
+    expect(parser).toHaveLength(1)
+    expect(parser[0].matcher).toBe('Bash')
+    expect((parser[0].hooks as Array<{ command: string }>)[0].command.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
   })
 })

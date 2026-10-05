@@ -28,7 +28,12 @@
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
 import { readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+// The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
+const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
 
 // Claude Code runtime self-pace / scheduling tools. A sub-agent has no
 // legitimate need to schedule its own future turns -- it is input-driven.
@@ -105,6 +110,71 @@ const WRITE_INTENT_RX = /(>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
 const SCHEDULE_API_RX = /\/api\/schedules\b/i
 const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH|DELETE)|(^|\s)(--data\b|--data-\w+\b|-d\b))/i
 
+// THE EGRESS ALLOWLIST IS A GATE ON THE SUB-AGENT ITSELF (EGRESSSELFEDIT824).
+// store/egress-allowlist.json decides which hosts egress-gate.mjs lets through, and it
+// was a plain writable file in the sub-agent's own tree: on 2026-08-24 a nested
+// sub-agent added a domain to reach it and removed it afterwards. Its legitimate
+// writers are the MAIN agent (on the owner's go) and the owner by hand -- neither runs
+// this gate (it is wired for sub-agents only), so neither is affected.
+//
+// Native file tools: denied on the file name AND on the resolved real path, so a
+// relative path or a symlink created earlier does not walk past the name check.
+// Bash: FAIL-CLOSED. A segment that mentions the file may only be a plain READ
+// (cat/grep/jq/...), and an output redirect in it may not point at the file. An
+// interpreter (python/node/...), cp/mv/tee/sed/ln/... or anything else that names the
+// file is denied, because whether it writes cannot be read off the command string.
+//
+// What this gate CANNOT see -- a script that builds the path at runtime, a glob that
+// does not spell the name -- is written down, not hidden: the dashboard keeps a hash
+// baseline of the file and reports every change, whoever made it, by whatever route
+// (src/egress-allowlist-baseline.ts). This gate narrows the casual route; that one
+// catches the rest after the fact.
+const ALLOWLIST_BASENAME = 'egress-allowlist.json'
+// The STORE objects, not the concept: the file and its history directory, or a glob that
+// starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
+// matched this gate's own source and test names (egress-allowlist-baseline.ts), so no
+// sub-agent could run, stage or diff them -- review on #1678.
+const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]/i
+const ALLOWLIST_READERS = new Set([
+  'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
+  'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
+])
+// Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
+const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
+
+export function allowlistBashSegmentAllowed(seg) {
+  const s = String(seg ?? '').trim()
+  if (!ALLOWLIST_MENTION_RX.test(s)) return true
+  const words = s.split(/\s+/)
+  let i = 0
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
+  const cmd = (words[i] ?? '').replace(/^.*\//, '')
+  if (!ALLOWLIST_READERS.has(cmd)) return false
+  for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
+    const target = m[1]
+    if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
+    if (ALLOWLIST_MENTION_RX.test(target) || /[$`]/.test(target)) return false
+  }
+  return true
+}
+
+function expandHome(p) {
+  return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
+}
+function realOrSelf(p) {
+  try { return realpathSync(p) } catch { return p }
+}
+
+// Does a native file-tool call target the allowlist? `allowlistPath` is the real file
+// this install's egress-gate reads; tests pass a tmp one.
+export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
+  const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
+  if (!raw) return false
+  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return true
+  const abs = resolve(cwd, expandHome(raw))
+  return realOrSelf(abs) === realOrSelf(allowlistPath)
+}
+
 // Split a compound command into individual simple commands, so a token in one
 // segment cannot trip a check anchored in another (e.g. `cat store && cp a b`).
 // Line-continuations (backslash-newline) are collapsed FIRST so a single command
@@ -127,6 +197,123 @@ export function splitSegments(command) {
     .split(/&&|\|\||[;&|]|\r?\n/)
     // trim so a leading-separator segment (" at now") anchors at ^ correctly
     .map((s) => s.trim())
+}
+
+// FORK NOTE: only the primitive is ported (upstream #887 added it to the self-pace
+// scheduler check as well). Here it is consumed by scripts/hooks/bash-egress-parser.mjs;
+// gateDecision below is unchanged.
+// Split like splitSegments, but ONLY on separators the shell would actually
+// treat as separators -- never on one that sits inside a quoted string or a
+// heredoc body. Returns null when the quoting cannot be resolved with
+// confidence, and every caller must then fall back to the naive splitter.
+//
+// WHY THIS EXISTS (measured 2026-08-05, five denials in one morning -- three
+// mine, two taric's): splitSegments is not quote-aware, so PROSE can manufacture
+// a command position that never existed. All five denials had the same cause: a
+// grep pattern quoted inside an inter-agent message,
+//   Minta: stop.sh <bar> launchctl <bar> com.janna.dashboard
+// The `<bar>` split it, the middle piece trimmed down to the bare word
+// `launchctl`, and SCHEDULER_RX's end-of-segment branch reads a bare `launchctl`
+// as a real (interactive) invocation -- correctly, for a real command line.
+// Nothing was scheduled; five messages simply never went out. From outside, a
+// hard-gate denial is indistinguishable from an agent that stayed silent.
+//
+// The route decided it: the SAME text passes as `curl -d '<json>'` (the payload
+// is blanked by stripDataPayloads) and is denied when sent from a python
+// heredoc, which has no -d argument to blank. Choosing how to send a message
+// had quietly become a security decision. stripDataPayloads' own comment names
+// this false-positive class as its target -- it is implemented for exactly one
+// route, so the gap is unfinished work, not an oversight.
+//
+// SCOPE, and this is the part that matters: the result feeds ONLY the anchored
+// scheduler check. The unanchored patterns (tmux+send-keys, nohup+claude,
+// claude+/loop) keep scanning naive segments, quoted regions included, because
+// they do NOT depend on a command position that prose can fake -- and because
+// measurement showed the naive scan is what catches a real
+// `subprocess.run(['tmux','send-keys',...])` hidden in a heredoc body. Handing
+// them quote-aware segments would have removed the detection of the very
+// incident vector this gate was built for, under the banner of a structural fix.
+//
+// FAIL-CLOSED in three places, because "could not parse" must mean "scan more",
+// never "scan less":
+//   - unterminated quote or heredoc -> null (caller uses the naive split)
+//   - a double-quoted region containing $(...) or a backtick -> null; the shell
+//     runs what is inside, so a `;` in there IS a real separator
+//   - a heredoc with an UNQUOTED tag whose body contains $(...) or a backtick
+//     -> null, same reason (an unquoted tag expands the body)
+// NOTE ON THE SHAPE OF THIS FIX. The first attempt made the SEGMENTER
+// quote-aware and left the regexes alone. It failed one corpus case:
+//   echo 'grep: foo <bar> crontab <bar> bar'
+// stayed denied, because SCHEDULER_RX carries its OWN boundary anchor
+// (SCHED_BOUNDARY includes the bar), so it re-finds a command position INSIDE a
+// segment. Keeping the quoted text in the segment at all was the mistake. The
+// `launchctl` cases passed only by luck -- LAUNCHCTL_SUBCOMMAND's lookahead
+// happened to reject the following bar. So the primitive is not "split more
+// carefully", it is "the inert text must not be there": mask it out, then let
+// the existing splitter and regexes run unchanged on what remains.
+export function maskInertLiterals(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  let cur = ''
+  let i = 0
+
+  // Inert regions collapse to spaces: the text is gone, and with it every
+  // separator inside it -- which is precisely what prose was faking.
+  const blank = (s) => ' '.repeat(s.length)
+
+  while (i < src.length) {
+    const c = src[i]
+
+    // backslash escape outside quotes: consumes the next character
+    if (c === '\\' && i + 1 < src.length) { cur += src.slice(i, i + 2); i += 2; continue }
+
+    // heredoc: <<TAG / <<-TAG / <<'TAG' / <<"TAG"
+    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
+    if (here) {
+      const tag = here[1] ?? here[2] ?? here[3]
+      const quotedTag = here[1] != null || here[2] != null
+      cur += here[0]
+      i += here[0].length
+      // the body starts after the rest of THIS line
+      const nl = src.indexOf('\n', i)
+      if (nl === -1) return null // heredoc announced but no body -> cannot resolve
+      cur += src.slice(i, nl + 1)
+      i = nl + 1
+      // find the terminator line (leading tabs allowed for <<-)
+      const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
+      const rel = endRx.exec(src.slice(i))
+      if (!rel) return null // unterminated heredoc
+      const body = src.slice(i, i + rel.index)
+      if (!quotedTag && /\$\(|`/.test(body)) return null // unquoted tag expands the body
+      cur += blank(body) + rel[0]
+      i += rel.index + rel[0].length
+      continue
+    }
+
+    if (c === "'") { // literal until the next ' -- a backslash is NOT special here
+      const end = src.indexOf("'", i + 1)
+      if (end === -1) return null
+      cur += blank(src.slice(i, end + 1)); i = end + 1; continue
+    }
+
+    if (c === '$' && src[i + 1] === "'") { // ANSI-C: \' does escape
+      let j = i + 2
+      while (j < src.length && src[j] !== "'") { j += src[j] === '\\' ? 2 : 1 }
+      if (j >= src.length) return null
+      cur += blank(src.slice(i, j + 1)); i = j + 1; continue
+    }
+
+    if (c === '"') {
+      let j = i + 1
+      while (j < src.length && src[j] !== '"') { j += src[j] === '\\' ? 2 : 1 }
+      if (j >= src.length) return null
+      const inner = src.slice(i + 1, j)
+      if (/\$\(|`/.test(inner)) return null // may run a command -> not inert
+      cur += blank(src.slice(i, j + 1)); i = j + 1; continue
+    }
+
+    cur += c; i++
+  }
+  return cur
 }
 
 // Blank out curl/HTTP DATA-PAYLOAD arguments before self-pace matching. A -d /
@@ -209,13 +396,14 @@ export function normalizeShellEvasion(seg) {
 }
 
 // Pure decision: does this tool call set up self-pace / self-injection?
-export function gateDecision(toolName, toolInput) {
+export function gateDecision(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
   // Native file tools writing the self-schedule store would bypass any Bash regex.
-  if (name === 'Write' || name === 'Edit' || name === 'NotebookEdit') {
+  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
+    if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
   }
   if (name === 'Bash') {
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
@@ -239,6 +427,8 @@ export function gateDecision(toolName, toolInput) {
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
+      // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
+      if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
     }
   }
   return { deny: false }
@@ -251,6 +441,12 @@ const GATE_MSG =
   'vagy: csak az operator (channel) vagy egy peer (inter-agent) uzenete inditson. Ha varakozol, ' +
   'maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. SOHA ne valaszolj ' +
   'magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'
+
+const ALLOWLIST_GATE_MSG =
+  'Egress-engedelylista TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
+  'store/egress-allowlist.json-t: ez a kapu RAD vonatkozik. Ha egy domain kell, kerd a fo ' +
+  'agenst (inter-agent uzenet: domain + miert); o a gazda jovahagyasaval veszi fel. ' +
+  'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
 function allow() { process.exit(0) }
 
@@ -281,7 +477,7 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny } = gateDecision(payload?.tool_name, payload?.tool_input)
-  if (shouldDeny) deny(GATE_MSG)
+  const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
+  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : GATE_MSG)
   allow()
 }

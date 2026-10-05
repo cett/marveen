@@ -405,6 +405,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
+  if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   injectDestructiveGate(existing)
   if (name !== MAIN_AGENT_ID) injectTenantHooks(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
@@ -470,7 +471,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
     // Write|Edit|NotebookEdit are included so the gate actually fires on the
     // native-file route to the self-schedule store (gateDecision blocks a Write
     // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
-    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|MultiEdit|NotebookEdit',
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -499,6 +500,40 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('egress-gate.mjs')),
+    entry,
+  ]
+}
+
+// Which agents get the Bash egress parser (EGRESSPARSER923): every sub-agent,
+// NOT the main agent. The main agent's hooks are repo-shipped in the tracked
+// project settings (ISSUE1305HOOKSCOPE) and the shared user config root is also
+// the owner's interactive shell, so a Bash hook written there would bind the
+// owner's own sessions. Widening it to the main agent is a separate owner
+// decision, not a side effect of this gate.
+export function agentGetsBashEgressParser(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the bash-egress-parser PreToolUse hook. It denies Bash
+// calls that reach an EXTERNAL host (curl, an interpreter one-liner with a
+// network primitive, a URL held in a variable) by PARSING the command, with
+// localhost always allowed. See the script header for what stays open. The
+// dedupe key is the script basename, which deliberately does NOT contain
+// 'egress-gate.mjs' -- injectEgressGate's filter would drop it.
+export function injectBashEgressParser(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs')),
     entry,
   ]
 }
@@ -678,6 +713,34 @@ export function ensureEgressGate(name: string): boolean {
   return true
 }
 
+// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
+// sub-agent's settings on spawn, so without this the parser would reach the
+// running agents no sooner than their next respawn. Returns true if written.
+// A settings file that is not there is not created: a sub-agent without one
+// has never been spawned, and its first spawn writes the hook.
+export function ensureBashEgressParser(name: string): boolean {
+  if (!agentGetsBashEgressParser(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  // Wired only when the entry carries the CURRENT command under the Bash
+  // matcher: a stale node path or a different matcher is silently
+  // non-enforcing, so both fall through to an in-place replace.
+  const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash'
+    && hookCommandWired(JSON.stringify(e), command))
+  if (wired) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectBashEgressParser(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // The domains the owner added for this install, from the egress allowlist.
 // That file is the owner's gate for outbound calls; the reader's own list used
 // to be a SECOND list of the same decision, kept by hand, and the two drifted:
@@ -850,7 +913,12 @@ export function ensureGovernanceGateCommands(name: string): boolean {
     : {}
   const ptuJson = JSON.stringify(Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
   const needEmail = agentGetsEmailGate(name) && !hookCommandWired(ptuJson, emailCmd)
-  const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  // A wired self-pace entry whose matcher predates MultiEdit never fires on a MultiEdit call, so the
+  // allowlist / schedule-store file-tool checks are skipped for it: re-inject to widen the matcher.
+  const ptuEntries = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as Array<{ matcher?: unknown }> : []
+  const paceMatcherStale = ptuEntries.some((e) => JSON.stringify(e).includes('self-pace-gate.mjs')
+    && !String(e?.matcher ?? '').includes('MultiEdit'))
+  const needPace = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, paceCmd) || paceMatcherStale)
   if (!needEmail && !needPace) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
