@@ -197,6 +197,9 @@ function readRuntimeCache() {
   try {
     const raw = JSON.parse(readFileSync(RUNTIME_CACHE_PATH, 'utf-8'))
     if (typeof raw?.fetchedAt !== 'number') return null
+    // A fetchedAt in the FUTURE is never fresh: a hand-written cache with fetchedAt = 9e15 would
+    // otherwise stay "fresh" for good. The cache is written only by this hook, with Date.now().
+    if (raw.fetchedAt > Date.now()) return null
     if (Date.now() - raw.fetchedAt >= RUNTIME_CACHE_TTL_MS) return null
     return {
       domains: Array.isArray(raw.domains) ? raw.domains : [],

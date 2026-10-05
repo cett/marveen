@@ -154,7 +154,15 @@ def _segments_tokens(cmd: str):
     lex.whitespace_split = True
     segments, cur = [], []
     for tok in lex:
-        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&"):
+        # shlex(punctuation_chars) returns a RUN of operator characters as ONE
+        # token, so `$(date); sendmail ...` (after the subshell mask:
+        # `;date); sendmail`) yields the token ");" -- which is not in the
+        # list, did not split, left `sendmail` mid-segment, and the send was
+        # NOT recognised: the copy audit was silently skipped. The JS twin
+        # (email-send-gate.mjs) says true on the same input. A token made ONLY
+        # of operator characters is always an operator sequence, so it
+        # separates.
+        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&") or (tok and set(tok) <= set("();|&")):
             if cur:
                 segments.append(cur)
             cur = []
@@ -310,32 +318,47 @@ ACCENTLESS = {
 # nem a cirill puszta jelenletere -- egy szandekosan idegen nyelvu idezet
 # tiszta nem-latin szavai atmennek. Unicode-tudatos tokenizalas kell: a WORD
 # regex latin-only, egy homoglifas szot darabokra vagna.
-UWORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+# THE RULE ITSELF LIVES IN scripts/lib/mixed_script.py, and is imported, not
+# copied. Measured 2026-09-24: the inter-agent send gate had re-implemented it
+# as "any Cyrillic or Greek letter" and refused a plain Russian quote and a
+# standalone Greek symbol, both of which THIS path passes. Two gates disagreeing
+# about what is legitimate teach the sender that the rule depends on which
+# script they called. One source, so they cannot drift.
+#
+# The unit/formula exception (SCRIPT_NEUTRAL: the micro sign, superscripts and
+# subscripts, so "40 µs", "100 m²" and "H₂O" are not mixed-script words) lives
+# in the shared module too, so both paths get it. It is imported here as well,
+# so an importer of this module keeps seeing the name.
+#
+# GUARDED IMPORT, FAIL-CLOSED. A bare ImportError fires during MODULE LOAD,
+# escapes the __main__ net and exits 1 -- and PreToolUse reads 1 as
+# NON-blocking, so the send would run UNCHECKED. That is the one outcome a gate
+# must never have. The stub does NOT invent a fallback rule: a gate that cannot
+# load its rule has no verdict, and "no verdict" means BLOCK. The call sites
+# turn MixedScriptUnavailable into a refusal that says the rule could not be
+# loaded, instead of a homoglyph finding that was never measured.
+class MixedScriptUnavailable(RuntimeError):
+    """The shared mixed-script rule could not be imported."""
 
 
-def _char_script(ch: str) -> str:
-    import unicodedata
-    try:
-        return unicodedata.name(ch).split(" ")[0]
-    except ValueError:
+try:
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+    from mixed_script import (  # noqa: E402
+        UWORD, SCRIPT_NEUTRAL, char_script, mixed_script_words,
+    )
+except Exception as _mixed_exc:  # noqa: BLE001 -- deliberate fail-closed stub
+    _MIXED_ERR = repr(_mixed_exc)
+    UWORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+    SCRIPT_NEUTRAL = frozenset()
+
+    def char_script(ch: str) -> str:
         return "UNKNOWN"
 
+    def mixed_script_words(text: str):
+        raise MixedScriptUnavailable(_MIXED_ERR)
 
-def mixed_script_words(text: str):
-    """Return [(word, bad_char, bad_char_name), ...] for words mixing LATIN
-    with any other script. Pure non-Latin words (foreign quotes) pass."""
-    import unicodedata
-    out = []
-    for word in UWORD.findall(text):
-        scripts = {_char_script(ch) for ch in word}
-        if "LATIN" in scripts and len(scripts) > 1:
-            bad = next(ch for ch in word if _char_script(ch) != "LATIN")
-            try:
-                bad_name = unicodedata.name(bad)
-            except ValueError:
-                bad_name = "UNKNOWN"
-            out.append((word, bad, f"{bad_name} (U+{ord(bad):04X})"))
-    return out
+_char_script = char_script   # the name this file used before the extraction
 
 
 EM_DASH = "—"
@@ -353,6 +376,23 @@ _LOCAL_RULES = os.environ.get(
     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                  "store", "outgoing-copy-gate-rules.json"),
 )
+
+_GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
+
+
+def _gate_log(message: str) -> None:
+    """Append one TIMESTAMPED line to the gate log (local time with offset).
+
+    A log whose entries cannot be placed in time cannot be used to check
+    anything, so every line carries a stamp. Used by the inter-agent branch for
+    its loud pass-throughs."""
+    try:
+        from datetime import datetime
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        with open(_GATE_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {message.rstrip()}\n")
+    except OSError:
+        pass
 
 
 def load_bad_name():
@@ -626,7 +666,16 @@ def audit(text: str):
     # homoglifaja atcsuszna (merve: a 'kerlek+koszonom' paros keves a
     # nyelv-detektorhoz). A konkret szot ES karaktert nevezzuk meg, mert a
     # hiba szemre lathatatlan -- enelkul a javitas talalgatas lenne.
-    mixed = mixed_script_words(prose)
+    try:
+        mixed = mixed_script_words(prose)
+    except MixedScriptUnavailable as exc:
+        problems.append(
+            "A VEGYES-IRASRENDSZER SZABALY NEM TOLTHETO BE "
+            f"(scripts/lib/mixed_script.py: {exc}). Ez NEM homoglifa-talalat: a "
+            "szabaly meg sem futott, tehat a szovegrol semmit nem tudunk. "
+            "Szandekosan fail-closed."
+        )
+        mixed = []
     if mixed:
         shown = "; ".join(f"{w!r} -- benne {name}" for w, _c, name in mixed[:5])
         more = f" (+{len(mixed) - 5} tovabbi)" if len(mixed) > 5 else ""
@@ -662,6 +711,182 @@ def audit(text: str):
     return problems
 
 
+# --- Inter-agent messages: HOMOGLYPH-ONLY ------------------------------------
+# `curl .../api/messages` is NOT an email send (send-invocation-cases.json pins
+# it expected:false, and that stays), so none of the copy rules below ever ran
+# on it: no accent audit, no name rule, no em dash -- correctly, because the
+# fleet's internal traffic is written WITHOUT accents and the full audit would
+# block most of it. One dimension is added here and nothing else: a MIXED-SCRIPT
+# word (homoglyph). The fleet coordinates by card ids, agent names and file
+# paths passed in messages; a Cyrillic 'a' in one of those does not look wrong,
+# it silently points at something that does not exist. Measured 2026-09-16:
+# four such characters in one agent's own messages, caught only by a manual
+# scan.
+#
+# FAILURE DIRECTION IS DELIBERATELY SPLIT (upstream design, kept on purpose and
+# flagged for review in the fork):
+#   - homoglyph FOUND                  -> BLOCK (exit 2), naming word and char;
+#   - rule cannot load / gate crashes  -> BLOCK (exit 2), fail-closed like the
+#                                         rest of this hook;
+#   - message BODY NOT INTERPRETABLE   -> PASS, with a loud named systemMessage
+#     (unreadable @file, $-path,          and a gate-log line. THIS IS THE ONE
+#     run-time substitution, non-JSON,    FAIL-OPEN OF THIS HOOK. On this channel
+#     non-object JSON, @- without a       a false block mutes an agent (the
+#     heredoc, unparseable command        fleet's coordination backbone); the
+#     that mentions the queue)            threat is our own agent emitting a
+#                                         lookalike by accident, not an
+#                                         attacker, so fail-open-loud is the
+#                                         right side HERE and only here.
+# A command that is not a POST to the queue at all is not this gate's business
+# and passes silently.
+# All three shapes are covered, or the concept is not closed: quoted heredoc
+# (`--data-binary @- <<'JSON'`), `@file`, and inline `-d '...'`.
+_IA_TARGET = re.compile(r"^(https?://)?[^/\s]*/api/messages/?(\?\S*)?$", re.I)
+_IA_DATA_FLAGS = ("-d", "--data", "--data-binary", "--data-raw", "--data-ascii", "--json")
+_IA_SUBST = re.compile(r"\$\(|`|\$\{?\w")
+
+
+def _ia_segment(cmd: str):
+    """Tokens of the curl segment that POSTs to /api/messages, or None."""
+    segments = _segments_tokens(cmd)  # ValueError is handled by the caller
+    for toks in segments:
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks = toks[1:]
+        if toks and _CURLISH.match(_basename(toks[0])) and any(_IA_TARGET.match(t) for t in toks[1:]):
+            return toks
+    return None
+
+
+# The fleet's everyday form is `S=/abs/scratch; ... --data-binary @$S/m.json`:
+# the variable is assigned a LITERAL earlier in the SAME command string. That
+# is deterministic, so it is resolved here instead of warned about. Measured
+# 2026-09-23 over 1153 real inter-agent POSTs: without this, most of the
+# warnings were exactly this shape, and a warning that fires on half the
+# traffic is noise. Only a plain literal value counts (no quotes-with-$,
+# no substitution); anything else stays unresolved and is warned about.
+_IA_ASSIGN = re.compile(r"""(?:^|[;&|\n(]\s*|\s)(?:export\s+)?([A-Za-z_]\w*)=(?:"([^"$`]*)"|'([^']*)'|([^\s;&|$`'"()]+))""")
+
+
+def _ia_resolve_local_vars(cmd: str, ref: str) -> str:
+    local = {}
+    for m in _IA_ASSIGN.finditer(cmd):
+        local[m.group(1)] = next(g for g in m.groups()[1:] if g is not None)
+
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        return local.get(name, m.group(0))
+    return re.sub(r"\$\{(\w+)\}|\$(\w+)", sub, ref)
+
+
+def _ia_payload(cmd: str, toks):
+    """(text, unreadable_reason) of the message body, from the three shapes."""
+    raw = None
+    for i, t in enumerate(toks):
+        val = None
+        for f in _IA_DATA_FLAGS:
+            if t == f and i + 1 < len(toks):
+                val = toks[i + 1]
+            elif t.startswith(f + "="):
+                val = t[len(f) + 1:]
+            elif f == "-d" and t.startswith("-d") and len(t) > 2 and not t.startswith("--"):
+                val = t[2:]
+            if val is not None:
+                is_raw_flag = f == "--data-raw"
+                break
+        if val is None:
+            continue
+        if val.startswith("@") and not is_raw_flag:
+            ref = val[1:]
+            if ref == "-":
+                m = re.search(r"<<-?\s*'?(\w+)'?[^\n]*\n(.*?)\n\1(?=\s|$)", cmd, re.S)
+                if not m:
+                    return None, "a torzs stdin-rol jon (@-), heredoc nelkul"
+                if not re.search(r"<<-?\s*'", cmd) and _IA_SUBST.search(m.group(2)):
+                    return None, "a heredoc NEM idezett, es shell-behelyettesitest tartalmaz"
+                raw = m.group(2)
+            else:
+                path = os.path.expandvars(os.path.expanduser(_ia_resolve_local_vars(cmd, ref)))
+                if "$" in path:
+                    return None, f"a torzs fel nem oldhato @utvonalrol jon (@{ref})"
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        raw = fh.read()
+                except OSError as exc:
+                    return None, f"a torzs-fajl (@{ref}) nem olvashato ({exc.strerror or exc})"
+        else:
+            if _IA_SUBST.search(val):
+                return None, "az inline torzs shell-behelyettesitest tartalmaz, futasidoben dol el"
+            raw = val
+        break
+    if raw is None:
+        # No data flag at all: a GET of the queue (the most frequent call on this
+        # path) or a bare POST. Nothing is being SENT, so nothing to scan and
+        # nothing to warn about -- a warning here would fire on every queue read.
+        return "", None
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None, "a torzs nem ervenyes JSON"
+    if not isinstance(obj, dict):
+        return None, "a torzs JSON, de nem objektum"
+    # EVERY string field: a lookalike in `to` misroutes as silently as one in
+    # `content` misleads.
+    strings = [str(v) for v in obj.values() if isinstance(v, str)]
+    return "\n".join(strings), None
+
+
+def _ia_loud_pass(unreadable: str) -> None:
+    """The documented fail-open of this hook: the body could not be interpreted,
+    so the message goes out WITHOUT the homoglyph check -- and says so, on the
+    surface the session reads (systemMessage) and in the gate log."""
+    msg = ("outgoing-copy-gate (inter-agent, homoglifa): a torzs NEM vizsgalhato -- "
+           f"{unreadable}. Az uzenet ATMENT, homoglifa-ellenorzes NELKUL. "
+           "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON') vagy @/abszolut/ut.json.")
+    _gate_log(msg)
+    print(json.dumps({"systemMessage": msg}))
+    sys.exit(0)
+
+
+def inter_agent_homoglyph_gate(cmd: str) -> None:
+    """Exit 2 on a homoglyph, exit 0 otherwise (loudly when unreadable).
+    Only called for a command that is NOT an email send."""
+    try:
+        toks = _ia_segment(cmd)
+    except ValueError:
+        # The command cannot be tokenised (e.g. an unterminated quote). If it
+        # does not even mention the queue it is not an inter-agent message and
+        # passes silently; if it does, its body is uninterpretable: loud pass.
+        if re.search(r"/api/messages", cmd):
+            _ia_loud_pass("a parancs nem tokenizalhato (pl. lezaratlan idezojel)")
+        sys.exit(0)
+    if toks is None:
+        sys.exit(0)
+    text, unreadable = _ia_payload(cmd, toks)
+    if unreadable:
+        _ia_loud_pass(unreadable)
+    try:
+        mixed = mixed_script_words(text)
+    except MixedScriptUnavailable as exc:
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (inter-agent): TILTVA -- a vegyes-irasrendszer szabaly "
+            f"NEM TOLTHETO BE (scripts/lib/mixed_script.py: {exc}).\n"
+            "Ez nem a szovegrol szol: a szabaly meg sem futott. Szandekosan fail-closed, "
+            "mert egy le nem futott ellenorzes nem 'rendben'.\n"
+        )
+        sys.exit(2)
+    if mixed:
+        shown = "; ".join(f"{w!r} -- benne {name}" for w, _c, name in mixed[:5])
+        more = f" (+{len(mixed) - 5} tovabbi)" if len(mixed) > 5 else ""
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (inter-agent): TILTVA -- VEGYES IRASRENDSZERU SZO (homoglifa), "
+            f"{len(mixed)} db: {shown}{more}.\n"
+            "Egy kartya-azonositoban, agens-nevben vagy utvonalban ez neman felreiranyit. "
+            "Javitsd a szoveget es kuldd ujra. (Itt CSAK a homoglifa fut, ekezet- es copy-szabaly nem.)\n"
+        )
+        sys.exit(2)
+    sys.exit(0)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -678,7 +903,7 @@ def main():
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not is_send_invocation(cmd):
-            sys.exit(0)
+            inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
     else:
         sys.exit(0)
@@ -722,4 +947,21 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-closed net
+        # An unhandled crash exits 1, and PreToolUse treats 1 as NON-blocking,
+        # so the call would run UNCHECKED -- the opposite of this hook's
+        # fail-closed contract. The Telegram arm catches its own errors and
+        # passes by design (it is the owner's only supervision channel), so
+        # this net only ever catches the email and Bash paths, where blocking
+        # is the safe failure mode.
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA, belso hiba a vizsgalat kozben "
+            f"({exc!r}).\n"
+            "Fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki. "
+            "Tedd vizsgalhatova a hivast, aztan kuldd ujra.\n"
+        )
+        sys.exit(2)

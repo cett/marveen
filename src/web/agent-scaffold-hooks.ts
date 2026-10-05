@@ -17,7 +17,7 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, STORE_DIR, SCRIPTS_DIR }
 import { logger } from '../logger.js'
 import { channelStateDir } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentDir, readAgentMcpScopeRaw } from './agent-config.js'
+import { agentDir, readAgentMcpScopeRaw, readAgentToolDeny } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { MCP_TOOL_REGISTRY, parseMcpScope, buildMcpDenyList } from './mcp-tool-registry.js'
 import { resolveTemplatePlaceholders } from './agent-scaffold-templates.js'
@@ -383,6 +383,21 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // even under --dangerously-skip-permissions (same guarantee as SELF_PACE_TOOL_DENY).
   const mcpScope = parseMcpScope(readAgentMcpScopeRaw(name))
   denyList.push(...buildMcpDenyList(mcpScope, MCP_TOOL_REGISTRY))
+  // Fleet baseline: the deny FLOOR every agent gets regardless of profile. Pushed here rather than
+  // copied into each templates/profiles/*.json so a profile added tomorrow cannot silently ship
+  // without it. Deduped against what the profile already declared (several profiles carry some of
+  // these), so the written file stays readable.
+  for (const rule of FLEET_BASELINE_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
+    if (!denyList.includes(rule)) denyList.push(rule)
+  }
+  // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and on EVERY spawn, because
+  // this function replaces the deny list wholesale -- a name written straight into settings.json
+  // disappears at the next respawn. A whole-tool-name deny also drops the tool's schema from the
+  // prompt, which is the point: it is the context handle for a sub-agent that never needs
+  // Artifact/Workflow/etc. Bare names only (sanitizeToolDenyList), so it can only widen the deny list.
+  for (const tool of readAgentToolDeny(name)) {
+    if (!denyList.includes(tool)) denyList.push(tool)
+  }
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: denyList,
@@ -405,6 +420,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
+  if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   injectDestructiveGate(existing)
   if (name !== MAIN_AGENT_ID) injectTenantHooks(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
@@ -449,6 +465,58 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
 // routes are covered by the self-pace-gate hook, which a name-deny cannot reach.
 const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger']
 
+// The fleet-wide deny FLOOR (ported from upstream #1679, DENYARGS925). permissions.deny is rebuilt
+// WHOLESALE from the security profile on every spawn, so a rule that lives only in one profile, or is
+// hand-written into a settings.json, is not a floor: it is whatever the agent's profile happens to
+// carry, and it disappears at the next respawn. One list, applied to all profiles.
+//
+// A sub-agent gets it from writeAgentSettingsFromProfile (so it takes effect at the next SPAWN, there
+// is no startup migration); the main agent gets the same rules from the repo's tracked
+// .claude/settings.json, which the scaffold never writes (`~` in place of ${HOME}); a test keeps the
+// two in step.
+//
+// Bash(curl -X POST:*) is deliberately NOT in the floor (owner decision): an argument-bearing rule matches
+// the command's leading words exactly, so `curl -s -X POST` walks past it, which makes it a weak guard, and
+// it would deny the fleet's own `curl -X POST http://localhost:...` dashboard recipes. A profile may still
+// carry it itself (marketer and researcher do).
+//
+// Two rules are deliberately weaker than they look, kept for the owner's posture and not as protection:
+//   Bash(git push --force:*) and Bash(git push -f:*) are FRICTION against a slip, not a guard:
+//     `git push --quiet --force <remote>` and `/usr/bin/git push --force <remote>` both run on a list
+//     carrying them (an inserted flag, `git -C <path>` or an absolute path moves the words out from
+//     under the rule). A force-push guard has to PARSE the command, which is a hook's job.
+//   Bash(sudo:*) holds against an inserted prefix word but NOT against an absolute path
+//     (`/usr/bin/sudo -n true`), which is why it has the `*/sudo *` partner. The partner matches the
+//     whole command text, so a command that merely NAMES a path ending in `/sudo` is denied too: the
+//     safe direction, but an over-match.
+//
+// The narrow rm rules (`rm -rf ${HOME}`, `rm -rf /`) have NO `*/` partner: the absolute-path form
+// (`/usr/bin/rm -rf /`) is NOT covered by the deny list. The HOME form differs by channel: a sub-agent
+// gets the RESOLVED absolute home, the main agent the tracked file with `~`; that a Bash rule matches the
+// typed `~` text, and not the shell's expansion of it, has not been measured.
+//
+// NOT in the floor, on purpose: the broad Bash(rm:*) and its `*/rm *` partner (a fleet-wide rm ban
+// refuses real daily work, and a compound command containing one is refused AS A WHOLE; a profile may
+// still carry it, marketer does), Bash(*/git *) (it also blocks read-only calls), and a Read() rule for
+// the token files under store/ (every agent reads those with `cat` every round; whether a Read() rule
+// reaches a Bash read is unmeasured).
+//
+// The ${HOME} placeholder is resolved through resolveProfilePlaceholders like any profile rule.
+export const FLEET_BASELINE_DENY = [
+  'Read(${HOME}/.ssh/**)',
+  'Read(${HOME}/.aws/**)',
+  'Read(${HOME}/.gnupg/**)',
+  'Read(${HOME}/.env)',
+  'Read(**/.env)',
+  'Bash(sudo:*)',
+  'Bash(*/sudo *)',
+  'Bash(rm -rf ${HOME}:*)',
+  'Bash(rm -rf /:*)',
+  'Bash(git push --force:*)',
+  'Bash(git push -f:*)',
+  'mcp__playwright__browser_run_code_unsafe',
+]
+
 // Which agents are subject to the self-pace gate: every agent EXCEPT the main
 // agent (same name-agnostic main-exempt rule as the email gate). Pure + exported
 // so the main-exempt guarantee is unit-testable.
@@ -470,7 +538,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
     // Write|Edit|NotebookEdit are included so the gate actually fires on the
     // native-file route to the self-schedule store (gateDecision blocks a Write
     // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
-    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|MultiEdit|NotebookEdit',
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -499,6 +567,40 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('egress-gate.mjs')),
+    entry,
+  ]
+}
+
+// Which agents get the Bash egress parser (EGRESSPARSER923): every sub-agent,
+// NOT the main agent. The main agent's hooks are repo-shipped in the tracked
+// project settings (ISSUE1305HOOKSCOPE) and the shared user config root is also
+// the owner's interactive shell, so a Bash hook written there would bind the
+// owner's own sessions. Widening it to the main agent is a separate owner
+// decision, not a side effect of this gate.
+export function agentGetsBashEgressParser(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the bash-egress-parser PreToolUse hook. It denies Bash
+// calls that reach an EXTERNAL host (curl, an interpreter one-liner with a
+// network primitive, a URL held in a variable) by PARSING the command, with
+// localhost always allowed. See the script header for what stays open. The
+// dedupe key is the script basename, which deliberately does NOT contain
+// 'egress-gate.mjs' -- injectEgressGate's filter would drop it.
+export function injectBashEgressParser(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs')),
     entry,
   ]
 }
@@ -678,6 +780,34 @@ export function ensureEgressGate(name: string): boolean {
   return true
 }
 
+// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
+// sub-agent's settings on spawn, so without this the parser would reach the
+// running agents no sooner than their next respawn. Returns true if written.
+// A settings file that is not there is not created: a sub-agent without one
+// has never been spawned, and its first spawn writes the hook.
+export function ensureBashEgressParser(name: string): boolean {
+  if (!agentGetsBashEgressParser(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  // Wired only when the entry carries the CURRENT command under the Bash
+  // matcher: a stale node path or a different matcher is silently
+  // non-enforcing, so both fall through to an in-place replace.
+  const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash'
+    && hookCommandWired(JSON.stringify(e), command))
+  if (wired) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectBashEgressParser(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // The domains the owner added for this install, from the egress allowlist.
 // That file is the owner's gate for outbound calls; the reader's own list used
 // to be a SECOND list of the same decision, kept by hand, and the two drifted:
@@ -850,7 +980,12 @@ export function ensureGovernanceGateCommands(name: string): boolean {
     : {}
   const ptuJson = JSON.stringify(Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
   const needEmail = agentGetsEmailGate(name) && !hookCommandWired(ptuJson, emailCmd)
-  const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  // A wired self-pace entry whose matcher predates MultiEdit never fires on a MultiEdit call, so the
+  // allowlist / schedule-store file-tool checks are skipped for it: re-inject to widen the matcher.
+  const ptuEntries = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as Array<{ matcher?: unknown }> : []
+  const paceMatcherStale = ptuEntries.some((e) => JSON.stringify(e).includes('self-pace-gate.mjs')
+    && !String(e?.matcher ?? '').includes('MultiEdit'))
+  const needPace = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, paceCmd) || paceMatcherStale)
   if (!needEmail && !needPace) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.

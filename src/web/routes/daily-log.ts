@@ -1,6 +1,8 @@
 import { appendDailyLog, getDailyLog, getDailyLogDates, resolveAgentTenant } from '../../db.js'
 import { MAIN_AGENT_ID } from '../../config.js'
+import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { RouteContext } from './types.js'
 
 // Tenant-IDOR guard: daily_logs has no tenant_id
@@ -26,6 +28,14 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
     const agentId = data.agent_id || MAIN_AGENT_ID
     if (tenantBlocked(ctx, agentId)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
     appendDailyLog(agentId, data.content.trim())
+    // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816) -- see memories.ts.
+    const homoglyphs = detectHomoglyphs(data.content)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ agent: agentId }, `daily-log entry saved with ${warning}`)
+      json(res, { ok: true, homoglyph_warning: warning })
+      return true
+    }
     json(res, { ok: true })
     return true
   }
