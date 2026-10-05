@@ -27,7 +27,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -253,6 +253,9 @@ export function protectedSet(opts = {}) {
 function kindOf(real, prot) {
   for (const e of prot.entries) {
     if (e.dir ? (real === e.real || real.startsWith(e.real + sep)) : real === e.real) return e.kind
+    // the settings entries match without regard to case: a file that does not exist yet keeps the case
+    // it is spelled with, and a case-insensitive filesystem opens `Settings.Local.json` as the real one
+    if (e.kind === 'agent-settings' && !e.dir && real.toLowerCase() === e.real.toLowerCase()) return e.kind
   }
   return agentSettingsKind(real, prot)
 }
@@ -261,14 +264,14 @@ function kindOf(real, prot) {
 function agentSettingsKind(real, prot) {
   if (!prot.agentsDir || !real.startsWith(prot.agentsDir + sep)) return null
   const rel = real.slice(prot.agentsDir.length + 1).split(sep)
-  return rel.length === 3 && AGENT_CONFIG_DIRS.includes(rel[1]) && SETTINGS_FILES.includes(rel[2]) ? 'agent-settings' : null
+  return rel.length === 3 && AGENT_CONFIG_DIRS.includes(rel[1].toLowerCase()) && SETTINGS_FILES.includes(rel[2].toLowerCase()) ? 'agent-settings' : null
 }
 // agents/<name>/.claude and agents/<name>/.claude-config: moving, removing or re-linking one (then
 // writing through the new link) would walk past the pattern above.
 function agentConfigDirKind(real, prot) {
   if (!prot.agentsDir || !real.startsWith(prot.agentsDir + sep)) return null
   const rel = real.slice(prot.agentsDir.length + 1).split(sep)
-  return rel.length === 2 && AGENT_CONFIG_DIRS.includes(rel[1]) ? 'agent-settings' : null
+  return rel.length === 2 && AGENT_CONFIG_DIRS.includes(rel[1].toLowerCase()) ? 'agent-settings' : null
 }
 // The settings files / config dirs of the agents that exist now (for globs and unresolved prefixes).
 function settingsCandidates(prot) {
@@ -284,7 +287,7 @@ function settingsCandidates(prot) {
 }
 // 'anc-strict:<kind>' | 'anc-loose:<kind>' | null
 const ancestorOf = (real, prot) => {
-  const a = prot.ancestors.find((x) => x.real === real)
+  const a = prot.ancestors.find((x) => x.real === real || (x.kind === 'agent-settings' && x.real.toLowerCase() === real.toLowerCase()))
   if (a) return `anc-${a.strict ? 'strict' : 'loose'}:${a.kind}`
   const k = agentConfigDirKind(real, prot)
   return k ? `anc-loose:${k}` : null
@@ -507,8 +510,9 @@ function wordKind(word, ctx) {
           const ga = ctx.prot.ancestors.find((a) => re.test(a.real))
           if (ga) results.push(ancestorOf(ga.real, ctx.prot))
           const sc = settingsCandidates(ctx.prot)
-          if (sc.files.some((f) => re.test(f))) results.push('agent-settings')
-          const sd = sc.dirs.find((d) => re.test(d))
+          const rei = new RegExp(re.source, 'i')
+          if (sc.files.some((f) => rei.test(f))) results.push('agent-settings')
+          const sd = sc.dirs.find((d) => rei.test(d))
           if (sd) results.push(ancestorOf(sd, ctx.prot))
           continue
         }
@@ -518,7 +522,7 @@ function wordKind(word, ctx) {
           const vm = [...w.matchAll(/\$\{?[A-Za-z_]\w*\}?/g)].pop()
           const tail = vm ? w.slice(vm.index + vm[0].length) : ''
           if ((tail.match(/\//g) ?? []).length >= 2) {
-            if (settingsCandidates(ctx.prot).files.some((f) => f.endsWith(tail))) results.push('agent-settings')
+            if (settingsCandidates(ctx.prot).files.some((f) => f.toLowerCase().endsWith(tail.toLowerCase()))) results.push('agent-settings')
             for (const e of ctx.prot.entries) {
               if (e.real.endsWith(tail) || (e.dir && listDir(e.real, ctx).some((pth) => pth.endsWith(tail)))) { results.push(e.kind); break }
             }
@@ -656,6 +660,62 @@ function gitSafe(args) {
   }
   return true
 }
+// `cp SRC... DIR/` (or `cp -t DIR SRC...`) creates DIR/<basename of SRC>: a file named like a protected
+// one lands there although no word of the command names it. Returns the kind of the protected path a
+// copy would create inside a directory operand, or null. A source whose name cannot be read (a $VAR, a
+// glob that could match) counts as the protected name when the directory holds one.
+function copyIntoDirKind(args, ctx) {
+  let targetDir = null; const operands = []; let opts = true
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (opts && a === '--') { opts = false; continue }
+    if (opts && a.startsWith('--')) {
+      if (a === '--target-directory') targetDir = args[++k] ?? null
+      else if (a.startsWith('--target-directory=')) targetDir = a.slice('--target-directory='.length)
+      continue
+    }
+    if (opts && a.startsWith('-') && a.length > 1) {
+      for (let q = 1; q < a.length; q++) {
+        if (a[q] === 't') { targetDir = q + 1 < a.length ? a.slice(q + 1) : args[++k] ?? null; break }
+        if (a[q] === 'S') { if (q + 1 >= a.length) k++; break } // --suffix value
+      }
+      continue
+    }
+    operands.push(a)
+  }
+  const dest = targetDir ?? (operands.length > 1 ? operands[operands.length - 1] : null)
+  const sources = targetDir !== null ? operands : operands.slice(0, -1)
+  if (dest === null || !sources.length) return null
+  const protectedChildren = (realD) => {
+    const names = new Map()
+    for (const e of ctx.prot.entries) if (dirname(e.real) === realD) names.set(basename(e.real), e.kind)
+    if (agentConfigDirKind(realD, ctx.prot)) for (const f of SETTINGS_FILES) names.set(f, 'agent-settings')
+    return names
+  }
+  for (const cwd of ctx.cwds) {
+    const w = expandWord(dest, ctx.vars, cwd)
+    if (!w || /[$`*?[]/.test(w)) continue
+    const realD = realOrSelf(isAbsolute(w) ? w : join(cwd, w))
+    let isDir = w.endsWith('/')
+    if (!isDir) { try { isDir = statSync(realD).isDirectory() } catch { /* not there: a file target, wordKind reads it */ } }
+    if (!isDir) continue
+    const children = protectedChildren(realD)
+    for (const src of sources) {
+      const base = basename(String(src).replace(/\/+$/, ''))
+      if (!base) continue
+      if (/[$`]/.test(base)) { if (children.size) return [...children.values()][0]; continue }
+      if (/[*?[]/.test(base)) {
+        const re = new RegExp(globToRegex(base).source, 'i')
+        for (const [name, kind] of children) if (re.test(name)) return kind
+        continue
+      }
+      const k = kindOf(join(realD, base), ctx.prot)
+      if (k) return k
+      for (const [name, kind] of children) if (name.toLowerCase() === base.toLowerCase()) return kind
+    }
+  }
+  return null
+}
 // Fail-closed decision for a whole Bash command. Returns { deny: false } or { deny: true, reason }.
 export function bashProtectedDecision(command, opts = {}) {
   const prot = opts.prot ?? protectedSet(opts)
@@ -682,6 +742,10 @@ export function bashProtectedDecision(command, opts = {}) {
       const target = arg === undefined ? homedir() : expandWord(arg, ctx.vars, ctx.current)
       if (arg === '-' || target.includes('$') || /[*?[`]/.test(target)) ctx.unknownCwd = true
       else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)) }
+    }
+    if (cmd === 'cp') {
+      const ck = copyIntoDirKind(words.slice(ci + 1), ctx)
+      if (ck) return { deny: true, reason: ck }
     }
     const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
     const ancKinds = [...kinds, ...rKinds].filter(isAnc)

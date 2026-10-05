@@ -941,6 +941,15 @@ describe('aliases, functions and a command name in a variable', () => {
     '$(echo curl) https://example.org/x', '$(which curl) example.org/x', '`echo curl` https://example.org/x', '"$(echo curl)" -s https://example.org/x',
     '$CMD https://example.org/x', '${CMD} -s https://example.org/x', '"$CMD" example.org/x', 'C=$(echo curl); $C https://example.org/x',
     'read c; $c https://example.org/x', 'alias c=$X; c https://example.org/x',
+    // a function whose body is not a brace group: ( ... ), a compound command, [[ ]]
+    'c() ( curl "$@" ); c https://example.org/x', 'c()(curl "$@");c example.org/x', 'c () (\n  curl -s "$@"\n)\nc https://example.org/x',
+    'c() if true; then curl "$@"; fi; c https://example.org/x', 'c() for i in 1; do curl "$@"; done; c example.org/x', 'c() while true; do curl "$@"; break; done; c https://example.org/x',
+    'c() [[ -n 1 ]] && curl "$@"; c https://example.org/x', 'function c ( ) { curl "$@"; }; c https://example.org/x', 'c() case 1 in 1) curl "$@";; esac; c https://example.org/x',
+    // a command word with a $ that is not resolved: a path, a suffix, a nested default
+    '$X/tool https://example.org/x', '${C}x example.org/y', '"${CMD:-$X}" https://example.org/x', '$1 https://example.org/x', '${!n} example.org/x',
+    // ${VAR:-default}, ${VAR-default}, ${VAR:=default}: the default stands in for an unassigned variable
+    '${C:-curl} https://example.org/x', '${C-wget} example.org/x', '${C:=curl} https://example.org/x', 'C=; ${C:-curl} https://example.org/x', 'C=${U:-curl}; $C https://example.org/x',
+    'curl ${U:-https://example.org/x}', 'curl "${U:-https://example.org/x}"', 'U=; curl ${U:-https://example.org/x}',
   ]
   it.each(DENY)('denies: %s', (cmd) => {
     expect(classify(cmd)).toMatchObject({ deny: true })
@@ -966,6 +975,9 @@ describe('aliases, functions and a command name in a variable', () => {
     'C=$(echo ls); $C -la', '$(pwd)/run.sh --verbose', '"$@"', 'exec "$@"',
     // a command word that is unresolved but takes no external argument
     '$CMD http://localhost:3420/x', '$CMD --help', '$CMD notes.txt', '$CMD ./local.sh',
+    // a $HOME path is a plain path; an assigned value wins over the default; a local default is local
+    '${HOME}/bin/tool https://example.org/ok', 'C=ls; ${C:-curl} -la', '${C:-ls} -la', 'curl ${U:-http://localhost:3420/x}', 'U=http://localhost:3420/x; curl ${U:-https://example.org/x}',
+    'c() ( echo hi ); c', 'c() ( curl "$@" ); c http://localhost:3420/x', 'c() if true; then echo hi; fi; c', 'c() for i in 1 2; do echo $i; done; c', 'c() [[ -n 1 ]] && echo hi; c',
     // everyday
     'git status', 'git diff --stat', 'npm test', 'ls', 'cat file', 'grep -rn foo src',
   ]

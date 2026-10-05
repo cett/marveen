@@ -510,6 +510,14 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     'mv .claude .claude.bak', 'ln -sfn /tmp/evil .claude',
     // substitutions and ambiguous quoting next to a protected word
     `echo $(cp /tmp/x ${L})`, `cat '${L}' 2>&1`,
+    // a copy into the directory creates <dir>/<basename of the source>: no word names the protected file
+    'cp /tmp/settings.json agents/boris/.claude/', 'cp /tmp/settings.local.json agents/boris/.claude', 'cp /tmp/x/settings.local.json agents/boris/.claude-config/',
+    'cp -t agents/boris/.claude /tmp/settings.json', 'cp --target-directory=agents/boris/.claude /tmp/settings.local.json', 'cp -pt agents/boris/.claude /tmp/settings.json',
+    'cp -f /tmp/settings.json agents/boris/.claude/', 'cp /tmp/settings.json .claude/', 'cd agents/boris/.claude && cp /tmp/settings.json .', 'cd agents/boris/.claude && cp /tmp/settings.local.json ./',
+    'cp /tmp/*.json agents/boris/.claude/', 'cp /tmp/settings.* agents/boris/.claude/', 'cp "$SRC" agents/boris/.claude/', 'cp /tmp/$NAME agents/boris/.claude-config/',
+    // the names compare without regard to case (a file that does not exist yet keeps its spelling)
+    'cp /tmp/x agents/boris/.CLAUDE/Settings.Local.json', 'echo x > agents/boris/.Claude/SETTINGS.JSON', 'echo x > agents/boris/.claude/Settings.json', 'cp /tmp/Settings.json agents/boris/.claude/',
+    'echo x > agents/newone/.CLAUDE/SETTINGS.LOCAL.JSON', 'echo x > .CLAUDE/Settings.Local.json', 'echo x > .claude/SETTINGS.local.json', 'mv agents/boris/.CLAUDE agents/boris/gone', 'cp /tmp/x agents/*/.CLAUDE/SETTINGS.JSON',
   ]
   it.each(DENIED)('denies: %s', (command) => {
     expect(bash(command)).toEqual({ deny: true, reason: 'agent-settings' })
@@ -524,6 +532,9 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     'cp /tmp/x.md agents/boris/.claude/skills/x/SKILL.md', 'echo x > agents/boris/.claude/other.json', 'mkdir -p agents/boris/.claude/skills/y', 'touch agents/boris/.claude/skills/y/SKILL.md',
     // the user-global file is the owner's: not covered, said in the gate header
     'cat ~/.claude/settings.json', 'jq .model ~/.claude/settings.json',
+    // a copy into a directory that holds them is fine while the new name is not a settings file
+    'cp /tmp/x.md agents/boris/.claude/', 'cp /tmp/a.md /tmp/b.md agents/boris/.claude/skills/', 'cp -t agents/boris/.claude /tmp/other.json', 'cp /tmp/settings.json agents/boris/', 'cp /tmp/settings.json agents/boris/notes/',
+    'cp /tmp/settings.json /tmp/copy.json', 'cp /tmp/*.md agents/boris/.claude/', 'cd agents/boris/.claude && cp /tmp/x.md .',
   ]
   it.each(ALLOWED)('allows: %s', (command) => {
     expect(bash(command)).toEqual({ deny: false })
@@ -543,5 +554,15 @@ describe('Claude Code settings files: a sub-agent cannot switch its own gates of
     expect(bashOut.hookSpecificOutput.permissionDecision).toBe('deny')
     const read = run({ tool_name: 'Bash', tool_input: { command: 'cat agents/someone/.claude/settings.local.json' }, cwd: installRoot })
     expect(read.stdout).toBe('')
+  })
+})
+
+describe('a copy into the store directory creates a file named like the source', () => {
+  it('cp <anything named egress-allowlist.json> store/ is denied; other names still pass', () => {
+    expect(bash('cp /tmp/egress-allowlist.json store/')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('cp -t store /tmp/egress-vendor-hosts.json')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('cp /tmp/*.json store/')).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(bash('cp /tmp/x.json store/')).toEqual({ deny: false })
+    expect(bash('cp /tmp/x.json store')).toEqual({ deny: false })
   })
 })

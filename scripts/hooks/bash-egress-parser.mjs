@@ -26,10 +26,11 @@
 //      xargs reads its arguments from stdin, which cannot be seen: an xargs-fed network client with
 //      no literal destination in the command is denied.
 //   4b. an alias or function defined in the SAME command line (`alias c=curl; c https://x`,
-//      `c(){ curl "$@"; }; c https://x`, `function c { ...; }`) is judged as what a call to it expands
-//      to; `command` and `builtin` are seen through; a command name held in a variable assigned in the
-//      same line is expanded; a command word that stays unresolved ($VAR nobody assigned here, `$(...)`,
-//      a backtick) followed by an external-looking URL or host argument is denied
+//      `c(){ curl "$@"; }; c https://x`, `function c { ...; }`, a body in ( ) or a compound command:
+//      `c() ( curl "$@" )`, `c() if ...; fi`) is judged as what a call to it expands to; `command` and `builtin` are seen through; a command name held in a variable assigned in the
+//      same line is expanded (`${VAR:-default}` and `${VAR-default}` with the default when nothing
+//      assigned VAR); a command word that stays unresolved (any `$` left after expansion except a
+//      `$HOME/` path, `$(...)`, a backtick) followed by an external-looking URL or host argument is denied
 //      (reason `unresolved-command-word`).
 //   5. a command that cannot be PARSED (unterminated quote or heredoc) and carries any of the above,
 //      or a URL, is denied (fail closed); an unparseable command with nothing network-capable passes.
@@ -220,7 +221,14 @@ function loopVariants(text, env, loops) {
   return out.map((t) => expand(t, env))
 }
 function expand(text, env) {
-  return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (all, a, b) => (env[a ?? b] ?? all))
+  return text
+    // ${VAR:-default} / ${VAR-default} / ${VAR:=default} / ${VAR=default}: the default stands in when
+    // nothing assigned VAR here (and, with the colon, when it is empty), so the destination is read.
+    .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(:?)[-=]([^}]*)\}/g, (all, name, colon, dflt) => {
+      const v = env[name]
+      return v === undefined || (colon && v === '') ? dflt : v
+    })
+    .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (all, a, b) => (env[a ?? b] ?? all))
 }
 // $( ... ) and backtick substitutions are commands of their own: lift them out (length-preserving,
 // so offsets still align), classify each inner command separately, and parse the rest without them.
@@ -753,19 +761,36 @@ function substituteParams(body, args) {
     .replace(/\$\{?([1-9])\}?/g, (_, d) => args[Number(d) - 1] ?? '')
     .replace(/\$#/g, String(args.length))
 }
-// Function definitions in the MASKED text: `name() {`, `name () {`, `function name {`, `function name() {`.
+// Function definitions in the MASKED text: `name() {`, `name () {`, `function name {`, `function name() {`,
+// and the other compound bodies bash accepts: `name() ( ... )`, `name() if ...; fi`, `for`, `while`,
+// `until`, `case`, `select`, `[[ ... ]]`, `(( ... ))`. A brace or parenthesis body is cut at its matching
+// close; any other body runs to the end of the command line (a superset: it can only add commands that
+// are judged anyway, never hide one).
 function collectFunctions(orig, masked) {
   const funcs = new Map()
   const rxs = [
-    /(?:^|[\s;&|(){])(?:function\s+)?([A-Za-z_][\w:.-]*)\s*\(\s*\)\s*\{/g,
-    /(?:^|[\s;&|(){])function\s+([A-Za-z_][\w:.-]*)\s*\{/g,
+    /(?:^|[\s;&|(){])(?:function\s+)?([A-Za-z_][\w:.-]*)\s*\(\s*\)\s*/g,
+    /(?:^|[\s;&|(){])function\s+([A-Za-z_][\w:.-]*)\s*/g,
   ]
-  for (const rx of rxs) {
+  const matchClose = (open, close, from) => {
+    let depth = 1; let j = from + 1
+    while (j < masked.length && depth > 0) { if (masked[j] === open) depth++; else if (masked[j] === close) depth--; j++ }
+    return j
+  }
+  for (const [ri, rx] of rxs.entries()) {
     for (const m of masked.matchAll(rx)) {
-      const brace = m.index + m[0].length - 1
-      let depth = 1; let j = brace + 1
-      while (j < masked.length && depth > 0) { if (masked[j] === '{') depth++; else if (masked[j] === '}') depth--; j++ }
-      funcs.set(m[1], { body: orig.slice(brace + 1, depth === 0 ? j - 1 : orig.length), head: [m.index, brace + 1] })
+      const at = m.index + m[0].length
+      const ch = masked[at]
+      if (ch === undefined || (ri === 1 && ch === '(')) continue // `function c()` is the first pattern's
+      let bodyFrom; let bodyTo; let headEnd
+      if (ch === '{' || ch === '(') {
+        const j = matchClose(ch, ch === '{' ? '}' : ')', at)
+        bodyFrom = at + 1; bodyTo = j - 1; headEnd = at + 1
+        if (bodyTo > masked.length || masked[bodyTo] !== (ch === '{' ? '}' : ')')) bodyTo = orig.length
+      } else if (/^(?:if|for|while|until|case|select|\[\[)(?![\w-])/.test(masked.slice(at))) {
+        bodyFrom = at; bodyTo = orig.length; headEnd = at
+      } else continue
+      funcs.set(m[1], { body: orig.slice(bodyFrom, bodyTo), head: [m.index, headEnd] })
     }
   }
   return funcs
@@ -821,7 +846,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       const { ow, k } = commandIndex(shellWords(expand(marked.slice(a, b), menv).replace(/\$(['"])/g, '$1')))
       if (k === -1) continue
       const w = ow[k]
-      if (!(w.includes('\u0001') || /^\$\{?[A-Za-z_]\w*\}?$/.test(w))) continue
+      if (!(w.includes('\u0001') || (w.includes('$') && !/^\$\{?HOME\}?\//.test(w)))) continue
       const hs = ow.slice(k + 1).map((x) => externalHostOf(x, isExt)).filter(Boolean)
       if (hs.length) return { deny: true, reason: 'unresolved-command-word', hosts: [...new Set(hs)] }
     }
