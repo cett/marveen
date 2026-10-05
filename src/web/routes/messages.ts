@@ -312,12 +312,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }
     }
     // Symmetric completion hook: complete:true closes the SENDER's own
-    // 'assigned'/'active' row to 'done'. A 'stale', already-'done', or
-    // missing row is a no-op -- the sweeper already reclaimed it or it was
-    // never opened, and #854's TTL sweep stays as the safety net either way.
+    // 'assigned'/'active'/'blocked' row to 'done' (nothing else clears a
+    // 'blocked' row, so a successful re-run must be able to). A 'stale',
+    // already-'done', or missing row is a no-op -- the sweeper already
+    // reclaimed it or it was never opened, and the TTL sweep stays as the
+    // safety net either way.
     if (complete === true) {
       const senderRow = findBlackboardRowByAgent(from.trim())
-      if (senderRow && (senderRow.status === 'assigned' || senderRow.status === 'active')) {
+      if (senderRow && (senderRow.status === 'assigned' || senderRow.status === 'active' || senderRow.status === 'blocked')) {
         upsertBlackboard(senderRow.agent_id, {
           status: 'done',
           summary: senderRow.summary,

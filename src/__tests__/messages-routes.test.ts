@@ -500,6 +500,49 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     })
   })
 
+  it('complete:true closes the sender\'s blocked row to done', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'blocked', summary: 'Waiting for auth', updated_at: 0, tenant_id: 'default', blocked_by: 'agent-c', blocked_reason: 'auth expired',
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 56, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Re-run succeeded',
+      complete: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    // Only the sender's own row is looked up and written, never the recipient's.
+    expect(vi.mocked(db.findBlackboardRowByAgent)).toHaveBeenCalledWith('agent-b')
+    expect(vi.mocked(db.findBlackboardRowByAgent)).not.toHaveBeenCalledWith('agent-c')
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledOnce()
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledWith('agent-b', {
+      status: 'done',
+      summary: 'Waiting for auth',
+      task_ref: null,
+    })
+  })
+
+  it('complete omitted: a blocked sender row stays blocked', async () => {
+    const db = await import('../db.js')
+    // No mockReturnValueOnce here: without complete:true the row is never read,
+    // and an unconsumed once-value would leak into the next test.
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue({
+      id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'blocked', summary: 'Waiting for auth', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 57, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'agent-b',
+      to: 'agent-c',
+      content: 'Still stuck, need a restart',
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+
   it('complete:true is a no-op when the sender row is already stale', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({

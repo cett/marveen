@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for scripts/blackboard-hygiene.py.
 
-Pure helpers (pane_is_active, is_lagging, next_counters) are tested directly;
+Pure helpers (pane_is_active, is_lagging, is_stale_blocked, next_counters) are tested directly;
 counter persistence runs against a throwaway SQLite file with the real
 agent_state shape; main() runs end to end with the dashboard, tmux and clock
 mocked, so the nudge / escalation / reset / dry-run / failure contract is
@@ -64,6 +64,24 @@ class IsLaggingTest(unittest.TestCase):
 
     def test_active_row_just_inside_two_hours_is_fine(self):
         self.assertFalse(mod.is_lagging({"status": "active", "updated_at": NOW - 2 * 3600 + 60}, NOW))
+
+
+class IsStaleBlockedTest(unittest.TestCase):
+    def test_exactly_one_hour_is_not_stale(self):
+        self.assertFalse(mod.is_stale_blocked({"status": "blocked", "updated_at": NOW - 3600}, NOW))
+
+    def test_one_hour_and_one_second_is_stale(self):
+        self.assertTrue(mod.is_stale_blocked({"status": "blocked", "updated_at": NOW - 3601}, NOW))
+
+    def test_fresh_blocked_row_is_not_stale(self):
+        self.assertFalse(mod.is_stale_blocked({"status": "blocked", "updated_at": NOW - 600}, NOW))
+
+    def test_old_non_blocked_rows_are_never_stale_blocked(self):
+        for status in ("done", "active", "assigned", "stale"):
+            self.assertFalse(mod.is_stale_blocked({"status": status, "updated_at": NOW - 10 * 3600}, NOW), status)
+
+    def test_missing_row_is_not_stale_blocked(self):
+        self.assertFalse(mod.is_stale_blocked(None, NOW))
 
 
 class NextCountersTest(unittest.TestCase):
@@ -242,6 +260,68 @@ class MainTest(unittest.TestCase):
         self._fleet({"status": "done", "updated_at": NOW - 120})
         mod.main([])
         self.assertEqual(self.sent, [])
+
+    def _blocked_idle_fleet(self, row=None):
+        """agent-a idle with a blocked row (default: 2h old); agent-b idle, no row."""
+        self._fleet()
+        self.panes["agent-a"] = "> idle"
+        self.board = [{"agent_id": "agent-a", **(row or {"status": "blocked", "updated_at": NOW - 2 * 3600})}]
+
+    def test_idle_agent_with_old_blocked_row_is_nudged_and_counted(self):
+        _make_db(self.db)
+        self._blocked_idle_fleet()
+        self.assertEqual(mod.main([]), 0)
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+        self.assertEqual(self.sent[0]["content"], mod.BLOCKED_IDLE_NUDGE_TEXT)
+        self.assertNotEqual(self.sent[0]["content"], mod.NUDGE_TEXT)
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_blocked_idle_second_round_escalates_with_blocked_idle_text_and_resets(self):
+        _make_db(self.db, '{"agent-a": 1}')
+        self._blocked_idle_fleet()
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a", "coord"])
+        self.assertTrue(self.sent[1]["content"].startswith("[ESZKALACIO]"))
+        self.assertIn("blocked-idle", self.sent[1]["content"])
+        self.assertIn("agent-a", self.sent[1]["content"])
+        self.assertEqual(self._counters(), {})
+
+    def test_fresh_blocked_row_on_idle_agent_is_not_nudged(self):
+        _make_db(self.db)
+        self._blocked_idle_fleet({"status": "blocked", "updated_at": NOW - 600})
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {})
+
+    def test_idle_agent_with_done_row_is_not_nudged(self):
+        _make_db(self.db)
+        self._blocked_idle_fleet({"status": "done", "updated_at": NOW - 5 * 3600})
+        mod.main([])
+        self.assertEqual(self.sent, [])
+
+    def test_active_blocked_agent_gets_exactly_one_message_from_the_lagging_branch(self):
+        _make_db(self.db)
+        self._fleet({"status": "blocked", "updated_at": NOW - 2 * 3600})
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+        self.assertEqual(self.sent[0]["content"], mod.NUDGE_TEXT)
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_coordinator_with_old_blocked_row_is_never_nudged(self):
+        _make_db(self.db)
+        self._blocked_idle_fleet({"status": "done", "updated_at": NOW - 5 * 3600})
+        self.panes["coord"] = "> idle"
+        self.board.append({"agent_id": "coord", "status": "blocked", "updated_at": NOW - 5 * 3600})
+        mod.main([])
+        self.assertEqual(self.sent, [])
+
+    def test_dry_run_does_not_send_or_count_blocked_idle(self):
+        _make_db(self.db)
+        self._blocked_idle_fleet()
+        self.assertEqual(mod.main(["--dry-run"]), 0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {})
+        self.assertIn("blocked_idle=agent-a", print.call_args[0][0])
 
     def test_dry_run_sends_nothing_and_writes_nothing(self):
         _make_db(self.db)
