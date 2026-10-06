@@ -17,13 +17,15 @@ TENANT_CONTEXT_MAX_AGE_SECONDS, default 12h), an unreadable database (for a call
 or an error in this gate all block the tool call. Contract: exit 0 = allow, exit 2 = block.
 
 KNOWN LIMITS (owner decision: the shell side is best effort): a Bash command can build a path
-indirectly (variables, globs over the skills root), and only its absolute and ~ path words are followed
-through symlinks (a relative path through an unknown link is not); a Glob/Grep rooted ABOVE the skills
+indirectly (variables, globs over the skills root, a symlink the same command creates before it uses it),
+and a path word is followed through symlinks relative to the session cwd only (a command that cd's
+elsewhere first is resolved against the wrong directory); a Glob/Grep rooted ABOVE the skills
 directories is allowed (it would otherwise break every repository-wide search).
 """
 import json
 import os
 import re
+import shlex
 import sqlite3
 import sys
 
@@ -60,7 +62,7 @@ def skill_dirs_in(text, cwd, resolve=False):
         if resolve:
             variants.append(os.path.realpath(base))
     for v in variants:
-        if "skills/" not in v:
+        if "skills/" not in v.lower():
             continue
         for m in tcl.SKILL_DIR_RX.finditer(v):
             if m.group(1) not in found:
@@ -72,11 +74,29 @@ def skill_dirs_in(text, cwd, resolve=False):
 _BASH_PATH_RX = re.compile(r"(?:^|(?<=[\s'\"=(]))[~/][^\s'\"`;|&<>()$*?\[\]{}\\]*")
 
 
-def bash_skill_dirs(command):
-    """Directory names a shell command points into: the textual match plus symlink-resolved path words."""
+def _shell_words(command):
+    """The words of a command as the shell sees them (quotes and backslashes removed, operators split off),
+    so '/abs/.cla'ude/skills/x/SKILL.md' and a backslash-escaped path are read as the path they spell.
+    A command shlex cannot parse (an apostrophe in prose, an unterminated quote) yields no words: the textual
+    and regex passes still run on it, it is not blocked for that."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        return list(lex)
+    except ValueError:
+        return []
+
+
+def bash_skill_dirs(command, cwd=None):
+    """Directory names a shell command points into: the textual match plus every path word (raw regex words
+    and shell-dequoted words, relative ones joined to the session cwd) resolved through symlinks."""
     found = skill_dirs_in(command, None)
-    for word in _BASH_PATH_RX.findall(command)[:20]:
-        for d in skill_dirs_in(word, None, resolve=True):
+    words = []
+    for w in _BASH_PATH_RX.findall(command) + [w for w in _shell_words(command) if "/" in w or w.startswith("~")]:
+        if w not in words:
+            words.append(w)
+    for word in words:
+        for d in skill_dirs_in(word, cwd, resolve=True):
             if d not in found:
                 found.append(d)
     return found
@@ -95,7 +115,7 @@ def extract(tool, inp, cwd):
         for k in ("path", "pattern", "glob"):
             out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd, resolve=True)]
     elif tool == "Bash":
-        out += [("dir", d) for d in bash_skill_dirs(str(inp.get("command") or ""))]
+        out += [("dir", d) for d in bash_skill_dirs(str(inp.get("command") or ""), cwd)]
     return out
 
 
@@ -126,7 +146,7 @@ def main():
             if kind == "skill":
                 cands = [s for s in skills if value in s["names"]]
             else:
-                cands = [s for s in skills if s["dir"] == value]
+                cands = [s for s in skills if (s["dir"] or "").casefold() == value.casefold()]
             if not cands:
                 continue  # fleet/global/plugin skill or not a skill at all
             if tenant is None:

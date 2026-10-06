@@ -85,7 +85,7 @@ class Base(unittest.TestCase):
     def gate(self, tool, **inp):
         hooks = getattr(self, "hooks", HOOKS)   # a mutated copy of the hooks directory in the mutation tests
         return subprocess.run([sys.executable, os.path.join(hooks, "tenant-skill-gate.py")],
-                              input=json.dumps({"tool_name": tool, "tool_input": inp, "cwd": CWD}),
+                              input=json.dumps({"tool_name": tool, "tool_input": inp, "cwd": getattr(self, "cwd", CWD)}),
                               capture_output=True, text=True, env=self.env())
 
     def allowed(self, tool, **inp):
@@ -377,6 +377,52 @@ class TestSymlinks(Base):
         self.assertIn(self.gate("Read", file_path="/a\x00b/skills/x").returncode, (0, 2))
 
 
+class TestShellFormsAndCase(Base):
+    """Quoting, escaping, letter case and word count must not hide a skill directory from the gate."""
+
+    def setUp(self):
+        super().setUp()
+        self.prompt(CHAN % "111")
+        self.real = os.path.join(self.tmp.name, "real", ".claude", "skills")
+        os.makedirs(os.path.join(self.real, "tenant-y-tool"))
+        self.link = os.path.join(self.tmp.name, "innocent-name")
+        os.symlink(self.real, self.link)
+
+    def test_shell_quoting_that_splits_the_path_text_is_read_as_the_shell_reads_it(self):
+        self.denied("Bash", command="cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)
+        self.denied("Bash", command='cat "%s/.cla""ude/skills/tenant-y-tool/SKILL.md"' % CWD)
+        self.denied("Bash", command="cat %s/\\.claude/skills/tenant-y-tool/SKILL.md" % CWD)
+        self.denied("Bash", command="cat %s/.claude/skills/ten'ant-y-to'ol/SKILL.md" % CWD)
+        self.allowed("Bash", command="cat '%s/.cla'ude/skills/tenant-x-demo/SKILL.md" % CWD)   # own tenant
+
+    def test_a_command_shlex_cannot_parse_is_still_judged_textually_and_not_blocked_for_it(self):
+        self.allowed("Bash", command="echo it's fine")
+        self.denied("Bash", command="echo it's; cat %s/.claude/skills/tenant-y-tool/SKILL.md" % CWD)
+
+    def test_letter_case_does_not_hide_a_directory(self):
+        self.denied("Read", file_path=CWD + "/.claude/SKILLS/tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path=CWD + "/.CLAUDE-CONFIG/Skills/tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path=SK + "Tenant-Y-Tool/SKILL.md")
+        self.denied("Bash", command="cat %sTENANT-Y-TOOL/SKILL.md" % SK)
+        self.denied("Bash", command="cat %s/.Claude/Skills/tenant-y-tool/SKILL.md" % CWD)
+        self.allowed("Read", file_path=SK + "TENANT-X-DEMO/SKILL.md")    # own tenant, any case
+        self.allowed("Read", file_path=SK + "Handoff/SKILL.md")           # fleet skill
+
+    def test_the_link_word_is_found_among_many_path_words(self):
+        words = " ".join("/nonexistent/path%d" % i for i in range(60))
+        self.denied("Bash", command="cat %s %s/tenant-y-tool/SKILL.md" % (words, self.link))
+
+    def test_a_relative_symlink_is_followed_from_the_session_cwd(self):
+        cwd = os.path.join(self.tmp.name, "agent-a")      # basename = the agent id the context belongs to
+        os.makedirs(cwd)
+        os.symlink(self.real, os.path.join(cwd, "shortcut"))
+        self.cwd = cwd
+        self.denied("Bash", command="cat shortcut/tenant-y-tool/SKILL.md")
+        self.denied("Bash", command="cat ./shortcut/tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path="shortcut/tenant-y-tool/SKILL.md")
+        self.allowed("Bash", command="cat shortcut/handoff/SKILL.md")
+
+
 class TestGateMutations(Base):
     """Each guard added for the alias fail-open is load-bearing: a mutated copy of the hooks must let one of the
     must-block calls through."""
@@ -399,6 +445,9 @@ class TestGateMutations(Base):
             "alias_bash": ("Bash", dict(command="cat %stenant-y-tool/SKILL.md" % ALIAS)),
             "link_read": ("Read", dict(file_path=self.link + "/tenant-y-tool/SKILL.md")),
             "link_bash": ("Bash", dict(command="cat %s/tenant-y-tool/SKILL.md" % self.link)),
+            "case_root": ("Read", dict(file_path=CWD + "/.claude/SKILLS/tenant-y-tool/SKILL.md")),
+            "case_dir": ("Read", dict(file_path=SK + "Tenant-Y-Tool/SKILL.md")),
+            "quote_bash": ("Bash", dict(command="cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)),
         }
 
     def patch(self, fname, old, new):
@@ -430,12 +479,24 @@ class TestGateMutations(Base):
         self.assertIn("link_read", self.survivors())
 
     def test_bash_not_resolving_words_is_caught(self):
-        self.patch("tenant-skill-gate.py", "skill_dirs_in(word, None, resolve=True)", "skill_dirs_in(word, None)")
+        self.patch("tenant-skill-gate.py", "skill_dirs_in(word, cwd, resolve=True)", "skill_dirs_in(word, cwd)")
         self.assertEqual(self.survivors(), ["link_bash"])
 
     def test_dropping_the_bash_word_scan_is_caught(self):
-        self.patch("tenant-skill-gate.py", "[:20]:", "[:0]:")
-        self.assertEqual(self.survivors(), ["link_bash"])
+        self.patch("tenant-skill-gate.py", "    for word in words:", "    for word in []:")
+        self.assertEqual(sorted(self.survivors()), ["link_bash", "quote_bash"])
+
+    def test_dropping_the_shell_dequoting_is_caught(self):
+        self.patch("tenant-skill-gate.py", "        return list(lex)", "        return []")
+        self.assertEqual(self.survivors(), ["quote_bash"])
+
+    def test_case_sensitive_pattern_is_caught(self):
+        self.patch("tenant_context_lib.py", ", re.IGNORECASE)", ")")
+        self.assertIn("case_root", self.survivors())
+
+    def test_case_sensitive_directory_compare_is_caught(self):
+        self.patch("tenant-skill-gate.py", '(s["dir"] or "").casefold() == value.casefold()', 's["dir"] == value')
+        self.assertIn("case_dir", self.survivors())
 
 
 if __name__ == "__main__":

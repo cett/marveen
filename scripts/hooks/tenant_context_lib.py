@@ -205,7 +205,10 @@ SAFE_SEGMENT = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 # A skill directory under ANY skill root: <..>/.claude/skills/<dir> (global, project-level, agent-local) or
 # <..>/.claude-config/skills/<dir>, the config alias the harness gives each agent (a symlink onto the global
 # root). Missing the alias made the gate see no directory there and wave the call through (fail-open).
-SKILL_DIR_RX = re.compile(r'(?<![\w.-])\.claude(?:-config)?/skills/([^/\s\'"`;|&<>()$*?\[\]{}\\]+)')
+# Case-insensitive: macOS volumes are case-insensitive by default, so .claude/Skills/<Dir> reaches the same
+# directory; the gate compares directory names with casefold() for the same reason (over-blocking on a
+# case-sensitive volume is the safe side).
+SKILL_DIR_RX = re.compile(r'(?<![\w.-])\.claude(?:-config)?/skills/([^/\s\'"`;|&<>()$*?\[\]{}\\]+)', re.IGNORECASE)
 FRONTMATTER_NAME_RX = re.compile(r'\A---\s*\n(.*?)\n---', re.DOTALL)
 
 
