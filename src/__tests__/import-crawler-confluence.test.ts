@@ -3,7 +3,13 @@
 // crawlConfluenceSource itself is module-private, same as the other
 // connectors (crawlLocalSource/crawlGdriveSource/crawlSharePointSource).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mkdtempSync, readdirSync, copyFileSync, rmSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import Database from 'better-sqlite3'
 import { initDatabase, getDb } from '../db.js'
+import { applyMigrations } from '../db-migrations.js'
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
 vi.mock('../db.js', async (importOriginal) => {
@@ -17,6 +23,7 @@ vi.mock('../web/vault.js', () => ({ getSecret: (...args: [string, string?]) => m
 import { crawlSource } from '../web/import-crawler.js'
 
 const BASE_URL = 'https://example.atlassian.net'
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 function createConfluenceSource(overrides: Partial<{
   id: string; path: string; last_run_at: number | null; tenant_id: string; base_url: string | null
@@ -442,5 +449,71 @@ describe('crawlConfluenceSource -- incremental sync ordering (regression)', () =
     const rows = importedRows(id)
     expect(rows).toHaveLength(1)
     expect(rows[0].content).toContain('EDITED')
+  })
+})
+
+describe('migration 0071 -- one full re-sync after the sort fix', () => {
+  function migrationsBefore71(dir: string) {
+    for (const f of readdirSync(MIGRATIONS_DIR)) {
+      if (f.endsWith('.sql') && f < '0071') copyFileSync(join(MIGRATIONS_DIR, f), join(dir, f))
+    }
+  }
+
+  function insertSource(db: Database.Database, id: string, type: string, lastRun: number | null) {
+    db.prepare(`
+      INSERT INTO import_sources (id, type, path, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id)
+      VALUES (?, ?, 'p', 4, 1, ?, 1, 1, 'default')
+    `).run(id, type, lastRun)
+  }
+
+  it('clears last_run_at on Confluence sources only, then runs once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'confluence-0071-'))
+    try {
+      migrationsBefore71(dir)
+      const db = new Database(':memory:')
+      applyMigrations(db, dir)
+      insertSource(db, 'c1', 'confluence', 1_700_000_000)
+      insertSource(db, 'c2', 'confluence', null)
+      insertSource(db, 'l1', 'local', 1_700_000_001)
+      insertSource(db, 'g1', 'gdrive', 1_700_000_002)
+
+      copyFileSync(join(MIGRATIONS_DIR, '0071_confluence_resync_after_sort_fix.sql'), join(dir, '0071_confluence_resync_after_sort_fix.sql'))
+      applyMigrations(db, dir)
+
+      const lastRun = (id: string) => (db.prepare('SELECT last_run_at AS t FROM import_sources WHERE id = ?').get(id) as any).t
+      expect(lastRun('c1')).toBeNull()
+      expect(lastRun('c2')).toBeNull()
+      expect(lastRun('l1')).toBe(1_700_000_001)
+      expect(lastRun('g1')).toBe(1_700_000_002)
+
+      // Recorded by the runner: a later crawl's last_run_at survives a second run.
+      expect((db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 71').get() as any).n).toBe(1)
+      db.prepare("UPDATE import_sources SET last_run_at = 1800000000 WHERE id = 'c1'").run()
+      applyMigrations(db, dir)
+      expect(lastRun('c1')).toBe(1_800_000_000)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is a no-op when there is no Confluence source', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'confluence-0071-'))
+    try {
+      migrationsBefore71(dir)
+      const db = new Database(':memory:')
+      applyMigrations(db, dir)
+      insertSource(db, 'l1', 'local', 1_700_000_001)
+      copyFileSync(join(MIGRATIONS_DIR, '0071_confluence_resync_after_sort_fix.sql'), join(dir, '0071_confluence_resync_after_sort_fix.sql'))
+      expect(() => applyMigrations(db, dir)).not.toThrow()
+      expect((db.prepare('SELECT last_run_at AS t FROM import_sources WHERE id = ?').get('l1') as any).t).toBe(1_700_000_001)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a fresh database applies it with no sources and no error', () => {
+    const db = new Database(':memory:')
+    expect(() => applyMigrations(db, MIGRATIONS_DIR)).not.toThrow()
+    expect((db.prepare('SELECT COUNT(*) AS n FROM import_sources').get() as any).n).toBe(0)
   })
 })
