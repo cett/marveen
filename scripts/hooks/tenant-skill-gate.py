@@ -24,6 +24,7 @@ directories is allowed (it would otherwise break every repository-wide search).
 """
 import json
 import os
+import codecs
 import re
 import shlex
 import sqlite3
@@ -79,12 +80,31 @@ def _shell_words(command):
     so '/abs/.cla'ude/skills/x/SKILL.md' and a backslash-escaped path are read as the path they spell.
     A command shlex cannot parse (an apostrophe in prose, an unterminated quote) yields no words: the textual
     and regex passes still run on it, it is not blocked for that."""
-    try:
-        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        return list(lex)
-    except ValueError:
-        return []
+    words = []
+    # Two readings: the command as written, and with every $'...' (ANSI-C quoting, which shlex does not
+    # decode) replaced by the text it spells ($'/.\x63laude/skills/x' -> '/.claude/skills/x').
+    for text in (command, _ansi_c_decoded(command)):
+        try:
+            lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            lex.commenters = ""   # bash starts a comment only at the START of a word; shlex would also cut mid-word
+            words += list(lex)
+        except ValueError:
+            pass
+    return words
+
+
+_ANSI_C_RX = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+
+
+def _ansi_c_decoded(command):
+    def decode(m):
+        try:
+            text = codecs.decode(m.group(1), "unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return m.group(0)
+        return shlex.quote(text)
+    return _ANSI_C_RX.sub(decode, command)
 
 
 def bash_skill_dirs(command, cwd=None):
@@ -143,15 +163,22 @@ def main():
         if tenant is not None and not serves:
             tenant, why = None, "az agens mar nincs engedelyezve a(z) '%s' tenanthez" % ctx["tenant_id"]
         for kind, value in targets:
+            need_all = False
             if kind == "skill":
                 cands = [s for s in skills if value in s["names"]]
             else:
-                cands = [s for s in skills if (s["dir"] or "").casefold() == value.casefold()]
+                # An exact-case match is the directory the path names; only without one does the case-insensitive
+                # match stand in (a case-insensitive volume), and then EVERY candidate must be usable, so a
+                # tenant's own "Foo" never opens another tenant's "foo".
+                exact = [s for s in skills if s["dir"] == value]
+                cands = exact or [s for s in skills if (s["dir"] or "").casefold() == value.casefold()]
+                need_all = not exact
             if not cands:
                 continue  # fleet/global/plugin skill or not a skill at all
             if tenant is None:
                 block("a(z) '%s' tenant-skill nem hasznalhato: %s. Tenant-skill csak a sajat tenantja keresehez tartozik." % (value, why))
-            if not any(tcl.skill_accessible(s, tenant) for s in cands):
+            usable = all if need_all else any
+            if not usable(tcl.skill_accessible(s, tenant) for s in cands):
                 block("a(z) '%s' skill masik tenanthez tartozik, ez a keres a(z) '%s' tenanthe. A skill ebben a keresben nem hasznalhato." % (value, tenant))
     except SystemExit:
         raise

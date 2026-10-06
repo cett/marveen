@@ -408,6 +408,23 @@ class TestShellFormsAndCase(Base):
         self.allowed("Read", file_path=SK + "TENANT-X-DEMO/SKILL.md")    # own tenant, any case
         self.allowed("Read", file_path=SK + "Handoff/SKILL.md")           # fleet skill
 
+    def test_a_mid_word_hash_does_not_hide_the_rest_of_the_line(self):
+        self.denied("Bash", command="echo a#b; cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)
+
+    def test_ansi_c_quoting_is_decoded(self):
+        self.denied("Bash", command="cat $'%s/.\\x63laude/skills/tenant-y-tool/SKILL.md'" % CWD)
+        self.denied("Bash", command="cat $'%s/.\\143laude/skills/tenant-y-tool/SKILL.md'" % CWD)
+        self.allowed("Bash", command="cat $'%s/.\\x63laude/skills/tenant-x-demo/SKILL.md'" % CWD)
+
+    def test_two_tenants_directories_differing_only_by_case_are_not_interchangeable(self):
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO skills VALUES ('Case-Dir','a','body','tenant-x')")
+        con.execute("INSERT INTO skills VALUES ('case-dir','b','body','tenant-y')")
+        con.commit(); con.close()
+        self.allowed("Read", file_path=SK + "Case-Dir/SKILL.md")      # tenant-x's own, exact case
+        self.denied("Read", file_path=SK + "case-dir/SKILL.md")       # tenant-y's, exact case
+        self.denied("Read", file_path=SK + "CASE-DIR/SKILL.md")       # no exact match: every candidate must be usable
+
     def test_the_link_word_is_found_among_many_path_words(self):
         words = " ".join("/nonexistent/path%d" % i for i in range(60))
         self.denied("Bash", command="cat %s %s/tenant-y-tool/SKILL.md" % (words, self.link))
@@ -448,6 +465,8 @@ class TestGateMutations(Base):
             "case_root": ("Read", dict(file_path=CWD + "/.claude/SKILLS/tenant-y-tool/SKILL.md")),
             "case_dir": ("Read", dict(file_path=SK + "Tenant-Y-Tool/SKILL.md")),
             "quote_bash": ("Bash", dict(command="cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)),
+            "hash_bash": ("Bash", dict(command="echo a#b; cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)),
+            "ansi_bash": ("Bash", dict(command="cat $'%s/.\\x63laude/skills/tenant-y-tool/SKILL.md'" % CWD)),
         }
 
     def patch(self, fname, old, new):
@@ -484,11 +503,19 @@ class TestGateMutations(Base):
 
     def test_dropping_the_bash_word_scan_is_caught(self):
         self.patch("tenant-skill-gate.py", "    for word in words:", "    for word in []:")
-        self.assertEqual(sorted(self.survivors()), ["link_bash", "quote_bash"])
+        self.assertEqual(sorted(self.survivors()), ["ansi_bash", "hash_bash", "link_bash", "quote_bash"])
 
     def test_dropping_the_shell_dequoting_is_caught(self):
-        self.patch("tenant-skill-gate.py", "        return list(lex)", "        return []")
-        self.assertEqual(self.survivors(), ["quote_bash"])
+        self.patch("tenant-skill-gate.py", "            words += list(lex)", "            pass")
+        self.assertEqual(sorted(self.survivors()), ["ansi_bash", "hash_bash", "quote_bash"])
+
+    def test_shlex_comment_handling_is_caught(self):
+        self.patch("tenant-skill-gate.py", '            lex.commenters = ""', "            pass")
+        self.assertEqual(self.survivors(), ["hash_bash"])
+
+    def test_dropping_ansi_c_decoding_is_caught(self):
+        self.patch("tenant-skill-gate.py", "for text in (command, _ansi_c_decoded(command)):", "for text in (command,):")
+        self.assertEqual(self.survivors(), ["ansi_bash"])
 
     def test_case_sensitive_pattern_is_caught(self):
         self.patch("tenant_context_lib.py", ", re.IGNORECASE)", ")")
