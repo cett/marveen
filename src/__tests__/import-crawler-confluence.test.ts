@@ -273,7 +273,7 @@ describe('crawlConfluenceSource -- incremental sync', () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes('/spaces?keys=SPACE')) return jsonResponse(200, { results: [{ id: 'sp1', key: 'SPACE', name: 'S', type: 'global', status: 'current' }] })
       if (url.includes('/pages?space-id=sp1')) {
-        expect(url).not.toContain('sort=modified-date')
+        expect(url).not.toContain('sort=')
         return jsonResponse(200, { results: [page('p1', 'Old Page', 'sp1', '2020-01-01T00:00:00.000Z')] })
       }
       if (url.includes('/pages/p1')) return jsonResponse(200, pageDetail('p1', 'Old Page', 'sp1', '<p>old but first sync</p>'))
@@ -290,7 +290,7 @@ describe('crawlConfluenceSource -- incremental sync', () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes('/spaces?keys=SPACE')) return jsonResponse(200, { results: [{ id: 'sp1', key: 'SPACE', name: 'S', type: 'global', status: 'current' }] })
       if (url.includes('/pages?space-id=sp1')) {
-        expect(url).toContain('sort=modified-date')
+        expect(url).toContain('sort=-modified-date')
         return jsonResponse(200, {
           results: [
             page('p1', 'Recent Page', 'sp1', '2026-09-01T00:00:00.000Z'),
@@ -307,5 +307,140 @@ describe('crawlConfluenceSource -- incremental sync', () => {
 
     const rows = importedRows(id)
     expect(rows.map(r => r.file_path)).toEqual(['confluence/SPACE/p1'])
+  })
+})
+
+// A stand-in for the Confluence v2 /pages endpoint that behaves like the real
+// one where it matters here: `sort=modified-date` is ASCENDING, only the
+// `-modified-date` spelling is descending, and an unknown parameter such as
+// `direction` is ignored. A mock that returned a fixed newest-first list
+// regardless of the query is what let the original bug through.
+function confluenceFake(pages: Array<{ id: string; createdAt: string; withVersion?: boolean }>, pageSize: number) {
+  const listUrls: string[] = []
+  const detailIds: string[] = []
+  const impl = async (url: string) => {
+    if (url.includes('/spaces?keys=SPACE')) return jsonResponse(200, { results: [{ id: 'sp1', key: 'SPACE', name: 'S', type: 'global', status: 'current' }] })
+    if (url.includes('/pages?space-id=sp1')) {
+      listUrls.push(url)
+      const u = new URL(url)
+      const sort = u.searchParams.get('sort')
+      const sorted = [...pages].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+      if (sort === '-modified-date') sorted.reverse()
+      const offset = Number(u.searchParams.get('cursor') ?? '0')
+      const slice = sorted.slice(offset, offset + pageSize)
+      const next = offset + pageSize < sorted.length
+        ? `/wiki/api/v2/pages?space-id=sp1&status=current&limit=${pageSize}${sort ? `&sort=${sort}` : ''}&cursor=${offset + pageSize}`
+        : undefined
+      return jsonResponse(200, {
+        results: slice.map(p => p.withVersion === false
+          ? { id: p.id, title: `T${p.id}`, spaceId: 'sp1' }
+          : page(p.id, `T${p.id}`, 'sp1', p.createdAt)),
+        _links: next ? { next } : undefined,
+      })
+    }
+    const m = url.match(/\/pages\/(\w+)\?body-format/)
+    if (m) { detailIds.push(m[1]); return jsonResponse(200, pageDetail(m[1], `T${m[1]}`, 'sp1', `<p>body ${m[1]}</p>`)) }
+    throw new Error(`unexpected URL: ${url}`)
+  }
+  return { impl, listUrls, detailIds }
+}
+
+describe('crawlConfluenceSource -- incremental sync ordering (regression)', () => {
+  const lastRunIso = '2026-06-01T12:00:00.000Z'
+  const lastRun = Math.floor(Date.parse(lastRunIso) / 1000)
+
+  it('requests descending order with sort=-modified-date and never the unsupported direction param', async () => {
+    const id = createConfluenceSource({ path: 'SPACE', last_run_at: lastRun })
+    const fake = confluenceFake([{ id: 'p1', createdAt: '2026-09-01T00:00:00.000Z' }], 50)
+    fetchMock.mockImplementation(fake.impl)
+
+    await crawlSource(id)
+
+    expect(fake.listUrls).toHaveLength(1)
+    const u = new URL(fake.listUrls[0])
+    expect(u.searchParams.get('sort')).toBe('-modified-date')
+    expect(u.searchParams.has('direction')).toBe(false)
+  })
+
+  it('imports a page edited after the last run even when many older pages exist (the reported bug)', async () => {
+    const id = createConfluenceSource({ path: 'SPACE', last_run_at: lastRun })
+    const fake = confluenceFake([
+      { id: 'old1', createdAt: '2020-01-01T00:00:00.000Z' },
+      { id: 'old2', createdAt: '2021-01-01T00:00:00.000Z' },
+      { id: 'old3', createdAt: '2022-01-01T00:00:00.000Z' },
+      { id: 'edited', createdAt: '2026-09-01T00:00:00.000Z' },
+    ], 50)
+    fetchMock.mockImplementation(fake.impl)
+
+    await crawlSource(id)
+
+    expect(importedRows(id).map(r => r.file_path)).toEqual(['confluence/SPACE/edited'])
+    expect(fake.detailIds).toEqual(['edited'])
+  })
+
+  it('stops paginating at the first page past the cut-off: later pages are not requested', async () => {
+    const id = createConfluenceSource({ path: 'SPACE', last_run_at: lastRun })
+    const fake = confluenceFake([
+      { id: 'n1', createdAt: '2026-09-05T00:00:00.000Z' },
+      { id: 'n2', createdAt: '2026-09-04T00:00:00.000Z' },
+      { id: 'n3', createdAt: '2026-09-03T00:00:00.000Z' },
+      { id: 'o1', createdAt: '2020-01-01T00:00:00.000Z' },
+      { id: 'o2', createdAt: '2019-01-01T00:00:00.000Z' },
+      { id: 'o3', createdAt: '2018-01-01T00:00:00.000Z' },
+    ], 2)
+    fetchMock.mockImplementation(fake.impl)
+
+    await crawlSource(id)
+
+    // Pages of 2 newest-first: [n1,n2] [n3,o1 -> cut] ; the third request must not happen.
+    expect(fake.listUrls).toHaveLength(2)
+    expect(fake.detailIds.sort()).toEqual(['n1', 'n2', 'n3'])
+  })
+
+  it('keeps a page modified within the skew margin before last_run_at, and cuts off one clearly older', async () => {
+    const id = createConfluenceSource({ path: 'SPACE', last_run_at: lastRun })
+    const fake = confluenceFake([
+      { id: 'inside', createdAt: new Date(Date.parse(lastRunIso) - 2 * 60 * 1000).toISOString() },
+      { id: 'outside', createdAt: new Date(Date.parse(lastRunIso) - 30 * 60 * 1000).toISOString() },
+    ], 50)
+    fetchMock.mockImplementation(fake.impl)
+
+    await crawlSource(id)
+
+    expect(fake.detailIds).toEqual(['inside'])
+  })
+
+  it('never cuts off a page whose list summary has no version.createdAt', async () => {
+    const id = createConfluenceSource({ path: 'SPACE', last_run_at: lastRun })
+    const fake = confluenceFake([
+      { id: 'nov', createdAt: '2020-01-01T00:00:00.000Z', withVersion: false },
+    ], 50)
+    fetchMock.mockImplementation(fake.impl)
+
+    await crawlSource(id)
+
+    expect(fake.detailIds).toEqual(['nov'])
+  })
+
+  it('a re-run re-imports only changed content: edited page updates, untouched page is hash-skipped', async () => {
+    const id = createConfluenceSource({ path: 'SPACE', last_run_at: lastRun })
+    const fake = confluenceFake([{ id: 'p1', createdAt: '2026-09-01T00:00:00.000Z' }], 50)
+    fetchMock.mockImplementation(fake.impl)
+    await crawlSource(id)
+    const first = importedRows(id)
+    expect(first).toHaveLength(1)
+
+    // Same page, new body, newer version; the next incremental run (last_run_at
+    // was moved by the first crawl) must pick it up and update the row.
+    getDb().prepare('UPDATE import_sources SET last_run_at = ? WHERE id = ?').run(lastRun, id)
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/pages/p1?body-format')) return jsonResponse(200, pageDetail('p1', 'Tp1', 'sp1', '<p>body p1 EDITED</p>'))
+      return fake.impl(url)
+    })
+    await crawlSource(id)
+
+    const rows = importedRows(id)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].content).toContain('EDITED')
   })
 })
