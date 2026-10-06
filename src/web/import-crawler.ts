@@ -19,6 +19,7 @@ import {
   CONFLUENCE_PAGE_LIMIT,
   CONFLUENCE_MAX_RETRIES,
   CONFLUENCE_REQUEST_TIMEOUT_MS,
+  CONFLUENCE_INCREMENTAL_SKEW_MS,
 } from './import-config.js'
 import { HTML_LIKE_EXTS, stripMarkup } from './import-utils.js'
 import { getSecret } from './vault.js'
@@ -484,14 +485,22 @@ async function resolveConfluenceSpaceByKey(baseUrl: string, authHeader: string, 
  * Lists pages in a space. Full sync (sinceMs === null): every current page,
  * cursor-paginated, capped at MAX_FILES_PER_RUN. Incremental sync
  * (sinceMs set): sorted newest-modified-first, and pagination stops as soon
- * as a page's version.createdAt is older than sinceMs -- every remaining
- * page in that space is guaranteed unchanged since the last run.
+ * as a page's version.createdAt is older than sinceMs minus a skew margin --
+ * every remaining page in that space is guaranteed unchanged since the last
+ * run.
+ *
+ * The v2 /pages `sort` parameter takes a `-` prefix for descending order
+ * (`-modified-date`); there is no separate `direction` parameter. Sending
+ * `sort=modified-date` alone sorts ascending, which puts the oldest page
+ * first, trips the cut-off on it and silently skips every changed page.
+ * A page whose summary carries no version.createdAt is never cut off.
  */
 async function listConfluencePages(
   baseUrl: string, authHeader: string, spaceId: string, sinceMs: number | null,
 ): Promise<ConfluencePageSummary[]> {
   const pages: ConfluencePageSummary[] = []
-  const sortParams = sinceMs !== null ? '&sort=modified-date&direction=desc' : ''
+  const sortParams = sinceMs !== null ? '&sort=-modified-date' : ''
+  const cutoffMs = sinceMs !== null ? sinceMs - CONFLUENCE_INCREMENTAL_SKEW_MS : null
   let url: string | null = `${baseUrl}/wiki/api/v2/pages?space-id=${spaceId}&status=current&limit=${CONFLUENCE_PAGE_LIMIT}${sortParams}`
   while (url && pages.length < MAX_FILES_PER_RUN) {
     const res = await confluenceFetch(url, authHeader)
@@ -499,8 +508,8 @@ async function listConfluencePages(
     const data = await res.json() as { results: ConfluencePageSummary[]; _links?: { next?: string } }
     let stopped = false
     for (const p of data.results) {
-      if (sinceMs !== null && p.version?.createdAt) {
-        if (new Date(p.version.createdAt).getTime() < sinceMs) { stopped = true; break }
+      if (cutoffMs !== null && p.version?.createdAt) {
+        if (new Date(p.version.createdAt).getTime() < cutoffMs) { stopped = true; break }
       }
       pages.push(p)
     }

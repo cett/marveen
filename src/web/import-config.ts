@@ -62,3 +62,11 @@ export const CONFLUENCE_MAX_RETRIES = 3
 
 /** Per-request timeout for Confluence API calls. */
 export const CONFLUENCE_REQUEST_TIMEOUT_MS = 15_000
+
+/**
+ * Incremental-sync safety margin. The page cut-off is last_run_at minus this,
+ * so clock skew between this host and Confluence (or a page saved while the
+ * previous crawl was running) cannot hide a changed page. A page re-fetched
+ * inside the margin is harmless: the content-hash dedup skips it.
+ */
+export const CONFLUENCE_INCREMENTAL_SKEW_MS = 10 * 60 * 1000
