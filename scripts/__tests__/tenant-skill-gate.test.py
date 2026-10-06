@@ -6,6 +6,7 @@ missing/unknown/conflicting/stale context and on gate errors. Neutral fixtures o
 """
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -82,8 +83,9 @@ class Base(unittest.TestCase):
         con.commit(); con.close()
 
     def gate(self, tool, **inp):
-        return subprocess.run([sys.executable, os.path.join(HOOKS, "tenant-skill-gate.py")],
-                              input=json.dumps({"tool_name": tool, "tool_input": inp, "cwd": CWD}),
+        hooks = getattr(self, "hooks", HOOKS)   # a mutated copy of the hooks directory in the mutation tests
+        return subprocess.run([sys.executable, os.path.join(hooks, "tenant-skill-gate.py")],
+                              input=json.dumps({"tool_name": tool, "tool_input": inp, "cwd": getattr(self, "cwd", CWD)}),
                               capture_output=True, text=True, env=self.env())
 
     def allowed(self, tool, **inp):
@@ -278,6 +280,250 @@ class TestBash(Base):
         self.prompt(CHAN % "222")
         self.allowed("Bash", command="grep -rn skills docs | head")
         self.allowed("Bash", command="git log --oneline")
+
+
+ALIAS = CWD + "/.claude-config/skills/"   # the config alias the harness gives each agent
+
+
+class TestConfigAlias(Base):
+    """The .claude-config/skills/<dir> alias (a symlink onto the global root) is a skill directory too."""
+
+    def test_read_through_the_alias_is_judged_like_the_real_path(self):
+        self.prompt(CHAN % "111")
+        self.denied("Read", file_path=ALIAS + "tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path=ALIAS + "tenant-y-tool/scripts/run.sh")
+        self.allowed("Read", file_path=ALIAS + "tenant-x-demo/SKILL.md")      # own tenant
+        self.allowed("Read", file_path=ALIAS + "tenant-y-shared/SKILL.md")    # granted
+        self.allowed("Read", file_path=ALIAS + "handoff/SKILL.md")            # fleet skill, not gated
+        self.allowed("Read", file_path=CWD + "/.claude-config/notes.md")
+
+    def test_same_rule_for_edit_write_glob_grep_through_the_alias(self):
+        self.prompt(CHAN % "111")
+        self.denied("Edit", file_path=ALIAS + "tenant-y-tool/SKILL.md", old_string="a", new_string="b")
+        self.denied("Write", file_path=ALIAS + "tenant-y-tool/x.md", content="a")
+        self.denied("Grep", pattern="foo", path=ALIAS + "tenant-y-tool")
+        self.denied("Glob", pattern=ALIAS + "tenant-y-tool/**/*.sh")
+        self.allowed("Grep", pattern="foo", path=ALIAS + "tenant-x-demo")
+
+    def test_relative_and_tilde_alias_paths(self):
+        self.prompt(CHAN % "111")
+        self.denied("Read", file_path=".claude-config/skills/tenant-y-tool/SKILL.md")        # relative to the agent cwd
+        self.denied("Read", file_path=ALIAS + "tenant-x-demo/../tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path=CWD + "/.claude-config/./skills/tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path="~/.claude-config/skills/tenant-y-tool/SKILL.md")
+
+    def test_bash_naming_an_alias_directory_is_blocked_best_effort(self):
+        self.prompt(CHAN % "111")
+        self.denied("Bash", command="cat %stenant-y-tool/SKILL.md" % ALIAS)
+        self.denied("Bash", command="bash .claude-config/skills/tenant-y-tool/scripts/run.sh --go")
+        self.denied("Bash", command="cd x && python3 ~/.claude-config/skills/tenant-y-tool/run.py")
+        self.denied("Bash", command="head -n 5 '%stenant-y-tool/SKILL.md'" % ALIAS)
+        self.allowed("Bash", command="cat %stenant-x-demo/SKILL.md" % ALIAS)
+        self.allowed("Bash", command="ls %s" % ALIAS.rstrip("/"))    # listing the alias root names no directory
+
+    def test_default_context_cannot_read_tenant_skill_files_through_the_alias(self):
+        self.prompt("operator")
+        self.denied("Read", file_path=ALIAS + "tenant-x-demo/SKILL.md")
+
+    def test_a_config_directory_that_is_not_the_skills_alias_is_not_a_skill_dir(self):
+        self.prompt(CHAN % "111")
+        self.allowed("Read", file_path=CWD + "/.claude-config/projects/x/memory/MEMORY.md")
+        self.allowed("Read", file_path=CWD + "/.claude-configs/skills/tenant-y-tool/SKILL.md")   # different name
+        self.allowed("Bash", command="cat x.claude-config/skills/tenant-y-tool/SKILL.md")      # not a path component
+
+
+class TestSymlinks(Base):
+    """A symlink the textual patterns do not know is followed (realpath), for file tools and absolute shell words."""
+
+    def setUp(self):
+        super().setUp()
+        self.real = os.path.join(self.tmp.name, "real", ".claude", "skills")
+        for d in ("tenant-y-tool", "tenant-x-demo", "handoff"):
+            os.makedirs(os.path.join(self.real, d))
+            with open(os.path.join(self.real, d, "SKILL.md"), "w") as f:
+                f.write("x")
+        self.link = os.path.join(self.tmp.name, "innocent-name")
+        os.symlink(self.real, self.link)
+
+    def test_file_tools_follow_a_symlink_onto_the_skills_root(self):
+        self.prompt(CHAN % "111")
+        self.denied("Read", file_path=self.link + "/tenant-y-tool/SKILL.md")
+        self.denied("Edit", file_path=self.link + "/tenant-y-tool/SKILL.md", old_string="a", new_string="b")
+        self.denied("Grep", pattern="x", path=self.link + "/tenant-y-tool")
+        self.allowed("Read", file_path=self.link + "/tenant-x-demo/SKILL.md")
+        self.allowed("Read", file_path=self.link + "/handoff/SKILL.md")
+
+    def test_a_symlink_to_one_tenant_directory_is_followed(self):
+        self.prompt(CHAN % "111")
+        one = os.path.join(self.tmp.name, "shortcut")
+        os.symlink(os.path.join(self.real, "tenant-y-tool"), one)
+        self.denied("Read", file_path=one + "/SKILL.md")
+
+    def test_absolute_shell_words_follow_a_symlink(self):
+        self.prompt(CHAN % "111")
+        self.denied("Bash", command="cat %s/tenant-y-tool/SKILL.md" % self.link)
+        self.denied("Bash", command="cd x && python3 '%s/tenant-y-tool/SKILL.md'" % self.link)
+        self.allowed("Bash", command="cat %s/tenant-x-demo/SKILL.md" % self.link)
+        self.allowed("Bash", command="cat %s/handoff/SKILL.md" % self.link)
+
+    def test_a_broken_or_missing_link_target_does_not_crash_the_gate(self):
+        self.prompt(CHAN % "111")
+        os.symlink(os.path.join(self.tmp.name, "nowhere"), os.path.join(self.tmp.name, "dangling"))
+        self.allowed("Read", file_path=os.path.join(self.tmp.name, "dangling", "SKILL.md"))
+        self.allowed("Bash", command="cat %s/nope/SKILL.md" % os.path.join(self.tmp.name, "dangling"))
+
+    def test_a_malformed_path_never_crashes_the_gate(self):
+        self.prompt(CHAN % "111")
+        self.assertIn(self.gate("Read", file_path="/a\x00b/skills/x").returncode, (0, 2))
+
+
+class TestShellFormsAndCase(Base):
+    """Quoting, escaping, letter case and word count must not hide a skill directory from the gate."""
+
+    def setUp(self):
+        super().setUp()
+        self.prompt(CHAN % "111")
+        self.real = os.path.join(self.tmp.name, "real", ".claude", "skills")
+        os.makedirs(os.path.join(self.real, "tenant-y-tool"))
+        self.link = os.path.join(self.tmp.name, "innocent-name")
+        os.symlink(self.real, self.link)
+
+    def test_shell_quoting_that_splits_the_path_text_is_read_as_the_shell_reads_it(self):
+        self.denied("Bash", command="cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)
+        self.denied("Bash", command='cat "%s/.cla""ude/skills/tenant-y-tool/SKILL.md"' % CWD)
+        self.denied("Bash", command="cat %s/\\.claude/skills/tenant-y-tool/SKILL.md" % CWD)
+        self.denied("Bash", command="cat %s/.claude/skills/ten'ant-y-to'ol/SKILL.md" % CWD)
+        self.allowed("Bash", command="cat '%s/.cla'ude/skills/tenant-x-demo/SKILL.md" % CWD)   # own tenant
+
+    def test_a_command_shlex_cannot_parse_is_still_judged_textually_and_not_blocked_for_it(self):
+        self.allowed("Bash", command="echo it's fine")
+        self.denied("Bash", command="echo it's; cat %s/.claude/skills/tenant-y-tool/SKILL.md" % CWD)
+
+    def test_letter_case_does_not_hide_a_directory(self):
+        self.denied("Read", file_path=CWD + "/.claude/SKILLS/tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path=CWD + "/.CLAUDE-CONFIG/Skills/tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path=SK + "Tenant-Y-Tool/SKILL.md")
+        self.denied("Bash", command="cat %sTENANT-Y-TOOL/SKILL.md" % SK)
+        self.denied("Bash", command="cat %s/.Claude/Skills/tenant-y-tool/SKILL.md" % CWD)
+        self.allowed("Read", file_path=SK + "TENANT-X-DEMO/SKILL.md")    # own tenant, any case
+        self.allowed("Read", file_path=SK + "Handoff/SKILL.md")           # fleet skill
+
+    def test_a_mid_word_hash_does_not_hide_the_rest_of_the_line(self):
+        self.denied("Bash", command="echo a#b; cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)
+
+    def test_ansi_c_quoting_is_decoded(self):
+        self.denied("Bash", command="cat $'%s/.\\x63laude/skills/tenant-y-tool/SKILL.md'" % CWD)
+        self.denied("Bash", command="cat $'%s/.\\143laude/skills/tenant-y-tool/SKILL.md'" % CWD)
+        self.allowed("Bash", command="cat $'%s/.\\x63laude/skills/tenant-x-demo/SKILL.md'" % CWD)
+
+    def test_two_tenants_directories_differing_only_by_case_are_not_interchangeable(self):
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO skills VALUES ('Case-Dir','a','body','tenant-x')")
+        con.execute("INSERT INTO skills VALUES ('case-dir','b','body','tenant-y')")
+        con.commit(); con.close()
+        self.allowed("Read", file_path=SK + "Case-Dir/SKILL.md")      # tenant-x's own, exact case
+        self.denied("Read", file_path=SK + "case-dir/SKILL.md")       # tenant-y's, exact case
+        self.denied("Read", file_path=SK + "CASE-DIR/SKILL.md")       # no exact match: every candidate must be usable
+
+    def test_the_link_word_is_found_among_many_path_words(self):
+        words = " ".join("/nonexistent/path%d" % i for i in range(60))
+        self.denied("Bash", command="cat %s %s/tenant-y-tool/SKILL.md" % (words, self.link))
+
+    def test_a_relative_symlink_is_followed_from_the_session_cwd(self):
+        cwd = os.path.join(self.tmp.name, "agent-a")      # basename = the agent id the context belongs to
+        os.makedirs(cwd)
+        os.symlink(self.real, os.path.join(cwd, "shortcut"))
+        self.cwd = cwd
+        self.denied("Bash", command="cat shortcut/tenant-y-tool/SKILL.md")
+        self.denied("Bash", command="cat ./shortcut/tenant-y-tool/SKILL.md")
+        self.denied("Read", file_path="shortcut/tenant-y-tool/SKILL.md")
+        self.allowed("Bash", command="cat shortcut/handoff/SKILL.md")
+
+
+class TestGateMutations(Base):
+    """Each guard added for the alias fail-open is load-bearing: a mutated copy of the hooks must let one of the
+    must-block calls through."""
+
+    def setUp(self):
+        super().setUp()
+        self.real = os.path.join(self.tmp.name, "real", ".claude", "skills")
+        os.makedirs(os.path.join(self.real, "tenant-y-tool"))
+        self.link = os.path.join(self.tmp.name, "innocent-name")
+        os.symlink(self.real, self.link)
+        self.hooks = os.path.join(self.tmp.name, "hooks-copy")
+        shutil.copytree(HOOKS, self.hooks, ignore=shutil.ignore_patterns("__pycache__"))
+        self.prompt(CHAN % "111")
+
+    def calls(self):
+        return {
+            "alias_read": ("Read", dict(file_path=ALIAS + "tenant-y-tool/SKILL.md")),
+            "alias_edit": ("Edit", dict(file_path=ALIAS + "tenant-y-tool/SKILL.md", old_string="a", new_string="b")),
+            "alias_grep": ("Grep", dict(pattern="x", path=ALIAS + "tenant-y-tool")),
+            "alias_bash": ("Bash", dict(command="cat %stenant-y-tool/SKILL.md" % ALIAS)),
+            "link_read": ("Read", dict(file_path=self.link + "/tenant-y-tool/SKILL.md")),
+            "link_bash": ("Bash", dict(command="cat %s/tenant-y-tool/SKILL.md" % self.link)),
+            "case_root": ("Read", dict(file_path=CWD + "/.claude/SKILLS/tenant-y-tool/SKILL.md")),
+            "case_dir": ("Read", dict(file_path=SK + "Tenant-Y-Tool/SKILL.md")),
+            "quote_bash": ("Bash", dict(command="cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)),
+            "hash_bash": ("Bash", dict(command="echo a#b; cat '%s/.cla'ude/skills/tenant-y-tool/SKILL.md" % CWD)),
+            "ansi_bash": ("Bash", dict(command="cat $'%s/.\\x63laude/skills/tenant-y-tool/SKILL.md'" % CWD)),
+        }
+
+    def patch(self, fname, old, new):
+        path = os.path.join(self.hooks, fname)
+        with open(path) as f:
+            src = f.read()
+        self.assertIn(old, src, "mutation anchor drifted")
+        with open(path, "w") as f:
+            f.write(src.replace(old, new, 1))
+
+    def survivors(self):
+        return [name for name, (tool, inp) in self.calls().items() if self.gate(tool, **inp).returncode == 0]
+
+    def test_unmutated_copy_blocks_every_call(self):
+        self.assertEqual(self.survivors(), [])
+
+    def test_removing_the_alias_from_the_pattern_is_caught(self):
+        self.patch("tenant_context_lib.py", "\\.claude(?:-config)?/skills/", "\\.claude/skills/")
+        self.assertIn("alias_read", self.survivors())
+        self.assertIn("alias_bash", self.survivors())
+
+    def test_removing_the_realpath_variant_is_caught(self):
+        self.patch("tenant-skill-gate.py", "if resolve:", "if False:")
+        self.assertIn("link_read", self.survivors())
+        self.assertIn("link_bash", self.survivors())
+
+    def test_file_tools_not_resolving_is_caught(self):
+        self.patch("tenant-skill-gate.py", 'cwd, resolve=True)]\n    elif tool in ("Glob"', 'cwd)]\n    elif tool in ("Glob"')
+        self.assertIn("link_read", self.survivors())
+
+    def test_bash_not_resolving_words_is_caught(self):
+        self.patch("tenant-skill-gate.py", "skill_dirs_in(word, cwd, resolve=True)", "skill_dirs_in(word, cwd)")
+        self.assertEqual(self.survivors(), ["link_bash"])
+
+    def test_dropping_the_bash_word_scan_is_caught(self):
+        self.patch("tenant-skill-gate.py", "    for word in words:", "    for word in []:")
+        self.assertEqual(sorted(self.survivors()), ["ansi_bash", "hash_bash", "link_bash", "quote_bash"])
+
+    def test_dropping_the_shell_dequoting_is_caught(self):
+        self.patch("tenant-skill-gate.py", "            words += list(lex)", "            pass")
+        self.assertEqual(sorted(self.survivors()), ["ansi_bash", "hash_bash", "quote_bash"])
+
+    def test_shlex_comment_handling_is_caught(self):
+        self.patch("tenant-skill-gate.py", '            lex.commenters = ""', "            pass")
+        self.assertEqual(self.survivors(), ["hash_bash"])
+
+    def test_dropping_ansi_c_decoding_is_caught(self):
+        self.patch("tenant-skill-gate.py", "for text in (command, _ansi_c_decoded(command)):", "for text in (command,):")
+        self.assertEqual(self.survivors(), ["ansi_bash"])
+
+    def test_case_sensitive_pattern_is_caught(self):
+        self.patch("tenant_context_lib.py", ", re.IGNORECASE)", ")")
+        self.assertIn("case_root", self.survivors())
+
+    def test_case_sensitive_directory_compare_is_caught(self):
+        self.patch("tenant-skill-gate.py", '(s["dir"] or "").casefold() == value.casefold()', 's["dir"] == value')
+        self.assertIn("case_dir", self.survivors())
 
 
 if __name__ == "__main__":

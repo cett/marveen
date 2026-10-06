@@ -6,7 +6,8 @@ UserPromptSubmit hook tenant-context.py). This gate then refuses:
   Skill tool     -> a tenant skill (skills.tenant_id != 'fleet') the active tenant neither owns
                     nor has been granted (skill_tenant_access)
   Read/Edit/Write/NotebookEdit/Glob/Grep -> a path INSIDE such a skill's directory
-                    (<..>/.claude/skills/<dir>/..., which includes its companion scripts)
+                    (<..>/.claude/skills/<dir>/... or the <..>/.claude-config/skills/<dir>/... alias,
+                    which includes its companion scripts; the path is also resolved through symlinks)
   Bash           -> a command that names such a skill directory (best effort, see below)
 Fleet/global skills and everything that is not a tenant skill are never touched, and calls that
 cannot involve a skill directory do not even open the database.
@@ -16,12 +17,16 @@ TENANT_CONTEXT_MAX_AGE_SECONDS, default 12h), an unreadable database (for a call
 or an error in this gate all block the tool call. Contract: exit 0 = allow, exit 2 = block.
 
 KNOWN LIMITS (owner decision: the shell side is best effort): a Bash command can build a path
-indirectly (variables, globs over the skills root); a Glob/Grep rooted ABOVE the skills
+indirectly (variables, globs over the skills root, a symlink the same command creates before it uses it),
+and a path word is followed through symlinks relative to the session cwd only (a command that cd's
+elsewhere first is resolved against the wrong directory); a Glob/Grep rooted ABOVE the skills
 directories is allowed (it would otherwise break every repository-wide search).
 """
 import json
 import os
+import codecs
 import re
+import shlex
 import sqlite3
 import sys
 
@@ -35,22 +40,85 @@ def block(msg):
     sys.exit(2)
 
 
-def skill_dirs_in(text, cwd):
-    """Skill directory names a path/command string points into (best effort)."""
+def skill_dirs_in(text, cwd, resolve=False):
+    """Skill directory names a path/command string points into (best effort).
+
+    resolve=True also follows symlinks (os.path.realpath), so a path that reaches a skill directory through a
+    link the textual pattern does not know (an alias onto the global skills root, a custom symlink) is still
+    seen. realpath never raises for a missing path; a malformed one (embedded NUL) raises ValueError, which
+    main() turns into a block."""
     found = []
-    if not text or "skills/" not in text:
+    if not text:
         return found
     variants = [text]
+    base = None
     if text.startswith("~"):
-        variants.append(os.path.normpath(os.path.expanduser(text)))
+        base = os.path.expanduser(text)
     elif text.startswith("/"):
-        variants.append(os.path.normpath(text))
+        base = text
     elif cwd:
-        variants.append(os.path.normpath(os.path.join(cwd, text)))
+        base = os.path.join(cwd, text)
+    if base is not None:
+        variants.append(os.path.normpath(base))
+        if resolve:
+            variants.append(os.path.realpath(base))
     for v in variants:
+        if "skills/" not in v.lower():
+            continue
         for m in tcl.SKILL_DIR_RX.finditer(v):
             if m.group(1) not in found:
                 found.append(m.group(1))
+    return found
+
+
+# Absolute or ~ path words in a shell command (separator and quoting characters end a word).
+_BASH_PATH_RX = re.compile(r"(?:^|(?<=[\s'\"=(]))[~/][^\s'\"`;|&<>()$*?\[\]{}\\]*")
+
+
+def _shell_words(command):
+    """The words of a command as the shell sees them (quotes and backslashes removed, operators split off),
+    so '/abs/.cla'ude/skills/x/SKILL.md' and a backslash-escaped path are read as the path they spell.
+    A command shlex cannot parse (an apostrophe in prose, an unterminated quote) yields no words: the textual
+    and regex passes still run on it, it is not blocked for that."""
+    words = []
+    # Two readings: the command as written, and with every $'...' (ANSI-C quoting, which shlex does not
+    # decode) replaced by the text it spells ($'/.\x63laude/skills/x' -> '/.claude/skills/x').
+    for text in (command, _ansi_c_decoded(command)):
+        try:
+            lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            lex.commenters = ""   # bash starts a comment only at the START of a word; shlex would also cut mid-word
+            words += list(lex)
+        except ValueError:
+            pass
+    return words
+
+
+_ANSI_C_RX = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+
+
+def _ansi_c_decoded(command):
+    def decode(m):
+        try:
+            text = codecs.decode(m.group(1), "unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return m.group(0)
+        return shlex.quote(text)
+    return _ANSI_C_RX.sub(decode, command)
+
+
+def bash_skill_dirs(command, cwd=None):
+    """Directory names a shell command points into: the textual match plus every path word (raw regex words
+    and shell-dequoted words, relative ones joined to the session cwd) resolved through symlinks."""
+    found = skill_dirs_in(command, None)
+    words = []
+    for w in _BASH_PATH_RX.findall(command) + [w for w in _shell_words(command) if "/" in w or w.startswith("~")]:
+        if w not in words:
+            words.append(w)
+    for word in words:
+        for d in skill_dirs_in(word, cwd, resolve=True):
+            if d not in found:
+                found.append(d)
     return found
 
 
@@ -62,12 +130,12 @@ def extract(tool, inp, cwd):
         out.append(("skill", name))
     elif tool in ("Read", "Edit", "Write", "NotebookEdit"):
         for k in ("file_path", "notebook_path"):
-            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd)]
+            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd, resolve=True)]
     elif tool in ("Glob", "Grep"):
         for k in ("path", "pattern", "glob"):
-            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd)]
+            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd, resolve=True)]
     elif tool == "Bash":
-        out += [("dir", d) for d in skill_dirs_in(str(inp.get("command") or ""), None)]
+        out += [("dir", d) for d in bash_skill_dirs(str(inp.get("command") or ""), cwd)]
     return out
 
 
@@ -95,15 +163,22 @@ def main():
         if tenant is not None and not serves:
             tenant, why = None, "az agens mar nincs engedelyezve a(z) '%s' tenanthez" % ctx["tenant_id"]
         for kind, value in targets:
+            need_all = False
             if kind == "skill":
                 cands = [s for s in skills if value in s["names"]]
             else:
-                cands = [s for s in skills if s["dir"] == value]
+                # An exact-case match is the directory the path names; only without one does the case-insensitive
+                # match stand in (a case-insensitive volume), and then EVERY candidate must be usable, so a
+                # tenant's own "Foo" never opens another tenant's "foo".
+                exact = [s for s in skills if s["dir"] == value]
+                cands = exact or [s for s in skills if (s["dir"] or "").casefold() == value.casefold()]
+                need_all = not exact
             if not cands:
                 continue  # fleet/global/plugin skill or not a skill at all
             if tenant is None:
                 block("a(z) '%s' tenant-skill nem hasznalhato: %s. Tenant-skill csak a sajat tenantja keresehez tartozik." % (value, why))
-            if not any(tcl.skill_accessible(s, tenant) for s in cands):
+            usable = all if need_all else any
+            if not usable(tcl.skill_accessible(s, tenant) for s in cands):
                 block("a(z) '%s' skill masik tenanthez tartozik, ez a keres a(z) '%s' tenanthe. A skill ebben a keresben nem hasznalhato." % (value, tenant))
     except SystemExit:
         raise
