@@ -191,7 +191,7 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 | Tábla | Tartalom |
 |-------|---------|
 | `skills` | Skill-katalógus |
-| `skill_usage` | Skill használati napló |
+| `skill_usage` | Skill használati napló (használat módja: Skill eszköz, fájlolvasás, shell, API, perjeles hívás) |
 | `skill_tenant_access` | Tenant-szintű skill hozzáférés |
 | `tenants` | Tenant definíciók |
 | `dashboard_users` | Dashboard felhasználók (per-tenant) |

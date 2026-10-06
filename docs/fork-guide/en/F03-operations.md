@@ -113,6 +113,16 @@ Direct HTTP health check:
 curl -f http://localhost:3420/
 ```
 
+## Skill usage log
+
+A hook logs agents' skill use; the dream-engine skill-health check and the Skills page badges are built on it. The hook is added to every sub-agent's settings when the dashboard starts (the main agent's lives in the repo's tracked settings); it also widens an older, already configured matcher, but a running session re-reads its settings only after a restart.
+
+Each row also stores the kind of use (`source`): `skill_tool` (the Skill tool), `read_tool` (Read on any file in a skill directory), `bash_read` (a reading command on one concrete skill file), `bash_script` (an interpreter or `./` on a file under the skill's `scripts/`), `api_read` (a GET on the skills database API), `slash` (a slash call). `trigger_type` keeps its old two values; older rows have a NULL `source`, which is derived from `trigger_type` on read; there is no backfill. A repeat of the same agent, skill, session and `source` within 60 seconds is one row.
+
+Limits (best effort): a path built at run time, a command inside `bash -c "..."` and a shell path with a space are not seen; a slash call counts only at the start of the input and `plugin:skill` names do not count; the dashboard UI's own requests are not logged.
+
+---
+
 ## Tenant skill gate
 
 Agents that serve several tenants keep each tenant's skills inside that tenant's requests. Two hooks do it (both wired at dashboard start into every sub-agent's `settings.json`; the main agent is not gated; running sessions pick them up after a restart):

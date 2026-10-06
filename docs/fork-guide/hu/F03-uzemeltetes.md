@@ -113,6 +113,16 @@ A dashboard HTTP health végpont közvetlen ellenőrzése:
 curl -f http://localhost:3420/
 ```
 
+## Skill-használat naplózás
+
+Az ágensek skill-használatát egy hook naplózza, ebből dolgozik a Dream Engine skill-egészség vizsgálata és a Skillek oldal jelvényei. A hook a dashboard indításakor kerül be minden sub-ágens beállításába (a főágensé a repo követett beállításaiban van); a már beállított, régebbi matchert is kiszélesíti, de a futó session csak újraindítás után olvassa újra a beállítást.
+
+Minden sor a használat módját is tárolja (`source`): `skill_tool` (Skill eszköz), `read_tool` (Read a skill-könyvtár bármely fájlján), `bash_read` (olvasó parancs egy konkrét skill-fájlon), `bash_script` (interpreter vagy `./` a skill `scripts/` fájlján), `api_read` (GET a skill-adatbázis API-ra), `slash` (perjeles hívás). A `trigger_type` a régi kétértékű marad, a korábbi sorok `source`-a NULL, olvasáskor a `trigger_type`-ból származik; visszamenőleges kitöltés nincs. Egy azonos ágens, skill, munkamenet és `source` hármas 60 másodpercen belüli ismétlése egy sor.
+
+Korlátok (best-effort): futásidőben összeállított útvonal, `bash -c "..."` belsejében futó parancs és szóközt tartalmazó shell-útvonal kimarad; a perjeles hívás csak akkor számít, ha a bevitel elején áll, a `plugin:skill` alakú nevek nem; a dashboard felületének saját lekérdezései nem számítanak.
+
+---
+
 ## Tenant skill-kapu
 
 A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk kéréseihez kötik. Két hook végzi (mindkettő a dashboard indításakor kerül be minden sub-ágens `settings.json`-jába; a főágens nincs kapu alatt; a futó sessionök újraindítás után veszik fel):

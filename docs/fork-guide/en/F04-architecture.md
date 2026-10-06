@@ -191,7 +191,7 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 | Table | Contents |
 |-------|---------|
 | `skills` | Skill catalog |
-| `skill_usage` | Skill usage log |
+| `skill_usage` | Skill usage log (kind of use: Skill tool, file read, shell, API, slash call) |
 | `skill_tenant_access` | Tenant-level skill access |
 | `tenants` | Tenant definitions |
 | `dashboard_users` | Dashboard users (per-tenant) |
