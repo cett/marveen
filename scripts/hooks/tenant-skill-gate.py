@@ -6,7 +6,8 @@ UserPromptSubmit hook tenant-context.py). This gate then refuses:
   Skill tool     -> a tenant skill (skills.tenant_id != 'fleet') the active tenant neither owns
                     nor has been granted (skill_tenant_access)
   Read/Edit/Write/NotebookEdit/Glob/Grep -> a path INSIDE such a skill's directory
-                    (<..>/.claude/skills/<dir>/..., which includes its companion scripts)
+                    (<..>/.claude/skills/<dir>/... or the <..>/.claude-config/skills/<dir>/... alias,
+                    which includes its companion scripts; the path is also resolved through symlinks)
   Bash           -> a command that names such a skill directory (best effort, see below)
 Fleet/global skills and everything that is not a tenant skill are never touched, and calls that
 cannot involve a skill directory do not even open the database.
@@ -16,7 +17,8 @@ TENANT_CONTEXT_MAX_AGE_SECONDS, default 12h), an unreadable database (for a call
 or an error in this gate all block the tool call. Contract: exit 0 = allow, exit 2 = block.
 
 KNOWN LIMITS (owner decision: the shell side is best effort): a Bash command can build a path
-indirectly (variables, globs over the skills root); a Glob/Grep rooted ABOVE the skills
+indirectly (variables, globs over the skills root), and only its absolute and ~ path words are followed
+through symlinks (a relative path through an unknown link is not); a Glob/Grep rooted ABOVE the skills
 directories is allowed (it would otherwise break every repository-wide search).
 """
 import json
@@ -35,22 +37,48 @@ def block(msg):
     sys.exit(2)
 
 
-def skill_dirs_in(text, cwd):
-    """Skill directory names a path/command string points into (best effort)."""
+def skill_dirs_in(text, cwd, resolve=False):
+    """Skill directory names a path/command string points into (best effort).
+
+    resolve=True also follows symlinks (os.path.realpath), so a path that reaches a skill directory through a
+    link the textual pattern does not know (an alias onto the global skills root, a custom symlink) is still
+    seen. realpath never raises for a missing path; a malformed one (embedded NUL) raises ValueError, which
+    main() turns into a block."""
     found = []
-    if not text or "skills/" not in text:
+    if not text:
         return found
     variants = [text]
+    base = None
     if text.startswith("~"):
-        variants.append(os.path.normpath(os.path.expanduser(text)))
+        base = os.path.expanduser(text)
     elif text.startswith("/"):
-        variants.append(os.path.normpath(text))
+        base = text
     elif cwd:
-        variants.append(os.path.normpath(os.path.join(cwd, text)))
+        base = os.path.join(cwd, text)
+    if base is not None:
+        variants.append(os.path.normpath(base))
+        if resolve:
+            variants.append(os.path.realpath(base))
     for v in variants:
+        if "skills/" not in v:
+            continue
         for m in tcl.SKILL_DIR_RX.finditer(v):
             if m.group(1) not in found:
                 found.append(m.group(1))
+    return found
+
+
+# Absolute or ~ path words in a shell command (separator and quoting characters end a word).
+_BASH_PATH_RX = re.compile(r"(?:^|(?<=[\s'\"=(]))[~/][^\s'\"`;|&<>()$*?\[\]{}\\]*")
+
+
+def bash_skill_dirs(command):
+    """Directory names a shell command points into: the textual match plus symlink-resolved path words."""
+    found = skill_dirs_in(command, None)
+    for word in _BASH_PATH_RX.findall(command)[:20]:
+        for d in skill_dirs_in(word, None, resolve=True):
+            if d not in found:
+                found.append(d)
     return found
 
 
@@ -62,12 +90,12 @@ def extract(tool, inp, cwd):
         out.append(("skill", name))
     elif tool in ("Read", "Edit", "Write", "NotebookEdit"):
         for k in ("file_path", "notebook_path"):
-            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd)]
+            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd, resolve=True)]
     elif tool in ("Glob", "Grep"):
         for k in ("path", "pattern", "glob"):
-            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd)]
+            out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd, resolve=True)]
     elif tool == "Bash":
-        out += [("dir", d) for d in skill_dirs_in(str(inp.get("command") or ""), None)]
+        out += [("dir", d) for d in bash_skill_dirs(str(inp.get("command") or ""))]
     return out
 
 
