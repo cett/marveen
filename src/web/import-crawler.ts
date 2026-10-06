@@ -3,7 +3,7 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, extname, basename } from 'node:path'
 import { Worker } from 'node:worker_threads'
-import { getDb, runLinkMaintenance } from '../db.js'
+import { getDb, runLinkMaintenance, syncVecMemoryDelete } from '../db.js'
 import { logger } from '../logger.js'
 import {
   ALLOWED_EXTENSIONS,
@@ -173,8 +173,8 @@ export function upsertImportMemory(
 ): 'added' | 'updated' | 'hash_match' {
   const db = getDb()
   const existing = db.prepare(
-    "SELECT id, content_hash, memory_shadow_id FROM import_memories WHERE source_id = ? AND file_path = ?"
-  ).get(sourceId, filePath) as { id: string; content_hash: string; memory_shadow_id: number | null } | undefined
+    "SELECT id, content_hash, content, keywords, memory_shadow_id FROM import_memories WHERE source_id = ? AND file_path = ?"
+  ).get(sourceId, filePath) as { id: string; content_hash: string; content: string; keywords: string | null; memory_shadow_id: number | null } | undefined
 
   if (existing) {
     if (existing.content_hash === hash) {
@@ -186,9 +186,19 @@ export function upsertImportMemory(
       WHERE id = ?
     `).run(hash, content, keywords, now, now, existing.id)
     if (existing.memory_shadow_id) {
-      // Keep shadow row in sync with updated content
-      db.prepare('UPDATE memories SET content = ?, keywords = ?, updated_at = ? WHERE id = ?')
-        .run(content, keywords, now, existing.memory_shadow_id)
+      // Keep shadow row in sync with updated content. The stored embedding was
+      // computed from the old text, so drop it (and its ANN entry) when the
+      // text it was built from changed; link maintenance / the embedding
+      // backfill then re-embed from updated_at. A hash-only change (the raw
+      // source differs, the extracted text does not) keeps the embedding.
+      const textChanged = existing.content !== content || existing.keywords !== keywords
+      if (textChanged) {
+        db.prepare('UPDATE memories SET content = ?, keywords = ?, updated_at = ?, embedding_blob = NULL WHERE id = ?')
+          .run(content, keywords, now, existing.memory_shadow_id)
+        syncVecMemoryDelete(existing.memory_shadow_id)
+      } else {
+        db.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, existing.memory_shadow_id)
+      }
     } else {
       // Create missing shadow row (defensive: migration backfill covers existing rows).
       // agent_id='import' is the discriminator; category='warm' satisfies the CHECK
@@ -357,6 +367,10 @@ async function crawlLocalSource(
 
       const dotExt = '.' + fileExt
       const stripped = HTML_LIKE_EXTS.has(dotExt) ? stripMarkup(raw) : raw
+      // Decoding character references can surface text the raw-markup check
+      // above could not see (`password&#61;...`), so the stored text is
+      // checked as well.
+      if (stripped !== raw && containsSecret(stripped)) { counts.skippedSecret++; return }
       const content = stripped.length > MAX_CONTENT_BYTES
         ? stripped.slice(0, MAX_CONTENT_BYTES) + '\n[truncated]'
         : stripped
