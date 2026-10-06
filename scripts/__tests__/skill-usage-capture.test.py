@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 _HOOK_PATH = os.path.join(
@@ -133,6 +134,10 @@ NEGATIVE = [
     bash("ls ~/.claude/skills"),
     bash("ls .claude/skills/x"),
     bash("ls -la .claude/skills/x/scripts"),
+    bash("awk -i inplace '{print}' .claude/skills/x/SKILL.md"),
+    bash("awk -iinplace '{print}' .claude/skills/x/SKILL.md"),
+    bash("awk --include inplace '{print}' .claude/skills/x/SKILL.md"),
+    bash("gawk -i inplace '{print}' .claude/skills/x/SKILL.md"),
     bash("cat .claude/skills/x"),
     bash("head .claude/skills/x/"),
     bash("stat .claude/skills/x/SKILL.md"),
@@ -312,6 +317,10 @@ MUTATIONS = [
             ('/skills/sql/([^/?#\\s]+)', '/skills/sql/?([^/?#\\s]*)'),
             ('if _NAME_OK.match(last):', 'if True:'),
         ],
+    ),
+    (
+        "the awk -i / --include exclusion is removed",
+        [('if verb == "awk" and any(', 'if False and any(')],
     ),
     (
         "the redirect handling is removed",
@@ -549,9 +558,12 @@ class TestAgentIdFromCwd(unittest.TestCase):
 
 class _Stub(http.server.BaseHTTPRequestHandler):
     posts: list = []
+    delay: float = 0.0
 
     def do_POST(self):  # noqa: N802
         n = int(self.headers.get("Content-Length", "0"))
+        if _Stub.delay:
+            time.sleep(_Stub.delay)   # a slow or hung dashboard
         _Stub.posts.append({
             "path": self.path,
             "auth": self.headers.get("Authorization"),
@@ -576,7 +588,9 @@ class TestHookEndToEnd(unittest.TestCase):
         with open(os.path.join(self.root, "store", ".dashboard-token"), "w") as f:
             f.write("tok-123\n")
         _Stub.posts = []
-        self.server = http.server.HTTPServer(("127.0.0.1", 0), _Stub)
+        _Stub.delay = 0.0
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Stub)
+        self.server.daemon_threads = True
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -666,6 +680,39 @@ class TestHookEndToEnd(unittest.TestCase):
                            "cwd": os.path.join(self.root, "agents", "agent-a")})
             self.assertEqual(r.returncode, 0)
         self.assertEqual(_Stub.posts, [])
+
+    FIVE_SKILLS = " && ".join("cat .claude/skills/s%d/SKILL.md" % i for i in range(5))
+
+    def test_a_hung_dashboard_costs_one_time_budget_not_one_per_post(self):
+        _Stub.delay = 6.0
+        started = time.monotonic()
+        r = self._run({"tool_name": "Bash", "tool_input": {"command": self.FIVE_SKILLS}, "session_id": "s", "cwd": self.root})
+        elapsed = time.monotonic() - started
+        self.assertEqual(r.returncode, 0)
+        self.assertLess(elapsed, 3.0, "5 hits against a hung dashboard held the tool call for %.1fs" % elapsed)
+
+    def test_the_budget_constant_stays_small(self):
+        self.assertLessEqual(hook._POST_BUDGET_SECS, 1.5)
+
+    def test_a_removed_budget_is_caught_by_the_hung_dashboard_run(self):
+        with open(_HOOK_PATH) as f:
+            src = f.read()
+        old = "worker.join(timeout=_POST_BUDGET_SECS)"
+        self.assertIn(old, src)
+        self.assertIn("_POST_BUDGET_SECS = 1.2", src)
+        mutated = src.replace(old, "worker.join()").replace("_POST_BUDGET_SECS = 1.2", "_POST_BUDGET_SECS = 60.0")
+        with open(os.path.join(self.root, "scripts", "hooks", "skill-usage-capture.py"), "w") as f:
+            f.write(mutated)
+        _Stub.delay = 2.5
+        started = time.monotonic()
+        self._run({"tool_name": "Bash", "tool_input": {"command": "cat .claude/skills/a/SKILL.md && cat .claude/skills/b/SKILL.md"},
+                   "session_id": "s", "cwd": self.root})
+        self.assertGreater(time.monotonic() - started, 3.5)
+
+    def test_a_slow_but_answering_dashboard_still_gets_every_post_inside_the_budget(self):
+        _Stub.delay = 0.1
+        self._run({"tool_name": "Bash", "tool_input": {"command": self.FIVE_SKILLS}, "session_id": "s", "cwd": self.root})
+        self.assertEqual(len(_Stub.posts), 5)
 
     def test_garbage_stdin_exits_zero(self):
         env = dict(os.environ, WEB_PORT=str(self.port))

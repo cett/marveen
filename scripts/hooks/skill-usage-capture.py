@@ -41,6 +41,8 @@ import os
 import re
 import json
 import shlex
+import threading
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -141,6 +143,8 @@ _CURL_DATA_LONG = (
     "--form", "--form-string", "--json", "--upload-file",
 )
 _MAX_HITS = 5
+# Total wall-clock budget for ALL the POSTs of one hook run (see main()).
+_POST_BUDGET_SECS = 1.2
 
 
 def _heredoc_stripped(cmd: str) -> str:
@@ -233,6 +237,9 @@ def _read_hit(verb: str, args: list[str]) -> list[str]:
     if verb == "sed" and any(
         a == "--in-place" or a.startswith("--in-place=") or re.match(r"^-[^-]*i", a) for a in args
     ):
+        return []
+    # awk -i inplace (gawk) rewrites the file, and awk -i <lib> / --include loads code: neither is a read.
+    if verb == "awk" and any(a.startswith("-i") or a.startswith("--include") or a.startswith("--in-place") for a in args):
         return []
     names = []
     for a in args:
@@ -415,31 +422,44 @@ def main() -> None:
     if not token:
         sys.exit(0)
 
-    for skill_name, trigger_type, source in hits:
-        body = json.dumps({
-            "agent_id": agent_id,
-            "skill_name": skill_name,
-            "trigger_type": trigger_type,
-            "session_id": session_id,
-            "source": source,
-        }).encode()
+    # This hook runs on every Bash call and every prompt, so logging must never hold the agent up: all the
+    # POSTs share ONE time budget. The work runs in a daemon thread the main thread waits for at most
+    # _POST_BUDGET_SECS, then exits whatever the thread is doing (a hung dashboard costs the budget once,
+    # not once per hit; the row is simply not written).
+    port = _web_port()
+    deadline = time.monotonic() + _POST_BUDGET_SECS
 
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request(
-                    f"http://localhost:{_web_port()}/api/skill-usage",
-                    data=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}",
-                    },
-                    method="POST",
-                ),
-                timeout=3,
-            )
-        except Exception:
-            pass  # never block the agent
+    def send_all() -> None:
+        for skill_name, trigger_type, source in hits:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.05:
+                return
+            body = json.dumps({
+                "agent_id": agent_id,
+                "skill_name": skill_name,
+                "trigger_type": trigger_type,
+                "session_id": session_id,
+                "source": source,
+            }).encode()
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"http://localhost:{port}/api/skill-usage",
+                        data=body,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {token}",
+                        },
+                        method="POST",
+                    ),
+                    timeout=remaining,
+                )
+            except Exception:
+                pass  # never block the agent
 
+    worker = threading.Thread(target=send_all, daemon=True)
+    worker.start()
+    worker.join(timeout=_POST_BUDGET_SECS)
     sys.exit(0)
 
 
