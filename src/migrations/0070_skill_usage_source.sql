@@ -2,12 +2,13 @@
 --
 -- trigger_type stays as it is (tool_call | skill_read): its CHECK can only change with a table
 -- rebuild, and every consumer (the dream-engine SQL, the Skills page badges) reads skill_name only.
--- source is the finer, additive label, written by the PostToolUse capture hook:
+-- source is the finer, additive label, written by the skill-usage capture hook:
 --   skill_tool   the Skill tool was invoked                           (trigger_type tool_call)
 --   read_tool    the Read tool opened a file inside a skill dir       (trigger_type skill_read)
 --   bash_read    a Bash cat/head/sed -n/grep... of a skill file       (trigger_type skill_read)
 --   bash_script  a Bash interpreter / ./ run of a skill scripts/ file (trigger_type skill_read)
 --   api_read     a Bash curl GET of /api/skills/sql/<id>              (trigger_type skill_read)
+--   slash        a /<skill> prompt (UserPromptSubmit)                 (trigger_type tool_call)
 -- Existing rows stay NULL (no backfill); readers derive the legacy value from trigger_type.
 -- The value set is enforced by POST /api/skill-usage, not by a CHECK, so a new path never needs a rebuild.
 ALTER TABLE skill_usage ADD COLUMN source TEXT;

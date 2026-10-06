@@ -138,6 +138,27 @@ describe('the shipped registrations carry the Bash matcher', () => {
   })
 })
 
+describe('the slash-command (UserPromptSubmit) registration', () => {
+  it('a fresh sub-agent is seeded with the capture hook on UserPromptSubmit, without a matcher', () => {
+    mkdirSync(testAgentDir, { recursive: true })
+    ensureAgentHooks(TEST_AGENT)
+    const ups = read().hooks.UserPromptSubmit as Entry[]
+    const entry = ups.find((e) => e.hooks.some((h) => h.command.includes('skill-usage-capture.py')))
+    expect(entry).toBeDefined()
+    expect(entry!.matcher).toBeUndefined()
+  })
+
+  it('an existing sub-agent that has UserPromptSubmit hooks but not the capture one gets it, once', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: OTHER_CMD }] }] } }))
+    expect(ensureAgentHooks(TEST_AGENT)).toBe(true)
+    ensureAgentHooks(TEST_AGENT)
+    const ups = read().hooks.UserPromptSubmit as Entry[]
+    expect(ups.flatMap((e) => e.hooks).filter((h) => h.command.includes('skill-usage-capture.py'))).toHaveLength(1)
+    expect(ups.flatMap((e) => e.hooks).some((h) => h.command === OTHER_CMD)).toBe(true)
+  })
+})
+
 // The command the template renders, taken from a seeded agent so the merge test does not hardcode a path.
 function seededCaptureCommand(): string {
   const name = `${TEST_AGENT}-seed`

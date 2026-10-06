@@ -362,6 +362,155 @@ class TestMutations(unittest.TestCase):
                 )
 
 
+# ---------------------------------------------------------------------------
+# Slash-command use (UserPromptSubmit): a prompt that starts with /<name>.
+# ---------------------------------------------------------------------------
+
+_SLASH_SKILLS = {
+    "home": ["fleet-helper", "help", "clear"],   # global; help/clear collide with built-in commands
+    "install": ["proj-skill"],                    # project-level
+    "cwd": ["local-skill"],                       # agent-local
+    "cfg": ["cfg-skill"],                         # .claude-config alias
+}
+SLASH_POSITIVE = [
+    ("/fleet-helper", "fleet-helper"),
+    ("/fleet-helper do the thing", "fleet-helper"),
+    ("/fleet-helper\nsecond line", "fleet-helper"),
+    ("/fleet-helper\targ", "fleet-helper"),
+    ("/proj-skill", "proj-skill"),
+    ("/local-skill with args", "local-skill"),
+    ("/cfg-skill", "cfg-skill"),
+]
+SLASH_NEGATIVE = [
+    "/clear",                    # built-in command
+    "/help",                     # built-in, even though a skill directory of that name exists
+    "/clear everything",
+    "/rename new-name",
+    "/compact",
+    "/model opus",
+    "/does-not-exist",           # no such skill
+    "/does-not-exist some args",
+    "/home/agent-a/notes.md",   # a path, not a command
+    "/fleet-helper/extra",       # path-like continuation of an existing name
+    "/fleet-helper.md",          # a file name, no such directory
+    "/plugin:skill",             # plugin-qualified names have no directory here
+    "//fleet-helper",
+    "/",
+    "",
+    "fleet-helper",              # no slash
+    "please run /fleet-helper",  # not at the start
+    " /fleet-helper",            # leading whitespace
+    "/*",
+    "/$HOME",
+    "/../fleet-helper",
+]
+
+
+def _slash_fixture():
+    root = tempfile.mkdtemp(prefix="skill-usage-slash-")
+    dirs = {
+        "home": os.path.join(root, "home", ".claude", "skills"),
+        "install": os.path.join(root, "install", ".claude", "skills"),
+        "cwd": os.path.join(root, "cwd", ".claude", "skills"),
+        "cfg": os.path.join(root, "cwd", ".claude-config", "skills"),
+    }
+    for key, names in _SLASH_SKILLS.items():
+        for n in names:
+            os.makedirs(os.path.join(dirs[key], n))
+    return root
+
+
+def _run_slash_tables(mod, root):
+    home, install, cwd = (os.path.join(root, "home"), os.path.join(root, "install"), os.path.join(root, "cwd"))
+    wrong = []
+    for prompt, name in SLASH_POSITIVE:
+        got = mod._classify_prompt(prompt, cwd, home, install)
+        if got != [(name, "tool_call", "slash")]:
+            wrong.append(f"POS {prompt!r} -> {got!r}")
+    for prompt in SLASH_NEGATIVE:
+        got = mod._classify_prompt(prompt, cwd, home, install)
+        if got:
+            wrong.append(f"NEG {prompt!r} -> {got!r}")
+    for bad in (None, 5, ["/fleet-helper"], {"a": 1}):
+        if mod._classify_prompt(bad, cwd, home, install):
+            wrong.append(f"NEG non-string {bad!r}")
+    return wrong
+
+
+class TestSlashClassify(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.root = _slash_fixture()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def test_tables(self):
+        self.assertEqual(_run_slash_tables(hook, self.root), [])
+
+    def test_each_positive_and_negative_case_individually(self):
+        home, install, cwd = (os.path.join(self.root, "home"), os.path.join(self.root, "install"), os.path.join(self.root, "cwd"))
+        for prompt, name in SLASH_POSITIVE:
+            with self.subTest(positive=prompt):
+                self.assertEqual(hook._classify_prompt(prompt, cwd, home, install), [(name, "tool_call", "slash")])
+        for prompt in SLASH_NEGATIVE:
+            with self.subTest(negative=prompt):
+                self.assertEqual(hook._classify_prompt(prompt, cwd, home, install), [])
+
+    def test_slash_maps_to_tool_call(self):
+        self.assertEqual(hook.SOURCE_TRIGGER["slash"], "tool_call")
+
+    def test_agent_local_skill_is_not_found_from_another_cwd(self):
+        home, install = os.path.join(self.root, "home"), os.path.join(self.root, "install")
+        self.assertEqual(hook._classify_prompt("/local-skill", os.path.join(self.root, "elsewhere"), home, install), [])
+
+    def test_tool_classifier_ignores_prompts(self):
+        self.assertIsNone(hook._classify("UserPromptSubmit", {"prompt": "/fleet-helper"}))
+
+
+SLASH_MUTATIONS = [
+    ("the slash match is removed", [('m = _SLASH_RE.match(prompt)\n    if not m:\n        return []', 'return []\n    m = None')]),
+    ("the built-in command exclusion is removed", [('if name in _BUILTIN_COMMANDS:', 'if False:')]),
+    ("the skill-exists check is removed", [('if not any(os.path.isdir(os.path.join(root, name)) for root in _skill_roots(cwd, home, install)):', 'if False:')]),
+    ("the end-of-name boundary is removed", [('(?=\\s|$)")', '")')]),
+    ("the .claude-config root is removed", [('roots.append(os.path.join(cwd, ".claude-config", "skills"))', 'pass')]),
+    ("the agent-local root is removed", [('roots.append(os.path.join(cwd, ".claude", "skills"))', 'pass')]),
+    ("the project-level root is removed", [('os.path.join(install, ".claude", "skills")]', '"/nonexistent-root"]')]),
+    ("the non-string guard is removed", [('if not isinstance(prompt, str):\n        return []', 'pass')]),
+]
+
+
+class TestSlashMutations(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.root = _slash_fixture()
+        with open(_HOOK_PATH) as f:
+            cls.source = f.read()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def test_every_slash_mutation_is_caught(self):
+        for name, replacements in SLASH_MUTATIONS:
+            with self.subTest(mutation=name):
+                mutated = self.source
+                for old, new in replacements:
+                    self.assertIn(old, mutated, f"mutation anchor drifted: {old!r}")
+                    mutated = mutated.replace(old, new)
+                try:
+                    wrong = _run_slash_tables(_load(mutated), self.root)
+                except Exception as exc:  # a mutant that crashes on the table is caught too
+                    wrong = [f"raised {exc!r}"]
+                self.assertTrue(wrong, f"mutation survived: {name}")
+
+    def test_the_main_dispatch_is_covered_by_the_end_to_end_run(self):
+        # Removing the prompt branch of main() is caught by TestHookEndToEnd.test_slash_prompt_posts_slash_source
+        # (it needs the real script and a stub dashboard, so it is not a table mutation).
+        self.assertIn('hits = _classify_prompt(payload.get("prompt"), cwd)', self.source)
+
+
 class TestAgentIdFromCwd(unittest.TestCase):
     """_agent_id_from_cwd(cwd) derives the agent identity from the session cwd."""
 
@@ -495,6 +644,28 @@ class TestHookEndToEnd(unittest.TestCase):
         # setUp's server is closed twice in tearDown; shutdown on a stopped server is a no-op wait
         self.server = http.server.HTTPServer(("127.0.0.1", 0), _Stub)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def test_slash_prompt_posts_slash_source(self):
+        os.makedirs(os.path.join(self.root, "agents", "agent-a", ".claude", "skills", "my-skill"))
+        r = self._run({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "/my-skill please",
+            "session_id": "sess-9",
+            "cwd": os.path.join(self.root, "agents", "agent-a"),
+        })
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(len(_Stub.posts), 1)
+        self.assertEqual(_Stub.posts[0]["body"], {
+            "agent_id": "agent-a", "skill_name": "my-skill", "trigger_type": "tool_call",
+            "session_id": "sess-9", "source": "slash",
+        })
+
+    def test_prompt_that_is_a_builtin_or_unknown_posts_nothing(self):
+        for prompt in ("/clear", "/no-such-skill", "hello"):
+            r = self._run({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "session_id": "s",
+                           "cwd": os.path.join(self.root, "agents", "agent-a")})
+            self.assertEqual(r.returncode, 0)
+        self.assertEqual(_Stub.posts, [])
 
     def test_garbage_stdin_exits_zero(self):
         env = dict(os.environ, WEB_PORT=str(self.port))

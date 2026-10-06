@@ -87,6 +87,11 @@
             "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/telegram_progress.py; exit 0'",
             "timeout": 15
           }
+          ,{
+            "type": "command",
+            "command": "bash -c '[ -f {{SCRIPTS_DIR}}/scripts/hooks/skill-usage-capture.py ] && exec python3 {{SCRIPTS_DIR}}/scripts/hooks/skill-usage-capture.py; exit 0'",
+            "timeout": 10
+          }
         ]
       }
     ],

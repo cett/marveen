@@ -2680,7 +2680,7 @@ paths:
                       type: integer
                     source:
                       type: string
-                      enum: [skill_tool, read_tool, bash_read, bash_script, api_read]
+                      enum: [skill_tool, read_tool, bash_read, bash_script, api_read, slash]
                       description: >-
                         Usage path that produced the row. Rows written before the column existed
                         are reported with the value derived from trigger_type (tool_call ->
@@ -2709,10 +2709,10 @@ paths:
                   type: [string, "null"]
                 source:
                   type: [string, "null"]
-                  enum: [skill_tool, read_tool, bash_read, bash_script, api_read, null]
+                  enum: [skill_tool, read_tool, bash_read, bash_script, api_read, slash, null]
                   description: >-
-                    Optional. skill_tool requires trigger_type tool_call; every other value requires
-                    skill_read. A repeat of the same agent_id, skill_name, session_id and source
+                    Optional. skill_tool and slash (a /<skill> prompt) require trigger_type tool_call;
+                    every other value requires skill_read. A repeat of the same agent_id, skill_name, session_id and source
                     within 60 seconds is recorded once (the call still answers ok).
       responses:
         "200":

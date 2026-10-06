@@ -10,6 +10,8 @@ Every captured event carries a `source` (the usage path) and the coarser legacy
   bash_read    skill_read    Bash cat/head/tail/sed -n/less/more/bat/nl/awk/grep/rg of a skill file
   bash_script  skill_read    Bash interpreter or ./ run of a skill's scripts/ file
   api_read     skill_read    Bash curl GET of /api/skills/sql/<id> (or its /files)
+  slash        tool_call     UserPromptSubmit: the prompt starts with /<name> and <name> is an existing
+                             skill directory (built-in commands and unknown names do not count)
 
 A "skill directory" is <anything>/.claude/skills/<name>/ or the same under
 .claude-config/ (the config alias the harness gives each agent), i.e. the global,
@@ -29,9 +31,10 @@ is deduplicated by the server, not here.
 Unlike tool_call_log (pruned every 24 h), skill_usage is never pruned so the
 dream-engine can make data-driven suggestions after two or more weeks of data.
 
-Registration: the PostToolUse entry with matcher Skill|Read|Bash in the tracked
-project settings (main agent) and templates/settings.json.template (sub-agents);
-ensureSkillUsageMatcher widens an older Skill|Read matcher at startup.
+Registration: a PostToolUse entry with matcher Skill|Read|Bash and a UserPromptSubmit entry (no
+matcher; same script, told apart by the payload) in the tracked project settings (main agent) and
+templates/settings.json.template (sub-agents); ensureAgentHooks seeds the UserPromptSubmit entry into
+existing sub-agents and ensureSkillUsageMatcher widens an older Skill|Read matcher at startup.
 """
 import sys
 import os
@@ -122,6 +125,7 @@ SOURCE_TRIGGER = {
     "bash_read": "skill_read",
     "bash_script": "skill_read",
     "api_read": "skill_read",
+    "slash": "tool_call",
 }
 
 _READ_VERBS = {"cat", "head", "tail", "sed", "less", "more", "bat", "nl", "awk", "grep", "rg"}
@@ -341,6 +345,51 @@ def _classify(tool_name: str, tool_input: dict) -> tuple[str, str, str] | None:
     return hits[0] if hits else None
 
 
+# Claude Code's own slash commands. A skill directory that happens to share one of these names is NOT what
+# the command runs, so the name never counts as a skill use.
+_BUILTIN_COMMANDS = {
+    "add-dir", "agents", "bug", "clear", "compact", "config", "context", "cost", "doctor", "effort",
+    "exit", "export", "fast", "help", "hooks", "ide", "init", "install-github-app", "login", "logout",
+    "mcp", "memory", "model", "output-style", "permissions", "plugin", "pr-comments", "privacy-settings",
+    "quit", "release-notes", "rename", "resume", "review", "rewind", "status", "statusline",
+    "terminal-setup", "theme", "todos", "upgrade", "usage", "vim",
+}
+_SLASH_RE = re.compile(r"^/(" + _NAME + r")(?=\s|$)")
+
+
+def _skill_roots(cwd: str, home: str | None = None, install: str | None = None) -> list[str]:
+    """Directories a /name can resolve a skill from: global, project-level, agent-local, config alias."""
+    home = home if home is not None else os.path.expanduser("~")
+    install = install if install is not None else _install_dir()
+    roots = [os.path.join(home, ".claude", "skills"), os.path.join(install, ".claude", "skills")]
+    if cwd:
+        roots.append(os.path.join(cwd, ".claude", "skills"))
+        roots.append(os.path.join(cwd, ".claude-config", "skills"))
+    return roots
+
+
+def _classify_prompt(prompt, cwd: str, home: str | None = None, install: str | None = None) -> list[tuple[str, str, str]]:
+    """UserPromptSubmit: a prompt that starts with /<name> and names an existing skill is a slash use.
+
+    Not a use: a built-in command (/clear, /help, /rename ...), a name no skill directory carries (this also
+    drops plugin-qualified names like /plugin:skill, which have no directory here), a path (/home/x), and
+    anything that does not START with the slash (no leading whitespace is tolerated, the harness would not
+    treat it as a command either). A slash use maps to trigger_type tool_call: it invokes the skill, like
+    the Skill tool does.
+    """
+    if not isinstance(prompt, str):
+        return []
+    m = _SLASH_RE.match(prompt)
+    if not m:
+        return []
+    name = m.group(1)
+    if name in _BUILTIN_COMMANDS:
+        return []
+    if not any(os.path.isdir(os.path.join(root, name)) for root in _skill_roots(cwd, home, install)):
+        return []
+    return [(name, "tool_call", "slash")]
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -352,7 +401,11 @@ def main() -> None:
     session_id = payload.get("session_id") or None
     cwd = payload.get("cwd") or ""
 
-    hits = _classify_all(tool_name, tool_input)
+    if not tool_name and "prompt" in payload:
+        # UserPromptSubmit carries a prompt and no tool.
+        hits = _classify_prompt(payload.get("prompt"), cwd)
+    else:
+        hits = _classify_all(tool_name, tool_input)
     if not hits:
         sys.exit(0)
 

@@ -37,7 +37,7 @@ const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py',
     'staleness-guard.py', 'channel-inbox-drain.py',
-    'voice-reply-directive.py', 'telegram_progress.py',
+    'voice-reply-directive.py', 'telegram_progress.py', 'skill-usage-capture.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'post-tool-injection-gate.py', 'tool-log-capture.py',
@@ -77,6 +77,12 @@ describe('tracked .claude/settings.json hook anchor (#1305)', () => {
     const entries = (hooks.PostToolUse ?? []).filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('skill-usage-capture.py')))
     expect(entries).toHaveLength(1)
     expect((entries[0].matcher ?? '').split('|').sort()).toEqual(['Bash', 'Read', 'Skill'])
+  })
+
+  it('the skill-usage capture hook is also on UserPromptSubmit (slash-command use), without a matcher', () => {
+    const entries = (hooks.UserPromptSubmit ?? []).filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('skill-usage-capture.py')))
+    expect(entries).toHaveLength(1)
+    expect(entries[0].matcher).toBeUndefined()
   })
 
   it('the sub-agent template registers the same matcher as the tracked settings', () => {

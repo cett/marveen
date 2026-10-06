@@ -165,9 +165,9 @@ export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, ga
 }
 
 export type SkillUsageTrigger = 'tool_call' | 'skill_read'
-export type SkillUsageSource = 'skill_tool' | 'read_tool' | 'bash_read' | 'bash_script' | 'api_read'
+export type SkillUsageSource = 'skill_tool' | 'read_tool' | 'bash_read' | 'bash_script' | 'api_read' | 'slash'
 
-// The trigger_type each source maps to: skill_tool is the Skill tool call, every other path reads the
+// The trigger_type each source maps to: skill_tool and slash invoke a skill, every other path reads the
 // skill's files. The route rejects a pair that disagrees, so the legacy values derived below stay coherent.
 export const SKILL_USAGE_SOURCES: Record<SkillUsageSource, SkillUsageTrigger> = {
   skill_tool: 'tool_call',
@@ -175,6 +175,7 @@ export const SKILL_USAGE_SOURCES: Record<SkillUsageSource, SkillUsageTrigger> = 
   bash_read: 'skill_read',
   bash_script: 'skill_read',
   api_read: 'skill_read',
+  slash: 'tool_call',
 }
 
 // Rows written before the source column existed (and by a not-yet-restarted old hook) carry NULL.

@@ -73,6 +73,7 @@ describe('POST /api/skill-usage with a source', () => {
     ['bash_read', 'skill_read'],
     ['bash_script', 'skill_read'],
     ['api_read', 'skill_read'],
+    ['slash', 'tool_call'],
   ])('accepts %s with trigger_type %s', async (source, trigger) => {
     const out = await post({ agent_id: 'src-a', skill_name: `s-${source}`, trigger_type: trigger, session_id: 's', source })
     expect(out.status).toBe(200)
@@ -105,6 +106,7 @@ describe('POST /api/skill-usage with a source', () => {
     ['skill_tool', 'skill_read'],
     ['bash_read', 'tool_call'],
     ['api_read', 'tool_call'],
+    ['slash', 'skill_read'],
   ])('rejects source %s paired with trigger_type %s', async (source, trigger) => {
     const out = await post({ agent_id: 'src-a', skill_name: 'x', trigger_type: trigger, source })
     expect(out.status).toBe(400)
