@@ -995,6 +995,57 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   return true
 }
 
+// Idempotent migration: widen the skill-usage-capture PostToolUse matcher from `Skill|Read` to
+// `Skill|Read|Bash`. The hook now also logs a skill's scripts run from Bash, a `cat` of a skill file and a
+// GET of the skills API, but a settings.json written before that keeps the older matcher, and a hook whose
+// matcher never selects Bash never sees those calls. ensureAgentHooks cannot do it: it only adds a template
+// command that is missing, and this command is already wired (under the older matcher).
+//
+// An entry that carries other hooks next to the capture hook is split: widening it in place would also run
+// those hooks on every Bash call. An entry with no matcher already matches everything and is left alone.
+// Sub-agents only: the main agent's entry lives in the tracked project settings, which ship the new matcher.
+// Takes effect at the agent's next (re)spawn; a running session does not re-read settings.json.
+// Returns true if the file was updated.
+export const SKILL_USAGE_HOOK_SCRIPT = 'skill-usage-capture.py'
+
+function matcherHasBash(matcher: string): boolean {
+  return matcher.split('|').map((p) => p.trim()).includes('Bash')
+}
+
+export function ensureSkillUsageMatcher(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureSkillUsageMatcher')) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : null
+  if (!hooks || !Array.isArray(hooks.PostToolUse)) return false
+  type Entry = { matcher?: unknown; hooks?: Array<{ command?: unknown }> }
+  const isCapture = (h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes(SKILL_USAGE_HOOK_SCRIPT)
+  const ptu = hooks.PostToolUse as Entry[]
+  const split: Entry[] = []
+  let changed = false
+  for (const entry of ptu) {
+    if (!entry || typeof entry.matcher !== 'string' || matcherHasBash(entry.matcher)) continue
+    const own = Array.isArray(entry.hooks) ? entry.hooks.filter(isCapture) : []
+    if (own.length === 0) continue
+    const widened = `${entry.matcher}|Bash`
+    if (own.length === entry.hooks!.length) {
+      entry.matcher = widened
+    } else {
+      entry.hooks = entry.hooks!.filter((h) => !isCapture(h))
+      split.push({ matcher: widened, hooks: own })
+    }
+    changed = true
+  }
+  if (!changed) return false
+  ptu.push(...split)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Deploy the quarantine-reader sub-agent definition to an agent's
 // .claude/agents/ directory. The template lives in templates/sub-agents/
 // (tracked in git); the deployed copies are per-install runtime state.

@@ -467,6 +467,8 @@ export type ListSkillUsageResponse = {
   trigger_type?: 'tool_call' | 'skill_read';
   session_id?: string | null;
   created_at?: number;
+  /** Usage path that produced the row. Rows written before the column existed are reported with the value derived from trigger_type (tool_call -> skill_tool, skill_read -> read_tool). */
+  source?: 'skill_tool' | 'read_tool' | 'bash_read' | 'bash_script' | 'api_read';
 }[]
 
 export type RecordSkillUsageResponse = OkResponse

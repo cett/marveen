@@ -34,7 +34,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Skill|Read",
+        "matcher": "Skill|Read|Bash",
         "hooks": [
           {
             "type": "command",

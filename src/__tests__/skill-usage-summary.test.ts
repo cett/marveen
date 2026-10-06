@@ -211,7 +211,7 @@ descRoute('POST /api/skill-usage route', () => {
     expectRoute(handled).toBe(true)
     expectRoute(out.status).toBe(200)
     expectRoute(out.body).toEqual({ ok: true })
-    expectRoute(mockLogSkillUsage).toHaveBeenCalledWith('agent-a', 'fleet-helper', 'tool_call', 'sess-1')
+    expectRoute(mockLogSkillUsage).toHaveBeenCalledWith('agent-a', 'fleet-helper', 'tool_call', 'sess-1', undefined)
   })
 
   itRoute('records a valid usage event without a session_id', async () => {
@@ -219,7 +219,7 @@ descRoute('POST /api/skill-usage route', () => {
       agent_id: 'agent-a', skill_name: 'fleet-helper', trigger_type: 'skill_read',
     })
     await tryHandleSkillUsage(ctx)
-    expectRoute(mockLogSkillUsage).toHaveBeenCalledWith('agent-a', 'fleet-helper', 'skill_read', undefined)
+    expectRoute(mockLogSkillUsage).toHaveBeenCalledWith('agent-a', 'fleet-helper', 'skill_read', undefined, undefined)
   })
 
   itRoute('rejects a body missing agent_id/skill_name/trigger_type', async () => {
@@ -264,5 +264,27 @@ descRoute('unrelated path', () => {
   itRoute('falls through (returns false)', async () => {
     const { ctx } = makeCtx('GET', '/api/something-else')
     expectRoute(await tryHandleSkillUsage(ctx)).toBe(false)
+  })
+})
+
+descRoute('POST /api/skill-usage route: source', () => {
+  routeBeforeEach(() => vi.clearAllMocks())
+
+  itRoute('passes a valid source through to logSkillUsage', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/skill-usage', {
+      agent_id: 'agent-a', skill_name: 'fleet-helper', trigger_type: 'skill_read', session_id: 's', source: 'bash_script',
+    })
+    await tryHandleSkillUsage(ctx)
+    expectRoute(out.status).toBe(200)
+    expectRoute(mockLogSkillUsage).toHaveBeenCalledWith('agent-a', 'fleet-helper', 'skill_read', 's', 'bash_script')
+  })
+
+  itRoute('an invalid source is a 400 and never reaches logSkillUsage', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/skill-usage', {
+      agent_id: 'agent-a', skill_name: 'fleet-helper', trigger_type: 'skill_read', source: 'nope',
+    })
+    await tryHandleSkillUsage(ctx)
+    expectRoute(out.status).toBe(400)
+    expectRoute(mockLogSkillUsage).not.toHaveBeenCalled()
   })
 })
