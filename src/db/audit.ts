@@ -164,13 +164,35 @@ export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, ga
   return candidates
 }
 
+export type SkillUsageTrigger = 'tool_call' | 'skill_read'
+export type SkillUsageSource = 'skill_tool' | 'read_tool' | 'bash_read' | 'bash_script' | 'api_read' | 'slash'
+
+// The trigger_type each source maps to: skill_tool and slash invoke a skill, every other path reads the
+// skill's files. The route rejects a pair that disagrees, so the legacy values derived below stay coherent.
+export const SKILL_USAGE_SOURCES: Record<SkillUsageSource, SkillUsageTrigger> = {
+  skill_tool: 'tool_call',
+  read_tool: 'skill_read',
+  bash_read: 'skill_read',
+  bash_script: 'skill_read',
+  api_read: 'skill_read',
+  slash: 'tool_call',
+}
+
+// Rows written before the source column existed (and by a not-yet-restarted old hook) carry NULL.
+const LEGACY_SOURCE_SQL = "CASE trigger_type WHEN 'tool_call' THEN 'skill_tool' ELSE 'read_tool' END"
+
+// A repeat of the same (agent, skill, session, source) inside this window is one use, not many: a skill
+// script run ten times in a loop must not inflate the 30-day counter the dream-engine prunes by.
+export const SKILL_USAGE_DEDUP_SECS = 60
+
 export interface SkillUsageRow {
   id: number
   agent_id: string
   skill_name: string
-  trigger_type: 'tool_call' | 'skill_read'
+  trigger_type: SkillUsageTrigger
   session_id: string | null
   created_at: number
+  source: SkillUsageSource
 }
 
 export interface SkillUsageStatRow {
@@ -182,16 +204,29 @@ export interface SkillUsageStatRow {
   last_used_at: number
 }
 
+// Returns true when a row was written, false when the 60 s dedup swallowed it. A missing source (an old
+// hook) is stored as NULL but deduped under its derived legacy value, so the Skill-tool row and the
+// SKILL.md-read row of one invocation (different triggers) never swallow each other.
 export function logSkillUsage(
   agentId: string,
   skillName: string,
-  triggerType: 'tool_call' | 'skill_read',
+  triggerType: SkillUsageTrigger,
   sessionId?: string | null,
-): void {
+  source?: SkillUsageSource | null,
+): boolean {
   const now = Math.floor(Date.now() / 1000)
+  const effectiveSource = source ?? (triggerType === 'tool_call' ? 'skill_tool' : 'read_tool')
+  const dup = db.prepare(
+    `SELECT 1 FROM skill_usage
+     WHERE agent_id = ? AND skill_name = ? AND session_id IS ? AND created_at >= ?
+       AND COALESCE(source, ${LEGACY_SOURCE_SQL}) = ?
+     LIMIT 1`,
+  ).get(agentId, skillName, sessionId ?? null, now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
+  if (dup) return false
   db.prepare(
-    'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(agentId, skillName, triggerType, sessionId ?? null, now)
+    'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(agentId, skillName, triggerType, sessionId ?? null, now, source ?? null)
+  return true
 }
 
 export function getSkillUsageRows(opts: {
@@ -208,7 +243,9 @@ export function getSkillUsageRows(opts: {
   if (skillName) { conditions.push('skill_name = ?'); params.push(skillName) }
   params.push(limit)
   return db.prepare(
-    `SELECT * FROM skill_usage WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
+    `SELECT id, agent_id, skill_name, trigger_type, session_id, created_at,
+            COALESCE(source, ${LEGACY_SOURCE_SQL}) AS source
+     FROM skill_usage WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
   ).all(...params) as SkillUsageRow[]
 }
 

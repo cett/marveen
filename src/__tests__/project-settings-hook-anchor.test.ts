@@ -37,7 +37,7 @@ const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py',
     'staleness-guard.py', 'channel-inbox-drain.py',
-    'voice-reply-directive.py', 'telegram_progress.py',
+    'voice-reply-directive.py', 'telegram_progress.py', 'skill-usage-capture.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'post-tool-injection-gate.py', 'tool-log-capture.py',
@@ -69,6 +69,28 @@ describe('tracked .claude/settings.json hook anchor (#1305)', () => {
     for (const [event, expected] of Object.entries(EXPECTED)) {
       expect([...scriptNames(event)].sort(), `event ${event}`).toEqual([...new Set(expected)].sort())
     }
+  })
+
+  it('the skill-usage capture hook matches Bash (skill scripts, cat of a skill file, the skills API)', () => {
+    // Without Bash in the matcher the hook never sees those calls: usage of a skill that is only
+    // run from the shell (the project-level ones) would read as "never used" to the dream-engine.
+    const entries = (hooks.PostToolUse ?? []).filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('skill-usage-capture.py')))
+    expect(entries).toHaveLength(1)
+    expect((entries[0].matcher ?? '').split('|').sort()).toEqual(['Bash', 'Read', 'Skill'])
+  })
+
+  it('the skill-usage capture hook is also on UserPromptSubmit (slash-command use), without a matcher', () => {
+    const entries = (hooks.UserPromptSubmit ?? []).filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('skill-usage-capture.py')))
+    expect(entries).toHaveLength(1)
+    expect(entries[0].matcher).toBeUndefined()
+  })
+
+  it('the sub-agent template registers the same matcher as the tracked settings', () => {
+    const tpl = JSON.parse(readFileSync(join(ROOT, 'templates', 'settings.json.template'), 'utf-8')) as { hooks?: Hooks }
+    const entry = (tpl.hooks?.PostToolUse ?? []).find((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('skill-usage-capture.py')))
+    const tracked = (hooks.PostToolUse ?? []).find((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('skill-usage-capture.py')))
+    expect(entry?.matcher).toBeDefined()
+    expect(entry?.matcher).toBe(tracked?.matcher)
   })
 
   it('every referenced script exists in scripts/hooks/', () => {

@@ -6,6 +6,19 @@ A forrás a készség-adatbázis: a lemezen lévő SKILL.md fájlok (és a `scri
 
 ---
 
+## Használati adatok
+
+A Skillek oldalon a készségek mellett 30 és 90 napos használati számláló és az utolsó használat ideje látszik, és a lista rendezhető utolsó használat vagy 30 napos forgalom szerint. A számláló azt méri, hányszor használta valamelyik ágens a készséget:
+
+- a Skill eszközzel vagy perjeles (`/készség-neve`) hívással, amikor a bevitel a készség nevével kezdődik;
+- a készség fájljainak (SKILL.md, `references/`, `scripts/`) olvasásával, a Read eszközzel vagy shellből (`cat`, `head`, `grep` és hasonlók);
+- a készség `scripts/` könyvtárában lévő script futtatásával;
+- a készség lekérdezésével a skill-adatbázis API-ból.
+
+Nem számít használatnak a listázás, másolás, szerkesztés, mentés, a beépített parancsok (`/clear`, `/help` stb.), és az olyan hivatkozás, amely a készség-gyökeret, egy mintát vagy egy futásidőben összeállított útvonalat nevez meg egy konkrét készség helyett. Az ugyanazon ágens, készség, munkamenet és használati mód egy percen belüli ismétlése egyszer számít. Az új mérési módok a bevezetésük napjától számolnak, korábbi használatot nem pótolnak, ezért egy csak shellből futtatott készség számlálója eleinte alacsonyabb a valóságnál.
+
+---
+
 ## Készség-típusok
 
 | Típus | Leírás |

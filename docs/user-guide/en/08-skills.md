@@ -6,6 +6,19 @@ The skills database is the source of truth: the SKILL.md files (and their `scrip
 
 ---
 
+## Usage figures
+
+On the Skills page each skill shows a 30-day and a 90-day usage count and the time of its last use, and the list can be sorted by last use or by 30-day traffic. The count measures how many times an agent used the skill:
+
+- through the Skill tool or a slash call (`/skill-name`), when the input starts with the skill's name;
+- by reading the skill's files (SKILL.md, `references/`, `scripts/`), with the Read tool or from the shell (`cat`, `head`, `grep` and the like);
+- by running a script from the skill's `scripts/` directory;
+- by fetching the skill from the skills database API.
+
+Listing, copying, editing and saving a skill, the built-in commands (`/clear`, `/help` and so on), and a reference that names the skills root, a pattern or a path built at run time instead of one concrete skill do not count as use. A repeat of the same agent, skill, session and kind of use within one minute counts once. The newer ways of measuring count from the day they were introduced and do not recover earlier use, so a skill that is only run from the shell shows a count below the real one at first.
+
+---
+
 ## Skill types
 
 | Type | Description |
