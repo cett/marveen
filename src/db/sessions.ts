@@ -279,3 +279,10 @@ export function deleteExpiredAuthSessions(idleCutoff: number, absoluteCutoff: nu
     .prepare('DELETE FROM auth_sessions WHERE last_seen_at < ? OR created_at < ?')
     .run(idleCutoff, absoluteCutoff).changes
 }
+
+/** Role and tenant scope of an ENABLED dashboard user (case-insensitive name), for the auth gate. */
+export function getDashboardUserAuthRow(username: string): { role: string; tenant_id: string | null } | undefined {
+  return db
+    .prepare('SELECT role, tenant_id FROM dashboard_users WHERE username = ? COLLATE NOCASE AND disabled = 0')
+    .get(username) as { role: string; tenant_id: string | null } | undefined
+}

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import type http from 'node:http'
-import { initDatabase, createDashboardUser } from '../db.js'
+import { initDatabase, createDashboardUser, adminPatchDashboardUser, insertApiToken, revokeApiToken } from '../db.js'
+import { createHash } from 'node:crypto'
 import { resolveAuth, requiresAuth, parseCookies, SESSION_COOKIE_NAME, resolveAgentIdHeader } from '../web/auth-gate.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 
@@ -230,5 +231,45 @@ describe('parseCookies', () => {
   })
   it('keeps the first occurrence of a duplicated name', () => {
     expect(parseCookies('mv_session=first; mv_session=second')).toEqual({ mv_session: 'first' })
+  })
+})
+
+describe('DB-backed lookups (dbLookups = true)', () => {
+  const sha = (raw: string) => createHash('sha256').update(raw).digest('hex')
+  const NOW = Math.floor(Date.now() / 1000)
+
+  it('a session resolves its role and tenant from dashboard_users', () => {
+    const u = createDashboardUser('lookup-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    adminPatchDashboardUser(u.id, { role: 'agent', tenant_id: null })
+    const cookie = createSession({ userId: u.id, username: u.username })
+    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'session', user: 'lookup-user', role: 'agent', tenantId: null })
+  })
+
+  it('a disabled user keeps the session identity but gets no role', () => {
+    const u = createDashboardUser('disabled-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    adminPatchDashboardUser(u.id, { disabled: true })
+    const cookie = createSession({ userId: u.id, username: u.username })
+    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'session', user: 'disabled-user' })
+  })
+
+  it('a registered API token resolves with its own role and tenant', () => {
+    insertApiToken({ tokenHash: sha('registered-token'), name: 'ci', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
+    const r = resolveAuth(mkReq({ authorization: 'Bearer registered-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'token', role: 'viewer', tenantId: 'tenant-a', tokenName: 'ci' })
+  })
+
+  it('a revoked API token is refused and never falls through to the dashboard token', () => {
+    const row = insertApiToken({ tokenHash: sha(TOKEN), name: 'dashboard-copy', role: 'admin', tenantId: 'default', createdAt: NOW, expiresAt: null })
+    revokeApiToken(row.id, NOW)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'none' })
+  })
+
+  it('the same registered token is not looked up when DB lookups are off', () => {
+    insertApiToken({ tokenHash: sha('offline-token'), name: 'ci2', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
+    const r = resolveAuth(mkReq({ authorization: 'Bearer offline-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    expect(r).toEqual({ kind: 'none' })
   })
 })

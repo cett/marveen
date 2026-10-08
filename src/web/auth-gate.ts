@@ -22,13 +22,12 @@
 // the fleet manifest return true.
 
 import type http from 'node:http'
-import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey } from './auth-device-keys.js'
-import { getValidApiToken, apiTokenHashExists } from '../db.js'
+import { getValidApiToken, apiTokenHashExists, getDashboardUserAuthRow } from '../db.js'
 import type { Role } from './rbac.js'
 
 export type AuthResult =
@@ -125,7 +124,9 @@ export function resolveAuth(
   path: string,
   method: string,
   dashboardToken: string,
-  db?: Database.Database,
+  // true = consult api_tokens and dashboard_users (production). false = the
+  // DB-less mode: bearer/device/federation lanes only, sessions carry no role.
+  dbLookups = false,
 ): AuthResult {
   const bearerHeader = req.headers.authorization
   const bearerMatch = /^Bearer\s+(.+)$/.exec(bearerHeader ?? '')
@@ -136,7 +137,7 @@ export function resolveAuth(
   //    immediately -- do NOT fall through to the file-token fallback, which would
   //    re-grant admin and bypass revocation. Only tokens absent from DB entirely
   //    may reach the legacy fallback in step 2.
-  if (bearerValue && db) {
+  if (bearerValue && dbLookups) {
     const result = resolveApiToken(bearerValue)
     if (result.found) {
       return { kind: 'token', role: result.role, tenantId: result.tenantId, tokenName: result.name }
@@ -151,15 +152,13 @@ export function resolveAuth(
   //    and a valid session cookie are present in the same browser request.
   //    Fleet API callers (curl, notify.sh, channels auth probe) never carry a
   //    session cookie, so the file-token fallback (step 3) is unaffected for them.
-  //    When the DB is available, look up role and tenant scope for RBAC.
+  //    When DB lookups are on, look up role and tenant scope for RBAC.
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
     const session = resolveSession(cookieValue)
     if (session) {
-      if (db) {
-        const userRow = db
-          .prepare('SELECT role, tenant_id FROM dashboard_users WHERE username = ? COLLATE NOCASE AND disabled = 0')
-          .get(session.username) as { role: string; tenant_id: string | null } | undefined
+      if (dbLookups) {
+        const userRow = getDashboardUserAuthRow(session.username)
         if (userRow) {
           return { kind: 'session', user: session.username, role: userRow.role as Role, tenantId: userRow.tenant_id }
         }
