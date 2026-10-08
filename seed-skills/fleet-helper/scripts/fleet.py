@@ -18,7 +18,8 @@ Config (no hardcoded paths or secrets):
 import json
 import os
 import sys
-import sqlite3
+import time
+from datetime import date, datetime
 import urllib.request
 import urllib.error
 
@@ -45,10 +46,6 @@ def base_url():
 def token():
     with open(os.path.join(project_dir(), "store", ".dashboard-token")) as f:
         return f.read().strip()
-
-
-def db_path():
-    return os.path.join(project_dir(), "store", "claudeclaw.db")
 
 
 def api(method, path, payload=None, timeout=20):
@@ -93,33 +90,35 @@ def list_agents():
     return api("GET", "/api/agents")
 
 
-def _kanban(where, params=()):
-    con = sqlite3.connect(db_path())
-    con.row_factory = sqlite3.Row
-    try:
-        rows = con.execute(
-            "SELECT id, title, status, assignee, priority, project, due_date, "
-            "updated_at FROM kanban_cards WHERE archived_at IS NULL AND " + where,
-            params).fetchall()
-    finally:
-        con.close()
-    return [dict(r) for r in rows]
+_KANBAN_FIELDS = ("id", "title", "status", "assignee", "priority", "project", "due_date", "updated_at")
+
+
+def _kanban(keep, sort_key=None, reverse=False):
+    """Open (non-archived) cards from GET /api/kanban, filtered and ordered here."""
+    cards = api("GET", "/api/kanban")
+    rows = [{k: c.get(k) for k in _KANBAN_FIELDS} for c in cards if keep(c)]
+    if sort_key:
+        rows.sort(key=sort_key, reverse=reverse)
+    return rows
 
 
 def kanban_due_today():
+    today = date.today()
     return _kanban(
-        "due_date IS NOT NULL AND status != 'done' "
-        "AND date(due_date,'unixepoch','localtime') <= date('now','localtime') "
-        "ORDER BY due_date")
+        lambda c: c.get("due_date") is not None and c.get("status") != "done"
+        and datetime.fromtimestamp(c["due_date"]).date() <= today,
+        sort_key=lambda c: c["due_date"])
 
 
 def kanban_stuck(idle_seconds=14400):
-    return _kanban("status = 'in_progress' AND updated_at < strftime('%s','now') - ? "
-                   "ORDER BY updated_at", (idle_seconds,))
+    cutoff = int(time.time()) - idle_seconds
+    return _kanban(lambda c: c.get("status") == "in_progress" and c.get("updated_at") < cutoff,
+                   sort_key=lambda c: c["updated_at"])
 
 
 def kanban_by_status(status):
-    return _kanban("status = ? ORDER BY priority DESC, updated_at DESC", (status,))
+    return _kanban(lambda c: c.get("status") == status,
+                   sort_key=lambda c: (c.get("priority") or "", c.get("updated_at") or 0), reverse=True)
 
 
 _MDV2_SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
