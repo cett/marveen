@@ -2,7 +2,6 @@
   "dispositions": {
     "install-macos.sh": "C",
     "scripts/backup.sh": "C",
-    "scripts/doctor.sh": "B",
     "scripts/ensure-native-modules.sh": "C",
     "scripts/hooks/context-watchdog.py": "A",
     "scripts/hooks/ledger_lib.py": "B",
@@ -13,7 +12,6 @@
     "scripts/migrate-main-agent-id.sh": "C",
     "scripts/pre-modify-backup.sh": "C",
     "scripts/start.sh": "C",
-    "scripts/status.ts": "B",
     "scripts/systemd/marveen-channels.service": "C",
     "scripts/verify-restore.sh": "C",
     "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
@@ -34,13 +32,6 @@
       "direct": {
         "claudeclaw.db": 7,
         "sqlite3 CLI": 3
-      }
-    },
-    "scripts/doctor.sh": {
-      "dialect": {},
-      "direct": {
-        "claudeclaw.db": 6,
-        "sqlite3 CLI": 2
       }
     },
     "scripts/ensure-native-modules.sh": {
@@ -122,13 +113,6 @@
       "dialect": {},
       "direct": {
         "better-sqlite3": 1
-      }
-    },
-    "scripts/status.ts": {
-      "dialect": {},
-      "direct": {
-        "claudeclaw.db": 1,
-        "sqlite3 CLI": 2
       }
     },
     "scripts/systemd/marveen-channels.service": {
