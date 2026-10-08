@@ -12,7 +12,8 @@
 
 import { removeScheduledTaskFiles } from '../scheduled-tasks-io.js'
 import {
-  getDb,
+  getDashboardUser,
+  writeAdminAuditLog,
   createTenant,
   getTenant,
   listTenants,
@@ -71,9 +72,7 @@ function userToPublic(u: { id: number; username: string; role: string; tenant_id
 function auditAdmin(ctx: RouteContext, action: string, targetId: string | number, detail: Record<string, unknown>): void {
   const actor = ctx.auth?.user ?? 'system'
   try {
-    getDb()
-      .prepare('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail) VALUES (?, ?, ?, ?, ?)')
-      .run(actor, 'admin', action, String(targetId), JSON.stringify(detail))
+    writeAdminAuditLog(actor, action, targetId, detail)
   } catch (err) {
     logger.warn({ err, action, targetId }, 'admin audit log write failed')
   }
@@ -237,7 +236,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
 
     // Duplicate check (UNIQUE on username, case-insensitive).
-    const dup = getDb().prepare('SELECT id FROM dashboard_users WHERE username = ? COLLATE NOCASE').get(username)
+    const dup = getDashboardUser(username)
     if (dup) { json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true }
 
     const hash = await hashPassword(password)

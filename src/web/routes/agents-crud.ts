@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, getDb, writeAgentAuditLog } from '../../db.js'
+import { createAgentMessage, getOpenKanbanCountsByAssignee, writeAgentAuditLog } from '../../db.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { setSecret, deleteSecret } from '../vault.js'
@@ -254,14 +254,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     )
 
     // Kanban: open and urgent/high card counts per assignee
-    const db = getDb()
-    type KanbanRow = { assignee: string | null; priority: string; cnt: number }
-    const kanbanRows = db.prepare(
-      `SELECT assignee, priority, COUNT(*) as cnt
-       FROM kanban_cards
-       WHERE archived_at IS NULL AND assignee IS NOT NULL
-       GROUP BY assignee, priority`
-    ).all() as KanbanRow[]
+    const kanbanRows = getOpenKanbanCountsByAssignee()
     const kanbanMap = new Map<string, { open: number; urgent: number }>()
     for (const row of kanbanRows) {
       if (!row.assignee) continue

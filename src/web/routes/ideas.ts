@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { listIdeas, getIdeaStatusCounts, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog } from '../../db.js'
+import { listIdeas, getIdeaStatusCounts, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getIdeaById, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -10,9 +10,7 @@ import type { RouteContext } from './types.js'
 
 type IdeaRow = import('../../db.js').IdeaBoxRow
 
-function getIdea(id: string): IdeaRow | undefined {
-  return getDb().prepare('SELECT * FROM idea_box WHERE id = ?').get(id) as IdeaRow | undefined
-}
+const getIdea = getIdeaById
 
 const VALID_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
 

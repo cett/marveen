@@ -43,9 +43,7 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
 })
 vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
-  getDb: vi.fn().mockReturnValue({
-    prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]) }),
-  }),
+  getOpenKanbanCountsByAssignee: vi.fn().mockReturnValue([]),
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
   isTenantAgentEnabled: vi.fn().mockReturnValue(true),
 }))
@@ -644,14 +642,10 @@ describe('agents-crud routes (extended)', () => {
     vi.mocked(tokenUsage.getTokenSummary).mockReturnValueOnce([
       { agent: 'test-agent', totalCalls: 10, totalInput: 50000, totalOutput: 5000, totalCacheRead: 0, totalCacheWrite: 0 },
     ] as any)
-    vi.mocked(db.getDb).mockReturnValueOnce({
-      prepare: vi.fn().mockReturnValue({
-        all: vi.fn().mockReturnValue([
-          { assignee: 'test-agent', priority: 'urgent', cnt: 2 },
-          { assignee: 'test-agent', priority: 'low', cnt: 1 },
-        ]),
-      }),
-    } as any)
+    vi.mocked(db.getOpenKanbanCountsByAssignee).mockReturnValueOnce([
+      { assignee: 'test-agent', priority: 'urgent', cnt: 2 },
+      { assignee: 'test-agent', priority: 'low', cnt: 1 },
+    ])
     vi.mocked(schedIO.listScheduledTasks).mockReturnValueOnce([
       { name: 'task-a', schedule: '*/30 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },
       { name: 'task-b', schedule: '0 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'heartbeat', skipIfBusy: false, forceSend: false },

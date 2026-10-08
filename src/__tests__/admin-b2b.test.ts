@@ -9,12 +9,8 @@ vi.mock('../web/password-hash.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
-  getDb: vi.fn().mockReturnValue({
-    prepare: vi.fn().mockReturnValue({
-      run: vi.fn().mockReturnValue({ lastInsertRowid: 5 }),
-      get: vi.fn().mockReturnValue(null),
-    }),
-  }),
+  getDashboardUser: vi.fn().mockReturnValue(undefined),
+  writeAdminAuditLog: vi.fn(),
   createTenant: vi.fn(),
   getTenant: vi.fn(),
   listTenants: vi.fn(),
@@ -96,12 +92,7 @@ const SAMPLE_USER = { id: 5, username: 'acme-viewer', role: 'agent', tenant_id: 
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(db.getDb).mockReturnValue({
-    prepare: vi.fn().mockReturnValue({
-      run: vi.fn().mockReturnValue({ lastInsertRowid: 5 }),
-      get: vi.fn().mockReturnValue(null),
-    }),
-  } as any)
+  vi.mocked(db.getDashboardUser).mockReturnValue(undefined)
 })
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
@@ -288,9 +279,7 @@ describe('POST /api/v1/admin/users', () => {
 
   it('returns 409 for duplicate username', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.getDb).mockReturnValue({
-      prepare: vi.fn().mockReturnValue({ get: vi.fn().mockReturnValue({ id: 5 }) }),
-    } as any)
+    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'acme-viewer', password: 'supersecret123', role: 'agent', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(409)

@@ -928,3 +928,9 @@ export function summarizeRbacShadowRows(f: Pick<ShadowLogFilter, 'from' | 'to' |
 
   return { from: f.from ?? null, to: f.to ?? null, total, by_decision, top_denials, denied_principals }
 }
+
+/** Admin-console audit row; `entity` is fixed to 'admin' and the actor is a dashboard user name. */
+export function writeAdminAuditLog(actor: string, action: string, targetId: string | number, detail: Record<string, unknown>): void {
+  db.prepare('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail) VALUES (?, ?, ?, ?, ?)')
+    .run(actor, 'admin', action, String(targetId), JSON.stringify(detail))
+}

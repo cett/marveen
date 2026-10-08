@@ -619,3 +619,19 @@ export function getLabelsForAllCards(): Map<string, Label[]> {
   }
   return map
 }
+
+export interface KanbanAssigneePriorityCount {
+  assignee: string | null
+  priority: string
+  cnt: number
+}
+
+/** Open (non-archived) card counts per assignee and priority. */
+export function getOpenKanbanCountsByAssignee(): KanbanAssigneePriorityCount[] {
+  return db.prepare(
+    `SELECT assignee, priority, COUNT(*) as cnt
+     FROM kanban_cards
+     WHERE archived_at IS NULL AND assignee IS NOT NULL
+     GROUP BY assignee, priority`
+  ).all() as KanbanAssigneePriorityCount[]
+}
