@@ -209,3 +209,73 @@ export function recallSearch(query: string, agentId?: string, limit = 50, tenant
 
   return { logs, memories, dateRange: { from, to } }
 }
+
+// ── Dashboard browser sessions (auth_sessions) ───────────────────────
+// Persistence only; the cookie hashing, cache and TTL policy live in
+// web/auth-sessions.ts.
+
+export interface AuthSessionRow {
+  user_id: number
+  username: string
+  created_at: number
+  last_seen_at: number
+}
+
+export interface AuthSessionListRow {
+  id_hash: string
+  created_at: number
+  last_seen_at: number
+  user_agent: string | null
+}
+
+export function insertAuthSession(
+  idHash: string,
+  userId: number,
+  username: string,
+  now: number,
+  userAgent: string | null,
+  remoteNote: string | null,
+): void {
+  db.prepare('INSERT INTO auth_sessions (id_hash, user_id, username, created_at, last_seen_at, user_agent, remote_note) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(idHash, userId, username, now, now, userAgent, remoteNote)
+}
+
+export function deleteAuthSessionByHash(idHash: string): void {
+  db.prepare('DELETE FROM auth_sessions WHERE id_hash = ?').run(idHash)
+}
+
+export function getAuthSessionByHash(idHash: string): AuthSessionRow | undefined {
+  return db
+    .prepare('SELECT user_id, username, created_at, last_seen_at FROM auth_sessions WHERE id_hash = ?')
+    .get(idHash) as AuthSessionRow | undefined
+}
+
+/** Returns the number of rows touched (0 = the session no longer exists). */
+export function touchAuthSessionLastSeen(idHash: string, now: number): number {
+  return db.prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id_hash = ?').run(now, idHash).changes
+}
+
+/** Deletes every session of a user, optionally sparing one (by hash). */
+export function deleteAuthSessionsForUser(userId: number, exceptHash: string | null): void {
+  if (exceptHash) {
+    db.prepare('DELETE FROM auth_sessions WHERE user_id = ? AND id_hash != ?').run(userId, exceptHash)
+  } else {
+    db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId)
+  }
+}
+
+export function deleteAllAuthSessions(): number {
+  return db.prepare('DELETE FROM auth_sessions').run().changes
+}
+
+export function listAuthSessionRowsForUser(userId: number): AuthSessionListRow[] {
+  return db
+    .prepare('SELECT id_hash, created_at, last_seen_at, user_agent FROM auth_sessions WHERE user_id = ? ORDER BY last_seen_at DESC')
+    .all(userId) as AuthSessionListRow[]
+}
+
+export function deleteExpiredAuthSessions(idleCutoff: number, absoluteCutoff: number): number {
+  return db
+    .prepare('DELETE FROM auth_sessions WHERE last_seen_at < ? OR created_at < ?')
+    .run(idleCutoff, absoluteCutoff).changes
+}
