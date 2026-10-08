@@ -69,8 +69,9 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: arFields.code, field: arFields.rejected[0], hint: arFields.message }, 400)
       return true
     }
-    setStoreWriteActor('dashboard')
-    const saved = writeAutoRestartConfig(name, data, resolveAgentOwningTenantId(name))
+    const owningTenant = resolveAgentOwningTenantId(name)
+    setStoreWriteActor('dashboard', owningTenant)
+    const saved = writeAutoRestartConfig(name, data, owningTenant)
     json(res, { ok: true, autoRestart: saved })
     return true
   }
@@ -96,8 +97,9 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: cgFields.code, field: cgFields.rejected[0], hint: cgFields.message }, 400)
       return true
     }
-    setStoreWriteActor('dashboard')
-    const saved = writeContextGuardConfig(name, data, resolveAgentOwningTenantId(name))
+    const owningTenant = resolveAgentOwningTenantId(name)
+    setStoreWriteActor('dashboard', owningTenant)
+    const saved = writeContextGuardConfig(name, data, owningTenant)
     json(res, { ok: true, contextGuard: saved })
     return true
   }

@@ -56,13 +56,19 @@ const SENSITIVE_NAMES = new Set(['.dashboard-token', 'vault.json', '.vault-key',
 // OS-level mechanism to identify the writer without a process audit daemon,
 // so null is the honest and correct value.
 let currentWriteActor: string | null = null
+// The tenant the file belongs to, set by the route that knows it (server-resolved, never taken from
+// the actor string: a request body can claim any actor name). null = fleet scope (a global file);
+// undefined = the route said nothing, the writer falls back to the actor as an agent id.
+let currentWriteTenant: string | null | undefined = undefined
 
-export function setStoreWriteActor(actor: string): void {
+export function setStoreWriteActor(actor: string, tenantId?: string | null): void {
   currentWriteActor = actor
+  currentWriteTenant = tenantId
 }
 
 export function clearStoreWriteActor(): void {
   currentWriteActor = null
+  currentWriteTenant = undefined
 }
 
 // --- Known-files tracking for creation detection ---
@@ -119,7 +125,9 @@ export function startStoreWatcher(): void {
       // events, so a slot set before a denylist-ed write cannot leak to the
       // next unrelated event.
       const agent = currentWriteActor
+      const tenantId = currentWriteTenant
       currentWriteActor = null
+      currentWriteTenant = undefined
 
       // Only rename events can indicate a new file. change = modification.
       if (eventType !== 'rename') return
@@ -157,7 +165,7 @@ export function startStoreWatcher(): void {
       const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
 
       try {
-        logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent)
+        logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent, tenantId)
       } catch (err) {
         logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
       }

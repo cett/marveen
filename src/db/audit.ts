@@ -419,17 +419,28 @@ export interface StoreFileAuditRow {
   created_at: number
 }
 
+/** The actor name the dashboard's own routes use for the store writes they announce. */
+export const STORE_DASHBOARD_ACTOR = 'dashboard'
+
 export function logStoreFileEvent(
   relPath: string,
   eventType: string,
   isSensitive: number,
   fileSize: number | null,
   agent: string | null = null,
+  tenantId?: string | null,
 ): void {
   const now = Math.floor(Date.now() / 1000)
+  // The store holds fleet files (configs, logs, handoffs); a file is a tenant's only when the route
+  // that wrote it says so. An explicit tenantId wins, null included (fleet scope). Without one the
+  // actor is read as an agent id, but 'dashboard' is the dashboard itself, not an agent: it must not
+  // fall into 'default'. A direct write nobody announced has no actor and stays NULL.
+  const tenant = tenantId !== undefined
+    ? tenantId
+    : agent === null || agent === STORE_DASHBOARD_ACTOR ? null : resolveWriteTenant(agent)
   db.prepare(
     'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(relPath, eventType, isSensitive, fileSize, agent, now, resolveWriteTenant(agent))
+  ).run(relPath, eventType, isSensitive, fileSize, agent, now, tenant)
 }
 
 export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
