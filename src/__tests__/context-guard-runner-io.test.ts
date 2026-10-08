@@ -185,7 +185,7 @@ vi.mock('../db.js', () => ({
   createAgentMessage: mockCreateAgentMessage,
 }))
 
-vi.mock('../workspace-store.js', () => ({
+vi.mock('../db/workspace.js', () => ({
   getWorkspaceDocUpdatedAtMs: mockGetWorkspaceDocUpdatedAtMs,
 }))
 

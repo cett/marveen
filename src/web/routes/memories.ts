@@ -11,7 +11,7 @@ import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
-import { hybridSearchDocs, type WorkspaceDocSearchResult } from '../../workspace-store.js'
+import { hybridSearchDocs, type WorkspaceDocSearchResult } from '../../db/workspace.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 

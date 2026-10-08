@@ -18,7 +18,7 @@ import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { createAgentMessage } from '../db.js'
-import { getWorkspaceDocUpdatedAtMs } from '../workspace-store.js'
+import { getWorkspaceDocUpdatedAtMs } from '../db/workspace.js'
 import { appendActivePlanMarkerToHandoff } from './claude-plan-handoff-marker.js'
 import { parseHHMM, dailyDueAtMs, restartDue } from '../auto-restart.js'
 import {

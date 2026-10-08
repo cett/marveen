@@ -4,7 +4,7 @@ import type { RouteContext } from '../web/routes/types.js'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-vi.mock('../workspace-store.js', () => ({
+vi.mock('../db/workspace.js', () => ({
   WORKSPACE_DOC_SIZE_LIMITS: { text: 2097152, code: 4194304, binary: 16777216 },
   saveWorkspaceDoc: vi.fn(),
   getWorkspaceDoc: vi.fn(),
@@ -19,7 +19,7 @@ vi.mock('../workspace-store.js', () => ({
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() } }))
 
-import * as store from '../workspace-store.js'
+import * as store from '../db/workspace.js'
 
 const SAMPLE_META = { id: 'abc123', agent_id: 'rick', tenant_id: 'acme-corp', content_type: 'text', title: 'RBAC plan' }
 import { tryHandleWorkspace } from '../web/routes/workspace.js'

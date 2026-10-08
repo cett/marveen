@@ -592,7 +592,7 @@ export function initVecSupport(): void {
   `)
 
   // vec_workspace_docs: ANN index for workspace document embeddings.
-  // App-level sync only (no triggers) -- insert/delete handled in workspace-store.ts.
+  // App-level sync only (no triggers) -- insert/delete handled in db/workspace.ts.
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS vec_workspace_docs USING vec0(
       doc_id      TEXT     PRIMARY KEY,

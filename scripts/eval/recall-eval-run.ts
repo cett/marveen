@@ -31,7 +31,7 @@ export async function runCases(
 ): Promise<QueryRun[]> {
   const { hybridSearch, floatsToBlob, searchArtifactsByVector } = await import('../../src/db/vector.js')
   const { searchAgentMemories } = await import('../../src/db/memory.js')
-  const { searchWorkspaceDocs, vectorSearchDocs, hybridSearchDocs } = await import('../../src/workspace-store.js')
+  const { searchWorkspaceDocs, vectorSearchDocs, hybridSearchDocs } = await import('../../src/db/workspace.js')
 
   const decay = (createdAt: number) => Math.exp(-VECTOR_RECENCY_LAMBDA * ((nowSec - createdAt) / 86400))
   const allMem = db

@@ -31,6 +31,7 @@ export * from './tenant-channel-bindings.js'
 export * from './vault.js'
 export * from './vault-bindings.js'
 export * from './vector.js'
+export * from './workspace.js'
 export * from './federation.js'
 
 import { existsSync, readFileSync, renameSync } from 'node:fs'

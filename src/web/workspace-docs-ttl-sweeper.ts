@@ -1,8 +1,8 @@
-import { sweepExpiredWorkspaceDocs } from '../workspace-store.js'
+import { sweepExpiredWorkspaceDocs } from '../db/workspace.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { logger } from '../logger.js'
 
-// sweepExpiredWorkspaceDocs() (workspace-store.ts) existed with no caller --
+// sweepExpiredWorkspaceDocs() (db/workspace.ts) existed with no caller --
 // the table only grew. Sweep on the same cadence as the blackboard-stale
 // sweeper; the TTL itself is minutes-to-days scale, so 5-minute granularity
 // is more than enough precision.

@@ -9,7 +9,7 @@ import {
   backfillWorkspaceDocs,
   vectorSearchDocs,
   hybridSearchDocs,
-} from '../workspace-store.js'
+} from '../db/workspace.js'
 
 // Wraps the real generateEmbedding so every existing test keeps hitting the
 // real (Ollama-less, always-null-in-CI) implementation by default -- only

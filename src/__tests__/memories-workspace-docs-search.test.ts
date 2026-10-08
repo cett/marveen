@@ -63,7 +63,7 @@ vi.mock('../db.js', () => ({
   syncVecMemoryDelete: vi.fn(),
 }))
 
-vi.mock('../workspace-store.js', () => ({
+vi.mock('../db/workspace.js', () => ({
   hybridSearchDocs: mockHybridSearchDocs,
 }))
 
