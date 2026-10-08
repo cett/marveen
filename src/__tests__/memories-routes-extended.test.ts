@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
 const { mockSaveAgentMemory, mockSearchAgentMemories, mockGetAgentMemories,
-  mockSearchMemories, mockGetMemoriesForChat, mockGetDb, mockTouchMemoriesAccessed,
+  mockSearchMemories, mockGetMemoriesForChat, mockLikeForAgent, mockLike, mockUpdatedIds, mockTouchMemoriesAccessed,
   mockHybridSearch, mockCountAgentMemories, mockCountMemoriesForChat } = vi.hoisted(() => {
   const fakeMemory = (id: number) => ({
     id, agent_id: 'agent-a', content: 'test content', keywords: 'test',
@@ -17,9 +17,9 @@ const { mockSaveAgentMemory, mockSearchAgentMemories, mockGetAgentMemories,
     mockGetAgentMemories: vi.fn().mockReturnValue([fakeMemory(2)]),
     mockSearchMemories: vi.fn().mockReturnValue([fakeMemory(3)]),
     mockGetMemoriesForChat: vi.fn().mockReturnValue([fakeMemory(4)]),
-    mockGetDb: vi.fn().mockReturnValue({
-      prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]), run: vi.fn() }),
-    }),
+    mockLikeForAgent: vi.fn().mockReturnValue([]),
+    mockLike: vi.fn().mockReturnValue([]),
+    mockUpdatedIds: vi.fn().mockReturnValue([]),
     mockTouchMemoriesAccessed: vi.fn(),
     mockHybridSearch: vi.fn().mockResolvedValue([]),
     mockCountAgentMemories: vi.fn().mockReturnValue(1),
@@ -40,7 +40,9 @@ vi.mock('../db.js', () => ({
   searchMemories: mockSearchMemories,
   getMemoriesForChat: mockGetMemoriesForChat,
   countMemoriesForChat: mockCountMemoriesForChat,
-  getDb: mockGetDb,
+  searchMemoriesLikeForAgent: mockLikeForAgent,
+  searchMemoriesLike: mockLike,
+  listUpdatedSinceLastReadIds: mockUpdatedIds,
   touchMemoriesAccessed: mockTouchMemoriesAccessed,
   recordMemoryRead: vi.fn(),
   recordMemoryReadBatch: vi.fn(),
@@ -152,7 +154,7 @@ describe('tryHandleMemories - extended paths', () => {
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(200)
-      expect(mockGetDb).toHaveBeenCalled()
+      expect(mockLikeForAgent).toHaveBeenCalledWith('agent-a', 'fallback', 50, 'default')
     })
 
     it('GET with q only (no agent) defaults to hybrid search (F0)', async () => {
@@ -177,7 +179,7 @@ describe('tryHandleMemories - extended paths', () => {
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'fallback global', mode: 'fts' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
-      expect(mockGetDb).toHaveBeenCalled()
+      expect(mockLike).toHaveBeenCalledWith('fallback global', 50, 'default')
     })
 
     it('GET with agentId and no q returns agent memories', async () => {

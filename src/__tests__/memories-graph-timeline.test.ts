@@ -13,8 +13,6 @@ const EDGE_GHOST = { src_id: 3, dst_id: 99, weight: 0.85, created_at: 1600 }  //
 // Tier-change version fixture: node A moved warm->cold at ts=1400
 const VERSION_A_COLD = { memory_id: 1, changed_at: 1400, category: 'cold' }
 
-const mockDb = { prepare: vi.fn() }
-
 vi.mock('../db.js', () => ({
   saveAgentMemory: vi.fn(),
   getAgentMemories: vi.fn().mockReturnValue([]),
@@ -26,7 +24,10 @@ vi.mock('../db.js', () => ({
   clearMemoryCache: vi.fn(),
   searchMemories: vi.fn().mockReturnValue([]),
   getMemoriesForChat: vi.fn().mockReturnValue([]),
-  getDb: vi.fn(() => mockDb),
+  listMemoryGraphNodesInWindow: vi.fn().mockReturnValue([]),
+  listMemoryLinksAmong: vi.fn().mockReturnValue([]),
+  listMemoryLinkDegrees: vi.fn().mockReturnValue([]),
+  listCategoryChangesInWindow: vi.fn().mockReturnValue([]),
   touchMemoriesAccessed: vi.fn(),
   recordMemoryRead: vi.fn(),
   recordMemoryReadBatch: vi.fn(),
@@ -48,6 +49,9 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: () => '0',
 }))
 
+import {
+  listMemoryGraphNodesInWindow, listMemoryLinksAmong, listMemoryLinkDegrees, listCategoryChangesInWindow,
+} from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
 
 function makeCtx(
@@ -71,27 +75,21 @@ function makeCtx(
   return { ctx, out }
 }
 
-// Helper: mock (nodes, edges, degree, tierChanged) for non-empty node queries.
-// Query order: 1=nodes, 2=edges, 3=degree, 4=tier-changed versions
+// Helper: stage what the four db helpers return for one request.
 function mockQueries(
-  nodes: any[], edges: any[], tierChangedVersions: any[] = []
+  nodes: any[], edges: any[], tierChangedVersions: any[] = [], degrees: any[] = []
 ) {
-  mockDb.prepare = vi.fn()
-    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(nodes) })         // nodes
-    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(edges) })         // edges
-    .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })            // degree
-    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(tierChangedVersions) }) // tier_changed
+  vi.mocked(listMemoryGraphNodesInWindow).mockReturnValue(nodes)
+  vi.mocked(listMemoryLinksAmong).mockReturnValue(edges)
+  vi.mocked(listMemoryLinkDegrees).mockReturnValue(degrees)
+  vi.mocked(listCategoryChangesInWindow).mockReturnValue(tierChangedVersions)
 }
 
 describe('GET /api/memories/graph/timeline', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => { vi.clearAllMocks(); mockQueries([], []) })
 
   it('returns nodes, edges, events, time_range structure', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([{ src_id: 1, degree: 1 }]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
+    mockQueries([NODE_A, NODE_B], [EDGE_AB], [], [{ src_id: 1, degree: 1 }])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     const handled = await tryHandleMemories(ctx)
@@ -155,71 +153,38 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('agent filter is forwarded to node query', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([NODE_A])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
+    mockQueries([NODE_A], [])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?agent=agent-a&from=900&to=2000')
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
-    // agent-filtered query receives agent as first arg, then from/to, then
-    // the #809/#810 tenant scope ('default' -- no ctx.tenantId in this fixture)
-    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', expect.any(Number), expect.any(Number), 'default')
+    // from/to window, the agent filter, then the tenant scope
+    // ('default' -- no ctx.tenantId in this fixture)
+    expect(listMemoryGraphNodesInWindow).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 'agent-a', 'default')
   })
 
   it('#810: non-admin viewer is scoped to their own tenant', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000', 'viewer', 'tenant-a')
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 'tenant-a')
+    expect(listMemoryGraphNodesInWindow).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), undefined, 'tenant-a')
   })
 
   it('#810: a non-admin cannot escape their tenant via ?tenant= (param ignored)', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000&tenant=tenant-b', 'viewer', 'tenant-a')
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 'tenant-a')
+    expect(listMemoryGraphNodesInWindow).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), undefined, 'tenant-a')
   })
 
   it('#810: admin with no ?tenant= sees every tenant (no tenant_id filter)', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000', 'admin', null)
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number))
+    expect(listMemoryGraphNodesInWindow).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), undefined, undefined)
   })
 
   it('#810: admin with ?tenant= narrows to that one tenant', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000&tenant=tenant-b', 'admin', null)
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 'tenant-b')
+    expect(listMemoryGraphNodesInWindow).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), undefined, 'tenant-b')
   })
 
   it('returns 400 when from > to', async () => {
@@ -230,12 +195,6 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('returns empty nodes/edges/events when no memories in window', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-    // Note: no 4th call because nodeRows.length=0 skips edges+degree+tier_changed queries
-
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=1&to=2')
     await tryHandleMemories(ctx)
     expect(out.body.nodes).toHaveLength(0)
@@ -244,17 +203,12 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('weight_min defaults to 0.75 and is forwarded to edge query', async () => {
-    const edgeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
-      .mockReturnValueOnce({ all: edgeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
+    mockQueries([NODE_A, NODE_B], [])
 
     const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     await tryHandleMemories(ctx)
-    const callArgs = edgeAllMock.mock.calls[0]
-    expect(callArgs[callArgs.length - 1]).toBe(0.75)
+    expect(listMemoryLinksAmong).toHaveBeenCalledWith([1, 2], 0.75)
+    expect(listMemoryLinkDegrees).toHaveBeenCalledWith([1, 2], 0.75)
   })
 
   it('node labels are truncated to 40 chars + ellipsis when longer', async () => {

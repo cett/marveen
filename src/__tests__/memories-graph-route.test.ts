@@ -11,10 +11,6 @@ const NODE_C = { id: 3, content: 'Node C belongs to agent-b and has a long conte
 const EDGE_AB = { src_id: 1, dst_id: 2, weight: 0.9, created_at: 1100 }
 const EDGE_GHOST = { src_id: 3, dst_id: 99, weight: 0.85, created_at: 1050 }  // dst_id 99 not in nodes
 
-const mockDb = {
-  prepare: vi.fn(),
-}
-
 vi.mock('../db.js', () => ({
   saveAgentMemory: vi.fn(),
   getAgentMemories: vi.fn().mockReturnValue([]),
@@ -26,7 +22,9 @@ vi.mock('../db.js', () => ({
   clearMemoryCache: vi.fn(),
   searchMemories: vi.fn().mockReturnValue([]),
   getMemoriesForChat: vi.fn().mockReturnValue([]),
-  getDb: vi.fn(() => mockDb),
+  listMemoryGraphNodes: vi.fn().mockReturnValue([]),
+  listMemoryLinksAmong: vi.fn().mockReturnValue([]),
+  listMemoryLinkDegrees: vi.fn().mockReturnValue([]),
   touchMemoriesAccessed: vi.fn(),
   recordMemoryRead: vi.fn(),
   recordMemoryReadBatch: vi.fn(),
@@ -48,7 +46,15 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: () => '0',
 }))
 
+import { listMemoryGraphNodes, listMemoryLinksAmong, listMemoryLinkDegrees } from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
+
+// Stage what the three db helpers return for one request.
+function stage(nodes: unknown[], edges: unknown[] = [], degrees: unknown[] = []) {
+  vi.mocked(listMemoryGraphNodes).mockReturnValue(nodes as never)
+  vi.mocked(listMemoryLinksAmong).mockReturnValue(edges as never)
+  vi.mocked(listMemoryLinkDegrees).mockReturnValue(degrees as never)
+}
 
 function makeCtx(
   path: string,
@@ -74,13 +80,11 @@ function makeCtx(
 describe('GET /api/memories/graph', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    stage([])
   })
 
   it('returns nodes, edges, meta structure', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })  // nodes query
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })          // edges query
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([{ src_id: 1, degree: 1 }]) })  // degree query
+    stage([NODE_A, NODE_B], [EDGE_AB], [{ src_id: 1, degree: 1 }])
 
     const { ctx, out } = makeCtx('/api/memories/graph')
     const handled = await tryHandleMemories(ctx)
@@ -93,10 +97,7 @@ describe('GET /api/memories/graph', () => {
   })
 
   it('node labels are truncated to 40 chars + ellipsis when longer', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_C]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    stage([NODE_C])
 
     const { ctx, out } = makeCtx('/api/memories/graph')
     await tryHandleMemories(ctx)
@@ -106,10 +107,7 @@ describe('GET /api/memories/graph', () => {
   })
 
   it('nodes include required fields (id, label, tier, agent, degree, created_at, accessed_at)', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    stage([NODE_A])
 
     const { ctx, out } = makeCtx('/api/memories/graph')
     await tryHandleMemories(ctx)
@@ -123,10 +121,7 @@ describe('GET /api/memories/graph', () => {
   })
 
   it('edges with both endpoints in nodes are included', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    stage([NODE_A, NODE_B], [EDGE_AB])
 
     const { ctx, out } = makeCtx('/api/memories/graph')
     await tryHandleMemories(ctx)
@@ -137,10 +132,7 @@ describe('GET /api/memories/graph', () => {
 
   it('edges whose endpoint is absent from nodes are filtered out (AND not OR)', async () => {
     // EDGE_GHOST has dst_id=99 which is not in the node set
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_C]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_GHOST]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    stage([NODE_C], [EDGE_GHOST])
 
     const { ctx, out } = makeCtx('/api/memories/graph')
     await tryHandleMemories(ctx)
@@ -150,10 +142,7 @@ describe('GET /api/memories/graph', () => {
 
   it('orphan_count reflects nodes with no edge connections', async () => {
     // NODE_A and NODE_B: only A-B edge, NODE_C is orphan
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B, NODE_C]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([{ src_id: 1, degree: 1 }]) })
+    stage([NODE_A, NODE_B, NODE_C], [EDGE_AB], [{ src_id: 1, degree: 1 }])
 
     const { ctx, out } = makeCtx('/api/memories/graph')
     await tryHandleMemories(ctx)
@@ -161,117 +150,65 @@ describe('GET /api/memories/graph', () => {
   })
 
   it('agent filter param is passed to node query', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([NODE_A])
-    const edgeAllMock = vi.fn().mockReturnValue([])
-    const degAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: edgeAllMock })
-      .mockReturnValueOnce({ all: degAllMock })
+    stage([NODE_A])
 
     const { ctx, out } = makeCtx('/api/memories/graph?agent=agent-a')
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
-    // The agent filter query passes 'agent-a' as first arg, then the
-    // #809/#810 tenant scope ('default' -- no ctx.tenantId in this fixture),
-    // then limit
-    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', 'default', 200)
+    // limit, agent filter, then the tenant scope ('default' -- no
+    // ctx.tenantId in this fixture)
+    expect(listMemoryGraphNodes).toHaveBeenCalledWith(200, 'agent-a', 'default')
   })
 
   it('#810: non-admin viewer is scoped to their own tenant, agent branch', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([NODE_A])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    stage([NODE_A])
 
     const { ctx } = makeCtx('/api/memories/graph?agent=agent-a', 'viewer', 'tenant-a')
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith('agent-a', 'tenant-a', 200)
+    expect(listMemoryGraphNodes).toHaveBeenCalledWith(200, 'agent-a', 'tenant-a')
   })
 
   it('#810: non-admin viewer is scoped to their own tenant, no-agent branch', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph', 'viewer', 'tenant-a')
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith('tenant-a', 200)
+    expect(listMemoryGraphNodes).toHaveBeenCalledWith(200, undefined, 'tenant-a')
   })
 
   it('#810: a non-admin cannot escape their tenant via ?tenant= (param ignored)', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph?tenant=tenant-b', 'viewer', 'tenant-a')
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith('tenant-a', 200)
+    expect(listMemoryGraphNodes).toHaveBeenCalledWith(200, undefined, 'tenant-a')
   })
 
   it('#810: admin with no ?tenant= sees every tenant (no tenant_id filter)', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph', 'admin', null)
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith(200)
+    expect(listMemoryGraphNodes).toHaveBeenCalledWith(200, undefined, undefined)
   })
 
   it('#810: admin with ?tenant= narrows to that one tenant', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx } = makeCtx('/api/memories/graph?tenant=tenant-b', 'admin', null)
     await tryHandleMemories(ctx)
-    expect(nodeAllMock).toHaveBeenCalledWith('tenant-b', 200)
+    expect(listMemoryGraphNodes).toHaveBeenCalledWith(200, undefined, 'tenant-b')
   })
 
   it('limit param is clamped to max 500', async () => {
-    const nodeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
-    const { ctx, out } = makeCtx('/api/memories/graph?limit=9999')
+    const { ctx } = makeCtx('/api/memories/graph?limit=9999')
     await tryHandleMemories(ctx)
-    // Without agent filter: #809/#810 tenant scope ('default') then limit,
-    // which must be clamped to <= 500
-    expect(nodeAllMock).toHaveBeenCalledWith('default', 500)
+    // The limit must be clamped to <= 500
+    expect(listMemoryGraphNodes).toHaveBeenCalledWith(500, undefined, 'default')
   })
 
   it('weight_min default is 0.75 when not specified', async () => {
-    const edgeAllMock = vi.fn().mockReturnValue([])
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
-      .mockReturnValueOnce({ all: edgeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    stage([NODE_A, NODE_B])
 
     const { ctx } = makeCtx('/api/memories/graph')
     await tryHandleMemories(ctx)
-    // Last arg to edges query should be 0.75 (weight_min default)
-    const callArgs = edgeAllMock.mock.calls[0]
-    expect(callArgs[callArgs.length - 1]).toBe(0.75)
+    expect(listMemoryLinksAmong).toHaveBeenCalledWith([1, 2], 0.75)
+    expect(listMemoryLinkDegrees).toHaveBeenCalledWith([1, 2], 0.75)
   })
 
   it('returns empty nodes/edges when no memories exist', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-
     const { ctx, out } = makeCtx('/api/memories/graph')
     await tryHandleMemories(ctx)
     expect(out.body.nodes).toHaveLength(0)

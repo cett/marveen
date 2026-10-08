@@ -442,3 +442,225 @@ export function updateMemory(
   }
   return changed
 }
+
+// ---------------------------------------------------------------------------
+// Read helpers behind the /api/memories routes (recall fallbacks, staleness,
+// graph, detail). tenantId undefined = unscoped (admin default).
+// ---------------------------------------------------------------------------
+
+function memoryTenantFilter(tenantId: string | undefined): { clause: string; params: string[] } {
+  return tenantId ? { clause: ' AND tenant_id = ?', params: [tenantId] } : { clause: '', params: [] }
+}
+
+// LIKE fallback used when FTS finds nothing for an agent-scoped query.
+export function searchMemoriesLikeForAgent(agentId: string, query: string, limit: number, tenantId?: string): Memory[] {
+  const { clause, params } = memoryTenantFilter(tenantId)
+  return db.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)${clause} ORDER BY accessed_at DESC LIMIT ?`)
+    .all(agentId, `%${query}%`, `%${query}%`, ...params, limit) as Memory[]
+}
+
+// LIKE fallback used when FTS finds nothing for an unscoped-agent query.
+export function searchMemoriesLike(query: string, limit: number, tenantId?: string): Memory[] {
+  const { clause, params } = memoryTenantFilter(tenantId)
+  return db.prepare(`SELECT * FROM memories WHERE content LIKE ?${clause} ORDER BY accessed_at DESC LIMIT ?`)
+    .all(`%${query}%`, ...params, limit) as Memory[]
+}
+
+// Of `ids`, the memories updated after this agent last read them.
+export function listUpdatedSinceLastReadIds(agentId: string, ids: number[]): number[] {
+  const rows = db.prepare(`
+        SELECT m.id FROM memories m
+        LEFT JOIN (
+          SELECT memory_id, MAX(read_at) AS last_read
+          FROM span_reads WHERE agent_id = ?
+          GROUP BY memory_id
+        ) sr ON sr.memory_id = m.id
+        WHERE m.id IN (${ids.map(() => '?').join(',')})
+          AND m.updated_at > COALESCE(sr.last_read, 0)
+      `).all(agentId, ...ids) as { id: number }[]
+  return rows.map(r => r.id)
+}
+
+export function listRecentMemoryIdsForAgent(agentId: string, limit: number): number[] {
+  const rows = db.prepare(
+    `SELECT id FROM memories WHERE agent_id = ? ORDER BY accessed_at DESC LIMIT ?`
+  ).all(agentId, limit) as { id: number }[]
+  return rows.map(r => r.id)
+}
+
+export interface MemoryGraphNodeRow {
+  id: number
+  content: string
+  agent_id: string
+  category: string
+  created_at: number
+  accessed_at: number
+}
+
+// Nodes created inside [fromTs, toTs], oldest first (timeline scrubber).
+export function listMemoryGraphNodesInWindow(
+  fromTs: number,
+  toTs: number,
+  agentId?: string,
+  tenantId?: string,
+): MemoryGraphNodeRow[] {
+  const { clause, params } = memoryTenantFilter(tenantId)
+  return agentId
+    ? db.prepare(
+        `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories
+           WHERE agent_id = ? AND created_at >= ? AND created_at <= ?${clause}
+           ORDER BY created_at ASC`
+      ).all(agentId, fromTs, toTs, ...params) as MemoryGraphNodeRow[]
+    : db.prepare(
+        `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories
+           WHERE created_at >= ? AND created_at <= ?${clause}
+           ORDER BY created_at ASC`
+      ).all(fromTs, toTs, ...params) as MemoryGraphNodeRow[]
+}
+
+// Most recently accessed nodes, newest first (static graph view).
+export function listMemoryGraphNodes(limit: number, agentId?: string, tenantId?: string): MemoryGraphNodeRow[] {
+  const { clause, params } = memoryTenantFilter(tenantId)
+  return agentId
+    ? db.prepare(
+        `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories WHERE agent_id = ?${clause} ORDER BY accessed_at DESC LIMIT ?`
+      ).all(agentId, ...params, limit) as MemoryGraphNodeRow[]
+    : db.prepare(
+        `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories${tenantId ? ' WHERE tenant_id = ?' : ''} ORDER BY accessed_at DESC LIMIT ?`
+      ).all(...params, limit) as MemoryGraphNodeRow[]
+}
+
+export interface MemoryLinkEdgeRow { src_id: number; dst_id: number; weight: number; created_at: number }
+
+// Edges with BOTH endpoints in `ids` and weight >= weightMin. The created_at
+// is the edge's, not filtered: an edge may predate the window.
+export function listMemoryLinksAmong(ids: number[], weightMin: number): MemoryLinkEdgeRow[] {
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  return db.prepare(
+    `SELECT src_id, dst_id, weight, created_at FROM memory_links
+           WHERE src_id IN (${placeholders}) AND dst_id IN (${placeholders}) AND weight >= ?`
+  ).all(...ids, ...ids, weightMin) as MemoryLinkEdgeRow[]
+}
+
+// Outgoing-edge count per source id, same weight threshold.
+export function listMemoryLinkDegrees(ids: number[], weightMin: number): { src_id: number; degree: number }[] {
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  return db.prepare(
+    `SELECT src_id, COUNT(*) AS degree FROM memory_links
+         WHERE src_id IN (${placeholders}) AND weight >= ?
+         GROUP BY src_id`
+  ).all(...ids, weightMin) as { src_id: number; degree: number }[]
+}
+
+export function listCategoryChangesInWindow(
+  ids: number[],
+  fromTs: number,
+  toTs: number,
+): { memory_id: number; changed_at: number; category: string }[] {
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  return db.prepare(
+    `SELECT mv.memory_id, mv.changed_at, mv.category
+           FROM memory_versions mv
+           WHERE mv.change_type = 'category_change'
+             AND mv.changed_at >= ? AND mv.changed_at <= ?
+             AND mv.memory_id IN (${placeholders})`
+  ).all(fromTs, toTs, ...ids) as { memory_id: number; changed_at: number; category: string }[]
+}
+
+export interface MemoryDetailRow {
+  id: number
+  content: string
+  category: string
+  agent_id: string
+  keywords: string | null
+  created_at: number
+  accessed_at: number
+}
+
+export function getMemoryDetailRow(id: number): MemoryDetailRow | undefined {
+  return db.prepare(
+    'SELECT id, content, category, agent_id, keywords, created_at, accessed_at FROM memories WHERE id = ?'
+  ).get(id) as MemoryDetailRow | undefined
+}
+
+export function countMemoryReads(memoryId: number): number {
+  const row = db.prepare('SELECT COUNT(*) AS cnt FROM span_reads WHERE memory_id = ?').get(memoryId) as { cnt: number }
+  return row.cnt
+}
+
+export interface MemoryNeighborRow {
+  id: number
+  content: string
+  category: string
+  agent_id: string | null
+  weight: number
+  direction: string
+}
+
+// Up to 5 strongest links in each direction (weight >= 0.75).
+export function listMemoryNeighbors(id: number): MemoryNeighborRow[] {
+  // SQLite forbids ORDER BY/LIMIT inside individual UNION ALL arms -- wrap each arm in a subquery
+  return db.prepare(`
+      SELECT * FROM (
+        SELECT m.id, m.content, m.category, m.agent_id, ml.weight, 'outgoing' AS direction
+        FROM memory_links ml
+        JOIN memories m ON m.id = ml.dst_id
+        WHERE ml.src_id = ? AND ml.weight >= 0.75
+        ORDER BY ml.weight DESC LIMIT 5
+      )
+      UNION ALL
+      SELECT * FROM (
+        SELECT m.id, m.content, m.category, m.agent_id, ml.weight, 'incoming' AS direction
+        FROM memory_links ml
+        JOIN memories m ON m.id = ml.src_id
+        WHERE ml.dst_id = ? AND ml.weight >= 0.75
+        ORDER BY ml.weight DESC LIMIT 5
+      )
+    `).all(id, id) as MemoryNeighborRow[]
+}
+
+export function listMemoryCategoryHistory(
+  memoryId: number,
+): { category: string; changed_at: number; changed_by: string }[] {
+  return db.prepare(
+    `SELECT category, changed_at, changed_by
+       FROM memory_versions
+       WHERE memory_id = ? AND change_type = 'category_change'
+       ORDER BY changed_at ASC`
+  ).all(memoryId) as { category: string; changed_at: number; changed_by: string }[]
+}
+
+// Originating file and source of an import shadow row (agent_id = 'import').
+export function getImportMetaForShadow(
+  shadowId: number,
+): { file_name: string; file_path: string; source_label: string | null } | null {
+  return (db.prepare(`
+          SELECT im.file_name, im.file_path,
+                 COALESCE(is_.label, is_.path) AS source_label
+          FROM import_memories im
+          LEFT JOIN import_sources is_ ON is_.id = im.source_id
+          WHERE im.memory_shadow_id = ?
+        `).get(shadowId) as { file_name: string; file_path: string; source_label: string | null } | null)
+}
+
+export function getMemoryById(id: number): Memory | undefined {
+  return db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
+}
+
+// Owner and tenant of a memory, for the route's tenant gate.
+export function getMemoryOwnerRow(id: number): { agent_id: string | null; tenant_id: string } | undefined {
+  return db.prepare('SELECT agent_id, tenant_id FROM memories WHERE id = ?').get(id) as
+    { agent_id: string | null; tenant_id: string } | undefined
+}
+
+// Raw row delete; the route owns the vec/cache/audit side effects.
+export function deleteMemoryRow(id: number): number {
+  return db.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
+}

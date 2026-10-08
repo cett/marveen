@@ -15,13 +15,9 @@ vi.mock('../db.js', () => ({
   searchMemories: vi.fn().mockReturnValue([]),
   getMemoriesForChat: vi.fn().mockReturnValue([]),
   countMemoriesForChat: vi.fn().mockReturnValue(0),
-  getDb: vi.fn().mockReturnValue({
-    prepare: vi.fn().mockReturnValue({
-      all: vi.fn().mockReturnValue([]),
-      run: vi.fn().mockReturnValue({ changes: 0 }),
-      get: vi.fn().mockReturnValue(null),
-    }),
-  }),
+  getMemoryOwnerRow: vi.fn().mockReturnValue(undefined),
+  deleteMemoryRow: vi.fn().mockReturnValue(0),
+  listUpdatedSinceLastReadIds: vi.fn().mockReturnValue([]),
   touchMemoriesAccessed: vi.fn(),
   writeAgentAuditLog: vi.fn(),
   syncVecMemoryDelete: vi.fn(),
@@ -321,13 +317,8 @@ describe('tryHandleMemories', () => {
   })
 
   it('DELETE /api/memories/1 returns ok when found', async () => {
-    const db = await import('../db.js')
-    vi.mocked(db.getDb).mockReturnValueOnce({
-      prepare: vi.fn().mockReturnValue({
-        get: vi.fn().mockReturnValue({ agent_id: 'agent-a' }),
-        run: vi.fn().mockReturnValue({ changes: 1 }),
-      }),
-    } as any)
+    vi.mocked(db.getMemoryOwnerRow).mockReturnValueOnce({ agent_id: 'agent-a', tenant_id: 'default' })
+    vi.mocked(db.deleteMemoryRow).mockReturnValueOnce(1)
     const { ctx, out } = makeCtx('DELETE', '/api/memories/1')
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
@@ -386,16 +377,18 @@ describe('tryHandleMemories -- tenant isolation for scoped callers', () => {
   })
 
   it('PUT /api/memories/:id returns 404 when memory belongs to another tenant', async () => {
-    // getDb mock: prepare().get = null → pre-check fails → 404
+    vi.mocked(db.getMemoryOwnerRow).mockReturnValueOnce({ agent_id: 'agent-a', tenant_id: 'other' })
     const { ctx, out } = makeScopedCtx('PUT', '/api/memories/1', 'acme', { content: 'x' })
     await tryHandleMemories(ctx)
     expect(out.status).toBe(404)
+    expect(db.updateMemory).not.toHaveBeenCalled()
   })
 
   it('DELETE /api/memories/:id returns 404 when memory belongs to another tenant', async () => {
-    // getDb mock: prepare().get = null → !row branch → 404
+    vi.mocked(db.getMemoryOwnerRow).mockReturnValueOnce({ agent_id: 'agent-a', tenant_id: 'other' })
     const { ctx, out } = makeScopedCtx('DELETE', '/api/memories/1', 'acme')
     await tryHandleMemories(ctx)
     expect(out.status).toBe(404)
+    expect(db.deleteMemoryRow).not.toHaveBeenCalled()
   })
 })
