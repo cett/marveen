@@ -24,7 +24,6 @@
     "seed-scheduled-tasks/kanban-audit/pre-check.sh": "B",
     "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
     "seed-skills/fleet-helper/scripts/mail_triage.py": "X",
-    "templates/CLAUDE.md.template": "B",
     "update.sh": "C"
   },
   "files": {
@@ -215,14 +214,6 @@
       "direct": {
         "python sqlite3": 1,
         "sqlite3.connect": 1
-      }
-    },
-    "templates/CLAUDE.md.template": {
-      "dialect": {
-        "unixepoch()": 1
-      },
-      "direct": {
-        "claudeclaw.db": 1
       }
     },
     "update.sh": {

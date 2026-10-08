@@ -124,7 +124,7 @@ curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
 
 ## Kanban tábla
 
-A kanban tábla az SQLite adatbázisban van: `store/claudeclaw.db` -> `kanban_cards` és `kanban_comments` táblák.
+A kanban tábla a dashboard adatbázisában van (`kanban_cards`, `kanban_comments`); olvasd és írd a dashboard API-n át (`/api/kanban`), ne közvetlenül az adatbázisfájlon.
 
 Státuszok: planned, in_progress, waiting, done
 Prioritások: low, normal, high, urgent

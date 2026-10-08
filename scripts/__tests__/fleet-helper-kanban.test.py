@@ -15,6 +15,8 @@ FLEET = os.path.join(ROOT, "seed-skills", "fleet-helper", "scripts", "fleet.py")
 
 
 def load():
+    # The script lives in a shipped seed-skill directory: leave no __pycache__ there.
+    sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location("fleet_helper_under_test", FLEET)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
