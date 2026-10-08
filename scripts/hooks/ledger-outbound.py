@@ -102,7 +102,9 @@ def main():
     # Double-check (the matcher should already filter): only the telegram reply.
     if "telegram" not in tool or "reply" not in tool:
         sys.exit(0)
-    agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
+    agent_id = ledger_lib.ledger_agent_id_from_cwd(payload.get("cwd"))
+    if not agent_id:
+        sys.exit(0)  # unknown cwd: not an agent, nothing to record
     tool_input = payload.get("tool_input") or {}
     chat_id = tool_input.get("chat_id")
     chat_id = "" if chat_id is None else str(chat_id).strip()

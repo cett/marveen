@@ -102,6 +102,25 @@ def agent_id_from_cwd(cwd):
     return base or main_agent_id()
 
 
+def ledger_agent_id_from_cwd(cwd):
+    """Like agent_id_from_cwd, but for the ledger: an unknown cwd (a scratch directory,
+    a worktree, <install>/scripts, ...) is NOT an identity. The best-effort basename of
+    agent_id_from_cwd used to leave junk agent ids in the ledger (a directory name taken as an
+    agent). Returns None for those and the ledger hooks then do nothing. An empty cwd
+    (no cwd in the payload) is still the main agent, as before.
+    """
+    cwd = (cwd or "").rstrip("/")
+    if not cwd:
+        return main_agent_id()
+    install = _install_dir().rstrip("/")
+    agents_root = os.path.join(install, "agents")
+    if cwd.startswith(agents_root + os.sep):
+        return cwd[len(agents_root) + 1:].split(os.sep)[0] or None
+    if cwd == install:
+        return main_agent_id()
+    return None
+
+
 # --- dashboard API client -----------------------------------------------------
 
 READ_TIMEOUT = 2

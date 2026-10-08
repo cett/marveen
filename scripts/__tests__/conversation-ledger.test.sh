@@ -543,6 +543,30 @@ emit_inbound 10000000001 3001 "rossz token" | env LEDGER_DB_PATH="$DB_H3" MAIN_A
 assert_eq "auth: the rejected turn is spooled" "1" "$(spool_lines "$TMPDIR_BASE/h3")"
 
 # ---------------------------------------------------------------------------
+# (i) UNKNOWN CWD -- not an agent: every ledger hook is a no-op (no junk agent ids)
+# ---------------------------------------------------------------------------
+echo ""
+echo "(i) Unknown cwd"
+
+mkdir -p "$TMPDIR_BASE/i1"; DB_I1="$TMPDIR_BASE/i1/x.db"
+emit_inbound 10000000001 4001 "scratch dir" "/tmp/some-scratch-dir" | run_hook ledger-capture.py "$DB_I1"
+emit_reply 10000000001 "scratch reply" "$INSTALL_DIR/scripts" | run_hook ledger-outbound.py "$DB_I1"
+I1_COUNT="$(db_scalar "$DB_I1" "SELECT COUNT(*) FROM conversation_log")"
+if [ "$I1_COUNT" = "0" ] || [ "$I1_COUNT" = "NULL" ]; then
+    pass "unknown cwd: capture and outbound record nothing"
+else
+    fail "unknown cwd: expected no rows, got $I1_COUNT"
+fi
+assert_eq "unknown cwd: nothing spooled either" "0" "$(find "$TMPDIR_BASE/i1" -name '*.jsonl' | wc -l | tr -d ' ')"
+emit_inbound 10000000001 4002 "real one" | run_hook ledger-capture.py "$DB_I1"
+OUT_I_REPLAY="$(emit_session "/tmp/some-scratch-dir" | run_hook ledger-replay.py "$DB_I1")"
+assert_eq "unknown cwd: replay prints nothing even though the ledger has rows" "" "$OUT_I_REPLAY"
+# a sub-agent directory is still that agent
+emit_inbound 10000000001 4003 "sub agent" "$INSTALL_DIR/agents/dia" | run_hook ledger-capture.py "$DB_I1"
+assert_eq "known sub-agent cwd is recorded under the sub-agent" "dia" \
+    "$(db_scalar "$DB_I1" "SELECT agent_id FROM conversation_log WHERE message_id='4003'")"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
