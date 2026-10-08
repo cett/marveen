@@ -60,7 +60,9 @@ def _record_surfaced(path, message_id):
 
 
 def main():
-    agent_id = ledger_lib.agent_id_from_cwd(os.getcwd())
+    agent_id = ledger_lib.ledger_agent_id_from_cwd(os.getcwd())
+    if not agent_id:
+        sys.exit(0)  # unknown cwd: not an agent, nothing to drain
 
     try:
         oq = ledger_lib.open_question_with_age(agent_id)

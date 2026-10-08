@@ -414,6 +414,11 @@ export function getDispatchedPendingStats(
  * True when the agent's last inbound channel message has no later outbound
  * (unanswered question). Used by the context-restart gate.
  *
+ * Agent-level and text-free on purpose: it reports a boolean for the agent as a whole, so for an
+ * agent shared by several tenants an unanswered question of ANY tenant counts. The tenant filter
+ * of the ledger reads (src/db/conversation-ledger.ts) guards what is shown to a session, not
+ * this gate.
+ *
  * With `opts`, an inbound older than staleCutoffMs no longer counts (same
  * cutoff as dispatched outbound): a question nobody answered for hours is
  * abandoned, not live work. Without it the ledger is the only clock, and an
@@ -818,9 +823,18 @@ export function resolveAgentOwningTenantId(agentId: string): string {
  *  agent can be enabled for more than one tenant, and any of them may
  *  manage it -- admin bypasses this check entirely (see agents-process.ts). */
 export function agentBelongsToTenant(agentId: string, tenantId: string): boolean {
+  return getServedTenantIds(agentId).includes(tenantId)
+}
+
+/** Every tenant the agent serves: the tenant it coordinates as main agent (getTenantForMainAgent)
+ *  plus the tenants it is enabled for (getTenantsForAgent), each once. The one definition behind
+ *  agentBelongsToTenant and the "shared agent" rule of the conversation ledger (an agent serving
+ *  two or more tenants), so a coordinator that is also enabled for a second tenant counts as
+ *  shared everywhere. */
+export function getServedTenantIds(agentId: string): string[] {
   const primary = getTenantForMainAgent(agentId)
-  if (primary?.id === tenantId) return true
-  return getTenantsForAgent(agentId).includes(tenantId)
+  const ids = getTenantsForAgent(agentId)
+  return primary && !ids.includes(primary.id) ? [primary.id, ...ids] : ids
 }
 
 // Schedules (SQL-backed, replaces file-based scheduled-tasks-io)

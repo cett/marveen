@@ -416,6 +416,7 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 // in the tests walks every `tenant_id` table against the three sets below, so a table added by a
 // later migration is a red test until someone decides where it belongs.
 export const TENANT_PURGE_SIMPLE_TABLES = [
+  'conversation_log',
   'cost_budgets',
   'egress_allowlist',
   'idea_box',

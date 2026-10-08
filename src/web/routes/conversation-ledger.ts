@@ -6,6 +6,8 @@ import {
   recentLedgerTurns,
   type LedgerTurnInput,
 } from '../../db.js'
+import { MAIN_AGENT_ID } from '../../config.js'
+import { listAgentNames } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -17,6 +19,12 @@ import type { RouteContext } from './types.js'
 const MAX_BATCH = 500
 const AGENT_ID_RE = /^[^\x00-\x1f/\\]{1,128}$/
 
+/** Only a registered agent (the main agent or an entry of the agent list) owns a ledger. An
+ *  unknown cwd used to leave junk agent ids behind (a directory name taken as an identity). */
+export function isRegisteredLedgerAgent(agentId: string): boolean {
+  return agentId === MAIN_AGENT_ID || listAgentNames().includes(agentId)
+}
+
 function bad(ctx: RouteContext, field: string, hint: string): true {
   json(ctx.res, { error: 'invalid_value', field, hint }, 400)
   return true
@@ -27,6 +35,7 @@ export function parseLedgerEntry(raw: unknown): LedgerTurnInput | string {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return 'entry must be an object'
   const e = raw as Record<string, unknown>
   if (typeof e['agent_id'] !== 'string' || !AGENT_ID_RE.test(e['agent_id'])) return 'agent_id must be a plain agent name'
+  if (!isRegisteredLedgerAgent(e['agent_id'])) return 'agent_id is not a registered agent'
   if (typeof e['chat_id'] !== 'string' || !e['chat_id']) return 'chat_id must be a non-empty string'
   if (e['direction'] !== 'in' && e['direction'] !== 'out') return "direction must be 'in' or 'out'"
   for (const f of ['message_id', 'text', 'ts'] as const) {
@@ -84,6 +93,7 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
     return bad(ctx, 'agent_id', 'Malformed percent-encoding in path')
   }
   if (!AGENT_ID_RE.test(agentId)) return bad(ctx, 'agent_id', 'agent_id must be a plain agent name')
+  if (!isRegisteredLedgerAgent(agentId)) return bad(ctx, 'agent_id', 'agent_id is not a registered agent')
 
   if (match[2] === 'recent') {
     const raw = url.searchParams.get('limit')

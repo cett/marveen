@@ -31,6 +31,7 @@ function count(table: string, tenantId: string): number {
 
 // One row per tenant in the table. The tables with a UNIQUE key get a per-tenant value.
 const SEEDERS: Record<string, (t: string) => void> = {
+  conversation_log: (t) => db().prepare("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at, tenant_id) VALUES ('a', 'c', 'in', ?, 'text', 0, ?)").run(`m-${t}`, t),
   cost_budgets: (t) => db().prepare('INSERT INTO cost_budgets (id, name, amount, tenant_id) VALUES (?, ?, 100, ?)').run('b1', 'b', t),
   egress_allowlist: (t) => db().prepare("INSERT INTO egress_allowlist (value, type, tenant_id) VALUES ('example.org', 'domain', ?)").run(t),
   idea_box: (t) => db().prepare("INSERT INTO idea_box (id, title, created_at, updated_at, tenant_id) VALUES (?, 'idea', 0, 0, ?)").run(`idea-${t}`, t),

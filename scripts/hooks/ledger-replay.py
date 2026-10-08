@@ -196,7 +196,9 @@ def main():
         cwd = payload.get("cwd")
     except Exception:
         pass
-    agent_id = ledger_lib.agent_id_from_cwd(cwd)
+    agent_id = ledger_lib.ledger_agent_id_from_cwd(cwd)
+    if not agent_id:
+        sys.exit(0)  # unknown cwd: not an agent, nothing to replay
 
     try:
         rows = ledger_lib.recent(agent_id, _window_limit())

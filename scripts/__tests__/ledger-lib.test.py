@@ -93,5 +93,34 @@ class TestMainAgentId(unittest.TestCase):
                             self.fail(f"main_agent_id() raised unexpectedly: {e}")
 
 
+class TestLedgerAgentIdFromCwd(unittest.TestCase):
+    """The ledger must never take a directory name for an agent id (junk ids like
+    'scripts' or a verification worktree used to land in conversation_log)."""
+
+    def _lib(self):
+        return patch.object(ledger_lib, "_install_dir", return_value="/inst")
+
+    def test_known_locations(self):
+        with self._lib(), patch.dict(os.environ, {"MAIN_AGENT_ID": "boss"}):
+            self.assertEqual(ledger_lib.ledger_agent_id_from_cwd("/inst"), "boss")
+            self.assertEqual(ledger_lib.ledger_agent_id_from_cwd("/inst/"), "boss")
+            self.assertEqual(ledger_lib.ledger_agent_id_from_cwd("/inst/agents/dia"), "dia")
+            self.assertEqual(ledger_lib.ledger_agent_id_from_cwd("/inst/agents/dia/sub/dir"), "dia")
+
+    def test_unknown_cwd_is_not_an_identity(self):
+        with self._lib(), patch.dict(os.environ, {"MAIN_AGENT_ID": "boss"}):
+            for cwd in ("/inst/scripts", "/tmp/verify-716", "/home/u/worktrees/x", "/inst/agents", "/instance"):
+                self.assertIsNone(ledger_lib.ledger_agent_id_from_cwd(cwd), cwd)
+
+    def test_empty_cwd_is_still_the_main_agent(self):
+        with self._lib(), patch.dict(os.environ, {"MAIN_AGENT_ID": "boss"}):
+            self.assertEqual(ledger_lib.ledger_agent_id_from_cwd(None), "boss")
+            self.assertEqual(ledger_lib.ledger_agent_id_from_cwd(""), "boss")
+
+    def test_the_old_function_is_unchanged_for_the_other_hooks(self):
+        with self._lib(), patch.dict(os.environ, {"MAIN_AGENT_ID": "boss"}):
+            self.assertEqual(ledger_lib.agent_id_from_cwd("/inst/scripts"), "scripts")
+
+
 if __name__ == "__main__":
     unittest.main()
