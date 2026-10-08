@@ -1685,7 +1685,7 @@ export function importFleet(
       // idea_box -- idempotent on id
       for (const idea of fleet.ideaBox?.ideas ?? []) {
         const i = idea as any
-        if (breaksTableRules(i, ['title', 'category', 'created_at', 'updated_at'], { status: ['new', 'reviewed', 'kanban', 'rejected'] })) {
+        if (!i.id || breaksTableRules(i, ['title', 'category', 'created_at', 'updated_at'], { status: ['new', 'reviewed', 'kanban', 'rejected'] })) {
           logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); continue
         }
         db.prepare(
