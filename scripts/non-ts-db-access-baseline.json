@@ -19,8 +19,6 @@
     "scripts/verify-restore.sh": "C",
     "seed-scheduled-tasks/intel-collector/SKILL.md": "B",
     "seed-scheduled-tasks/intel-daily-brief/SKILL.md": "B",
-    "seed-scheduled-tasks/kanban-audit/SKILL.md": "B",
-    "seed-scheduled-tasks/kanban-audit/pre-check.sh": "B",
     "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
     "seed-skills/fleet-helper/scripts/mail_triage.py": "X",
     "update.sh": "C"
@@ -171,25 +169,6 @@
       "dialect": {},
       "direct": {
         "intel.db": 1
-      }
-    },
-    "seed-scheduled-tasks/kanban-audit/SKILL.md": {
-      "dialect": {
-        "strftime()": 2,
-        "unixepoch()": 2
-      },
-      "direct": {
-        "claudeclaw.db": 4,
-        "sqlite3 CLI": 4
-      }
-    },
-    "seed-scheduled-tasks/kanban-audit/pre-check.sh": {
-      "dialect": {
-        "strftime()": 1
-      },
-      "direct": {
-        "claudeclaw.db": 1,
-        "sqlite3 CLI": 3
       }
     },
     "seed-skills/ai-fleet-project-execution/SKILL.md": {

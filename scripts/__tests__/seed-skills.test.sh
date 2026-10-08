@@ -132,7 +132,7 @@ else
   fail "MAIN_AGENT_ID NOT substituted in task-config.json"
 fi
 
-if grep -q '/opt/testbot/store/claudeclaw.db' "$SCHED_TARGET/kanban-audit/SKILL.md"; then
+if grep -q '/opt/testbot/store/.dashboard-token' "$SCHED_TARGET/kanban-audit/SKILL.md"; then
   pass "INSTALL_DIR substituted in SKILL.md"
 else
   fail "INSTALL_DIR NOT substituted in SKILL.md"
