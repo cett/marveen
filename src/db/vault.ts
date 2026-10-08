@@ -119,7 +119,7 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
-  tenant_id: string | null
+  tenant_id: string
 }
 
 export function createApproval(params: {

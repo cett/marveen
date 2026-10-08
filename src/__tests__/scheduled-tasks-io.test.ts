@@ -308,7 +308,7 @@ describe('scheduled-tasks-io', () => {
     it('maps a DB row status straight onto the ScheduledTask shape', () => {
       const row = {
         id: 'db-task', prompt: 'p', description: 'd', schedule: '0 9 * * *',
-        agent: 'marveen', type: 'task', enabled: 1, tenant_id: null,
+        agent: 'marveen', type: 'task', enabled: 1, tenant_id: 'default',
         skip_if_busy: 0, force_send: 0, target_session: null, command: null,
         timeout_ms: null, fail_threshold: null, pre_check: null,
         catch_up_max_age_minutes: null, stuck_after_minutes: null, requires: null,
