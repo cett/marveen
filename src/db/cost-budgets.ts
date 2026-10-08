@@ -131,3 +131,53 @@ export function migrateCostBudgetsFromFile(): number {
   }
   return migrated
 }
+
+// Month-to-date token volume for the budget check (token_usage raw rows plus
+// the rolled-up token_usage_monthly rows). Evaluation policy lives in
+// costops/budget-alert.ts.
+const TOKEN_SUM_EXPR = 'input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens + thinking_tokens'
+
+export interface TokenSpendFilter {
+  agent?: string
+  tenant?: string
+}
+
+export function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: number): number {
+  if (filter.tenant) {
+    // token_usage_monthly has NO tenant_id column (only token_usage does,
+    // since migration 0033) -- a tenant-scoped budget can only be measured
+    // against the raw table. This means the same "under-reports once rows
+    // age past TOKEN_USAGE_RETENTION_DAYS" caveat as the dual-source query
+    // below applies here too, except there's no monthly fallback to catch
+    // the rolled-up portion for a tenant. In practice this only matters for
+    // the first day or two of a new month once the raw retention window
+    // (default 30 days) starts overlapping the previous month.
+    const row = db.prepare(`
+      SELECT COALESCE(SUM(${TOKEN_SUM_EXPR}), 0) AS total
+      FROM token_usage
+      WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
+            = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+        AND tenant_id = @tenant
+    `).get({ nowSec, tenant: filter.tenant }) as { total: number }
+    return row.total
+  }
+
+  const agent = filter.agent ?? null
+  const row = db.prepare(`
+    SELECT
+      COALESCE((
+        SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
+        WHERE month = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+          AND (@agent IS NULL OR agent = @agent)
+      ), 0)
+      +
+      COALESCE((
+        SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage
+        WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
+              = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+          AND (@agent IS NULL OR agent = @agent)
+      ), 0)
+      AS total
+  `).get({ nowSec, agent }) as { total: number }
+  return row.total
+}
