@@ -67,6 +67,15 @@ function loadMigrationFiles(dir: string): MigrationFile[] {
   }
 
   files.sort((a, b) => a.version - b.version)
+  // Two files with one number would share one schema_version row: the second would be skipped as
+  // "already applied" without ever running. Refuse to start rather than lose a migration silently.
+  for (let i = 1; i < files.length; i++) {
+    if (files[i]!.version === files[i - 1]!.version) {
+      throw new Error(
+        `Duplicate migration version ${files[i]!.version}: ${files[i - 1]!.path} and ${files[i]!.path}`,
+      )
+    }
+  }
   return files
 }
 
@@ -257,17 +266,25 @@ export function applyMigrations(db: Database.Database, migrationsDir?: string): 
     if (baseline) bootstrapLegacyInstall(db, baseline)
   }
 
-  // Determine the highest version already applied.
-  const row = db
-    .prepare('SELECT COALESCE(MAX(version), 0) AS max_v FROM schema_version')
-    .get() as { max_v: number }
-  const currentVersion = row.max_v
+  // What is recorded decides what is pending, not the highest recorded number: a migration merged
+  // after a higher-numbered one (0075 landing after 0076) has a number BELOW the maximum yet was
+  // never applied, and a "run everything above the maximum" rule would skip it for good.
+  const applied = new Set(
+    (db.prepare('SELECT version FROM schema_version').all() as { version: number }[]).map((r) => r.version),
+  )
+  const currentVersion = applied.size === 0 ? 0 : Math.max(...applied)
 
   for (const m of files) {
-    if (m.version <= currentVersion) {
+    if (applied.has(m.version)) {
       // Already applied: verify checksum but do not re-run.
       warnChecksumMismatch(db, m)
       continue
+    }
+    if (m.version < currentVersion) {
+      logger.warn(
+        { version: m.version, description: m.description, highestApplied: currentVersion },
+        'Applying a migration that was missed earlier: its number is below the highest applied version (merged out of order).',
+      )
     }
     // Pending: apply it. Any error propagates up — the caller must decide
     // whether to abort the process (production) or fail the test.
