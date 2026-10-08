@@ -17,8 +17,6 @@
     "scripts/systemd/marveen-channels.service": "C",
     "scripts/tenant-gate-rollout-check.py": "B",
     "scripts/verify-restore.sh": "C",
-    "seed-scheduled-tasks/intel-collector/SKILL.md": "B",
-    "seed-scheduled-tasks/intel-daily-brief/SKILL.md": "B",
     "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
     "seed-skills/fleet-helper/scripts/mail_triage.py": "X",
     "update.sh": "C"
@@ -104,9 +102,7 @@
     "scripts/intel_db.py": {
       "dialect": {},
       "direct": {
-        "intel.db": 2,
-        "python sqlite3": 1,
-        "sqlite3.connect": 1
+        "intel.db": 1
       }
     },
     "scripts/migrate-main-agent-id.sh": {
@@ -157,18 +153,6 @@
       "direct": {
         "claudeclaw.db": 4,
         "sqlite3 CLI": 2
-      }
-    },
-    "seed-scheduled-tasks/intel-collector/SKILL.md": {
-      "dialect": {},
-      "direct": {
-        "intel.db": 1
-      }
-    },
-    "seed-scheduled-tasks/intel-daily-brief/SKILL.md": {
-      "dialect": {},
-      "direct": {
-        "intel.db": 1
       }
     },
     "seed-skills/ai-fleet-project-execution/SKILL.md": {

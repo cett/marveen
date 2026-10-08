@@ -1,6 +1,6 @@
 ---
 name: intel-collector
-description: Proaktív hírszerző -- óránkénti gyűjtés a saját figyelt témáidban, eredmény az intel registry-be (store/intel.db). A napi brief (intel-napi-brief) ebből épül.
+description: Proaktív hírszerző -- óránkénti gyűjtés a saját figyelt témáidban, eredmény az intel registry-be (a dashboard API-n át). A napi brief (intel-napi-brief) ebből épül.
 ---
 
 # Proaktív hírszerző -- óránkénti gyűjtő ciklus

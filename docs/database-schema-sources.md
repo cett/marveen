@@ -19,7 +19,7 @@ race waits (the connection's `busy_timeout`) and then skips what the winner appl
 | `src/db-migrations.ts` | `schema_version` | The runner's own bookkeeping table. |
 | `src/db/vector.ts` | `vec_memories`, `vec_artifacts` (and its `vec_artifacts_ad` trigger), `vec_workspace_docs` (sqlite-vec `vec0` virtual tables) | They need the sqlite-vec extension, which may not be loaded; created only when it is. A pgvector column replaces them in the PostgreSQL phase. |
 | `scripts/hooks/ledger_lib.py` | `conversation_log` and `idx_convlog_agent` | A hook can run before the dashboard has migrated (fresh boot, respawn), and Python cannot call the runner. The migration (`0001_baseline.sql`) is canonical; `conversation-ledger-schema.test.ts` fails when the two drift. |
-| `scripts/intel_db.py` | `known_facts_registry`, `watchlist`, `decision_log`, `active_focus` | A separate database file (`store/intel.db`), not `claudeclaw.db`. |
+| `src/intel-store.ts` | `known_facts_registry`, `watchlist`, `decision_log`, `active_focus` | A separate database file (`store/intel.db`, or `INTEL_DB`), not `claudeclaw.db`, opened only by the dashboard on first use. `scripts/intel_db.py` is a client of `/api/intel/*` and no longer opens it. |
 
 Moved into the migrations: `incoming_events` and `poll_offset` (0073, previously created only by the
 coordinator, together with a copy of the `agent_messages` DDL that had already drifted once), and the
