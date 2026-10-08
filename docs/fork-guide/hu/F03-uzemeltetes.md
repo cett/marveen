@@ -146,7 +146,7 @@ curl -s -X PUT http://localhost:3420/api/v1/admin/channel-bindings \
 - Kötés módosítása vagy törlése, ágens letiltása egy tenantnál, tenant letiltása vagy a főágens cseréje azonnal törli az érintett kontextust; a tenant-skillek a következő promptig tiltottak, amíg az újra nem oldja a forrást.
 - Fail-closed: hiányzó tábla, adatbázis-hiba, elavult kontextus (`TENANT_CONTEXT_MAX_AGE_SECONDS`) vagy kapu-hiba esetén a tenant-skill tiltott. A prompt-hook elutasítja a promptot, ha nem tudja rögzíteni a kontextust. Táblát sosem hoz létre: az `agent_tenant_context`-et a 0065 migráció birtokolja, ezért a dashboardnak előbb migrálnia kell.
 
-A bevezetés ellenőrzéséhez (a hookokat bekötő dashboard-restart előtt és után) futtasd: `python3 scripts/tenant-gate-rollout-check.py`; csak olvas, és jelenti a migrációkat, a hook-scripteket, az ágensenkénti bekötést, az élő hook-bizonyítékot és a csatornakötés nélküli több-tenantos ágenseket.
+A bevezetés ellenőrzéséhez (a hookokat bekötő dashboard-restart előtt és után) futtasd: `python3 scripts/tenant-gate-rollout-check.py`; csak olvas, és jelenti a migrációkat, a hook-scripteket, az ágensenkénti bekötést, az élő hook-bizonyítékot és a csatornakötés nélküli több-tenantos ágenseket. A migrációk, a hook-bizonyíték és a csatornakötés adatai a futó dashboardtól jönnek (`GET /api/admin/tenant-gate-status`); az endpointot még nem ismerő dashboard WARN-t ad, így a restart előtti első futás a fájl-oldali ellenőrzéseket így is jelenti.
 
 A főágens szándékosan nincs a kapu alatt: a fail-closed prompt-hook adatbázis-hibánál elutasíthatná a promptjait, és leállítaná a teljes flotta koordinációját, tenant-skillre pedig nincs szüksége.
 

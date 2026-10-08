@@ -146,7 +146,7 @@ curl -s -X PUT http://localhost:3420/api/v1/admin/channel-bindings \
 - Changing or deleting a binding, disabling an agent for a tenant, disabling a tenant or changing its main agent drops the affected context at once; tenant skills stay denied until the agent's next prompt re-resolves the source.
 - Fail closed: a missing table, a database error, a stale context (`TENANT_CONTEXT_MAX_AGE_SECONDS`) or a gate error denies the tenant skill. The prompt hook refuses the prompt when it cannot record the context. It never creates tables: migration 0065 owns `agent_tenant_context`, so the dashboard must have migrated first.
 
-To check a rollout (before and after the dashboard restart that wires the hooks), run `python3 scripts/tenant-gate-rollout-check.py`: it is read-only and reports migrations, hook scripts, per-agent wiring, live hook evidence and multi-tenant agents without a channel binding.
+To check a rollout (before and after the dashboard restart that wires the hooks), run `python3 scripts/tenant-gate-rollout-check.py`: it is read-only and reports migrations, hook scripts, per-agent wiring, live hook evidence and multi-tenant agents without a channel binding. The migration, hook-evidence and channel-binding facts come from the running dashboard (`GET /api/admin/tenant-gate-status`); a dashboard that predates the endpoint gives a WARN instead, so the first run before the restart still reports the file-side checks.
 
 The main agent is intentionally not under the gate: a fail-closed prompt hook could refuse its prompts on a database error and stall the whole fleet's coordination, and it needs no tenant skills.
 

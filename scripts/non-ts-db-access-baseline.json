@@ -15,7 +15,6 @@
     "scripts/start.sh": "C",
     "scripts/status.ts": "B",
     "scripts/systemd/marveen-channels.service": "C",
-    "scripts/tenant-gate-rollout-check.py": "B",
     "scripts/verify-restore.sh": "C",
     "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
     "seed-skills/fleet-helper/scripts/mail_triage.py": "X",
@@ -136,14 +135,6 @@
       "dialect": {},
       "direct": {
         "better-sqlite3": 1
-      }
-    },
-    "scripts/tenant-gate-rollout-check.py": {
-      "dialect": {},
-      "direct": {
-        "claudeclaw.db": 2,
-        "python sqlite3": 1,
-        "sqlite3.connect": 1
       }
     },
     "scripts/verify-restore.sh": {
