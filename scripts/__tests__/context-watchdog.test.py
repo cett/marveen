@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 _HOOKS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
@@ -101,7 +102,23 @@ def _make_db(path):
           content_hash TEXT,
           reason TEXT,
           session_id TEXT,
-          trigger_source TEXT
+          trigger_source TEXT,
+          tenant_id TEXT
+        );
+
+        CREATE TABLE tenants (
+          id            TEXT PRIMARY KEY,
+          main_agent_id TEXT,
+          disabled_at   INTEGER
+        );
+
+        CREATE TABLE agent_tenant_context (
+          agent_id   TEXT PRIMARY KEY,
+          tenant_id  TEXT NOT NULL,
+          status     TEXT NOT NULL,
+          source     TEXT NOT NULL DEFAULT '',
+          session_id TEXT NOT NULL DEFAULT '',
+          updated_at INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE agent_settings (
@@ -125,6 +142,7 @@ def _make_db(path):
                            CHECK(status IN ('ok','error','timeout','running')),
           attributes     TEXT,
           exported_at    INTEGER,
+          tenant_id      TEXT,
           PRIMARY KEY (trace_id, span_id)
         );
         """
@@ -349,6 +367,80 @@ class TestResolveTenant(unittest.TestCase):
         self.assertEqual(hook.resolve_tenant(self.conn, "agent-x"), "default")
 
 
+class TestResolveWriteTenant(unittest.TestCase):
+    """Mirror of resolveWriteTenant() in src/db/write-tenant.ts: fresh context, else the one served
+    tenant, else NULL for a shared agent."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.conn = _make_db(self.tmp.name)
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.tmp.name)
+
+    def _avail(self, agent, *tenants):
+        self.conn.executemany(
+            "INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES (?, ?, 1)",
+            [(t, agent) for t in tenants],
+        )
+        self.conn.executemany("INSERT OR IGNORE INTO tenants (id) VALUES (?)", [(t,) for t in tenants])
+        self.conn.commit()
+
+    def _context(self, agent, tenant, status="bound", age=0):
+        self.conn.execute(
+            "INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)",
+            (agent, tenant, status, int(time.time()) - age),
+        )
+        self.conn.commit()
+
+    def test_no_agent_is_null(self):
+        self.assertIsNone(hook.resolve_write_tenant(self.conn, None))
+        self.assertIsNone(hook.resolve_write_tenant(self.conn, ""))
+
+    def test_serving_no_tenant_is_default(self):
+        self.assertEqual(hook.resolve_write_tenant(self.conn, "agent-x"), "default")
+
+    def test_single_served_tenant_without_context(self):
+        self._avail("agent-x", "acme")
+        self.assertEqual(hook.resolve_write_tenant(self.conn, "agent-x"), "acme")
+
+    def test_main_agent_counts_as_served(self):
+        self.conn.execute("INSERT INTO tenants (id, main_agent_id) VALUES ('acme', 'agent-x')")
+        self.conn.commit()
+        self.assertEqual(hook.resolve_write_tenant(self.conn, "agent-x"), "acme")
+
+    def test_shared_agent_without_context_is_null(self):
+        self._avail("agent-x", "acme", "globex")
+        self.assertIsNone(hook.resolve_write_tenant(self.conn, "agent-x"))
+
+    def test_shared_agent_takes_the_fresh_context(self):
+        self._avail("agent-x", "acme", "globex")
+        self._context("agent-x", "globex")
+        self.assertEqual(hook.resolve_write_tenant(self.conn, "agent-x"), "globex")
+
+    def test_stale_context_is_not_used(self):
+        self._avail("agent-x", "acme", "globex")
+        self._context("agent-x", "globex", age=10 * 86400)
+        self.assertIsNone(hook.resolve_write_tenant(self.conn, "agent-x"))
+
+    def test_context_of_a_tenant_the_agent_no_longer_serves_is_not_used(self):
+        self._avail("agent-x", "acme", "globex")
+        self._context("agent-x", "initech")
+        self.assertIsNone(hook.resolve_write_tenant(self.conn, "agent-x"))
+
+    def test_unknown_context_falls_back_to_the_served_tenant(self):
+        self._avail("agent-x", "acme")
+        self._context("agent-x", "", status="unknown")
+        self.assertEqual(hook.resolve_write_tenant(self.conn, "agent-x"), "acme")
+
+    def test_missing_tables_are_null_not_an_error(self):
+        self.conn.execute("DROP TABLE tenants")
+        self.conn.commit()
+        self.assertIsNone(hook.resolve_write_tenant(self.conn, "agent-x"))
+
+
 class TestWriteTokenRow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -467,6 +559,29 @@ class TestOtelSpanWrites(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row, ("sess-1", "msg_1", "turn-1", MAIN_AGENT, "model.call", "ok"))
 
+    def test_span_is_stamped_with_the_served_tenant(self):
+        self.conn.execute("INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES ('acme', ?, 1)", (MAIN_AGENT,))
+        self.conn.commit()
+        hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1")
+        self.assertEqual(self.conn.execute("SELECT tenant_id FROM otel_spans").fetchone(), ("acme",))
+
+    def test_span_of_a_shared_agent_without_context_is_null(self):
+        self.conn.executemany(
+            "INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES (?, ?, 1)",
+            [("acme", MAIN_AGENT), ("globex", MAIN_AGENT)],
+        )
+        self.conn.commit()
+        hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1")
+        self.assertEqual(self.conn.execute("SELECT tenant_id FROM otel_spans").fetchone(), (None,))
+
+    def test_span_still_lands_before_the_column_exists(self):
+        # The script can be deployed before the dashboard applied the migration that adds tenant_id.
+        self.conn.execute("ALTER TABLE otel_spans DROP COLUMN tenant_id")
+        self.conn.commit()
+        span_id = hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1")
+        self.assertEqual(span_id, "msg_1")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM otel_spans").fetchone(), (1,))
+
     def test_write_model_call_span_missing_id_returns_none(self):
         ev = _usage_event()
         del ev["message"]["id"]
@@ -523,6 +638,18 @@ class TestRecordHandoffAudit(unittest.TestCase):
             "SELECT agent_id, hook_type, verdict, tool_name, reason, session_id, trigger_source FROM hook_audit_log"
         ).fetchone()
         self.assertEqual(row, (MAIN_AGENT, "PostToolUse", "handoff", "Bash", "ctx=62%", "sess-1", "watchdog"))
+
+    def test_row_is_stamped_with_the_served_tenant(self):
+        self.conn.execute("INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES ('acme', ?, 1)", (MAIN_AGENT,))
+        self.conn.commit()
+        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62)
+        self.assertEqual(self.conn.execute("SELECT tenant_id FROM hook_audit_log").fetchone(), ("acme",))
+
+    def test_row_still_lands_before_the_column_exists(self):
+        self.conn.execute("ALTER TABLE hook_audit_log DROP COLUMN tenant_id")
+        self.conn.commit()
+        hook.record_handoff_audit(self.conn, MAIN_AGENT, "sess-1", "Bash", 0.62)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM hook_audit_log").fetchone(), (1,))
 
     def test_never_raises_on_a_closed_connection(self):
         self.conn.close()
