@@ -3,6 +3,7 @@
 
 import { APP_TZ } from '../config.js'
 import { db } from './connection.js'
+import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
 
 export function getSession(chatId: string): { sessionId: string; messageCount: number } | undefined {
@@ -98,7 +99,8 @@ export function appendDailyLog(agentId: string, content: string): void {
   // local time lands on the previous day and the "ma" recall query misses it.
   // en-CA formats as YYYY-MM-DD.
   const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
-  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
+  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)')
+    .run(agentId, today, content, now, resolveWriteTenant(agentId))
 }
 
 export function getDailyLog(agentId: string, date: string): { id: number; content: string; created_at: number }[] {
