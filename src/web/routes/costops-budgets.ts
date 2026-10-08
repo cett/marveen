@@ -4,7 +4,6 @@
 // not tenant data.
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
-import { getDb } from '../../db.js'
 import { loadCostopsConfig, saveCostopsConfig, type BudgetEntry } from '../../costops/config.js'
 import { evaluateBudgets } from '../../costops/budget-alert.js'
 import type { RouteContext } from './types.js'
@@ -81,7 +80,7 @@ export async function tryHandleCostopsBudgets(ctx: RouteContext): Promise<boolea
     // Enriched with live status (spent/ratio/level/blocked) so this one
     // response serves both the Settings CRUD table and the read-only
     // budget-status widget on the token-usage page -- no separate endpoint.
-    const statuses = evaluateBudgets(getDb(), config, Date.now())
+    const statuses = evaluateBudgets(config, Date.now())
     const budgets = statuses.map((s) => ({ ...s.budget, spent: s.spent, ratio: s.ratio, level: s.level, blocked: s.blocked }))
     json(res, { budgets })
     return true

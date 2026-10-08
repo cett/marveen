@@ -1,4 +1,4 @@
-// Tenant-scoped query wrapper for the four core tables.
+// Tenant-scoped query facade for the four core tables.
 //
 // Every method on the returned object hard-wires the caller's tenant_id into
 // the SQL so route handlers can never accidentally read or write another
@@ -7,308 +7,70 @@
 // writes are structurally impossible because the tenant_id column is always
 // supplied by the scope, not by the caller.
 //
-// Admin-level aggregation that needs to span tenants should use the raw db
-// handle directly, protected by the admin:all permission check.
+// The SQL lives in db/tenant-scoped.ts, where `tenantId` is a required first
+// parameter of every function; this module only binds it once.
 //
-// The wrapper accepts a db parameter rather than calling getDb() so that
-// tests can pass an in-memory database without touching the production store.
+// Admin-level aggregation that needs to span tenants should use the unscoped
+// db functions directly, protected by the admin:all permission check.
 
-import type Database from 'better-sqlite3'
-import { syncVecMemoryDelete } from '../db.js'
+import {
+  listTenantMemories, getTenantMemory, insertTenantMemory, updateTenantMemory, deleteTenantMemory,
+  listTenantKanbanCards, countTenantKanbanCards, getTenantKanbanCard, insertTenantKanbanCard,
+  updateTenantKanbanCard, deleteTenantKanbanCard,
+  listTenantMessagesFor, insertTenantMessage,
+  listTenantImportMemoriesForSource, getTenantImportMemory, insertTenantImportMemory, deleteTenantImportMemory,
+} from '../db/tenant-scoped.js'
 
-// ── Types ────────────────────────────────────────────────────────────────────
+export type { ScopedMemory, ScopedKanbanCard, ScopedAgentMessage, ScopedImportMemory } from '../db/tenant-scoped.js'
 
-export interface ScopedMemory {
-  id: number
-  agent_id: string
-  category: string
-  key: string
-  value: string
-  tenant_id: string
-  [key: string]: unknown
-}
-
-export interface ScopedKanbanCard {
-  id: string
-  title: string
-  status: string
-  tenant_id: string
-  [key: string]: unknown
-}
-
-export interface ScopedAgentMessage {
-  id: number
-  from_agent: string
-  to_agent: string
-  content: string
-  status: string
-  tenant_id: string
-  [key: string]: unknown
-}
-
-export interface ScopedImportMemory {
-  id: string
-  source_id: string
-  file_path: string
-  content: string
-  tenant_id: string
-  [key: string]: unknown
-}
-
-// ── Main export ───────────────────────────────────────────────────────────────
-
-export function scopeToTenant(db: Database.Database, tenantId: string) {
+export function scopeToTenant(tenantId: string) {
   return {
-
-    // ── memories ─────────────────────────────────────────────────────────────
-
     memories: {
       /** List memories for an agent within this tenant, including shared-tier. */
-      list(agentId: string, category?: string, limit = 50): ScopedMemory[] {
-        if (category) {
-          return db
-            .prepare(
-              `SELECT * FROM memories
-               WHERE tenant_id = ? AND (agent_id = ? OR category = 'shared') AND category = ?
-               ORDER BY accessed_at DESC LIMIT ?`,
-            )
-            .all(tenantId, agentId, category, limit) as ScopedMemory[]
-        }
-        return db
-          .prepare(
-            `SELECT * FROM memories
-             WHERE tenant_id = ? AND (agent_id = ? OR category = 'shared')
-             ORDER BY accessed_at DESC LIMIT ?`,
-          )
-          .all(tenantId, agentId, limit) as ScopedMemory[]
-      },
-
+      list: (agentId: string, category?: string, limit?: number) => listTenantMemories(tenantId, agentId, category, limit),
       /** Get a single memory by id, only if it belongs to this tenant. */
-      get(id: number): ScopedMemory | null {
-        return (
-          (db
-            .prepare('SELECT * FROM memories WHERE tenant_id = ? AND id = ?')
-            .get(tenantId, id) as ScopedMemory | undefined) ?? null
-        )
-      },
-
+      get: (id: number) => getTenantMemory(tenantId, id),
       /** Insert a new memory stamped with this tenant. */
-      insert(
-        agentId: string,
-        category: string,
-        content: string,
-        keywords?: string,
-      ): number {
-        const now = Math.floor(Date.now() / 1000)
-        const row = db
-          .prepare(
-            `INSERT INTO memories (agent_id, category, content, keywords, tenant_id, created_at, accessed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             RETURNING id`,
-          )
-          .get(agentId, category, content, keywords ?? null, tenantId, now, now) as { id: number }
-        return row.id
-      },
-
+      insert: (agentId: string, category: string, content: string, keywords?: string) =>
+        insertTenantMemory(tenantId, agentId, category, content, keywords),
       /** Update a memory only if it belongs to this tenant. */
-      update(id: number, patch: { content?: string; category?: string }): boolean {
-        const fields: string[] = []
-        const params: unknown[] = []
-        if (patch.content !== undefined) { fields.push('content = ?'); params.push(patch.content) }
-        if (patch.category !== undefined) { fields.push('category = ?'); params.push(patch.category) }
-        if (fields.length === 0) return false
-        params.push(tenantId, id)
-        const result = db
-          .prepare(
-            `UPDATE memories SET ${fields.join(', ')} WHERE tenant_id = ? AND id = ?`,
-          )
-          .run(...params)
-        return result.changes > 0
-      },
-
+      update: (id: number, patch: { content?: string; category?: string }) => updateTenantMemory(tenantId, id, patch),
       /** Delete a memory only if it belongs to this tenant. */
-      delete(id: number): boolean {
-        const result = db
-          .prepare('DELETE FROM memories WHERE tenant_id = ? AND id = ?')
-          .run(tenantId, id)
-        if (result.changes > 0) syncVecMemoryDelete(id)
-        return result.changes > 0
-      },
+      delete: (id: number) => deleteTenantMemory(tenantId, id),
     },
-
-    // ── kanban_cards ─────────────────────────────────────────────────────────
 
     kanban: {
-      /**
-       * List kanban cards for this tenant, excluding archived ones -- matches
-       * the unscoped listKanbanCards() so tenant-scoped and fleet-wide counts
-       * agree. `limit` is only applied when explicitly passed; the default
-       * (unbounded) call mirrors the unscoped path instead of silently
-       * truncating at a fixed page size. `offset` is only meaningful together
-       * with `limit` (kanban board per-column "load more", P1c).
-       */
-      list(status?: string, limit?: number, offset?: number): ScopedKanbanCard[] {
-        let limitClause = ''
-        if (limit !== undefined) {
-          limitClause = ' LIMIT ?'
-          if (offset !== undefined) limitClause += ' OFFSET ?'
-        }
-        if (status) {
-          const params: unknown[] = [tenantId, status]
-          if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
-          return db
-            .prepare(
-              `SELECT * FROM kanban_cards
-               WHERE tenant_id = ? AND status = ? AND archived_at IS NULL
-               ORDER BY created_at DESC${limitClause}`,
-            )
-            .all(...params) as ScopedKanbanCard[]
-        }
-        const params: unknown[] = [tenantId]
-        if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
-        return db
-          .prepare(
-            `SELECT * FROM kanban_cards
-             WHERE tenant_id = ? AND archived_at IS NULL
-             ORDER BY created_at DESC${limitClause}`,
-          )
-          .all(...params) as ScopedKanbanCard[]
-      },
-
-      /** Count kanban cards for this tenant, excluding archived ones -- pairs with list() for pagination totals. */
-      count(status?: string): number {
-        if (status) {
-          return (db
-            .prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE tenant_id = ? AND status = ? AND archived_at IS NULL')
-            .get(tenantId, status) as { n: number }).n
-        }
-        return (db
-          .prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE tenant_id = ? AND archived_at IS NULL')
-          .get(tenantId) as { n: number }).n
-      },
-
+      /** List this tenant's non-archived cards; `limit`/`offset` only when passed. */
+      list: (status?: string, limit?: number, offset?: number) => listTenantKanbanCards(tenantId, status, limit, offset),
+      /** Count this tenant's non-archived cards -- pairs with list() for pagination totals. */
+      count: (status?: string) => countTenantKanbanCards(tenantId, status),
       /** Get a single card by id, only if it belongs to this tenant. */
-      get(id: string): ScopedKanbanCard | null {
-        return (
-          (db
-            .prepare('SELECT * FROM kanban_cards WHERE tenant_id = ? AND id = ?')
-            .get(tenantId, id) as ScopedKanbanCard | undefined) ?? null
-        )
-      },
-
+      get: (id: string) => getTenantKanbanCard(tenantId, id),
       /** Insert a new kanban card stamped with this tenant. */
-      insert(id: string, title: string, status = 'planned'): void {
-        db.prepare(
-          `INSERT INTO kanban_cards (id, title, status, tenant_id) VALUES (?, ?, ?, ?)`,
-        ).run(id, title, status, tenantId)
-      },
-
+      insert: (id: string, title: string, status?: string) => insertTenantKanbanCard(tenantId, id, title, status),
       /** Update a card only if it belongs to this tenant. */
-      update(id: string, patch: { title?: string; status?: string }): boolean {
-        const fields: string[] = []
-        const params: unknown[] = []
-        if (patch.title !== undefined) { fields.push('title = ?'); params.push(patch.title) }
-        if (patch.status !== undefined) { fields.push('status = ?'); params.push(patch.status) }
-        if (fields.length === 0) return false
-        params.push(tenantId, id)
-        const result = db
-          .prepare(
-            `UPDATE kanban_cards SET ${fields.join(', ')} WHERE tenant_id = ? AND id = ?`,
-          )
-          .run(...params)
-        return result.changes > 0
-      },
-
+      update: (id: string, patch: { title?: string; status?: string }) => updateTenantKanbanCard(tenantId, id, patch),
       /** Delete a card only if it belongs to this tenant. */
-      delete(id: string): boolean {
-        const result = db
-          .prepare('DELETE FROM kanban_cards WHERE tenant_id = ? AND id = ?')
-          .run(tenantId, id)
-        return result.changes > 0
-      },
+      delete: (id: string) => deleteTenantKanbanCard(tenantId, id),
     },
-
-    // ── agent_messages ───────────────────────────────────────────────────────
 
     agentMessages: {
       /** List messages for a target agent within this tenant. */
-      listFor(toAgent: string, status?: string, limit = 100): ScopedAgentMessage[] {
-        if (status) {
-          return db
-            .prepare(
-              `SELECT * FROM agent_messages
-               WHERE tenant_id = ? AND to_agent = ? AND status = ?
-               ORDER BY created_at DESC LIMIT ?`,
-            )
-            .all(tenantId, toAgent, status, limit) as ScopedAgentMessage[]
-        }
-        return db
-          .prepare(
-            `SELECT * FROM agent_messages
-             WHERE tenant_id = ? AND to_agent = ?
-             ORDER BY created_at DESC LIMIT ?`,
-          )
-          .all(tenantId, toAgent, limit) as ScopedAgentMessage[]
-      },
-
+      listFor: (toAgent: string, status?: string, limit?: number) => listTenantMessagesFor(tenantId, toAgent, status, limit),
       /** Insert a message stamped with this tenant. */
-      insert(fromAgent: string, toAgent: string, content: string): number {
-        const now = Math.floor(Date.now() / 1000)
-        const row = db
-          .prepare(
-            `INSERT INTO agent_messages (from_agent, to_agent, content, status, tenant_id, created_at)
-             VALUES (?, ?, ?, 'pending', ?, ?)
-             RETURNING id`,
-          )
-          .get(fromAgent, toAgent, content, tenantId, now) as { id: number }
-        return row.id
-      },
+      insert: (fromAgent: string, toAgent: string, content: string) => insertTenantMessage(tenantId, fromAgent, toAgent, content),
     },
-
-    // ── import_memories ──────────────────────────────────────────────────────
 
     importMemories: {
       /** List import memories for a source within this tenant. */
-      listForSource(sourceId: string, limit = 500): ScopedImportMemory[] {
-        return db
-          .prepare(
-            `SELECT * FROM import_memories
-             WHERE tenant_id = ? AND source_id = ?
-             ORDER BY updated_at DESC LIMIT ?`,
-          )
-          .all(tenantId, sourceId, limit) as ScopedImportMemory[]
-      },
-
+      listForSource: (sourceId: string, limit?: number) => listTenantImportMemoriesForSource(tenantId, sourceId, limit),
       /** Get a single import memory by id, only if it belongs to this tenant. */
-      get(id: string): ScopedImportMemory | null {
-        return (
-          (db
-            .prepare('SELECT * FROM import_memories WHERE tenant_id = ? AND id = ?')
-            .get(tenantId, id) as ScopedImportMemory | undefined) ?? null
-        )
-      },
-
+      get: (id: string) => getTenantImportMemory(tenantId, id),
       /** Insert an import memory stamped with this tenant. */
-      insert(
-        id: string,
-        sourceId: string,
-        filePath: string,
-        content: string,
-      ): void {
-        const now = Math.floor(Date.now() / 1000)
-        db.prepare(
-          `INSERT INTO import_memories (id, source_id, file_path, content, tenant_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(id, sourceId, filePath, content, tenantId, now, now)
-      },
-
+      insert: (id: string, sourceId: string, filePath: string, content: string) =>
+        insertTenantImportMemory(tenantId, id, sourceId, filePath, content),
       /** Delete an import memory only if it belongs to this tenant. */
-      delete(id: string): boolean {
-        const result = db
-          .prepare('DELETE FROM import_memories WHERE tenant_id = ? AND id = ?')
-          .run(tenantId, id)
-        return result.changes > 0
-      },
+      delete: (id: string) => deleteTenantImportMemory(tenantId, id),
     },
   }
 }

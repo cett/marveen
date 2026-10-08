@@ -1,5 +1,6 @@
-import { getDb, generateEmbedding } from './db.js'
-import { logger } from './logger.js'
+import { db } from './connection.js'
+import { generateEmbedding } from './vector.js'
+import { logger } from '../logger.js'
 
 // At this row count the HNSW graph may benefit from a periodic re-index.
 const VEC_REBUILD_THRESHOLD = 10_000
@@ -58,7 +59,6 @@ const DEFAULT_MIME: Record<ArtifactKind, string> = {
 }
 
 export function createArtifact(params: CreateArtifactParams): { id: string; updated: boolean } {
-  const db = getDb()
   const mime = params.mime ?? DEFAULT_MIME[params.kind]
   const meta = JSON.stringify(params.meta ?? {})
 
@@ -113,7 +113,6 @@ export async function storeArtifactEmbedding(
   const embedding = await generateEmbedding(text).catch(() => null)
   if (!embedding) return
 
-  const db = getDb()
   const rowRow = db.prepare('SELECT rowid FROM artifacts WHERE id = ?').get(id) as { rowid: number } | undefined
   if (!rowRow) return
 
@@ -144,7 +143,6 @@ export interface ListArtifactsOptions {
 }
 
 export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[] {
-  const db = getDb()
   const limit = Math.min(opts.limit ?? 50, 200)
   const offset = opts.offset ?? 0
 
@@ -187,7 +185,6 @@ export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[
 // a separate query (not folded into listArtifacts) so existing callers that
 // treat its return value as a plain array are unaffected.
 export function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 'offset'> = {}): number {
-  const db = getDb()
 
   const agentBind  = opts.agent ? [opts.agent] : []
   const tenantBind = opts.tenant_id !== undefined ? [opts.tenant_id] : []
@@ -224,13 +221,13 @@ function ftsEscape(term: string): string {
 }
 
 export function getArtifact(id: string): ArtifactRow | undefined {
-  return getDb()
+  return db
     .prepare('SELECT * FROM artifacts WHERE id = ?')
     .get(id) as ArtifactRow | undefined
 }
 
 export function deleteArtifact(id: string): boolean {
-  const result = getDb()
+  const result = db
     .prepare('DELETE FROM artifacts WHERE id = ?')
     .run(id)
   return result.changes > 0
@@ -244,12 +241,12 @@ export const ARTIFACT_TITLE_MAX_LENGTH = 250
  * trigger defined in migration 0010.
  */
 export function renameArtifact(id: string, title: string): boolean {
-  const result = getDb()
+  const result = db
     .prepare('UPDATE artifacts SET title = ? WHERE id = ?')
     .run(title, id)
   if (result.changes === 0) return false
   // Re-index embedding so semantic search reflects the new title (fire-and-forget)
-  const row = getDb().prepare('SELECT meta FROM artifacts WHERE id = ?').get(id) as { meta: string } | undefined
+  const row = db.prepare('SELECT meta FROM artifacts WHERE id = ?').get(id) as { meta: string } | undefined
   if (row) storeArtifactEmbedding(id, title, row.meta).catch(() => { /* non-critical */ })
   return true
 }
@@ -263,7 +260,6 @@ export interface ArtifactStats {
 }
 
 export function getArtifactStats(): ArtifactStats {
-  const db = getDb()
   const { c: artifact_count } = db.prepare('SELECT COUNT(*) as c FROM artifacts').get() as { c: number }
   let vec_count = -1
   try {

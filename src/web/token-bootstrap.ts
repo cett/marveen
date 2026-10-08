@@ -11,22 +11,14 @@
 // takes over -- no server restart required.
 
 import { createHash } from 'node:crypto'
-import type Database from 'better-sqlite3'
 import { logger } from '../logger.js'
+import { enrollDashboardApiToken } from '../db.js'
 
-export function bootstrapDashboardToken(rawToken: string, db: Database.Database): void {
+export function bootstrapDashboardToken(rawToken: string): void {
   try {
     const hash = createHash('sha256').update(rawToken).digest('hex')
     const now = Math.floor(Date.now() / 1000)
-    const info = db
-      .prepare(
-        `INSERT INTO api_tokens
-           (token_hash, name, role, created_at)
-         VALUES (?, 'dashboard', 'admin', ?)
-         ON CONFLICT DO NOTHING`,
-      )
-      .run(hash, now)
-    if (info.changes > 0) {
+    if (enrollDashboardApiToken(hash, now) > 0) {
       logger.info('api_tokens: dashboard token enrolled (role=admin, no expiry)')
     }
   } catch (err) {

@@ -1,4 +1,4 @@
-import { getDb, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, deactivatePlanForAgent, listActivePlansForAgents, type BlackboardRow, type ActivePlanForAgent } from '../../db.js'
+import { listBlackboardRows, getBlackboardRowById, blackboardRowExistsForAgent, getLastOutboundMessageTimes, getLastBlackboardChangeTimes, updateBlackboardRowById, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, deactivatePlanForAgent, listActivePlansForAgents, type BlackboardRow, type ActivePlanForAgent } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -59,10 +59,7 @@ export function computeBlackboardSignal(
 // tenantId: null means unfiltered (admin, sees every tenant including shared
 // '_multi_' agents); a string narrows to that tenant's own rows only.
 function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): BlackboardRowWithSignal[] {
-  const db = getDb()
-  const rows = tenantId !== null
-    ? db.prepare('SELECT * FROM fleet_blackboard WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?').all(tenantId, limit) as BlackboardRow[]
-    : db.prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?').all(limit) as BlackboardRow[]
+  const rows = listBlackboardRows(limit, tenantId)
 
   if (!rows.length) return []
 
@@ -75,30 +72,14 @@ function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): 
   // agent_messages.from_agent may contain a slash-prefixed sub-path; we match on
   // the exact agent_id as stored in fleet_blackboard (lower-cased base name).
   const agentIds = rows.map((r) => r.agent_id)
-  const placeholders = agentIds.map(() => '?').join(',')
-  const msgRows = db
-    .prepare(
-      `SELECT from_agent AS agent_id, MAX(created_at) AS last_msg_at
-         FROM agent_messages
-        WHERE from_agent IN (${placeholders})
-          AND created_at > ?
-        GROUP BY from_agent`,
-    )
-    .all(...agentIds, Math.floor(Date.now() / 1000) - msgHours * 3600) as { agent_id: string; last_msg_at: number }[]
+  const msgRows = getLastOutboundMessageTimes(agentIds, Math.floor(Date.now() / 1000) - msgHours * 3600)
 
   const lastMsgMap = new Map(msgRows.map((r) => [r.agent_id, r.last_msg_at]))
 
   // For Signal B: use the last actual state change from history, not updated_at.
   // updated_at is refreshed by every write (including no-op rewrites from schedule-runner),
   // so it cannot distinguish "never changed" from "written repeatedly with the same state".
-  const histRows = db
-    .prepare(
-      `SELECT agent_id, MAX(created_at) AS last_changed_at
-         FROM fleet_blackboard_history
-        WHERE agent_id IN (${placeholders})
-        GROUP BY agent_id`,
-    )
-    .all(...agentIds) as { agent_id: string; last_changed_at: number }[]
+  const histRows = getLastBlackboardChangeTimes(agentIds)
   const lastChangedMap = new Map(histRows.map((r) => [r.agent_id, r.last_changed_at]))
 
   const nowSec = Math.floor(Date.now() / 1000)
@@ -118,9 +99,7 @@ function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): 
 }
 
 function listBlackboard(limit = 10): BlackboardRow[] {
-  return getDb()
-    .prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?')
-    .all(limit) as BlackboardRow[]
+  return listBlackboardRows(limit)
 }
 
 function patchBlackboard(id: string, data: {
@@ -131,8 +110,7 @@ function patchBlackboard(id: string, data: {
   blocked_reason?: string | null
   resolved_by?: string | null
 }): BlackboardRow | undefined {
-  const db = getDb()
-  const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow | undefined
+  const row = getBlackboardRowById(id)
   if (!row) return undefined
   const status = data.status ?? row.status
   const summary = data.summary ?? row.summary
@@ -142,10 +120,8 @@ function patchBlackboard(id: string, data: {
   // the moment it moves away from 'blocked'.
   const blocked_by = status === 'blocked' ? (data.blocked_by ?? row.blocked_by ?? null) : null
   const blocked_reason = status === 'blocked' ? (data.blocked_reason ?? row.blocked_reason ?? null) : null
-  db.prepare(`
-    UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, blocked_by = ?, blocked_reason = ?, updated_at = unixepoch() WHERE id = ?
-  `).run(status, summary, task_ref, blocked_by, blocked_reason, id)
-  const updated = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
+  updateBlackboardRowById(id, { status, summary, task_ref, blocked_by, blocked_reason })
+  const updated = getBlackboardRowById(id) as BlackboardRow
   // Only record history when the patch actually changed something.
   const changed =
     updated.status !== row.status ||
@@ -233,7 +209,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       }
     }
     try {
-      const hadExisting = !!getDb().prepare('SELECT 1 FROM fleet_blackboard WHERE agent_id = ?').get(agent_id)
+      const hadExisting = blackboardRowExistsForAgent(agent_id)
       const row = upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by })
       try {
         writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })

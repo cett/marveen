@@ -285,3 +285,38 @@ export function revertIdeaFromKanban(kanbanId: string): string | null {
   logIdeaStatusChange(idea.id, 'kanban', 'reviewed', 'system', `Kanban card removed: ${kanbanId}`)
   return idea.id
 }
+
+// ── Homoglyph journal (homoglyph_findings) ───────────────────────────
+
+export interface HomoglyphFindingRow {
+  id: number
+  src_table: string
+  src_id: string
+  sample: string
+  found_at: number
+  resolved_at: number | null
+}
+
+export function listHomoglyphFindings(includeResolved: boolean): HomoglyphFindingRow[] {
+  return db
+    .prepare(
+      `SELECT id, src_table, src_id, sample, found_at, resolved_at
+       FROM homoglyph_findings
+       ${includeResolved ? '' : 'WHERE resolved_at IS NULL'}
+       ORDER BY id DESC LIMIT 200`
+    )
+    .all() as HomoglyphFindingRow[]
+}
+
+/** Returns the number of findings newly marked resolved (0 when absent or already resolved). */
+export function resolveHomoglyphFinding(id: number): number {
+  return db
+    .prepare('UPDATE homoglyph_findings SET resolved_at = unixepoch() WHERE id = ? AND resolved_at IS NULL')
+    .run(id).changes
+}
+
+// ── Idea box lookup ──────────────────────────────────────────────────
+
+export function getIdeaById(id: string): IdeaBoxRow | undefined {
+  return db.prepare('SELECT * FROM idea_box WHERE id = ?').get(id) as IdeaBoxRow | undefined
+}

@@ -105,7 +105,7 @@ afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }))
 describe('evaluateBudgets', () => {
   it('reports ok when spend is well under the warning threshold', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 100, output_tokens: 50 })
-    const [status] = evaluateBudgets(getDb(), config([budget({ amount: 1000 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ amount: 1000 })]), NOW_MS)
     expect(status.spent).toBe(150)
     expect(status.ratio).toBeCloseTo(0.15)
     expect(status.level).toBe('ok')
@@ -117,7 +117,7 @@ describe('evaluateBudgets', () => {
     // retention were shorter), half still raw -- both must count.
     insertMonthlyRollup('2026-09', 'agent-a', { input_tokens: 300, output_tokens: 100 })
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 200, output_tokens: 50 })
-    const [status] = evaluateBudgets(getDb(), config([budget({ amount: 1000 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ amount: 1000 })]), NOW_MS)
     expect(status.spent).toBe(300 + 100 + 200 + 50)
   })
 
@@ -125,38 +125,36 @@ describe('evaluateBudgets', () => {
     const augustSec = Math.floor(new Date('2026-08-15T12:00:00').getTime() / 1000)
     insertRawUsage('agent-a', augustSec, { input_tokens: 900, output_tokens: 900 })
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 10, output_tokens: 10 })
-    const [status] = evaluateBudgets(getDb(), config([budget({ amount: 1000 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ amount: 1000 })]), NOW_MS)
     expect(status.spent).toBe(20)
   })
 
   it('reaches warning level at the configured threshold', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 850 })
-    const [status] = evaluateBudgets(getDb(), config([budget({ amount: 1000, warning_threshold: 0.8, hard_threshold: 1.0 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ amount: 1000, warning_threshold: 0.8, hard_threshold: 1.0 })]), NOW_MS)
     expect(status.level).toBe('warning')
   })
 
   it('reaches hard level once spend meets the hard threshold', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 1000 })
-    const [status] = evaluateBudgets(getDb(), config([budget({ amount: 1000, hard_threshold: 1.0 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ amount: 1000, hard_threshold: 1.0 })]), NOW_MS)
     expect(status.level).toBe('hard')
   })
 
   it('marks blocked only when hard level AND block_on_hard is set', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 1000 })
-    const [withFlag] = evaluateBudgets(getDb(), config([budget({ amount: 1000, block_on_hard: true })]), NOW_MS)
+    const [withFlag] = evaluateBudgets(config([budget({ amount: 1000, block_on_hard: true })]), NOW_MS)
     expect(withFlag.level).toBe('hard')
     expect(withFlag.blocked).toBe(true)
 
-    const [withoutFlag] = evaluateBudgets(getDb(), config([budget({ amount: 1000, block_on_hard: false })]), NOW_MS)
+    const [withoutFlag] = evaluateBudgets(config([budget({ amount: 1000, block_on_hard: false })]), NOW_MS)
     expect(withoutFlag.blocked).toBe(false)
   })
 
   it('scopes to a single agent when scope is "agent"', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 100 })
     insertRawUsage('agent-b', NOW_SEC, { input_tokens: 900 })
-    const [status] = evaluateBudgets(
-      getDb(),
-      config([budget({ id: 'agent-a-monthly', scope: 'agent', scope_ref: 'agent-a', amount: 1000 })]),
+    const [status] = evaluateBudgets(config([budget({ id: 'agent-a-monthly', scope: 'agent', scope_ref: 'agent-a', amount: 1000 })]),
       NOW_MS,
     )
     expect(status.spent).toBe(100)
@@ -165,9 +163,7 @@ describe('evaluateBudgets', () => {
   it('scopes to a single tenant when scope is "tenant" (other tenants excluded)', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 100, tenant_id: 'acme' })
     insertRawUsage('agent-b', NOW_SEC, { input_tokens: 900, tenant_id: 'other-tenant' })
-    const [status] = evaluateBudgets(
-      getDb(),
-      config([budget({ id: 'acme-monthly', scope: 'tenant', scope_ref: 'acme', amount: 1000 })]),
+    const [status] = evaluateBudgets(config([budget({ id: 'acme-monthly', scope: 'tenant', scope_ref: 'acme', amount: 1000 })]),
       NOW_MS,
     )
     expect(status.spent).toBe(100)
@@ -175,14 +171,14 @@ describe('evaluateBudgets', () => {
 
   it('fails open (ok, spent 0) for a tenant-scope budget missing scope_ref', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 5000, tenant_id: 'acme' })
-    const [status] = evaluateBudgets(getDb(), config([budget({ scope: 'tenant', amount: 1000 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ scope: 'tenant', amount: 1000 })]), NOW_MS)
     expect(status.level).toBe('ok')
     expect(status.spent).toBe(0)
   })
 
   it('fails open (ok, spent 0) for an agent-scope budget missing scope_ref', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 5000 })
-    const [status] = evaluateBudgets(getDb(), config([budget({ scope: 'agent', amount: 1000 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ scope: 'agent', amount: 1000 })]), NOW_MS)
     expect(status.level).toBe('ok')
     expect(status.spent).toBe(0)
   })
@@ -190,20 +186,20 @@ describe('evaluateBudgets', () => {
   it('fails open for scopes with no token-volume equivalent (source/provider/product)', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 5000 })
     for (const scope of ['source', 'provider', 'product'] as const) {
-      const [status] = evaluateBudgets(getDb(), config([budget({ scope, amount: 1000 })]), NOW_MS)
+      const [status] = evaluateBudgets(config([budget({ scope, amount: 1000 })]), NOW_MS)
       expect(status.level).toBe('ok')
     }
   })
 
   it('fails open for a zero/unset amount instead of dividing by zero', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 5000 })
-    const [status] = evaluateBudgets(getDb(), config([budget({ amount: 0 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ amount: 0 })]), NOW_MS)
     expect(status.level).toBe('ok')
     expect(Number.isFinite(status.ratio)).toBe(true)
   })
 
   it('returns ok with no usage at all (empty tables)', () => {
-    const [status] = evaluateBudgets(getDb(), config([budget({ amount: 1000 })]), NOW_MS)
+    const [status] = evaluateBudgets(config([budget({ amount: 1000 })]), NOW_MS)
     expect(status).toMatchObject({ spent: 0, ratio: 0, level: 'ok', blocked: false })
   })
 })
@@ -217,7 +213,7 @@ describe('runBudgetAlertCheck', () => {
 
   it('does nothing when no budgets are configured', async () => {
     writeConfig([])
-    await runBudgetAlertCheck(getDb(), NOW_MS)
+    await runBudgetAlertCheck(NOW_MS)
     expect(mockNotifyChannel).not.toHaveBeenCalled()
     expect(existsSync(STATE_PATH)).toBe(false)
   })
@@ -226,7 +222,7 @@ describe('runBudgetAlertCheck', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 1000 })
     writeConfig([budget({ amount: 1000 })])
 
-    await runBudgetAlertCheck(getDb(), NOW_MS)
+    await runBudgetAlertCheck(NOW_MS)
 
     expect(mockNotifyChannel).toHaveBeenCalledTimes(1)
     expect(mockNotifyChannel.mock.calls[0][0]).toMatch(/plafon elérve/)
@@ -238,9 +234,9 @@ describe('runBudgetAlertCheck', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 1000 })
     writeConfig([budget({ amount: 1000 })])
 
-    await runBudgetAlertCheck(getDb(), NOW_MS)
+    await runBudgetAlertCheck(NOW_MS)
     mockNotifyChannel.mockClear()
-    await runBudgetAlertCheck(getDb(), NOW_MS + 60 * 60 * 1000) // +1h, still under 6h cooldown
+    await runBudgetAlertCheck(NOW_MS + 60 * 60 * 1000) // +1h, still under 6h cooldown
 
     expect(mockNotifyChannel).not.toHaveBeenCalled()
   })
@@ -249,9 +245,9 @@ describe('runBudgetAlertCheck', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 1000 })
     writeConfig([budget({ amount: 1000 })])
 
-    await runBudgetAlertCheck(getDb(), NOW_MS)
+    await runBudgetAlertCheck(NOW_MS)
     mockNotifyChannel.mockClear()
-    await runBudgetAlertCheck(getDb(), NOW_MS + 7 * 60 * 60 * 1000) // +7h, past 6h cooldown
+    await runBudgetAlertCheck(NOW_MS + 7 * 60 * 60 * 1000) // +7h, past 6h cooldown
 
     expect(mockNotifyChannel).toHaveBeenCalledTimes(1)
   })
@@ -260,7 +256,7 @@ describe('runBudgetAlertCheck', () => {
     insertRawUsage('agent-a', NOW_SEC, { input_tokens: 10 })
     writeConfig([budget({ amount: 1000 })])
 
-    await runBudgetAlertCheck(getDb(), NOW_MS)
+    await runBudgetAlertCheck(NOW_MS)
 
     expect(mockNotifyChannel).not.toHaveBeenCalled()
     expect(existsSync(STATE_PATH)).toBe(false)

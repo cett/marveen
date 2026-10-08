@@ -15,7 +15,7 @@ import {
   listWorkspaceDocs, countWorkspaceDocs, patchWorkspaceDoc, deleteWorkspaceDoc,
   peekWorkspaceDoc, storeWorkspaceDocEmbedding, WORKSPACE_DOC_SIZE_LIMITS,
   type WorkspaceDocType, type WorkspaceContentType,
-} from '../../workspace-store.js'
+} from '../../db/workspace.js'
 import type { RouteContext } from './types.js'
 
 const VALID_TYPES = new Set<WorkspaceDocType>(['plan', 'brief', 'report', 'notes'])

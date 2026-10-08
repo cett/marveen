@@ -68,7 +68,7 @@ vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
 }))
 
-vi.mock('../workspace-store.js', () => ({
+vi.mock('../db/workspace.js', () => ({
   getWorkspaceDocUpdatedAtMs: vi.fn(() => null),
 }))
 

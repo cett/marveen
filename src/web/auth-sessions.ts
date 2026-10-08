@@ -15,7 +15,16 @@
 // table.
 
 import { randomBytes, createHash } from 'node:crypto'
-import { getDb } from '../db.js'
+import {
+  insertAuthSession,
+  deleteAuthSessionByHash,
+  getAuthSessionByHash,
+  touchAuthSessionLastSeen,
+  deleteAuthSessionsForUser,
+  deleteAllAuthSessions,
+  listAuthSessionRowsForUser,
+  deleteExpiredAuthSessions,
+} from '../db.js'
 
 const IDLE_TTL_SEC = 7 * 24 * 60 * 60
 const ABSOLUTE_TTL_SEC = 30 * 24 * 60 * 60
@@ -61,16 +70,14 @@ export function createSession(user: AuthSessionUser, opts: { userAgent?: string 
   const token = randomBytes(32).toString('base64url')
   const idHash = sha256hex(token)
   const now = nowSec()
-  getDb()
-    .prepare('INSERT INTO auth_sessions (id_hash, user_id, username, created_at, last_seen_at, user_agent, remote_note) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(idHash, user.userId, user.username, now, now, opts.userAgent ?? null, opts.remoteNote ?? null)
+  insertAuthSession(idHash, user.userId, user.username, now, opts.userAgent ?? null, opts.remoteNote ?? null)
   cache.set(idHash, { userId: user.userId, username: user.username, createdAt: now, lastSeenAt: now })
   return token
 }
 
 function removeByHash(idHash: string): void {
   cache.delete(idHash)
-  getDb().prepare('DELETE FROM auth_sessions WHERE id_hash = ?').run(idHash)
+  deleteAuthSessionByHash(idHash)
 }
 
 // Validate a presented cookie value. Returns the session principal or null.
@@ -82,9 +89,7 @@ export function resolveSession(cookieValue: string): ResolvedSession | null {
   if (!entry) {
     // Cache miss (fresh process after a restart, or a session minted by another
     // path): rehydrate from the durable table.
-    const row = getDb()
-      .prepare('SELECT user_id, username, created_at, last_seen_at FROM auth_sessions WHERE id_hash = ?')
-      .get(idHash) as { user_id: number; username: string; created_at: number; last_seen_at: number } | undefined
+    const row = getAuthSessionByHash(idHash)
     if (!row) return null
     entry = { userId: row.user_id, username: row.username, createdAt: row.created_at, lastSeenAt: row.last_seen_at }
     cache.set(idHash, entry)
@@ -100,12 +105,12 @@ export function resolveSession(cookieValue: string): ResolvedSession | null {
   }
   if (now - entry.lastSeenAt >= LAST_SEEN_DEBOUNCE_SEC) {
     entry.lastSeenAt = now
-    const res = getDb().prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id_hash = ?').run(now, idHash)
+    const changes = touchAuthSessionLastSeen(idHash, now)
     // Zero changed rows = the session row was deleted OUTSIDE this process
     // (dashboard-user sessions:clear / security:reset run in their own process
     // and cannot reach this cache). Honor the revocation within <=60s instead
     // of serving the cached session until the next restart.
-    if (res.changes === 0) {
+    if (changes === 0) {
       cache.delete(idHash)
       return null
     }
@@ -125,11 +130,7 @@ export function revokeAllForUser(userId: number, exceptCookieValue?: string | nu
   for (const [hash, entry] of cache) {
     if (entry.userId === userId && hash !== exceptHash) cache.delete(hash)
   }
-  if (exceptHash) {
-    getDb().prepare('DELETE FROM auth_sessions WHERE user_id = ? AND id_hash != ?').run(userId, exceptHash)
-  } else {
-    getDb().prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId)
-  }
+  deleteAuthSessionsForUser(userId, exceptHash)
 }
 
 // Revoke EVERY browser session at once (break-glass security reset). Cache and
@@ -137,14 +138,11 @@ export function revokeAllForUser(userId: number, exceptCookieValue?: string | nu
 // until the next restart.
 export function revokeAllSessions(): number {
   cache.clear()
-  return getDb().prepare('DELETE FROM auth_sessions').run().changes
+  return deleteAllAuthSessions()
 }
 
 export function listUserSessions(userId: number): UserSessionInfo[] {
-  const rows = getDb()
-    .prepare('SELECT id_hash, created_at, last_seen_at, user_agent FROM auth_sessions WHERE user_id = ? ORDER BY last_seen_at DESC')
-    .all(userId) as { id_hash: string; created_at: number; last_seen_at: number; user_agent: string | null }[]
-  return rows.map((r) => ({ idHashPrefix: r.id_hash.slice(0, 12), createdAt: r.created_at, lastSeenAt: r.last_seen_at, userAgent: r.user_agent }))
+  return listAuthSessionRowsForUser(userId).map((r) => ({ idHashPrefix: r.id_hash.slice(0, 12), createdAt: r.created_at, lastSeenAt: r.last_seen_at, userAgent: r.user_agent }))
 }
 
 // Hourly sweep of rows past either TTL. Cheap: two indexed range deletes plus a
@@ -153,13 +151,11 @@ export function sweepExpiredSessions(): number {
   const now = nowSec()
   const idleCutoff = now - IDLE_TTL_SEC
   const absoluteCutoff = now - ABSOLUTE_TTL_SEC
-  const res = getDb()
-    .prepare('DELETE FROM auth_sessions WHERE last_seen_at < ? OR created_at < ?')
-    .run(idleCutoff, absoluteCutoff)
+  const removed = deleteExpiredAuthSessions(idleCutoff, absoluteCutoff)
   for (const [hash, entry] of cache) {
     if (entry.lastSeenAt < idleCutoff || entry.createdAt < absoluteCutoff) cache.delete(hash)
   }
-  return res.changes
+  return removed
 }
 
 // Test seam: drop the in-memory cache to simulate a process restart (durable

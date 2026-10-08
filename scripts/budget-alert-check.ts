@@ -7,8 +7,8 @@
 // Opens the real DB, runs one evaluation+notify pass, exits. All logic lives
 // in src/costops/budget-alert*.ts (unit-tested); this file is deliberately
 // thin.
-import { initDatabase, getDb } from '../src/db.js'
+import { initDatabase } from '../src/db.js'
 import { runBudgetAlertCheck } from '../src/costops/budget-alert-runner.js'
 
 initDatabase()
-await runBudgetAlertCheck(getDb())
+await runBudgetAlertCheck()

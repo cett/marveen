@@ -1,17 +1,23 @@
 import {
   saveAgentMemory, getAgentMemories, countAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, clearMemoryCache,
-  searchMemories, getMemoriesForChat, countMemoriesForChat, getDb, touchMemoriesAccessed,
+  searchMemories, getMemoriesForChat, countMemoriesForChat, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
   runMemoryMaintenance, runLinkMaintenance, getLinksForMemories, writeAgentAuditLog,
   syncVecMemoryDelete,
+  hybridSearchDocs,
+  searchMemoriesLikeForAgent, searchMemoriesLike, listUpdatedSinceLastReadIds,
+  listRecentMemoryIdsForAgent, listMemoryGraphNodesInWindow, listMemoryGraphNodes,
+  listMemoryLinksAmong, listMemoryLinkDegrees, listCategoryChangesInWindow,
+  getMemoryDetailRow, countMemoryReads, listMemoryNeighbors, listMemoryCategoryHistory,
+  getImportMetaForShadow, getMemoryById, getMemoryOwnerRow, deleteMemoryRow,
   type Memory,
+  type WorkspaceDocSearchResult,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
-import { hybridSearchDocs, type WorkspaceDocSearchResult } from '../../workspace-store.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
@@ -152,22 +158,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, recallTenantId)
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit, recallTenantId)
-      if (results.length === 0) {
-        const db2 = getDb()
-        const tcFallback = recallTenantId ? ' AND tenant_id = ?' : ''
-        const tpFallback = recallTenantId ? [recallTenantId] : []
-        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)${tcFallback} ORDER BY accessed_at DESC LIMIT ?`)
-          .all(agentId, `%${q}%`, `%${q}%`, ...tpFallback, limit) as Memory[]
-      }
+      if (results.length === 0) results = searchMemoriesLikeForAgent(agentId, q, limit, recallTenantId)
     } else if (q) {
       results = searchMemories(q, ALLOWED_CHAT_ID, limit, recallTenantId)
-      if (results.length === 0) {
-        const db2 = getDb()
-        const tcFallback = recallTenantId ? ' AND tenant_id = ?' : ''
-        const tpFallback = recallTenantId ? [recallTenantId] : []
-        results = db2.prepare(`SELECT * FROM memories WHERE content LIKE ?${tcFallback} ORDER BY accessed_at DESC LIMIT ?`)
-          .all(`%${q}%`, ...tpFallback, limit) as Memory[]
-      }
+      if (results.length === 0) results = searchMemoriesLike(q, limit, recallTenantId)
     } else if (agentId) {
       // Tenant filtering pushed into SQL (before LIMIT) to avoid the post-filter
       // accuracy bug: getAgentMemories enforces tenantId in the WHERE clause.
@@ -210,18 +204,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     let staleIdSet = new Set<number>()
     if (q && agentId && results.length) {
       const ids = results.map(m => m.id)
-      const db2 = getDb()
-      const staleRows = db2.prepare(`
-        SELECT m.id FROM memories m
-        LEFT JOIN (
-          SELECT memory_id, MAX(read_at) AS last_read
-          FROM span_reads WHERE agent_id = ?
-          GROUP BY memory_id
-        ) sr ON sr.memory_id = m.id
-        WHERE m.id IN (${ids.map(() => '?').join(',')})
-          AND m.updated_at > COALESCE(sr.last_read, 0)
-      `).all(agentId, ...ids) as { id: number }[]
-      staleIdSet = new Set(staleRows.map(r => r.id))
+      staleIdSet = new Set(listUpdatedSinceLastReadIds(agentId, ids))
       // Stale memories float to the top of context -- the agent needs fresh info first.
       results.sort((a, b) => (staleIdSet.has(b.id) ? 1 : 0) - (staleIdSet.has(a.id) ? 1 : 0))
     }
@@ -423,10 +406,7 @@ Respond ONLY with JSON, nothing else:
     if (idsParam) {
       memoryIds = idsParam.split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n))
     } else if (agentParam) {
-      const rows = getDb().prepare(
-        `SELECT id FROM memories WHERE agent_id = ? ORDER BY accessed_at DESC LIMIT 500`
-      ).all(agentParam) as { id: number }[]
-      memoryIds = rows.map(r => r.id)
+      memoryIds = listRecentMemoryIdsForAgent(agentParam, 500)
     }
     json(res, getLinksForMemories(memoryIds))
     return true
@@ -504,58 +484,27 @@ Respond ONLY with JSON, nothing else:
 
     if (fromTs > toTs) { json(res, { error: 'invalid_value', field: 'from', hint: 'from must be <= to' }, 400); return true }
 
-    const db2 = getDb()
-
     // Tenant isolation (#809/#810): admins may narrow with ?tenant=, everyone
     // else is pinned to effectiveTenantId -- same rule as the rest of this file.
     // Edges/degree/tier-change rows below are all derived from nodeRows ids, so
     // scoping this one query scopes the whole timeline payload.
     const timelineTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
-    const timelineTenantClause = timelineTenantId ? ' AND tenant_id = ?' : ''
-    const timelineTenantParams = timelineTenantId ? [timelineTenantId] : []
 
     // Nodes created within the requested window (agent-filtered if provided)
-    const nodeRows: Memory[] = agentParam
-      ? db2.prepare(
-          `SELECT id, content, agent_id, category, created_at, accessed_at
-           FROM memories
-           WHERE agent_id = ? AND created_at >= ? AND created_at <= ?${timelineTenantClause}
-           ORDER BY created_at ASC`
-        ).all(agentParam, fromTs, toTs, ...timelineTenantParams) as Memory[]
-      : db2.prepare(
-          `SELECT id, content, agent_id, category, created_at, accessed_at
-           FROM memories
-           WHERE created_at >= ? AND created_at <= ?${timelineTenantClause}
-           ORDER BY created_at ASC`
-        ).all(fromTs, toTs, ...timelineTenantParams) as Memory[]
+    const nodeRows = listMemoryGraphNodesInWindow(fromTs, toTs, agentParam || undefined, timelineTenantId)
 
     const nodeIdSet    = new Set(nodeRows.map(r => r.id))
-    const placeholders = nodeRows.map(() => '?').join(',')
+    const nodeIds      = nodeRows.map(r => r.id)
 
     // Edges where both endpoints are in the node set AND weight >= weight_min.
     // created_at filter not applied on edges: an edge may be created outside the
     // window if both nodes happen to fall inside it.
-    type LinkRow = { src_id: number; dst_id: number; weight: number; created_at: number }
-    const edgeRows: LinkRow[] = nodeRows.length > 0
-      ? (db2.prepare(
-          `SELECT src_id, dst_id, weight, created_at FROM memory_links
-           WHERE src_id IN (${placeholders}) AND dst_id IN (${placeholders})
-             AND weight >= ?`
-        ).all(...nodeRows.map(r => r.id), ...nodeRows.map(r => r.id), weightMin) as LinkRow[])
-          .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
-      : []
+    const edgeRows = listMemoryLinksAmong(nodeIds, weightMin)
+      .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
 
     // Degree map (same weight threshold)
-    type DegreeRow = { src_id: number; degree: number }
     const degreeMap = new Map<number, number>()
-    if (nodeRows.length > 0) {
-      const degRows = db2.prepare(
-        `SELECT src_id, COUNT(*) AS degree FROM memory_links
-         WHERE src_id IN (${placeholders}) AND weight >= ?
-         GROUP BY src_id`
-      ).all(...nodeRows.map(r => r.id), weightMin) as DegreeRow[]
-      for (const d of degRows) degreeMap.set(d.src_id, d.degree)
-    }
+    for (const d of listMemoryLinkDegrees(nodeIds, weightMin)) degreeMap.set(d.src_id, d.degree)
 
     const nodes = nodeRows.map(r => ({
       id:          r.id,
@@ -570,16 +519,7 @@ Respond ONLY with JSON, nothing else:
     // Tier-change events: memory_versions entries with change_type='category_change'
     // whose changed_at falls in the window and whose memory_id is in the node set.
     // from_tier is derived by inverting to_tier (maintenance only does warm<->cold).
-    type TierChangeRow = { memory_id: number; changed_at: number; category: string }
-    const tierChangedRows: TierChangeRow[] = nodeRows.length > 0
-      ? (db2.prepare(
-          `SELECT mv.memory_id, mv.changed_at, mv.category
-           FROM memory_versions mv
-           WHERE mv.change_type = 'category_change'
-             AND mv.changed_at >= ? AND mv.changed_at <= ?
-             AND mv.memory_id IN (${placeholders})`
-        ).all(fromTs, toTs, ...nodeRows.map(r => r.id)) as TierChangeRow[])
-      : []
+    const tierChangedRows = listCategoryChangesInWindow(nodeIds, fromTs, toTs)
 
     // Event list: 'created' per node + 'linked' per edge + 'tier_changed' per version entry.
     // Sorted by ts ascending for the frontend scrubber.
@@ -622,48 +562,23 @@ Respond ONLY with JSON, nothing else:
     const agentParam = url.searchParams.get('agent') || ''
     const weightMin = Math.max(0, Math.min(1, parseFloat(url.searchParams.get('weight_min') || '0.75')))
     const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') || '200', 10)))
-    const db2 = getDb()
 
     // Tenant isolation (#809/#810): admins may narrow with ?tenant=, everyone
     // else is pinned to effectiveTenantId -- same rule as the rest of this file.
     // Edges below are derived from nodeRows ids, so scoping this query scopes
     // the whole graph payload.
     const graphTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
-    const graphTenantClause = graphTenantId ? ' AND tenant_id = ?' : ''
-    const graphTenantParams = graphTenantId ? [graphTenantId] : []
 
-    const nodeRows = agentParam
-      ? db2.prepare(
-          `SELECT id, content, agent_id, category, created_at, accessed_at
-           FROM memories WHERE agent_id = ?${graphTenantClause} ORDER BY accessed_at DESC LIMIT ?`
-        ).all(agentParam, ...graphTenantParams, limit) as Memory[]
-      : db2.prepare(
-          `SELECT id, content, agent_id, category, created_at, accessed_at
-           FROM memories${graphTenantId ? ' WHERE tenant_id = ?' : ''} ORDER BY accessed_at DESC LIMIT ?`
-        ).all(...graphTenantParams, limit) as Memory[]
+    const nodeRows = listMemoryGraphNodes(limit, agentParam || undefined, graphTenantId)
 
     const nodeIdSet = new Set(nodeRows.map(r => r.id))
-    const placeholders = nodeRows.map(() => '?').join(',')
+    const nodeIds = nodeRows.map(r => r.id)
 
-    type LinkRow = { src_id: number; dst_id: number; weight: number; created_at: number }
-    const edgeRows: LinkRow[] = nodeRows.length > 0
-      ? (db2.prepare(
-          `SELECT src_id, dst_id, weight, created_at FROM memory_links
-           WHERE src_id IN (${placeholders}) AND dst_id IN (${placeholders}) AND weight >= ?`
-        ).all(...nodeRows.map(r => r.id), ...nodeRows.map(r => r.id), weightMin) as LinkRow[])
-          .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
-      : []
+    const edgeRows = listMemoryLinksAmong(nodeIds, weightMin)
+      .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
 
-    type DegreeRow = { src_id: number; degree: number }
     const degreeMap = new Map<number, number>()
-    if (nodeRows.length > 0) {
-      const degRows = db2.prepare(
-        `SELECT src_id, COUNT(*) AS degree FROM memory_links
-         WHERE src_id IN (${placeholders}) AND weight >= ?
-         GROUP BY src_id`
-      ).all(...nodeRows.map(r => r.id), weightMin) as DegreeRow[]
-      for (const d of degRows) degreeMap.set(d.src_id, d.degree)
-    }
+    for (const d of listMemoryLinkDegrees(nodeIds, weightMin)) degreeMap.set(d.src_id, d.degree)
 
     const orphanCount = nodeRows.filter(r => !edgeRows.some(e => e.src_id === r.id || e.dst_id === r.id)).length
 
@@ -710,46 +625,13 @@ Respond ONLY with JSON, nothing else:
   const memDetailMatch = path.match(/^\/api\/memories\/(\d+)\/detail$/)
   if (memDetailMatch && method === 'GET') {
     const id = parseInt(memDetailMatch[1], 10)
-    const db2 = getDb()
 
-    type DetailRow = { id: number; content: string; category: string; agent_id: string; keywords: string | null; created_at: number; accessed_at: number }
-    const mem = db2.prepare(
-      'SELECT id, content, category, agent_id, keywords, created_at, accessed_at FROM memories WHERE id = ?'
-    ).get(id) as DetailRow | undefined
+    const mem = getMemoryDetailRow(id)
     if (!mem) { json(res, { error: 'not_found' }, 404); return true }
 
-    type CountRow = { cnt: number }
-    const { cnt: read_count } = db2.prepare(
-      'SELECT COUNT(*) AS cnt FROM span_reads WHERE memory_id = ?'
-    ).get(id) as CountRow
-
-    type NeighborRow = { id: number; content: string; category: string; agent_id: string | null; weight: number; direction: string }
-    // SQLite forbids ORDER BY/LIMIT inside individual UNION ALL arms -- wrap each arm in a subquery
-    const neighbors = db2.prepare(`
-      SELECT * FROM (
-        SELECT m.id, m.content, m.category, m.agent_id, ml.weight, 'outgoing' AS direction
-        FROM memory_links ml
-        JOIN memories m ON m.id = ml.dst_id
-        WHERE ml.src_id = ? AND ml.weight >= 0.75
-        ORDER BY ml.weight DESC LIMIT 5
-      )
-      UNION ALL
-      SELECT * FROM (
-        SELECT m.id, m.content, m.category, m.agent_id, ml.weight, 'incoming' AS direction
-        FROM memory_links ml
-        JOIN memories m ON m.id = ml.src_id
-        WHERE ml.dst_id = ? AND ml.weight >= 0.75
-        ORDER BY ml.weight DESC LIMIT 5
-      )
-    `).all(id, id) as NeighborRow[]
-
-    type VersionRow = { category: string; changed_at: number; changed_by: string }
-    const versionRows = db2.prepare(
-      `SELECT category, changed_at, changed_by
-       FROM memory_versions
-       WHERE memory_id = ? AND change_type = 'category_change'
-       ORDER BY changed_at ASC`
-    ).all(id) as VersionRow[]
+    const read_count = countMemoryReads(id)
+    const neighbors = listMemoryNeighbors(id)
+    const versionRows = listMemoryCategoryHistory(id)
 
     const tier_history = versionRows.map((row, i) => {
       const to_tier = row.category
@@ -758,16 +640,7 @@ Respond ONLY with JSON, nothing else:
     })
 
     // For shadow rows (agent_id='import'), look up the originating file and source.
-    type ImportMetaRow = { file_name: string; file_path: string; source_label: string | null }
-    const import_meta: ImportMetaRow | null = mem.agent_id === 'import'
-      ? (db2.prepare(`
-          SELECT im.file_name, im.file_path,
-                 COALESCE(is_.label, is_.path) AS source_label
-          FROM import_memories im
-          LEFT JOIN import_sources is_ ON is_.id = im.source_id
-          WHERE im.memory_shadow_id = ?
-        `).get(id) as ImportMetaRow | null)
-      : null
+    const import_meta = mem.agent_id === 'import' ? getImportMetaForShadow(id) : null
 
     json(res, {
       id: mem.id,
@@ -797,8 +670,7 @@ Respond ONLY with JSON, nothing else:
   if (memIdMatch && method === 'GET') {
     const id = parseInt(memIdMatch[1], 10)
     const includeVersions = url.searchParams.get('include') === 'versions'
-    const db2 = getDb()
-    const mem = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
+    const mem = getMemoryById(id)
     if (!mem) { json(res, { error: 'not_found' }, 404); return true }
     const { embedding: _emb, embedding_blob: _blob, ...rest } = mem
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
@@ -813,7 +685,7 @@ Respond ONLY with JSON, nothing else:
     const id = parseInt(memIdMatch[1], 10)
     // Non-admin callers may only update memories belonging to their own tenant.
     if (!isAdmin) {
-      const tenantRow = getDb().prepare('SELECT tenant_id FROM memories WHERE id = ?').get(id) as { tenant_id: string } | undefined
+      const tenantRow = getMemoryOwnerRow(id)
       if (!tenantRow || tenantRow.tenant_id !== effectiveTenantId) {
         json(res, { error: 'not_found' }, 404)
         return true
@@ -839,14 +711,13 @@ Respond ONLY with JSON, nothing else:
 
   if (memIdMatch && method === 'DELETE') {
     const id = parseInt(memIdMatch[1], 10)
-    const db2 = getDb()
-    const row = db2.prepare('SELECT agent_id, tenant_id FROM memories WHERE id = ?').get(id) as { agent_id: string | null; tenant_id: string } | undefined
+    const row = getMemoryOwnerRow(id)
     // Non-admin callers may only delete memories belonging to their own tenant.
     if (!isAdmin && row && row.tenant_id !== effectiveTenantId) {
       json(res, { error: 'not_found' }, 404)
       return true
     }
-    const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
+    const changes = deleteMemoryRow(id)
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.
     if (changes > 0) {

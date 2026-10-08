@@ -42,8 +42,6 @@ const NEIGHBOR_IN = {
 const VERSION_WARM_TO_COLD = { category: 'cold', changed_at: 1500, changed_by: 'system:maintenance' }
 const VERSION_COLD_TO_WARM = { category: 'warm', changed_at: 1800, changed_by: 'system:maintenance' }
 
-const mockDb = { prepare: vi.fn() }
-
 vi.mock('../db.js', () => ({
   saveAgentMemory: vi.fn(),
   getAgentMemories: vi.fn().mockReturnValue([]),
@@ -55,7 +53,11 @@ vi.mock('../db.js', () => ({
   clearMemoryCache: vi.fn(),
   searchMemories: vi.fn().mockReturnValue([]),
   getMemoriesForChat: vi.fn().mockReturnValue([]),
-  getDb: vi.fn(() => mockDb),
+  getMemoryDetailRow: vi.fn(),
+  countMemoryReads: vi.fn().mockReturnValue(0),
+  listMemoryNeighbors: vi.fn().mockReturnValue([]),
+  listMemoryCategoryHistory: vi.fn().mockReturnValue([]),
+  getImportMetaForShadow: vi.fn().mockReturnValue(null),
   touchMemoriesAccessed: vi.fn(),
   recordMemoryRead: vi.fn(),
   recordMemoryReadBatch: vi.fn(),
@@ -77,6 +79,9 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: () => '0',
 }))
 
+import {
+  getMemoryDetailRow, countMemoryReads, listMemoryNeighbors, listMemoryCategoryHistory, getImportMetaForShadow,
+} from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
 
 function makeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -96,14 +101,12 @@ function makeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { stat
   return { ctx, out }
 }
 
-// Helper: mock the 4 sequential .prepare() calls for /detail
-// 1: base memory (.get), 2: read_count (.get), 3: neighbors (.all), 4: versions (.all)
+// Helper: stage what the five db helpers behind /detail return.
 function mockDetail(mem: any, readCount: number, neighbors: any[], versions: any[]) {
-  mockDb.prepare = vi.fn()
-    .mockReturnValueOnce({ get: vi.fn().mockReturnValue(mem) })
-    .mockReturnValueOnce({ get: vi.fn().mockReturnValue({ cnt: readCount }) })
-    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(neighbors) })
-    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(versions) })
+  vi.mocked(getMemoryDetailRow).mockReturnValue(mem)
+  vi.mocked(countMemoryReads).mockReturnValue(readCount)
+  vi.mocked(listMemoryNeighbors).mockReturnValue(neighbors)
+  vi.mocked(listMemoryCategoryHistory).mockReturnValue(versions)
 }
 
 describe('GET /api/memories/:id/detail', () => {
@@ -127,9 +130,20 @@ describe('GET /api/memories/:id/detail', () => {
     expect(Array.isArray(out.body.tier_history)).toBe(true)
   })
 
+  it('import shadow rows omit content and carry import_meta', async () => {
+    const shadow = { ...MEM_A, id: 7, agent_id: 'import' }
+    const meta = { file_name: 'a.html', file_path: '/docs/a.html', source_label: 'docs' }
+    mockDetail(shadow, 0, [], [])
+    vi.mocked(getImportMetaForShadow).mockReturnValueOnce(meta)
+    const { ctx, out } = makeCtx('/api/memories/7/detail')
+    await tryHandleMemories(ctx)
+    expect(getImportMetaForShadow).toHaveBeenCalledWith(7)
+    expect(out.body.content).toBeNull()
+    expect(out.body.import_meta).toEqual(meta)
+  })
+
   it('returns 404 for non-existent memory', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ get: vi.fn().mockReturnValue(undefined) })
+    vi.mocked(getMemoryDetailRow).mockReturnValue(undefined)
     const { ctx, out } = makeCtx('/api/memories/999/detail')
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)

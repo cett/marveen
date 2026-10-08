@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import type http from 'node:http'
-import { initDatabase, createDashboardUser } from '../db.js'
+import { initDatabase, createDashboardUser, adminPatchDashboardUser, insertApiToken, revokeApiToken } from '../db.js'
+import { createHash } from 'node:crypto'
 import { resolveAuth, requiresAuth, parseCookies, SESSION_COOKIE_NAME, resolveAgentIdHeader } from '../web/auth-gate.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 
@@ -69,23 +70,23 @@ describe('requiresAuth (gated-path predicate)', () => {
 describe('bearer lane (byte-identical, users absent AND present)', () => {
   it('accepts a valid bearer with ZERO users configured', () => {
     // fresh in-memory DB: no dashboard_users rows
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
 
   it('accepts the SAME valid bearer once a user EXISTS (no behavior drift)', () => {
     createDashboardUser('operator', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
 
   it('rejects a wrong bearer with no cookie -> none (401 upstream)', () => {
-    const r = resolveAuth(mkReq({ authorization: 'Bearer wrong' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: 'Bearer wrong' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 
   it('rejects a missing Authorization header -> none', () => {
-    const r = resolveAuth(mkReq(), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq(), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 })
@@ -93,21 +94,21 @@ describe('bearer lane (byte-identical, users absent AND present)', () => {
 describe('SSE pane-stream ?token= lane', () => {
   const path = '/api/agents/zara/pane/stream'
   it('accepts the token via query on the SSE path', () => {
-    const r = resolveAuth(mkReq(), mkUrl(path, `?token=${TOKEN}`), path, 'GET', TOKEN)
+    const r = resolveAuth(mkReq(), mkUrl(path, `?token=${TOKEN}`), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
   it('rejects a wrong token via query', () => {
-    const r = resolveAuth(mkReq(), mkUrl(path, '?token=nope'), path, 'GET', TOKEN)
+    const r = resolveAuth(mkReq(), mkUrl(path, '?token=nope'), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
   it('does NOT honor ?token= on a non-SSE path', () => {
-    const r = resolveAuth(mkReq(), mkUrl('/api/memories', `?token=${TOKEN}`), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq(), mkUrl('/api/memories', `?token=${TOKEN}`), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
   it('accepts a session cookie on the SSE path (cookie-only EventSource)', () => {
     const u = createDashboardUser('sse-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl(path), path, 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl(path), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'session', user: 'sse-user' })
   })
 })
@@ -116,7 +117,7 @@ describe('session cookie lane', () => {
   it('resolves a valid session cookie to its user', () => {
     const u = createDashboardUser('alice', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'session', user: 'alice' })
   })
 
@@ -133,12 +134,13 @@ describe('session cookie lane', () => {
       '/api/memories',
       'GET',
       TOKEN,
+      false,
     )
     expect(r).toEqual({ kind: 'session', user: 'bob' })
   })
 
   it('rejects an unknown/garbage cookie value -> none', () => {
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=deadbeef` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=deadbeef` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 })
@@ -153,6 +155,7 @@ describe('session-priority regression: bearer-only fleet calls unchanged', () =>
       '/api/memories',
       'GET',
       TOKEN,
+      false,
     )
     expect(r).toEqual({ kind: 'token' })
   })
@@ -164,7 +167,7 @@ describe('session-priority regression: bearer-only fleet calls unchanged', () =>
       '/api/kanban',
       'GET',
       TOKEN,
-      undefined, // no DB
+      false, // no DB
     )
     expect(r).toEqual({ kind: 'token' })
   })
@@ -176,6 +179,7 @@ describe('session-priority regression: bearer-only fleet calls unchanged', () =>
       '/api/memories',
       'GET',
       TOKEN,
+      false,
     )
     expect(r).toEqual({ kind: 'token' })
   })
@@ -185,7 +189,7 @@ describe('SSE pane-stream ?token= and device-key unaffected by session-priority'
   const ssePath = '/api/agents/zara/pane/stream'
 
   it('SSE ?token= without session cookie still resolves to token', () => {
-    const r = resolveAuth(mkReq(), mkUrl(ssePath, `?token=${TOKEN}`), ssePath, 'GET', TOKEN)
+    const r = resolveAuth(mkReq(), mkUrl(ssePath, `?token=${TOKEN}`), ssePath, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
 
@@ -198,6 +202,7 @@ describe('SSE pane-stream ?token= and device-key unaffected by session-priority'
       ssePath,
       'GET',
       TOKEN,
+      false,
     )
     expect(r).toEqual({ kind: 'session', user: 'sse-session-user' })
   })
@@ -208,15 +213,15 @@ describe('federation endpoint scoping is preserved', () => {
   // system_config), so identifyFederationCaller returns null: a fed token
   // can never authenticate.
   it('does not authenticate an arbitrary token on the manifest endpoint', () => {
-    const r = resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/federation/manifest'), '/api/federation/manifest', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/federation/manifest'), '/api/federation/manifest', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
   it('still accepts the dashboard bearer on a federation endpoint', () => {
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/federation/inbox'), '/api/federation/inbox', 'POST', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/federation/inbox'), '/api/federation/inbox', 'POST', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
   it('federation scoping does not leak onto a non-federation path', () => {
-    const r = resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 })
@@ -230,5 +235,45 @@ describe('parseCookies', () => {
   })
   it('keeps the first occurrence of a duplicated name', () => {
     expect(parseCookies('mv_session=first; mv_session=second')).toEqual({ mv_session: 'first' })
+  })
+})
+
+describe('DB-backed lookups (dbLookups = true)', () => {
+  const sha = (raw: string) => createHash('sha256').update(raw).digest('hex')
+  const NOW = Math.floor(Date.now() / 1000)
+
+  it('a session resolves its role and tenant from dashboard_users', () => {
+    const u = createDashboardUser('lookup-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    adminPatchDashboardUser(u.id, { role: 'agent', tenant_id: null })
+    const cookie = createSession({ userId: u.id, username: u.username })
+    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'session', user: 'lookup-user', role: 'agent', tenantId: null })
+  })
+
+  it('a disabled user keeps the session identity but gets no role', () => {
+    const u = createDashboardUser('disabled-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    adminPatchDashboardUser(u.id, { disabled: true })
+    const cookie = createSession({ userId: u.id, username: u.username })
+    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'session', user: 'disabled-user' })
+  })
+
+  it('a registered API token resolves with its own role and tenant', () => {
+    insertApiToken({ tokenHash: sha('registered-token'), name: 'ci', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
+    const r = resolveAuth(mkReq({ authorization: 'Bearer registered-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'token', role: 'viewer', tenantId: 'tenant-a', tokenName: 'ci' })
+  })
+
+  it('a revoked API token is refused and never falls through to the dashboard token', () => {
+    const row = insertApiToken({ tokenHash: sha(TOKEN), name: 'dashboard-copy', role: 'admin', tenantId: 'default', createdAt: NOW, expiresAt: null })
+    revokeApiToken(row.id, NOW)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    expect(r).toEqual({ kind: 'none' })
+  })
+
+  it('the same registered token is not looked up when DB lookups are off', () => {
+    insertApiToken({ tokenHash: sha('offline-token'), name: 'ci2', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
+    const r = resolveAuth(mkReq({ authorization: 'Bearer offline-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+    expect(r).toEqual({ kind: 'none' })
   })
 })

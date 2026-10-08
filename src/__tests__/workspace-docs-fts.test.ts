@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import { initDatabase, getDb } from '../db.js'
-import { saveWorkspaceDoc, searchWorkspaceDocs } from '../workspace-store.js'
+import { saveWorkspaceDoc, searchWorkspaceDocs } from '../db/workspace.js'
 
 beforeAll(() => {
   initDatabase(':memory:')

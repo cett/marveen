@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   getMemoryVersions: vi.fn().mockReturnValue([]),
   updateMemory: vi.fn().mockReturnValue(true),
   runMemoryMaintenance: vi.fn().mockReturnValue({ warmToCold: 2, coldToWarm: 1, prunedVersions: 5 }),
-  getDb: vi.fn(),
+  getMemoryById: vi.fn(),
 }))
 
 vi.mock('../db.js', () => ({
@@ -29,7 +29,7 @@ vi.mock('../db.js', () => ({
   getStaleMemories: mocks.getStaleMemories,
   getMemoryVersions: mocks.getMemoryVersions,
   runMemoryMaintenance: mocks.runMemoryMaintenance,
-  getDb: mocks.getDb,
+  getMemoryById: mocks.getMemoryById,
 }))
 
 vi.mock('../config.js', () => ({
@@ -183,14 +183,8 @@ describe('GET /api/memories/:id/versions', () => {
 
 describe('GET /api/memories/:id', () => {
   it('returns memory without embedding', async () => {
-    mocks.getDb.mockReturnValue({
-      prepare: vi.fn().mockReturnValue({
-        get: vi.fn().mockReturnValue({
-          id: 5, content: 'hello', category: 'warm', agent_id: 'agent-a', embedding: 'BLOB',
-        }),
-        all: vi.fn().mockReturnValue([]),
-        run: vi.fn().mockReturnValue({ changes: 0 }),
-      }),
+    mocks.getMemoryById.mockReturnValue({
+      id: 5, content: 'hello', category: 'warm', agent_id: 'agent-a', embedding: 'BLOB',
     })
     const { ctx, out } = makeCtx('GET', '/api/memories/5')
     const handled = await tryHandleMemories(ctx)
@@ -201,13 +195,7 @@ describe('GET /api/memories/:id', () => {
   })
 
   it('returns 404 for unknown id', async () => {
-    mocks.getDb.mockReturnValue({
-      prepare: vi.fn().mockReturnValue({
-        get: vi.fn().mockReturnValue(undefined),
-        all: vi.fn().mockReturnValue([]),
-        run: vi.fn().mockReturnValue({ changes: 0 }),
-      }),
-    })
+    mocks.getMemoryById.mockReturnValue(undefined)
     const { ctx, out } = makeCtx('GET', '/api/memories/9999')
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
@@ -215,15 +203,9 @@ describe('GET /api/memories/:id', () => {
   })
 
   it('includes versions when ?include=versions', async () => {
-    mocks.getDb.mockReturnValue({
-      prepare: vi.fn().mockReturnValue({
-        get: vi.fn().mockReturnValue(
-          { id: 10, content: 'mem', category: 'warm', agent_id: 'agent-a', embedding: null }
-        ),
-        all: vi.fn().mockReturnValue([]),
-        run: vi.fn().mockReturnValue({ changes: 0 }),
-      }),
-    })
+    mocks.getMemoryById.mockReturnValue(
+      { id: 10, content: 'mem', category: 'warm', agent_id: 'agent-a', embedding: null }
+    )
     mocks.getMemoryVersions.mockReturnValue([
       { id: 1, memory_id: 10, content: 'old', category: 'warm', changed_at: 999, changed_by: 'agent-a', change_type: 'update' },
     ])

@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
-const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs, mockGetEffectiveSettingValue } = vi.hoisted(() => {
+const { mockSearchMemories, mockHybridSearch, mockUpdatedIds, mockHybridSearchDocs, mockGetEffectiveSettingValue } = vi.hoisted(() => {
   const fakeMemory = (id: number) => ({
     id, agent_id: 'agent-a', content: 'test content', keywords: 'test',
     category: 'warm', created_at: 1750000000, accessed_at: 1750000001,
@@ -25,9 +25,7 @@ const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs, m
   return {
     mockSearchMemories: vi.fn().mockReturnValue([fakeMemory(1)]),
     mockHybridSearch: vi.fn().mockResolvedValue([fakeMemory(1)]),
-    mockGetDb: vi.fn().mockReturnValue({
-      prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]), run: vi.fn() }),
-    }),
+    mockUpdatedIds: vi.fn().mockReturnValue([]),
     mockHybridSearchDocs: vi.fn().mockResolvedValue([
       { id: 'doc1', title: 'Budget plafon terv', agent_id: 'agent-a', tenant_id: 'tenant-a', type: 'plan', task_ref: '670b6218', doc_key: null, created_at: 1750000000, updated_at: 1750000000, snippet: 'The [BudgetEntry] amount' },
     ]),
@@ -38,6 +36,7 @@ const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs, m
 })
 
 vi.mock('../db.js', () => ({
+  hybridSearchDocs: mockHybridSearchDocs,
   saveAgentMemory: vi.fn(),
   getAgentMemories: vi.fn().mockReturnValue([]),
   countAgentMemories: vi.fn().mockReturnValue(0),
@@ -50,7 +49,7 @@ vi.mock('../db.js', () => ({
   searchMemories: mockSearchMemories,
   getMemoriesForChat: vi.fn().mockReturnValue([]),
   countMemoriesForChat: vi.fn().mockReturnValue(0),
-  getDb: mockGetDb,
+  listUpdatedSinceLastReadIds: mockUpdatedIds,
   touchMemoriesAccessed: vi.fn(),
   recordMemoryRead: vi.fn(),
   recordMemoryReadBatch: vi.fn(),
@@ -61,10 +60,6 @@ vi.mock('../db.js', () => ({
   getLinksForMemories: vi.fn().mockReturnValue([]),
   writeAgentAuditLog: vi.fn(),
   syncVecMemoryDelete: vi.fn(),
-}))
-
-vi.mock('../workspace-store.js', () => ({
-  hybridSearchDocs: mockHybridSearchDocs,
 }))
 
 vi.mock('../settings-store.js', () => ({

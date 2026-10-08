@@ -3,7 +3,7 @@ import {
   createArtifact, listArtifacts, countArtifacts, getArtifact, deleteArtifact, getArtifactStats,
   renameArtifact, ARTIFACT_TITLE_MAX_LENGTH,
   ARTIFACT_KINDS, type ArtifactKind,
-} from '../../artifacts-db.js'
+} from '../../db/artifacts.js'
 import { signViewToken, verifyViewToken } from '../view-token.js'
 import { logger } from '../../logger.js'
 import { parsePagination } from '../utils/pagination.js'

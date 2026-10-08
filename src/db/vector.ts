@@ -570,7 +570,7 @@ export function initVecSupport(): void {
   }
 
   // vec_artifacts: ANN index for artifact title+meta embeddings (pointer-only recall).
-  // INSERT/UPDATE are handled async in artifacts-db.ts (fire-and-forget).
+  // INSERT/UPDATE are handled async in db/artifacts.ts (fire-and-forget).
   // DELETE trigger keeps the index clean when an artifact is removed.
   db.exec(`
     DROP TRIGGER IF EXISTS vec_artifacts_ad;
@@ -592,7 +592,7 @@ export function initVecSupport(): void {
   `)
 
   // vec_workspace_docs: ANN index for workspace document embeddings.
-  // App-level sync only (no triggers) -- insert/delete handled in workspace-store.ts.
+  // App-level sync only (no triggers) -- insert/delete handled in db/workspace.ts.
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS vec_workspace_docs USING vec0(
       doc_id      TEXT     PRIMARY KEY,

@@ -31,7 +31,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { saveWorkspaceDoc, getWorkspaceDoc, type WorkspaceDocType } from '../src/workspace-store.js'
+import { saveWorkspaceDoc, getWorkspaceDoc, type WorkspaceDocType } from '../src/db/workspace.js'
 import { initDatabase, getDb } from '../src/db.js'
 import { STORE_DIR } from '../src/config.js'
 

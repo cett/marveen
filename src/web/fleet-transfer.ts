@@ -22,12 +22,16 @@ import { AGENTS_BASE_DIR, listAgentNames, invalidateModelProfileMapCache } from 
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
-import { getDb, backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow, listAgentSettingsByKey, setAgentSetting } from '../db.js'
+import { backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow, listAgentSettingsByKey, setAgentSetting } from '../db.js'
 import { getDesiredAgents, setDesiredAgents } from './agent-desired-state.js'
 import { readModelFallbackFieldsRaw, writeModelFallbackFieldsRaw } from './model-fallback-store.js'
 import type { ModelFallbackConfig } from '../model-fallback.js'
 import { readTerminalInputEnabledRaw, writeTerminalInputEnabled } from './terminal-input-store.js'
 import { listCostBudgets, replaceCostBudgets } from '../db/cost-budgets.js'
+import {
+  exportTableRows, exportMemoryRows, exportDailyLogRows, fleetRowIdExists, fleetRowExists, importFleetRows,
+  listEnabledTenantIds, rebuildMemoriesFts, inFleetImportTransaction,
+} from '../db/fleet-transfer.js'
 import { validateConfig, type BudgetEntry } from '../costops/config.js'
 import { listVaultBindings, replaceVaultBindings, type VaultBinding } from '../db/vault-bindings.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
@@ -763,7 +767,6 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   }
 
   const withSecrets = !!options.vaultPassword
-  const db = getDb()
   const bindingLookup = withSecrets ? new Map() : buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
@@ -772,34 +775,28 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const scheduledTasks = exportScheduledTasks()
 
   // Export ALL memories and daily_logs across every agent_id
-  const memories = db.prepare(
-    `SELECT agent_id, content, sector, salience, created_at, accessed_at,
-            category, auto_generated, keywords
-     FROM memories ORDER BY agent_id ASC, created_at ASC`
-  ).all() as MemoryRow[]
+  const memories = exportMemoryRows<MemoryRow>()
 
-  const dailyLogs = db.prepare(
-    'SELECT agent_id, date, content, created_at FROM daily_logs ORDER BY agent_id ASC, date ASC'
-  ).all() as DailyLogRow[]
+  const dailyLogs = exportDailyLogRows<DailyLogRow>()
 
   const kanban: KanbanExport = {
-    cards: db.prepare('SELECT * FROM kanban_cards').all() as Record<string, unknown>[],
-    comments: db.prepare('SELECT * FROM kanban_comments').all() as Record<string, unknown>[],
-    cardEvents: db.prepare('SELECT * FROM kanban_card_events').all() as Record<string, unknown>[],
-    labels: db.prepare('SELECT * FROM labels').all() as Record<string, unknown>[],
-    cardLabels: db.prepare('SELECT * FROM kanban_card_labels').all() as Record<string, unknown>[],
+    cards: exportTableRows('kanban_cards'),
+    comments: exportTableRows('kanban_comments'),
+    cardEvents: exportTableRows('kanban_card_events'),
+    labels: exportTableRows('labels'),
+    cardLabels: exportTableRows('kanban_card_labels'),
   }
 
   const ideaBox: IdeaBoxExport = {
-    ideas: db.prepare('SELECT * FROM idea_box').all() as Record<string, unknown>[],
-    comments: db.prepare('SELECT * FROM idea_comments').all() as Record<string, unknown>[],
-    statusLog: db.prepare('SELECT * FROM idea_status_log').all() as Record<string, unknown>[],
+    ideas: exportTableRows('idea_box'),
+    comments: exportTableRows('idea_comments'),
+    statusLog: exportTableRows('idea_status_log'),
   }
 
   // DB-based schedules (dashboard-schedule-crud API), distinct from the file-based
   // scheduledTasks[] above. Force-disabled at export time, same as scheduledTasks,
   // so an imported fleet never starts firing a source fleet's cron jobs unreviewed.
-  const schedules = (db.prepare('SELECT * FROM schedules').all() as Record<string, unknown>[])
+  const schedules = exportTableRows('schedules')
     .map(row => ({ ...row, enabled: 0 }))
 
   // Import-pipeline source configs (local/gdrive/sharepoint/confluence). Only the
@@ -811,7 +808,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   // leaving last_run_at set would make the next crawl treat itself as incremental
   // and silently skip everything older than that cutoff -- content the target
   // never actually has, since import_memories didn't come along for the ride.
-  const importSources = (db.prepare('SELECT * FROM import_sources').all() as Record<string, unknown>[])
+  const importSources = exportTableRows('import_sources')
     .map(row => ({ ...row, enabled: 0, last_run_at: null }))
 
   // SSH key-pool metadata (P4). Neither table has a private-key column -- the
@@ -819,8 +816,8 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   // vault_key_id, and is included ONLY when the vault section below is (i.e.
   // only in an encrypted, password-protected export). This metadata alone is
   // safe in plaintext: public key, fingerprint, host/port/username, no secret.
-  const vaultSshKeys = db.prepare('SELECT * FROM vault_ssh_keys').all() as Record<string, unknown>[]
-  const vaultSshServers = db.prepare('SELECT * FROM vault_ssh_servers').all() as Record<string, unknown>[]
+  const vaultSshKeys = exportTableRows('vault_ssh_keys')
+  const vaultSshServers = exportTableRows('vault_ssh_servers')
 
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
   const vault = withSecrets ? exportVault() : undefined
@@ -950,14 +947,11 @@ function importedScheduleTenant(localTenants: ReadonlySet<string>, raw: unknown)
   return typeof raw === 'string' && localTenants.has(raw) ? raw : 'default'
 }
 
-function enabledLocalTenantIds(db: ReturnType<typeof getDb>): Set<string> {
-  const ids = new Set<string>(['default'])
-  for (const r of db.prepare('SELECT id FROM tenants WHERE disabled_at IS NULL').all() as { id: string }[]) ids.add(r.id)
-  return ids
+function enabledLocalTenantIds(): Set<string> {
+  return new Set<string>(['default', ...listEnabledTenantIds()])
 }
 
 function buildDiffReport(fleet: FleetJson): DiffReport {
-  const db = getDb()
   const warnings: string[] = []
 
   const existingAgents = new Set(listAgentNames())
@@ -965,39 +959,38 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newMemories = 0
   for (const mem of fleet.memories ?? []) {
-    if (!db.prepare('SELECT 1 FROM memories WHERE agent_id = ? AND content = ?').get(mem.agent_id, mem.content)) {
+    if (!fleetRowExists('memories', mem)) {
       newMemories++
     }
   }
 
   let newCards = 0
   for (const card of fleet.kanban?.cards ?? []) {
-    if (!db.prepare('SELECT 1 FROM kanban_cards WHERE id = ?').get((card as any).id)) newCards++
+    if (!fleetRowIdExists('kanban_cards', (card as any).id)) newCards++
   }
 
   let newLabels = 0
   for (const label of fleet.kanban?.labels ?? []) {
-    if (!db.prepare('SELECT 1 FROM labels WHERE id = ?').get((label as any).id)) newLabels++
+    if (!fleetRowIdExists('labels', (label as any).id)) newLabels++
   }
 
   let newDailyLogs = 0
   for (const log of fleet.dailyLogs ?? []) {
-    if (!db.prepare('SELECT 1 FROM daily_logs WHERE agent_id = ? AND date = ? AND content = ?').get(log.agent_id, log.date, log.content)) {
+    if (!fleetRowExists('daily_logs', log)) {
       newDailyLogs++
     }
   }
 
   let newComments = 0
   for (const c of fleet.kanban?.comments ?? []) {
-    if (!db.prepare('SELECT 1 FROM kanban_comments WHERE card_id = ? AND content = ?')
-      .get((c as any).card_id, (c as any).content)) newComments++
+    if (!fleetRowExists('kanban_comments', c as any)) newComments++
   }
 
   let newSchedules = 0
   let rehomedSchedules = 0
-  const localTenants = enabledLocalTenantIds(db)
+  const localTenants = enabledLocalTenantIds()
   for (const sch of fleet.schedules ?? []) {
-    if (db.prepare('SELECT 1 FROM schedules WHERE id = ?').get((sch as any).id)) continue
+    if (fleetRowIdExists('schedules', (sch as any).id)) continue
     newSchedules++
     const exported = (sch as any).tenant_id
     if (exported != null && importedScheduleTenant(localTenants, exported) !== exported) rehomedSchedules++
@@ -1011,7 +1004,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newImportSources = 0
   for (const src of fleet.importSources ?? []) {
-    if (!db.prepare('SELECT 1 FROM import_sources WHERE id = ?').get((src as any).id)) newImportSources++
+    if (!fleetRowIdExists('import_sources', (src as any).id)) newImportSources++
   }
   if (newImportSources > 0) {
     warnings.push(
@@ -1022,11 +1015,11 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newVaultSshKeys = 0
   for (const key of fleet.vaultSshKeys ?? []) {
-    if (!db.prepare('SELECT 1 FROM vault_ssh_keys WHERE id = ?').get((key as any).id)) newVaultSshKeys++
+    if (!fleetRowIdExists('vault_ssh_keys', (key as any).id)) newVaultSshKeys++
   }
   let newVaultSshServers = 0
   for (const srv of fleet.vaultSshServers ?? []) {
-    if (!db.prepare('SELECT 1 FROM vault_ssh_servers WHERE id = ?').get((srv as any).id)) newVaultSshServers++
+    if (!fleetRowIdExists('vault_ssh_servers', (srv as any).id)) newVaultSshServers++
   }
 
   if (!fleet.vault) {
@@ -1333,7 +1326,6 @@ export function importFleet(
   // -------------------------------------------------------------------------
   // Apply phase -- H3: track ALL writes, cleanup on any failure
   // -------------------------------------------------------------------------
-  const db = getDb()
   const tracker: WriteTracker = { files: [], dirs: [] }
   const globalSkillsDir = join(homedir(), '.claude', 'skills')
 
@@ -1512,90 +1504,67 @@ export function importFleet(
     }
 
     // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
-    const importTx = db.transaction(() => {
+    // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
+    // The row-level policy (required fields, enums, forced values) lives here;
+    // the SQL itself is in db/fleet-transfer.ts.
+    const importTx = () => inFleetImportTransaction(() => {
       // labels first (FK dep for kanban_card_labels)
       // M3: skip rows with missing required fields to avoid SQLite constraint errors -> 500
-      for (const label of fleet.kanban?.labels ?? []) {
+      importFleetRows('labels', (fleet.kanban?.labels ?? []).filter((label) => {
         const l = label as any
-        if (!l.id || !l.name || breaksTableRules(l, ['color', 'created_at'])) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); continue }
-        db.prepare('INSERT INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING')
-          .run(l.id, l.name, l.color, l.created_at)
-      }
+        if (!l.id || !l.name || breaksTableRules(l, ['color', 'created_at'])) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); return false }
+        return true
+      }))
 
-      for (const card of fleet.kanban?.cards ?? []) {
+      importFleetRows('kanban_cards', (fleet.kanban?.cards ?? []).filter((card) => {
         const c = card as any
         if (!c.id || !c.title || !c.status || !c.priority || c.sort_order == null
           || breaksTableRules(c, ['created_at', 'updated_at'], {
             status: ['planned', 'in_progress', 'testing', 'waiting', 'done'],
             priority: ['low', 'normal', 'high', 'urgent'],
           })) {
-          logger.warn({ id: c.id }, 'Fleet import: skipping kanban card with missing required fields'); continue
+          logger.warn({ id: c.id }, 'Fleet import: skipping kanban card with missing required fields'); return false
         }
-        db.prepare(
-          `INSERT INTO kanban_cards
-           (id, title, description, status, assignee, priority, project,
-            due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT DO NOTHING`
-        ).run(c.id, c.title, c.description ?? null, c.status, c.assignee ?? null,
-          c.priority, c.project ?? null, c.due_date ?? null, c.sort_order,
-          c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null)
-      }
+        return true
+      }))
 
       // kanban comments (idempotent: card_id + content)
-      for (const comment of fleet.kanban?.comments ?? []) {
+      importFleetRows('kanban_comments', (fleet.kanban?.comments ?? []).filter((comment) => {
         const c = comment as any
-        if (!c.card_id || !c.content) continue
-        if (!db.prepare('SELECT 1 FROM kanban_comments WHERE card_id = ? AND content = ?').get(c.card_id, c.content)) {
-          db.prepare('INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)')
-            .run(c.card_id, c.author, c.content, c.created_at)
-        }
-      }
+        return !!c.card_id && !!c.content
+      }))
 
       // kanban card events -- idempotent on (card_id, created_at, to_status)
-      for (const ev of fleet.kanban?.cardEvents ?? []) {
+      importFleetRows('kanban_card_events', (fleet.kanban?.cardEvents ?? []).filter((ev) => {
         const e = ev as any
-        if (!e.card_id || !e.to_status) continue
-        if (!db.prepare('SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND to_status = ?')
-          .get(e.card_id, e.created_at, e.to_status)) {
-          db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
-            .run(e.card_id, e.from_status ?? null, e.to_status, e.actor, e.created_at)
-        }
-      }
+        return !!e.card_id && !!e.to_status
+      }))
 
-      for (const cl of fleet.kanban?.cardLabels ?? []) {
+      importFleetRows('kanban_card_labels', (fleet.kanban?.cardLabels ?? []).filter((cl) => {
         const c = cl as any
-        if (!c.card_id || !c.label_id || c.created_at == null) continue
-        db.prepare('INSERT INTO kanban_card_labels (card_id, label_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING')
-          .run(c.card_id, c.label_id, c.created_at)
-      }
+        return !!c.card_id && !!c.label_id && c.created_at != null
+      }))
 
       // schedules -- idempotent on id. Always imported disabled regardless of the
       // exported value (defense in depth -- mirrors the file-based scheduledTasks
       // pause-on-import above): a migrated fleet must never start firing a source
       // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
-      const scheduleTenants = enabledLocalTenantIds(db)
+      const scheduleTenants = enabledLocalTenantIds()
+      const scheduleRows: Record<string, unknown>[] = []
       for (const sch of fleet.schedules ?? []) {
         const s = sch as any
         if (!s.id || !s.schedule || !s.agent || !s.type
           || breaksTableRules(s, [], { type: ['task', 'heartbeat', 'command'] })) {
           logger.warn({ id: s.id }, 'Fleet import: skipping schedule with missing required fields'); continue
         }
-        db.prepare(
-          `INSERT INTO schedules
-           (id, prompt, description, schedule, agent, type, enabled, tenant_id, skip_if_busy,
-            force_send, target_session, command, timeout_ms, fail_threshold, pre_check,
-            catch_up_max_age_minutes, stuck_after_minutes, requires, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT DO NOTHING`
-        ).run(
-          s.id, s.prompt ?? '', s.description ?? '', s.schedule, s.agent, s.type,
-          importedScheduleTenant(scheduleTenants, s.tenant_id), s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
-          s.command ?? null, s.timeout_ms ?? null, s.fail_threshold ?? null, s.pre_check ?? null,
-          s.catch_up_max_age_minutes ?? null, s.stuck_after_minutes ?? null, s.requires ?? null,
-          s.created_at, s.updated_at,
-        )
+        scheduleRows.push({
+          ...s,
+          prompt: s.prompt ?? '', description: s.description ?? '', enabled: 0,
+          tenant_id: importedScheduleTenant(scheduleTenants, s.tenant_id),
+          skip_if_busy: s.skip_if_busy ?? 0, force_send: s.force_send ?? 0,
+        })
       }
+      importFleetRows('schedules', scheduleRows)
 
       // import_sources -- idempotent on id. Always imported disabled with
       // last_run_at cleared, regardless of the exported values (defense in
@@ -1605,121 +1574,70 @@ export function importFleet(
       // actually have. vault_token_ref is carried over as-is (just the vault
       // entry id); re-enabling still requires that entry to exist on this
       // machine (enforced by the route layer, not by this raw insert).
+      const importSourceRows: Record<string, unknown>[] = []
       for (const src of fleet.importSources ?? []) {
         const s = src as any
         if (!s.id || !s.type || !s.path
           || breaksTableRules(s, ['created_at', 'updated_at'], { type: ['local', 'gdrive', 'sharepoint', 'confluence'] })) {
           logger.warn({ id: s.id }, 'Fleet import: skipping import source with missing required fields'); continue
         }
-        db.prepare(
-          `INSERT INTO import_sources
-           (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at,
-            tenant_id, vault_token_ref, confluence_email, base_url)
-           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT DO NOTHING`
-        ).run(
-          s.id, s.type, s.path, s.label ?? null, s.interval_hours ?? 4,
-          s.created_at, s.updated_at, s.tenant_id ?? 'default',
-          s.vault_token_ref ?? null, s.confluence_email ?? null, s.base_url ?? null,
-        )
+        importSourceRows.push({
+          ...s,
+          interval_hours: s.interval_hours ?? 4, enabled: 0, last_run_at: null,
+          tenant_id: s.tenant_id ?? 'default',
+        })
       }
+      importFleetRows('import_sources', importSourceRows)
 
       // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
       // inserted before vault_ssh_servers below since a server's ssh_key_id refers
       // to it (foreign_keys is on for this connection, so the insert order matters:
       // keys before servers).
-      for (const key of fleet.vaultSshKeys ?? []) {
+      importFleetRows('vault_ssh_keys', (fleet.vaultSshKeys ?? []).filter((key) => {
         const k = key as any
         if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type
           || breaksTableRules(k, ['created_at'])) {
-          logger.warn({ id: k.id }, 'Fleet import: skipping SSH key with missing required fields'); continue
+          logger.warn({ id: k.id }, 'Fleet import: skipping SSH key with missing required fields'); return false
         }
-        db.prepare(
-          `INSERT INTO vault_ssh_keys
-           (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT DO NOTHING`
-        ).run(k.id, k.label, k.username, k.vault_key_id, k.public_key, k.fingerprint, k.key_type, k.created_at, k.tenant_id ?? 'default')
-      }
+        return true
+      }).map((key) => ({ ...(key as any), tenant_id: (key as any).tenant_id ?? 'default' })))
 
       // vault_ssh_servers -- idempotent on id.
-      for (const srv of fleet.vaultSshServers ?? []) {
+      importFleetRows('vault_ssh_servers', (fleet.vaultSshServers ?? []).filter((srv) => {
         const s2 = srv as any
         if (!s2.id || !s2.name || !s2.host || !s2.username || breaksTableRules(s2, ['created_at', 'updated_at'])) {
-          logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); continue
+          logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); return false
         }
-        db.prepare(
-          `INSERT INTO vault_ssh_servers
-           (id, name, host, port, username, ssh_key_id, description, tenant_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT DO NOTHING`
-        ).run(
-          s2.id, s2.name, s2.host, s2.port ?? 22, s2.username, s2.ssh_key_id ?? null,
-          s2.description ?? null, s2.tenant_id ?? 'default', s2.created_at, s2.updated_at,
-        )
-      }
+        return true
+      }).map((srv) => ({ ...(srv as any), port: (srv as any).port ?? 22, tenant_id: (srv as any).tenant_id ?? 'default' })))
 
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
-      for (const mem of fleet.memories ?? []) {
-        if (!db.prepare('SELECT 1 FROM memories WHERE agent_id = ? AND content = ?').get(mem.agent_id, mem.content)) {
-          db.prepare(
-            `INSERT INTO memories
-             (chat_id, topic_key, content, sector, salience, created_at, accessed_at,
-              agent_id, category, auto_generated, keywords)
-             VALUES ('', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(mem.content, mem.sector, mem.salience, mem.created_at, mem.accessed_at ?? now,
-            mem.agent_id, mem.category, mem.auto_generated ?? 0, mem.keywords ?? null)
-        }
-      }
+      importFleetRows('memories', (fleet.memories ?? []).map((mem) => ({
+        ...mem, chat_id: '', accessed_at: mem.accessed_at ?? now, auto_generated: mem.auto_generated ?? 0,
+      })))
 
       // daily logs -- idempotent on (agent_id, date, content); multiple rows per date are preserved
-      for (const log of fleet.dailyLogs ?? []) {
-        if (!db.prepare('SELECT 1 FROM daily_logs WHERE agent_id = ? AND date = ? AND content = ?').get(log.agent_id, log.date, log.content)) {
-          db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)')
-            .run(log.agent_id, log.date, log.content, log.created_at)
-        }
-      }
+      importFleetRows('daily_logs', fleet.dailyLogs ?? [])
 
       // idea_box -- idempotent on id
-      for (const idea of fleet.ideaBox?.ideas ?? []) {
+      importFleetRows('idea_box', (fleet.ideaBox?.ideas ?? []).filter((idea) => {
         const i = idea as any
         if (!i.id || breaksTableRules(i, ['title', 'category', 'created_at', 'updated_at'], { status: ['new', 'reviewed', 'kanban', 'rejected'] })) {
-          logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); continue
+          logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); return false
         }
-        db.prepare(
-          `INSERT INTO idea_box
-           (id, title, description, category, status, source, kanban_id, impact, effort, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT DO NOTHING`
-        ).run(i.id, i.title, i.description ?? null, i.category, i.status, i.source ?? '',
-          i.kanban_id ?? null, i.impact ?? null, i.effort ?? null, i.created_at, i.updated_at)
-      }
+        return true
+      }).map((idea) => ({ ...(idea as any), source: (idea as any).source ?? '' })))
 
       // idea_comments -- M5: idempotent on (idea_id, created_at, content)
-      for (const comment of fleet.ideaBox?.comments ?? []) {
-        const c = comment as any
-        if (!db.prepare('SELECT 1 FROM idea_comments WHERE idea_id = ? AND created_at = ? AND content = ?')
-          .get(c.idea_id, c.created_at, c.content)) {
-          db.prepare('INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?)')
-            .run(c.idea_id, c.author, c.content, c.created_at)
-        }
-      }
+      importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [])
 
       // idea_status_log -- M5: idempotent on (idea_id, created_at, to_status)
-      for (const log of fleet.ideaBox?.statusLog ?? []) {
-        const l = log as any
-        if (!db.prepare('SELECT 1 FROM idea_status_log WHERE idea_id = ? AND created_at = ? AND to_status = ?')
-          .get(l.idea_id, l.created_at, l.to_status)) {
-          db.prepare(
-            'INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-          ).run(l.idea_id, l.from_status ?? null, l.to_status, l.actor, l.note ?? null, l.created_at)
-        }
-      }
+      importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [])
 
       // FTS rebuild after all memory inserts
-      db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')").run()
+      rebuildMemoriesFts()
     })
 
     importTx()

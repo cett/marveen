@@ -48,14 +48,6 @@ describe('encrypt/decrypt round-trip', () => {
 // ---------------------------------------------------------------------------
 
 vi.mock('../db.js', () => ({
-  getDb: () => ({
-    prepare: () => ({
-      all: () => [],
-      get: () => null,
-      run: () => ({ changes: 0 }),
-    }),
-    transaction: (fn: Function) => fn,
-  }),
   backfillEmbeddings: () => Promise.resolve(),
   initDatabase: () => {},
   listAllSkills: vi.fn().mockReturnValue([]),
@@ -94,6 +86,19 @@ vi.mock('../db/cost-budgets.js', () => ({
 vi.mock('../db/vault-bindings.js', () => ({
   listVaultBindings: vi.fn().mockReturnValue([]),
   replaceVaultBindings: vi.fn(),
+}))
+
+// The fleet SQL lives in db/fleet-transfer.ts; an empty destination database.
+vi.mock('../db/fleet-transfer.js', () => ({
+  exportTableRows: () => [],
+  exportMemoryRows: () => [],
+  exportDailyLogRows: () => [],
+  fleetRowIdExists: () => false,
+  fleetRowExists: () => false,
+  importFleetRows: () => 0,
+  listEnabledTenantIds: () => [],
+  rebuildMemoriesFts: () => {},
+  inFleetImportTransaction: (fn: () => void) => fn(),
 }))
 
 vi.mock('../web/agent-config.js', () => ({

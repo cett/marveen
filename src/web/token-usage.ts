@@ -3,7 +3,7 @@ import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { getDb, resolveAgentTenant } from '../db.js'
+import { resolveAgentTenant, getTokenUsageCursor, setTokenUsageCursor, recordTokenUsageCalls } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 
@@ -205,27 +205,9 @@ async function parseJsonlFile(
 }
 
 export async function collectTokenUsage(): Promise<{ inserted: number; files: number }> {
-  const db = getDb()
   const sources = discoverAgentSources()
   let totalInserted = 0
   let totalFiles = 0
-
-  const getCursor = db.prepare('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?')
-  const setCursor = db.prepare(
-    `INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
-     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`,
-  )
-  const insertCall = db.prepare(`
-    INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, tenant_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(agent, session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
-      model = CASE WHEN token_usage.model IS NULL AND excluded.model IS NOT NULL THEN excluded.model ELSE token_usage.model END,
-      thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END,
-      cache_creation_tokens = CASE WHEN (token_usage.cache_creation_tokens IS NULL OR token_usage.cache_creation_tokens = 0) AND excluded.cache_creation_tokens > 0 THEN excluded.cache_creation_tokens ELSE token_usage.cache_creation_tokens END,
-      cache_read_tokens = CASE WHEN (token_usage.cache_read_tokens IS NULL OR token_usage.cache_read_tokens = 0) AND excluded.cache_read_tokens > 0 THEN excluded.cache_read_tokens ELSE token_usage.cache_read_tokens END,
-      tenant_id = excluded.tenant_id
-  `)
 
   for (const source of sources) {
     // Resolved once per source (constant for every call parsed from this
@@ -237,7 +219,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
       let fileSize: number
       try { fileSize = statSync(file).size } catch { continue }
 
-      const cursor = getCursor.get(file) as { last_line: number; last_size: number } | undefined
+      const cursor = getTokenUsageCursor(file)
       if (cursor && cursor.last_size === fileSize) continue
 
       const fromLine = (cursor && cursor.last_size <= fileSize) ? cursor.last_line : 0
@@ -246,23 +228,10 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
         const { calls, linesRead } = await parseJsonlFile(file, source.agent, fromLine)
 
         if (calls.length > 0) {
-          const tx = db.transaction(() => {
-            for (const c of calls) {
-              insertCall.run(
-                c.agent, c.sessionId, c.timestamp,
-                c.inputTokens, c.outputTokens,
-                c.cacheReadTokens, c.cacheCreationTokens,
-                c.thinkingTokens, c.model,
-                c.contentPreview || null, c.toolName,
-                tenantId,
-              )
-            }
-            setCursor.run(file, linesRead, fileSize)
-          })
-          tx()
+          recordTokenUsageCalls(calls, tenantId, file, linesRead, fileSize)
           totalInserted += calls.length
         } else {
-          setCursor.run(file, linesRead, fileSize)
+          setTokenUsageCursor(file, linesRead, fileSize)
         }
         totalFiles++
       } catch (err) {
@@ -274,260 +243,19 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   return { inserted: totalInserted, files: totalFiles }
 }
 
-export interface TokenSummaryModelRow {
-  model: string | null
-  totalInput: number
-  totalOutput: number
-  totalCacheRead: number
-  totalCacheCreation: number
-  totalThinking: number
-}
-
-export interface TokenSummary {
-  agent: string
-  totalCalls: number
-  totalInput: number
-  totalOutput: number
-  totalCacheRead: number
-  totalCacheCreation: number
-  totalThinking: number
-  totalSessions: number
-  firstSeen: number
-  lastSeen: number
-  perModel: TokenSummaryModelRow[]
-}
-
-export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
-  const db = getDb()
-  const conditions: string[] = []
-  const params: any[] = []
-  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
-  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
-  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''
-
-  const rows = db.prepare(`
-    SELECT agent,
-      COUNT(*) as totalCalls,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking,
-      COUNT(DISTINCT session_id) as totalSessions,
-      MIN(timestamp) as firstSeen,
-      MAX(timestamp) as lastSeen
-    FROM token_usage
-    ${where}
-    GROUP BY agent ORDER BY totalInput DESC
-  `).all(...params) as Omit<TokenSummary, 'perModel'>[]
-
-  const modelRows = db.prepare(`
-    SELECT agent, model,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking
-    FROM token_usage
-    ${where}
-    GROUP BY agent, model
-  `).all(...params) as (TokenSummaryModelRow & { agent: string })[]
-
-  const byAgent = new Map<string, TokenSummaryModelRow[]>()
-  for (const mr of modelRows) {
-    const { agent, ...rest } = mr as { agent: string } & TokenSummaryModelRow
-    if (!byAgent.has(agent)) byAgent.set(agent, [])
-    byAgent.get(agent)!.push(rest)
-  }
-
-  return rows.map(r => ({ ...r, perModel: byAgent.get(r.agent) ?? [] }))
-}
-
-export interface ModelDistEntry {
-  model: string
-  count: number
-  totalInput: number
-  totalOutput: number
-  totalCacheRead: number
-  totalCacheCreation: number
-  totalThinking: number
-}
-
-export function getModelDistribution(from?: number, to?: number, agent?: string): ModelDistEntry[] {
-  const db = getDb()
-  const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
-  if (!hasModelCol.n) return []
-
-  let sql = `
-    SELECT model,
-      COUNT(*) as count,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking
-    FROM token_usage
-  `
-  const conditions: string[] = [
-    "model IS NOT NULL",
-    "model != ''",
-    "model != '<synthetic>'",
-  ]
-  const params: any[] = []
-  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
-  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
-  if (agent) { conditions.push('agent = ?'); params.push(agent) }
-  sql += ' WHERE ' + conditions.join(' AND ')
-  sql += ' GROUP BY model ORDER BY count DESC'
-
-  return db.prepare(sql).all(...params) as ModelDistEntry[]
-}
-
-export interface ToolStatEntry {
-  tool_name: string
-  model: string | null
-  count: number
-  agents: string
-  totalInput: number
-  totalOutput: number
-  totalCacheRead: number
-  totalCacheCreation: number
-  totalThinking: number
-}
-
-export function getToolStats(from?: number, to?: number, agent?: string): ToolStatEntry[] {
-  const db = getDb()
-  let sql = `
-    SELECT tool_name,
-      model,
-      COUNT(*) as count,
-      GROUP_CONCAT(DISTINCT agent) as agents,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking
-    FROM token_usage
-    WHERE tool_name IS NOT NULL
-  `
-  const conditions: string[] = []
-  const params: any[] = []
-  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
-  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
-  if (agent) { conditions.push('agent = ?'); params.push(agent) }
-  if (conditions.length) sql += ' AND ' + conditions.join(' AND ')
-  sql += ' GROUP BY tool_name, model ORDER BY count DESC'
-
-  return db.prepare(sql).all(...params) as ToolStatEntry[]
-}
-
-export interface TimelineBucket {
-  bucket: number
-  agent: string
-  calls: number
-  inputTokens: number
-  outputTokens: number
-}
-
-export function getTokenTimeline(
-  bucketMinutes: number = 60,
-  from?: number,
-  to?: number,
-  agent?: string,
-): TimelineBucket[] {
-  const db = getDb()
-  const bucketSeconds = bucketMinutes * 60
-  let sql = `
-    SELECT
-      (timestamp / ${bucketSeconds}) * ${bucketSeconds} as bucket,
-      agent,
-      COUNT(*) as calls,
-      SUM(input_tokens + cache_read_tokens + cache_creation_tokens) as inputTokens,
-      SUM(output_tokens) as outputTokens
-    FROM token_usage
-  `
-  const conditions: string[] = []
-  const params: any[] = []
-  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
-  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
-  if (agent) { conditions.push('agent = ?'); params.push(agent) }
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
-  sql += ' GROUP BY bucket, agent ORDER BY bucket ASC'
-
-  return db.prepare(sql).all(...params) as TimelineBucket[]
-}
-
-export interface TokenDetail {
-  id: number
-  agent: string
-  sessionId: string
-  timestamp: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheCreationTokens: number
-  thinkingTokens: number
-  model: string | null
-  contentPreview: string | null
-  toolName: string | null
-  taskTitle: string | null
-  project: string | null
-}
-
-export function getTokenDetails(
-  opts: { agent?: string; from?: number; to?: number; limit?: number; offset?: number; minTokens?: number; q?: string },
-): TokenDetail[] {
-  const db = getDb()
-  let sql = `SELECT * FROM token_usage`
-  const conditions: string[] = []
-  const params: any[] = []
-  if (opts.agent) { conditions.push('agent = ?'); params.push(opts.agent) }
-  if (opts.from) { conditions.push('timestamp >= ?'); params.push(opts.from) }
-  if (opts.to) { conditions.push('timestamp <= ?'); params.push(opts.to) }
-  if (opts.minTokens) {
-    conditions.push('(input_tokens + cache_read_tokens + cache_creation_tokens) >= ?')
-    params.push(opts.minTokens)
-  }
-  if (opts.q) {
-    const like = `%${opts.q}%`
-    conditions.push('(agent LIKE ? OR tool_name LIKE ? OR content_preview LIKE ? OR task_title LIKE ?)')
-    params.push(like, like, like, like)
-  }
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
-  sql += ' ORDER BY timestamp DESC'
-  sql += ' LIMIT ? OFFSET ?'
-  params.push(opts.limit || 100, opts.offset || 0)
-
-  return db.prepare(sql).all(...params) as TokenDetail[]
-}
-
-export function correlateWithKanban(): void {
-  const db = getDb()
-  const uncorrelated = db.prepare(`
-    SELECT DISTINCT agent, MIN(timestamp) as minTs, MAX(timestamp) as maxTs
-    FROM token_usage
-    WHERE task_title IS NULL
-    GROUP BY agent
-  `).all() as { agent: string; minTs: number; maxTs: number }[]
-
-  for (const row of uncorrelated) {
-    const cards = db.prepare(`
-      SELECT id, title, project, assignee, updated_at
-      FROM kanban_cards
-      WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
-        AND updated_at BETWEEN ? AND ?
-      ORDER BY updated_at ASC
-    `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
-
-    for (const card of cards) {
-      const nextCard = cards.find((c: any) => c.updated_at > card.updated_at)
-      const endTs = nextCard ? nextCard.updated_at : row.maxTs
-
-      db.prepare(`
-        UPDATE token_usage
-        SET task_title = ?, project = ?
-        WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
-      `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
-    }
-  }
-}
+export {
+  getTokenSummary,
+  getModelDistribution,
+  getToolStats,
+  getTokenTimeline,
+  getTokenDetails,
+  correlateWithKanban,
+} from '../db.js'
+export type {
+  TokenSummaryModelRow,
+  TokenSummary,
+  ModelDistEntry,
+  ToolStatEntry,
+  TimelineBucket,
+  TokenDetail,
+} from '../db.js'

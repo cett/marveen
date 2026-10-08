@@ -97,6 +97,7 @@ describe('bridgeEnroll', () => {
     const r = resolveAuth(
       { headers: { authorization: `Bearer ${bundle.dashboardToken}` } } as unknown as http.IncomingMessage,
       new URL('http://127.0.0.1:3420/api/agents'), '/api/agents', 'GET', TOKEN,
+      false,
     )
     expect(r).toMatchObject({ kind: 'device', device: 'device-a' })
   })
@@ -119,6 +120,7 @@ describe('bridgeEnroll', () => {
     const gate = (k: string) => resolveAuth(
       { headers: { authorization: `Bearer ${k}` } } as unknown as http.IncomingMessage,
       new URL('http://127.0.0.1:3420/api/agents'), '/api/agents', 'GET', TOKEN,
+      false,
     )
     expect(gate(firstKey)).toEqual({ kind: 'none' })
     expect(gate(secondKey).kind).toBe('device')

@@ -2,7 +2,13 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, currentBotName } from '../../config.js'
-import { getDb, countTaskRunsBetween, listSkillsForTenant, resolveAgentTenant } from '../../db.js'
+import {
+  countTaskRunsBetween, listSkillsForTenant, resolveAgentTenant,
+  countOverviewMemories, countOverviewMemoryCategories, countOverviewArtifacts,
+  listOverviewLastActive, sumOverviewTokensSince, countOverviewPendingApprovals,
+  countOverviewErrorSpansSince, countOverviewPendingMessages, countOverviewStuckScheduledTasks,
+  listOverviewRecentMemories, listOverviewRecentMessages, listOverviewRecentApprovals,
+} from '../../db.js'
 import {
   agentDir, listAgentNames, readAgentDisplayName,
 } from '../agent-config.js'
@@ -68,20 +74,16 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const effectiveTenantId: string | null = isAdmin
       ? (url.searchParams.get('tenant') ?? null)
       : (ctx.tenantId ?? 'default')
-    const tc = effectiveTenantId ? ' AND tenant_id = ?' : ''
-    const tp: string[] = effectiveTenantId ? [effectiveTenantId] : []
 
     const subAgents = listAgentNames()
     const running = subAgents.filter(n => isAgentRunning(n)).length + 1
     const total = subAgents.length + 1
 
-    const db0 = getDb()
-    const memStats = db0.prepare(`SELECT COUNT(*) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
-    const memCats = db0.prepare(`SELECT COUNT(DISTINCT category) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
+    const memCount = countOverviewMemories(effectiveTenantId)
+    const memCatCount = countOverviewMemoryCategories(effectiveTenantId)
     let artifactCount = 0
     try {
-      const aRow = db0.prepare(`SELECT COUNT(*) as c FROM artifacts WHERE 1=1${tc}`).get(...tp) as { c: number }
-      artifactCount = aRow.c
+      artifactCount = countOverviewArtifacts(effectiveTenantId)
     } catch { /* artifacts table absent on fresh installs before migration */ }
 
     const nowMs = Date.now()
@@ -136,49 +138,36 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // Per-agent last-active timestamp from token_usage (ms epoch)
     const lastActiveMap = new Map<string, number>()
     try {
-      const rows = db0.prepare(
-        "SELECT agent, MAX(timestamp) as last_active FROM token_usage GROUP BY agent"
-      ).all() as { agent: string; last_active: number }[]
-      for (const r of rows) lastActiveMap.set(r.agent, r.last_active)
+      for (const r of listOverviewLastActive()) lastActiveMap.set(r.agent, r.last_active)
     } catch { /* ignore */ }
 
     // Daily token count and estimated USD cost from token_usage.
-    // Tenant scoping reuses the tc/tp ("AND tenant_id = ?") pair built above
-    // for the other tenant-scoped tables -- '_multi_' (shared-agent) rows are
+    // Tenant scoping is the same optional "tenant_id = ?" filter the other
+    // tenant-scoped aggregates use -- '_multi_' (shared-agent) rows are
     // intentionally excluded from every real tenant's view (see
     // resolveAgentTenant() in db.ts), only admin's unfiltered view sees them.
     let tokensToday = 0
     try {
       const startSec = Math.floor(startTs / 1000)
-      const tokenRows = db0.prepare(
-        `SELECT input_tokens, output_tokens FROM token_usage WHERE timestamp >= ?${tc}`
-      ).all(startSec, ...tp) as { input_tokens: number; output_tokens: number }[]
-      for (const r of tokenRows) {
-        tokensToday += r.input_tokens + r.output_tokens
-      }
+      tokensToday = sumOverviewTokensSince(startSec, effectiveTenantId)
     } catch { /* ignore */ }
 
     // Pending approvals count
     let pendingApprovals = 0
     try {
-      const pa = db0.prepare(`SELECT COUNT(*) as c FROM approvals WHERE status='pending'${tc}`).get(...tp) as { c: number }
-      pendingApprovals = pa.c
+      pendingApprovals = countOverviewPendingApprovals(effectiveTenantId)
     } catch { /* ignore */ }
 
     // Error/timeout spans in last 4h (start_ms is in milliseconds)
     let errors4h = 0
     try {
-      const errRow = db0.prepare(
-        "SELECT COUNT(*) as c FROM otel_spans WHERE status IN ('error','timeout') AND start_ms >= ?"
-      ).get(fourHoursAgo) as { c: number }
-      errors4h = errRow.c
+      errors4h = countOverviewErrorSpansSince(fourHoursAgo)
     } catch { /* ignore */ }
 
     // Undelivered inter-agent messages (pending = not yet delivered to recipient session)
     let unreadMessages = 0
     try {
-      const umRow = db0.prepare(`SELECT COUNT(*) as c FROM agent_messages WHERE status='pending'${tc}`).get(...tp) as { c: number }
-      unreadMessages = umRow.c
+      unreadMessages = countOverviewPendingMessages(effectiveTenantId)
     } catch { /* ignore */ }
 
     // Stuck scheduled tasks: active tasks whose next_run was more than 10 minutes ago.
@@ -192,20 +181,14 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     let stuckTasks = 0
     try {
       const tenMinAgo = Math.floor((nowMs - 10 * 60 * 1000) / 1000)
-      const stRow = db0.prepare(
-        "SELECT COUNT(*) as c FROM scheduled_tasks WHERE status='active' AND next_run < ?"
-      ).get(tenMinAgo) as { c: number }
-      stuckTasks = stRow.c
+      stuckTasks = countOverviewStuckScheduledTasks(tenMinAgo)
     } catch { /* ignore */ }
 
     // Activity feed: last 4h, include agent_id for frontend filtering
     const activity: Array<{ icon: string; text: string; at: number; agent: string }> = []
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
-      const memRows = db0.prepare(
-        `SELECT content, created_at, agent_id FROM memories WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 20`
-      ).all(fourHAgoSec, ...tp) as { content: string; created_at: number; agent_id: string }[]
-      for (const r of memRows) {
+      for (const r of listOverviewRecentMemories(fourHAgoSec, effectiveTenantId)) {
         activity.push({
           icon: 'memory',
           text: `${r.content.slice(0, 80)}${r.content.length > 80 ? '…' : ''}`,
@@ -216,10 +199,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     } catch { /* ignore */ }
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
-      const msgRows = db0.prepare(
-        `SELECT from_agent, to_agent, content, created_at FROM agent_messages WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 15`
-      ).all(fourHAgoSec, ...tp) as { from_agent: string; to_agent: string; content: string; created_at: number }[]
-      for (const r of msgRows) {
+      for (const r of listOverviewRecentMessages(fourHAgoSec, effectiveTenantId)) {
         activity.push({
           icon: 'delegate',
           text: `→ ${r.to_agent}: ${r.content.slice(0, 60)}${r.content.length > 60 ? '…' : ''}`,
@@ -230,10 +210,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     } catch { /* ignore */ }
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
-      const aprRows = db0.prepare(
-        `SELECT agent_id, action_description, status, created_at FROM approvals WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 10`
-      ).all(fourHAgoSec, ...tp) as { agent_id: string; action_description: string; status: string; created_at: number }[]
-      for (const r of aprRows) {
+      for (const r of listOverviewRecentApprovals(fourHAgoSec, effectiveTenantId)) {
         activity.push({
           icon: 'approval',
           text: `[${r.status}] ${r.action_description.slice(0, 60)}${r.action_description.length > 60 ? '…' : ''}`,
@@ -283,7 +260,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
 
     jsonMaybeGzip(req, res, {
       // Tenant-scoped: visible to all authenticated callers.
-      memories: { count: memStats.c, categories: memCats.c },
+      memories: { count: memCount, categories: memCatCount },
       unreadMessages,
       activity: activity.slice(0, 30),
       // Fleet-level: omitted entirely for non-admin callers.

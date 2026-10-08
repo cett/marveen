@@ -215,7 +215,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
       let items, total
       if (effectiveTenantId !== null) {
-        const scoped = scopeToTenant(getDb(), effectiveTenantId).kanban
+        const scoped = scopeToTenant(effectiveTenantId).kanban
         items = scoped.list(status, limit, offset).map(embedLabels)
         total = scoped.count(status)
       } else {
@@ -228,7 +228,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
     let cards
     if (effectiveTenantId !== null) {
-      cards = scopeToTenant(getDb(), effectiveTenantId).kanban.list().map(embedLabels)
+      cards = scopeToTenant(effectiveTenantId).kanban.list().map(embedLabels)
     } else {
       cards = listKanbanCards().map(embedLabels)
     }
@@ -382,7 +382,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     // Non-admin callers may only update cards belonging to their own tenant.
     if (!isAdmin && effectiveTenantId !== null) {
-      const ownedCard = scopeToTenant(getDb(), effectiveTenantId).kanban.get(id)
+      const ownedCard = scopeToTenant(effectiveTenantId).kanban.get(id)
       if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
     const body = await readBody(req)
@@ -404,7 +404,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     // Non-admin callers may only delete cards belonging to their own tenant.
     if (!isAdmin && effectiveTenantId !== null) {
-      const ownedCard = scopeToTenant(getDb(), effectiveTenantId).kanban.get(id)
+      const ownedCard = scopeToTenant(effectiveTenantId).kanban.get(id)
       if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
     revertIdeaFromKanban(id)

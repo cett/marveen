@@ -21,7 +21,20 @@
 // never mint users, keys, or reset passwords.
 
 import { randomBytes, createHash } from 'node:crypto'
-import { getDb } from '../db.js'
+import {
+  insertDeviceKey,
+  deleteDeviceKeyByHash,
+  getDeviceKeyAuthRowByHash,
+  touchDeviceKeyLastUsed,
+  listDeviceKeyRows,
+  getDeviceKeyRowById,
+  getDeviceKeyRowByInstallId,
+  deleteDeviceKeyById,
+  deleteAllDeviceKeys,
+  deleteExpiredDeviceKeys,
+  setDeviceKeyTenant,
+  type DeviceKeyRow,
+} from '../db.js'
 
 const LAST_USED_DEBOUNCE_SEC = 60
 
@@ -69,13 +82,9 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000)
 }
 
-type DbRow = { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null; install_id: string | null; tenant_id: string | null }
-
-function rowToInfo(r: DbRow): DeviceKeyInfo {
+function rowToInfo(r: DeviceKeyRow): DeviceKeyInfo {
   return { id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at, installId: r.install_id, tenantId: r.tenant_id ?? null }
 }
-
-const INFO_COLUMNS = 'id, name, created_at, last_used_at, expires_at, install_id, tenant_id'
 
 // Mint a new key. The raw value exists only in the returned object; the row
 // stores its hash. expiresInDays is opt-in -- omitted means the key lives until
@@ -86,16 +95,14 @@ export function createDeviceKey(name: string, opts: { expiresInDays?: number; in
   const now = nowSec()
   const expiresAt = opts.expiresInDays ? now + Math.floor(opts.expiresInDays * 24 * 60 * 60) : null
   const installId = opts.installId ?? null
-  const { id } = getDb()
-    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
-    .get(keyHash, name, now, null, expiresAt, installId) as { id: number }
+  const id = insertDeviceKey(keyHash, name, now, expiresAt, installId)
   cache.set(keyHash, { id, name, lastUsedAt: null, expiresAt })
   return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, tenantId: null, key: raw }
 }
 
 function removeByHash(keyHash: string): void {
   cache.delete(keyHash)
-  getDb().prepare('DELETE FROM device_keys WHERE key_hash = ?').run(keyHash)
+  deleteDeviceKeyByHash(keyHash)
 }
 
 // Validate a presented raw key. Returns the device principal or null. Enforces
@@ -106,9 +113,7 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
   const keyHash = sha256hex(raw)
   let entry = cache.get(keyHash)
   if (!entry) {
-    const row = getDb()
-      .prepare('SELECT id, name, last_used_at, expires_at FROM device_keys WHERE key_hash = ?')
-      .get(keyHash) as { id: number; name: string; last_used_at: number | null; expires_at: number | null } | undefined
+    const row = getDeviceKeyAuthRowByHash(keyHash)
     if (!row) return null
     entry = { id: row.id, name: row.name, lastUsedAt: row.last_used_at, expiresAt: row.expires_at }
     cache.set(keyHash, entry)
@@ -120,13 +125,13 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
   }
   if (entry.lastUsedAt === null || now - entry.lastUsedAt >= LAST_USED_DEBOUNCE_SEC) {
     entry.lastUsedAt = now
-    const res = getDb().prepare('UPDATE device_keys SET last_used_at = ? WHERE key_hash = ?').run(now, keyHash)
+    const changes = touchDeviceKeyLastUsed(keyHash, now)
     // The debounced write doubles as an existence check: zero changed rows
     // means the key was revoked OUTSIDE this process (dashboard-user
     // security:reset runs in its own process and cannot reach this cache), so
     // an out-of-band revocation takes effect here within <=60s instead of
     // lingering until the next restart.
-    if (res.changes === 0) {
+    if (changes === 0) {
       cache.delete(keyHash)
       return null
     }
@@ -135,57 +140,53 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
 }
 
 export function listDeviceKeys(): DeviceKeyInfo[] {
-  const rows = getDb()
-    .prepare(`SELECT ${INFO_COLUMNS} FROM device_keys ORDER BY created_at DESC`)
-    .all() as DbRow[]
-  return rows.map(rowToInfo)
+  return listDeviceKeyRows().map(rowToInfo)
 }
 
 export function getDeviceKey(id: number): DeviceKeyInfo | null {
-  const row = getDb().prepare(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE id = ?`).get(id) as DbRow | undefined
+  const row = getDeviceKeyRowById(id)
   return row ? rowToInfo(row) : null
 }
 
 /** Bridge re-pairing: find the key minted by a previous enrollment of the same
  *  device (same marveen-remote:<uuid>), so it can be replaced, not duplicated. */
 export function findDeviceKeyByInstallId(installId: string): DeviceKeyInfo | null {
-  const row = getDb().prepare(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE install_id = ?`).get(installId) as DbRow | undefined
+  const row = getDeviceKeyRowByInstallId(installId)
   return row ? rowToInfo(row) : null
 }
 
 // Revocation is immediate: the row and any cached entry go together, so the
 // very next request with the key falls through the gate.
 export function revokeDeviceKey(id: number): boolean {
-  const res = getDb().prepare('DELETE FROM device_keys WHERE id = ?').run(id)
+  const changes = deleteDeviceKeyById(id)
   for (const [hash, entry] of cache) {
     if (entry.id === id) cache.delete(hash)
   }
-  return res.changes > 0
+  return changes > 0
 }
 
 // Nuclear option for the security:reset break-glass path (#5): every device
 // loses access at once. Returns the number of keys revoked.
 export function revokeAllDeviceKeys(): number {
-  const res = getDb().prepare('DELETE FROM device_keys').run()
+  const changes = deleteAllDeviceKeys()
   cache.clear()
-  return res.changes
+  return changes
 }
 
 // Hourly sweep of keys past their (opt-in) expiry, alongside the session sweep.
 // Keys without expires_at are never touched.
 export function sweepExpiredDeviceKeys(): number {
   const now = nowSec()
-  const res = getDb().prepare('DELETE FROM device_keys WHERE expires_at IS NOT NULL AND expires_at < ?').run(now)
+  const changes = deleteExpiredDeviceKeys(now)
   for (const [hash, entry] of cache) {
     if (entry.expiresAt !== null && entry.expiresAt < now) cache.delete(hash)
   }
-  return res.changes
+  return changes
 }
 
 /** Assign (or clear) the tenant scope of a device key. Returns false if not found. */
 export function assignDeviceKeyTenant(id: number, tenantId: string | null): boolean {
-  const res = getDb().prepare('UPDATE device_keys SET tenant_id = ? WHERE id = ?').run(tenantId, id)
-  return res.changes > 0
+  return setDeviceKeyTenant(id, tenantId) > 0
 }
 
 // Test seam: drop the in-memory cache to simulate a process restart (durable

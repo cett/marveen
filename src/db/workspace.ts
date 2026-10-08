@@ -1,4 +1,4 @@
-// workspace-store.ts — DB helpers for workspace_docs.
+// db/workspace.ts — DB helpers for workspace_docs.
 //
 // App-level vec sync follows the vec_memories pattern (db.ts:2798):
 // NO database triggers. Vec operations are fire-and-forget when the extension
@@ -10,8 +10,9 @@
 //   binary ≤ 16 MB
 
 import { randomBytes } from 'node:crypto'
-import { getDb, generateEmbedding, floatsToBlob } from './db.js'
-import { logger } from './logger.js'
+import { db } from './connection.js'
+import { generateEmbedding, floatsToBlob } from './vector.js'
+import { logger } from '../logger.js'
 
 export const WORKSPACE_DOC_SIZE_LIMITS: Record<string, number> = {
   text:   2 * 1024 * 1024,
@@ -72,7 +73,7 @@ function vecEnabled(): boolean {
   if (_vecSupported !== null) return _vecSupported
   try {
     // Probe: if the virtual table exists, the extension is loaded.
-    getDb().prepare("SELECT 1 FROM vec_workspace_docs LIMIT 1").raw(true).all()
+    db.prepare("SELECT 1 FROM vec_workspace_docs LIMIT 1").raw(true).all()
     _vecSupported = true
   } catch {
     _vecSupported = false
@@ -82,13 +83,12 @@ function vecEnabled(): boolean {
 
 function syncVecDelete(docId: string): void {
   if (!vecEnabled()) return
-  try { getDb().prepare('DELETE FROM vec_workspace_docs WHERE doc_id = ?').run(docId) } catch { /* no-op */ }
+  try { db.prepare('DELETE FROM vec_workspace_docs WHERE doc_id = ?').run(docId) } catch { /* no-op */ }
 }
 
 function syncVecUpsert(docId: string, agentId: string, tenantId: string, embeddingBlob: Buffer): void {
   if (!vecEnabled()) return
   try {
-    const db = getDb()
     db.prepare('DELETE FROM vec_workspace_docs WHERE doc_id = ?').run(docId)
     db.prepare('INSERT OR IGNORE INTO vec_workspace_docs(doc_id, agent_id, tenant_id, embedding) VALUES(?, ?, ?, ?)')
       .run(docId, agentId, tenantId, embeddingBlob)
@@ -111,7 +111,6 @@ export interface SaveWorkspaceDocInput {
 }
 
 export function saveWorkspaceDoc(input: SaveWorkspaceDocInput): WorkspaceDoc {
-  const db = getDb()
   const now = Math.floor(Date.now() / 1000)
   const content = input.content ?? null
   const contentBlob = input.content_blob ?? null
@@ -167,7 +166,7 @@ export function saveWorkspaceDoc(input: SaveWorkspaceDocInput): WorkspaceDoc {
 // Lightweight auth-gate check: returns id/agent_id/tenant_id/content_type/title
 // without touching last_accessed_at.  Use this before any ownership/tenant gate.
 export function peekWorkspaceDoc(id: string): Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'> | null {
-  const row = getDb().prepare(
+  const row = db.prepare(
     'SELECT id, agent_id, tenant_id, content_type, title FROM workspace_docs WHERE id = ?'
   ).get(id) as Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'> | undefined
   return row ?? null
@@ -177,14 +176,13 @@ export function peekWorkspaceDoc(id: string): Pick<WorkspaceDoc, 'id' | 'agent_i
 // (agent_id, doc_key) doc last written", polled on a tight interval -- must
 // NOT touch last_accessed_at (that's a read-access signal, not a write one).
 export function getWorkspaceDocUpdatedAtMs(agentId: string, docKey: string): number | null {
-  const row = getDb().prepare(
+  const row = db.prepare(
     'SELECT updated_at FROM workspace_docs WHERE agent_id = ? AND doc_key = ?'
   ).get(agentId, docKey) as { updated_at: number } | undefined
   return row ? row.updated_at * 1000 : null
 }
 
 export function getWorkspaceDoc(id: string): WorkspaceDoc | null {
-  const db = getDb()
   const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow | undefined
   if (!row) return null
   const now = Math.floor(Date.now() / 1000)
@@ -193,13 +191,13 @@ export function getWorkspaceDoc(id: string): WorkspaceDoc | null {
 }
 
 export function getWorkspaceDocBlob(id: string): Buffer | null {
-  const row = getDb().prepare('SELECT content_blob FROM workspace_docs WHERE id = ?').get(id) as { content_blob: Buffer | null } | undefined
+  const row = db.prepare('SELECT content_blob FROM workspace_docs WHERE id = ?').get(id) as { content_blob: Buffer | null } | undefined
   return row?.content_blob ?? null
 }
 
 // Escape FTS5 special characters to prevent query-syntax errors on user
 // input. Wraps the term in double quotes so it is treated as a phrase, not
-// as FTS5 operators -- mirrors artifacts-db.ts's ftsEscape.
+// as FTS5 operators -- mirrors db/artifacts.ts's ftsEscape.
 function ftsEscape(term: string): string {
   return `"${term.replace(/"/g, '""')}"`
 }
@@ -242,7 +240,7 @@ export function searchWorkspaceDocs(
   const where = conditions.length ? `AND ${conditions.join(' AND ')}` : ''
   params.push(opts.limit)
 
-  return getDb().prepare(`
+  return db.prepare(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
            wd.task_ref, wd.doc_key, wd.created_at, wd.updated_at,
            snippet(workspace_docs_fts, 1, '[', ']', '...', 15) AS snippet
@@ -275,7 +273,7 @@ export async function vectorSearchDocs(
 
   try {
     const queryBlob = floatsToBlob(queryEmbedding)
-    const annRows = getDb().prepare(`
+    const annRows = db.prepare(`
       SELECT doc_id, distance
       FROM vec_workspace_docs
       WHERE embedding MATCH ?
@@ -293,7 +291,7 @@ export async function vectorSearchDocs(
     const where = conditions.length ? `AND ${conditions.join(' AND ')}` : ''
     const placeholders = ids.map(() => '?').join(',')
 
-    const rows = getDb().prepare(`
+    const rows = db.prepare(`
       SELECT id, title, agent_id, tenant_id, type, task_ref, doc_key,
              created_at, updated_at, content
       FROM workspace_docs
@@ -393,13 +391,13 @@ export function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): WorkspaceDoc
     sql += ' LIMIT ?'; params.push(filter.limit)
     if (filter.offset && filter.offset > 0) { sql += ' OFFSET ?'; params.push(filter.offset) }
   }
-  const rows = getDb().prepare(sql).all(...params) as DbRow[]
+  const rows = db.prepare(sql).all(...params) as DbRow[]
   return rows.map(r => filter.metaOnly ? rowToDocMeta(r) : rowToDoc(r))
 }
 
 export function countWorkspaceDocs(filter: ListWorkspaceDocsFilter): number {
   const { where, params } = workspaceDocsWhere(filter)
-  const row = getDb().prepare(`SELECT COUNT(*) AS n FROM workspace_docs ${where}`).get(...params) as { n: number }
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM workspace_docs ${where}`).get(...params) as { n: number }
   return row.n
 }
 
@@ -413,7 +411,6 @@ export interface PatchWorkspaceDocInput {
 }
 
 export function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInput): WorkspaceDoc | null {
-  const db = getDb()
   const existing = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow | undefined
   if (!existing) return null
 
@@ -463,13 +460,13 @@ export async function storeWorkspaceDocEmbedding(
   const embedding = await generateEmbedding(text).catch(() => null)
   if (!embedding) return
 
-  const existing = getDb().prepare(
+  const existing = db.prepare(
     'SELECT content_type FROM workspace_docs WHERE id = ?'
   ).get(id) as { content_type: WorkspaceContentType } | undefined
   if (!existing || existing.content_type === 'binary') return
 
   const blob = floatsToBlob(embedding)
-  getDb().prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, id)
+  db.prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, id)
   syncVecUpsert(id, agentId, tenantId, blob)
 }
 
@@ -480,7 +477,7 @@ export async function storeWorkspaceDocEmbedding(
  * content, and sleeps 100ms between rows so as not to overwhelm Ollama.
  */
 export async function backfillWorkspaceDocs(): Promise<number> {
-  const rows = getDb().prepare(`
+  const rows = db.prepare(`
     SELECT id, agent_id, tenant_id, title, content FROM workspace_docs
     WHERE embedding_blob IS NULL AND content_type != 'binary' AND content IS NOT NULL
   `).all() as { id: string; agent_id: string; tenant_id: string; title: string; content: string }[]
@@ -490,7 +487,7 @@ export async function backfillWorkspaceDocs(): Promise<number> {
     const embedding = await generateEmbedding(`${row.title} ${row.content}`).catch(() => null)
     if (embedding) {
       const blob = floatsToBlob(embedding)
-      getDb().prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
+      db.prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
       syncVecUpsert(row.id, row.agent_id, row.tenant_id, blob)
       count++
     }
@@ -502,7 +499,7 @@ export async function backfillWorkspaceDocs(): Promise<number> {
 
 export function deleteWorkspaceDoc(id: string): boolean {
   syncVecDelete(id)
-  const res = getDb().prepare('DELETE FROM workspace_docs WHERE id = ?').run(id)
+  const res = db.prepare('DELETE FROM workspace_docs WHERE id = ?').run(id)
   return res.changes > 0
 }
 
@@ -514,7 +511,6 @@ export function deleteWorkspaceDoc(id: string): boolean {
 // Returns count of deleted rows.
 
 export function sweepExpiredWorkspaceDocs(ttlDays: number): number {
-  const db = getDb()
   const ttlSeconds = ttlDays * 86400
   const now = Math.floor(Date.now() / 1000)
 

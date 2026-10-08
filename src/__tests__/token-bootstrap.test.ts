@@ -7,28 +7,13 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import Database from 'better-sqlite3'
+import type Database from 'better-sqlite3'
+import { initDatabase, getDb } from '../db.js'
 import { bootstrapDashboardToken } from '../web/token-bootstrap.js'
 
-const API_TOKENS_SCHEMA = `
-  CREATE TABLE api_tokens (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    token_hash    TEXT    NOT NULL UNIQUE,
-    name          TEXT    NOT NULL,
-    role          TEXT    NOT NULL CHECK(role IN ('admin', 'agent', 'read_only', 'viewer')),
-    tenant_id     TEXT    NOT NULL DEFAULT 'default',
-    created_at    INTEGER NOT NULL,
-    expires_at    INTEGER,
-    revoked_at    INTEGER,
-    last_used_at  INTEGER,
-    rotated_from  INTEGER REFERENCES api_tokens(id)
-  )
-`
-
 function openDb(): Database.Database {
-  const db = new Database(':memory:')
-  db.exec(API_TOKENS_SCHEMA)
-  return db
+  initDatabase(':memory:')
+  return getDb()
 }
 
 function sha256(raw: string): string {
@@ -45,7 +30,7 @@ describe('bootstrapDashboardToken', () => {
   })
 
   it('enrolls the token on first boot with correct fields', () => {
-    bootstrapDashboardToken(RAW_TOKEN, db)
+    bootstrapDashboardToken(RAW_TOKEN)
 
     const row = db
       .prepare('SELECT token_hash, name, role, tenant_id, expires_at, revoked_at FROM api_tokens WHERE name = ?')
@@ -69,7 +54,7 @@ describe('bootstrapDashboardToken', () => {
 
   it('sets created_at to a plausible unix timestamp', () => {
     const before = Math.floor(Date.now() / 1000)
-    bootstrapDashboardToken(RAW_TOKEN, db)
+    bootstrapDashboardToken(RAW_TOKEN)
     const after = Math.floor(Date.now() / 1000)
 
     const row = db
@@ -81,8 +66,8 @@ describe('bootstrapDashboardToken', () => {
   })
 
   it('is idempotent: second call is a no-op, row count stays 1', () => {
-    bootstrapDashboardToken(RAW_TOKEN, db)
-    bootstrapDashboardToken(RAW_TOKEN, db)
+    bootstrapDashboardToken(RAW_TOKEN)
+    bootstrapDashboardToken(RAW_TOKEN)
 
     const count = (
       db.prepare('SELECT COUNT(*) AS n FROM api_tokens WHERE name = ?').get('dashboard') as { n: number }
@@ -91,20 +76,20 @@ describe('bootstrapDashboardToken', () => {
   })
 
   it('does not throw when the DB prepare/run throws (error-safe)', () => {
-    const brokenDb = { prepare: () => { throw new Error('DB locked') } } as unknown as Database.Database
-    expect(() => bootstrapDashboardToken(RAW_TOKEN, brokenDb)).not.toThrow()
+    vi.spyOn(db, 'prepare').mockImplementation(() => { throw new Error('DB locked') })
+    expect(() => bootstrapDashboardToken(RAW_TOKEN)).not.toThrow()
   })
 
   it('does not insert a row when it throws', () => {
     // Verify the error path leaves the DB untouched (real DB, force conflict via closed db)
     db.close()
     // After close, all operations throw; the function must silently survive
-    expect(() => bootstrapDashboardToken(RAW_TOKEN, db)).not.toThrow()
+    expect(() => bootstrapDashboardToken(RAW_TOKEN)).not.toThrow()
   })
 
   it('different tokens produce different hashes (no collision risk)', () => {
-    bootstrapDashboardToken('token-one', db)
-    bootstrapDashboardToken('token-two', db)
+    bootstrapDashboardToken('token-one')
+    bootstrapDashboardToken('token-two')
 
     const count = (db.prepare('SELECT COUNT(*) AS n FROM api_tokens').get() as { n: number }).n
     expect(count).toBe(2)

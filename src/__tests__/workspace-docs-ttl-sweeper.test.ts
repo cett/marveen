@@ -8,7 +8,7 @@ const mockGetEffectiveSettingValue = vi.hoisted(() => vi.fn(() => 7))
 const mockLoggerInfo = vi.hoisted(() => vi.fn())
 const mockLoggerError = vi.hoisted(() => vi.fn())
 
-vi.mock('../workspace-store.js', () => ({
+vi.mock('../db/workspace.js', () => ({
   sweepExpiredWorkspaceDocs: mockSweepExpiredWorkspaceDocs,
 }))
 

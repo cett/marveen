@@ -785,3 +785,152 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
 // servers. The private key blob lives in the AES-256-GCM vault (vault.ts);
 // only its id (vault_key_id) is stored here. public_key and fingerprint are
 // safe to surface in the API; the private key never leaves the backend.
+
+// ── RBAC shadow log (rbac_shadow_log) ────────────────────────────────
+// Persistence and query only; the principal/permission resolution, the gate
+// wiring and the prune throttle live in web/rbac-shadow-log.ts.
+
+export type ShadowDecision = 'would-deny' | 'denied' | 'permitted'
+
+export interface ShadowLogRow {
+  id: number
+  ts: number
+  tenant_id: string | null
+  principal_kind: string
+  principal: string
+  role: string
+  method: string
+  route: string
+  permission: string
+  decision: ShadowDecision
+  reason: string
+}
+
+export interface ShadowLogFilter {
+  decision?: ShadowDecision
+  tenantId?: string
+  principal?: string
+  role?: string
+  permission?: string
+  /** Substring match on the route. */
+  route?: string
+  /** unix seconds, inclusive */
+  from?: number
+  /** unix seconds, exclusive */
+  to?: number
+  limit?: number
+  offset?: number
+}
+
+export interface ShadowSummary {
+  from: number | null
+  to: number | null
+  total: number
+  by_decision: Record<ShadowDecision, number>
+  /** Distinct (method, route, permission, role) shapes that would be / were denied, most frequent first. */
+  top_denials: Array<{ method: string; route: string; permission: string; role: string; decision: ShadowDecision; count: number }>
+  /** Callers behind the denials. */
+  denied_principals: Array<{ principal_kind: string; principal: string; role: string; count: number }>
+}
+
+export const SHADOW_MAX_LIMIT = 500
+export const SHADOW_DEFAULT_LIMIT = 100
+
+const SHADOW_TOP_N = 20
+
+export function insertRbacShadowRow(row: {
+  ts: number
+  tenantId: string | null
+  principalKind: string
+  principal: string
+  role: string
+  method: string
+  route: string
+  permission: string
+  decision: ShadowDecision
+  reason: string
+}): void {
+  db.prepare(
+    `INSERT INTO rbac_shadow_log
+       (ts, tenant_id, principal_kind, principal, role, method, route, permission, decision, reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.ts, row.tenantId, row.principalKind, row.principal, row.role, row.method, row.route, row.permission, row.decision, row.reason)
+}
+
+/** Deletes rows older than the cutoff (unix seconds). Returns the number removed. */
+export function deleteRbacShadowRowsBefore(cutoff: number): number {
+  return db.prepare('DELETE FROM rbac_shadow_log WHERE ts < ?').run(cutoff).changes
+}
+
+function buildShadowWhere(f: ShadowLogFilter): { sql: string; params: unknown[] } {
+  const clauses: string[] = []
+  const params: unknown[] = []
+  if (f.decision) { clauses.push('decision = ?'); params.push(f.decision) }
+  if (f.tenantId !== undefined) { clauses.push('tenant_id = ?'); params.push(f.tenantId) }
+  if (f.principal) { clauses.push('principal = ?'); params.push(f.principal) }
+  if (f.role) { clauses.push('role = ?'); params.push(f.role) }
+  if (f.permission) { clauses.push('permission = ?'); params.push(f.permission) }
+  if (f.route) {
+    // instr() is a plain substring test: no LIKE wildcard in the input is special.
+    clauses.push('instr(route, ?) > 0')
+    params.push(f.route)
+  }
+  if (f.from !== undefined) { clauses.push('ts >= ?'); params.push(f.from) }
+  if (f.to !== undefined) { clauses.push('ts < ?'); params.push(f.to) }
+  return { sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params }
+}
+
+export function queryRbacShadowRows(
+  f: ShadowLogFilter,
+): { entries: ShadowLogRow[]; total: number; limit: number; offset: number } {
+  const limit = Math.min(Math.max(f.limit ?? SHADOW_DEFAULT_LIMIT, 1), SHADOW_MAX_LIMIT)
+  const offset = Math.max(f.offset ?? 0, 0)
+  const { sql, params } = buildShadowWhere(f)
+  const total = (db.prepare(`SELECT COUNT(*) AS n FROM rbac_shadow_log ${sql}`).get(...params) as { n: number }).n
+  // Newest first; id breaks ties between rows written in the same second.
+  const entries = db
+    .prepare(`SELECT * FROM rbac_shadow_log ${sql} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as ShadowLogRow[]
+  return { entries, total, limit, offset }
+}
+
+/** Aggregate view used by the daily monitor and the dashboard. */
+export function summarizeRbacShadowRows(f: Pick<ShadowLogFilter, 'from' | 'to' | 'tenantId'> = {}): ShadowSummary {
+  const { sql, params } = buildShadowWhere(f)
+
+  const by_decision: Record<ShadowDecision, number> = { 'would-deny': 0, denied: 0, permitted: 0 }
+  const rows = db
+    .prepare(`SELECT decision, COUNT(*) AS n FROM rbac_shadow_log ${sql} GROUP BY decision`)
+    .all(...params) as Array<{ decision: ShadowDecision; n: number }>
+  for (const r of rows) by_decision[r.decision] = r.n
+  const total = by_decision['would-deny'] + by_decision.denied + by_decision.permitted
+
+  // Denial shapes: would-deny and denied only (permitted rows are not a false-positive signal).
+  const denialWhere = sql ? `${sql} AND decision IN ('would-deny','denied')` : `WHERE decision IN ('would-deny','denied')`
+  const top_denials = db
+    .prepare(
+      `SELECT method, route, permission, role, decision, COUNT(*) AS count
+         FROM rbac_shadow_log ${denialWhere}
+        GROUP BY method, route, permission, role, decision
+        ORDER BY count DESC, route ASC
+        LIMIT ${SHADOW_TOP_N}`,
+    )
+    .all(...params) as ShadowSummary['top_denials']
+  const denied_principals = db
+    .prepare(
+      `SELECT principal_kind, principal, role, COUNT(*) AS count
+         FROM rbac_shadow_log ${denialWhere}
+        GROUP BY principal_kind, principal, role
+        ORDER BY count DESC, principal ASC
+        LIMIT ${SHADOW_TOP_N}`,
+    )
+    .all(...params) as ShadowSummary['denied_principals']
+
+  return { from: f.from ?? null, to: f.to ?? null, total, by_decision, top_denials, denied_principals }
+}
+
+/** Admin-console audit row; `entity` is fixed to 'admin' and the actor is a dashboard user name. */
+export function writeAdminAuditLog(actor: string, action: string, targetId: string | number, detail: Record<string, unknown>): void {
+  db.prepare('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail) VALUES (?, ?, ?, ?, ?)')
+    .run(actor, 'admin', action, String(targetId), JSON.stringify(detail))
+}

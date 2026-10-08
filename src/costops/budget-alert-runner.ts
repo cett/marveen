@@ -13,7 +13,6 @@
 // design question, tracked separately from this change.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type Database from 'better-sqlite3'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { notifyChannel } from '../notify.js'
@@ -66,11 +65,11 @@ function formatMessage(status: BudgetStatus): string {
  * Run one budget-alert check: evaluate all budgets, notify for any at
  * warning/hard level whose cooldown has elapsed, persist updated cooldowns.
  */
-export async function runBudgetAlertCheck(db: Database.Database, nowMs: number = Date.now()): Promise<void> {
+export async function runBudgetAlertCheck(nowMs: number = Date.now()): Promise<void> {
   const { config } = loadCostopsConfig()
   if (config.budgets.length === 0) return
 
-  const statuses = evaluateBudgets(db, config, nowMs)
+  const statuses = evaluateBudgets(config, nowMs)
   const state = loadState()
   let stateChanged = false
 
