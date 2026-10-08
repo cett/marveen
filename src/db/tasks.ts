@@ -344,7 +344,7 @@ export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRo
       updated_at               = excluded.updated_at
   `).run(
     id, opts.prompt, opts.description, opts.schedule, opts.agent,
-    opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? null,
+    opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? 'default',
     opts.skip_if_busy ? 1 : 0, opts.force_send ? 1 : 0,
     opts.target_session ?? null, opts.command ?? null,
     opts.timeout_ms ?? null, opts.fail_threshold ?? null,
@@ -463,7 +463,7 @@ export function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): bool
     ON CONFLICT DO NOTHING
   `).run(
     id, opts.prompt, opts.description, opts.schedule, opts.agent,
-    opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? null,
+    opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? 'default',
     opts.skip_if_busy ? 1 : 0, opts.force_send ? 1 : 0,
     opts.target_session ?? null, opts.command ?? null,
     opts.timeout_ms ?? null, opts.fail_threshold ?? null,

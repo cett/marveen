@@ -70,7 +70,7 @@ function insertSchedule(overrides: Partial<{ id: string; enabled: number; agent:
     overrides.agent ?? 'agent-a',
     overrides.type ?? 'task',
     overrides.enabled ?? 1,
-    overrides.tenant_id ?? null,
+    overrides.tenant_id ?? 'default',
     now, now,
   )
 }

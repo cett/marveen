@@ -143,7 +143,7 @@ export function createApproval(params: {
     params.action_payload ?? null,
     params.timeout_at ?? null,
     now,
-    params.tenant_id ?? null,
+    params.tenant_id ?? 'default',
   )
   return {
     id: params.id,
@@ -157,7 +157,7 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
-    tenant_id: params.tenant_id ?? null,
+    tenant_id: params.tenant_id ?? 'default',
   }
 }
 

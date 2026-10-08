@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  listKanbanCards, countKanbanCards, createKanbanCard, updateKanbanCard,
+  listKanbanCards, countKanbanCards, createKanbanCard, updateKanbanCard, parseKanbanDueDate,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus, getDb,
@@ -360,6 +360,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
+    if ('due_date' in data) {
+      const due = parseKanbanDueDate(data.due_date)
+      if (due === undefined) { json(res, { error: 'invalid_value', field: 'due_date', hint: 'due_date must be an integer epoch in seconds, a YYYY-MM-DD date or null' }, 400); return true }
+      data.due_date = due
+    }
     const id = randomUUID().slice(0, 8)
     try {
       createKanbanCard({ id, ...data, tenant_id: effectiveTenantId ?? 'default' })
@@ -387,6 +392,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
+    if ('due_date' in data) {
+      const due = parseKanbanDueDate(data.due_date)
+      if (due === undefined) { json(res, { error: 'invalid_value', field: 'due_date', hint: 'due_date must be an integer epoch in seconds, a YYYY-MM-DD date or null' }, 400); return true }
+      data.due_date = due
+    }
     if (updateKanbanCard(id, data)) {
       try {
         if (ctx.auth?.kind === 'session' && ctx.auth.user) {

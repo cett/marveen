@@ -107,11 +107,13 @@ export function createKanbanCard(card: {
   priority?: KanbanCard['priority']
   project?: string
   parent_id?: string
-  due_date?: number
+  due_date?: number | string | null
   tenant_id?: string
 }): void {
   const now = Math.floor(Date.now() / 1000)
   const status = card.status ?? 'planned'
+  const dueDate = card.due_date === undefined ? null : parseKanbanDueDate(card.due_date)
+  if (dueDate === undefined) throw new Error('Invalid due_date: an integer epoch in seconds, a YYYY-MM-DD date or null')
 
   // Compute depth from parent; enforce max 2 (3 levels: 0, 1, 2).
   let depth = 0
@@ -133,7 +135,7 @@ export function createKanbanCard(card: {
   ).run(
     card.id, card.title, card.description ?? null, status,
     card.assignee ?? null, card.priority ?? 'normal',
-    card.project ?? null, card.parent_id ?? null, depth, card.due_date ?? null, sortOrder, now, now,
+    card.project ?? null, card.parent_id ?? null, depth, dueDate, sortOrder, now, now,
     card.tenant_id ?? 'default',
   )
   try {
@@ -141,9 +143,34 @@ export function createKanbanCard(card: {
   } catch { /* audit failure must not abort card creation */ }
 }
 
+/**
+ * due_date is an integer epoch in seconds, or null. A calendar date ('2026-07-15') is accepted and
+ * stored as its UTC midnight, the way the other rows hold dates. Anything else is invalid: the
+ * function returns undefined for it, and the routes answer 400 (a text date once reached the column
+ * and a PostgreSQL integer column would reject it). null and '' clear the date.
+ */
+export function parseKanbanDueDate(v: unknown): number | null | undefined {
+  if (v === null || v === '') return null
+  if (typeof v === 'number') return Number.isInteger(v) && v >= 0 ? v : undefined
+  if (typeof v !== 'string') return undefined
+  const s = v.trim()
+  if (/^\d{1,12}$/.test(s)) return Number(s)
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return undefined
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  const d = new Date(ms)
+  if (d.getUTCFullYear() !== Number(m[1]) || d.getUTCMonth() !== Number(m[2]) - 1 || d.getUTCDate() !== Number(m[3])) return undefined
+  return ms / 1000
+}
+
 export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
+  if ('due_date' in fields) {
+    const due = parseKanbanDueDate(fields.due_date)
+    if (due === undefined) throw new Error('Invalid due_date: an integer epoch in seconds, a YYYY-MM-DD date or null')
+    fields = { ...fields, due_date: due }
+  }
   const now = Math.floor(Date.now() / 1000)
 
   // When parent_id changes, recompute depth and validate the constraint.

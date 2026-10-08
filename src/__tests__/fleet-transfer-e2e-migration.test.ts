@@ -55,7 +55,7 @@ function seedSourceFleet() {
 
   db.prepare(
     `INSERT INTO schedules (id, prompt, description, schedule, agent, type, enabled, tenant_id, created_at, updated_at)
-     VALUES ('morning-chain', 'p', 'd', '0 7 * * *', 'agent-a', 'task', 1, NULL, ?, ?)`
+     VALUES ('morning-chain', 'p', 'd', '0 7 * * *', 'agent-a', 'task', 1, 'default', ?, ?)`
   ).run(now, now)
 
   db.prepare(
