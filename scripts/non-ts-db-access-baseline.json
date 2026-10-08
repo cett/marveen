@@ -25,7 +25,6 @@
     "seed-scheduled-tasks/kanban-audit/pre-check.sh": "B",
     "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
     "seed-skills/fleet-helper/scripts/mail_triage.py": "X",
-    "seed-skills/handoff/SKILL.md": "B",
     "templates/CLAUDE.md.template": "B",
     "update.sh": "C"
   },
@@ -227,13 +226,6 @@
       "direct": {
         "python sqlite3": 1,
         "sqlite3.connect": 1
-      }
-    },
-    "seed-skills/handoff/SKILL.md": {
-      "dialect": {},
-      "direct": {
-        "claudeclaw.db": 1,
-        "sqlite3 CLI": 1
       }
     },
     "templates/CLAUDE.md.template": {

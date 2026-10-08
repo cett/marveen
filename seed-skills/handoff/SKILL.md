@@ -35,7 +35,14 @@ Collect data from these sources (skip any that return empty):
 ```bash
 # Active kanban cards (assigned to current agent or recently touched)
 AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
-sqlite3 store/claudeclaw.db "SELECT id, title, status, priority, assignee, description FROM kanban_cards WHERE archived_at IS NULL AND (assignee = '$AGENT_ID' OR status = 'in_progress') ORDER BY priority DESC, updated_at DESC LIMIT 10"
+curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:3420/api/kanban \
+  | AGENT_ID="$AGENT_ID" python3 -c "
+import json, os, sys
+me = os.environ['AGENT_ID']
+cards = [c for c in json.load(sys.stdin) if c.get('assignee') == me or c.get('status') == 'in_progress']
+cards.sort(key=lambda c: (c.get('priority') or '', c.get('updated_at') or 0), reverse=True)
+for c in cards[:10]:
+    print({k: c.get(k) for k in ('id', 'title', 'status', 'priority', 'assignee', 'description')})"
 
 # Hot memories from last 24h
 curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
