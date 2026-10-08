@@ -23,9 +23,9 @@ import os
 import sys
 import time
 import urllib.parse
-import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dashboard_api  # noqa: E402
 from hook_db_path import db_path  # noqa: E402,F401  (re-exported for the fail-closed hooks)
 
 RECENT_LIMIT = 20
@@ -110,47 +110,11 @@ SPOOL_MAX_ENTRIES = 500
 
 
 def _store_dir():
-    # Same directory as the database file: that is where the dashboard token,
-    # the spool and the live-drain marker live (and the single seam tests use).
-    return os.path.dirname(db_path())
-
-
-def _port():
-    port = os.environ.get("WEB_PORT")
-    if not port:
-        try:
-            with open(os.path.join(_install_dir(), ".env")) as f:
-                for line in f:
-                    if line.startswith("WEB_PORT="):
-                        port = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
-        except Exception:
-            pass
-    return port or "3420"
-
-
-def _base_url():
-    # Test override: LEDGER_BASE_URL.
-    return (os.environ.get("LEDGER_BASE_URL") or "http://localhost:%s" % _port()).rstrip("/")
-
-
-def _headers():
-    headers = {"Content-Type": "application/json"}
-    try:
-        with open(os.path.join(_store_dir(), ".dashboard-token")) as f:
-            token = f.read().strip()
-        if token:
-            headers["Authorization"] = "Bearer " + token
-    except Exception:
-        pass
-    return headers
+    return dashboard_api.store_dir()
 
 
 def _request(method, path, body=None, timeout=READ_TIMEOUT):
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(_base_url() + path, data=data, method=method, headers=_headers())
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8") or "null")
+    return dashboard_api.request(method, path, body, timeout=timeout)
 
 
 def _spool_path(agent_id):

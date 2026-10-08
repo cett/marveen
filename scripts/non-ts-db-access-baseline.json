@@ -5,7 +5,6 @@
     "scripts/ensure-native-modules.sh": "C",
     "scripts/hooks/context-watchdog.py": "A",
     "scripts/hooks/hook_db_path.py": "A",
-    "scripts/hooks/skill-sql-sync.py": "B",
     "scripts/hooks/tenant-skill-gate.py": "A",
     "scripts/hooks/tenant_context_lib.py": "A",
     "scripts/migrate-main-agent-id.sh": "C",
@@ -52,16 +51,6 @@
       "dialect": {},
       "direct": {
         "claudeclaw.db": 1
-      }
-    },
-    "scripts/hooks/skill-sql-sync.py": {
-      "dialect": {
-        "PRAGMA": 3
-      },
-      "direct": {
-        "claudeclaw.db": 1,
-        "python sqlite3": 1,
-        "sqlite3.connect": 3
       }
     },
     "scripts/hooks/tenant-skill-gate.py": {

@@ -2,35 +2,40 @@
 """
 PostToolUse hook: sync edited SKILL.md files back to the skills SQL table.
 
-Fires for Edit / Write / MultiEdit calls on paths matching **/skills/**/SKILL.md.
-Derives the SQL skill id (inverse of resolveSkillPath in src/web/skill-regen.ts)
-and UPSERTs the file's current content into the skills table.
+Fires for Edit / Write / MultiEdit calls on paths matching **/skills/**/SKILL.md
+(and on the companion files next to them). The hook does the file-system half:
+it derives the SQL skill id (inverse of resolveSkillPath in
+src/web/skill-regen.ts), parses the generated header, reads the file, and sends
+the result to POST /api/skill-sync, which does the database half (upsert, the
+tenant qualification check, the companion limits).
 
 Design invariants:
   - Never breaks the agent: always exits 0.
-  - Idempotent: content unchanged -> UPDATE changes=0, no-op.
-  - Direct SQLite, not the HTTP API. Skill ids contain '/', which the route only
-    accepts percent-encoded (global%2F<dir>); going straight to the DB avoids
-    depending on the dashboard being up.
+  - Idempotent: unchanged content is a no-op write on the server.
+  - Needs the dashboard. When it cannot be reached the write-back is lost, so the
+    hook says so on stderr AND as additionalContext ("SKILL.md change NOT in DB"),
+    so the agent knows the file and the row now differ.
   - Reads MAIN_AGENT_ID from .env (default: jarvis).
   - BLOCKS 716-D fleet-wide SQL regen (SKILL_SQL_REGEN kill-switch) from
     clobbering hand-edited SQL rows between startup regens.
 """
+import base64
 import json
 import os
 import re
-import sqlite3
 import sys
-import time
 
 # Hooks live in <install>/scripts/hooks/; resolve the install root from THIS
 # file's location (same computation as ledger_lib.py's _install_dir()), so it
 # is correct regardless of the machine or the session's cwd.
 _HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+import dashboard_api  # noqa: E402
+
 MARVEEN_ROOT = os.path.dirname(os.path.dirname(_HERE))
 AGENTS_BASE_DIR = os.path.join(MARVEEN_ROOT, "agents")
 HOME = os.path.expanduser("~")
-DB_PATH = os.path.join(MARVEEN_ROOT, "store", "claudeclaw.db")
+POST_TIMEOUT = 5
 
 HANDLED_TOOLS = {"Edit", "Write", "MultiEdit"}
 
@@ -90,23 +95,10 @@ def _skill_id_from_path(file_path: str) -> "str | None":
 GENERATED_MARKER = "<!-- GENERATED from the skills DB"
 
 
-def strip_generated_header(content: str) -> str:
-    """Mirror of stripGeneratedHeader (src/skill-header.ts): drop the one marker
-    line that regen puts after the frontmatter, so the DB row never stores it."""
-    pos = 0
-    while pos <= len(content):
-        nl = content.find("\n", pos)
-        line_end = len(content) if nl == -1 else nl
-        if content.startswith(GENERATED_MARKER, pos) and content[pos:line_end].rstrip().endswith("-->"):
-            if nl == -1:  # header is the last line: also drop the newline before it
-                if pos > 0 and content[pos - 1] == "\n":
-                    return content[: pos - 1]
-                return content[:pos]
-            return content[:pos] + content[nl + 1:]
-        if nl == -1:
-            break
-        pos = nl + 1
-    return content
+def _post(payload: dict) -> str:
+    """Send one write-back to the dashboard and return the message it logs.
+    Raises when the dashboard cannot be reached or rejects the payload."""
+    return dashboard_api.request("POST", "/api/skill-sync", payload, timeout=POST_TIMEOUT)["message"]
 
 
 def read_generated_header(content: str) -> "tuple[str | None, bool] | None":
@@ -144,47 +136,24 @@ def _agent_and_dir_from_path(file_path: str) -> "tuple[str, str] | None":
     return None
 
 
-def _agent_qualifies(conn, skill_id: str, owner_tenant: str, agent_id: str) -> bool:
-    """True when the agent has an enabled availability row for the skill's owning
-    tenant or for a tenant it is granted to (the recipients regen writes to)."""
-    tenants = {owner_tenant} | {r[0] for r in conn.execute(
-        "SELECT tenant_id FROM skill_tenant_access WHERE skill_id = ?", (skill_id,))}
-    ph = ",".join("?" * len(tenants))
-    return conn.execute(
-        f"SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN ({ph})",
-        (agent_id, *sorted(tenants))).fetchone() is not None
-
-
 def _sync_tenant_skill(file_path: str, content: str, header_id: str) -> str:
-    """A generated tenant skill copy was edited: update THAT tenant row, never
-    create rows or fall back to agent/<id>/<dir>. The header is only a claim an
-    agent could forge, so the edit is applied only when the file sits where regen
-    would put this skill: an agent that qualifies for the row's tenant (owner or
-    granted) and the exact directory name. Returns a log message."""
+    """A generated tenant skill copy was edited: the dashboard updates THAT tenant
+    row, never creates rows or falls back to agent/<id>/<dir>. The header is only a
+    claim an agent could forge, so the edit is sent only when the file sits where
+    regen would put this skill (an agent skills dir, the exact directory name); the
+    server then checks that the agent qualifies for the row's tenant (owner or
+    granted). Returns a log message."""
     where = _agent_and_dir_from_path(file_path)
     if not where:
         return "tenant header outside an agent skills dir, ignored"
     agent_id, dir_name = where
     if dir_name != tenant_dir_name(header_id):
         return f"tenant header id {header_id} does not match directory {dir_name}, ignored"
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    try:
-        conn.execute("PRAGMA busy_timeout=5000")
-        row = conn.execute("SELECT tenant_id FROM skills WHERE id = ?", (header_id,)).fetchone()
-        if not row or row[0] == "fleet":
-            return f"no tenant skill {header_id} in the DB, ignored"
-        if not _agent_qualifies(conn, header_id, row[0], agent_id):
-            return f"agent {agent_id} does not qualify for tenant skill {header_id}, ignored"
-        conn.execute("UPDATE skills SET content = ?, updated_at = ? WHERE id = ?",
-                     (strip_generated_header(content), int(time.time()), header_id))
-        conn.commit()
-        return f"updated tenant skill {header_id}"
-    finally:
-        conn.close()
+    return _post({"kind": "tenant", "header_id": header_id, "agent_id": agent_id,
+                  "dir_name": dir_name, "content": content})
 
 
 MAX_SKILL_FILE_BYTES = 5 * 1024 * 1024
-MAX_SKILL_FILES_PER_SKILL = 200
 _SKIP_SEGMENTS = {"node_modules", "__pycache__", ".git"}
 
 
@@ -196,11 +165,6 @@ def normalize_skill_rel_path(rel: str) -> "str | None":
     if any(p in ("", ".", "..") for p in parts) or rel == "SKILL.md":
         return None
     return rel
-
-
-def sanitize_skill_file_mode(mode: int) -> int:
-    """Mirror of sanitizeSkillFileMode: 0755 when any exec bit is set, else 0644."""
-    return 0o755 if mode & 0o111 else 0o644
 
 
 def _companion_location(file_path: str) -> "tuple[str, str] | None":
@@ -225,11 +189,11 @@ def _companion_location(file_path: str) -> "tuple[str, str] | None":
 
 
 def _sync_companion_file(file_path: str, skill_dir: str, rel: str) -> str:
-    """A companion file (scripts/, references/, ...) of a skill was edited: store
-    it in skill_files of the skill's row. Only for a skill that already has a row
-    (SKILL.md is what creates rows); for a generated TENANT copy the row is the
-    tenant one named in the header, with the same qualification check as the
-    SKILL.md path."""
+    """A companion file (scripts/, references/, ...) of a skill was edited: the
+    dashboard stores it in skill_files of the skill's row. Only for a skill that
+    already has a row (SKILL.md is what creates rows); for a generated TENANT copy
+    the row is the tenant one named in the header, with the same qualification
+    check as the SKILL.md path."""
     rel_n = normalize_skill_rel_path(rel)
     if not rel_n:
         return f"companion path {rel!r} not accepted, ignored"
@@ -262,57 +226,24 @@ def _sync_companion_file(file_path: str, skill_dir: str, rel: str) -> str:
     if not skill_id:
         return "not inside a skill directory, ignored"
 
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    try:
-        conn.execute("PRAGMA busy_timeout=5000")
-        row = conn.execute("SELECT tenant_id FROM skills WHERE id = ?", (skill_id,)).fetchone()
-        if not row:
-            return f"no skill {skill_id} in the DB yet, companion ignored"
-        if tenant_agent is not None:
-            if row[0] == "fleet" or not _agent_qualifies(conn, skill_id, row[0], tenant_agent):
-                return f"agent {tenant_agent} does not qualify for tenant skill {skill_id}, ignored"
-        exists = conn.execute("SELECT 1 FROM skill_files WHERE skill_id = ? AND rel_path = ?", (skill_id, rel_n)).fetchone()
-        if not exists:
-            n = conn.execute("SELECT COUNT(*) FROM skill_files WHERE skill_id = ?", (skill_id,)).fetchone()[0]
-            if n >= MAX_SKILL_FILES_PER_SKILL:
-                return f"skill {skill_id} already has {n} companion files, ignored"
-        now = int(time.time())
-        conn.execute(
-            """INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(skill_id, rel_path) DO UPDATE SET
-                 content = excluded.content, mode = excluded.mode, updated_at = excluded.updated_at""",
-            (skill_id, rel_n, data, sanitize_skill_file_mode(st.st_mode), now, now),
-        )
-        conn.commit()
-        return f"stored companion {rel_n} of {skill_id}"
-    finally:
-        conn.close()
+    payload = {"kind": "companion", "skill_id": skill_id, "rel_path": rel_n,
+               "content_base64": base64.b64encode(data).decode("ascii"), "mode": st.st_mode & 0o777}
+    if tenant_agent is not None:
+        payload["tenant_agent"] = tenant_agent
+    return _post(payload)
 
 
-def _upsert_skill(skill_id: str, name: str, content: str) -> None:
-    content = strip_generated_header(content)
-    now = int(time.time())
-    is_global = 1 if skill_id.startswith("global/") else 0
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    try:
-        conn.execute("PRAGMA busy_timeout=5000")
-        cur = conn.execute("SELECT id FROM skills WHERE id = ?", (skill_id,))
-        if cur.fetchone():
-            conn.execute(
-                "UPDATE skills SET content = ?, updated_at = ? WHERE id = ?",
-                (content, now, skill_id),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO skills
-                   (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
-                   VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?)""",
-                (skill_id, name, content, is_global, now, now),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+def _warn_not_synced(what: str, exc: Exception) -> None:
+    """The write-back failed (dashboard down, rejected payload): tell the log AND
+    the agent, because the file on disk and the row in the database now differ."""
+    msg = f"skill-sql-sync: {what} NOT in DB ({exc})"
+    print(msg, file=sys.stderr)
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "additionalContext": f"{what} was saved to disk but NOT written back to the skills database "
+                             f"(dashboard unreachable or rejected it: {exc}). Edit it again once the dashboard is up, "
+                             "or the next skill regeneration may overwrite your change.",
+    }}))
 
 
 def main() -> None:
@@ -337,7 +268,7 @@ def main() -> None:
             try:
                 print(f"skill-sql-sync: {_sync_companion_file(file_path, loc[0], loc[1])}", file=sys.stderr)
             except Exception as exc:
-                print(f"skill-sql-sync: SQL error for companion {loc[1]}: {exc}", file=sys.stderr)
+                _warn_not_synced(f"The companion file {loc[1]}", exc)
         sys.exit(0)
 
     try:
@@ -353,16 +284,13 @@ def main() -> None:
             msg = _sync_tenant_skill(file_path, content, hdr[0]) if hdr[0] else "tenant header without id, ignored"
             print(f"skill-sql-sync: {msg}", file=sys.stderr)
         except Exception as exc:
-            print(f"skill-sql-sync: SQL error for tenant skill {hdr[0]}: {exc}", file=sys.stderr)
+            _warn_not_synced(f"The SKILL.md change of tenant skill {hdr[0]}", exc)
         sys.exit(0)
 
-    name = skill_id.rsplit("/", 1)[-1]
-
     try:
-        _upsert_skill(skill_id, name, content)
-        print(f"skill-sql-sync: upserted {skill_id}", file=sys.stderr)
+        print(f"skill-sql-sync: {_post({'kind': 'skill', 'skill_id': skill_id, 'content': content})}", file=sys.stderr)
     except Exception as exc:
-        print(f"skill-sql-sync: SQL error for {skill_id}: {exc}", file=sys.stderr)
+        _warn_not_synced(f"The SKILL.md change of {skill_id}", exc)
 
     sys.exit(0)
 

@@ -45,7 +45,7 @@ ledger_env() {
     mkdir -p "$(dirname "$db")"
     printf 'test-token' > "$(dirname "$db")/.dashboard-token"
     env LEDGER_DB_PATH="$db" \
-        LEDGER_BASE_URL="http://127.0.0.1:$STUB_PORT/db/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$db")" \
+        DASHBOARD_BASE_URL="http://127.0.0.1:$STUB_PORT/db/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$db")" \
         "$@"
 }
 
@@ -488,7 +488,7 @@ down_env() { # db cmd...
     local db="$1"; shift
     mkdir -p "$(dirname "$db")"
     printf 'test-token' > "$(dirname "$db")/.dashboard-token"
-    env LEDGER_DB_PATH="$db" LEDGER_BASE_URL="http://127.0.0.1:1" LEDGER_OWNER_CHAT="10000000001" \
+    env LEDGER_DB_PATH="$db" DASHBOARD_BASE_URL="http://127.0.0.1:1" LEDGER_OWNER_CHAT="10000000001" \
         MAIN_AGENT_ID="marveen" OWNER_NAME="Gyula" "$@"
 }
 spool_lines() { cat "$1/.ledger-spool/marveen.jsonl" 2>/dev/null | wc -l | tr -d ' '; }
@@ -536,7 +536,7 @@ assert_eq "outage: a full spool does not grow" "500" "$(spool_lines "$TMPDIR_BAS
 mkdir -p "$TMPDIR_BASE/h3"; DB_H3="$TMPDIR_BASE/h3/x.db"
 printf 'wrong' > "$TMPDIR_BASE/h3/.dashboard-token"
 emit_inbound 10000000001 3001 "rossz token" | env LEDGER_DB_PATH="$DB_H3" MAIN_AGENT_ID="marveen" \
-    LEDGER_BASE_URL="http://127.0.0.1:$STUB_PORT/db/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$DB_H3")" \
+    DASHBOARD_BASE_URL="http://127.0.0.1:$STUB_PORT/db/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$DB_H3")" \
     python3 "$HOOKS_DIR/ledger-capture.py" \
     && pass "auth: a rejected token does not break the prompt" \
     || fail "auth: a rejected token must not break the prompt"
