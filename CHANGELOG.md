@@ -126,6 +126,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Infrastructure
 
+- SQLite-dialect ratchet for the PostgreSQL migration preparation. `scripts/sqlite-dialect-ratchet.py` counts SQLite-specific SQL constructs in production TypeScript (`src/`, tests, migrations and comments excluded: `unixepoch()`, `strftime()`, `INSERT OR IGNORE`, `INSERT OR REPLACE`, `AUTOINCREMENT`, `rowid`, `lastInsertRowid`, `PRAGMA`, `GLOB`, `instr()`, `GROUP_CONCAT`, `COLLATE NOCASE`, FTS5 `MATCH`, `vec0`) and fails the CI step `SQLite dialect ratchet` when any count is higher than `scripts/sqlite-dialect-baseline.json`; counts may only go down (`--update` locks a lower baseline in, `--update --allow-increase` is the explicit escape hatch, `--report` prints the per-file breakdown). It does not judge a use, it only keeps the port from growing while portable rewrites land
 - retire context-compact-monitor.sh in favor of the proactive PostToolUse hook, and the interlock stamp/validation counter that gated its removal
 - fix seed-count assertions stale after quarantine supplement
 - scrub internal workspace-doc id from group 1 comments

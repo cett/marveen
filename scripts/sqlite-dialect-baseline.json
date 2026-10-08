@@ -1,0 +1,22 @@
+{
+  "counts": {
+    "AUTOINCREMENT": 2,
+    "COLLATE NOCASE": 7,
+    "FTS5 MATCH": 12,
+    "GLOB": 2,
+    "GROUP_CONCAT": 1,
+    "IFNULL()": 0,
+    "INSERT OR IGNORE": 28,
+    "INSERT OR REPLACE": 3,
+    "PRAGMA": 10,
+    "datetime()": 0,
+    "instr()": 14,
+    "json_extract/json_each": 0,
+    "lastInsertRowid": 14,
+    "randomblob()/hex()": 0,
+    "rowid": 26,
+    "strftime()": 9,
+    "unixepoch()": 44,
+    "vec0/sqlite-vec": 8
+  }
+}
