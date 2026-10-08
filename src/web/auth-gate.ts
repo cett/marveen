@@ -126,7 +126,7 @@ export function resolveAuth(
   dashboardToken: string,
   // true = consult api_tokens and dashboard_users (production). false = the
   // DB-less mode: bearer/device/federation lanes only, sessions carry no role.
-  dbLookups = false,
+  dbLookups: boolean,
 ): AuthResult {
   const bearerHeader = req.headers.authorization
   const bearerMatch = /^Bearer\s+(.+)$/.exec(bearerHeader ?? '')

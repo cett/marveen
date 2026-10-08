@@ -98,11 +98,11 @@ beforeEach(() => {
 
 describe('fresh-install guarantee (zero rows)', () => {
   it('an arbitrary mvdk_-shaped bearer resolves to none with no device_keys rows', () => {
-    const r = resolveAuth(mkReq({ authorization: 'Bearer mvdk_doesnotexist' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: 'Bearer mvdk_doesnotexist' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
   it('the dashboard-token bearer lane is untouched', () => {
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
 })
@@ -136,28 +136,28 @@ describe('mint + storage discipline', () => {
 describe('gate integration (Bearer + SSE lanes)', () => {
   it('a minted key authenticates as kind device on the Bearer lane', () => {
     const minted = createDeviceKey('bridge')
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${minted.key}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${minted.key}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'device', device: 'bridge', deviceId: minted.id })
   })
   it('the dashboard token still wins precedence (checked first)', () => {
     createDeviceKey('bridge')
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
   it('a device key works on the SSE pane-stream ?token= lane', () => {
     const minted = createDeviceKey('phone')
     const path = '/api/agents/zara/pane/stream'
-    const r = resolveAuth(mkReq(), mkUrl(path, `?token=${minted.key}`), path, 'GET', TOKEN)
+    const r = resolveAuth(mkReq(), mkUrl(path, `?token=${minted.key}`), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'device', device: 'phone', deviceId: minted.id })
   })
   it('a device key is NOT honored via ?token= on a non-SSE path', () => {
     const minted = createDeviceKey('phone')
-    const r = resolveAuth(mkReq(), mkUrl('/api/memories', `?token=${minted.key}`), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq(), mkUrl('/api/memories', `?token=${minted.key}`), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
   it('a wrong device key resolves to none', () => {
     createDeviceKey('bridge')
-    const r = resolveAuth(mkReq({ authorization: 'Bearer mvdk_wrong' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: 'Bearer mvdk_wrong' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 })
@@ -250,7 +250,7 @@ describe('a REAL device principal stays locked out of access-granting endpoints'
   // actually minted key, closing the loop end-to-end.
   function realDeviceAuth(): RouteContext['auth'] {
     const minted = createDeviceKey('real-device')
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${minted.key}` }), mkUrl('/api/auth/status'), '/api/auth/status', 'GET', TOKEN)
+    const r = resolveAuth(mkReq({ authorization: `Bearer ${minted.key}` }), mkUrl('/api/auth/status'), '/api/auth/status', 'GET', TOKEN, false)
     expect(r.kind).toBe('device')
     return r.kind === 'device' ? { kind: 'device', device: r.device } : undefined
   }
