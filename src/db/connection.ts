@@ -124,35 +124,8 @@ export function initDatabase(dbPathOverride?: string): void {
 
   applyMigrations(db)
 
-  // INVARIANT: a row that says 'delivered' must carry a delivered_at.
-  //
-  // On 2026-07-27 an operator bulk-closed a 28-row backlog with raw SQL that
-  // set status without a timestamp. Nothing broke loudly -- but the queue,
-  // which is the only signal we have for "what actually went out", started
-  // claiming that messages had been delivered when they never left. It took an
-  // hour of log archaeology to work out which of them the recipients had
-  // genuinely received and which they had only read out of band, and the answer
-  // was recoverable that day purely by luck.
-  //
-  // Enforced with a trigger rather than a CHECK constraint because SQLite
-  // cannot add a CHECK to an existing table without rebuilding it, and this is
-  // not worth a rebuild of the message log. Self-healing rather than ABORT:
-  // aborting would turn a bookkeeping slip into a failed operation for the
-  // caller, and the point is to keep the RECORD honest, not to police writers.
-  // The row gets a timestamp AND -- if nothing else explains it -- a marker
-  // saying it was closed without ever being delivered, so the distinction
-  // survives in the data instead of in someone's memory.
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS agent_messages_delivered_needs_ts
-    AFTER UPDATE OF status ON agent_messages
-    FOR EACH ROW WHEN NEW.status = 'delivered' AND NEW.delivered_at IS NULL
-    BEGIN
-      UPDATE agent_messages
-         SET delivered_at = CAST(strftime('%s','now') AS INTEGER),
-             result = COALESCE(result, 'closed-without-delivery')
-       WHERE id = NEW.id;
-    END
-  `)
+  // The agent_messages_delivered_needs_ts trigger (a 'delivered' row must carry
+  // a delivered_at) lives in migration 0074.
 
   // One-time L1 backfill: federation system ids are now stored lowercase, but
   // rows written by a pre-L1 build (an install that federated with a
@@ -163,19 +136,7 @@ export function initDatabase(dbPathOverride?: string): void {
   // segment keeps its case -- it is the peer's namespace). Idempotent: an
   // already-lowercase prefix compares equal and is skipped, so this is a
   // safe no-op after the first run and on fresh installs.
-  db.exec(`
-    UPDATE agent_messages
-       SET from_agent = lower(substr(from_agent, 1, instr(from_agent, '/') - 1)) || substr(from_agent, instr(from_agent, '/'))
-     WHERE instr(from_agent, '/') > 0
-       AND substr(from_agent, 1, instr(from_agent, '/') - 1) <> lower(substr(from_agent, 1, instr(from_agent, '/') - 1))
-  `)
-  db.exec(`
-    UPDATE agent_messages
-       SET to_agent = lower(substr(to_agent, 1, instr(to_agent, '/') - 1)) || substr(to_agent, instr(to_agent, '/'))
-     WHERE instr(to_agent, '/') > 0
-       AND substr(to_agent, 1, instr(to_agent, '/') - 1) <> lower(substr(to_agent, 1, instr(to_agent, '/') - 1))
-  `)
-
+  foldFederationPrefixCase()
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -190,6 +151,33 @@ export function initDatabase(dbPathOverride?: string): void {
   // initDatabase() wrapper, AFTER this function returns -- see db/index.ts.
   // connection.ts intentionally never imports a domain module (see db/index.ts
   // header comment) so it stays the acyclic root every other db/*.ts depends on.
+}
+
+/**
+ * Lowercase the SYSTEM prefix (the part before the first '/') of qualified
+ * from_agent / to_agent ids in place; the agent segment keeps its case. Runs on
+ * every start and is a no-op once the prefixes are lowercase. Done row by row
+ * in code over the few rows that contain a '/', so the SQL stays portable
+ * (no instr()).
+ */
+function foldFederationPrefixCase(): void {
+  const fold = (value: string): string => {
+    const slash = value.indexOf('/')
+    if (slash <= 0) return value
+    const prefix = value.slice(0, slash)
+    return prefix === prefix.toLowerCase() ? value : prefix.toLowerCase() + value.slice(slash)
+  }
+  for (const column of ['from_agent', 'to_agent'] as const) {
+    const rows = db
+      .prepare(`SELECT id, ${column} AS value FROM agent_messages WHERE ${column} LIKE '%/%'`)
+      .all() as { id: number; value: string }[]
+    const update = db.prepare(`UPDATE agent_messages SET ${column} = ? WHERE id = ?`)
+    const pending = rows.filter((r) => fold(r.value) !== r.value)
+    if (pending.length === 0) continue
+    db.transaction(() => {
+      for (const r of pending) update.run(fold(r.value), r.id)
+    })()
+  }
 }
 
 function migrateTaskRunsFromJson(): void {

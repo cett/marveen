@@ -86,10 +86,9 @@ export function createDeviceKey(name: string, opts: { expiresInDays?: number; in
   const now = nowSec()
   const expiresAt = opts.expiresInDays ? now + Math.floor(opts.expiresInDays * 24 * 60 * 60) : null
   const installId = opts.installId ?? null
-  const info = getDb()
-    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(keyHash, name, now, null, expiresAt, installId)
-  const id = Number(info.lastInsertRowid)
+  const { id } = getDb()
+    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
+    .get(keyHash, name, now, null, expiresAt, installId) as { id: number }
   cache.set(keyHash, { id, name, lastUsedAt: null, expiresAt })
   return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, tenantId: null, key: raw }
 }

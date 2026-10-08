@@ -211,7 +211,10 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   let totalFiles = 0
 
   const getCursor = db.prepare('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?')
-  const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)')
+  const setCursor = db.prepare(
+    `INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
+     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`,
+  )
   const insertCall = db.prepare(`
     INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, tenant_id)

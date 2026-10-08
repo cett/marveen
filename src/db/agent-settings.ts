@@ -73,8 +73,9 @@ export function importAgentSettingsFromFile(
 ): number {
   let migrated = 0
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at)
+    INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at)
     VALUES (?, ?, ?, ?, unixepoch())
+    ON CONFLICT DO NOTHING
   `)
   for (const [agentId, cfg] of Object.entries(entries)) {
     if (cfg === null || cfg === undefined) continue

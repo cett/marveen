@@ -161,9 +161,10 @@ export function insertPendingTaskRetryIfNew(
   reason: string,
 ): boolean {
   return db.prepare(`
-    INSERT OR IGNORE INTO pending_task_retries
+    INSERT INTO pending_task_retries
       (task_name, agent_name, first_attempt, last_attempt, attempt_count, last_reason)
     VALUES (?, ?, ?, ?, 1, ?)
+    ON CONFLICT DO NOTHING
   `).run(taskName, agentName, now, now, reason).changes > 0
 }
 
@@ -444,15 +445,22 @@ export function migrateScheduleLastRunFromFile(entries: Record<string, unknown>)
 
 // INSERT OR IGNORE: seed a schedule from file only if it does not already exist
 // in the DB. Safe to run on every boot -- never overwrites hand-edited rows.
+const SCHEDULE_TYPES = ['task', 'heartbeat', 'command']
+
 export function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): boolean {
+  // The options come from task files on disk. A row the table would reject
+  // (NOT NULL schedule/agent, CHECK on type) is skipped like an existing one;
+  // ON CONFLICT DO NOTHING only absorbs key conflicts, not constraint errors.
+  if (opts.schedule == null || opts.agent == null || !SCHEDULE_TYPES.includes(opts.type)) return false
   const now = opts.created_at ?? Math.floor(Date.now() / 1000)
   const result = db.prepare(`
-    INSERT OR IGNORE INTO schedules (
+    INSERT INTO schedules (
       id, prompt, description, schedule, agent, type, enabled, tenant_id,
       skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
       pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires, status,
       created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT DO NOTHING
   `).run(
     id, opts.prompt, opts.description, opts.schedule, opts.agent,
     opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? null,
@@ -558,8 +566,9 @@ export function putSkillFile(skillId: string, relPath: string, content: Buffer, 
 export function seedSkillFileIfAbsent(skillId: string, relPath: string, content: Buffer, mode?: number): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
-    INSERT OR IGNORE INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
+    INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT DO NOTHING
   `).run(skillId, relPath, content, sanitizeSkillFileMode(mode), now, now).changes > 0
 }
 
@@ -620,7 +629,7 @@ export function listSkillAccess(skillId: string): SkillTenantAccessRow[] {
   return db.prepare('SELECT * FROM skill_tenant_access WHERE skill_id = ?').all(skillId) as SkillTenantAccessRow[]
 }
 
-// INSERT OR IGNORE: materialize a file-based skill only if no row with this id
+// ON CONFLICT DO NOTHING: materialize a file-based skill only if no row with this id
 // exists yet. Safe to run repeatedly -- never overwrites hand-edited DB rows.
 export function seedSkillIfAbsent(opts: {
   id: string
@@ -631,10 +640,14 @@ export function seedSkillIfAbsent(opts: {
   is_global: boolean
   created_at?: number
 }): boolean {
+  // File-derived input: a row the table would reject (NOT NULL name/content/tenant_id)
+  // is skipped, since ON CONFLICT DO NOTHING only absorbs key conflicts.
+  if (opts.name == null || opts.content == null || opts.tenant_id == null) return false
   const now = opts.created_at ?? Math.floor(Date.now() / 1000)
   const result = db.prepare(`
-    INSERT OR IGNORE INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
+    INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+    ON CONFLICT DO NOTHING
   `).run(opts.id, opts.name, opts.description, stripGeneratedHeader(opts.content), opts.tenant_id, opts.is_global ? 1 : 0, now, now)
   return result.changes > 0
 }

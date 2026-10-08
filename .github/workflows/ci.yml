@@ -227,6 +227,11 @@ jobs:
           done
           exit $fail
 
+      - name: SQLite dialect ratchet
+        # No SQLite-specific SQL construct count may grow past
+        # scripts/sqlite-dialect-baseline.json (PostgreSQL migration prep).
+        run: python3 scripts/sqlite-dialect-ratchet.py
+
       - name: Shell tests
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
         # vault-file-materializer / channels-mcp-unlock / channels-auth-probe,

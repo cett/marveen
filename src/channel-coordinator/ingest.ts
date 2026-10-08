@@ -8,7 +8,7 @@
 // because db.ts does not set it -- without it a concurrent dashboard write would
 // surface as SQLITE_BUSY instead of a short wait.
 //
-// Two tables live here:
+// Two tables are owned here (created by migration 0073):
 //   incoming_events -- every inbound Telegram update, deduped on (source,update_id)
 //   poll_offset     -- the persisted getUpdates offset (one row), so a restart
 //                      resumes instead of replaying or skipping.
@@ -19,6 +19,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID } from '../config.js'
+import { applyMigrations } from '../db-migrations.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
@@ -32,74 +33,15 @@ export function initIngestDb(dbPath = join(STORE_DIR, DB_FILENAME)): Database.Da
   handle.pragma('journal_mode = WAL')
   handle.pragma('busy_timeout = 5000')
 
-  handle.exec(`
-    CREATE TABLE IF NOT EXISTS incoming_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source TEXT NOT NULL DEFAULT 'telegram',
-      update_id INTEGER NOT NULL,
-      chat_id INTEGER,
-      user_id INTEGER,
-      username TEXT,
-      message_id INTEGER,
-      kind TEXT NOT NULL DEFAULT 'message',
-      content TEXT,
-      meta TEXT,
-      tg_date INTEGER,
-      status TEXT NOT NULL DEFAULT 'pending'
-        CHECK(status IN ('pending','delivered','done','failed')),
-      agent_message_id INTEGER,
-      error TEXT,
-      created_at INTEGER NOT NULL,
-      delivered_at INTEGER
-    )
-  `)
-  // Idempotency: an at-least-once handler (crash between handoff and offset
-  // persist) must never create a duplicate event for the same update.
-  handle.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_events_source_update ON incoming_events(source, update_id)`)
-  handle.exec(`CREATE INDEX IF NOT EXISTS idx_incoming_events_status ON incoming_events(status, created_at)`)
-
-  handle.exec(`
-    CREATE TABLE IF NOT EXISTS poll_offset (
-      source TEXT PRIMARY KEY,
-      last_update_id INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-
-  // Defensive: the coordinator and the dashboard both start at boot (separate
-  // launchd units). The dashboard owns agent_messages, but if the coordinator
-  // wins the race and tries to hand off before the dashboard's initDatabase
-  // runs, the INSERT would fail. CREATE IF NOT EXISTS with the identical schema
-  // (src/migrations/0001_baseline.sql plus every later ALTER TABLE on this
-  // table) is a no-op when the dashboard already made it, and prevents the
-  // boot-race failure otherwise. IMPORTANT: because this is IF NOT EXISTS, a
-  // coordinator-created table is never revisited by the dashboard's own
-  // CREATE TABLE migration -- only its later ALTER TABLE migrations still
-  // apply. Keep this column list byte-for-byte in sync with the canonical
-  // schema, or a coordinator-first boot permanently drops whatever column was
-  // only ever added via the baseline CREATE TABLE (see migration 0048, which
-  // repairs a DB that already drifted before this comment existed).
-  handle.exec(`
-    CREATE TABLE IF NOT EXISTS agent_messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      from_agent TEXT NOT NULL,
-      to_agent TEXT NOT NULL,
-      content TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivered','done','failed')),
-      result TEXT,
-      created_at INTEGER NOT NULL,
-      delivered_at INTEGER,
-      completed_at INTEGER,
-      origin_note TEXT,
-      trace_id TEXT,
-      span_id TEXT,
-      parent_span_id TEXT,
-      tenant_id TEXT NOT NULL DEFAULT 'default',
-      refused_reason TEXT,
-      no_session_at INTEGER,
-      envelope TEXT
-    )
-  `)
+  // The coordinator and the dashboard both start at boot (separate launchd
+  // units) and either may win. Both run the SAME migration runner, so the
+  // tables this module uses (incoming_events and poll_offset from migration
+  // 0073, agent_messages from the baseline and its later migrations) have one
+  // source of truth and a coordinator-first boot cannot drift from it. The
+  // runner takes an IMMEDIATE write lock per migration and re-checks
+  // schema_version inside it, so a concurrent dashboard start is safe. The
+  // busy_timeout set above is what makes the loser wait instead of failing.
+  applyMigrations(handle)
 
   db = handle
   return db
@@ -153,15 +95,18 @@ export function insertIncomingEvent(
   },
 ): InsertResult {
   const now = Math.floor(Date.now() / 1000)
-  const info = requireDb().prepare(`
-    INSERT OR IGNORE INTO incoming_events
+  const row = requireDb().prepare(`
+    INSERT INTO incoming_events
       (source, update_id, chat_id, user_id, username, message_id, kind, content, meta, tg_date, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-  `).run(
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `).get(
     source, ev.update_id, ev.chat_id, ev.user_id, ev.username, ev.message_id,
     ev.kind, ev.content, JSON.stringify(ev.meta), ev.tg_date, now,
-  )
-  return { inserted: info.changes > 0, eventId: info.changes > 0 ? Number(info.lastInsertRowid) : null }
+  ) as { id: number } | undefined
+  // No row back means the (source, update_id) pair was already stored.
+  return { inserted: row !== undefined, eventId: row?.id ?? null }
 }
 
 // Create the pending agent_messages row that the dashboard's message-router
@@ -174,10 +119,10 @@ export function insertIncomingEvent(
 // rejects it; only this in-process direct DB insert is trusted.)
 export function createHandoffMessage(content: string): number {
   const now = Math.floor(Date.now() / 1000)
-  const info = requireDb().prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now)
-  return Number(info.lastInsertRowid)
+  const row = requireDb().prepare(
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id'
+  ).get(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now) as { id: number }
+  return row.id
 }
 
 export function markEventDelivered(eventId: number, agentMessageId: number): void {

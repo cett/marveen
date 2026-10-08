@@ -105,12 +105,11 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
     const db = getDb()
     try {
-      const result = db.prepare(
+      const row = db.prepare(
         `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(hash, name, role, tenantId, now, expiresAt)
-
-      const row = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(result.lastInsertRowid) as TokenRow
+         VALUES (?, ?, ?, ?, ?, ?)
+         RETURNING *`,
+      ).get(hash, name, role, tenantId, now, expiresAt) as TokenRow
       logger.info({ tokenId: row.id, name, role, tenantId }, 'api_token created')
       // Return the raw token value ONCE -- it cannot be recovered after this response.
       json(res, { token: rawToken, ...toPublic(row) }, 201)

@@ -73,7 +73,8 @@ export function migrateConfigOverridesToSystemConfig(): number {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 0
 
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), 'migrated_from_json')`
+    `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), 'migrated_from_json')
+     ON CONFLICT DO NOTHING`
   )
   let migrated = 0
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
@@ -132,7 +133,8 @@ function migrateOneGroup5File(filename: string, extract: (parsed: unknown) => Ar
     return 0
   }
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), 'migrated_from_json')`
+    `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), 'migrated_from_json')
+     ON CONFLICT DO NOTHING`
   )
   let migrated = 0
   for (const [key, value] of extract(parsed)) {

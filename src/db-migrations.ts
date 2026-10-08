@@ -82,8 +82,9 @@ function loadMigrationFiles(dir: string): MigrationFile[] {
 function bootstrapLegacyInstall(db: Database.Database, baseline: MigrationFile): void {
   logger.info('Detected legacy install (otel_spans present, no schema_version). Bootstrapping to v1.')
   db.prepare(`
-    INSERT OR IGNORE INTO schema_version (version, applied_at, description, checksum)
+    INSERT INTO schema_version (version, applied_at, description, checksum)
     VALUES (?, ?, ?, ?)
+    ON CONFLICT DO NOTHING
   `).run(baseline.version, Math.floor(Date.now() / 1000), baseline.description, sha256(baseline.sql))
 }
 
@@ -144,7 +145,19 @@ function applyAddColumnsTolerantly(db: Database.Database, sql: string): void {
 function applyMigration(db: Database.Database, m: MigrationFile): void {
   // Wrap SQL + schema_version INSERT in one transaction. If the SQL throws, the
   // version row is never written; the error propagates to the caller.
+  //
+  // Two processes run this runner (the dashboard and the channel-coordinator),
+  // possibly at the same moment on a fresh boot. The transaction is IMMEDIATE
+  // so the loser waits for the winner's write lock, and it re-checks
+  // schema_version inside the lock: a migration the other process just applied
+  // is skipped instead of hitting the version primary key.
+  let applied = true
   const tx = db.transaction(() => {
+    const done = db.prepare('SELECT 1 FROM schema_version WHERE version = ?').get(m.version)
+    if (done !== undefined) {
+      applied = false
+      return
+    }
     if (isPureAddColumnMigration(m.sql)) {
       applyAddColumnsTolerantly(db, m.sql)
     } else {
@@ -155,8 +168,8 @@ function applyMigration(db: Database.Database, m: MigrationFile): void {
       VALUES (?, ?, ?, ?)
     `).run(m.version, Math.floor(Date.now() / 1000), m.description, sha256(m.sql))
   })
-  tx()
-  logger.info({ version: m.version, description: m.description }, 'Migration applied')
+  tx.immediate()
+  if (applied) logger.info({ version: m.version, description: m.description }, 'Migration applied')
 }
 
 // ── checksum guard ───────────────────────────────────────────────────────────

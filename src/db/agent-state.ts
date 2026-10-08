@@ -48,8 +48,9 @@ export function setAgentState(agentId: string, key: AgentStateKey, value: unknow
 export function importAgentStateFromFile(key: AgentStateKey, entries: Record<string, unknown>): number {
   let migrated = 0
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO agent_state (agent_id, state_key, state_value, tenant_id, updated_at)
+    INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id, updated_at)
     VALUES (?, ?, ?, 'default', unixepoch())
+    ON CONFLICT DO NOTHING
   `)
   for (const [agentId, state] of Object.entries(entries)) {
     if (state === null || state === undefined) continue
