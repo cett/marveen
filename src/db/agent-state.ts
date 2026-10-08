@@ -8,7 +8,14 @@
 
 import { db } from './connection.js'
 
-export type AgentStateKey = 'gate_run_state' | 'kanban_audit_last_audit_at'
+export const AGENT_STATE_KEYS = [
+  'gate_run_state',
+  'kanban_audit_last_audit_at',
+  'blackboard_hygiene_nudges',
+  'blackboard_hygiene_last_sweep',
+] as const
+
+export type AgentStateKey = (typeof AGENT_STATE_KEYS)[number]
 
 export interface AgentStateRow {
   agent_id: string
