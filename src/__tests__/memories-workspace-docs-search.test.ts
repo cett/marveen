@@ -38,6 +38,7 @@ const { mockSearchMemories, mockHybridSearch, mockGetDb, mockHybridSearchDocs, m
 })
 
 vi.mock('../db.js', () => ({
+  hybridSearchDocs: mockHybridSearchDocs,
   saveAgentMemory: vi.fn(),
   getAgentMemories: vi.fn().mockReturnValue([]),
   countAgentMemories: vi.fn().mockReturnValue(0),
@@ -61,10 +62,6 @@ vi.mock('../db.js', () => ({
   getLinksForMemories: vi.fn().mockReturnValue([]),
   writeAgentAuditLog: vi.fn(),
   syncVecMemoryDelete: vi.fn(),
-}))
-
-vi.mock('../db/workspace.js', () => ({
-  hybridSearchDocs: mockHybridSearchDocs,
 }))
 
 vi.mock('../settings-store.js', () => ({
