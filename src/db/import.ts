@@ -2,6 +2,7 @@
 // sources, their shadow rows in `memories`, the crawl audit log, stats and
 // search. tenantId null = every tenant (admin default view).
 
+import { createHash } from 'node:crypto'
 import { db } from './connection.js'
 import { syncVecMemoryDelete } from './vector.js'
 
@@ -170,4 +171,110 @@ export function searchImportMemories(
       WHERE (im.content LIKE ? OR im.keywords LIKE ? OR im.file_name LIKE ?)${tc}
     `).get(...params) as { n: number }).n
   return { items, total }
+}
+
+// ---------------------------------------------------------------------------
+// Crawler side: bookkeeping around a crawl run and the per-file upsert.
+// ---------------------------------------------------------------------------
+
+/** Total characters stored in import_memories (soft-cap input). */
+export function sumImportContentSize(): number {
+  const row = db.prepare("SELECT SUM(LENGTH(content)) AS s FROM import_memories").get() as { s: number | null }
+  return row.s ?? 0
+}
+
+export function listEnabledImportSources(): ImportSourceRow[] {
+  return db.prepare("SELECT * FROM import_sources WHERE enabled = 1").all() as ImportSourceRow[]
+}
+
+export function markImportSourceRun(sourceId: string, runAt: number): void {
+  db.prepare("UPDATE import_sources SET last_run_at = ? WHERE id = ?").run(runAt, sourceId)
+}
+
+/** Throws on failure: the crawler wraps it so an audit write never escapes. */
+export function insertImportAuditLog(
+  sourceId: string,
+  runAt: number,
+  counts: {
+    scanned: number; added: number; updated: number
+    skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number
+  },
+  error?: string,
+): void {
+  db.prepare(`
+      INSERT INTO import_audit_log
+        (source_id, run_at, files_scanned, files_added, files_updated,
+         files_skipped_hash, files_skipped_secret, files_skipped_size, files_skipped_type, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+    sourceId, runAt,
+    counts.scanned, counts.added, counts.updated,
+    counts.skippedHash, counts.skippedSecret, counts.skippedSize, counts.skippedType,
+    error ?? null,
+  )
+}
+
+export function upsertImportMemory(
+  sourceId: string,
+  filePath: string,
+  fileName: string,
+  hash: string,
+  content: string,
+  keywords: string,
+  now: number,
+  tenantId: string,
+): 'added' | 'updated' | 'hash_match' {
+  const existing = db.prepare(
+    "SELECT id, content_hash, content, keywords, memory_shadow_id FROM import_memories WHERE source_id = ? AND file_path = ?"
+  ).get(sourceId, filePath) as { id: string; content_hash: string; content: string; keywords: string | null; memory_shadow_id: number | null } | undefined
+
+  if (existing) {
+    if (existing.content_hash === hash) {
+      db.prepare("UPDATE import_memories SET last_seen_at = ? WHERE id = ?").run(now, existing.id)
+      return 'hash_match'
+    }
+    db.prepare(`
+      UPDATE import_memories SET content_hash = ?, content = ?, keywords = ?, last_seen_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(hash, content, keywords, now, now, existing.id)
+    if (existing.memory_shadow_id) {
+      // Keep shadow row in sync with updated content. The stored embedding was
+      // computed from the old text, so drop it (and its ANN entry) when the
+      // text it was built from changed; link maintenance / the embedding
+      // backfill then re-embed from updated_at. A hash-only change (the raw
+      // source differs, the extracted text does not) keeps the embedding.
+      const textChanged = existing.content !== content || existing.keywords !== keywords
+      if (textChanged) {
+        db.prepare('UPDATE memories SET content = ?, keywords = ?, updated_at = ?, embedding_blob = NULL WHERE id = ?')
+          .run(content, keywords, now, existing.memory_shadow_id)
+        syncVecMemoryDelete(existing.memory_shadow_id)
+      } else {
+        db.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, existing.memory_shadow_id)
+      }
+    } else {
+      // Create missing shadow row (defensive: migration backfill covers existing rows).
+      // agent_id='import' is the discriminator; category='warm' satisfies the CHECK
+      // constraint; chat_id and sector are sentinel values for NOT NULL columns.
+      const sr = db.prepare(
+        `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
+         VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?, ?) RETURNING id`
+      ).get(content, keywords, now, now, now, tenantId) as { id: number }
+      db.prepare('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?').run(sr.id, existing.id)
+    }
+    return 'updated'
+  }
+
+  const id = createHash('sha256').update(`${sourceId}:${filePath}`).digest('hex').slice(0, 16)
+  db.prepare(`
+    INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, sourceId, filePath, fileName, hash, content, keywords, now, now, now, tenantId)
+  // Create shadow row so the main embedding and link pipelines pick this up.
+  // agent_id='import' is the discriminator; category='warm' satisfies the CHECK constraint.
+  const sr = db.prepare(
+    `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
+     VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?, ?) RETURNING id`
+  ).get(content, keywords, now, now, now, tenantId) as { id: number }
+  db.prepare('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?').run(sr.id, id)
+  return 'added'
 }
