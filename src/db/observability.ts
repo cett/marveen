@@ -5,6 +5,7 @@ import { db, vecExtensionLoaded } from './connection.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
+import { resolveWriteTenant } from './write-tenant.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
 
 export function recordMemoryRead(
@@ -199,8 +200,8 @@ export interface InterAgentSpanAttributes {
 
 export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): void {
   db.prepare(`
-    INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (trace_id, span_id) DO UPDATE SET
       end_ms = excluded.end_ms,
       status = excluded.status,
@@ -209,6 +210,7 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
     span.trace_id, span.span_id, span.parent_span_id ?? null,
     span.agent_id, span.operation, span.start_ms,
     span.end_ms ?? null, span.status ?? 'running', span.attributes ?? null,
+    resolveWriteTenant(span.agent_id),
   )
 }
 
@@ -425,6 +427,11 @@ export const TENANT_PURGE_SIMPLE_TABLES = [
   'fleet_blackboard_history',
   // Names the tenant's users (principal column): tenant data, not fleet-wide audit evidence.
   'rbac_shadow_log',
+  // Telemetry and journals stamped with a tenant by migration 0077. Rows of a shared agent that
+  // could not be told apart ('_multi_') or were never resolved (NULL) belong to no single tenant
+  // and stay. labels also drops its card links first (see deleteTenant).
+  'otel_spans', 'daily_logs', 'task_runs', 'background_tasks', 'skill_usage', 'store_file_audit',
+  'token_usage_daily', 'token_usage_monthly', 'cost_line_items', 'labels',
 ] as const
 
 // Agent-keyed tables: `tenant_id` says who wrote the row, not who owns it, so the purge decides per
@@ -441,7 +448,10 @@ export const TENANT_PURGE_HANDLED_TABLES = [
 
 // Tables that deliberately keep their rows. api_tokens is a tombstone: the row stays for the access
 // history (hash only, not reversible, the rotated_from chain stays intact) and revoked_at is set.
-export const TENANT_PURGE_EXEMPT_TABLES = ['api_tokens'] as const
+// agent_audit_log and hook_audit_log are the governance trail (who changed what, which hook said
+// what): they carry a tenant_id so a tenant's auditor sees its own entries, but the entries outlive
+// the tenant like the api_tokens tombstone does.
+export const TENANT_PURGE_EXEMPT_TABLES = ['api_tokens', 'agent_audit_log', 'hook_audit_log'] as const
 
 export interface TenantDeleteResult {
   memoriesDeleted: number
@@ -480,7 +490,7 @@ export interface TenantDeleteResult {
 // and the agent-keyed rows (agent_settings, agent_state, fleet_blackboard) are cleaned right before
 // step 16. An agent-keyed row tagged with this tenant is deleted when its agent is exclusive to the
 // tenant, and re-tagged to `default` when the agent also serves another tenant (its configuration
-// outlives the tenant). token_usage_daily / _monthly have no tenant_id and stay (numbers only).
+// outlives the tenant). The rollup tables token_usage_daily / _monthly carry tenant_id and are purged with the rest.
 // The 'default' tenant is permanently guarded and throws if passed.
 export function deleteTenant(tenantId: string): TenantDeleteResult {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
@@ -584,6 +594,9 @@ export function deleteTenant(tenantId: string): TenantDeleteResult {
     //      cascade it, but a silent cascade is how 0041 once lost audit rows, so it is explicit and counted.
     purged.import_audit_log = db.prepare('DELETE FROM import_audit_log WHERE tenant_id = ?').run(tenantId).changes
     purged.import_sources = db.prepare('DELETE FROM import_sources WHERE tenant_id = ?').run(tenantId).changes
+    // A label of this tenant can still be linked from a card of another tenant (links made before
+    // labels carried a tenant): drop those links before the label rows go.
+    db.prepare('DELETE FROM kanban_card_labels WHERE label_id IN (SELECT id FROM labels WHERE tenant_id = ?)').run(tenantId)
     for (const table of TENANT_PURGE_SIMPLE_TABLES) {
       purged[table] = db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId).changes
     }
