@@ -3,17 +3,17 @@
 
 Pure helpers (pane_is_active, is_lagging, is_stale_blocked, is_maintenance_active,
 nudge_on_hold, is_wake_gap, next_counters) are tested directly;
-counter persistence runs against a throwaway SQLite file with the real
-agent_state shape; main() runs end to end with the dashboard, tmux and clock
-mocked, so the nudge / escalation / reset / dry-run / failure contract is
+counter persistence runs against an in-memory stand-in for the dashboard's
+agent-state and messages endpoints; main() runs end to end with the dashboard,
+tmux and clock mocked, so the nudge / escalation / reset / dry-run / failure contract is
 pinned without touching a real fleet.
 
 Privacy: neutral fixture agent names only.
 """
 import importlib.util
+import io
 import os
-import sqlite3
-import tempfile
+import re
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -176,92 +176,158 @@ class NextCountersTest(unittest.TestCase):
         self.assertEqual((new, esc), ({"agent-b": 1}, ["agent-a"]))
 
 
-def _make_db(path, initial=None):
-    conn = sqlite3.connect(path)
-    conn.execute(
-        "CREATE TABLE agent_state (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, "
-        "state_key TEXT NOT NULL, state_value TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT 'default', "
-        "updated_at INTEGER NOT NULL DEFAULT (unixepoch()), UNIQUE(agent_id, state_key))"
-    )
-    conn.execute(
-        "CREATE TABLE agent_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, from_agent TEXT NOT NULL, "
-        "to_agent TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
-        "created_at INTEGER NOT NULL, delivered_at INTEGER, completed_at INTEGER)"
-    )
-    if initial is not None:
-        conn.execute(
-            "INSERT INTO agent_state(agent_id,state_key,state_value) VALUES(?,?,?)",
-            (mod.STATE_AGENT_ID, mod.STATE_KEY, initial),
-        )
-    conn.commit()
-    conn.close()
+class FakeStore:
+    """In-memory stand-in for /api/agent-state and /api/messages.
 
+    Mirrors the real contract: a missing state row is a 404, PUT stores the
+    JSON value as sent, and a message listing is newest-first for one agent in
+    either direction.
+    """
 
-def _add_msg(path, to, content, age, sender="coord", status="delivered"):
-    """Insert an agent_messages row `age` seconds old (delivered at the same moment)."""
-    conn = sqlite3.connect(path)
-    ts = NOW - age
-    conn.execute(
-        "INSERT INTO agent_messages(from_agent,to_agent,content,status,created_at,delivered_at) VALUES(?,?,?,?,?,?)",
-        (sender, to, content, status, ts, ts if status != "pending" else None),
-    )
-    conn.commit()
-    conn.close()
+    def __init__(self, coordinator="coord"):
+        self.coordinator = coordinator
+        self.state = {}
+        self.messages = []
+        self.puts = []
 
+    def seed(self, nudges=None):
+        if nudges is not None:
+            self.state[mod.STATE_KEY] = nudges
+
+    def add_msg(self, to, content, age, sender="coord", status="delivered"):
+        """Add a message `age` seconds old (delivered at the same moment)."""
+        ts = NOW - age
+        self.messages.append({
+            "id": len(self.messages) + 1, "from_agent": sender, "to_agent": to, "content": content,
+            "status": status, "created_at": ts, "delivered_at": ts if status != "pending" else None,
+        })
+
+    def api(self, path, payload=None, method=None):
+        m = re.match(r"^/api/agent-state/([^/]+)/([^/?]+)$", path)
+        if m:
+            assert m.group(1) == self.coordinator, path
+            key = m.group(2)
+            if method == "PUT":
+                self.puts.append((key, payload["value"]))
+                self.state[key] = payload["value"]
+                return {"ok": True}
+            if key not in self.state:
+                raise urllib.error.HTTPError(path, 404, "not found", {}, io.BytesIO(b""))
+            return {"agent_id": self.coordinator, "state_key": key, "value": self.state[key], "updated_at": NOW}
+        m = re.match(r"^/api/messages\?agent=([^&]+)&limit=(\d+)$", path)
+        if m:
+            agent, limit = m.group(1), int(m.group(2))
+            rows = [x for x in self.messages if agent in (x["from_agent"], x["to_agent"])]
+            rows.sort(key=lambda x: (x["created_at"], x["id"]), reverse=True)
+            return rows[:limit]
+        raise AssertionError("unexpected path " + path)
 
 
 class CountersPersistenceTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = os.path.join(self.tmp.name, "t.db")
-
-    def tearDown(self):
-        self.tmp.cleanup()
+        self.store = FakeStore()
+        patcher = patch.object(mod, "_api", side_effect=self.store.api)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(mod, "STATE_AGENT_ID", "coord")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_missing_row_reads_as_empty(self):
-        _make_db(self.db)
-        conn = sqlite3.connect(self.db)
-        self.addCleanup(conn.close)
-        self.assertEqual(mod.read_counters(conn), {})
+        self.assertEqual(mod.read_counters(), {})
 
     def test_corrupt_value_reads_as_empty(self):
-        _make_db(self.db, "not json")
-        conn = sqlite3.connect(self.db)
-        self.addCleanup(conn.close)
-        self.assertEqual(mod.read_counters(conn), {})
+        self.store.seed("not json")
+        self.assertEqual(mod.read_counters(), {})
 
     def test_non_dict_value_reads_as_empty(self):
-        _make_db(self.db, "[1,2]")
-        conn = sqlite3.connect(self.db)
-        self.addCleanup(conn.close)
-        self.assertEqual(mod.read_counters(conn), {})
+        self.store.seed([1, 2])
+        self.assertEqual(mod.read_counters(), {})
 
-    def test_write_then_read_roundtrip_and_upsert(self):
-        _make_db(self.db)
-        conn = sqlite3.connect(self.db)
-        self.addCleanup(conn.close)
-        mod.write_counters(conn, {"agent-a": 1})
-        mod.write_counters(conn, {"agent-b": 1})
-        self.assertEqual(mod.read_counters(conn), {"agent-b": 1})
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM agent_state").fetchone()[0], 1)
+    def test_write_then_read_roundtrip_and_overwrite(self):
+        mod.write_counters({"agent-a": 1})
+        mod.write_counters({"agent-b": 1})
+        self.assertEqual(mod.read_counters(), {"agent-b": 1})
+
+    def test_missing_last_sweep_reads_as_none(self):
+        self.assertIsNone(mod.read_last_sweep())
+
+    def test_last_sweep_roundtrip_and_legacy_text_value(self):
+        mod.write_last_sweep(NOW)
+        self.assertEqual(mod.read_last_sweep(), NOW)
+        # Rows written by the old SQL path were the bare number as text.
+        self.store.state[mod.LAST_SWEEP_KEY] = str(NOW - 5)
+        self.assertEqual(mod.read_last_sweep(), NOW - 5)
+
+    def test_unreadable_last_sweep_reads_as_none(self):
+        self.store.state[mod.LAST_SWEEP_KEY] = "garbage"
+        self.assertIsNone(mod.read_last_sweep())
+
+    def test_server_error_is_not_mistaken_for_an_empty_state(self):
+        # An outage must not read as "no counters": the next write would wipe them.
+        err = urllib.error.HTTPError("/x", 500, "boom", {}, io.BytesIO(b""))
+        with patch.object(mod, "_api", side_effect=err):
+            with self.assertRaises(urllib.error.HTTPError):
+                mod.read_counters()
+
+
+class MessageLookupTest(unittest.TestCase):
+    def setUp(self):
+        self.store = FakeStore()
+
+    def test_latest_incoming_is_the_newest_delivered_or_done_message_to_the_agent(self):
+        self.store.add_msg("agent-a", "old", 900, status="done")
+        self.store.add_msg("agent-a", "new", 100)
+        self.store.add_msg("agent-a", "queued", 10, status="pending")
+        self.store.add_msg("agent-b", "other", 5)
+        self.store.add_msg("someone", "outgoing", 5, sender="agent-a")
+        got = mod.latest_incoming(self.store.messages, "agent-a")
+        self.assertEqual((got["content"], got["ts"]), ("new", NOW - 100))
+
+    def test_latest_incoming_is_none_without_a_delivered_message(self):
+        self.store.add_msg("agent-a", "queued", 10, status="pending")
+        self.assertIsNone(mod.latest_incoming(self.store.messages, "agent-a"))
+
+    def test_latest_nudge_ignores_failed_other_senders_and_other_prefixes(self):
+        with patch.object(mod, "COORDINATOR", "coord"):
+            self.store.add_msg("agent-a", mod.NUDGE_TEXT, 3000, status="done")
+            self.store.add_msg("agent-a", mod.NUDGE_TEXT, 100, status="failed")
+            self.store.add_msg("agent-a", mod.NUDGE_TEXT, 50, sender="agent-b")
+            self.store.add_msg("agent-a", HEARTBEAT, 10)
+            got = mod.latest_nudge(self.store.messages, "agent-a")
+        self.assertEqual((got["status"], got["ts"]), ("done", NOW - 3000))
+
+    def test_agent_messages_asks_for_the_agent_mailbox_with_the_endpoint_cap(self):
+        with patch.object(mod, "_api", return_value=[]) as api:
+            self.assertEqual(mod.agent_messages("agent-a"), [])
+        self.assertEqual(api.call_args[0][0], "/api/messages?agent=agent-a&limit=200")
 
 
 class MainTest(unittest.TestCase):
     """main() with dashboard / tmux / clock mocked."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = os.path.join(self.tmp.name, "t.db")
+        self.store = FakeStore()
         self.sent = []
         self.panes = {}
         self.board = []
         self.agents = []
         self.fail_send = False
         self.fail_read = False
+        self.fail_state_read = False
+        self.fail_state_write = False
 
-        def fake_api(path, payload=None):
+        def fake_api(path, payload=None, method=None):
             if self.fail_read and payload is None and path in ("/api/agents", "/api/blackboard"):
                 raise urllib.error.URLError("down")
+            if path.startswith("/api/agent-state/"):
+                if self.fail_state_read and method != "PUT":
+                    raise urllib.error.URLError("down")
+                if self.fail_state_write and method == "PUT":
+                    raise urllib.error.URLError("down")
+                return self.store.api(path, payload, method)
+            if path.startswith("/api/messages?"):
+                return self.store.api(path)
             if path == "/api/agents":
                 return self.agents
             if path == "/api/blackboard":
@@ -279,7 +345,6 @@ class MainTest(unittest.TestCase):
             patch.object(mod, "_api", side_effect=fake_api),
             patch.object(mod, "capture_pane", side_effect=lambda a: self.panes.get(a, "")),
             patch.object(mod.time, "time", return_value=NOW),
-            patch.object(mod, "DB_PATH", self.db),
             patch.object(mod, "COORDINATOR", "coord"),
             patch.object(mod, "STATE_AGENT_ID", "coord"),
             patch("builtins.print"),
@@ -290,7 +355,6 @@ class MainTest(unittest.TestCase):
     def tearDown(self):
         for p in self.patches:
             p.stop()
-        self.tmp.cleanup()
 
     def _fleet(self, lagging_row=None):
         self.agents = [
@@ -303,14 +367,9 @@ class MainTest(unittest.TestCase):
         self.board = [{"agent_id": "agent-a", **(lagging_row or {"status": "done", "updated_at": NOW - 3600})}]
 
     def _counters(self):
-        conn = sqlite3.connect(self.db)
-        try:
-            return mod.read_counters(conn)
-        finally:
-            conn.close()
+        return self.store.state.get(mod.STATE_KEY, {})
 
     def test_lagging_active_agent_is_nudged_and_counted(self):
-        _make_db(self.db)
         self._fleet()
         self.assertEqual(mod.main([]), 0)
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
@@ -319,14 +378,13 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self._counters(), {"agent-a": 1})
 
     def test_coordinator_idle_and_stopped_agents_are_never_nudged(self):
-        _make_db(self.db)
         self._fleet()
         self.board = []
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
 
     def test_second_consecutive_round_escalates_to_coordinator_and_resets(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._fleet()
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a", "coord"])
@@ -335,14 +393,14 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self._counters(), {})
 
     def test_recovered_agent_counter_is_cleared_silently(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._fleet({"status": "active", "updated_at": NOW - 60})
         mod.main([])
         self.assertEqual(self.sent, [])
         self.assertEqual(self._counters(), {})
 
     def test_idle_agent_counter_is_cleared(self):
-        _make_db(self.db, '{"agent-b": 1}')
+        self.store.seed({"agent-b": 1})
         self._fleet()
         self.board = []
         self.panes["agent-a"] = "> idle"
@@ -351,7 +409,6 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self._counters(), {})
 
     def test_freshly_done_row_is_not_a_lag(self):
-        _make_db(self.db)
         self._fleet({"status": "done", "updated_at": NOW - 120})
         mod.main([])
         self.assertEqual(self.sent, [])
@@ -363,7 +420,6 @@ class MainTest(unittest.TestCase):
         self.board = [{"agent_id": "agent-a", **(row or {"status": "blocked", "updated_at": NOW - 2 * 3600})}]
 
     def test_idle_agent_with_old_blocked_row_is_nudged_and_counted(self):
-        _make_db(self.db)
         self._blocked_idle_fleet()
         self.assertEqual(mod.main([]), 0)
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
@@ -372,7 +428,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self._counters(), {"agent-a": 1})
 
     def test_blocked_idle_second_round_escalates_with_blocked_idle_text_and_resets(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._blocked_idle_fleet()
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a", "coord"])
@@ -382,20 +438,17 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self._counters(), {})
 
     def test_fresh_blocked_row_on_idle_agent_is_not_nudged(self):
-        _make_db(self.db)
         self._blocked_idle_fleet({"status": "blocked", "updated_at": NOW - 600})
         mod.main([])
         self.assertEqual(self.sent, [])
         self.assertEqual(self._counters(), {})
 
     def test_idle_agent_with_done_row_is_not_nudged(self):
-        _make_db(self.db)
         self._blocked_idle_fleet({"status": "done", "updated_at": NOW - 5 * 3600})
         mod.main([])
         self.assertEqual(self.sent, [])
 
     def test_active_blocked_agent_gets_exactly_one_message_from_the_lagging_branch(self):
-        _make_db(self.db)
         self._fleet({"status": "blocked", "updated_at": NOW - 2 * 3600})
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
@@ -403,7 +456,6 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self._counters(), {"agent-a": 1})
 
     def test_coordinator_with_old_blocked_row_is_never_nudged(self):
-        _make_db(self.db)
         self._blocked_idle_fleet({"status": "done", "updated_at": NOW - 5 * 3600})
         self.panes["coord"] = "> idle"
         self.board.append({"agent_id": "coord", "status": "blocked", "updated_at": NOW - 5 * 3600})
@@ -411,7 +463,6 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
     def test_dry_run_does_not_send_or_count_blocked_idle(self):
-        _make_db(self.db)
         self._blocked_idle_fleet()
         self.assertEqual(mod.main(["--dry-run"]), 0)
         self.assertEqual(self.sent, [])
@@ -419,7 +470,6 @@ class MainTest(unittest.TestCase):
         self.assertIn("blocked_idle=agent-a", print.call_args[0][0])
 
     def test_dry_run_sends_nothing_and_writes_nothing(self):
-        _make_db(self.db)
         self._fleet()
         self.assertEqual(mod.main(["--dry-run"]), 0)
         self.assertEqual(self.sent, [])
@@ -428,21 +478,31 @@ class MainTest(unittest.TestCase):
         self.assertIn("DRY", line)
         self.assertIn("lagging=agent-a", line)
 
-    def test_dry_run_does_not_create_a_missing_db(self):
+    def test_dry_run_issues_no_state_write(self):
         self._fleet()
-        with self.assertRaises(sqlite3.OperationalError):
-            mod.main(["--dry-run"])
-        self.assertFalse(os.path.exists(self.db))
+        self.assertEqual(mod.main(["--dry-run"]), 0)
+        self.assertEqual(self.store.puts, [])
+
+    def test_state_read_failure_exits_nonzero_without_side_effects(self):
+        # An unreadable state must not look like "no counters": nothing is sent or written.
+        self._fleet()
+        self.fail_state_read = True
+        self.assertEqual(mod.main([]), 1)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.store.puts, [])
+
+    def test_state_write_failure_exits_nonzero(self):
+        self._fleet()
+        self.fail_state_write = True
+        self.assertEqual(mod.main([]), 1)
 
     def test_dashboard_read_failure_exits_nonzero_without_side_effects(self):
-        _make_db(self.db)
         self._fleet()
         self.fail_read = True
         self.assertEqual(mod.main([]), 1)
         self.assertEqual(self.sent, [])
 
     def test_message_failure_exits_nonzero_but_still_saves_counters(self):
-        _make_db(self.db)
         self._fleet()
         self.fail_send = True
         self.assertEqual(mod.main([]), 1)
@@ -455,111 +515,94 @@ class MainTest(unittest.TestCase):
         self._fleet({"status": "done", "updated_at": NOW - 5 * 86400})
 
     def test_fresh_heartbeat_turn_on_idle_agent_is_not_nudged(self):
-        _make_db(self.db)
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", HEARTBEAT, 5 * 60)
+        self.store.add_msg("agent-a", HEARTBEAT, 5 * 60)
         mod.main([])
         self.assertEqual(self.sent, [])
         self.assertEqual(self._counters(), {})
 
     def test_same_fixture_with_old_heartbeat_is_nudged(self):
         # Counter-probe: a stall must not slip through behind a stale heartbeat.
-        _make_db(self.db)
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", HEARTBEAT, 20 * 60)
+        self.store.add_msg("agent-a", HEARTBEAT, 20 * 60)
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
         self.assertEqual(self._counters(), {"agent-a": 1})
 
     def test_real_message_after_the_heartbeat_ends_the_exemption(self):
-        _make_db(self.db)
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", HEARTBEAT, 8 * 60)
-        _add_msg(self.db, "agent-a", "Dolgozz ezen", 3 * 60, sender="someone")
+        self.store.add_msg("agent-a", HEARTBEAT, 8 * 60)
+        self.store.add_msg("agent-a", "Dolgozz ezen", 3 * 60, sender="someone")
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
 
     def test_heartbeat_from_a_non_coordinator_does_not_silence_the_monitor(self):
-        _make_db(self.db)
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", HEARTBEAT, 5 * 60, sender="agent-b")
+        self.store.add_msg("agent-a", HEARTBEAT, 5 * 60, sender="agent-b")
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
 
     def test_agent_without_a_row_and_a_fresh_heartbeat_is_not_lagging(self):
-        _make_db(self.db)
         self._fleet()
         self.board = []
-        _add_msg(self.db, "agent-a", HEARTBEAT, 2 * 60)
+        self.store.add_msg("agent-a", HEARTBEAT, 2 * 60)
         mod.main([])
         self.assertEqual(self.sent, [])
 
     def test_maintenance_exemption_keeps_the_existing_counter(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 4 * 60)
+        self.store.add_msg("agent-a", mod.NUDGE_TEXT, 4 * 60)
         mod.main([])
         self.assertEqual(self.sent, [])
         self.assertEqual(self._counters(), {"agent-a": 1})
 
     def test_pending_nudge_blocks_a_second_one_and_keeps_the_counter(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 40 * 60, status="pending")
+        self.store.add_msg("agent-a", mod.NUDGE_TEXT, 40 * 60, status="pending")
         mod.main([])
         self.assertEqual(self.sent, [])
         self.assertEqual(self._counters(), {"agent-a": 1})
 
     def test_nudge_inside_cooldown_is_not_repeated_or_counted(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 20 * 60)
+        self.store.add_msg("agent-a", mod.NUDGE_TEXT, 20 * 60)
         mod.main([])
         self.assertEqual(self.sent, [])
         self.assertEqual(self._counters(), {"agent-a": 1})
 
     def test_nudge_after_cooldown_without_update_is_repeated_and_escalates(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 40 * 60)
+        self.store.add_msg("agent-a", mod.NUDGE_TEXT, 40 * 60)
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a", "coord"])
         self.assertEqual(self._counters(), {})
 
     def test_nudge_to_another_agent_does_not_hold_this_one(self):
-        _make_db(self.db)
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-b", mod.NUDGE_TEXT, 60)
+        self.store.add_msg("agent-b", mod.NUDGE_TEXT, 60)
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
 
     def test_dry_run_reports_held_agents(self):
-        _make_db(self.db)
         self._idle_agent_fleet()
-        _add_msg(self.db, "agent-a", HEARTBEAT, 60)
+        self.store.add_msg("agent-a", HEARTBEAT, 60)
         mod.main(["--dry-run"])
         line = print.call_args[0][0]
         self.assertIn("lagging=-", line)
         self.assertIn("held=agent-a", line)
 
     def _set_last_sweep(self, ts):
-        conn = sqlite3.connect(self.db)
-        conn.execute(
-            "INSERT INTO agent_state(agent_id,state_key,state_value) VALUES(?,?,?)",
-            ("coord", mod.LAST_SWEEP_KEY, str(ts)),
-        )
-        conn.commit()
-        conn.close()
+        self.store.state[mod.LAST_SWEEP_KEY] = ts
 
     def _last_sweep(self):
-        conn = sqlite3.connect(self.db)
-        try:
-            return mod.read_last_sweep(conn)
-        finally:
-            conn.close()
+        return self.store.state.get(mod.LAST_SWEEP_KEY)
 
     def test_wake_guard_skips_the_round_and_records_the_time(self):
-        _make_db(self.db, '{"agent-a": 1}')
+        self.store.seed({"agent-a": 1})
         self._set_last_sweep(NOW - 2 * 3600)
         self._fleet()
         self.assertEqual(mod.main([]), 0)
@@ -569,14 +612,12 @@ class MainTest(unittest.TestCase):
         self.assertIn("wake-guard", print.call_args[0][0])
 
     def test_hourly_cadence_is_not_a_wake_gap(self):
-        _make_db(self.db)
         self._set_last_sweep(NOW - 61 * 60)
         self._fleet()
         mod.main([])
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
 
     def test_wake_guard_swallows_only_one_round(self):
-        _make_db(self.db)
         self._set_last_sweep(NOW - 2 * 3600)
         self._fleet()
         mod.main([])
@@ -585,19 +626,16 @@ class MainTest(unittest.TestCase):
         self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
 
     def test_every_normal_sweep_records_the_time(self):
-        _make_db(self.db)
         self._fleet()
         mod.main([])
         self.assertEqual(self._last_sweep(), NOW)
 
     def test_dry_run_does_not_record_the_time(self):
-        _make_db(self.db)
         self._fleet()
         mod.main(["--dry-run"])
         self.assertIsNone(self._last_sweep())
 
     def test_dry_run_wake_guard_writes_nothing(self):
-        _make_db(self.db)
         self._set_last_sweep(NOW - 2 * 3600)
         self._fleet()
         mod.main(["--dry-run"])

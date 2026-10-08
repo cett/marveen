@@ -47,9 +47,9 @@ its pane look active):
 Escalation is therefore slower than two hourly ticks: at least one cooldown
 between two counted nudges, longer after a sleep.
 
-The consecutive-nudge counters live in the SQLite agent_state table
+The consecutive-nudge counters live in the dashboard's agent_state store
 (agent_id=<coordinator>, state_key='blackboard_hygiene_nudges', JSON
-{"<agent>": <n>}). A counter is cleared as soon as the agent is fine or idle.
+{"<agent>": <n>}), read and written through /api/agent-state. A counter is cleared as soon as the agent is fine or idle.
 When it reaches ESCALATE_AT the script sends an "[ESZKALACIO] ..." inter-agent
 message to the coordinator (who forwards it to the owner; a command task has
 no chat tool of its own) and resets the counter.
@@ -67,11 +67,11 @@ can notice a broken monitor).
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -80,7 +80,6 @@ REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 DASHBOARD_BASE = os.environ.get("MARVEEN_DASHBOARD_BASE", "http://localhost:3420")
 STORE_DIR = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(REPO_ROOT, "store")
 DASHBOARD_TOKEN_FILE = os.path.join(STORE_DIR, ".dashboard-token")
-DB_PATH = os.path.join(STORE_DIR, "claudeclaw.db")
 
 
 
@@ -224,12 +223,12 @@ def _token():
         return f.read().strip()
 
 
-def _api(path, payload=None):
+def _api(path, payload=None, method=None):
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(
         DASHBOARD_BASE + path,
         data=data,
-        method="POST" if payload is not None else "GET",
+        method=method or ("POST" if payload is not None else "GET"),
         headers={"Authorization": "Bearer " + _token(), "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
@@ -270,70 +269,91 @@ def blackboard_row(agent, board):
     return None
 
 
-def read_counters(conn):
-    row = conn.execute(
-        "SELECT state_value FROM agent_state WHERE agent_id=? AND state_key=?",
-        (STATE_AGENT_ID, STATE_KEY),
-    ).fetchone()
-    if not row:
-        return {}
+def _state_path(key):
+    return "/api/agent-state/%s/%s" % (urllib.parse.quote(STATE_AGENT_ID, safe=""), key)
+
+
+def _state_get(key):
+    """Stored value for the key, None when nothing was written yet.
+
+    Any other failure (dashboard down, auth) propagates: reading "no counters"
+    on an outage would let the next write wipe the real ones.
+    """
     try:
-        data = json.loads(row[0])
-    except ValueError:
-        return {}
+        return _api(_state_path(key))["value"]
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+def _state_put(key, value):
+    _api(_state_path(key), {"value": value}, method="PUT")
+
+
+def read_counters():
+    data = _state_get(STATE_KEY)
     return data if isinstance(data, dict) else {}
 
 
-def write_counters(conn, counters):
-    conn.execute(
-        "INSERT INTO agent_state(agent_id,state_key,state_value,updated_at) VALUES(?,?,?,unixepoch()) "
-        "ON CONFLICT(agent_id,state_key) DO UPDATE SET state_value=excluded.state_value, "
-        "updated_at=excluded.updated_at",
-        (STATE_AGENT_ID, STATE_KEY, json.dumps(counters, sort_keys=True)),
-    )
-    conn.commit()
+def write_counters(counters):
+    _state_put(STATE_KEY, counters)
 
 
-def read_last_sweep(conn):
-    row = conn.execute(
-        "SELECT state_value FROM agent_state WHERE agent_id=? AND state_key=?",
-        (STATE_AGENT_ID, LAST_SWEEP_KEY),
-    ).fetchone()
+def read_last_sweep():
+    value = _state_get(LAST_SWEEP_KEY)
     try:
-        return int(row[0]) if row else None
+        return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
 
 
-def write_last_sweep(conn, now):
-    conn.execute(
-        "INSERT INTO agent_state(agent_id,state_key,state_value,updated_at) VALUES(?,?,?,unixepoch()) "
-        "ON CONFLICT(agent_id,state_key) DO UPDATE SET state_value=excluded.state_value, "
-        "updated_at=excluded.updated_at",
-        (STATE_AGENT_ID, LAST_SWEEP_KEY, str(int(now))),
-    )
-    conn.commit()
+def write_last_sweep(now):
+    _state_put(LAST_SWEEP_KEY, int(now))
 
 
-def latest_incoming(conn, agent):
+# GET /api/messages?agent=X returns the agent's newest messages in both
+# directions; the cap is the endpoint's maximum. Only the last two hours
+# matter to the hold logic below, so a mailbox busier than that errs towards
+# one extra nudge, never towards silence.
+MESSAGE_WINDOW = 200
+
+
+def agent_messages(agent):
+    return _api("/api/messages?agent=%s&limit=%d" % (urllib.parse.quote(agent, safe=""), MESSAGE_WINDOW)) or []
+
+
+def latest_incoming(messages, agent):
     """Newest delivered/done message addressed to the agent, stamped with its delivery time."""
-    row = conn.execute(
-        "SELECT from_agent, content, COALESCE(delivered_at, created_at) AS ts FROM agent_messages "
-        "WHERE to_agent=? AND status IN ('delivered','done') ORDER BY ts DESC, id DESC LIMIT 1",
-        (agent,),
-    ).fetchone()
-    return {"from_agent": row[0], "content": row[1], "ts": row[2]} if row else None
+    best = None
+    for m in messages:
+        if m.get("to_agent") != agent or m.get("status") not in ("delivered", "done"):
+            continue
+        ts = m.get("delivered_at") or m.get("created_at")
+        if ts is None:
+            continue
+        key = (ts, m.get("id") or 0)
+        if best is None or key > best[0]:
+            best = (key, {"from_agent": m.get("from_agent"), "content": m.get("content"), "ts": ts})
+    return best[1] if best else None
 
 
-def latest_nudge(conn, agent):
+def latest_nudge(messages, agent):
     """Newest hygiene message the coordinator sent to the agent (any non-failed status)."""
     prefix = "[blackboard-hygiene]"
-    row = conn.execute(
-        "SELECT status, created_at FROM agent_messages WHERE from_agent=? AND to_agent=? "
-        "AND substr(content,1,?)=? AND status!='failed' ORDER BY created_at DESC, id DESC LIMIT 1",
-        (COORDINATOR, agent, len(prefix), prefix),
-    ).fetchone()
-    return {"status": row[0], "ts": row[1]} if row else None
+    best = None
+    for m in messages:
+        if (
+            m.get("from_agent") != COORDINATOR
+            or m.get("to_agent") != agent
+            or not (m.get("content") or "").startswith(prefix)
+            or m.get("status") == "failed"
+        ):
+            continue
+        key = (m.get("created_at") or 0, m.get("id") or 0)
+        if best is None or key > best[0]:
+            best = (key, {"status": m.get("status"), "ts": m.get("created_at")})
+    return best[1] if best else None
 
 
 def send_message(to, content):
@@ -347,27 +367,33 @@ def main(argv):
     try:
         agents = running_agents()
         board = _api("/api/blackboard") or []
+        last_sweep = read_last_sweep()
     except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
         print("FAIL dashboard read: %s" % exc)
         return 1
 
-    # mode=rw/ro: never create an empty DB file if the path is wrong.
-    conn = sqlite3.connect("file:%s?mode=%s" % (DB_PATH, "ro" if dry_run else "rw"), uri=True, timeout=10)
     send_failures = 0
-    try:
-        if is_wake_gap(read_last_sweep(conn), now):
-            if not dry_run:
-                write_last_sweep(conn, now)
-            print("%s wake-guard: previous sweep older than %d min, skipped this round" % (
-                "DRY" if dry_run else "OK", WAKE_GUARD_SECONDS // 60))
-            return 0
+    if is_wake_gap(last_sweep, now):
+        if not dry_run:
+            try:
+                write_last_sweep(now)
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                print("FAIL state write: %s" % exc)
+                return 1
+        print("%s wake-guard: previous sweep older than %d min, skipped this round" % (
+            "DRY" if dry_run else "OK", WAKE_GUARD_SECONDS // 60))
+        return 0
 
+    # Decide first, write afterwards: a read failure in the middle leaves the
+    # counters and the messages untouched.
+    try:
         active = [a for a in agents if pane_is_active(capture_pane(a))]
         rows = {a: blackboard_row(a, board) for a in agents}
         behind = [a for a in active if is_lagging(rows[a], now)]
         lagging, held = [], []
         for a in behind:
-            if is_maintenance_active(latest_incoming(conn, a), now) or nudge_on_hold(latest_nudge(conn, a), rows[a], now):
+            messages = agent_messages(a)
+            if is_maintenance_active(latest_incoming(messages, a), now) or nudge_on_hold(latest_nudge(messages, a), rows[a], now):
                 held.append(a)
             else:
                 lagging.append(a)
@@ -376,41 +402,46 @@ def main(argv):
         blocked_idle = [a for a in agents if a not in active and is_stale_blocked(rows[a], now)]
         nudged = lagging + blocked_idle
 
-        counters = read_counters(conn)
-        new_counters, escalate = next_counters(counters, nudged, held)
+        counters = read_counters()
+    except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+        print("FAIL dashboard read: %s" % exc)
+        return 1
+    new_counters, escalate = next_counters(counters, nudged, held)
 
-        if not dry_run:
-            escalation = {
-                a: (
-                    "[ESZKALACIO] blackboard-hygiene: %s ket blackboard-hygiene kor ota aktivan dolgozik, "
-                    "de nem frissiti a blackboardot a nudge ellenere. Tovabbitsd az ownernek Telegramon." % a
-                )
-                for a in lagging
-            }
-            escalation.update(
-                {
-                    a: (
-                        "[ESZKALACIO] blackboard-hygiene (blocked-idle): %s sora ket blackboard-hygiene kor ota "
-                        "blocked es az agens tetlen, a nudge ellenere sem frissitette. Lehet, hogy beragadt "
-                        "blokk, vagy valaki segitsegere var. Tovabbitsd az ownernek Telegramon." % a
-                    )
-                    for a in blocked_idle
-                }
+    if not dry_run:
+        escalation = {
+            a: (
+                "[ESZKALACIO] blackboard-hygiene: %s ket blackboard-hygiene kor ota aktivan dolgozik, "
+                "de nem frissiti a blackboardot a nudge ellenere. Tovabbitsd az ownernek Telegramon." % a
             )
-            outbox = [(a, NUDGE_TEXT) for a in lagging] + [(a, BLOCKED_IDLE_NUDGE_TEXT) for a in blocked_idle] + [
-                (COORDINATOR, escalation[a]) for a in escalate
-            ]
-            for to, content in outbox:
-                try:
-                    send_message(to, content)
-                except (urllib.error.URLError, OSError, ValueError) as exc:
-                    send_failures += 1
-                    print("WARN message to %s failed: %s" % (to, exc))
+            for a in lagging
+        }
+        escalation.update(
+            {
+                a: (
+                    "[ESZKALACIO] blackboard-hygiene (blocked-idle): %s sora ket blackboard-hygiene kor ota "
+                    "blocked es az agens tetlen, a nudge ellenere sem frissitette. Lehet, hogy beragadt "
+                    "blokk, vagy valaki segitsegere var. Tovabbitsd az ownernek Telegramon." % a
+                )
+                for a in blocked_idle
+            }
+        )
+        outbox = [(a, NUDGE_TEXT) for a in lagging] + [(a, BLOCKED_IDLE_NUDGE_TEXT) for a in blocked_idle] + [
+            (COORDINATOR, escalation[a]) for a in escalate
+        ]
+        for to, content in outbox:
+            try:
+                send_message(to, content)
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                send_failures += 1
+                print("WARN message to %s failed: %s" % (to, exc))
+        try:
             if new_counters != counters:
-                write_counters(conn, new_counters)
-            write_last_sweep(conn, now)
-    finally:
-        conn.close()
+                write_counters(new_counters)
+            write_last_sweep(now)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            print("FAIL state write: %s" % exc)
+            return 1
 
     print(
         "%s running=%d active=%d lagging=%s held=%s blocked_idle=%s escalated=%s"

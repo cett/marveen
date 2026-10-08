@@ -2,7 +2,6 @@
   "dispositions": {
     "install-macos.sh": "C",
     "scripts/backup.sh": "C",
-    "scripts/blackboard-hygiene.py": "B",
     "scripts/doctor.sh": "B",
     "scripts/ensure-native-modules.sh": "C",
     "scripts/hooks/context-watchdog.py": "A",
@@ -40,16 +39,6 @@
       "direct": {
         "claudeclaw.db": 7,
         "sqlite3 CLI": 3
-      }
-    },
-    "scripts/blackboard-hygiene.py": {
-      "dialect": {
-        "unixepoch()": 2
-      },
-      "direct": {
-        "claudeclaw.db": 1,
-        "python sqlite3": 1,
-        "sqlite3.connect": 1
       }
     },
     "scripts/doctor.sh": {
