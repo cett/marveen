@@ -1,6 +1,6 @@
 ---
 name: intel-daily-brief
-description: Proaktív hírszerző -- napi brief 07:00-kor az intel registry-ből (store/intel.db). Az intel-collector párja, azzal együtt kapcsold be.
+description: Proaktív hírszerző -- napi brief 07:00-kor az intel registry-ből (a dashboard API-n át). Az intel-collector párja, azzal együtt kapcsold be.
 ---
 
 # Proaktív hírszerző -- napi brief

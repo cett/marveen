@@ -1,7 +1,7 @@
 {
   "counts": {
     "AUTOINCREMENT": 0,
-    "COLLATE NOCASE": 7,
+    "COLLATE NOCASE": 6,
     "FTS5 MATCH": 12,
     "GLOB": 2,
     "GROUP_CONCAT": 1,

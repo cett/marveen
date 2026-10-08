@@ -17,15 +17,20 @@ Checks (each line is OK, WARN, FAIL or INFO):
   6. multi-tenant agents (enabled for 2+ tenants) that have no channel binding at all: every source of
      theirs resolves to the default tenant, so no tenant skill is usable for them
 
+The database-side facts (checks 1, 5 and 6) come from the running dashboard, GET /api/admin/tenant-gate-status,
+so the dashboard must be up; the rest is read from the files on disk. The dashboard base URL is
+MARVEEN_DASHBOARD_BASE, else http://localhost:<WEB_PORT> (environment, then the install's .env, default 3420), and
+the bearer token is read from <store>/.dashboard-token (MARVEEN_STORE_DIR overrides the store directory).
+
 Exit code: 0 = no FAIL, 1 = at least one FAIL (or WARN with --strict). Nothing is written anywhere.
 """
 import argparse
 import json
 import os
 import re
-import sqlite3
 import sys
-import time
+import urllib.error
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.dirname(HERE)
@@ -33,7 +38,46 @@ GATE_MATCHER = "Skill|Read|Edit|Write|NotebookEdit|Glob|Grep|Bash"
 CONTEXT_SCRIPT = "tenant-context.py"
 GATE_SCRIPT = "tenant-skill-gate.py"
 LIB_SCRIPT = "tenant_context_lib.py"
-NEEDED_MIGRATIONS = {64: "tenant_channel_bindings", 65: "agent_tenant_context"}
+
+
+def web_port(root):
+    port = os.environ.get("WEB_PORT")
+    if not port:
+        try:
+            with open(os.path.join(root, ".env")) as f:
+                for line in f:
+                    m = re.match(r"\s*WEB_PORT\s*=\s*['\"]?([0-9]+)", line)
+                    if m:
+                        port = m.group(1)
+                        break
+        except OSError:
+            pass
+    return port or "3420"
+
+
+def fetch_status(root, base_url=None):
+    """-> (status, None, None) or (None, reason, level). One authenticated GET; nothing is written.
+
+    level is WARN when the dashboard answers but predates the endpoint (the report is then run before the
+    restart onto this version, which is the documented first run), FAIL for every other problem."""
+    base = (base_url or os.environ.get("MARVEEN_DASHBOARD_BASE") or "http://localhost:%s" % web_port(root)).rstrip("/")
+    store = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(root, "store")
+    try:
+        with open(os.path.join(store, ".dashboard-token")) as f:
+            token = f.read().strip()
+    except OSError as err:
+        return None, "cannot read the dashboard token (%s)" % err, "FAIL"
+    req = urllib.request.Request(base + "/api/admin/tenant-gate-status", headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8")), None, None
+    except urllib.error.HTTPError as err:
+        if err.code == 404:
+            return None, "%s has no tenant-gate-status endpoint yet (the running dashboard is older than this check); " \
+                         "migrations and tenant context are unknown until it is restarted onto this version" % base, "WARN"
+        return None, "%s answered %d" % (base, err.code), "FAIL"
+    except (urllib.error.URLError, OSError, ValueError) as err:
+        return None, "cannot reach %s (%s)" % (base, err), "FAIL"
 
 
 def main_agent_id(root):
@@ -76,7 +120,8 @@ def hook_state(settings):
     return context_wired, gate_wired, matcher_ok, fail_closed
 
 
-def check(root, db_path):
+def check(root, status, status_error=None, status_level="FAIL"):
+    """status: the dashboard's tenant-gate-status payload, or None with status_error saying why."""
     results = []  # (level, subject, message)
 
     def add(level, subject, message):
@@ -89,26 +134,16 @@ def check(root, db_path):
         else:
             add("FAIL", "script", "%s missing in %s (the hook registration would be refused as unsafe)" % (name, hooks_dir))
 
-    con = None
-    try:
-        con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True, timeout=3)
-        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    except sqlite3.Error as err:
-        add("FAIL", "database", "cannot read %s (%s)" % (db_path, err))
-        tables = set()
-    if con is not None:
-        versions = set()
-        try:
-            versions = {r[0] for r in con.execute("SELECT version FROM schema_version")}
-        except sqlite3.Error:
-            pass
-        for v, table in NEEDED_MIGRATIONS.items():
-            if v in versions and table in tables:
-                add("OK", "migration", "%04d applied, table %s exists" % (v, table))
+    if status is None:
+        add(status_level, "dashboard", "cannot read the tenant gate status: %s" % status_error)
+    else:
+        for m in status.get("migrations", []):
+            if m.get("applied") and m.get("table_exists"):
+                add("OK", "migration", "%04d applied, table %s exists" % (m["version"], m["table"]))
             else:
                 add("FAIL", "migration",
                     "%04d not applied or table %s missing: migrate the dashboard first (the prompt hook refuses "
-                    "prompts without agent_tenant_context)" % (v, table))
+                    "prompts without agent_tenant_context)" % (m["version"], m["table"]))
 
     agents_dir = os.path.join(root, "agents")
     agents = sorted(d for d in os.listdir(agents_dir) if not d.startswith(".") and os.path.isdir(os.path.join(agents_dir, d))) \
@@ -146,53 +181,41 @@ def check(root, db_path):
     else:
         add("INFO", "main agent", "MAIN_AGENT_ID not found (env or .env), exemption not checked")
 
-    if con is not None and "agent_tenant_context" in tables:
-        now = int(time.time())
-        rows = {r[0]: r for r in con.execute("SELECT agent_id, status, tenant_id, updated_at FROM agent_tenant_context")}
+    if status is not None:
+        now = int(status.get("now") or 0)
+        rows = {r["agent_id"]: r for r in status.get("contexts", [])}
         for name in wired:
             r = rows.get(name)
             if r is None:
                 add("INFO", name, "no agent_tenant_context row yet: not restarted, or no prompt since the hooks were wired")
             else:
-                add("INFO", name, "hook active: status=%s tenant=%s age=%ds" % (r[1], r[2] or "-", now - int(r[3] or 0)))
-        for agent_id, status, _, _ in rows.values():
-            if status in ("unknown", "conflict"):
-                add("INFO", agent_id, "current context is %s: tenant skills are denied until its next resolvable prompt" % status)
+                add("INFO", name, "hook active: status=%s tenant=%s age=%ds" % (r["status"], r["tenant_id"] or "-", now - int(r["updated_at"] or 0)))
+        for r in rows.values():
+            if r["status"] in ("unknown", "conflict"):
+                add("INFO", r["agent_id"], "current context is %s: tenant skills are denied until its next resolvable prompt" % r["status"])
 
-    if con is not None and {"tenant_agent_availability", "tenants"} <= tables:
-        per_agent = {}
-        for agent_id, tenant in con.execute(
-            "SELECT a.agent_id, a.tenant_id FROM tenant_agent_availability a JOIN tenants t ON t.id = a.tenant_id "
-            "WHERE a.enabled = 1 AND t.disabled_at IS NULL"
-        ):
-            per_agent.setdefault(agent_id, set()).add(tenant)
-        multi = sorted(a for a, t in per_agent.items() if len(t) > 1)
-        bound = set()
-        if "tenant_channel_bindings" in tables:
-            bound = {r[0] for r in con.execute("SELECT DISTINCT agent_id FROM tenant_channel_bindings")}
-        for a in multi:
-            if a in bound:
-                add("OK", a, "multi-tenant agent (%d tenants) with channel bindings" % len(per_agent[a]))
+        multi = status.get("multi_tenant_agents", [])
+        for m in multi:
+            if m["has_binding"]:
+                add("OK", m["agent_id"], "multi-tenant agent (%d tenants) with channel bindings" % m["tenant_count"])
             else:
-                add("WARN", a, "multi-tenant agent (%d tenants) with NO channel binding: every source resolves to the "
-                               "default tenant, no tenant skill is usable for it (PUT /api/v1/admin/channel-bindings)"
-                    % len(per_agent[a]))
+                add("WARN", m["agent_id"], "multi-tenant agent (%d tenants) with NO channel binding: every source resolves to the "
+                                           "default tenant, no tenant skill is usable for it (PUT /api/v1/admin/channel-bindings)"
+                    % m["tenant_count"])
         if not multi:
             add("INFO", "tenants", "no agent is enabled for 2+ tenants: the gate has nothing to separate yet")
-    if con is not None:
-        con.close()
     return results
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", default=DEFAULT_ROOT, help="project root (default: this checkout)")
-    ap.add_argument("--db", default=None, help="SQLite file (default: LEDGER_DB_PATH or <root>/store/claudeclaw.db)")
+    ap.add_argument("--base-url", default=None, help="dashboard base URL (default: MARVEEN_DASHBOARD_BASE or http://localhost:<WEB_PORT>)")
     ap.add_argument("--strict", action="store_true", help="exit 1 on WARN too")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
-    db = args.db or os.environ.get("LEDGER_DB_PATH") or os.path.join(args.root, "store", "claudeclaw.db")
-    results = check(args.root, db)
+    status, status_error, status_level = fetch_status(args.root, args.base_url)
+    results = check(args.root, status, status_error, status_level)
     fails = sum(1 for r in results if r["level"] == "FAIL")
     warns = sum(1 for r in results if r["level"] == "WARN")
     if args.json:

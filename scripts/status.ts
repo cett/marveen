@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { platform } from 'node:os'
-import { SERVICE_ID, launchdStatusPattern, systemdStatusUnits } from '../src/config.js'
+import { SERVICE_ID, WEB_PORT, launchdStatusPattern, systemdStatusUnits } from '../src/config.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..')
@@ -79,30 +79,33 @@ if (existsSync(envPath)) {
   fail('.env fajl', 'nem talalhato — futtasd: npm run setup')
 }
 
-// Adatbázis
-const dbPath = join(PROJECT_ROOT, 'store', 'claudeclaw.db')
-if (existsSync(dbPath)) {
-  ok('Adatbazis', 'letezik')
+// Adatbázis (a futó dashboardon át, nem a fájlt nyitjuk meg)
+const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
+async function apiGet(path: string): Promise<any> {
+  const token = readFileSync(tokenPath, 'utf-8').trim()
+  const res = await fetch(`http://localhost:${WEB_PORT}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+if (existsSync(tokenPath)) {
   try {
-    const sqlite = execSync(
-      `sqlite3 "${dbPath}" "SELECT COUNT(*) FROM memories;" 2>/dev/null`,
-      { encoding: 'utf-8' }
-    ).trim()
-    ok('Emlekek szama', sqlite)
+    const stats = await apiGet('/api/memories/stats')
+    ok('Adatbazis', 'valaszol a dashboardon at')
+    ok('Emlekek szama', String(stats.total))
+    try {
+      const schedules = await apiGet('/api/schedules')
+      ok('Utemezett feladatok', String(schedules.length))
+    } catch {
+      warn('Utemezett feladatok', 'nem sikerult lekerdezni')
+    }
   } catch {
-    warn('Emlekek szama', 'nem sikerult lekerdezni')
-  }
-  try {
-    const taskCount = execSync(
-      `sqlite3 "${dbPath}" "SELECT COUNT(*) FROM scheduled_tasks;" 2>/dev/null`,
-      { encoding: 'utf-8' }
-    ).trim()
-    ok('Utemezett feladatok', taskCount)
-  } catch {
-    warn('Utemezett feladatok', 'nem sikerult lekerdezni')
+    warn('Adatbazis', 'a dashboard nem valaszol, az emlekek es feladatok szama nem elerheto')
   }
 } else {
-  warn('Adatbazis', 'meg nem letezik (elso inditaskor jon letre)')
+  warn('Adatbazis', 'nincs dashboard token (a dashboard meg nem indult el)')
 }
 
 // Szolgáltatás állapot

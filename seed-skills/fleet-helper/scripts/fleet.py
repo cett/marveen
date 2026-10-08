@@ -18,7 +18,8 @@ Config (no hardcoded paths or secrets):
 import json
 import os
 import sys
-import sqlite3
+import time
+from datetime import date, datetime
 import urllib.request
 import urllib.error
 
@@ -45,10 +46,6 @@ def base_url():
 def token():
     with open(os.path.join(project_dir(), "store", ".dashboard-token")) as f:
         return f.read().strip()
-
-
-def db_path():
-    return os.path.join(project_dir(), "store", "claudeclaw.db")
 
 
 def api(method, path, payload=None, timeout=20):
@@ -93,33 +90,124 @@ def list_agents():
     return api("GET", "/api/agents")
 
 
-def _kanban(where, params=()):
-    con = sqlite3.connect(db_path())
-    con.row_factory = sqlite3.Row
-    try:
-        rows = con.execute(
-            "SELECT id, title, status, assignee, priority, project, due_date, "
-            "updated_at FROM kanban_cards WHERE archived_at IS NULL AND " + where,
-            params).fetchall()
-    finally:
-        con.close()
-    return [dict(r) for r in rows]
+_KANBAN_FIELDS = ("id", "title", "status", "assignee", "priority", "project", "due_date", "updated_at")
+
+
+def _kanban(keep, sort_key=None, reverse=False):
+    """Open (non-archived) cards from GET /api/kanban, filtered and ordered here."""
+    cards = api("GET", "/api/kanban")
+    rows = [{k: c.get(k) for k in _KANBAN_FIELDS} for c in cards if keep(c)]
+    if sort_key:
+        rows.sort(key=sort_key, reverse=reverse)
+    return rows
 
 
 def kanban_due_today():
+    today = date.today()
     return _kanban(
-        "due_date IS NOT NULL AND status != 'done' "
-        "AND date(due_date,'unixepoch','localtime') <= date('now','localtime') "
-        "ORDER BY due_date")
+        lambda c: c.get("due_date") is not None and c.get("status") != "done"
+        and datetime.fromtimestamp(c["due_date"]).date() <= today,
+        sort_key=lambda c: c["due_date"])
 
 
 def kanban_stuck(idle_seconds=14400):
-    return _kanban("status = 'in_progress' AND updated_at < strftime('%s','now') - ? "
-                   "ORDER BY updated_at", (idle_seconds,))
+    cutoff = int(time.time()) - idle_seconds
+    return _kanban(lambda c: c.get("status") == "in_progress" and c.get("updated_at") < cutoff,
+                   sort_key=lambda c: c["updated_at"])
 
 
 def kanban_by_status(status):
-    return _kanban("status = ? ORDER BY priority DESC, updated_at DESC", (status,))
+    return _kanban(lambda c: c.get("status") == status,
+                   sort_key=lambda c: (c.get("priority") or "", c.get("updated_at") or 0), reverse=True)
+
+
+def _memory_agents():
+    """Every agent_id that owns a memory (the stats endpoint knows them all)."""
+    return sorted(api("GET", "/api/memories/stats").get("byAgent", {}))
+
+
+def _agent_memories(agent, category):
+    """All of one agent's memories in a tier, paged. Shared-tier rows of other
+    agents come back in the same listing and are dropped (each row belongs to
+    exactly one agent here, so nothing is counted twice)."""
+    from urllib.parse import quote
+    out, offset = [], 0
+    while True:
+        page = api("GET", f"/api/memories?agent={quote(agent)}&category={category}&limit=200&offset={offset}")
+        rows = page if isinstance(page, list) else page.get("memories", [])
+        out += [m for m in rows if m.get("agent_id") == agent]
+        if len(rows) < 200:
+            return out
+        offset += 200
+
+
+def memories_recent(hours=24):
+    """hot/warm memories created in the last `hours`, every agent, oldest first per agent."""
+    cutoff = int(time.time()) - hours * 3600
+    rows = [m for a in _memory_agents() for c in ("hot", "warm") for m in _agent_memories(a, c)
+            if m["created_at"] > cutoff]
+    rows.sort(key=lambda m: (m["agent_id"], m["created_at"]))
+    return [{k: m.get(k) for k in ("agent_id", "content", "keywords")} for m in rows]
+
+
+def memory_health():
+    """Total memories vs memories with an embedding (the stats endpoint counts both
+    embedding columns; a backfill count of 0 means nothing is missing, not 0% vectorised)."""
+    st = api("GET", "/api/memories/stats")
+    return {"total": st["total"], "with_emb": st["withEmbedding"]}
+
+
+def memories_stale_hot(days=7):
+    """hot memories whose last touch (accessed_at, else created_at) is older than `days`."""
+    cutoff = int(time.time()) - days * 86400
+    rows = [m for a in _memory_agents() for m in _agent_memories(a, "hot")
+            if (m.get("accessed_at") or m["created_at"]) < cutoff]
+    return [{k: m.get(k) for k in ("id", "content", "accessed_at")} for m in rows]
+
+
+def memories_to_cold(ids):
+    """Move hot/warm memories to the cold tier through PUT (content is resent unchanged).
+    Unlike a raw UPDATE this also stamps accessed_at and writes a memory_versions row."""
+    wanted, moved = set(int(i) for i in ids), []
+    for a in _memory_agents():
+        for c in ("hot", "warm"):
+            for m in _agent_memories(a, c):
+                if m["id"] in wanted:
+                    api("PUT", f"/api/memories/{m['id']}", {"content": m["content"], "category": "cold"})
+                    moved.append(m["id"])
+    return {"moved": sorted(set(moved)), "not_found": sorted(wanted - set(moved))}
+
+
+def kanban_open():
+    """Planned / in_progress / waiting cards, ordered by project, then priority descending."""
+    rows = _kanban(lambda c: c.get("status") in ("planned", "in_progress", "waiting"))
+    rows.sort(key=lambda c: c["priority"] or "", reverse=True)
+    rows.sort(key=lambda c: c["project"] or "")
+    return [{k: c.get(k) for k in ("id", "title", "status", "project", "priority", "assignee")} for c in rows]
+
+
+def ideas_top(n=5):
+    """new/reviewed ideas that carry impact and effort, best (impact - effort) first."""
+    items = []
+    for status in ("new", "reviewed"):
+        offset = 0
+        while True:
+            page = api("GET", f"/api/ideas?status={status}&limit=100&offset={offset}")
+            items += page["ideas"]
+            offset += 100
+            if offset >= page["total"]:
+                break
+    scored = [dict(i, score=i["impact"] - i["effort"]) for i in items
+              if i.get("impact") is not None and i.get("effort") is not None]
+    scored.sort(key=lambda i: (i["score"], i["impact"]), reverse=True)
+    return [{k: i.get(k) for k in ("id", "title", "category", "impact", "effort", "score")} for i in scored[:n]]
+
+
+def skill_usage_30d():
+    """Skills used in the last 30 days: name, count, last use (unix seconds), most used first."""
+    rows = [r for r in api("GET", "/api/skill-usage/summary") if r["count_30d"] > 0]
+    rows.sort(key=lambda r: r["count_30d"], reverse=True)
+    return [{"skill_name": r["skill_name"], "n": r["count_30d"], "last_used_at": r["last_used_at"]} for r in rows]
 
 
 _MDV2_SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
@@ -160,6 +248,20 @@ def main(argv):
         _out(kanban_stuck(int(rest[0]) if rest else 14400))
     elif cmd == "kanban-status":
         _out(kanban_by_status(rest[0]))
+    elif cmd == "kanban-open":
+        _out(kanban_open())
+    elif cmd == "mem-recent":
+        _out(memories_recent(int(rest[0]) if rest else 24))
+    elif cmd == "mem-health":
+        _out(memory_health())
+    elif cmd == "mem-stale-hot":
+        _out(memories_stale_hot(int(rest[0]) if rest else 7))
+    elif cmd == "mem-to-cold":
+        _out(memories_to_cold(rest))
+    elif cmd == "ideas-top":
+        _out(ideas_top(int(rest[0]) if rest else 5))
+    elif cmd == "skill-usage-30d":
+        _out(skill_usage_30d())
     else:
         sys.stderr.write(f"unknown command: {cmd}\n")
         return 2

@@ -20,6 +20,14 @@ WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/nu
 WEB_PORT="${WEB_PORT:-3420}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
+# Authenticated GET against the dashboard; prints nothing and fails when the
+# token is missing or the dashboard does not answer. The doctor reads database
+# facts through the API instead of opening the database file.
+api_get() {
+  [ -f store/.dashboard-token ] || return 1
+  curl -sf --max-time 5 -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}$1" 2>/dev/null
+}
+
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
 
 # --- Services (systemd on Linux, launchd on macOS) ---
@@ -60,12 +68,15 @@ fi
 # -- see the HEARTBEAT_AGENT_ENABLED gate in src/index.ts. Warning about a
 # missing session on an install that never asked for it is pure noise, so only
 # complain when it is actually switched on. The flag can come from the
-# system_config DB row (config-overrides.json was migrated and retired, S8B)
-# or from .env -- same db-over-env precedence as config.ts's cfg().
-HB_AGENT=""
-if [ -f store/claudeclaw.db ]; then
-  HB_AGENT=$(sqlite3 store/claudeclaw.db "SELECT value FROM system_config WHERE key='HEARTBEAT_AGENT_ENABLED';" 2>/dev/null)
-fi
+# stored system config (config-overrides.json was migrated and retired, S8B)
+# or from .env -- GET /api/settings already returns the effective value with
+# config.ts's db-over-env precedence; .env is the fallback when the dashboard
+# does not answer.
+HB_AGENT=$(api_get /api/settings | python3 -c "
+import sys, json
+v = next((s['value'] for s in json.load(sys.stdin)['settings'] if s['key'] == 'HEARTBEAT_AGENT_ENABLED'), None)
+print('' if v is None else ('1' if v in (True, 1, '1', 'true') else '0'))
+" 2>/dev/null)
 if [ -z "$HB_AGENT" ]; then
   HB_AGENT=$(grep -E "^HEARTBEAT_AGENT_ENABLED=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')
 fi
@@ -211,11 +222,11 @@ fi
 
 # --- Database ---
 echo -e "\n${BOLD}Database${RESET}"
-if [ -f "store/claudeclaw.db" ]; then
-  MEM=$(sqlite3 store/claudeclaw.db "SELECT COUNT(*) FROM memories;" 2>/dev/null || echo "?")
-  ok "claudeclaw.db: alive ($MEM memories)"
+MEM=$(api_get /api/memories/stats | python3 -c "import sys, json; print(json.load(sys.stdin)['total'])" 2>/dev/null)
+if [ -n "$MEM" ]; then
+  ok "Database: alive via the dashboard ($MEM memories)"
 else
-  fail "store/claudeclaw.db missing"
+  fail "Database: the dashboard could not read the memory count"
 fi
 
 # --- Scheduled tasks ---

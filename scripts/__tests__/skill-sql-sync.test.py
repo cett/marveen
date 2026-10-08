@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/hooks/skill-sql-sync.py, tenant skill handling.
+"""Unit tests for scripts/hooks/skill-sql-sync.py (the file-system half).
 
-A generated tenant skill copy (header "(tenant skill <id>)") lives under an
-agent's skills dir. When that agent edits it, the hook must update THAT tenant
-row and never mint agent/<id>/<dir> or touch a row the agent does not qualify
-for (the header is only a claim). Runs against a temp SQLite DB and a temp
-agents dir by patching the module's DB_PATH / AGENTS_BASE_DIR.
+The hook derives the skill id from the path, parses the generated header, reads
+the file and sends the result to POST /api/skill-sync; the database half
+(upsert, tenant qualification, companion limits) is tested in
+src/__tests__/skill-sync-route.test.ts. Here the dashboard call is replaced by a
+recorder, so the tests pin WHAT the hook sends and what it refuses to send
+(forged tenant headers outside an agent skills dir, wrong directory names,
+oversize or unsafe companion paths), plus the failure path: a dashboard that
+cannot be reached must produce the "NOT in DB" warning, never a crash.
 
 Privacy: only neutral fixture data; no real agent names, tokens, or chat IDs.
 """
+import base64
 import importlib.util
+import io
+import json
 import os
-import sqlite3
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
 _HOOK_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "hooks", "skill-sql-sync.py",
 )
+sys.dont_write_bytecode = True
 _spec = importlib.util.spec_from_file_location("skill_sql_sync", _HOOK_PATH)
 hook = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(hook)  # type: ignore[union-attr]
@@ -30,52 +38,58 @@ def tenant_header(skill_id: str) -> str:
     return f"{hook.GENERATED_MARKER} (tenant skill {skill_id}). Edit it in the dashboard. -->"
 
 
-class TenantSync(unittest.TestCase):
+class Recorder:
+    """Stands in for hook._post: records payloads, answers with a canned message."""
+
+    def __init__(self):
+        self.calls = []
+        self.fail = None
+
+    def __call__(self, payload):
+        if self.fail:
+            raise self.fail
+        self.calls.append(payload)
+        return f"recorded {payload['kind']}"
+
+
+class HookTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.agents = os.path.join(self.tmp.name, "agents")
-        self.db = os.path.join(self.tmp.name, "t.db")
-        hook.AGENTS_BASE_DIR = self.agents
-        hook.DB_PATH = self.db
-        c = sqlite3.connect(self.db)
-        c.executescript(
-            """CREATE TABLE skills (id TEXT PRIMARY KEY, name TEXT, description TEXT, content TEXT,
-                 tenant_id TEXT, is_global INTEGER, created_by TEXT, created_at INTEGER, updated_at INTEGER);
-               CREATE TABLE skill_tenant_access (skill_id TEXT, tenant_id TEXT);
-               CREATE TABLE tenant_agent_availability (tenant_id TEXT, agent_id TEXT, enabled INTEGER);"""
-        )
-        c.execute("INSERT INTO skills VALUES ('acme-demo','acme-demo','', 'old body', 'acme', 0, NULL, 0, 0)")
-        c.execute("INSERT INTO tenant_agent_availability VALUES ('acme','ann',1)")
-        c.execute("INSERT INTO tenant_agent_availability VALUES ('beta','bob',1)")
-        c.commit()
-        c.close()
+        root = self.tmp.name
+        self._saved = (hook.HOME, hook.MARVEEN_ROOT, hook.AGENTS_BASE_DIR, hook._post)
+        hook.HOME = os.path.join(root, "home")
+        hook.MARVEEN_ROOT = os.path.join(root, "proj")
+        hook.AGENTS_BASE_DIR = os.path.join(hook.MARVEEN_ROOT, "agents")
+        self.post = Recorder()
+        hook._post = self.post
+        os.environ["MAIN_AGENT_ID"] = "mainx"
 
     def tearDown(self):
+        hook.HOME, hook.MARVEEN_ROOT, hook.AGENTS_BASE_DIR, hook._post = self._saved
+        os.environ.pop("MAIN_AGENT_ID", None)
         self.tmp.cleanup()
 
+    def _run_main(self, tool_input, tool_name="Edit"):
+        old = sys.stdin
+        sys.stdin = io.StringIO(json.dumps({"tool_name": tool_name, "tool_input": tool_input}))
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                hook.main()
+        finally:
+            sys.stdin = old
+        self.assertEqual(cm.exception.code, 0)  # the hook never fails the agent
+        return out.getvalue(), err.getvalue()
+
+
+class TenantSync(HookTestCase):
     def _file(self, agent: str, dir_name: str, body: str, skill_id: str = "acme-demo") -> str:
-        d = os.path.join(self.agents, agent, ".claude", "skills", dir_name)
+        d = os.path.join(hook.AGENTS_BASE_DIR, agent, ".claude", "skills", dir_name)
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, "SKILL.md")
-        content = FM + tenant_header(skill_id) + "\n" + body
         with open(p, "w") as f:
-            f.write(content)
+            f.write(FM + tenant_header(skill_id) + "\n" + body)
         return p
-
-    def _content(self, skill_id: str = "acme-demo"):
-        c = sqlite3.connect(self.db)
-        try:
-            r = c.execute("SELECT content FROM skills WHERE id = ?", (skill_id,)).fetchone()
-            return r[0] if r else None
-        finally:
-            c.close()
-
-    def _ids(self):
-        c = sqlite3.connect(self.db)
-        try:
-            return {r[0] for r in c.execute("SELECT id FROM skills")}
-        finally:
-            c.close()
 
     def _run(self, path: str) -> str:
         with open(path) as f:
@@ -84,61 +98,32 @@ class TenantSync(unittest.TestCase):
         self.assertTrue(hdr and hdr[1])
         return hook._sync_tenant_skill(path, content, hdr[0])
 
-    def test_edit_by_owning_tenant_agent_updates_the_tenant_row_without_the_header(self):
+    def test_edit_sends_the_tenant_id_the_agent_and_the_directory(self):
         p = self._file("ann", "acme-demo", "new body\n")
-        self.assertIn("updated tenant skill acme-demo", self._run(p))
-        self.assertEqual(self._content(), FM + "new body\n")
-        self.assertEqual(self._ids(), {"acme-demo"})   # no agent/<id>/<dir> row minted
+        self.assertEqual(self._run(p), "recorded tenant")
+        call = self.post.calls[0]
+        self.assertEqual((call["kind"], call["header_id"], call["agent_id"], call["dir_name"]),
+                         ("tenant", "acme-demo", "ann", "acme-demo"))
+        self.assertIn("new body", call["content"])
 
-    def test_agent_of_another_tenant_cannot_overwrite_the_row_with_a_forged_header(self):
-        p = self._file("bob", "acme-demo", "forged\n")
-        self.assertIn("does not qualify", self._run(p))
-        self.assertEqual(self._content(), "old body")
-
-    def test_grantee_tenant_agent_may_edit(self):
-        c = sqlite3.connect(self.db)
-        c.execute("INSERT INTO skill_tenant_access VALUES ('acme-demo','beta')")
-        c.commit(); c.close()
-        p = self._file("bob", "acme-demo", "by grantee\n")
-        self.assertIn("updated tenant skill", self._run(p))
-        self.assertEqual(self._content(), FM + "by grantee\n")
-
-    def test_directory_must_match_the_header_id(self):
+    def test_directory_must_match_the_header_id_and_nothing_is_sent(self):
         p = self._file("ann", "some-other-dir", "x\n")
         self.assertIn("does not match directory", self._run(p))
-        self.assertEqual(self._content(), "old body")
+        self.assertEqual(self.post.calls, [])
 
-    def test_unknown_id_and_fleet_rows_are_ignored(self):
-        p = self._file("ann", "nope", "x\n", skill_id="nope")
-        self.assertIn("no tenant skill nope", self._run(p))
-        c = sqlite3.connect(self.db)
-        c.execute("INSERT INTO skills VALUES ('global-x','global-x','', 'fleet body', 'fleet', 1, NULL, 0, 0)")
-        c.commit(); c.close()
-        p2 = self._file("ann", "global-x", "x\n", skill_id="global-x")
-        self.assertIn("no tenant skill global-x", self._run(p2))
-        self.assertEqual(self._content("global-x"), "fleet body")
-
-    def test_header_outside_an_agent_skills_dir_is_ignored(self):
+    def test_header_outside_an_agent_skills_dir_is_not_sent(self):
         p = os.path.join(self.tmp.name, "elsewhere", "acme-demo", "SKILL.md")
         os.makedirs(os.path.dirname(p))
         with open(p, "w") as f:
             f.write(FM + tenant_header("acme-demo") + "\nx\n")
         self.assertIn("outside an agent skills dir", self._run(p))
+        self.assertEqual(self.post.calls, [])
 
-    def test_main_routes_a_tenant_copy_to_its_row_not_to_an_agent_row(self):
-        import io, json, sys
+    def test_main_routes_a_tenant_copy_to_the_tenant_kind_not_the_agent_row(self):
         p = self._file("ann", "acme-demo", "via main\n")
-        payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": p}})
-        old = sys.stdin
-        sys.stdin = io.StringIO(payload)
-        try:
-            with self.assertRaises(SystemExit) as cm:
-                hook.main()
-        finally:
-            sys.stdin = old
-        self.assertEqual(cm.exception.code, 0)
-        self.assertEqual(self._content(), FM + "via main\n")
-        self.assertEqual(self._ids(), {"acme-demo"})
+        _, err = self._run_main({"file_path": p})
+        self.assertEqual([c["kind"] for c in self.post.calls], ["tenant"])
+        self.assertIn("recorded tenant", err)
 
     def test_read_generated_header_distinguishes_tenant_and_fleet(self):
         self.assertEqual(hook.read_generated_header(FM + tenant_header("acme-demo") + "\n"), ("acme-demo", True))
@@ -153,38 +138,50 @@ class TenantSync(unittest.TestCase):
         self.assertIsNone(hook.tenant_dir_name("..."))
 
 
-class CompanionSync(unittest.TestCase):
-    """Edits of scripts/, references/ ... files inside a skill dir go to skill_files."""
+class PlainSkillSync(HookTestCase):
+    def test_global_skill_md_is_sent_as_a_skill_with_its_content(self):
+        p = os.path.join(hook.HOME, ".claude", "skills", "demo", "SKILL.md")
+        os.makedirs(os.path.dirname(p))
+        with open(p, "w") as f:
+            f.write(FM + "body\n")
+        _, err = self._run_main({"file_path": p}, tool_name="Write")
+        self.assertEqual(self.post.calls, [{"kind": "skill", "skill_id": "global/demo", "content": FM + "body\n"}])
+        self.assertIn("recorded skill", err)
 
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        root = self.tmp.name
-        self._saved = (hook.HOME, hook.MARVEEN_ROOT, hook.AGENTS_BASE_DIR, hook.DB_PATH)
-        hook.HOME = os.path.join(root, "home")
-        hook.MARVEEN_ROOT = os.path.join(root, "proj")
-        hook.AGENTS_BASE_DIR = os.path.join(hook.MARVEEN_ROOT, "agents")
-        hook.DB_PATH = os.path.join(root, "t.db")
-        os.environ["MAIN_AGENT_ID"] = "mainx"
-        c = sqlite3.connect(hook.DB_PATH)
-        c.executescript(
-            """CREATE TABLE skills (id TEXT PRIMARY KEY, name TEXT, description TEXT, content TEXT,
-                 tenant_id TEXT, is_global INTEGER, created_by TEXT, created_at INTEGER, updated_at INTEGER);
-               CREATE TABLE skill_tenant_access (skill_id TEXT, tenant_id TEXT);
-               CREATE TABLE tenant_agent_availability (tenant_id TEXT, agent_id TEXT, enabled INTEGER);
-               CREATE TABLE skill_files (skill_id TEXT NOT NULL, rel_path TEXT NOT NULL, content BLOB NOT NULL,
-                 mode INTEGER NOT NULL DEFAULT 420, created_at INTEGER, updated_at INTEGER,
-                 PRIMARY KEY (skill_id, rel_path));"""
-        )
-        c.execute("INSERT INTO skills VALUES ('global/demo','demo','','body','fleet',1,NULL,0,0)")
-        c.execute("INSERT INTO skills VALUES ('acme-demo','acme-demo','','tbody','acme',0,NULL,0,0)")
-        c.execute("INSERT INTO tenant_agent_availability VALUES ('acme','ann',1)")
-        c.commit()
-        c.close()
+    def test_agent_skill_md_maps_to_its_agent_id_and_the_main_agent_to_the_project_skills(self):
+        for base, expected in (
+            (os.path.join(hook.AGENTS_BASE_DIR, "ann", ".claude", "skills", "loc"), "agent/ann/loc"),
+            (os.path.join(hook.MARVEEN_ROOT, ".claude", "skills", "loc"), "agent/mainx/loc"),
+        ):
+            os.makedirs(base)
+            p = os.path.join(base, "SKILL.md")
+            with open(p, "w") as f:
+                f.write("b")
+            self._run_main({"file_path": p}, tool_name="MultiEdit")
+            self.assertEqual(self.post.calls[-1]["skill_id"], expected)
 
-    def tearDown(self):
-        hook.HOME, hook.MARVEEN_ROOT, hook.AGENTS_BASE_DIR, hook.DB_PATH = self._saved
-        os.environ.pop("MAIN_AGENT_ID", None)
-        self.tmp.cleanup()
+    def test_other_tools_and_non_skill_files_are_ignored(self):
+        p = os.path.join(hook.HOME, ".claude", "skills", "demo", "SKILL.md")
+        self._run_main({"file_path": p}, tool_name="Read")
+        self._run_main({"file_path": os.path.join(self.tmp.name, "notes.md")})
+        self.assertEqual(self.post.calls, [])
+
+    def test_unreachable_dashboard_warns_the_agent_and_still_exits_zero(self):
+        p = os.path.join(hook.HOME, ".claude", "skills", "demo", "SKILL.md")
+        os.makedirs(os.path.dirname(p))
+        with open(p, "w") as f:
+            f.write("body")
+        self.post.fail = ConnectionRefusedError("refused")
+        out, err = self._run_main({"file_path": p})
+        self.assertIn("NOT in DB", err)
+        ctx = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(ctx["hookEventName"], "PostToolUse")
+        self.assertIn("NOT written back", ctx["additionalContext"])
+        self.assertIn("global/demo", ctx["additionalContext"])
+
+
+class CompanionSync(HookTestCase):
+    """Edits of scripts/, references/ ... files inside a skill dir."""
 
     def _write(self, path: str, data: bytes, mode: int = 0o644, skill_md: "str | None" = None) -> str:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -203,57 +200,38 @@ class CompanionSync(unittest.TestCase):
             d = os.path.dirname(d)
         return d
 
-    def _files(self, skill_id: str):
-        c = sqlite3.connect(hook.DB_PATH)
-        try:
-            return {r[0]: (bytes(r[1]), r[2]) for r in c.execute(
-                "SELECT rel_path, content, mode FROM skill_files WHERE skill_id = ?", (skill_id,))}
-        finally:
-            c.close()
-
     def _sync(self, path: str) -> str:
         loc = hook._companion_location(path)
         self.assertIsNotNone(loc, path)
         return hook._sync_companion_file(path, loc[0], loc[1])
 
-    def test_global_skill_companion_is_stored_with_exec_bit_and_binary_content(self):
+    def test_global_skill_companion_is_sent_with_binary_content_and_the_file_mode(self):
         base = os.path.join(hook.HOME, ".claude", "skills", "demo")
         p = self._write(os.path.join(base, "scripts", "run.sh"), b"\x00\xffbin\n", 0o755, skill_md="body")
-        self.assertIn("stored companion scripts/run.sh of global/demo", self._sync(p))
-        self.assertEqual(self._files("global/demo"), {"scripts/run.sh": (b"\x00\xffbin\n", 0o755)})
+        self.assertEqual(self._sync(p), "recorded companion")
+        call = self.post.calls[0]
+        self.assertEqual((call["skill_id"], call["rel_path"], call["mode"]), ("global/demo", "scripts/run.sh", 0o755))
+        self.assertEqual(base64.b64decode(call["content_base64"]), b"\x00\xffbin\n")
+        self.assertNotIn("tenant_agent", call)
 
-    def test_update_replaces_and_a_skill_md_is_not_a_companion(self):
+    def test_skill_md_is_not_a_companion_and_tool_caches_are_skipped(self):
         base = os.path.join(hook.HOME, ".claude", "skills", "demo")
-        p = self._write(os.path.join(base, "notes.md"), b"v1", skill_md="body")
-        self._sync(p)
-        self._write(p, b"v2")
-        self._sync(p)
-        self.assertEqual(self._files("global/demo"), {"notes.md": (b"v2", 0o644)})
+        self._write(os.path.join(base, "notes.md"), b"v1", skill_md="body")
         self.assertIsNone(hook._companion_location(os.path.join(base, "SKILL.md")))
+        cache = self._write(os.path.join(base, "__pycache__", "m.pyc"), b"junk")
+        self.assertIsNone(hook._companion_location(cache))
 
     def test_agent_local_skill_maps_to_its_agent_row(self):
-        c = sqlite3.connect(hook.DB_PATH)
-        c.execute("INSERT INTO skills VALUES ('agent/ann/loc','loc','','b','fleet',0,NULL,0,0)")
-        c.commit(); c.close()
         base = os.path.join(hook.AGENTS_BASE_DIR, "ann", ".claude", "skills", "loc")
         p = self._write(os.path.join(base, "references", "r.md"), b"r", skill_md="b")
         self._sync(p)
-        self.assertEqual(list(self._files("agent/ann/loc")), ["references/r.md"])
-
-    def test_unknown_skill_row_and_tool_cache_dirs_are_ignored(self):
-        base = os.path.join(hook.HOME, ".claude", "skills", "norow")
-        p = self._write(os.path.join(base, "x.txt"), b"x", skill_md="b")
-        self.assertIn("no skill global/norow in the DB yet", self._sync(p))
-        cache = os.path.join(hook.HOME, ".claude", "skills", "demo", "__pycache__", "m.pyc")
-        self._write(cache, b"junk", skill_md="body")
-        self.assertIsNone(hook._companion_location(cache))
-        self.assertEqual(self._files("global/norow"), {})
+        self.assertEqual(self.post.calls[0]["skill_id"], "agent/ann/loc")
 
     def test_files_outside_any_skill_dir_are_not_companions(self):
         p = self._write(os.path.join(self.tmp.name, "elsewhere", "x.txt"), b"x")
         self.assertIsNone(hook._companion_location(p))
 
-    def test_oversize_and_unsafe_paths_are_ignored(self):
+    def test_oversize_and_unsafe_paths_are_not_sent(self):
         base = os.path.join(hook.HOME, ".claude", "skills", "demo")
         p = self._write(os.path.join(base, "big.bin"), b"x", skill_md="body")
         old = hook.MAX_SKILL_FILE_BYTES
@@ -262,32 +240,33 @@ class CompanionSync(unittest.TestCase):
             self.assertIn("over the size limit", self._sync(p))
         finally:
             hook.MAX_SKILL_FILE_BYTES = old
-        self.assertEqual(self._files("global/demo"), {})
+        self.assertEqual(self.post.calls, [])
         self.assertIsNone(hook.normalize_skill_rel_path("../x"))
         self.assertIsNone(hook.normalize_skill_rel_path("SKILL.md"))
         self.assertEqual(hook.normalize_skill_rel_path("a/b.txt"), "a/b.txt")
 
-    def test_per_skill_file_cap(self):
-        base = os.path.join(hook.HOME, ".claude", "skills", "demo")
-        p = self._write(os.path.join(base, "one-more.txt"), b"x", skill_md="body")
-        c = sqlite3.connect(hook.DB_PATH)
-        c.executemany("INSERT INTO skill_files (skill_id, rel_path, content) VALUES ('global/demo', ?, x'00')",
-                      [(f"f{i}",) for i in range(hook.MAX_SKILL_FILES_PER_SKILL)])
-        c.commit(); c.close()
-        self.assertIn("already has", self._sync(p))
-
-    def test_tenant_copy_companion_goes_to_the_tenant_row_only_for_a_qualifying_agent(self):
+    def test_tenant_copy_companion_carries_the_tenant_id_and_the_agent(self):
         base = os.path.join(hook.AGENTS_BASE_DIR, "ann", ".claude", "skills", "acme-demo")
         md = FM + tenant_header("acme-demo") + "\ntbody\n"
         p = self._write(os.path.join(base, "scripts", "t.sh"), b"t", skill_md=md)
-        self.assertIn("stored companion scripts/t.sh of acme-demo", self._sync(p))
-        self.assertEqual(list(self._files("acme-demo")), ["scripts/t.sh"])
-        self.assertEqual(self._files("agent/ann/acme-demo"), {})
-        # an agent the tenant does not enable cannot write through the same header
-        base2 = os.path.join(hook.AGENTS_BASE_DIR, "eve", ".claude", "skills", "acme-demo")
-        p2 = self._write(os.path.join(base2, "scripts", "evil.sh"), b"e", skill_md=md)
-        self.assertIn("does not qualify", self._sync(p2))
-        self.assertEqual(list(self._files("acme-demo")), ["scripts/t.sh"])
+        self._sync(p)
+        call = self.post.calls[0]
+        self.assertEqual((call["skill_id"], call["tenant_agent"]), ("acme-demo", "ann"))
+
+    def test_tenant_copy_in_the_wrong_directory_is_not_sent(self):
+        base = os.path.join(hook.AGENTS_BASE_DIR, "ann", ".claude", "skills", "renamed")
+        md = FM + tenant_header("acme-demo") + "\ntbody\n"
+        p = self._write(os.path.join(base, "scripts", "t.sh"), b"t", skill_md=md)
+        self.assertIn("does not match its header", self._sync(p))
+        self.assertEqual(self.post.calls, [])
+
+    def test_failed_companion_write_warns_instead_of_crashing(self):
+        base = os.path.join(hook.HOME, ".claude", "skills", "demo")
+        p = self._write(os.path.join(base, "notes.md"), b"v1", skill_md="body")
+        self.post.fail = OSError("down")
+        out, err = self._run_main({"file_path": p})
+        self.assertIn("NOT in DB", err)
+        self.assertIn("notes.md", json.loads(out)["hookSpecificOutput"]["additionalContext"])
 
 
 if __name__ == "__main__":

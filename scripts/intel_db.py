@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 """
-intel_db.py -- Proactive Intelligence registry: schema + Python API + CLI.
+intel_db.py -- Proactive Intelligence registry: Python API + CLI.
 
-A small SQLite-backed store that lets an hourly "collector" scheduled task
-persist findings and a daily "brief" scheduled task read them back, so the
-brief is built from accumulated structured facts instead of whatever happens
-to be in the session context. Ships with two seed task templates:
+A small store that lets an hourly "collector" scheduled task persist findings
+and a daily "brief" scheduled task read them back, so the brief is built from
+accumulated structured facts instead of whatever happens to be in the session
+context. Ships with two seed task templates:
 seed-scheduled-tasks/intel-collector and seed-scheduled-tasks/intel-daily-brief.
 
-Tables (created automatically on first use, see SCHEMA):
+This script is a thin client of the dashboard's /api/intel/* routes: the
+dashboard owns the data (four tables, see src/intel-store.ts) and this file
+only turns CLI arguments into requests. The dashboard must therefore be
+running; it is created on first use, so there is no schema step to run.
+
+Tables (kept by the dashboard):
   known_facts_registry  facts with domain, source tier, status and priority
   watchlist             directions worth tracking that are not yet facts
   decision_log          recommendations with reasoning and falsifiability
   active_focus          currently prioritized topics with expiry
 
-Database location: store/intel.db next to this repo by default; override
-with the INTEL_DB environment variable (absolute path).
+Connection: MARVEEN_DASHBOARD_BASE, else http://localhost:<WEB_PORT> (WEB_PORT
+from the environment, then from the install's .env, default 3420); the bearer
+token is read from <store>/.dashboard-token (MARVEEN_STORE_DIR overrides the
+store directory). Where the registry is kept is the dashboard's business
+(see src/intel-store.ts).
 
 CLI (see --help of each subcommand):
-  intel_db.py init                          create the schema (idempotent)
+  intel_db.py init                          make sure the registry exists (idempotent)
   intel_db.py add-fact --title .. --domain .. --source .. --tier 1 --content ..
   intel_db.py add-watch --title .. --domain .. --direction ..
   intel_db.py add-focus --topic .. [--mode deep|transient] [--days N]
@@ -30,128 +38,113 @@ Usage from Python:
   import sys; sys.path.insert(0, "scripts")
   from intel_db import get_active_registry, get_watchlist, get_active_focus
 
+Exit codes: 0 on success (including a duplicate fact, which is a repeat
+sighting, not an error); 1 when the dashboard cannot be reached or refuses the
+request; 2 for bad CLI arguments (argparse).
+
 See docs/intel-registry.md for how the collector and the brief fit together.
 """
 
 from __future__ import annotations
 
-import hashlib
+import json
 import os
-import sqlite3
-import time
-import uuid
+import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-DB_PATH = Path(
-    os.environ.get("INTEL_DB", Path(__file__).resolve().parent.parent / "store" / "intel.db")
-)
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS known_facts_registry (
-  id TEXT PRIMARY KEY,
-  title TEXT,
-  domain TEXT,
-  source TEXT,
-  source_tier INTEGER CHECK(source_tier IN (1,2,3)),
-  status TEXT CHECK(status IN ('new','evolving','stable','closed')),
-  priority_score REAL,
-  content TEXT,
-  fact_hash TEXT UNIQUE,
-  created_at INTEGER,
-  updated_at INTEGER,
-  expires_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS watchlist (
-  id TEXT PRIMARY KEY,
-  title TEXT,
-  domain TEXT,
-  direction TEXT,
-  days_tracked INTEGER,
-  notes TEXT,
-  created_at INTEGER,
-  updated_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS decision_log (
-  id TEXT PRIMARY KEY,
-  date INTEGER,
-  recommendation TEXT,
-  reasoning TEXT,
-  assumption TEXT,
-  evidence TEXT,
-  what_would_falsify TEXT,
-  owner_reaction TEXT,
-  outcome TEXT,
-  created_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS active_focus (
-  id TEXT PRIMARY KEY,
-  topic TEXT,
-  mode TEXT CHECK(mode IN ('deep','transient')),
-  started_at INTEGER,
-  expires_at INTEGER,
-  status TEXT CHECK(status IN ('active','closed')),
-  notes TEXT
-);
-"""
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STORE_DIR = Path(os.environ.get("MARVEEN_STORE_DIR") or REPO_ROOT / "store")
+TOKEN_FILE = STORE_DIR / ".dashboard-token"
+REQUEST_TIMEOUT = 20
 
 
-def _conn():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    con.executescript(SCHEMA)
-    return con
+class IntelError(Exception):
+    """The dashboard could not be reached, or refused the request."""
 
 
-def init_db() -> None:
-    """Create the database and all tables (idempotent)."""
-    with _conn():
-        pass
+class DuplicateFactError(Exception):
+    """The same content is already stored under another id (a repeat sighting)."""
+
+    def __init__(self, fact_id: str):
+        super().__init__(fact_id)
+        self.fact_id = fact_id
+
+
+def _web_port() -> str:
+    port = os.environ.get("WEB_PORT")
+    if not port:
+        try:
+            with open(REPO_ROOT / ".env", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("WEB_PORT="):
+                        port = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+        except OSError:
+            pass
+    return port or "3420"
+
+
+def _base_url() -> str:
+    return (os.environ.get("MARVEEN_DASHBOARD_BASE") or f"http://localhost:{_web_port()}").rstrip("/")
+
+
+def _request(method: str, path: str, payload: dict | None = None) -> dict:
+    try:
+        token = TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise IntelError(f"cannot read the dashboard token ({TOKEN_FILE}): {exc}") from exc
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        _base_url() + path,
+        data=data,
+        method=method,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+            hint = detail.get("hint") or detail.get("error") or ""
+        except (ValueError, OSError):
+            hint = ""
+        raise IntelError(f"dashboard answered {exc.code} for {method} {path}: {hint}".rstrip(": ")) from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise IntelError(f"dashboard unreachable ({_base_url()}): {exc}") from exc
+
+
+def init_db() -> str:
+    """Make sure the registry exists (idempotent). Returns where the dashboard keeps it."""
+    return _request("POST", "/api/intel/init").get("db_path", "")
+
+
+def dump_active(days: int = 14) -> dict:
+    """Everything the daily brief reads, as one JSON-serializable dict."""
+    data = _request("GET", f"/api/intel/dump?days={int(days)}")
+    data.pop("db_path", None)
+    return data
 
 
 def get_active_registry(days: int = 14) -> list[dict]:
     """Return known_facts_registry rows updated within `days` days, excluding closed."""
-    cutoff = int(time.time()) - days * 86400
-    with _conn() as con:
-        rows = con.execute(
-            """
-            SELECT * FROM known_facts_registry
-            WHERE status != 'closed'
-              AND updated_at >= ?
-            ORDER BY priority_score DESC, updated_at DESC
-            """,
-            (cutoff,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    return dump_active(days)["registry"]
 
 
 def get_watchlist() -> list[dict]:
     """Return all watchlist entries ordered by creation date desc."""
-    with _conn() as con:
-        rows = con.execute(
-            "SELECT * FROM watchlist ORDER BY created_at DESC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+    return dump_active()["watchlist"]
 
 
 def get_active_focus() -> list[dict]:
     """Return active_focus rows with status='active' and not yet expired."""
-    now = int(time.time())
-    with _conn() as con:
-        rows = con.execute(
-            """
-            SELECT * FROM active_focus
-            WHERE status = 'active'
-              AND (expires_at IS NULL OR expires_at > ?)
-            ORDER BY started_at DESC
-            """,
-            (now,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    return dump_active()["active_focus"]
 
 
 def upsert_registry_fact(
-    id: str,
+    id: str | None,
     title: str,
     domain: str,
     source: str,
@@ -160,130 +153,64 @@ def upsert_registry_fact(
     status: str = "new",
     priority_score: float = 0.5,
 ) -> str:
-    """Insert or update a fact in known_facts_registry. Returns the id."""
-    now = int(time.time())
-    fact_hash = hashlib.sha256(content.encode()).hexdigest()[:32]
-    with _conn() as con:
-        existing = con.execute(
-            "SELECT id FROM known_facts_registry WHERE id = ?", (id,)
-        ).fetchone()
-        if existing:
-            con.execute(
-                """
-                UPDATE known_facts_registry
-                SET title=?, domain=?, source=?, source_tier=?, status=?,
-                    priority_score=?, content=?, fact_hash=?, updated_at=?
-                WHERE id=?
-                """,
-                (title, domain, source, source_tier, status,
-                 priority_score, content, fact_hash, now, id),
-            )
-        else:
-            con.execute(
-                """
-                INSERT INTO known_facts_registry
-                  (id, title, domain, source, source_tier, status,
-                   priority_score, content, fact_hash, created_at, updated_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (id, title, domain, source, source_tier, status,
-                 priority_score, content, fact_hash, now, now),
-            )
-    return id
+    """Insert or update a fact in known_facts_registry. Returns the id.
+
+    Pass None as the id and the dashboard derives <domain>-<YYYYMMDD>-<hash8> from the
+    content, so a repeated sighting on the same day updates the same row.
+    Raises DuplicateFactError when the same content already lives under
+    another id.
+    """
+    payload: dict = {
+        "title": title, "domain": domain, "source": source, "source_tier": source_tier,
+        "content": content, "status": status, "priority_score": priority_score,
+    }
+    if id:
+        payload["id"] = id
+    result = _request("POST", "/api/intel/facts", payload)
+    if result.get("duplicate"):
+        raise DuplicateFactError(result.get("id", id or ""))
+    return result["id"]
 
 
-def add_watchlist(
-    title: str,
-    domain: str,
-    direction: str,
-    notes: str = "",
-) -> str:
+def add_watchlist(title: str, domain: str, direction: str, notes: str = "") -> str:
     """Add a new entry to the watchlist. Returns the generated id."""
-    now = int(time.time())
-    wid = str(uuid.uuid4())
-    with _conn() as con:
-        con.execute(
-            """
-            INSERT INTO watchlist (id, title, domain, direction, days_tracked, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
-            """,
-            (wid, title, domain, direction, notes, now, now),
-        )
-    return wid
+    return _request(
+        "POST", "/api/intel/watchlist",
+        {"title": title, "domain": domain, "direction": direction, "notes": notes},
+    )["id"]
 
 
-def add_focus(
-    topic: str,
-    mode: str = "transient",
-    days: int | None = None,
-    notes: str = "",
-) -> str:
+def add_focus(topic: str, mode: str = "transient", days: int | None = None, notes: str = "") -> str:
     """Add an active_focus topic; expires after `days` days if given. Returns the id."""
-    now = int(time.time())
-    fid = str(uuid.uuid4())
-    expires_at = now + days * 86400 if days else None
-    with _conn() as con:
-        con.execute(
-            """
-            INSERT INTO active_focus (id, topic, mode, started_at, expires_at, status, notes)
-            VALUES (?, ?, ?, ?, ?, 'active', ?)
-            """,
-            (fid, topic, mode, now, expires_at, notes),
-        )
-    return fid
+    payload: dict = {"topic": topic, "mode": mode, "notes": notes}
+    if days:
+        payload["days"] = days
+    return _request("POST", "/api/intel/focus", payload)["id"]
 
 
 def log_decision(
     recommendation: str,
     reasoning: str,
-    assumption: str,
-    evidence: str,
-    what_would_falsify: str,
+    assumption: str = "",
+    evidence: str = "",
+    what_would_falsify: str = "",
     owner_reaction: str = "",
     outcome: str = "",
 ) -> str:
     """Append a record to decision_log. Returns the generated id."""
-    now = int(time.time())
-    did = str(uuid.uuid4())
-    with _conn() as con:
-        con.execute(
-            """
-            INSERT INTO decision_log
-              (id, date, recommendation, reasoning, assumption, evidence,
-               what_would_falsify, owner_reaction, outcome, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (did, now, recommendation, reasoning, assumption, evidence,
-             what_would_falsify, owner_reaction, outcome, now),
-        )
-    return did
-
-
-def make_fact_id(domain: str, content: str, date_str: str | None = None) -> str:
-    """Deterministic fact id: <domain>-<YYYYMMDD>-<sha256(content)[:8]>.
-
-    The same finding collected twice on the same day maps to the same id, so
-    the collector's repeated hourly runs hit the UPDATE path of
-    upsert_registry_fact instead of piling up duplicates.
-    """
-    day = date_str or time.strftime("%Y%m%d")
-    return f"{domain}-{day}-{hashlib.sha256(content.encode()).hexdigest()[:8]}"
-
-
-def dump_active(days: int = 14) -> dict:
-    """Everything the daily brief reads, as one JSON-serializable dict."""
-    return {
-        "registry": get_active_registry(days),
-        "watchlist": get_watchlist(),
-        "active_focus": get_active_focus(),
-    }
+    return _request(
+        "POST", "/api/intel/decisions",
+        {
+            "recommendation": recommendation, "reasoning": reasoning, "assumption": assumption,
+            "evidence": evidence, "what_would_falsify": what_would_falsify,
+            "owner_reaction": owner_reaction, "outcome": outcome,
+        },
+    )["id"]
 
 
 def _cli() -> int:
     """argparse CLI so agent prompts can write the registry without inline Python."""
     import argparse
-    import json
-    import sys
 
     # The daily-brief task calls `intel_db.py --dump`; accept the flag form as
     # an alias for the subcommand so that contract keeps working.
@@ -294,7 +221,7 @@ def _cli() -> int:
     parser = argparse.ArgumentParser(description="Proactive Intelligence registry CLI")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub.add_parser("init", help="Create the database and schema (idempotent)")
+    sub.add_parser("init", help="Make sure the registry exists (idempotent)")
 
     p_fact = sub.add_parser("add-fact", help="Upsert a fact into known_facts_registry")
     p_fact.add_argument("--id", help="Fact id; omitted -> deterministic <domain>-<YYYYMMDD>-<hash8>")
@@ -332,53 +259,56 @@ def _cli() -> int:
 
     args = parser.parse_args(argv)
 
-    if args.cmd == "init":
-        init_db()
-        print(f"OK: schema ready at {DB_PATH}")
-        return 0
-
-    if args.cmd == "add-fact":
-        fact_id = args.id or make_fact_id(args.domain, args.content)
-        try:
-            upsert_registry_fact(
-                id=fact_id, title=args.title, domain=args.domain, source=args.source,
-                source_tier=args.tier, content=args.content, status=args.status,
-                priority_score=max(0.0, min(1.0, args.priority)),
-            )
-        except sqlite3.IntegrityError:
-            # fact_hash is UNIQUE: same content under a DIFFERENT id means the
-            # fact is already known -- a repeat sighting, not an error.
-            print(f"DUPLICATE content already in registry (id={fact_id} skipped)")
+    try:
+        if args.cmd == "init":
+            print(f"OK: registry ready at {init_db()}")
             return 0
-        print(fact_id)
-        return 0
 
-    if args.cmd == "add-watch":
-        print(add_watchlist(args.title, args.domain, args.direction, args.notes))
-        return 0
+        if args.cmd == "add-fact":
+            try:
+                fact_id = upsert_registry_fact(
+                    id=args.id, title=args.title, domain=args.domain, source=args.source,
+                    source_tier=args.tier, content=args.content, status=args.status,
+                    priority_score=max(0.0, min(1.0, args.priority)),
+                )
+            except DuplicateFactError as dup:
+                # Same content under a DIFFERENT id means the fact is already
+                # known -- a repeat sighting, not an error.
+                print(f"DUPLICATE content already in registry (id={dup.fact_id} skipped)")
+                return 0
+            print(fact_id)
+            return 0
 
-    if args.cmd == "add-focus":
-        print(add_focus(args.topic, args.mode, args.days, args.notes))
-        return 0
+        if args.cmd == "add-watch":
+            print(add_watchlist(args.title, args.domain, args.direction, args.notes))
+            return 0
 
-    if args.cmd == "log-decision":
-        print(log_decision(
-            args.recommendation, args.reasoning, args.assumption, args.evidence,
-            args.what_would_falsify, args.owner_reaction, args.outcome,
-        ))
-        return 0
+        if args.cmd == "add-focus":
+            print(add_focus(args.topic, args.mode, args.days, args.notes))
+            return 0
 
-    if args.cmd == "dump":
-        print(json.dumps(dump_active(args.days), ensure_ascii=False, indent=2))
-        return 0
+        if args.cmd == "log-decision":
+            print(log_decision(
+                args.recommendation, args.reasoning, args.assumption, args.evidence,
+                args.what_would_falsify, args.owner_reaction, args.outcome,
+            ))
+            return 0
 
-    # No subcommand: health counters (also creates the schema on first run).
-    print(f"DB: {DB_PATH}")
-    print(f"Active registry (14d): {len(get_active_registry())} rows")
-    print(f"Watchlist: {len(get_watchlist())} rows")
-    print(f"Active focus: {len(get_active_focus())} rows")
-    print("OK")
-    return 0
+        if args.cmd == "dump":
+            print(json.dumps(dump_active(args.days), ensure_ascii=False, indent=2))
+            return 0
+
+        # No subcommand: health counters (also creates the registry on first run).
+        data = _request("GET", "/api/intel/dump?days=14")
+        print(f"DB: {data.get('db_path', '')}")
+        print(f"Active registry (14d): {len(data['registry'])} rows")
+        print(f"Watchlist: {len(data['watchlist'])} rows")
+        print(f"Active focus: {len(data['active_focus'])} rows")
+        print("OK")
+        return 0
+    except IntelError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
