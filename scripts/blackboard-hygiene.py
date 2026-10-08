@@ -23,6 +23,30 @@ round: if it is active and blocked, the lagging branch decides.
 The coordinator (MAIN_AGENT_ID: env, then .env, then the same "marveen"
 fallback src/config.ts uses) is never nudged.
 
+Three guards keep an idle agent from being flagged for its own maintenance
+turns (a long-idle agent has a days-old done row, and any turn at all makes
+its pane look active):
+  - Maintenance attribution: an active agent whose newest delivered incoming
+    message is a coordinator-sent "[memoria-heartbeat]" / "[blackboard-hygiene]"
+    message younger than MAINT_WINDOW_SECONDS is running a maintenance turn,
+    not real work, and is not lagging. The sender must be the coordinator, or
+    anyone could silence the monitor with a prefixed message. A turn that
+    outlives the window counts as real work again (accepted delay: up to the
+    window plus one tick for work that starts right after a heartbeat).
+  - Nudge cooldown: no new nudge while the previous one is still queued
+    (status pending) or is younger than NUDGE_COOLDOWN_SECONDS with no
+    blackboard update since. A held agent keeps its counter (neither raised
+    nor reset), so queued nudges are never counted as separate rounds.
+    "Processed" is approximated by status != pending: only the receiving
+    agent can mark a message done, so a done flag is too soft to gate on.
+  - Wake guard: the time of the last completed sweep is kept in agent_state.
+    When more than WAKE_GUARD_SECONDS passed since (the monitor is hourly, so
+    the threshold must stay above 60 minutes or every tick would be skipped),
+    the machine was most likely asleep; that round sends nothing and changes
+    no counter, it only records the time, so it can swallow one tick at most.
+Escalation is therefore slower than two hourly ticks: at least one cooldown
+between two counted nudges, longer after a sleep.
+
 The consecutive-nudge counters live in the SQLite agent_state table
 (agent_id=<coordinator>, state_key='blackboard_hygiene_nudges', JSON
 {"<agent>": <n>}). A counter is cleared as soon as the agent is fine or idle.
@@ -78,11 +102,18 @@ def _main_agent_id():
 COORDINATOR = _main_agent_id()
 STATE_AGENT_ID = COORDINATOR
 STATE_KEY = "blackboard_hygiene_nudges"
+LAST_SWEEP_KEY = "blackboard_hygiene_last_sweep"
 
 DONE_GRACE_SECONDS = 15 * 60
 STALE_SECONDS = 2 * 60 * 60
 BLOCKED_IDLE_SECONDS = 60 * 60
 ESCALATE_AT = 2
+MAINT_WINDOW_SECONDS = 15 * 60
+NUDGE_COOLDOWN_SECONDS = 30 * 60
+WAKE_GUARD_SECONDS = 75 * 60
+# A queued (pending) nudge holds the next one back only this long, so a stuck
+# message queue cannot silence the monitor for good.
+PENDING_NUDGE_HOLD_SECONDS = STALE_SECONDS
 PANE_LINES = 20
 
 # Two pane signals, OR-ed: the "esc to interrupt" status line is sometimes
@@ -90,6 +121,11 @@ PANE_LINES = 20
 # not always on screen either. Same pair scripts/context-compact-monitor.sh uses.
 SPINNER_RE = re.compile(r"\w[\w\s]*[…\.]{1,3}\s*\([\dsmh]")
 PANE_MARKERS = ("esc to interrupt", "Thinking", "Cogitating")
+
+# Every message the coordinator sends on a schedule starts with one of these
+# (fleet-heartbeat-sweep.sh DIRECTIVE, NUDGE_TEXT below); a contract test keeps
+# the sweep script's prefix and this tuple in step.
+MAINTENANCE_PREFIXES = ("[memoria-heartbeat]", "[blackboard-hygiene]")
 
 NUDGE_TEXT = (
     "[blackboard-hygiene] Aktivan dolgozol, de a Fleet Blackboard sorod elavult vagy done. "
@@ -119,6 +155,42 @@ def is_lagging(row, now):
     return age > STALE_SECONDS
 
 
+def is_maintenance_active(latest_incoming, now):
+    """True when the agent's current turn was started by coordinator maintenance.
+
+    `latest_incoming` is the newest delivered message addressed to the agent
+    (dict with from_agent / content / ts) or None. Only the newest one counts:
+    a later message from anyone else is real work and ends the exemption.
+    """
+    if not latest_incoming:
+        return False
+    if latest_incoming.get("from_agent") != COORDINATOR:
+        return False
+    if not str(latest_incoming.get("content") or "").lstrip().startswith(MAINTENANCE_PREFIXES):
+        return False
+    return now - int(latest_incoming.get("ts") or 0) < MAINT_WINDOW_SECONDS
+
+
+def nudge_on_hold(last_nudge, row, now):
+    """True when a fresh nudge would only pile on top of the previous one.
+
+    `last_nudge` is the newest hygiene message sent to the agent (dict with
+    status / ts) or None; `row` is the agent's blackboard row or None.
+    """
+    if not last_nudge:
+        return False
+    age = now - int(last_nudge.get("ts") or 0)
+    if last_nudge.get("status") == "pending" and age < PENDING_NUDGE_HOLD_SECONDS:
+        return True
+    updated_since = row is not None and int(row.get("updated_at") or 0) > int(last_nudge.get("ts") or 0)
+    return age < NUDGE_COOLDOWN_SECONDS and not updated_since
+
+
+def is_wake_gap(last_sweep, now):
+    """True when the previous sweep is old enough to suspect a sleeping machine."""
+    return last_sweep is not None and now - last_sweep > WAKE_GUARD_SECONDS
+
+
 def is_stale_blocked(row, now):
     """True when a blackboard row is 'blocked' and older than BLOCKED_IDLE_SECONDS."""
     if row is None or row.get("status") != "blocked":
@@ -126,15 +198,17 @@ def is_stale_blocked(row, now):
     return now - int(row.get("updated_at") or 0) > BLOCKED_IDLE_SECONDS
 
 
-def next_counters(counters, lagging):
+def next_counters(counters, lagging, held=()):
     """Advance the consecutive-nudge counters after one sweep.
 
-    `lagging` is the agents nudged this round. Every other agent (fine, idle
+    `lagging` is the agents nudged this round. `held` is agents that would be
+    lagging but were suppressed this round (maintenance turn, nudge cooldown):
+    their counter is carried over unchanged. Every other agent (fine, idle
     or no longer running) is dropped, which is the "reset on improvement"
     rule. Returns (new_counters, escalate_list); escalated agents are reset
     to zero (removed) so the owner is not spammed every round.
     """
-    new = {}
+    new = {a: int(counters[a]) for a in held if a in counters and a not in lagging}
     escalate = []
     for agent in sorted(lagging):
         n = int(counters.get(agent, 0)) + 1
@@ -220,6 +294,48 @@ def write_counters(conn, counters):
     conn.commit()
 
 
+def read_last_sweep(conn):
+    row = conn.execute(
+        "SELECT state_value FROM agent_state WHERE agent_id=? AND state_key=?",
+        (STATE_AGENT_ID, LAST_SWEEP_KEY),
+    ).fetchone()
+    try:
+        return int(row[0]) if row else None
+    except (TypeError, ValueError):
+        return None
+
+
+def write_last_sweep(conn, now):
+    conn.execute(
+        "INSERT INTO agent_state(agent_id,state_key,state_value,updated_at) VALUES(?,?,?,unixepoch()) "
+        "ON CONFLICT(agent_id,state_key) DO UPDATE SET state_value=excluded.state_value, "
+        "updated_at=excluded.updated_at",
+        (STATE_AGENT_ID, LAST_SWEEP_KEY, str(int(now))),
+    )
+    conn.commit()
+
+
+def latest_incoming(conn, agent):
+    """Newest delivered/done message addressed to the agent, stamped with its delivery time."""
+    row = conn.execute(
+        "SELECT from_agent, content, COALESCE(delivered_at, created_at) AS ts FROM agent_messages "
+        "WHERE to_agent=? AND status IN ('delivered','done') ORDER BY ts DESC, id DESC LIMIT 1",
+        (agent,),
+    ).fetchone()
+    return {"from_agent": row[0], "content": row[1], "ts": row[2]} if row else None
+
+
+def latest_nudge(conn, agent):
+    """Newest hygiene message the coordinator sent to the agent (any non-failed status)."""
+    prefix = "[blackboard-hygiene]"
+    row = conn.execute(
+        "SELECT status, created_at FROM agent_messages WHERE from_agent=? AND to_agent=? "
+        "AND substr(content,1,?)=? AND status!='failed' ORDER BY created_at DESC, id DESC LIMIT 1",
+        (COORDINATOR, agent, len(prefix), prefix),
+    ).fetchone()
+    return {"status": row[0], "ts": row[1]} if row else None
+
+
 def send_message(to, content):
     _api("/api/messages", {"from": COORDINATOR, "to": to, "content": content})
 
@@ -235,19 +351,33 @@ def main(argv):
         print("FAIL dashboard read: %s" % exc)
         return 1
 
-    active = [a for a in agents if pane_is_active(capture_pane(a))]
-    lagging = [a for a in active if is_lagging(blackboard_row(a, board), now)]
-    # Idle agents with a long-standing blocked row. Active agents are excluded
-    # here, so nobody gets two messages in one round.
-    blocked_idle = [a for a in agents if a not in active and is_stale_blocked(blackboard_row(a, board), now)]
-    nudged = lagging + blocked_idle
-
     # mode=rw/ro: never create an empty DB file if the path is wrong.
     conn = sqlite3.connect("file:%s?mode=%s" % (DB_PATH, "ro" if dry_run else "rw"), uri=True, timeout=10)
     send_failures = 0
     try:
+        if is_wake_gap(read_last_sweep(conn), now):
+            if not dry_run:
+                write_last_sweep(conn, now)
+            print("%s wake-guard: previous sweep older than %d min, skipped this round" % (
+                "DRY" if dry_run else "OK", WAKE_GUARD_SECONDS // 60))
+            return 0
+
+        active = [a for a in agents if pane_is_active(capture_pane(a))]
+        rows = {a: blackboard_row(a, board) for a in agents}
+        behind = [a for a in active if is_lagging(rows[a], now)]
+        lagging, held = [], []
+        for a in behind:
+            if is_maintenance_active(latest_incoming(conn, a), now) or nudge_on_hold(latest_nudge(conn, a), rows[a], now):
+                held.append(a)
+            else:
+                lagging.append(a)
+        # Idle agents with a long-standing blocked row. Active agents are excluded
+        # here, so nobody gets two messages in one round.
+        blocked_idle = [a for a in agents if a not in active and is_stale_blocked(rows[a], now)]
+        nudged = lagging + blocked_idle
+
         counters = read_counters(conn)
-        new_counters, escalate = next_counters(counters, nudged)
+        new_counters, escalate = next_counters(counters, nudged, held)
 
         if not dry_run:
             escalation = {
@@ -278,16 +408,18 @@ def main(argv):
                     print("WARN message to %s failed: %s" % (to, exc))
             if new_counters != counters:
                 write_counters(conn, new_counters)
+            write_last_sweep(conn, now)
     finally:
         conn.close()
 
     print(
-        "%s running=%d active=%d lagging=%s blocked_idle=%s escalated=%s"
+        "%s running=%d active=%d lagging=%s held=%s blocked_idle=%s escalated=%s"
         % (
             "DRY" if dry_run else "OK",
             len(agents),
             len(active),
             ",".join(lagging) or "-",
+            ",".join(held) or "-",
             ",".join(blocked_idle) or "-",
             ",".join(escalate) or "-",
         )
