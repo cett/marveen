@@ -232,6 +232,11 @@ jobs:
         # scripts/sqlite-dialect-baseline.json (PostgreSQL migration prep).
         run: python3 scripts/sqlite-dialect-ratchet.py
 
+      - name: Non-TS direct DB access ratchet
+        # Direct database access outside src/ (Python, shell, skills, templates)
+        # may not grow past scripts/non-ts-db-access-baseline.json.
+        run: python3 scripts/non-ts-db-access-ratchet.py
+
       - name: Shell tests
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
         # vault-file-materializer / channels-mcp-unlock / channels-auth-probe,

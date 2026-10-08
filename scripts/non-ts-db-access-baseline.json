@@ -1,0 +1,265 @@
+{
+  "dispositions": {
+    "install-macos.sh": "C",
+    "scheduled-tasks/dream-engine/SKILL.md": "B",
+    "scripts/backup.sh": "C",
+    "scripts/blackboard-hygiene.py": "B",
+    "scripts/doctor.sh": "B",
+    "scripts/ensure-native-modules.sh": "C",
+    "scripts/hooks/context-watchdog.py": "A",
+    "scripts/hooks/ledger_lib.py": "B",
+    "scripts/hooks/skill-sql-sync.py": "B",
+    "scripts/hooks/tenant-skill-gate.py": "A",
+    "scripts/hooks/tenant_context_lib.py": "A",
+    "scripts/intel_db.py": "B",
+    "scripts/migrate-main-agent-id.sh": "C",
+    "scripts/pre-modify-backup.sh": "C",
+    "scripts/start.sh": "C",
+    "scripts/status.ts": "B",
+    "scripts/systemd/marveen-channels.service": "C",
+    "scripts/tenant-gate-rollout-check.py": "B",
+    "scripts/verify-restore.sh": "C",
+    "seed-scheduled-tasks/intel-collector/SKILL.md": "B",
+    "seed-scheduled-tasks/intel-daily-brief/SKILL.md": "B",
+    "seed-scheduled-tasks/kanban-audit/SKILL.md": "B",
+    "seed-scheduled-tasks/kanban-audit/pre-check.sh": "B",
+    "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
+    "seed-skills/fleet-helper/scripts/fleet.py": "B",
+    "seed-skills/fleet-helper/scripts/mail_triage.py": "X",
+    "seed-skills/handoff/SKILL.md": "B",
+    "templates/CLAUDE.md.template": "B",
+    "update.sh": "C"
+  },
+  "files": {
+    "install-macos.sh": {
+      "dialect": {},
+      "direct": {
+        "better-sqlite3": 2
+      }
+    },
+    "scheduled-tasks/dream-engine/SKILL.md": {
+      "dialect": {
+        "strftime()": 5,
+        "vec0/sqlite-vec": 3
+      },
+      "direct": {
+        "claudeclaw.db": 7,
+        "sqlite3 CLI": 7
+      }
+    },
+    "scripts/backup.sh": {
+      "dialect": {
+        "PRAGMA": 3
+      },
+      "direct": {
+        "claudeclaw.db": 7,
+        "sqlite3 CLI": 3
+      }
+    },
+    "scripts/blackboard-hygiene.py": {
+      "dialect": {
+        "unixepoch()": 2
+      },
+      "direct": {
+        "claudeclaw.db": 1,
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "scripts/doctor.sh": {
+      "dialect": {},
+      "direct": {
+        "claudeclaw.db": 6,
+        "sqlite3 CLI": 2
+      }
+    },
+    "scripts/ensure-native-modules.sh": {
+      "dialect": {},
+      "direct": {
+        "better-sqlite3": 3
+      }
+    },
+    "scripts/hooks/context-watchdog.py": {
+      "dialect": {
+        "PRAGMA": 1,
+        "rowid": 3
+      },
+      "direct": {
+        "python sqlite3": 1,
+        "sqlite3.connect": 2
+      }
+    },
+    "scripts/hooks/ledger_lib.py": {
+      "dialect": {
+        "AUTOINCREMENT": 1,
+        "INSERT OR IGNORE": 4,
+        "PRAGMA": 1
+      },
+      "direct": {
+        "claudeclaw.db": 2,
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "scripts/hooks/skill-sql-sync.py": {
+      "dialect": {
+        "PRAGMA": 3
+      },
+      "direct": {
+        "claudeclaw.db": 1,
+        "python sqlite3": 1,
+        "sqlite3.connect": 3
+      }
+    },
+    "scripts/hooks/tenant-skill-gate.py": {
+      "dialect": {},
+      "direct": {
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "scripts/hooks/tenant_context_lib.py": {
+      "dialect": {
+        "INSERT OR REPLACE": 1,
+        "PRAGMA": 1
+      },
+      "direct": {
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "scripts/intel_db.py": {
+      "dialect": {},
+      "direct": {
+        "intel.db": 2,
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "scripts/migrate-main-agent-id.sh": {
+      "dialect": {},
+      "direct": {
+        "claudeclaw.db": 1,
+        "sqlite3 CLI": 1
+      }
+    },
+    "scripts/pre-modify-backup.sh": {
+      "dialect": {},
+      "direct": {
+        "claudeclaw.db": 3,
+        "sqlite3 CLI": 1
+      }
+    },
+    "scripts/start.sh": {
+      "dialect": {},
+      "direct": {
+        "better-sqlite3": 1
+      }
+    },
+    "scripts/status.ts": {
+      "dialect": {},
+      "direct": {
+        "claudeclaw.db": 1,
+        "sqlite3 CLI": 2
+      }
+    },
+    "scripts/systemd/marveen-channels.service": {
+      "dialect": {},
+      "direct": {
+        "better-sqlite3": 1
+      }
+    },
+    "scripts/tenant-gate-rollout-check.py": {
+      "dialect": {},
+      "direct": {
+        "claudeclaw.db": 2,
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "scripts/verify-restore.sh": {
+      "dialect": {
+        "PRAGMA": 3
+      },
+      "direct": {
+        "claudeclaw.db": 4,
+        "sqlite3 CLI": 2
+      }
+    },
+    "seed-scheduled-tasks/intel-collector/SKILL.md": {
+      "dialect": {},
+      "direct": {
+        "intel.db": 1
+      }
+    },
+    "seed-scheduled-tasks/intel-daily-brief/SKILL.md": {
+      "dialect": {},
+      "direct": {
+        "intel.db": 1
+      }
+    },
+    "seed-scheduled-tasks/kanban-audit/SKILL.md": {
+      "dialect": {
+        "strftime()": 2,
+        "unixepoch()": 2
+      },
+      "direct": {
+        "claudeclaw.db": 4,
+        "sqlite3 CLI": 4
+      }
+    },
+    "seed-scheduled-tasks/kanban-audit/pre-check.sh": {
+      "dialect": {
+        "strftime()": 1
+      },
+      "direct": {
+        "claudeclaw.db": 1,
+        "sqlite3 CLI": 3
+      }
+    },
+    "seed-skills/ai-fleet-project-execution/SKILL.md": {
+      "dialect": {},
+      "direct": {
+        "sqlite3 CLI": 2
+      }
+    },
+    "seed-skills/fleet-helper/scripts/fleet.py": {
+      "dialect": {
+        "strftime()": 1
+      },
+      "direct": {
+        "claudeclaw.db": 1,
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "seed-skills/fleet-helper/scripts/mail_triage.py": {
+      "dialect": {},
+      "direct": {
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
+      }
+    },
+    "seed-skills/handoff/SKILL.md": {
+      "dialect": {},
+      "direct": {
+        "claudeclaw.db": 1,
+        "sqlite3 CLI": 1
+      }
+    },
+    "templates/CLAUDE.md.template": {
+      "dialect": {
+        "unixepoch()": 1
+      },
+      "direct": {
+        "claudeclaw.db": 1
+      }
+    },
+    "update.sh": {
+      "dialect": {},
+      "direct": {
+        "better-sqlite3": 4
+      }
+    }
+  }
+}
