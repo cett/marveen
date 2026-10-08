@@ -15,7 +15,9 @@ export function getSession(chatId: string): { sessionId: string; messageCount: n
 
 export function setSession(chatId: string, sessionId: string, messageCount = 0): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (chat_id, session_id, updated_at, message_count) VALUES (?, ?, ?, ?)'
+    `INSERT INTO sessions (chat_id, session_id, updated_at, message_count) VALUES (?, ?, ?, ?)
+     ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id,
+       updated_at = excluded.updated_at, message_count = excluded.message_count`
   ).run(chatId, sessionId, Math.floor(Date.now() / 1000), messageCount)
 }
 

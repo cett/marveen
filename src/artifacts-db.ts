@@ -122,6 +122,8 @@ export async function storeArtifactEmbedding(
   for (let i = 0; i < embedding.length; i++) buf.writeFloatLE(embedding[i], i * 4)
 
   try {
+    // vec0 virtual tables have no ON CONFLICT upsert, so this stays OR REPLACE
+    // until the pgvector phase replaces the table.
     db.prepare('INSERT OR REPLACE INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)').run(BigInt(rowRow.rowid), buf)
     const { c } = db.prepare('SELECT COUNT(*) as c FROM vec_artifacts').get() as { c: number }
     if (c >= VEC_REBUILD_THRESHOLD) {

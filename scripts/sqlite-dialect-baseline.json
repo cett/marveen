@@ -7,7 +7,7 @@
     "GROUP_CONCAT": 1,
     "IFNULL()": 0,
     "INSERT OR IGNORE": 3,
-    "INSERT OR REPLACE": 3,
+    "INSERT OR REPLACE": 1,
     "PRAGMA": 10,
     "datetime()": 0,
     "instr()": 1,
