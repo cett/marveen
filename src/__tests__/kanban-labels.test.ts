@@ -18,7 +18,7 @@ beforeEach(() => {
 describe('label registry CRUD', () => {
   it('creates and lists a label', () => {
     createLabel({ id: 'lbl-a', name: 'bug', color: '#3b82f6' })
-    expect(listLabels()).toEqual([{ id: 'lbl-a', name: 'bug', color: '#3b82f6', created_at: expect.any(Number) }])
+    expect(listLabels()).toEqual([{ id: 'lbl-a', name: 'bug', color: '#3b82f6', created_at: expect.any(Number), tenant_id: 'default' }])
   })
 
   it('updates name and colour independently', () => {
@@ -61,7 +61,7 @@ describe('card <-> label associations', () => {
   it('attaches a label to a card and reads it back', () => {
     addLabelToCard('card-a', 'lbl-bug')
     expect(getLabelsForCard('card-a')).toEqual([
-      { id: 'lbl-bug', name: 'bug', color: '#3b82f6', created_at: expect.any(Number) },
+      { id: 'lbl-bug', name: 'bug', color: '#3b82f6', created_at: expect.any(Number), tenant_id: 'default' },
     ])
     expect(getLabelsForCard('card-b')).toHaveLength(0)
   })

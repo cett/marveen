@@ -27,6 +27,7 @@ export interface KanbanCard {
   created_at: number
   updated_at: number
   archived_at: number | null
+  tenant_id?: string
   // Set the first time the card is moved to in_progress and the assigned agent
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
@@ -569,22 +570,27 @@ export interface Label {
   name: string
   color: string
   created_at: number
+  tenant_id: string
 }
 
-export function listLabels(): Label[] {
-  return db.prepare('SELECT * FROM labels ORDER BY name ASC').all() as Label[]
+/** Label names are a tenant's own vocabulary: `tenantId` narrows to that tenant, null = all (admin). */
+export function listLabels(tenantId: string | null = null): Label[] {
+  return tenantId !== null
+    ? db.prepare('SELECT * FROM labels WHERE tenant_id = ? ORDER BY name ASC').all(tenantId) as Label[]
+    : db.prepare('SELECT * FROM labels ORDER BY name ASC').all() as Label[]
 }
 
 export function getLabel(id: string): Label | undefined {
   return db.prepare('SELECT * FROM labels WHERE id = ?').get(id) as Label | undefined
 }
 
-export function createLabel(label: { id: string; name: string; color: string }): Label {
+export function createLabel(label: { id: string; name: string; color: string; tenant_id?: string }): Label {
   const now = Math.floor(Date.now() / 1000)
+  const tenantId = label.tenant_id ?? 'default'
   db.prepare(
-    'INSERT INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)'
-  ).run(label.id, label.name, label.color, now)
-  return { ...label, created_at: now }
+    'INSERT INTO labels (id, name, color, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)'
+  ).run(label.id, label.name, label.color, now, tenantId)
+  return { ...label, created_at: now, tenant_id: tenantId }
 }
 
 export function updateLabel(id: string, fields: Partial<Pick<Label, 'name' | 'color'>>): boolean {
@@ -632,7 +638,7 @@ export function getLabelsForCard(cardId: string): Label[] {
 // per-card lookup when rendering footer pills for every card at once.
 export function getLabelsForAllCards(): Map<string, Label[]> {
   const rows = db.prepare(`
-    SELECT cl.card_id AS card_id, l.id AS id, l.name AS name, l.color AS color, l.created_at AS created_at
+    SELECT cl.card_id AS card_id, l.id AS id, l.name AS name, l.color AS color, l.created_at AS created_at, l.tenant_id AS tenant_id
     FROM kanban_card_labels cl
     JOIN labels l ON l.id = cl.label_id
     ORDER BY l.name ASC

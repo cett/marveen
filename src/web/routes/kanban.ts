@@ -258,8 +258,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // Labels belong to a tenant. A scoped caller sees and changes only its own tenant's labels (a
+  // foreign id is a 404, as if it did not exist); an admin sees all, or one tenant with ?tenant=.
+  const ownLabel = (id: string) => {
+    const label = getLabel(id)
+    return label && (effectiveTenantId === null || label.tenant_id === effectiveTenantId) ? label : undefined
+  }
+
   if (path === '/api/kanban/labels' && method === 'GET') {
-    json(res, listLabels())
+    json(res, listLabels(effectiveTenantId))
     return true
   }
 
@@ -272,7 +279,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // to the single configurable source instead of an arbitrary per-request value.
     const resolvedColor = color && KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
     const id = randomUUID().slice(0, 8)
-    const label = createLabel({ id, name: name.trim(), color: resolvedColor })
+    const label = createLabel({ id, name: name.trim(), color: resolvedColor, tenant_id: effectiveTenantId ?? 'default' })
     json(res, label)
     return true
   }
@@ -290,13 +297,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (color !== undefined) {
       fields.color = KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
     }
-    if (updateLabel(id, fields)) { json(res, { ok: true }); return true }
+    if (ownLabel(id) && updateLabel(id, fields)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
     return true
   }
   if (labelMatch && method === 'DELETE') {
     const id = decodeURIComponent(labelMatch[1])
-    if (deleteLabel(id)) { json(res, { ok: true }); return true }
+    if (ownLabel(id) && deleteLabel(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
     return true
   }
@@ -316,16 +323,22 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const parsed = JSON.parse(body.toString()) as { labelId?: string; id?: string }
     const labelId = parsed.labelId ?? parsed.id
     if (!labelId) { json(res, { error: 'required', field: 'labelId', hint: 'labelId mező kötelező' }, 400); return true }
-    if (!getLabel(labelId)) {
+    const label = ownLabel(labelId)
+    if (!label) {
       // Common mistake: sending the label's `name` where an `id` is expected -- GET
       // /api/kanban/labels lists both, so this is an easy mix-up. Point at the real id
       // instead of a bare "not found" that reads as if the label doesn't exist at all.
-      const byName = listLabels().find((l) => l.name === labelId)
+      const byName = listLabels(effectiveTenantId).find((l) => l.name === labelId)
       if (byName) {
         json(res, { error: 'not_found', field: 'labelId', hint: `Címke nem található id alapján -- a "${labelId}" egy név, nem id. Használd az id-t: ${byName.id}` }, 404)
         return true
       }
       json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
+      return true
+    }
+    // A card carries only labels of its own tenant, whoever attaches them.
+    if (label.tenant_id !== (getKanbanCard(cardId)?.tenant_id ?? 'default')) {
+      json(res, { error: 'invalid_value', field: 'labelId', hint: 'A címke másik tenanthoz tartozik, mint a kártya' }, 400)
       return true
     }
     addLabelToCard(cardId, labelId)
