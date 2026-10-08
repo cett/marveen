@@ -3,7 +3,7 @@ import { initDatabase, searchArtifactsByVector } from '../db.js'
 import {
   createArtifact, listArtifacts, getArtifact, deleteArtifact, storeArtifactEmbedding,
   getArtifactStats, renameArtifact, ARTIFACT_TITLE_MAX_LENGTH,
-} from '../artifacts-db.js'
+} from '../db/artifacts.js'
 
 beforeAll(() => { initDatabase(':memory:') })
 

@@ -16,7 +16,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
 
-# Extension -> artifact kind mapping (matches ARTIFACT_KINDS in artifacts-db.ts)
+# Extension -> artifact kind mapping (matches ARTIFACT_KINDS in db/artifacts.ts)
 _EXT_KIND = {
     '.html': 'html',
     '.htm':  'html',

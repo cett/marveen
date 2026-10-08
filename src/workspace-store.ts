@@ -199,7 +199,7 @@ export function getWorkspaceDocBlob(id: string): Buffer | null {
 
 // Escape FTS5 special characters to prevent query-syntax errors on user
 // input. Wraps the term in double quotes so it is treated as a phrase, not
-// as FTS5 operators -- mirrors artifacts-db.ts's ftsEscape.
+// as FTS5 operators -- mirrors db/artifacts.ts's ftsEscape.
 function ftsEscape(term: string): string {
   return `"${term.replace(/"/g, '""')}"`
 }

@@ -11,7 +11,7 @@ const mockGet      = vi.fn()
 const mockDelete   = vi.fn()
 const mockRename   = vi.fn()
 
-vi.mock('../artifacts-db.js', () => ({
+vi.mock('../db/artifacts.js', () => ({
   ARTIFACT_KINDS: new Set(['html', 'markdown', 'json', 'text', 'binary']),
   ARTIFACT_TITLE_MAX_LENGTH: 250,
   createArtifact:  (...a: unknown[]) => mockCreate(...a),
