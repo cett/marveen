@@ -124,35 +124,8 @@ export function initDatabase(dbPathOverride?: string): void {
 
   applyMigrations(db)
 
-  // INVARIANT: a row that says 'delivered' must carry a delivered_at.
-  //
-  // On 2026-07-27 an operator bulk-closed a 28-row backlog with raw SQL that
-  // set status without a timestamp. Nothing broke loudly -- but the queue,
-  // which is the only signal we have for "what actually went out", started
-  // claiming that messages had been delivered when they never left. It took an
-  // hour of log archaeology to work out which of them the recipients had
-  // genuinely received and which they had only read out of band, and the answer
-  // was recoverable that day purely by luck.
-  //
-  // Enforced with a trigger rather than a CHECK constraint because SQLite
-  // cannot add a CHECK to an existing table without rebuilding it, and this is
-  // not worth a rebuild of the message log. Self-healing rather than ABORT:
-  // aborting would turn a bookkeeping slip into a failed operation for the
-  // caller, and the point is to keep the RECORD honest, not to police writers.
-  // The row gets a timestamp AND -- if nothing else explains it -- a marker
-  // saying it was closed without ever being delivered, so the distinction
-  // survives in the data instead of in someone's memory.
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS agent_messages_delivered_needs_ts
-    AFTER UPDATE OF status ON agent_messages
-    FOR EACH ROW WHEN NEW.status = 'delivered' AND NEW.delivered_at IS NULL
-    BEGIN
-      UPDATE agent_messages
-         SET delivered_at = CAST(strftime('%s','now') AS INTEGER),
-             result = COALESCE(result, 'closed-without-delivery')
-       WHERE id = NEW.id;
-    END
-  `)
+  // The agent_messages_delivered_needs_ts trigger (a 'delivered' row must carry
+  // a delivered_at) lives in migration 0074.
 
   // One-time L1 backfill: federation system ids are now stored lowercase, but
   // rows written by a pre-L1 build (an install that federated with a

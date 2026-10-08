@@ -49,6 +49,12 @@ describe('conversation_log schema: baseline migration == ledger_lib.py (no drift
     expect(lib).toMatch(/UNIQUE\(agent_id,\s*chat_id,\s*direction,\s*message_id\)/)
   })
 
+  it('ledger_lib.py creates the same per-agent lookup index as the migration', () => {
+    expect(lib).toMatch(
+      /CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log\(agent_id, created_at\)/,
+    )
+  })
+
   it('baseline migration creates the per-agent lookup index', () => {
     expect(baselineSql).toMatch(
       /CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log\(agent_id, created_at\)/,

@@ -1,6 +1,6 @@
 {
   "counts": {
-    "AUTOINCREMENT": 2,
+    "AUTOINCREMENT": 0,
     "COLLATE NOCASE": 7,
     "FTS5 MATCH": 12,
     "GLOB": 2,
@@ -15,7 +15,7 @@
     "lastInsertRowid": 14,
     "randomblob()/hex()": 0,
     "rowid": 26,
-    "strftime()": 9,
+    "strftime()": 8,
     "unixepoch()": 44,
     "vec0/sqlite-vec": 8
   }
