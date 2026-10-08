@@ -26,6 +26,29 @@ assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected '$2', 
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 HOOKS_DIR="$INSTALL_DIR/scripts/hooks"
 
+# The hooks talk to the dashboard API, so the tests run them against a stub
+# server (ledger-stub-server.py) backed by a SQLite file per scenario; the
+# assertions below read those files. The stub serves every database under
+# /db/<encoded path>; LEDGER_DB_PATH still names the store directory (token,
+# spool and drain marker live beside it).
+STUB_PORT_FILE="$TMPDIR_BASE/stub.port"
+python3 -B "$INSTALL_DIR/scripts/__tests__/ledger-stub-server.py" "$STUB_PORT_FILE" &
+STUB_PID=$!
+trap 'kill $STUB_PID 2>/dev/null; rm -rf "$TMPDIR_BASE"' EXIT
+for _ in $(seq 1 50); do [ -s "$STUB_PORT_FILE" ] && break; sleep 0.1; done
+STUB_PORT="$(cat "$STUB_PORT_FILE")"
+
+# ledger_env db VAR=value... cmd...: run cmd with the hook env pointed at the stub.
+ledger_env() {
+    local db="$1"
+    shift
+    mkdir -p "$(dirname "$db")"
+    printf 'test-token' > "$(dirname "$db")/.dashboard-token"
+    env LEDGER_DB_PATH="$db" \
+        LEDGER_BASE_URL="http://127.0.0.1:$STUB_PORT/db/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$db")" \
+        "$@"
+}
+
 # Run a hook with isolation env vars. MAIN_AGENT_ID is pinned so a payload with
 # no cwd resolves deterministically to agent 'marveen'. Extra env (e.g.
 # LEDGER_CONTEXT_WINDOW=3) can be exported by the caller and is inherited.
@@ -36,7 +59,7 @@ run_hook() {
     # OWNER_NAME is pinned to 'Gyula' so the replay's inbound prefix is
     # deterministic regardless of the install's .env (assertions below grep for
     # "Gyula:"). Same reasoning as pinning MAIN_AGENT_ID.
-    LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="10000000001" MAIN_AGENT_ID="marveen" \
+    ledger_env "$db" LEDGER_OWNER_CHAT="10000000001" MAIN_AGENT_ID="marveen" \
         OWNER_NAME="Gyula" \
         python3 "$HOOKS_DIR/$hook" "$@"
 }
@@ -45,7 +68,7 @@ run_hook() {
 # (matching the capture/outbound rows). The drain's dedup statefile lands beside
 # the DB (dirname of LEDGER_DB_PATH), so per-case subdirs keep it isolated.
 run_drain() { # db
-    ( cd "$INSTALL_DIR" && LEDGER_DB_PATH="$1" LEDGER_OWNER_CHAT="10000000001" \
+    ( cd "$INSTALL_DIR" && ledger_env "$1" LEDGER_OWNER_CHAT="10000000001" \
         MAIN_AGENT_ID="marveen" python3 "$HOOKS_DIR/ledger-live-drain.py" )
 }
 
@@ -453,6 +476,71 @@ mkdir -p "$TMPDIR_BASE/ld4"; DB_LD4="$TMPDIR_BASE/ld4/x.db"
 emit_inbound 10000000001 1131 "Epp most erkezett" | run_hook ledger-capture.py "$DB_LD4"
 OUT_G4="$(run_drain "$DB_LD4")"
 assert_eq "live drain: in-flight question (within grace) is not surfaced" "" "$OUT_G4"
+
+# ---------------------------------------------------------------------------
+# (h) DASHBOARD UNREACHABLE -- writes spool, reads are silent no-ops
+# ---------------------------------------------------------------------------
+echo ""
+echo "(h) Dashboard unreachable"
+
+# A closed port: nothing listens there, the connection is refused at once.
+down_env() { # db cmd...
+    local db="$1"; shift
+    mkdir -p "$(dirname "$db")"
+    printf 'test-token' > "$(dirname "$db")/.dashboard-token"
+    env LEDGER_DB_PATH="$db" LEDGER_BASE_URL="http://127.0.0.1:1" LEDGER_OWNER_CHAT="10000000001" \
+        MAIN_AGENT_ID="marveen" OWNER_NAME="Gyula" "$@"
+}
+spool_lines() { cat "$1/.ledger-spool/marveen.jsonl" 2>/dev/null | wc -l | tr -d ' '; }
+
+mkdir -p "$TMPDIR_BASE/h1"; DB_H1="$TMPDIR_BASE/h1/x.db"
+emit_inbound 10000000001 2001 "kiesés alatt jott" | down_env "$DB_H1" python3 "$HOOKS_DIR/ledger-capture.py" \
+    && pass "outage: capture exits 0 with the dashboard down" \
+    || fail "outage: capture must exit 0 with the dashboard down"
+emit_reply 10000000001 "kiesés alatti válasz" | down_env "$DB_H1" python3 "$HOOKS_DIR/ledger-outbound.py" \
+    && pass "outage: outbound exits 0 with the dashboard down" \
+    || fail "outage: outbound must exit 0 with the dashboard down"
+assert_eq "outage: both turns land in the spool" "2" "$(spool_lines "$TMPDIR_BASE/h1")"
+
+# Reads are silent no-ops (replay prints nothing, drain prints nothing, exit 0)
+OUT_H_REPLAY="$(emit_session | down_env "$DB_H1" python3 "$HOOKS_DIR/ledger-replay.py")"
+assert_eq "outage: replay is a silent no-op" "" "$OUT_H_REPLAY"
+OUT_H_DRAIN="$( cd "$INSTALL_DIR" && down_env "$DB_H1" python3 "$HOOKS_DIR/ledger-live-drain.py" )"
+assert_eq "outage: live drain is a silent no-op" "" "$OUT_H_DRAIN"
+
+# Dashboard is back: the next write flushes the spool with the ORIGINAL order
+emit_inbound 10000000001 2002 "mar elerheto" | run_hook ledger-capture.py "$DB_H1"
+assert_eq "recovery: spooled turns + the new one are all in the ledger" "3" \
+    "$(db_scalar "$DB_H1" "SELECT COUNT(*) FROM conversation_log")"
+assert_eq "recovery: spooled inbound kept its message_id" "2001" \
+    "$(db_scalar "$DB_H1" "SELECT message_id FROM conversation_log WHERE text LIKE 'kies%jott'")"
+assert_eq "recovery: the spool is empty again" "0" "$(spool_lines "$TMPDIR_BASE/h1")"
+
+# A second hook firing after the flush must not duplicate the spooled rows
+emit_inbound 10000000001 2001 "kiesés alatt jott" | run_hook ledger-capture.py "$DB_H1"
+assert_eq "recovery: re-sent inbound is deduplicated" "3" \
+    "$(db_scalar "$DB_H1" "SELECT COUNT(*) FROM conversation_log")"
+
+# The spool is bounded: past SPOOL_MAX_ENTRIES the new turns are dropped, not the file grown
+mkdir -p "$TMPDIR_BASE/h2/.ledger-spool"; DB_H2="$TMPDIR_BASE/h2/x.db"
+python3 -B -c '
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i in range(500):
+        f.write(json.dumps({"agent_id": "marveen", "chat_id": "1", "direction": "in", "message_id": str(i), "text": "x", "ts": None, "created_at": 1}) + "\n")
+' "$TMPDIR_BASE/h2/.ledger-spool/marveen.jsonl"
+emit_inbound 10000000001 9999 "tul sok" | down_env "$DB_H2" python3 "$HOOKS_DIR/ledger-capture.py"
+assert_eq "outage: a full spool does not grow" "500" "$(spool_lines "$TMPDIR_BASE/h2")"
+
+# A wrong token is a failed write too (401 -> spooled), not a crash
+mkdir -p "$TMPDIR_BASE/h3"; DB_H3="$TMPDIR_BASE/h3/x.db"
+printf 'wrong' > "$TMPDIR_BASE/h3/.dashboard-token"
+emit_inbound 10000000001 3001 "rossz token" | env LEDGER_DB_PATH="$DB_H3" MAIN_AGENT_ID="marveen" \
+    LEDGER_BASE_URL="http://127.0.0.1:$STUB_PORT/db/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$DB_H3")" \
+    python3 "$HOOKS_DIR/ledger-capture.py" \
+    && pass "auth: a rejected token does not break the prompt" \
+    || fail "auth: a rejected token must not break the prompt"
+assert_eq "auth: the rejected turn is spooled" "1" "$(spool_lines "$TMPDIR_BASE/h3")"
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -1,52 +1,34 @@
 """Shared helpers for the deterministic conversation-continuity ledger.
 
-The ledger (store/claudeclaw.db -> conversation_log) is a rolling TRANSCRIPT of
+The ledger (the dashboard's conversation_log table) is a rolling TRANSCRIPT of
 every channel turn -- inbound user messages AND outbound replies -- per
 agent_id + chat_id. On a respawn (a fresh --channels session with no memory of
 the live conversation) the SessionStart hook injects the last ~20 turns of
 context PLUS the open question, so the fresh session continues where the
 connection dropped -- with ZERO agent discretion.
 
+The hooks talk to the dashboard API (/api/conversation-ledger) and never open
+the database file. Reads have a short timeout and raise on failure (the callers
+treat that as "ledger unavailable" and do nothing). Writes never raise: when the
+dashboard cannot be reached the turn is appended to a bounded spool file
+(store/.ledger-spool/<agent>.jsonl) that the next successful write flushes and
+the dashboard drains at boot.
+
 Generic across all three channel agents (marveen / dia / erno-ba): agent_id is
 derived from the running session's cwd so each session only ever sees its OWN
-chat. Pure stdlib (sqlite3) -- no node startup, no jq.
+chat. Pure stdlib -- no node startup, no jq.
 """
+import json
 import os
-import sqlite3
 import sys
 import time
+import urllib.parse
+import urllib.request
 
-# Canonical schema. MUST stay identical to the db.ts initDatabase() migration
-# (asserted by a contract test). Created defensively so a hook that runs before
-# the dashboard migration (fresh boot / respawn) still works.
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS conversation_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id TEXT NOT NULL,
-  chat_id TEXT NOT NULL,
-  direction TEXT NOT NULL CHECK(direction IN ('in','out')),
-  message_id TEXT,
-  text TEXT,
-  ts TEXT,
-  created_at INTEGER NOT NULL,
-  UNIQUE(agent_id, chat_id, direction, message_id)
-)
-"""
-INDEX = "CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log(agent_id, created_at)"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hook_db_path import db_path  # noqa: E402,F401  (re-exported for the fail-closed hooks)
 
 RECENT_LIMIT = 20
-
-
-def db_path():
-    # Hooks live in <install>/scripts/hooks/; the ledger is <install>/store/.
-    # Resolve from THIS file's location so it is correct regardless of the
-    # session's cwd. Test override: LEDGER_DB_PATH.
-    override = os.environ.get("LEDGER_DB_PATH")
-    if override:
-        return override
-    here = os.path.dirname(os.path.abspath(__file__))
-    install = os.path.dirname(os.path.dirname(here))
-    return os.path.join(install, "store", "claudeclaw.db")
 
 
 def _install_dir():
@@ -120,100 +102,170 @@ def agent_id_from_cwd(cwd):
     return base or main_agent_id()
 
 
-def connect():
-    con = sqlite3.connect(db_path(), timeout=10)
-    con.execute("PRAGMA busy_timeout=10000")
-    con.execute(SCHEMA)
-    con.execute(INDEX)
-    return con
+# --- dashboard API client -----------------------------------------------------
+
+READ_TIMEOUT = 2
+WRITE_TIMEOUT = 2
+SPOOL_MAX_ENTRIES = 500
+
+
+def _store_dir():
+    # Same directory as the database file: that is where the dashboard token,
+    # the spool and the live-drain marker live (and the single seam tests use).
+    return os.path.dirname(db_path())
+
+
+def _port():
+    port = os.environ.get("WEB_PORT")
+    if not port:
+        try:
+            with open(os.path.join(_install_dir(), ".env")) as f:
+                for line in f:
+                    if line.startswith("WEB_PORT="):
+                        port = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+        except Exception:
+            pass
+    return port or "3420"
+
+
+def _base_url():
+    # Test override: LEDGER_BASE_URL.
+    return (os.environ.get("LEDGER_BASE_URL") or "http://localhost:%s" % _port()).rstrip("/")
+
+
+def _headers():
+    headers = {"Content-Type": "application/json"}
+    try:
+        with open(os.path.join(_store_dir(), ".dashboard-token")) as f:
+            token = f.read().strip()
+        if token:
+            headers["Authorization"] = "Bearer " + token
+    except Exception:
+        pass
+    return headers
+
+
+def _request(method, path, body=None, timeout=READ_TIMEOUT):
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(_base_url() + path, data=data, method=method, headers=_headers())
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8") or "null")
+
+
+def _spool_path(agent_id):
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(agent_id))
+    return os.path.join(_store_dir(), ".ledger-spool", safe + ".jsonl")
+
+
+def _spool(entry):
+    """Append one turn to the agent's spool. Bounded: a full spool drops the NEW
+    entry (append-only, nothing is rewritten). Never raises."""
+    try:
+        path = _spool_path(entry["agent_id"])
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        try:
+            with open(path) as f:
+                if sum(1 for _ in f) >= SPOOL_MAX_ENTRIES:
+                    return
+        except FileNotFoundError:
+            pass
+        with open(path, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _flush_spool(agent_id):
+    """After a successful write: send what an earlier outage left in the spool.
+    The file is claimed by renaming it, so a concurrent hook appends to a fresh
+    one; on failure the claimed lines are put back. Never raises."""
+    path = _spool_path(agent_id)
+    claimed = "%s.%d.flushing" % (path, os.getpid())
+    try:
+        os.replace(path, claimed)
+    except Exception:
+        return  # nothing spooled (or another hook claimed it)
+    try:
+        with open(claimed) as f:
+            lines = [ln for ln in f.read().split("\n") if ln.strip()]
+        entries = []
+        for ln in lines:
+            try:
+                entries.append(json.loads(ln))
+            except Exception:
+                pass  # a torn line is dropped
+        if entries:
+            try:
+                _request("POST", "/api/conversation-ledger", {"entries": entries}, timeout=WRITE_TIMEOUT)
+            except Exception:
+                for e in entries:
+                    _spool(e)
+    finally:
+        try:
+            os.unlink(claimed)
+        except Exception:
+            pass
+
+
+def _write(entry):
+    """Send one turn; on failure spool it. Never raises."""
+    try:
+        _request("POST", "/api/conversation-ledger", entry, timeout=WRITE_TIMEOUT)
+    except Exception:
+        _spool(entry)
+        return
+    _flush_spool(entry["agent_id"])
 
 
 def log_inbound(agent_id, chat_id, message_id, text, ts):
     """Record an inbound user message. Idempotent on (agent_id, chat_id, in, message_id)."""
-    con = connect()
-    try:
-        con.execute(
-            "INSERT OR IGNORE INTO conversation_log"
-            " (agent_id, chat_id, direction, message_id, text, ts, created_at)"
-            " VALUES (?, ?, 'in', ?, ?, ?, ?)",
-            (str(agent_id), str(chat_id), str(message_id), text, ts, int(time.time())),
-        )
-        con.commit()
-    finally:
-        con.close()
+    _write({
+        "agent_id": str(agent_id), "chat_id": str(chat_id), "direction": "in",
+        "message_id": str(message_id), "text": text, "ts": ts, "created_at": int(time.time()),
+    })
 
 
 def log_outbound(agent_id, chat_id, text, message_id=None):
     """Record an outbound reply.
 
     message_id: the Telegram message_id returned by the reply tool, or None.
-    When provided, INSERT OR IGNORE deduplicates on the UNIQUE constraint so
-    a double-fire of the hook does not produce a duplicate row. When None the
+    When provided, the server deduplicates on the UNIQUE constraint so a
+    double-fire of the hook does not produce a duplicate row. When None the
     constraint does not trigger (NULL != NULL in SQL), preserving the existing
     behaviour for callers that do not supply a message_id.
-    Note: INSERT OR IGNORE silently swallows ALL constraint violations, not
-    only UNIQUE conflicts. This is intentional: a duplicate outbound row is
-    harmless, and we never want the ledger write to raise an exception.
+    The write never raises: a duplicate outbound row is harmless, and we never
+    want the ledger write to break the reply.
     """
-    con = connect()
-    try:
-        now = int(time.time())
-        mid = str(message_id) if message_id is not None else None
-        con.execute(
-            "INSERT OR IGNORE INTO conversation_log"
-            " (agent_id, chat_id, direction, message_id, text, ts, created_at)"
-            " VALUES (?, ?, 'out', ?, ?, ?, ?)",
-            (str(agent_id), str(chat_id), mid, text,
-             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), now),
-        )
-        con.commit()
-    finally:
-        con.close()
+    now = int(time.time())
+    _write({
+        "agent_id": str(agent_id), "chat_id": str(chat_id), "direction": "out",
+        "message_id": str(message_id) if message_id is not None else None, "text": text,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "created_at": now,
+    })
 
 
 def recent(agent_id, limit=RECENT_LIMIT):
-    """The last `limit` turns for this agent, oldest-first. Rows: (direction, chat_id, text, ts)."""
-    con = connect()
-    try:
-        rows = con.execute(
-            "SELECT direction, chat_id, text, ts FROM conversation_log"
-            " WHERE agent_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
-            (str(agent_id), int(limit)),
-        ).fetchall()
-        return list(reversed(rows))
-    finally:
-        con.close()
+    """The last `limit` turns for this agent, oldest-first. Rows: (direction, chat_id, text, ts).
+    Raises when the dashboard cannot be reached."""
+    path = "/api/conversation-ledger/%s/recent?limit=%d" % (urllib.parse.quote(str(agent_id), safe=""), int(limit))
+    data = _request("GET", path)
+    return [(t["direction"], t["chat_id"], t["text"], t["ts"]) for t in data["turns"]]
 
 
 def open_question_with_age(agent_id):
-    """Like open_question() but also returns the open inbound's created_at (unix
-    epoch). Returns (chat_id, message_id, text, ts, created_at) or None. Used by
-    the live-drain hook, which needs the age for its grace window."""
-    con = connect()
-    try:
-        row = con.execute(
-            "SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log"
-            " WHERE agent_id=? AND direction='in' ORDER BY created_at DESC, id DESC LIMIT 1",
-            (str(agent_id),),
-        ).fetchone()
-        if not row:
-            return None
-        chat_id, message_id, text, ts, created_at, rid = row
-        later_out = con.execute(
-            "SELECT 1 FROM conversation_log"
-            " WHERE agent_id=? AND direction='out'"
-            "   AND (created_at > ? OR (created_at = ? AND id > ?)) LIMIT 1",
-            (str(agent_id), created_at, created_at, rid),
-        ).fetchone()
-        if later_out:
-            return None  # the last inbound has already been answered
-        return (chat_id, message_id, text, ts, created_at)
-    finally:
-        con.close()
+    """The most recent inbound with NO later outbound (the unanswered question),
+    or None. Returns (chat_id, message_id, text, ts, created_at). Used by the
+    live-drain hook, which needs the age for its grace window. Raises when the
+    dashboard cannot be reached."""
+    path = "/api/conversation-ledger/%s/open-question" % urllib.parse.quote(str(agent_id), safe="")
+    q = _request("GET", path)["open_question"]
+    if not q:
+        return None
+    return (q["chat_id"], q["message_id"], q["text"], q["ts"], q["created_at"])
 
 
 def open_question(agent_id):
-    """The most recent inbound with NO later outbound (the unanswered question),
-    or None. Returns (chat_id, message_id, text, ts)."""
+    """Like open_question_with_age() without the age: (chat_id, message_id, text, ts) or None."""
     oq = open_question_with_age(agent_id)
     return oq[:4] if oq else None

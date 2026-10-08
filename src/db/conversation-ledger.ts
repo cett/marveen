@@ -43,9 +43,10 @@ export function logLedgerTurn(turn: LedgerTurnInput): boolean {
   const createdAt = turn.created_at ?? Math.floor(Date.now() / 1000)
   const ts = turn.ts ?? (turn.direction === 'out' ? new Date(createdAt * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z') : null)
   const info = db.prepare(
-    `INSERT OR IGNORE INTO conversation_log
+    `INSERT INTO conversation_log
        (agent_id, chat_id, direction, message_id, text, ts, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`,
   ).run(turn.agent_id, turn.chat_id, turn.direction, turn.message_id ?? null, turn.text ?? null, ts, createdAt)
   return info.changes > 0
 }

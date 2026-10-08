@@ -4,7 +4,7 @@
     "scripts/backup.sh": "C",
     "scripts/ensure-native-modules.sh": "C",
     "scripts/hooks/context-watchdog.py": "A",
-    "scripts/hooks/ledger_lib.py": "B",
+    "scripts/hooks/hook_db_path.py": "A",
     "scripts/hooks/skill-sql-sync.py": "B",
     "scripts/hooks/tenant-skill-gate.py": "A",
     "scripts/hooks/tenant_context_lib.py": "A",
@@ -48,16 +48,10 @@
         "sqlite3.connect": 2
       }
     },
-    "scripts/hooks/ledger_lib.py": {
-      "dialect": {
-        "AUTOINCREMENT": 1,
-        "INSERT OR IGNORE": 4,
-        "PRAGMA": 1
-      },
+    "scripts/hooks/hook_db_path.py": {
+      "dialect": {},
       "direct": {
-        "claudeclaw.db": 2,
-        "python sqlite3": 1,
-        "sqlite3.connect": 1
+        "claudeclaw.db": 1
       }
     },
     "scripts/hooks/skill-sql-sync.py": {
