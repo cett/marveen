@@ -136,19 +136,7 @@ export function initDatabase(dbPathOverride?: string): void {
   // segment keeps its case -- it is the peer's namespace). Idempotent: an
   // already-lowercase prefix compares equal and is skipped, so this is a
   // safe no-op after the first run and on fresh installs.
-  db.exec(`
-    UPDATE agent_messages
-       SET from_agent = lower(substr(from_agent, 1, instr(from_agent, '/') - 1)) || substr(from_agent, instr(from_agent, '/'))
-     WHERE instr(from_agent, '/') > 0
-       AND substr(from_agent, 1, instr(from_agent, '/') - 1) <> lower(substr(from_agent, 1, instr(from_agent, '/') - 1))
-  `)
-  db.exec(`
-    UPDATE agent_messages
-       SET to_agent = lower(substr(to_agent, 1, instr(to_agent, '/') - 1)) || substr(to_agent, instr(to_agent, '/'))
-     WHERE instr(to_agent, '/') > 0
-       AND substr(to_agent, 1, instr(to_agent, '/') - 1) <> lower(substr(to_agent, 1, instr(to_agent, '/') - 1))
-  `)
-
+  foldFederationPrefixCase()
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -163,6 +151,33 @@ export function initDatabase(dbPathOverride?: string): void {
   // initDatabase() wrapper, AFTER this function returns -- see db/index.ts.
   // connection.ts intentionally never imports a domain module (see db/index.ts
   // header comment) so it stays the acyclic root every other db/*.ts depends on.
+}
+
+/**
+ * Lowercase the SYSTEM prefix (the part before the first '/') of qualified
+ * from_agent / to_agent ids in place; the agent segment keeps its case. Runs on
+ * every start and is a no-op once the prefixes are lowercase. Done row by row
+ * in code over the few rows that contain a '/', so the SQL stays portable
+ * (no instr()).
+ */
+function foldFederationPrefixCase(): void {
+  const fold = (value: string): string => {
+    const slash = value.indexOf('/')
+    if (slash <= 0) return value
+    const prefix = value.slice(0, slash)
+    return prefix === prefix.toLowerCase() ? value : prefix.toLowerCase() + value.slice(slash)
+  }
+  for (const column of ['from_agent', 'to_agent'] as const) {
+    const rows = db
+      .prepare(`SELECT id, ${column} AS value FROM agent_messages WHERE ${column} LIKE '%/%'`)
+      .all() as { id: number; value: string }[]
+    const update = db.prepare(`UPDATE agent_messages SET ${column} = ? WHERE id = ?`)
+    const pending = rows.filter((r) => fold(r.value) !== r.value)
+    if (pending.length === 0) continue
+    db.transaction(() => {
+      for (const r of pending) update.run(fold(r.value), r.id)
+    })()
+  }
 }
 
 function migrateTaskRunsFromJson(): void {

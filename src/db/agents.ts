@@ -248,26 +248,29 @@ export function setMessageResult(id: number, result: string): boolean {
 // deterministic counterpart of the bridge's drip-fail on disable/removal.
 // ONE statement (claimPendingForAgent idiom: no SELECT-then-UPDATE window).
 // pending only: delivered/done/failed rows are conversation history.
-// Per-peer scoping compares the exact prefix segment via instr/substr -- a
-// LIKE pattern would treat '_' in a peer id as a wildcard ('te_dor' purging
-// 'teodor'). lower() on both sides: system ids are case-insensitive, and rows
-// written before the lowercase normalization may carry an uppercase prefix
-// that must still be purged with its peer (ASCII-only lower() is fine -- the
-// id charset is [a-zA-Z0-9_-]).
+// Per-peer scoping is a LIKE on '<peer>/%' with the peer id escaped, so '_' in
+// a peer id is a literal ('te_dor' does not purge 'teodor'). lower() on both
+// sides: system ids are case-insensitive, and rows written before the
+// lowercase normalization may carry an uppercase prefix that must still be
+// purged with its peer (ASCII-only lower() is fine -- the id charset is
+// [a-zA-Z0-9_-]).
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => '\\' + c)
+}
+
 export function failPendingFederatedMessages(peerId: string | undefined, reason: string): number[] {
   const now = Math.floor(Date.now() / 1000)
   const rows = peerId === undefined
     ? db.prepare(
         `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
-           WHERE status = 'pending' AND instr(to_agent, '/') > 0
+           WHERE status = 'pending' AND to_agent LIKE '%/%'
          RETURNING id`,
       ).all(reason, now) as Array<{ id: number }>
     : db.prepare(
         `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
-           WHERE status = 'pending' AND instr(to_agent, '/') > 0
-             AND lower(substr(to_agent, 1, instr(to_agent, '/') - 1)) = lower(?)
+           WHERE status = 'pending' AND lower(to_agent) LIKE ? ESCAPE '\\'
          RETURNING id`,
-      ).all(reason, now, peerId) as Array<{ id: number }>
+      ).all(reason, now, escapeLike(peerId.toLowerCase()) + '/%') as Array<{ id: number }>
   return rows.map((r) => r.id)
 }
 

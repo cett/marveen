@@ -116,3 +116,32 @@ describe('fleet import: a row the table would reject is skipped', () => {
     expect(breaksTableRules({}, [], { status: ['new'] })).toBe(true)
   })
 })
+
+describe('failPendingFederatedMessages without instr()', () => {
+  const pending = (to: string) => createAgentMessage('local-a', to, 'pending ' + to).id
+  const status = (id: number) =>
+    (getDb().prepare('SELECT status FROM agent_messages WHERE id = ?').get(id) as { status: string }).status
+
+  it("a peer id with '_' is a literal, and case does not matter", async () => {
+    const { failPendingFederatedMessages } = await import('../db.js')
+    const teodor = pending('teodor/agent-x')
+    const teUnderscore = pending('te_dor/agent-x')
+    const upper = pending('Teodor/Agent-Y')
+    const local = pending('local-agent')
+    const failed = failPendingFederatedMessages('teodor', 'peer gone')
+    expect(failed.sort()).toEqual([teodor, upper].sort())
+    expect(status(teodor)).toBe('failed')
+    expect(status(upper)).toBe('failed')
+    expect(status(teUnderscore)).toBe('pending')
+    expect(status(local)).toBe('pending')
+  })
+
+  it('no peer id fails every pending qualified message and nothing else', async () => {
+    const { failPendingFederatedMessages } = await import('../db.js')
+    const other = pending('other-peer/agent-z')
+    const local = pending('local-agent-2')
+    expect(failPendingFederatedMessages(undefined, 'all gone')).toContain(other)
+    expect(status(other)).toBe('failed')
+    expect(status(local)).toBe('pending')
+  })
+})

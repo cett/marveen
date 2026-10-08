@@ -10,7 +10,7 @@
     "INSERT OR REPLACE": 3,
     "PRAGMA": 10,
     "datetime()": 0,
-    "instr()": 14,
+    "instr()": 1,
     "json_extract/json_each": 0,
     "lastInsertRowid": 0,
     "randomblob()/hex()": 0,
