@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for scripts/blackboard-hygiene.py.
 
-Pure helpers (pane_is_active, is_lagging, is_stale_blocked, next_counters) are tested directly;
+Pure helpers (pane_is_active, is_lagging, is_stale_blocked, is_maintenance_active,
+nudge_on_hold, is_wake_gap, next_counters) are tested directly;
 counter persistence runs against a throwaway SQLite file with the real
 agent_state shape; main() runs end to end with the dashboard, tmux and clock
 mocked, so the nudge / escalation / reset / dry-run / failure contract is
@@ -26,6 +27,7 @@ mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
 NOW = 1_800_000_000
+HEARTBEAT = "[memoria-heartbeat] Ideje a periodikus memoria-heartbeatednek."
 SPINNER_PANE = "output\nFlibbertigibbeting… (32m 37s · esc)\n"
 
 
@@ -84,7 +86,82 @@ class IsStaleBlockedTest(unittest.TestCase):
         self.assertFalse(mod.is_stale_blocked(None, NOW))
 
 
+class IsMaintenanceActiveTest(unittest.TestCase):
+    def setUp(self):
+        p = patch.object(mod, "COORDINATOR", "coord")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _msg(self, age, sender="coord", content=HEARTBEAT):
+        return {"from_agent": sender, "content": content, "ts": NOW - age}
+
+    def test_recent_coordinator_heartbeat_is_maintenance(self):
+        self.assertTrue(mod.is_maintenance_active(self._msg(10 * 60), NOW))
+
+    def test_window_boundary_is_fifteen_minutes(self):
+        self.assertTrue(mod.is_maintenance_active(self._msg(14 * 60 + 59), NOW))
+        self.assertFalse(mod.is_maintenance_active(self._msg(15 * 60 + 1), NOW))
+
+    def test_hygiene_prefix_counts(self):
+        self.assertTrue(mod.is_maintenance_active(self._msg(60, content=mod.NUDGE_TEXT), NOW))
+
+    def test_other_sender_with_the_prefix_does_not_count(self):
+        self.assertFalse(mod.is_maintenance_active(self._msg(60, sender="agent-b"), NOW))
+
+    def test_real_task_message_is_not_maintenance(self):
+        self.assertFalse(mod.is_maintenance_active(self._msg(60, content="Implementalj egy feladatot"), NOW))
+
+    def test_no_message_is_not_maintenance(self):
+        self.assertFalse(mod.is_maintenance_active(None, NOW))
+
+
+class NudgeOnHoldTest(unittest.TestCase):
+    ROW = {"status": "done", "updated_at": NOW - 5 * 86400}
+
+    def test_no_previous_nudge_is_not_on_hold(self):
+        self.assertFalse(mod.nudge_on_hold(None, self.ROW, NOW))
+
+    def test_pending_nudge_holds(self):
+        self.assertTrue(mod.nudge_on_hold({"status": "pending", "ts": NOW - 3600}, self.ROW, NOW))
+
+    def test_pending_nudge_stops_holding_after_two_hours(self):
+        self.assertFalse(mod.nudge_on_hold({"status": "pending", "ts": NOW - 2 * 3600 - 1}, self.ROW, NOW))
+
+    def test_cooldown_boundary_is_thirty_minutes(self):
+        self.assertTrue(mod.nudge_on_hold({"status": "delivered", "ts": NOW - 29 * 60}, self.ROW, NOW))
+        self.assertFalse(mod.nudge_on_hold({"status": "delivered", "ts": NOW - 31 * 60}, self.ROW, NOW))
+
+    def test_row_updated_after_the_nudge_releases_the_hold(self):
+        row = {"status": "done", "updated_at": NOW - 60}
+        self.assertFalse(mod.nudge_on_hold({"status": "delivered", "ts": NOW - 600}, row, NOW))
+
+    def test_missing_row_inside_cooldown_holds(self):
+        self.assertTrue(mod.nudge_on_hold({"status": "delivered", "ts": NOW - 600}, None, NOW))
+
+
+class IsWakeGapTest(unittest.TestCase):
+    def test_first_ever_sweep_is_not_a_gap(self):
+        self.assertFalse(mod.is_wake_gap(None, NOW))
+
+    def test_hourly_tick_is_normal(self):
+        # 61 minutes: the monitor's own cadence plus jitter must not look like a sleep.
+        self.assertFalse(mod.is_wake_gap(NOW - 61 * 60, NOW))
+
+    def test_boundary_is_seventy_five_minutes(self):
+        self.assertFalse(mod.is_wake_gap(NOW - 75 * 60, NOW))
+        self.assertTrue(mod.is_wake_gap(NOW - 76 * 60, NOW))
+
+
 class NextCountersTest(unittest.TestCase):
+    def test_held_agent_keeps_its_counter(self):
+        self.assertEqual(mod.next_counters({"agent-a": 1}, [], ["agent-a"]), ({"agent-a": 1}, []))
+
+    def test_held_agent_without_counter_stays_absent(self):
+        self.assertEqual(mod.next_counters({}, [], ["agent-a"]), ({}, []))
+
+    def test_unheld_missing_agent_is_still_dropped(self):
+        self.assertEqual(mod.next_counters({"agent-a": 1}, [], []), ({}, []))
+
     def test_first_nudge_starts_the_counter(self):
         self.assertEqual(mod.next_counters({}, ["agent-a"]), ({"agent-a": 1}, []))
 
@@ -106,6 +183,11 @@ def _make_db(path, initial=None):
         "state_key TEXT NOT NULL, state_value TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT 'default', "
         "updated_at INTEGER NOT NULL DEFAULT (unixepoch()), UNIQUE(agent_id, state_key))"
     )
+    conn.execute(
+        "CREATE TABLE agent_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, from_agent TEXT NOT NULL, "
+        "to_agent TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
+        "created_at INTEGER NOT NULL, delivered_at INTEGER, completed_at INTEGER)"
+    )
     if initial is not None:
         conn.execute(
             "INSERT INTO agent_state(agent_id,state_key,state_value) VALUES(?,?,?)",
@@ -113,6 +195,19 @@ def _make_db(path, initial=None):
         )
     conn.commit()
     conn.close()
+
+
+def _add_msg(path, to, content, age, sender="coord", status="delivered"):
+    """Insert an agent_messages row `age` seconds old (delivered at the same moment)."""
+    conn = sqlite3.connect(path)
+    ts = NOW - age
+    conn.execute(
+        "INSERT INTO agent_messages(from_agent,to_agent,content,status,created_at,delivered_at) VALUES(?,?,?,?,?,?)",
+        (sender, to, content, status, ts, ts if status != "pending" else None),
+    )
+    conn.commit()
+    conn.close()
+
 
 
 class CountersPersistenceTest(unittest.TestCase):
@@ -352,6 +447,177 @@ class MainTest(unittest.TestCase):
         self.fail_send = True
         self.assertEqual(mod.main([]), 1)
         self.assertEqual(self._counters(), {"agent-a": 1})
+
+    # --- idle-agent false positive guards -----------------------------------
+
+    def _idle_agent_fleet(self):
+        """agent-a: pane active, done row five days old (the idle-agent shape)."""
+        self._fleet({"status": "done", "updated_at": NOW - 5 * 86400})
+
+    def test_fresh_heartbeat_turn_on_idle_agent_is_not_nudged(self):
+        _make_db(self.db)
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", HEARTBEAT, 5 * 60)
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {})
+
+    def test_same_fixture_with_old_heartbeat_is_nudged(self):
+        # Counter-probe: a stall must not slip through behind a stale heartbeat.
+        _make_db(self.db)
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", HEARTBEAT, 20 * 60)
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_real_message_after_the_heartbeat_ends_the_exemption(self):
+        _make_db(self.db)
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", HEARTBEAT, 8 * 60)
+        _add_msg(self.db, "agent-a", "Dolgozz ezen", 3 * 60, sender="someone")
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_heartbeat_from_a_non_coordinator_does_not_silence_the_monitor(self):
+        _make_db(self.db)
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", HEARTBEAT, 5 * 60, sender="agent-b")
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_agent_without_a_row_and_a_fresh_heartbeat_is_not_lagging(self):
+        _make_db(self.db)
+        self._fleet()
+        self.board = []
+        _add_msg(self.db, "agent-a", HEARTBEAT, 2 * 60)
+        mod.main([])
+        self.assertEqual(self.sent, [])
+
+    def test_maintenance_exemption_keeps_the_existing_counter(self):
+        _make_db(self.db, '{"agent-a": 1}')
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 4 * 60)
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_pending_nudge_blocks_a_second_one_and_keeps_the_counter(self):
+        _make_db(self.db, '{"agent-a": 1}')
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 40 * 60, status="pending")
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_nudge_inside_cooldown_is_not_repeated_or_counted(self):
+        _make_db(self.db, '{"agent-a": 1}')
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 20 * 60)
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_nudge_after_cooldown_without_update_is_repeated_and_escalates(self):
+        _make_db(self.db, '{"agent-a": 1}')
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", mod.NUDGE_TEXT, 40 * 60)
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a", "coord"])
+        self.assertEqual(self._counters(), {})
+
+    def test_nudge_to_another_agent_does_not_hold_this_one(self):
+        _make_db(self.db)
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-b", mod.NUDGE_TEXT, 60)
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_dry_run_reports_held_agents(self):
+        _make_db(self.db)
+        self._idle_agent_fleet()
+        _add_msg(self.db, "agent-a", HEARTBEAT, 60)
+        mod.main(["--dry-run"])
+        line = print.call_args[0][0]
+        self.assertIn("lagging=-", line)
+        self.assertIn("held=agent-a", line)
+
+    def _set_last_sweep(self, ts):
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "INSERT INTO agent_state(agent_id,state_key,state_value) VALUES(?,?,?)",
+            ("coord", mod.LAST_SWEEP_KEY, str(ts)),
+        )
+        conn.commit()
+        conn.close()
+
+    def _last_sweep(self):
+        conn = sqlite3.connect(self.db)
+        try:
+            return mod.read_last_sweep(conn)
+        finally:
+            conn.close()
+
+    def test_wake_guard_skips_the_round_and_records_the_time(self):
+        _make_db(self.db, '{"agent-a": 1}')
+        self._set_last_sweep(NOW - 2 * 3600)
+        self._fleet()
+        self.assertEqual(mod.main([]), 0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {"agent-a": 1})
+        self.assertEqual(self._last_sweep(), NOW)
+        self.assertIn("wake-guard", print.call_args[0][0])
+
+    def test_hourly_cadence_is_not_a_wake_gap(self):
+        _make_db(self.db)
+        self._set_last_sweep(NOW - 61 * 60)
+        self._fleet()
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_wake_guard_swallows_only_one_round(self):
+        _make_db(self.db)
+        self._set_last_sweep(NOW - 2 * 3600)
+        self._fleet()
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_every_normal_sweep_records_the_time(self):
+        _make_db(self.db)
+        self._fleet()
+        mod.main([])
+        self.assertEqual(self._last_sweep(), NOW)
+
+    def test_dry_run_does_not_record_the_time(self):
+        _make_db(self.db)
+        self._fleet()
+        mod.main(["--dry-run"])
+        self.assertIsNone(self._last_sweep())
+
+    def test_dry_run_wake_guard_writes_nothing(self):
+        _make_db(self.db)
+        self._set_last_sweep(NOW - 2 * 3600)
+        self._fleet()
+        mod.main(["--dry-run"])
+        self.assertEqual(self._last_sweep(), NOW - 2 * 3600)
+
+
+class SweepContractTest(unittest.TestCase):
+    """The maintenance prefixes must match what the coordinator really sends."""
+
+    def test_heartbeat_directive_starts_with_a_maintenance_prefix(self):
+        sweep = os.path.join(os.path.dirname(_SCRIPT_PATH), "fleet-heartbeat-sweep.sh")
+        with open(sweep, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        start = next(i for i, ln in enumerate(lines) if "DIRECTIVE <<'EOF'" in ln)
+        first = lines[start + 1].lstrip()
+        self.assertTrue(first.startswith(mod.MAINTENANCE_PREFIXES), first[:40])
+
+    def test_own_nudge_texts_start_with_a_maintenance_prefix(self):
+        for text in (mod.NUDGE_TEXT, mod.BLOCKED_IDLE_NUDGE_TEXT):
+            self.assertTrue(text.startswith(mod.MAINTENANCE_PREFIXES))
 
 
 class RunningAgentsTest(unittest.TestCase):
