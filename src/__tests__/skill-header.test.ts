@@ -53,19 +53,28 @@ describe('generated SKILL.md header', () => {
     expect(readGeneratedHeader(out)?.id).toBeNull()
   })
 
-  it('the Python hook strips exactly what the TS side does (cross-language parity)', () => {
+  // The hook only reads the header (to tell a tenant copy from a plain skill and
+  // to find the tenant row); the stripping happens on the server, in
+  // stripGeneratedHeader, before the row is written.
+  it('the Python hook reads the header exactly like the TS side (cross-language parity)', () => {
     const vectors = [
       addGeneratedHeader(`${FM}# Body\n`, 'global/demo'),
       addGeneratedHeader('---\nname: x\n---', 'global/x'),
       addGeneratedHeader('plain\n', 'global/p'),
+      addGeneratedHeader(`${FM}# Body\n`, 'acme-demo', { tenant: true }),
       `${FM}no header\n`,
       '',
     ]
     const hook = join(__dirname, '../../scripts/hooks/skill-sql-sync.py')
     const py = `import importlib.util,json,sys
+sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('h', sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-print(json.dumps([m.strip_generated_header(v) for v in json.loads(sys.stdin.read())]))`
-    const out = JSON.parse(execFileSync('python3', ['-c', py, hook], { input: JSON.stringify(vectors), encoding: 'utf-8' }))
-    expect(out).toEqual(vectors.map(stripGeneratedHeader))
+print(json.dumps([m.read_generated_header(v) for v in json.loads(sys.stdin.read())]))`
+    const out = JSON.parse(execFileSync('python3', ['-B', '-c', py, hook], { input: JSON.stringify(vectors), encoding: 'utf-8' }))
+    expect(out).toEqual(vectors.map(v => {
+      const h = readGeneratedHeader(v)
+      return h ? [h.id, h.tenant] : null
+    }))
+    expect(out[3]).toEqual(['acme-demo', true])
   })
 })
