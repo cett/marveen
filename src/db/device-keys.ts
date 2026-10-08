@@ -11,7 +11,7 @@ export interface DeviceKeyRow {
   last_used_at: number | null
   expires_at: number | null
   install_id: string | null
-  tenant_id: string | null
+  tenant_id: string
 }
 
 export interface DeviceKeyAuthRow {
