@@ -100,13 +100,14 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
         keywords?: string,
       ): number {
         const now = Math.floor(Date.now() / 1000)
-        const result = db
+        const row = db
           .prepare(
             `INSERT INTO memories (agent_id, category, content, keywords, tenant_id, created_at, accessed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             RETURNING id`,
           )
-          .run(agentId, category, content, keywords ?? null, tenantId, now, now)
-        return Number(result.lastInsertRowid)
+          .get(agentId, category, content, keywords ?? null, tenantId, now, now) as { id: number }
+        return row.id
       },
 
       /** Update a memory only if it belongs to this tenant. */
@@ -253,13 +254,14 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
       /** Insert a message stamped with this tenant. */
       insert(fromAgent: string, toAgent: string, content: string): number {
         const now = Math.floor(Date.now() / 1000)
-        const result = db
+        const row = db
           .prepare(
             `INSERT INTO agent_messages (from_agent, to_agent, content, status, tenant_id, created_at)
-             VALUES (?, ?, ?, 'pending', ?, ?)`,
+             VALUES (?, ?, ?, 'pending', ?, ?)
+             RETURNING id`,
           )
-          .run(fromAgent, toAgent, content, tenantId, now)
-        return Number(result.lastInsertRowid)
+          .get(fromAgent, toAgent, content, tenantId, now) as { id: number }
+        return row.id
       },
     },
 

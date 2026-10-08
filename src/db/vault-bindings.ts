@@ -126,8 +126,9 @@ export function migrateVaultBindingsFromFile(): number {
   if (!Array.isArray(rawBindings)) return 0
 
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO vault_bindings (vault_secret_id, env_var, targets, tenant_id, created_at, updated_at)
+    INSERT INTO vault_bindings (vault_secret_id, env_var, targets, tenant_id, created_at, updated_at)
     VALUES (@vault_secret_id, @env_var, @targets, 'default', unixepoch(), unixepoch())
+    ON CONFLICT DO NOTHING
   `)
   let migrated = 0
   for (const e of rawBindings) {

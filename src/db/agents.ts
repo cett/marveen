@@ -149,10 +149,9 @@ export function createAgentMessage(
   // A delegation inherits the tenant of the request the sending agent is serving; an explicit non-default
   // tenant (partner sends) and messages for federated recipients are left as given.
   if (!pinTenant && tenantId === 'default' && !to.includes('/')) tenantId = getDelegationTenant(from, now)
-  const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null)
-  const id = Number(info.lastInsertRowid)
+  const { id } = db.prepare(
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
+  ).get(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null) as { id: number }
   try {
     writeAgentAuditLog({ agent_id: from, entity: 'message', action: 'create', entity_id: id, detail: { to, preview: content.slice(0, 80) } })
   } catch { /* audit failure must not abort message creation */ }

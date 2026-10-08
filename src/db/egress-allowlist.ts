@@ -59,8 +59,9 @@ export function insertEgressAllowlistEntry(entry: {
   added_by?: string
 }): void {
   db.prepare(
-    `INSERT OR IGNORE INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
-     VALUES (?, ?, ?, unixepoch(), ?)`
+    `INSERT INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
+     VALUES (?, ?, ?, unixepoch(), ?)
+     ON CONFLICT DO NOTHING`
   ).run(entry.value, entry.type, entry.added_by ?? 'dashboard', entry.tenant_id ?? 'default')
 }
 
@@ -81,8 +82,9 @@ export function mergeEgressAllowlistEntries(
   entries: Array<{ value: string; type: EgressAllowlistType; tenant_id?: string; added_by?: string }>
 ): void {
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
-     VALUES (?, ?, ?, unixepoch(), ?)`
+    `INSERT INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
+     VALUES (?, ?, ?, unixepoch(), ?)
+     ON CONFLICT DO NOTHING`
   )
   const tx = db.transaction((rows: typeof entries) => {
     for (const row of rows) {

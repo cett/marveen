@@ -315,7 +315,7 @@ export interface MemoryLink {
 
 /**
  * Upsert a directed link between two memories. If (src, dst, type) already
- * exists the weight is replaced with the new value (INSERT OR REPLACE).
+ * exists the weight is replaced with the new value (ON CONFLICT DO UPDATE).
  * Returns the row id of the upserted link.
  */
 export function upsertMemoryLink(
@@ -327,10 +327,12 @@ export function upsertMemoryLink(
   const stmt = db.prepare(
     `INSERT INTO memory_links (src_id, dst_id, link_type, weight)
      VALUES (?, ?, ?, ?)
-     ON CONFLICT(src_id, dst_id, link_type) DO UPDATE SET weight = excluded.weight, last_traversed_at = unixepoch()`
+     ON CONFLICT(src_id, dst_id, link_type) DO UPDATE SET weight = excluded.weight, last_traversed_at = unixepoch()
+     RETURNING id`
   )
-  const result = stmt.run(srcId, dstId, linkType, weight) as { lastInsertRowid: number | bigint }
-  return Number(result.lastInsertRowid)
+  // RETURNING gives the row's own id on the update path too (lastInsertRowid
+  // would be whatever this connection inserted last).
+  return (stmt.get(srcId, dstId, linkType, weight) as { id: number }).id
 }
 
 /**

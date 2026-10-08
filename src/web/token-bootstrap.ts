@@ -20,9 +20,10 @@ export function bootstrapDashboardToken(rawToken: string, db: Database.Database)
     const now = Math.floor(Date.now() / 1000)
     const info = db
       .prepare(
-        `INSERT OR IGNORE INTO api_tokens
+        `INSERT INTO api_tokens
            (token_hash, name, role, created_at)
-         VALUES (?, 'dashboard', 'admin', ?)`,
+         VALUES (?, 'dashboard', 'admin', ?)
+         ON CONFLICT DO NOTHING`,
       )
       .run(hash, now)
     if (info.changes > 0) {

@@ -530,11 +530,11 @@ export function markScheduledTaskKanbanWaiting(taskName: string): string | null 
 
 export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
   const now = Math.floor(Date.now() / 1000)
-  const info = db.prepare(
-    'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
-  ).run(cardId, author, content, now)
+  const { id } = db.prepare(
+    'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id'
+  ).get(cardId, author, content, now) as { id: number }
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
-  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
+  return { id, card_id: cardId, author, content, created_at: now }
 }
 
 export interface Label {
@@ -582,7 +582,7 @@ export function deleteLabel(id: string): boolean {
 export function addLabelToCard(cardId: string, labelId: string): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    'INSERT OR IGNORE INTO kanban_card_labels (card_id, label_id, created_at) VALUES (?, ?, ?)'
+    'INSERT INTO kanban_card_labels (card_id, label_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING'
   ).run(cardId, labelId, now)
 }
 

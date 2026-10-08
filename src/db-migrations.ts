@@ -82,8 +82,9 @@ function loadMigrationFiles(dir: string): MigrationFile[] {
 function bootstrapLegacyInstall(db: Database.Database, baseline: MigrationFile): void {
   logger.info('Detected legacy install (otel_spans present, no schema_version). Bootstrapping to v1.')
   db.prepare(`
-    INSERT OR IGNORE INTO schema_version (version, applied_at, description, checksum)
+    INSERT INTO schema_version (version, applied_at, description, checksum)
     VALUES (?, ?, ?, ?)
+    ON CONFLICT DO NOTHING
   `).run(baseline.version, Math.floor(Date.now() / 1000), baseline.description, sha256(baseline.sql))
 }
 

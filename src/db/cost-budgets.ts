@@ -106,9 +106,10 @@ export function migrateCostBudgetsFromFile(): number {
   if (!Array.isArray(rawBudgets)) return 0
 
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO cost_budgets
+    `INSERT INTO cost_budgets
        (id, name, scope, scope_ref, amount, currency, warning_threshold, hard_threshold, block_on_hard, tenant_id, created_at, updated_at)
-     VALUES (@id, @name, @scope, @scope_ref, @amount, @currency, @warning_threshold, @hard_threshold, @block_on_hard, 'default', unixepoch(), unixepoch())`
+     VALUES (@id, @name, @scope, @scope_ref, @amount, @currency, @warning_threshold, @hard_threshold, @block_on_hard, 'default', unixepoch(), unixepoch())
+     ON CONFLICT DO NOTHING`
   )
   let migrated = 0
   for (const e of rawBudgets) {

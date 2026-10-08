@@ -114,8 +114,9 @@ export function saveTelegramMessage(
 ): void {
   const now = ts ?? Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT OR IGNORE INTO telegram_history (chat_id, message_id, user_id, direction, text, ts)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO telegram_history (chat_id, message_id, user_id, direction, text, ts)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`
   ).run(chatId, messageId, userId ?? null, direction, text, now)
 }
 
@@ -240,11 +241,11 @@ export function getIdeaComments(ideaId: string): IdeaComment[] {
 
 export function addIdeaComment(ideaId: string, author: string, content: string): IdeaComment {
   const now = Math.floor(Date.now() / 1000)
-  const info = db.prepare(
-    'INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?)'
-  ).run(ideaId, author, content, now)
+  const { id } = db.prepare(
+    'INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id'
+  ).get(ideaId, author, content, now) as { id: number }
   db.prepare('UPDATE idea_box SET updated_at = ? WHERE id = ?').run(now, ideaId)
-  return { id: Number(info.lastInsertRowid), idea_id: ideaId, author, content, created_at: now }
+  return { id, idea_id: ideaId, author, content, created_at: now }
 }
 
 export interface IdeaStatusLogRow {

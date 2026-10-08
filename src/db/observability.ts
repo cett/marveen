@@ -618,10 +618,10 @@ export function provisionDashboardUser(
   displayName?: string | null,
 ): DashboardUser {
   const now = Math.floor(Date.now() / 1000)
-  const info = db
-    .prepare('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, email: email ?? null, display_name: displayName ?? null, created_at: now, updated_at: now, disabled: 0 }
+  const { id } = db
+    .prepare('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id')
+    .get(username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now) as { id: number }
+  return { id, username, password_hash: passwordHash, role, tenant_id: tenantId, email: email ?? null, display_name: displayName ?? null, created_at: now, updated_at: now, disabled: 0 }
 }
 
 export function getDashboardUserById(id: number): DashboardUser | undefined {

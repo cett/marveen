@@ -95,15 +95,18 @@ export function insertIncomingEvent(
   },
 ): InsertResult {
   const now = Math.floor(Date.now() / 1000)
-  const info = requireDb().prepare(`
-    INSERT OR IGNORE INTO incoming_events
+  const row = requireDb().prepare(`
+    INSERT INTO incoming_events
       (source, update_id, chat_id, user_id, username, message_id, kind, content, meta, tg_date, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-  `).run(
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `).get(
     source, ev.update_id, ev.chat_id, ev.user_id, ev.username, ev.message_id,
     ev.kind, ev.content, JSON.stringify(ev.meta), ev.tg_date, now,
-  )
-  return { inserted: info.changes > 0, eventId: info.changes > 0 ? Number(info.lastInsertRowid) : null }
+  ) as { id: number } | undefined
+  // No row back means the (source, update_id) pair was already stored.
+  return { inserted: row !== undefined, eventId: row?.id ?? null }
 }
 
 // Create the pending agent_messages row that the dashboard's message-router
@@ -116,10 +119,10 @@ export function insertIncomingEvent(
 // rejects it; only this in-process direct DB insert is trusted.)
 export function createHandoffMessage(content: string): number {
   const now = Math.floor(Date.now() / 1000)
-  const info = requireDb().prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now)
-  return Number(info.lastInsertRowid)
+  const row = requireDb().prepare(
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id'
+  ).get(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now) as { id: number }
+  return row.id
 }
 
 export function markEventDelivered(eventId: number, agentMessageId: number): void {

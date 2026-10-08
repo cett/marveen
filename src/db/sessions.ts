@@ -52,12 +52,12 @@ export function createDashboardUser(username: string, passwordHash: string): Das
   const isFirst = (db.prepare('SELECT COUNT(*) AS c FROM dashboard_users').get() as { c: number }).c === 0
   const role = isFirst ? 'admin' : 'viewer'
   const tenantId = null  // NULL = global scope; tenant-scoped users are created via the admin provisioning API
-  const info = db
+  const { id } = db
     .prepare(
-      'INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
     )
-    .run(username, passwordHash, role, tenantId, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, email: null, display_name: null, created_at: now, updated_at: now, disabled: 0 }
+    .get(username, passwordHash, role, tenantId, now, now) as { id: number }
+  return { id, username, password_hash: passwordHash, role, tenant_id: tenantId, email: null, display_name: null, created_at: now, updated_at: now, disabled: 0 }
 }
 
 export function getDashboardUser(username: string): DashboardUser | undefined {

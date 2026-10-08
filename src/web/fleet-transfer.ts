@@ -935,6 +935,17 @@ function validateNames(fleet: FleetJson): string[] {
 // that this machine does not have (or has disabled) cannot be honoured, and a task must belong
 // to a tenant, so it is re-homed to the default tenant. It arrives disabled either way, so a
 // person reviews it before it can fire.
+/**
+ * True when an imported row would break a NOT NULL or CHECK rule of its table.
+ * The import used to rely on INSERT OR IGNORE swallowing such a row; ON
+ * CONFLICT DO NOTHING only absorbs key conflicts, so the rule is checked here
+ * and the row is skipped the same way. `enums` are the CHECK(col IN (...)) lists.
+ */
+export function breaksTableRules(row: Record<string, unknown>, notNull: string[], enums: Record<string, string[]> = {}): boolean {
+  if (notNull.some((col) => row[col] == null)) return true
+  return Object.entries(enums).some(([col, allowed]) => !allowed.includes(row[col] as string))
+}
+
 function importedScheduleTenant(localTenants: ReadonlySet<string>, raw: unknown): string {
   return typeof raw === 'string' && localTenants.has(raw) ? raw : 'default'
 }
@@ -1506,21 +1517,26 @@ export function importFleet(
       // M3: skip rows with missing required fields to avoid SQLite constraint errors -> 500
       for (const label of fleet.kanban?.labels ?? []) {
         const l = label as any
-        if (!l.id || !l.name) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); continue }
-        db.prepare('INSERT OR IGNORE INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)')
+        if (!l.id || !l.name || breaksTableRules(l, ['color', 'created_at'])) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); continue }
+        db.prepare('INSERT INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING')
           .run(l.id, l.name, l.color, l.created_at)
       }
 
       for (const card of fleet.kanban?.cards ?? []) {
         const c = card as any
-        if (!c.id || !c.title || !c.status || !c.priority || c.sort_order == null) {
+        if (!c.id || !c.title || !c.status || !c.priority || c.sort_order == null
+          || breaksTableRules(c, ['created_at', 'updated_at'], {
+            status: ['planned', 'in_progress', 'testing', 'waiting', 'done'],
+            priority: ['low', 'normal', 'high', 'urgent'],
+          })) {
           logger.warn({ id: c.id }, 'Fleet import: skipping kanban card with missing required fields'); continue
         }
         db.prepare(
-          `INSERT OR IGNORE INTO kanban_cards
+          `INSERT INTO kanban_cards
            (id, title, description, status, assignee, priority, project,
             due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
         ).run(c.id, c.title, c.description ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null)
@@ -1549,8 +1565,8 @@ export function importFleet(
 
       for (const cl of fleet.kanban?.cardLabels ?? []) {
         const c = cl as any
-        if (!c.card_id || !c.label_id) continue
-        db.prepare('INSERT OR IGNORE INTO kanban_card_labels (card_id, label_id, created_at) VALUES (?, ?, ?)')
+        if (!c.card_id || !c.label_id || c.created_at == null) continue
+        db.prepare('INSERT INTO kanban_card_labels (card_id, label_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING')
           .run(c.card_id, c.label_id, c.created_at)
       }
 
@@ -1561,15 +1577,17 @@ export function importFleet(
       const scheduleTenants = enabledLocalTenantIds(db)
       for (const sch of fleet.schedules ?? []) {
         const s = sch as any
-        if (!s.id || !s.schedule || !s.agent || !s.type) {
+        if (!s.id || !s.schedule || !s.agent || !s.type
+          || breaksTableRules(s, [], { type: ['task', 'heartbeat', 'command'] })) {
           logger.warn({ id: s.id }, 'Fleet import: skipping schedule with missing required fields'); continue
         }
         db.prepare(
-          `INSERT OR IGNORE INTO schedules
+          `INSERT INTO schedules
            (id, prompt, description, schedule, agent, type, enabled, tenant_id, skip_if_busy,
             force_send, target_session, command, timeout_ms, fail_threshold, pre_check,
             catch_up_max_age_minutes, stuck_after_minutes, requires, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
         ).run(
           s.id, s.prompt ?? '', s.description ?? '', s.schedule, s.agent, s.type,
           importedScheduleTenant(scheduleTenants, s.tenant_id), s.skip_if_busy ?? 0, s.force_send ?? 0, s.target_session ?? null,
@@ -1589,14 +1607,16 @@ export function importFleet(
       // machine (enforced by the route layer, not by this raw insert).
       for (const src of fleet.importSources ?? []) {
         const s = src as any
-        if (!s.id || !s.type || !s.path) {
+        if (!s.id || !s.type || !s.path
+          || breaksTableRules(s, ['created_at', 'updated_at'], { type: ['local', 'gdrive', 'sharepoint', 'confluence'] })) {
           logger.warn({ id: s.id }, 'Fleet import: skipping import source with missing required fields'); continue
         }
         db.prepare(
-          `INSERT OR IGNORE INTO import_sources
+          `INSERT INTO import_sources
            (id, type, path, label, interval_hours, enabled, last_run_at, created_at, updated_at,
             tenant_id, vault_token_ref, confluence_email, base_url)
-           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
         ).run(
           s.id, s.type, s.path, s.label ?? null, s.interval_hours ?? 4,
           s.created_at, s.updated_at, s.tenant_id ?? 'default',
@@ -1610,26 +1630,29 @@ export function importFleet(
       // keys before servers).
       for (const key of fleet.vaultSshKeys ?? []) {
         const k = key as any
-        if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type) {
+        if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type
+          || breaksTableRules(k, ['created_at'])) {
           logger.warn({ id: k.id }, 'Fleet import: skipping SSH key with missing required fields'); continue
         }
         db.prepare(
-          `INSERT OR IGNORE INTO vault_ssh_keys
+          `INSERT INTO vault_ssh_keys
            (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
         ).run(k.id, k.label, k.username, k.vault_key_id, k.public_key, k.fingerprint, k.key_type, k.created_at, k.tenant_id ?? 'default')
       }
 
       // vault_ssh_servers -- idempotent on id.
       for (const srv of fleet.vaultSshServers ?? []) {
         const s2 = srv as any
-        if (!s2.id || !s2.name || !s2.host || !s2.username) {
+        if (!s2.id || !s2.name || !s2.host || !s2.username || breaksTableRules(s2, ['created_at', 'updated_at'])) {
           logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); continue
         }
         db.prepare(
-          `INSERT OR IGNORE INTO vault_ssh_servers
+          `INSERT INTO vault_ssh_servers
            (id, name, host, port, username, ssh_key_id, description, tenant_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
         ).run(
           s2.id, s2.name, s2.host, s2.port ?? 22, s2.username, s2.ssh_key_id ?? null,
           s2.description ?? null, s2.tenant_id ?? 'default', s2.created_at, s2.updated_at,
@@ -1662,10 +1685,14 @@ export function importFleet(
       // idea_box -- idempotent on id
       for (const idea of fleet.ideaBox?.ideas ?? []) {
         const i = idea as any
+        if (breaksTableRules(i, ['title', 'category', 'created_at', 'updated_at'], { status: ['new', 'reviewed', 'kanban', 'rejected'] })) {
+          logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); continue
+        }
         db.prepare(
-          `INSERT OR IGNORE INTO idea_box
+          `INSERT INTO idea_box
            (id, title, description, category, status, source, kanban_id, impact, effort, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
         ).run(i.id, i.title, i.description ?? null, i.category, i.status, i.source ?? '',
           i.kanban_id ?? null, i.impact ?? null, i.effort ?? null, i.created_at, i.updated_at)
       }
