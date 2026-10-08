@@ -142,23 +142,33 @@ export interface TokenSpendFilter {
   tenant?: string
 }
 
+/** 'YYYY-MM' of the server's local time, the key token_usage_monthly rows use. */
+function localMonthKey(nowSec: number): string {
+  const d = new Date(nowSec * 1000)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
 export function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: number): number {
   if (filter.tenant) {
-    // token_usage_monthly has NO tenant_id column (only token_usage does,
-    // since migration 0033) -- a tenant-scoped budget can only be measured
-    // against the raw table. This means the same "under-reports once rows
-    // age past TOKEN_USAGE_RETENTION_DAYS" caveat as the dual-source query
-    // below applies here too, except there's no monthly fallback to catch
-    // the rolled-up portion for a tenant. In practice this only matters for
-    // the first day or two of a new month once the raw retention window
-    // (default 30 days) starts overlapping the previous month.
+    // Raw rows plus the rolled-up months (token_usage_monthly carries tenant_id since migration
+    // 0077), the same dual source as the agent query below. Rollup rows written before the column
+    // existed hold '_multi_' for a shared agent and are not counted against any one tenant.
     const row = db.prepare(`
-      SELECT COALESCE(SUM(${TOKEN_SUM_EXPR}), 0) AS total
-      FROM token_usage
-      WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
-            = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
-        AND tenant_id = @tenant
-    `).get({ nowSec, tenant: filter.tenant }) as { total: number }
+      SELECT
+        COALESCE((
+          SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
+          WHERE month = @month
+            AND tenant_id = @tenant
+        ), 0)
+        +
+        COALESCE((
+          SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage
+          WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
+                = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+            AND tenant_id = @tenant
+        ), 0)
+        AS total
+    `).get({ nowSec, month: localMonthKey(nowSec), tenant: filter.tenant }) as { total: number }
     return row.total
   }
 

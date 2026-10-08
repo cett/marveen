@@ -2,6 +2,7 @@
 // re-export surface and boot orchestration).
 
 import { db } from './connection.js'
+import { resolveWriteTenant } from './write-tenant.js'
 
 export interface BackgroundTask {
   id: string
@@ -19,8 +20,8 @@ export function createBackgroundTaskAtomic(id: string, agentId: string, prompt: 
   const result = db.transaction(() => {
     const running = (db.prepare("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'").get(agentId) as { c: number }).c
     if (running >= maxConcurrent) return null
-    db.prepare('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, agentId, prompt, 'running', tmuxSession, now)
+    db.prepare('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, agentId, prompt, 'running', tmuxSession, now, resolveWriteTenant(agentId))
     return { id, agent_id: agentId, prompt, status: 'running' as const, tmux_session: tmuxSession, started_at: now, finished_at: null, output: null }
   })()
   return result

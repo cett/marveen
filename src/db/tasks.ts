@@ -3,6 +3,7 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
+import { resolveWriteTenant } from './write-tenant.js'
 import { stripGeneratedHeader } from '../skill-header.js'
 import { sanitizeSkillFileMode } from '../skill-files.js'
 
@@ -84,7 +85,11 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 export function appendTaskRun(name: string, agent: string, status = 'fired'): void {
   const now = Date.now()
-  db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, now, status)
+  // A scheduled run belongs to the tenant of its schedule; a name with no schedule row (an ad-hoc
+  // or legacy task) falls back to the tenant the agent is working for.
+  const schedule = db.prepare('SELECT tenant_id FROM schedules WHERE id = ?').get(name) as { tenant_id: string | null } | undefined
+  const tenantId = schedule?.tenant_id ?? resolveWriteTenant(agent)
+  db.prepare('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)').run(name, agent, now, status, tenantId)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
   db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
 }

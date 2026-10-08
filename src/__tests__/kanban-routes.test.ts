@@ -27,9 +27,9 @@ vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
   markKanbanCardDispatched: vi.fn(),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
-  listLabels: vi.fn().mockReturnValue([{ id: 'lbl1', name: 'bug', color: '#e74c3c' }]),
-  getLabel: vi.fn().mockReturnValue({ id: 'lbl1', name: 'bug', color: '#e74c3c' }),
-  createLabel: vi.fn().mockReturnValue({ id: 'lbl1', name: 'bug', color: '#e74c3c' }),
+  listLabels: vi.fn().mockReturnValue([{ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }]),
+  getLabel: vi.fn().mockReturnValue({ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }),
+  createLabel: vi.fn().mockReturnValue({ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }),
   updateLabel: vi.fn().mockReturnValue(true),
   deleteLabel: vi.fn().mockReturnValue(true),
   addLabelToCard: vi.fn(),
@@ -349,6 +349,54 @@ describe('tryHandleKanban', () => {
     const { ctx, out } = makeCtx('POST', '/api/kanban/card1/labels', { labelId: 'lbl1' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.body.ok).toBe(true)
+  })
+
+  describe('labels are tenant-scoped', () => {
+    const asTenant = (ctx: RouteContext, tenantId: string): RouteContext => ({ ...ctx, role: 'agent', tenantId } as RouteContext)
+
+    it('a scoped caller lists only its own tenant, an admin lists all', async () => {
+      const { ctx } = makeCtx('GET', '/api/kanban/labels')
+      await tryHandleKanban(asTenant(ctx, 'acme'))
+      expect(db.listLabels).toHaveBeenLastCalledWith('acme')
+      const admin = makeCtx('GET', '/api/kanban/labels')
+      await tryHandleKanban(admin.ctx)
+      expect(db.listLabels).toHaveBeenLastCalledWith(null)
+    })
+
+    it('a scoped caller creates the label in its own tenant', async () => {
+      const { ctx } = makeCtx('POST', '/api/kanban/labels', { name: 'bug' })
+      await tryHandleKanban(asTenant(ctx, 'acme'))
+      expect(db.createLabel).toHaveBeenLastCalledWith(expect.objectContaining({ tenant_id: 'acme' }))
+    })
+
+    it('a label of another tenant is a 404 to rename, delete or attach', async () => {
+      vi.mocked(db.updateLabel).mockClear()
+      vi.mocked(db.deleteLabel).mockClear()
+      vi.mocked(db.addLabelToCard).mockClear()
+      for (const [method, path, body] of [
+        ['PUT', '/api/kanban/labels/lbl1', { name: 'x' }],
+        ['DELETE', '/api/kanban/labels/lbl1', undefined],
+        ['POST', '/api/kanban/card1/labels', { labelId: 'lbl1' }],
+      ] as const) {
+        const { ctx, out } = makeCtx(method, path, body)
+        await tryHandleKanban(asTenant(ctx, 'acme'))
+        expect(out.status, `${method} ${path}`).toBe(404)
+      }
+      expect(db.updateLabel).not.toHaveBeenCalled()
+      expect(db.deleteLabel).not.toHaveBeenCalled()
+      expect(db.addLabelToCard).not.toHaveBeenCalled()
+    })
+
+    it('a card takes only labels of its own tenant, whoever attaches them', async () => {
+      vi.mocked(db.addLabelToCard).mockClear()
+      // The route reads the card twice: the existence check, then the tenant comparison.
+      vi.mocked(db.getKanbanCard).mockReturnValueOnce({ id: 'card1', tenant_id: 'acme' } as any).mockReturnValueOnce({ id: 'card1', tenant_id: 'acme' } as any)
+      const { ctx, out } = makeCtx('POST', '/api/kanban/card1/labels', { labelId: 'lbl1' })
+      await tryHandleKanban(ctx)
+      expect(out.status).toBe(400)
+      expect(out.body.error).toBe('invalid_value')
+      expect(db.addLabelToCard).not.toHaveBeenCalled()
+    })
   })
 
   it('POST /api/kanban/:id/labels returns 404 when card not found', async () => {

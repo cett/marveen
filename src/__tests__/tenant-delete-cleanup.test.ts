@@ -39,6 +39,19 @@ const SEEDERS: Record<string, (t: string) => void> = {
   token_usage: (t) => db().prepare("INSERT INTO token_usage (agent, session_id, timestamp, content_preview, tenant_id) VALUES ('a', 's', ?, 'secret text', ?)").run(OTHERS.concat(TARGET).indexOf(t) + 1, t),
   fleet_blackboard_history: (t) => db().prepare("INSERT INTO fleet_blackboard_history (agent_id, status, summary, tenant_id) VALUES ('a', 'done', 'x', ?)").run(t),
   rbac_shadow_log: (t) => db().prepare("INSERT INTO rbac_shadow_log (tenant_id, principal_kind, principal, role, method, route, permission, decision) VALUES (?, 'session', 'user-a', 'viewer', 'GET', '/api/memories', 'memories:read', 'permitted')").run(t),
+  otel_spans: (t) => db().prepare("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, tenant_id) VALUES (?, 's', 'a', 'op', 0, ?)").run(`tr-${t}`, t),
+  daily_logs: (t) => db().prepare("INSERT INTO daily_logs (agent_id, date, content, created_at, tenant_id) VALUES ('a', '2026-10-08', 'diary', 0, ?)").run(t),
+  task_runs: (t) => db().prepare("INSERT INTO task_runs (name, agent, ts, tenant_id) VALUES ('job', 'a', 0, ?)").run(t),
+  background_tasks: (t) => db().prepare("INSERT INTO background_tasks (id, agent_id, prompt, started_at, tenant_id) VALUES (?, 'a', 'p', 0, ?)").run(`bg-${t}`, t),
+  skill_usage: (t) => db().prepare("INSERT INTO skill_usage (agent_id, skill_name, trigger_type, created_at, tenant_id) VALUES ('a', 'sk', 'tool_call', 0, ?)").run(t),
+  store_file_audit: (t) => db().prepare("INSERT INTO store_file_audit (rel_path, event_type, created_at, tenant_id) VALUES ('f', 'write', 0, ?)").run(t),
+  token_usage_daily: (t) => db().prepare("INSERT INTO token_usage_daily (day, agent, model, tenant_id) VALUES ('2026-10-08', 'a', 'm', ?)").run(t),
+  token_usage_monthly: (t) => db().prepare("INSERT INTO token_usage_monthly (month, agent, model, tenant_id) VALUES ('2026-10', 'a', 'm', ?)").run(t),
+  cost_line_items: (t) => {
+    db().prepare("INSERT OR IGNORE INTO cost_sources (id, name, provider, source_type, created_at, updated_at) VALUES ('cs', 'n', 'p', 't', 0, 0)").run()
+    db().prepare("INSERT INTO cost_line_items (source_id, charge_period_start, charge_period_end, charge_category, billed_cost, confidence, data_freshness, created_at, tenant_id) VALUES ('cs', 0, 1, 'c', 1, 'high', 0, 0, ?)").run(t)
+  },
+  labels: (t) => db().prepare("INSERT INTO labels (id, name, color, created_at, tenant_id) VALUES (?, 'label', '#fff', 0, ?)").run(`lb-${t}`, t),
   import_sources: (t) => db().prepare("INSERT INTO import_sources (id, type, path, created_at, updated_at, tenant_id) VALUES (?, 'local', '/x', 0, 0, ?)").run(`src-${t}`, t),
   import_audit_log: (t) => db().prepare('INSERT INTO import_audit_log (source_id, run_at, tenant_id) VALUES (?, 0, ?)').run(`src-${t}`, t),
 }
@@ -192,5 +205,22 @@ describe('deleteTenant: tombstones and untouched rollups', () => {
     const row = db().prepare("SELECT revoked_at FROM api_tokens WHERE token_hash = 'h'").get() as { revoked_at: number | null } | undefined
     expect(row).toBeDefined()
     expect(row!.revoked_at).not.toBeNull()
+  })
+
+  it('keeps the governance trail (agent and hook audit rows) of the deleted tenant', () => {
+    db().prepare("INSERT INTO agent_audit_log (agent_id, entity, action, tenant_id) VALUES ('a', 'agent', 'update', ?)").run(TARGET)
+    db().prepare("INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tenant_id) VALUES (0, 'a', 'PreToolUse', 'allow', ?)").run(TARGET)
+    deleteTenant(TARGET)
+    expect(count('agent_audit_log', TARGET)).toBe(1)
+    expect(count('hook_audit_log', TARGET)).toBe(1)
+  })
+
+  it('drops the card links of a purged label even when the card belongs to another tenant', () => {
+    db().prepare("INSERT INTO labels (id, name, color, created_at, tenant_id) VALUES ('lb', 'l', '#fff', 0, ?)").run(TARGET)
+    db().prepare("INSERT INTO kanban_cards (id, title, status, priority, created_at, updated_at, tenant_id) VALUES ('kc', 't', 'planned', 'normal', 0, 0, 'default')").run()
+    db().prepare("INSERT INTO kanban_card_labels (card_id, label_id, created_at) VALUES ('kc', 'lb', 0)").run()
+    deleteTenant(TARGET)
+    expect(db().prepare("SELECT COUNT(*) AS n FROM kanban_card_labels WHERE label_id = 'lb'").get()).toEqual({ n: 0 })
+    expect(db().prepare("SELECT COUNT(*) AS n FROM kanban_cards WHERE id = 'kc'").get()).toEqual({ n: 1 })
   })
 })

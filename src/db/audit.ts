@@ -5,6 +5,7 @@ import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { db } from './connection.js'
 import { upsertOtelSpan } from './observability.js'
+import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
 
 // mcp__<server>__<tool> -- split into (server, tool) for the OTel span
 // attributes. Split on the FIRST "__" so a server name that itself contains
@@ -224,8 +225,8 @@ export function logSkillUsage(
   ).get(agentId, skillName, sessionId ?? null, now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
   if (dup) return false
   db.prepare(
-    'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(agentId, skillName, triggerType, sessionId ?? null, now, source ?? null)
+    'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, resolveWriteTenant(agentId))
   return true
 }
 
@@ -324,7 +325,7 @@ export function insertHookAuditLog(entry: {
 }): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(
     now,
     entry.agent_id ?? null,
@@ -335,6 +336,7 @@ export function insertHookAuditLog(entry: {
     entry.reason ?? null,
     entry.session_id ?? null,
     entry.trigger_source ?? null,
+    resolveWriteTenant(entry.agent_id),
   )
 }
 
@@ -426,8 +428,8 @@ export function logStoreFileEvent(
 ): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(relPath, eventType, isSensitive, fileSize, agent, now)
+    'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(relPath, eventType, isSensitive, fileSize, agent, now, resolveWriteTenant(agent))
 }
 
 export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
@@ -493,13 +495,14 @@ export function writeAgentAuditLog(opts: {
   detail?: Record<string, unknown> | null
 }): void {
   db.prepare(
-    'INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(
     opts.agent_id,
     opts.entity,
     opts.action,
     opts.entity_id != null ? String(opts.entity_id) : null,
-    opts.detail != null ? JSON.stringify(opts.detail) : null
+    opts.detail != null ? JSON.stringify(opts.detail) : null,
+    resolveWriteTenant(opts.agent_id),
   )
 }
 
@@ -710,7 +713,7 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
   const dailyResult = db.prepare(`
     INSERT INTO token_usage_daily
       (day, agent, model, input_tokens, output_tokens, cache_read_tokens,
-       cache_creation_tokens, thinking_tokens, row_count)
+       cache_creation_tokens, thinking_tokens, row_count, tenant_id)
     SELECT
       date(timestamp, 'unixepoch', 'localtime') AS day,
       agent,
@@ -720,11 +723,12 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
       SUM(cache_read_tokens),
       SUM(cache_creation_tokens),
       SUM(thinking_tokens),
-      COUNT(*)
+      COUNT(*),
+      tenant_id
     FROM token_usage
     WHERE timestamp < ?
-    GROUP BY date(timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, '')
-    ON CONFLICT(day, agent, model) DO UPDATE SET
+    GROUP BY date(timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, ''), tenant_id
+    ON CONFLICT(day, agent, model, tenant_id) DO UPDATE SET
       input_tokens          = excluded.input_tokens,
       output_tokens         = excluded.output_tokens,
       cache_read_tokens     = excluded.cache_read_tokens,
@@ -737,7 +741,7 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
   const monthlyResult = db.prepare(`
     INSERT INTO token_usage_monthly
       (month, agent, model, input_tokens, output_tokens, cache_read_tokens,
-       cache_creation_tokens, thinking_tokens, session_count, row_count)
+       cache_creation_tokens, thinking_tokens, session_count, row_count, tenant_id)
     SELECT
       strftime('%Y-%m', timestamp, 'unixepoch', 'localtime') AS month,
       agent,
@@ -748,11 +752,12 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
       SUM(cache_creation_tokens),
       SUM(thinking_tokens),
       COUNT(DISTINCT session_id),
-      COUNT(*)
+      COUNT(*),
+      tenant_id
     FROM token_usage
     WHERE timestamp < ?
-    GROUP BY strftime('%Y-%m', timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, '')
-    ON CONFLICT(month, agent, model) DO UPDATE SET
+    GROUP BY strftime('%Y-%m', timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, ''), tenant_id
+    ON CONFLICT(month, agent, model, tenant_id) DO UPDATE SET
       input_tokens          = excluded.input_tokens,
       output_tokens         = excluded.output_tokens,
       cache_read_tokens     = excluded.cache_read_tokens,
@@ -931,6 +936,6 @@ export function summarizeRbacShadowRows(f: Pick<ShadowLogFilter, 'from' | 'to' |
 
 /** Admin-console audit row; `entity` is fixed to 'admin' and the actor is a dashboard user name. */
 export function writeAdminAuditLog(actor: string, action: string, targetId: string | number, detail: Record<string, unknown>): void {
-  db.prepare('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail) VALUES (?, ?, ?, ?, ?)')
-    .run(actor, 'admin', action, String(targetId), JSON.stringify(detail))
+  db.prepare('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(actor, 'admin', action, String(targetId), JSON.stringify(detail), dashboardUserTenant(actor))
 }

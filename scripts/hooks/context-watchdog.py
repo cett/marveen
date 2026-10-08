@@ -120,6 +120,7 @@ import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import tenant_context_lib  # noqa: E402
 
 # Fraction of the restart-gate's configured thresholdTokens (agent_settings
 # row, setting_key='context_restart_gate' -- migration 0058, group 3/8,
@@ -219,6 +220,44 @@ def resolve_tenant(conn, agent_id: str) -> str:
     if len(rows) == 1:
         return rows[0][0]
     return "_multi_"
+
+
+def resolve_write_tenant(conn, agent_id):
+    """Mirrors resolveWriteTenant() in src/db/write-tenant.ts: the tenant a telemetry row (otel_spans,
+    hook_audit_log) is stamped with. 1. the fresh tenant context of the request the agent is serving
+    (agent_tenant_context; a 'bound' context only while the agent still serves the tenant); 2. the one
+    tenant the agent serves (main agent or enabled availability row, each tenant once), 'default' when it
+    serves none; 3. None (NULL, unknown) for a shared agent with no fresh context. Never raises: this is
+    instrumentation, an unresolved row is NULL."""
+    if not agent_id:
+        return None
+    try:
+        ctx = tenant_context_lib.read_context(conn, agent_id)
+        tenant, _ = tenant_context_lib.usable_context(ctx)
+        if tenant and tenant_context_lib.context_still_serves(conn, agent_id, ctx):
+            return tenant
+        rows = conn.execute(
+            "SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 "
+            "UNION SELECT id FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL",
+            (agent_id, agent_id),
+        ).fetchall()
+    except Exception:
+        return None
+    if len(rows) == 0:
+        return "default"
+    return rows[0][0] if len(rows) == 1 else None
+
+
+def _execute_tenant_aware(conn, sql, params, legacy_sql, legacy_params) -> None:
+    """Run the tenant-stamping INSERT; if the table has no tenant_id column yet (this script was
+    deployed before the dashboard applied migration 0077) fall back to the legacy INSERT, so the
+    window between the two costs no telemetry. Any other error propagates as before."""
+    try:
+        conn.execute(sql, params)
+    except sqlite3.OperationalError as e:
+        if "tenant_id" not in str(e):
+            raise
+        conn.execute(legacy_sql, legacy_params)
 
 
 def write_token_row(conn, agent_id, session_id, ev, tool_name) -> bool:
@@ -330,16 +369,21 @@ def upsert_otel_span(conn, trace_id, span_id, parent_span_id, agent_id, operatio
     used by the F2 tool-call span) -- INSERT, and on a (trace_id, span_id)
     conflict, only refresh end_ms/status/attributes so a span already closed
     by another writer is never reopened."""
-    conn.execute(
-        """
-        INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on_conflict = """
         ON CONFLICT (trace_id, span_id) DO UPDATE SET
           end_ms = excluded.end_ms,
           status = excluded.status,
           attributes = COALESCE(excluded.attributes, otel_spans.attributes)
-        """,
-        (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes),
+        """
+    row = (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+    _execute_tenant_aware(
+        conn,
+        "INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" + on_conflict,
+        row + (resolve_write_tenant(conn, agent_id),),
+        "INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)" + on_conflict,
+        row,
     )
 
 
@@ -538,17 +582,22 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_has
     session can read it back as its dedup baseline, without any new
     persistent state. Never raises -- this is instrumentation, not a gate."""
     try:
-        conn.execute(
+        row = (
+            int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
+            agent_id,
+            tool_name,
+            content_hash,
+            f"ctx={pct:.0%}",
+            session_id,
+        )
+        _execute_tenant_aware(
+            conn,
+            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) "
+            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog', ?)",
+            (row[0], row[1], row[2], row[3], row[4], row[5], resolve_write_tenant(conn, agent_id)),
             "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) "
             "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog')",
-            (
-                int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
-                agent_id,
-                tool_name,
-                content_hash,
-                f"ctx={pct:.0%}",
-                session_id,
-            ),
+            row,
         )
         conn.commit()
     except Exception:
