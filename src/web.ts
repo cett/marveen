@@ -183,7 +183,7 @@ export function startWebServer(port = 3420): http.Server {
   ensureDirs()
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
-  bootstrapDashboardToken(DASHBOARD_TOKEN, getDb())
+  bootstrapDashboardToken(DASHBOARD_TOKEN)
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,

@@ -15,25 +15,21 @@
 // responses; raw token values are returned ONLY at creation/rotation time.
 
 import { randomBytes, createHash } from 'node:crypto'
-import { getDb } from '../../db.js'
+import {
+  listApiTokenRows,
+  getApiTokenRowById,
+  insertApiToken,
+  revokeApiToken,
+  rotateApiToken,
+  type ApiTokenRow,
+} from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
 // ── Schema types ─────────────────────────────────────────────────────────────
 
-interface TokenRow {
-  id: number
-  token_hash: string
-  name: string
-  role: string
-  tenant_id: string
-  created_at: number
-  expires_at: number | null
-  revoked_at: number | null
-  last_used_at: number | null
-  rotated_from: number | null
-}
+type TokenRow = ApiTokenRow
 
 interface TokenPublic {
   id: number
@@ -69,9 +65,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
   // GET /api/admin/tokens
   if (method === 'GET' && path === '/api/admin/tokens') {
-    const db = getDb()
-    const rows = db.prepare('SELECT * FROM api_tokens ORDER BY created_at DESC').all() as TokenRow[]
-    json(res, rows.map(toPublic))
+    json(res, listApiTokenRows().map(toPublic))
     return true
   }
 
@@ -103,13 +97,8 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const rawToken = generateToken()
     const hash = sha256hex(rawToken)
 
-    const db = getDb()
     try {
-      const row = db.prepare(
-        `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         RETURNING *`,
-      ).get(hash, name, role, tenantId, now, expiresAt) as TokenRow
+      const row = insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt: now, expiresAt })
       logger.info({ tokenId: row.id, name, role, tenantId }, 'api_token created')
       // Return the raw token value ONCE -- it cannot be recovered after this response.
       json(res, { token: rawToken, ...toPublic(row) }, 201)
@@ -135,8 +124,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       return true
     }
 
-    const db = getDb()
-    const old = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as TokenRow | undefined
+    const old = getApiTokenRowById(id)
     if (!old) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
     // deliberate: discriminating error response, admin-gated
     if (old.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
@@ -149,16 +137,8 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const hash = sha256hex(rawToken)
 
     try {
-      db.transaction(() => {
-        // Revoke the old token atomically with creating the replacement.
-        db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ?').run(now, id)
-        db.prepare(
-          `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, rotated_from)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(hash, old.name, old.role, old.tenant_id, now, expiresAt, id)
-      })()
-
-      const newRow = db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(hash) as TokenRow
+      // Revokes the old token atomically with creating the replacement.
+      const newRow = rotateApiToken(old, hash, now, expiresAt)
       logger.info({ oldId: id, newId: newRow.id, name: old.name }, 'api_token rotated')
       json(res, { token: rawToken, ...toPublic(newRow) })
     } catch (e) {
@@ -172,14 +152,13 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
   const revokeMatch = /^\/api\/admin\/tokens\/(\d+)\/revoke$/.exec(path)
   if (method === 'DELETE' && revokeMatch) {
     const id = Number(revokeMatch[1])
-    const db = getDb()
-    const row = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as TokenRow | undefined
+    const row = getApiTokenRowById(id)
     if (!row) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
     // deliberate: discriminating error response, admin-gated
     if (row.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
 
     const now = Math.floor(Date.now() / 1000)
-    db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ?').run(now, id)
+    revokeApiToken(id, now)
     logger.info({ tokenId: id, name: row.name }, 'api_token revoked')
     json(res, { revoked: true, id })
     return true

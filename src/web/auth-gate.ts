@@ -28,6 +28,7 @@ import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey } from './auth-device-keys.js'
+import { getValidApiToken, apiTokenHashExists } from '../db.js'
 import type { Role } from './rbac.js'
 
 export type AuthResult =
@@ -48,23 +49,17 @@ type ApiTokenResult =
   | { found: true; role: Role; tenantId: string; name: string }
   | { found: false; registeredButInvalid: boolean }
 
-export function resolveApiToken(bearer: string, db: Database.Database): ApiTokenResult {
+export function resolveApiToken(bearer: string): ApiTokenResult {
   const hash = createHash('sha256').update(bearer).digest('hex')
   const now = Math.floor(Date.now() / 1000)
 
-  const validRow = db
-    .prepare(
-      `SELECT role, tenant_id, name FROM api_tokens
-       WHERE token_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
-    )
-    .get(hash, now) as { role: string; tenant_id: string; name: string } | undefined
+  const validRow = getValidApiToken(hash, now)
 
   if (validRow) {
     return { found: true, role: validRow.role as Role, tenantId: validRow.tenant_id, name: validRow.name }
   }
 
-  const anyRow = db.prepare('SELECT id FROM api_tokens WHERE token_hash = ?').get(hash)
-  return { found: false, registeredButInvalid: !!anyRow }
+  return { found: false, registeredButInvalid: apiTokenHashExists(hash) }
 }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -142,7 +137,7 @@ export function resolveAuth(
   //    re-grant admin and bypass revocation. Only tokens absent from DB entirely
   //    may reach the legacy fallback in step 2.
   if (bearerValue && db) {
-    const result = resolveApiToken(bearerValue, db)
+    const result = resolveApiToken(bearerValue)
     if (result.found) {
       return { kind: 'token', role: result.role, tenantId: result.tenantId, tokenName: result.name }
     }

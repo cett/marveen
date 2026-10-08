@@ -14,33 +14,16 @@
 //  10. rotate preserves name/role/tenant across the rotation chain
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import Database from 'better-sqlite3'
+import type Database from 'better-sqlite3'
+import { initDatabase, getDb } from '../db.js'
 import { createHash } from 'node:crypto'
 import { resolveApiToken } from '../web/auth-gate.js'
 import { resolveRole } from '../web/authz.js'
 import type { AuthResult } from '../web/auth-gate.js'
 
-// ── Schema ────────────────────────────────────────────────────────────────────
-
-const API_TOKENS_SCHEMA = `
-  CREATE TABLE api_tokens (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    token_hash    TEXT    NOT NULL UNIQUE,
-    name          TEXT    NOT NULL,
-    role          TEXT    NOT NULL CHECK(role IN ('admin', 'agent', 'read_only', 'viewer')),
-    tenant_id     TEXT    NOT NULL DEFAULT 'default',
-    created_at    INTEGER NOT NULL,
-    expires_at    INTEGER,
-    revoked_at    INTEGER,
-    last_used_at  INTEGER,
-    rotated_from  INTEGER REFERENCES api_tokens(id)
-  );
-`
-
 function openDb(): Database.Database {
-  const db = new Database(':memory:')
-  db.exec(API_TOKENS_SCHEMA)
-  return db
+  initDatabase(':memory:')
+  return getDb()
 }
 
 function sha256(raw: string): string {
@@ -95,7 +78,7 @@ describe('token creation', () => {
     const db = openDb()
     const raw = 'agent-tok-abc'
     insertToken(db, { hash: sha256(raw), role: 'agent', tenantId: 'tenant-x' })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(true)
     if (result.found) {
       expect(result.role).toBe('agent')
@@ -107,7 +90,7 @@ describe('token creation', () => {
     const db = openDb()
     const raw = 'admin-tok-xyz'
     insertToken(db, { hash: sha256(raw), role: 'admin', tenantId: 'default' })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(true)
     if (result.found) {
       expect(result.role).toBe('admin')
@@ -118,7 +101,7 @@ describe('token creation', () => {
     const db = openDb()
     const raw = 'named-tok-123'
     insertToken(db, { hash: sha256(raw), name: 'example-service-token', role: 'agent', tenantId: 'default' })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(true)
     if (result.found) {
       expect(result.name).toBe('example-service-token')
@@ -133,7 +116,7 @@ describe('token expiry', () => {
     const db = openDb()
     const raw = 'expired-token'
     insertToken(db, { hash: sha256(raw), expiresAt: NOW - 3600 })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(false)
     if (!result.found) expect(result.registeredButInvalid).toBe(true)
   })
@@ -142,7 +125,7 @@ describe('token expiry', () => {
     const db = openDb()
     const raw = 'valid-expiry-token'
     insertToken(db, { hash: sha256(raw), expiresAt: NOW + 86400 })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(true)
   })
 
@@ -150,7 +133,7 @@ describe('token expiry', () => {
     const db = openDb()
     const raw = 'no-expiry-token'
     insertToken(db, { hash: sha256(raw), expiresAt: null })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(true)
   })
 })
@@ -162,7 +145,7 @@ describe('token revocation', () => {
     const db = openDb()
     const raw = 'revoked-token'
     insertToken(db, { hash: sha256(raw), revokedAt: NOW - 60 })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(false)
     if (!result.found) expect(result.registeredButInvalid).toBe(true)
   })
@@ -171,7 +154,7 @@ describe('token revocation', () => {
     const db = openDb()
     const raw = 'active-token'
     insertToken(db, { hash: sha256(raw), revokedAt: null })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(true)
   })
 })
@@ -183,7 +166,7 @@ describe('CRITICAL: expired/revoked token in DB blocks file-token fallback', () 
     const db = openDb()
     const raw = 'file-matches-expired'
     insertToken(db, { hash: sha256(raw), expiresAt: NOW - 1 })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     // The caller MUST treat registeredButInvalid=true as a hard deny, not fall through
     expect(result.found).toBe(false)
     if (!result.found) {
@@ -196,7 +179,7 @@ describe('CRITICAL: expired/revoked token in DB blocks file-token fallback', () 
     const db = openDb()
     const raw = 'file-matches-revoked'
     insertToken(db, { hash: sha256(raw), revokedAt: NOW - 1 })
-    const result = resolveApiToken(raw, db)
+    const result = resolveApiToken(raw)
     expect(result.found).toBe(false)
     if (!result.found) {
       expect(result.registeredButInvalid).toBe(true)
@@ -206,7 +189,7 @@ describe('CRITICAL: expired/revoked token in DB blocks file-token fallback', () 
   it('registeredButInvalid=false for token absent from DB (fallback allowed)', () => {
     const db = openDb()
     // No row inserted -- this simulates the prod file-token which is not in DB
-    const result = resolveApiToken('completely-unknown-token', db)
+    const result = resolveApiToken('completely-unknown-token')
     expect(result.found).toBe(false)
     if (!result.found) {
       // Caller may proceed to file-token fallback
@@ -233,12 +216,12 @@ describe('token rotation', () => {
     ).run(sha256(newRaw), now, oldId)
 
     // Old token is now revoked
-    const oldResult = resolveApiToken(oldRaw, db)
+    const oldResult = resolveApiToken(oldRaw)
     expect(oldResult.found).toBe(false)
     if (!oldResult.found) expect(oldResult.registeredButInvalid).toBe(true)
 
     // New token resolves correctly
-    const newResult = resolveApiToken(newRaw, db)
+    const newResult = resolveApiToken(newRaw)
     expect(newResult.found).toBe(true)
     if (newResult.found) {
       expect(newResult.role).toBe('agent')
@@ -308,7 +291,7 @@ describe('resolveRole with DB token role', () => {
 describe('unknown token', () => {
   it('returns found=false, registeredButInvalid=false for token not in DB', () => {
     const db = openDb()
-    const result = resolveApiToken('not-in-db-token', db)
+    const result = resolveApiToken('not-in-db-token')
     expect(result.found).toBe(false)
     if (!result.found) expect(result.registeredButInvalid).toBe(false)
   })
