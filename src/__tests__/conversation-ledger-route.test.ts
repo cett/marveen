@@ -1,8 +1,14 @@
 // Route + spool tests for the conversation ledger API. Real in-memory SQLite,
 // no mocks.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
+
+// The ledger only belongs to a registered agent: the fixtures below use these names.
+vi.mock('../web/agent-config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/agent-config.js')>()),
+  listAgentNames: () => ['agent-a', 'agent-b'],
+}))
 import { mkdtempSync, writeFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

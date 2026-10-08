@@ -414,6 +414,11 @@ export function getDispatchedPendingStats(
  * True when the agent's last inbound channel message has no later outbound
  * (unanswered question). Used by the context-restart gate.
  *
+ * Agent-level and text-free on purpose: it reports a boolean for the agent as a whole, so for an
+ * agent shared by several tenants an unanswered question of ANY tenant counts. The tenant filter
+ * of the ledger reads (src/db/conversation-ledger.ts) guards what is shown to a session, not
+ * this gate.
+ *
  * With `opts`, an inbound older than staleCutoffMs no longer counts (same
  * cutoff as dispatched outbound): a question nobody answered for hours is
  * abandoned, not live work. Without it the ledger is the only clock, and an
