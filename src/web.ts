@@ -272,7 +272,7 @@ export function startWebServer(port = 3420): http.Server {
     // (in BOTH modes), so the observation window is measurable from the database.
     // Runs only for gated, authenticated requests (kind !== 'none').
     if (requiresAuth(path, method) && auth.kind !== 'none') {
-      if (!runRbacGate(getDb(), auth, method, path, res, RBAC_MODE)) return
+      if (!runRbacGate(auth, method, path, res, RBAC_MODE)) return
     }
 
     const role = auth.kind !== 'none' ? resolveRole(auth) : undefined

@@ -1,5 +1,4 @@
 import { json } from '../http-helpers.js'
-import { getDb } from '../../db.js'
 import {
   SHADOW_DECISIONS,
   queryShadowLog,
@@ -70,11 +69,9 @@ export async function tryHandleRbacShadowLog(ctx: RouteContext): Promise<boolean
   filter.from = sinceHours !== undefined ? Math.floor(Date.now() / 1000) - sinceHours * 3600 : from
   filter.to = to
 
-  const db = getDb()
-
   const summary = p.get('summary')
   if (summary === '1' || summary === 'true') {
-    json(res, summarizeShadowLog(db, { from: filter.from, to: filter.to, tenantId: filter.tenantId }))
+    json(res, summarizeShadowLog({ from: filter.from, to: filter.to, tenantId: filter.tenantId }))
     return true
   }
 
@@ -85,6 +82,6 @@ export async function tryHandleRbacShadowLog(ctx: RouteContext): Promise<boolean
   filter.limit = limit
   filter.offset = offset
 
-  json(res, queryShadowLog(db, filter))
+  json(res, queryShadowLog(filter))
   return true
 }
