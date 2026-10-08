@@ -21,7 +21,12 @@ const ROW_B = {
 }
 
 // ---------- db mock ----------
-const mockPrepare = vi.fn()
+const mockListBlackboardRows = vi.fn<(limit: number, tenantId?: string | null) => object[]>(() => [])
+const mockGetLastOutboundMessageTimes = vi.fn<(agentIds: string[], sinceSec: number) => object[]>(() => [])
+const mockGetLastBlackboardChangeTimes = vi.fn<(agentIds: string[]) => object[]>(() => [])
+const mockBlackboardRowExistsForAgent = vi.fn<(agentId: string) => boolean>(() => false)
+const mockGetBlackboardRowById = vi.fn<(id: string) => object | undefined>(() => undefined)
+const mockUpdateBlackboardRowById = vi.fn()
 const mockInsertBlackboardHistory = vi.fn()
 const mockListBlackboardHistory = vi.fn<(opts?: unknown) => object[]>(() => [])
 const mockUpsertBlackboard = vi.fn<(agent_id: unknown, data: unknown) => object>(() => ({ ...ROW_A }))
@@ -34,7 +39,12 @@ const mockWriteAgentAuditLog = vi.fn()
 const mockListActivePlansForAgents = vi.fn<(agentIds: string[]) => Map<string, object>>(() => new Map())
 const mockDeactivatePlanForAgent = vi.fn()
 vi.mock('../db.js', () => ({
-  getDb: vi.fn(() => ({ prepare: mockPrepare })),
+  listBlackboardRows: (limit: number, tenantId?: string | null) => mockListBlackboardRows(limit, tenantId),
+  getLastOutboundMessageTimes: (ids: string[], since: number) => mockGetLastOutboundMessageTimes(ids, since),
+  getLastBlackboardChangeTimes: (ids: string[]) => mockGetLastBlackboardChangeTimes(ids),
+  blackboardRowExistsForAgent: (agentId: string) => mockBlackboardRowExistsForAgent(agentId),
+  getBlackboardRowById: (id: string) => mockGetBlackboardRowById(id),
+  updateBlackboardRowById: (id: string, fields: unknown) => mockUpdateBlackboardRowById(id, fields),
   insertBlackboardHistory: (a: unknown) => mockInsertBlackboardHistory(a),
   listBlackboardHistory: (a: unknown) => mockListBlackboardHistory(a),
   upsertBlackboard: (agent_id: unknown, data: unknown) => mockUpsertBlackboard(agent_id, data),
@@ -53,10 +63,6 @@ vi.mock('../settings-store.js', () => ({
     return 0
   }),
 }))
-
-function makeStmt(value: unknown) {
-  return { all: vi.fn(() => value), get: vi.fn(() => value), run: vi.fn(() => ({ lastInsertRowid: 1n })) }
-}
 
 import { tryHandleBlackboard } from '../web/routes/blackboard.js'
 
@@ -93,12 +99,9 @@ describe('GET /api/blackboard', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('returns list from db, max 10 rows', async () => {
-    // Three prepare calls: fleet_blackboard rows, agent_messages (empty), fleet_blackboard_history (empty).
-    // Empty history -> lastChangedAt falls back to row.updated_at.
-    mockPrepare
-      .mockReturnValueOnce(makeStmt([ROW_A, ROW_B]))
-      .mockReturnValueOnce(makeStmt([]))
-      .mockReturnValueOnce(makeStmt([]))
+    // Rows from the blackboard; no recent messages and an empty history
+    // (-> lastChangedAt falls back to row.updated_at).
+    mockListBlackboardRows.mockReturnValueOnce([ROW_A, ROW_B])
     const { ctx, out } = makeCtx('GET', '/api/blackboard')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(true)
@@ -109,10 +112,7 @@ describe('GET /api/blackboard', () => {
   })
 
   it('#886: includes activePlan for a row with a binding, omits it for a row without one', async () => {
-    mockPrepare
-      .mockReturnValueOnce(makeStmt([ROW_A, ROW_B]))
-      .mockReturnValueOnce(makeStmt([]))
-      .mockReturnValueOnce(makeStmt([]))
+    mockListBlackboardRows.mockReturnValueOnce([ROW_A, ROW_B])
     mockListActivePlansForAgents.mockReturnValueOnce(new Map([
       ['agent-a', { id: 'team-x', label: 'Team X', planType: 'team', channelsAllowed: true, source: 'rotation', activatedAt: 1, lastHeartbeat: 1, planUnresolved: false }],
     ]))
@@ -124,7 +124,7 @@ describe('GET /api/blackboard', () => {
   })
 
   it('returns empty array when table is empty', async () => {
-    mockPrepare.mockReturnValue(makeStmt([]))
+    mockListBlackboardRows.mockReturnValueOnce([])
     const { ctx, out } = makeCtx('GET', '/api/blackboard')
     await tryHandleBlackboard(ctx)
     expect(out.body).toEqual([])
@@ -137,36 +137,27 @@ describe('GET /api/blackboard', () => {
   })
 
   it('admin (role=admin) queries unfiltered -- no tenant WHERE clause', async () => {
-    mockPrepare
-      .mockReturnValueOnce(makeStmt([ROW_A, ROW_B]))
-      .mockReturnValueOnce(makeStmt([]))
-      .mockReturnValueOnce(makeStmt([]))
+    mockListBlackboardRows.mockReturnValueOnce([ROW_A, ROW_B])
     const { ctx } = makeCtx('GET', '/api/blackboard', undefined, { role: 'admin' })
     await tryHandleBlackboard(ctx)
-    expect(mockPrepare.mock.calls[0][0]).not.toMatch(/tenant_id/)
+    expect(mockListBlackboardRows).toHaveBeenCalledWith(10, null)
   })
 
   it('non-admin role narrows the query to ctx.tenantId', async () => {
-    const stmt = makeStmt([ROW_A])
-    mockPrepare
-      .mockReturnValueOnce(stmt)
-      .mockReturnValueOnce(makeStmt([]))
-      .mockReturnValueOnce(makeStmt([]))
+    mockListBlackboardRows.mockReturnValueOnce([ROW_A])
     const { ctx } = makeCtx('GET', '/api/blackboard', undefined, { role: 'agent', tenantId: 'tenant-a' })
     await tryHandleBlackboard(ctx)
-    expect(mockPrepare.mock.calls[0][0]).toMatch(/WHERE tenant_id = \?/)
-    expect(stmt.all).toHaveBeenCalledWith('tenant-a', 10)
+    expect(mockListBlackboardRows).toHaveBeenCalledWith(10, 'tenant-a')
   })
 
   it('non-admin role with no tenantId falls back to the "default" tenant', async () => {
-    // rows=[] triggers listBlackboardWithSignals' early return, so only this
-    // one db.prepare() call happens -- do not queue further Once values here,
-    // they would leak into (and desync) the next test's mockPrepare queue.
-    const stmt = makeStmt([])
-    mockPrepare.mockReturnValueOnce(stmt)
+    // rows=[] triggers listBlackboardWithSignals' early return, so no signal
+    // lookups happen.
+    mockListBlackboardRows.mockReturnValueOnce([])
     const { ctx } = makeCtx('GET', '/api/blackboard', undefined, { role: 'viewer' })
     await tryHandleBlackboard(ctx)
-    expect(stmt.all).toHaveBeenCalledWith('default', 10)
+    expect(mockListBlackboardRows).toHaveBeenCalledWith(10, 'default')
+    expect(mockGetLastOutboundMessageTimes).not.toHaveBeenCalled()
   })
 })
 
@@ -205,7 +196,7 @@ describe('POST /api/blackboard', () => {
   })
 
   it('records a fleet-audit entry (action=create) for a first-time write', async () => {
-    mockPrepare.mockReturnValue(makeStmt(undefined)) // no existing row for this agent
+    mockBlackboardRowExistsForAgent.mockReturnValueOnce(false) // no existing row for this agent
     mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
     const { ctx } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'First write' })
     await tryHandleBlackboard(ctx)
@@ -216,7 +207,7 @@ describe('POST /api/blackboard', () => {
   })
 
   it('records a fleet-audit entry (action=update) when the agent already has a row', async () => {
-    mockPrepare.mockReturnValue(makeStmt({ id: ROW_A.id })) // existing row for this agent
+    mockBlackboardRowExistsForAgent.mockReturnValueOnce(true) // existing row for this agent
     mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A, summary: 'Updated' })
     const { ctx } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'Updated' })
     await tryHandleBlackboard(ctx)
@@ -226,7 +217,7 @@ describe('POST /api/blackboard', () => {
   })
 
   it('a failing audit write does not fail the blackboard write itself', async () => {
-    mockPrepare.mockReturnValue(makeStmt(undefined))
+    mockBlackboardRowExistsForAgent.mockReturnValueOnce(false)
     mockWriteAgentAuditLog.mockImplementationOnce(() => { throw new Error('audit db down') })
     mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
     const { ctx, out } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'Still works' })
@@ -363,18 +354,15 @@ describe('PATCH /api/blackboard/:id', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('updates status and summary', async () => {
-    const stmtGet1 = makeStmt({ ...ROW_A })
-    const stmtUpdate = makeStmt(undefined)
-    const stmtGet2 = makeStmt({ ...ROW_A, status: 'done', summary: 'Finished' })
-    mockPrepare
-      .mockReturnValueOnce(stmtGet1)
-      .mockReturnValueOnce(stmtUpdate)
-      .mockReturnValueOnce(stmtGet2)
+    mockGetBlackboardRowById
+      .mockReturnValueOnce({ ...ROW_A })
+      .mockReturnValueOnce({ ...ROW_A, status: 'done', summary: 'Finished' })
     const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'done', summary: 'Finished' })
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
     expect((out.body as { row: { status: string } }).row.status).toBe('done')
+    expect(mockUpdateBlackboardRowById).toHaveBeenCalledWith('bb000001', expect.objectContaining({ status: 'done', summary: 'Finished' }))
     expect(mockInsertBlackboardHistory).toHaveBeenCalledOnce()
     expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'done' })
@@ -385,16 +373,14 @@ describe('PATCH /api/blackboard/:id', () => {
   })
 
   it('does not record a fleet-audit entry when the id does not exist', async () => {
-    const stmtGet = makeStmt(undefined)
-    mockPrepare.mockReturnValue(stmtGet)
+    mockGetBlackboardRowById.mockReturnValueOnce(undefined)
     const { ctx } = makeCtx('PATCH', '/api/blackboard/nonexistent', { status: 'done' })
     await tryHandleBlackboard(ctx)
     expect(mockWriteAgentAuditLog).not.toHaveBeenCalled()
   })
 
   it('returns 404 when id does not exist', async () => {
-    const stmtGet = makeStmt(undefined)
-    mockPrepare.mockReturnValue(stmtGet)
+    mockGetBlackboardRowById.mockReturnValueOnce(undefined)
     const { ctx, out } = makeCtx('PATCH', '/api/blackboard/nonexistent', { status: 'done' })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(404)
@@ -423,13 +409,9 @@ describe('PATCH /api/blackboard/:id', () => {
 
   it('does not record history on no-op PATCH (identical data)', async () => {
     // PATCH body matches existing row exactly -- nothing changes
-    const stmtGet1 = makeStmt({ ...ROW_A })
-    const stmtUpdate = makeStmt(undefined)
-    const stmtGet2 = makeStmt({ ...ROW_A })
-    mockPrepare
-      .mockReturnValueOnce(stmtGet1)
-      .mockReturnValueOnce(stmtUpdate)
-      .mockReturnValueOnce(stmtGet2)
+    mockGetBlackboardRowById
+      .mockReturnValueOnce({ ...ROW_A })
+      .mockReturnValueOnce({ ...ROW_A })
     const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', {
       status: ROW_A.status,
       summary: ROW_A.summary,
@@ -441,14 +423,10 @@ describe('PATCH /api/blackboard/:id', () => {
   })
 
   it('PATCH to status=blocked persists blocked_by/blocked_reason on the row and in history', async () => {
-    const stmtGet1 = makeStmt({ ...ROW_A })
-    const stmtUpdate = makeStmt(undefined)
     const blockedRow = { ...ROW_A, status: 'blocked', blocked_by: 'agent-c', blocked_reason: 'waiting on review' }
-    const stmtGet2 = makeStmt(blockedRow)
-    mockPrepare
-      .mockReturnValueOnce(stmtGet1)
-      .mockReturnValueOnce(stmtUpdate)
-      .mockReturnValueOnce(stmtGet2)
+    mockGetBlackboardRowById
+      .mockReturnValueOnce({ ...ROW_A })
+      .mockReturnValueOnce(blockedRow)
     const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', {
       status: 'blocked', blocked_by: 'agent-c', blocked_reason: 'waiting on review',
     })
@@ -462,13 +440,9 @@ describe('PATCH /api/blackboard/:id', () => {
 
   it('PATCH moving a row out of blocked clears blocked_by/blocked_reason and records resolved_by', async () => {
     const blockedRow = { ...ROW_A, status: 'blocked', blocked_by: 'agent-c', blocked_reason: 'waiting on review' }
-    const stmtGet1 = makeStmt(blockedRow)
-    const stmtUpdate = makeStmt(undefined)
-    const stmtGet2 = makeStmt({ ...ROW_A, status: 'active', blocked_by: null, blocked_reason: null })
-    mockPrepare
-      .mockReturnValueOnce(stmtGet1)
-      .mockReturnValueOnce(stmtUpdate)
-      .mockReturnValueOnce(stmtGet2)
+    mockGetBlackboardRowById
+      .mockReturnValueOnce(blockedRow)
+      .mockReturnValueOnce({ ...ROW_A, status: 'active', blocked_by: null, blocked_reason: null })
     const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'active', resolved_by: 'agent-d' })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(200)
@@ -559,10 +533,7 @@ describe('GET /api/blackboard/history', () => {
   })
 
   it('does NOT interfere with the existing /api/blackboard GET', async () => {
-    mockPrepare
-      .mockReturnValueOnce(makeStmt([ROW_A]))
-      .mockReturnValueOnce(makeStmt([]))
-      .mockReturnValueOnce(makeStmt([]))
+    mockListBlackboardRows.mockReturnValueOnce([ROW_A])
     const { ctx, out } = makeCtx('GET', '/api/blackboard')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(true)

@@ -824,3 +824,56 @@ export function agentBelongsToTenant(agentId: string, tenantId: string): boolean
 }
 
 // Schedules (SQL-backed, replaces file-based scheduled-tasks-io)
+
+// ── Blackboard reads/updates used by routes/blackboard.ts ────────────
+
+/** Newest rows first; tenantId null = unfiltered (admin), a string narrows to that tenant. */
+export function listBlackboardRows(limit: number, tenantId: string | null = null): BlackboardRow[] {
+  return tenantId !== null
+    ? db.prepare('SELECT * FROM fleet_blackboard WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?').all(tenantId, limit) as BlackboardRow[]
+    : db.prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?').all(limit) as BlackboardRow[]
+}
+
+export function getBlackboardRowById(id: string): BlackboardRow | undefined {
+  return db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow | undefined
+}
+
+export function blackboardRowExistsForAgent(agentId: string): boolean {
+  return !!db.prepare('SELECT 1 FROM fleet_blackboard WHERE agent_id = ?').get(agentId)
+}
+
+/** Latest outbound inter-agent message per sender, for the given agents, after `sinceSec`. */
+export function getLastOutboundMessageTimes(agentIds: string[], sinceSec: number): { agent_id: string; last_msg_at: number }[] {
+  const placeholders = agentIds.map(() => '?').join(',')
+  return db
+    .prepare(
+      `SELECT from_agent AS agent_id, MAX(created_at) AS last_msg_at
+         FROM agent_messages
+        WHERE from_agent IN (${placeholders})
+          AND created_at > ?
+        GROUP BY from_agent`,
+    )
+    .all(...agentIds, sinceSec) as { agent_id: string; last_msg_at: number }[]
+}
+
+/** Latest recorded state change per agent, from the history table. */
+export function getLastBlackboardChangeTimes(agentIds: string[]): { agent_id: string; last_changed_at: number }[] {
+  const placeholders = agentIds.map(() => '?').join(',')
+  return db
+    .prepare(
+      `SELECT agent_id, MAX(created_at) AS last_changed_at
+         FROM fleet_blackboard_history
+        WHERE agent_id IN (${placeholders})
+        GROUP BY agent_id`,
+    )
+    .all(...agentIds) as { agent_id: string; last_changed_at: number }[]
+}
+
+export function updateBlackboardRowById(
+  id: string,
+  fields: { status: string; summary: string; task_ref: string | null | undefined; blocked_by: string | null; blocked_reason: string | null },
+): void {
+  db.prepare(`
+    UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, blocked_by = ?, blocked_reason = ?, updated_at = unixepoch() WHERE id = ?
+  `).run(fields.status, fields.summary, fields.task_ref, fields.blocked_by, fields.blocked_reason, id)
+}
