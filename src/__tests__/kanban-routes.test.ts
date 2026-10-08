@@ -69,7 +69,14 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: vi.fn().mockReturnValue(100),
 }))
 
+vi.mock('../db/tenant-scoped.js', () => ({
+  listTenantKanbanCards: vi.fn().mockReturnValue([]),
+  countTenantKanbanCards: vi.fn().mockReturnValue(0),
+  getTenantKanbanCard: vi.fn().mockReturnValue(null),
+}))
+
 import * as db from '../db.js'
+import * as tenantScoped from '../db/tenant-scoped.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 
 function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -500,15 +507,12 @@ describe('tryHandleKanban -- tenant isolation for scoped callers', () => {
     await tryHandleKanban(ctx)
     expect(out.status).toBe(200)
     expect(vi.mocked(db.listKanbanCards)).not.toHaveBeenCalled()
+    expect(vi.mocked(tenantScoped.listTenantKanbanCards)).toHaveBeenCalledWith('acme', undefined, undefined, undefined)
   })
 
   it('GET /api/kanban?status= uses scoped list/count for a tenant caller', async () => {
-    vi.mocked(db.getDb).mockReturnValueOnce({
-      prepare: vi.fn().mockReturnValue({
-        all: vi.fn().mockReturnValue([{ id: 'card1', status: 'done', tenant_id: 'acme' }]),
-        get: vi.fn().mockReturnValue({ n: 3 }),
-      }),
-    } as any)
+    vi.mocked(tenantScoped.listTenantKanbanCards).mockReturnValueOnce([{ id: 'card1', title: 't', status: 'done', tenant_id: 'acme' }])
+    vi.mocked(tenantScoped.countTenantKanbanCards).mockReturnValueOnce(3)
     const { ctx, out } = makeScopedCtx('GET', '/api/kanban?status=done&limit=20&offset=0', 'acme')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(200)
@@ -517,7 +521,7 @@ describe('tryHandleKanban -- tenant isolation for scoped callers', () => {
   })
 
   it('PUT /api/kanban/:id returns 404 when card does not belong to caller tenant', async () => {
-    // scopeToTenant.kanban.get → null (getDb mock: prepare().get = null)
+    // the tenant-scoped card lookup finds nothing (mock default: null)
     const { ctx, out } = makeScopedCtx('PUT', '/api/kanban/card1', 'acme', { title: 'Updated' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)

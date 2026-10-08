@@ -190,7 +190,7 @@ describe('GET /api/kanban -- admin ?tenant filter', () => {
     )
     await tryHandleKanban(ctx)
     expect(out.status).toBe(200)
-    expect(vi.mocked(tenantScope.scopeToTenant)).toHaveBeenCalledWith(expect.anything(), 'acme-corp')
+    expect(vi.mocked(tenantScope.scopeToTenant)).toHaveBeenCalledWith('acme-corp')
   })
 
   it('does not scope when admin omits ?tenant (bypass -- all tenants)', async () => {
@@ -209,7 +209,7 @@ describe('GET /api/kanban -- admin ?tenant filter', () => {
     )
     await tryHandleKanban(ctx)
     // scopeToTenant called with own-tenant, not the spoofed acme-corp
-    expect(vi.mocked(tenantScope.scopeToTenant)).toHaveBeenCalledWith(expect.anything(), 'own-tenant')
+    expect(vi.mocked(tenantScope.scopeToTenant)).toHaveBeenCalledWith('own-tenant')
   })
 })
 
