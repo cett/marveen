@@ -8,13 +8,11 @@
     "scripts/hooks/skill-sql-sync.py": "B",
     "scripts/hooks/tenant-skill-gate.py": "A",
     "scripts/hooks/tenant_context_lib.py": "A",
-    "scripts/intel_db.py": "B",
     "scripts/migrate-main-agent-id.sh": "C",
     "scripts/pre-modify-backup.sh": "C",
     "scripts/start.sh": "C",
     "scripts/systemd/marveen-channels.service": "C",
     "scripts/verify-restore.sh": "C",
-    "seed-skills/ai-fleet-project-execution/SKILL.md": "B",
     "seed-skills/fleet-helper/scripts/mail_triage.py": "X",
     "update.sh": "C"
   },
@@ -89,12 +87,6 @@
         "sqlite3.connect": 1
       }
     },
-    "scripts/intel_db.py": {
-      "dialect": {},
-      "direct": {
-        "intel.db": 1
-      }
-    },
     "scripts/migrate-main-agent-id.sh": {
       "dialect": {},
       "direct": {
@@ -127,12 +119,6 @@
       },
       "direct": {
         "claudeclaw.db": 4,
-        "sqlite3 CLI": 2
-      }
-    },
-    "seed-skills/ai-fleet-project-execution/SKILL.md": {
-      "dialect": {},
-      "direct": {
         "sqlite3 CLI": 2
       }
     },

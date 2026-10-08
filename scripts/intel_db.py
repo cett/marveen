@@ -22,8 +22,8 @@ Tables (kept by the dashboard):
 Connection: MARVEEN_DASHBOARD_BASE, else http://localhost:<WEB_PORT> (WEB_PORT
 from the environment, then from the install's .env, default 3420); the bearer
 token is read from <store>/.dashboard-token (MARVEEN_STORE_DIR overrides the
-store directory). Where the data file lives is the dashboard's business
-(INTEL_DB / store/intel.db on its side).
+store directory). Where the registry is kept is the dashboard's business
+(see src/intel-store.ts).
 
 CLI (see --help of each subcommand):
   intel_db.py init                          make sure the registry exists (idempotent)
