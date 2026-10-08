@@ -4,6 +4,7 @@
 // /api/conversation-ledger, which calls these helpers.
 
 import { db } from './connection.js'
+import { getServedTenantIds } from './agents.js'
 import { getChannelBindingTenant, getServingTenant } from './tenant-channel-bindings.js'
 
 export type LedgerDirection = 'in' | 'out'
@@ -11,12 +12,11 @@ export type LedgerDirection = 'in' | 'out'
 /** Channel the ledger hooks see: they only run on Telegram turns. */
 export const LEDGER_CHANNEL = 'telegram'
 
-/** A shared agent serves two or more tenants (enabled tenant_agent_availability rows). */
+/** A shared agent serves two or more tenants: the one it coordinates as main agent plus the ones
+ *  it is enabled for (getServedTenantIds, the same set agentBelongsToTenant uses). Counting only
+ *  the availability rows missed a coordinator enabled for one more tenant. */
 export function isSharedLedgerAgent(agentId: string): boolean {
-  const row = db
-    .prepare('SELECT COUNT(*) AS n FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1')
-    .get(agentId) as { n: number }
-  return row.n >= 2
+  return getServedTenantIds(agentId).length >= 2
 }
 
 export interface LedgerTurnInput {

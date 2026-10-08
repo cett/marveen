@@ -823,9 +823,18 @@ export function resolveAgentOwningTenantId(agentId: string): string {
  *  agent can be enabled for more than one tenant, and any of them may
  *  manage it -- admin bypasses this check entirely (see agents-process.ts). */
 export function agentBelongsToTenant(agentId: string, tenantId: string): boolean {
+  return getServedTenantIds(agentId).includes(tenantId)
+}
+
+/** Every tenant the agent serves: the tenant it coordinates as main agent (getTenantForMainAgent)
+ *  plus the tenants it is enabled for (getTenantsForAgent), each once. The one definition behind
+ *  agentBelongsToTenant and the "shared agent" rule of the conversation ledger (an agent serving
+ *  two or more tenants), so a coordinator that is also enabled for a second tenant counts as
+ *  shared everywhere. */
+export function getServedTenantIds(agentId: string): string[] {
   const primary = getTenantForMainAgent(agentId)
-  if (primary?.id === tenantId) return true
-  return getTenantsForAgent(agentId).includes(tenantId)
+  const ids = getTenantsForAgent(agentId)
+  return primary && !ids.includes(primary.id) ? [primary.id, ...ids] : ids
 }
 
 // Schedules (SQL-backed, replaces file-based scheduled-tasks-io)

@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { applyMigrations } from '../db-migrations.js'
 import {
-  initDatabase, db, createTenant, setTenantAgentAvailability, setChannelBinding,
-  logLedgerTurn, recentLedgerTurns, openLedgerQuestion,
+  initDatabase, db, createTenant, updateTenant, setTenantAgentAvailability, setChannelBinding,
+  logLedgerTurn, recentLedgerTurns, openLedgerQuestion, isSharedLedgerAgent,
 } from '../db.js'
 import { tryHandleConversationLedger } from '../web/routes/conversation-ledger.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -48,11 +48,17 @@ describe('migration 0075 backfill (Q3b)', () => {
       old.pragma('foreign_keys = OFF')
       old.exec(`
         INSERT INTO tenants (id, display_name, created_at) VALUES ('t1', 'T1', 0), ('t2', 'T2', 0);
+        INSERT INTO tenants (id, display_name, created_at) VALUES ('t3', 'T3', 0);
+        UPDATE tenants SET main_agent_id = 'coord' WHERE id = 't1';
+        UPDATE tenants SET main_agent_id = 'dup' WHERE id = 't3';
+        UPDATE tenants SET main_agent_id = 'boss' WHERE id = 't2';
         INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES
-          ('t1', 'multi', 1), ('t2', 'multi', 1), ('t1', 'single', 1), ('t1', 'half', 1), ('t2', 'half', 0);
+          ('t1', 'multi', 1), ('t2', 'multi', 1), ('t1', 'single', 1), ('t1', 'half', 1), ('t2', 'half', 0),
+          ('t2', 'coord', 1), ('t2', 'boss', 1), ('t3', 'dup', 1);
         INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES
           ('multi', '1', 'in', 'a', 'x', 1), ('single', '1', 'in', 'b', 'x', 1),
-          ('half', '1', 'in', 'c', 'x', 1), ('nobody', '1', 'in', 'd', 'x', 1);
+          ('half', '1', 'in', 'c', 'x', 1), ('nobody', '1', 'in', 'd', 'x', 1),
+          ('coord', '1', 'in', 'e', 'x', 1), ('boss', '1', 'in', 'f', 'x', 1), ('dup', '1', 'in', 'g', 'x', 1);
       `)
       copyFileSync(join(src, files.find(f => f.startsWith('0075'))!), join(dir, files.find(f => f.startsWith('0075'))!))
       applyMigrations(old, dir)
@@ -62,6 +68,9 @@ describe('migration 0075 backfill (Q3b)', () => {
         { message_id: 'b', tenant_id: 'default' },   // one tenant
         { message_id: 'c', tenant_id: 'default' },   // the second availability row is disabled
         { message_id: 'd', tenant_id: 'default' },   // not in the matrix at all
+        { message_id: 'e', tenant_id: '_multi_' },   // coordinates t1 and is enabled for t2
+        { message_id: 'f', tenant_id: 'default' },   // coordinates t2 and is enabled for t2: ONE tenant
+        { message_id: 'g', tenant_id: 'default' },   // coordinates t3 and is enabled for t3: ONE tenant
       ])
       old.close()
     } finally {
@@ -96,6 +105,41 @@ describe('server-side tenant stamp from the chat binding', () => {
     setChannelBinding('solo', 'telegram', '555', 'acme', 'test')
     logLedgerTurn(turn({ agent_id: 'shared', chat_id: '555', message_id: 'y' }))
     expect(tenantOf('y')).toBeNull()
+  })
+})
+
+describe('a coordinator enabled for a second tenant is shared (main agent + availability)', () => {
+  beforeEach(() => {
+    updateTenant('acme', { main_agent_id: 'coord' })      // coord coordinates acme ...
+    setTenantAgentAvailability('beta', 'coord', true)       // ... and is enabled for beta: ONE availability row
+    setChannelBinding('coord', 'telegram', 'A', 'acme', 'test')
+    setChannelBinding('coord', 'telegram', 'B', 'beta', 'test')
+    logLedgerTurn(turn({ agent_id: 'coord', chat_id: 'A', message_id: 'a1', text: 'acme question', created_at: 1000 }))
+    logLedgerTurn(turn({ agent_id: 'coord', chat_id: 'B', message_id: 'b1', text: 'beta question', created_at: 1010 }))
+  })
+  const ctxFor = (tenant: string) =>
+    db.prepare("INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES ('coord', ?, 'bound', unixepoch())").run(tenant)
+
+  it('is shared although it has a single availability row', () => {
+    expect(isSharedLedgerAgent('coord')).toBe(true)
+    expect(isSharedLedgerAgent('solo')).toBe(false)
+  })
+
+  it('replay is empty: the acme coordinator never replays beta turns (and vice versa)', () => {
+    expect(recentLedgerTurns('coord')).toEqual([])
+  })
+
+  it('open question comes only from the serving tenant, null without a context', () => {
+    expect(openLedgerQuestion('coord')).toBeNull()
+    ctxFor('acme')
+    expect(openLedgerQuestion('coord')?.text).toBe('acme question')
+    ctxFor('beta')
+    expect(openLedgerQuestion('coord')?.text).toBe('beta question')
+  })
+
+  it('a coordinator of one tenant with no other tenant is not shared', () => {
+    updateTenant('acme', { main_agent_id: 'lonely' })
+    expect(isSharedLedgerAgent('lonely')).toBe(false)
   })
 })
 
