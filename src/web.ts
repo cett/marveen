@@ -91,6 +91,7 @@ import { tryHandleRbacShadowLog } from './web/routes/rbac-shadow-log.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleAgentState } from './web/routes/agent-state.js'
 import { tryHandleIntel } from './web/routes/intel.js'
+import { tryHandleConversationLedger } from './web/routes/conversation-ledger.js'
 import { tryHandleTenantGateStatus } from './web/routes/tenant-gate-status.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
@@ -173,6 +174,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleHookAudit)
   .add(tryHandleAgentState)
   .add(tryHandleIntel)
+  .add(tryHandleConversationLedger)
   .add(tryHandleTenantGateStatus)
   .add(tryHandleFleetQ)
   .add(tryHandleFleet)
