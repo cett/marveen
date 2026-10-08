@@ -86,5 +86,75 @@ class FleetKanban(unittest.TestCase):
         self.assertEqual([r["id"] for r in self.fleet.kanban_due_today()], ["overdue", "today"])
 
 
+class FleetDreamData(unittest.TestCase):
+    """The dream-engine reads and the cold-tier move go through the API only."""
+
+    def setUp(self):
+        self.fleet = load()
+        self.calls = []
+        now = int(time.time())
+        self.now = now
+        self.memories = {
+            ("a1", "hot"): [
+                {"id": 1, "agent_id": "a1", "content": "old", "created_at": now - 20 * 86400, "accessed_at": now - 9 * 86400},
+                {"id": 2, "agent_id": "a1", "content": "touched", "created_at": now - 20 * 86400, "accessed_at": now - 3600},
+                {"id": 3, "agent_id": "a1", "content": "never touched", "created_at": now - 8 * 86400, "accessed_at": None},
+                {"id": 9, "agent_id": "other", "content": "shared from another agent", "created_at": 1, "accessed_at": 1},
+            ],
+            ("a1", "warm"): [
+                {"id": 4, "agent_id": "a1", "content": "fresh", "created_at": now - 600, "accessed_at": now - 600, "keywords": "k"},
+            ],
+        }
+        self.ideas = [
+            {"id": "i1", "title": "x", "category": "c", "impact": 5, "effort": 4},
+            {"id": "i2", "title": "y", "category": "c", "impact": 4, "effort": 1},
+            {"id": "i3", "title": "z", "category": "c", "impact": None, "effort": 1},
+        ]
+
+        def fake_api(method, path, payload=None, timeout=20):
+            self.calls.append((method, path, payload))
+            if path == "/api/memories/stats":
+                return {"byAgent": {"a1": 4}, "total": 4, "withEmbedding": 3}
+            if path.startswith("/api/memories?agent=a1&category="):
+                return self.memories.get(("a1", path.split("category=")[1].split("&")[0]), [])
+            if path.startswith("/api/ideas"):
+                return {"ideas": self.ideas if "status=new" in path else [], "total": len(self.ideas) if "status=new" in path else 0}
+            if path.startswith("/api/memories/") and method == "PUT":
+                return {"ok": True}
+            if path == "/api/skill-usage/summary":
+                return [{"skill_name": "a", "count_30d": 2, "last_used_at": 5},
+                        {"skill_name": "unused", "count_30d": 0, "last_used_at": 1},
+                        {"skill_name": "b", "count_30d": 9, "last_used_at": 7}]
+            if path == "/api/kanban":
+                return [card("p2", status="planned", project="zeta", priority="low"),
+                        card("p1", status="waiting", project="alpha", priority="urgent"),
+                        card("p1b", status="planned", project="alpha", priority="low"),
+                        card("closed", status="done", project="alpha")]
+            raise AssertionError("unexpected call " + path)
+
+        self.fleet.api = fake_api
+
+    def test_stale_hot_uses_access_time_then_creation_time_and_skips_foreign_rows(self):
+        self.assertEqual([m["id"] for m in self.fleet.memories_stale_hot(7)], [1, 3])
+
+    def test_recent_memories_cover_hot_and_warm_created_in_the_window(self):
+        rows = self.fleet.memories_recent(24)
+        self.assertEqual([r["content"] for r in rows], ["fresh"])
+        self.assertEqual(set(rows[0]), {"agent_id", "content", "keywords"})
+
+    def test_move_to_cold_puts_each_found_id_and_reports_the_missing_ones(self):
+        out = self.fleet.memories_to_cold(["1", "4", "77"])
+        puts = [(p, b) for m, p, b in self.calls if m == "PUT"]
+        self.assertEqual(puts, [("/api/memories/1", {"content": "old", "category": "cold"}),
+                                ("/api/memories/4", {"content": "fresh", "category": "cold"})])
+        self.assertEqual(out, {"moved": [1, 4], "not_found": [77]})
+
+    def test_health_ideas_usage_and_open_kanban_shapes(self):
+        self.assertEqual(self.fleet.memory_health(), {"total": 4, "with_emb": 3})
+        self.assertEqual([i["id"] for i in self.fleet.ideas_top(5)], ["i2", "i1"])
+        self.assertEqual([r["skill_name"] for r in self.fleet.skill_usage_30d()], ["b", "a"])
+        self.assertEqual([c["id"] for c in self.fleet.kanban_open()], ["p1", "p1b", "p2"])
+
+
 if __name__ == "__main__":
     unittest.main()

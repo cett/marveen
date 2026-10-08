@@ -1,7 +1,6 @@
 {
   "dispositions": {
     "install-macos.sh": "C",
-    "scheduled-tasks/dream-engine/SKILL.md": "B",
     "scripts/backup.sh": "C",
     "scripts/blackboard-hygiene.py": "B",
     "scripts/doctor.sh": "B",
@@ -33,16 +32,6 @@
       "dialect": {},
       "direct": {
         "better-sqlite3": 2
-      }
-    },
-    "scheduled-tasks/dream-engine/SKILL.md": {
-      "dialect": {
-        "strftime()": 5,
-        "vec0/sqlite-vec": 3
-      },
-      "direct": {
-        "claudeclaw.db": 7,
-        "sqlite3 CLI": 7
       }
     },
     "scripts/backup.sh": {

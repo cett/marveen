@@ -19,9 +19,9 @@ Nézz végig MINDEN agent (a fő-ágens és az összes sub-agent) tegnapi (24h) 
 - Volt-e 3+ szor visszatérő, manuálisan ismételt művelet ami skill-be illeszthető?
 - Új, NEM lefedett pattern amit érdemes lenne skillbe önteni?
 
-SQL minta:
+Lekérdezés (a dashboard API-n át; agent_id, content, keywords, minden ágens, ágensenként időrendben):
 ```bash
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT agent_id, content, keywords FROM memories WHERE created_at > strftime('%s', 'now', '-24 hours') AND category IN ('hot','warm') ORDER BY agent_id, created_at"
+CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-recent 24
 ```
 
 Output: 0-2 konkrét skill-javaslat. Mindegyikhez: cím + 1 mondat indoklás + "flotta-szintű" vagy "agent: <név>".
@@ -29,43 +29,41 @@ Output: 0-2 konkrét skill-javaslat. Mindegyikhez: cím + 1 mondat indoklás + "
 ### Bucket 2 — 🧹 Memória-egészség (NE delete, COLD-tier-be mozgatás)
 
 ```bash
-# Vektorizálás ellenőrzés
-# FONTOS (2026-08-03, Jonas 2x korrigalta): a vektorizaltsagot az embedding_blob (BLOB) oszlopon merd,
-# NEM az embedding (TEXT) oszlopon -- az utobbi URES, COUNT(embedding)=0 FELREVEZET (teves "0% vektorizalt").
-# A backfill {"count":0} = NINCS mit backfillelni (minden kesz), NEM 0 vektorizalt.
-# A vec_memories sqlite-vec (vec0) virtualis tabla a sqlite3 CLI-bol NEM elerheto ("no such module: vec0"), ne abbol szamolj.
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT COUNT(*) as total, COUNT(embedding_blob) as with_emb FROM memories"
-# Ha NEM 100%, hívd meg a backfill endpoint-ot (Ollamaval embeddeli a hianyzo ID-kat):
+# Vektorizálás ellenőrzés: {"total": N, "with_emb": M}
+# A /api/memories/stats withEmbedding mezője az embedding_blob-ot (és a régi embedding oszlopot) számolja.
+# A backfill {"count":0} = NINCS mit backfillelni (minden kész), NEM 0 vektorizált.
+CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-health
+# Ha NEM 100%, hívd meg a backfill endpoint-ot (Ollamaval embeddeli a hiányzó ID-kat):
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories/backfill -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)"
 
-# Antikvált hot-tier (>7 napos hot, nem hivatkozott a memories_fts-en az elmúlt 24h-ban)
-# FONTOS: CAST(... AS INTEGER) kötelező, lásd Buktatók.
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, content, accessed_at FROM memories WHERE category='hot' AND COALESCE(accessed_at, created_at) < CAST(strftime('%s', 'now', '-7 days') AS INTEGER)"
+# Antikvált hot-tier (>7 napos hot: az utolsó hozzáférés, ennek hiányában a létrehozás ideje régebbi 7 napnál)
+CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-stale-hot 7
 ```
 
-### ⚠️ Buktató: COALESCE + strftime = mindig igaz (2026-07-13)
-Az `COALESCE(accessed_at, created_at) < strftime('%s','now','-7 days')` alak SQLite-ban MINDIG igazat ad, tehát MINDEN hot memóriát "antikváltnak" mutat. Ok: a `strftime` TEXT-et ad vissza, és a COALESCE-kifejezésnek (ellentétben egy sima oszlopnévvel) NINCS típus-affinitása, így nem történik numerikus konverzió. Javítás: **mindig** `CAST(strftime(...) AS INTEGER)`, ha COALESCE-t vagy bármilyen kifejezést hasonlítasz időbélyeghez. Ellenőrzés a mozgatás előtt: írasd ki a találatok `datetime(...,'unixepoch','localtime')` értékét, és nézd meg, hogy tényleg régiek-e.
+### ⚠️ Buktató: COALESCE + strftime = mindig igaz (2026-07-13, a SQL-es változatnál)
+A korábbi `COALESCE(accessed_at, created_at) < strftime('%s','now','-7 days')` SQL-alak SQLite-ban MINDIG igazat adott (a `strftime` TEXT, a COALESCE-kifejezésnek nincs típus-affinitása), ezért minden hot memóriát antikváltnak mutatott; a javítás `CAST(... AS INTEGER)` volt. A `mem-stale-hot` ezt a lekérdezést már számként, a helperben hasonlítja össze, de a mozgatás előtt továbbra is nézd meg a találatok `accessed_at` értékét (unix másodperc), hogy tényleg régiek-e.
 
 Műveletek:
 1. Vektorizálatlan memóriák: jelezd hányat találtál (a fire-and-forget embedding-job amúgy megcsinálja, de itt ellenőrzöd).
-2. Antikvált hot/warm → COLD-tier-be PUT (UPDATE category='cold'). Sosem törlés.
+2. Antikvált hot/warm → COLD-tier-be PUT (a `mem-to-cold` helper a `PUT /api/memories/:id`-t hívja category='cold'-dal). Sosem törlés.
 3. Pontos dupla-content: jelezd, mozgass cold-ba.
 
-A változtatásokat directly SQL-lel csináld:
+A változtatásokat a helperrel csináld (a `mem-stale-hot` által adott id-kkal; a kimenet a `moved` és `not_found` listát adja):
 ```bash
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "UPDATE memories SET category='cold' WHERE id IN (...)"
+CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-to-cold 1425 1426
 ```
+Figyelem: a PUT a `accessed_at`-et is ráírja a mozgatás idejére és verziósort (memory_versions) hagy maga után, a régi nyers UPDATE egyiket sem tette.
 
 Output: rövid statisztika ("X memória cold-tier-be áthelyezve, Y vektorizálatlan rendezve").
 
 ### Bucket 3 — 🎯 Project-priorítás (top-3 holnapi javaslat)
 
 ```bash
-# Nyitott kanban-kártyák project + priority szerint
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, title, status, project, priority, assignee FROM kanban_cards WHERE status IN ('planned','in_progress','waiting') AND archived_at IS NULL ORDER BY project, priority DESC"
+# Nyitott kanban-kártyák project + priority szerint (planned / in_progress / waiting, nem archivált)
+CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py kanban-open
 
-# Magas impact, alacsony effort ötletek az ötletládából (score = impact - effort, magasabb = jobb)
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, title, category, impact, effort, (impact - effort) AS score FROM idea_box WHERE status IN ('new','reviewed') AND impact IS NOT NULL AND effort IS NOT NULL ORDER BY score DESC, impact DESC LIMIT 5"
+# Magas impact, alacsony effort ötletek az ötletládából (score = impact - effort, magasabb = jobb; top 5)
+CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py ideas-top 5
 ```
 
 Csoportosíts project szerint. A daily naplóban (utolsó 7 nap) nézd hogy melyik projekten van aktív mozgás (commit, PR, kanban-átmozgás). A top-3 javaslatba a kanban kártyák mellé vehetsz be max 1 magas-score (score>=2) ötletlada-tételt is, ha van ilyen -- jelöld `[Ötletláda]` prefixszel.
@@ -92,11 +90,8 @@ tool_call és skill_read típussal). A bucket kimenete ("utolsó használat >30 
 igényli -- csak a lekérdezés hiányzott innen.
 
 ```bash
-# 1) Mit használtak az elmúlt 30 napban:
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db \
-  "SELECT skill_name, COUNT(*) n, datetime(MAX(created_at),'unixepoch','localtime') utolso
-   FROM skill_usage WHERE created_at > strftime('%s','now','-30 days')
-   GROUP BY skill_name ORDER BY n DESC;"
+# 1) Mit használtak az elmúlt 30 napban (skill_name, n, last_used_at unix másodpercben, a leggyakoribb elöl):
+CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py skill-usage-30d
 
 # 2) Pinned-védelem (ezeket sosem javasoljuk törlésre):
 grep -L "^pinned:" ~/.claude/skills/*/SKILL.md
