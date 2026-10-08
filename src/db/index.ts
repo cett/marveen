@@ -34,6 +34,7 @@ export * from './vault-bindings.js'
 export * from './vector.js'
 export * from './workspace.js'
 export * from './federation.js'
+export * from './import.js'
 
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
