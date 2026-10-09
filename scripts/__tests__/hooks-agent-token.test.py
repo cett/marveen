@@ -56,6 +56,11 @@ HOOKS = {
     "skill-usage": ("skill-usage-capture.py",
                     lambda cwd: {"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s", "cwd": cwd},
                     "/api/skill-usage", "agent-a"),
+    "artifact-sync": ("artifact-store-sync.py",
+                      lambda cwd: {"tool_name": "Artifact", "cwd": cwd,
+                                   "tool_input": {"action": "publish", "title": "t"},
+                                   "tool_response": {"url": "https://claude.ai/public/artifacts/abc"}},
+                      "/api/artifacts", "agent-a"),
 }
 
 
@@ -146,6 +151,57 @@ class TestHooksAgentToken(unittest.TestCase):
                 self.put(self.own_token_file(who), "own\n")
                 self.run_hook(key)
                 self.assertNotIn("Bearer shared", {c["auth"] for c in Rec.seen})
+
+
+class TestAutoSkillifyNotify(unittest.TestCase):
+    """auto-skillify only talks to the dashboard in _notify_main_agent (a message FROM the agent)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("auto_skillify", os.path.join(_HOOKS, "auto-skillify.py"))
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+        cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Rec)
+        cls.srv.daemon_threads = True
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def setUp(self):
+        Rec.seen = []
+        self.store = tempfile.mkdtemp(prefix="t3-skillify-")
+        self._old = (self.mod.DASHBOARD_URL, self.mod.DASHBOARD_STORE_DIR, os.environ.get("MARVEEN_AGENT_TOKEN_FILE"))
+        self.mod.DASHBOARD_URL = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        self.mod.DASHBOARD_STORE_DIR = self.store
+        os.environ.pop("MARVEEN_AGENT_TOKEN_FILE", None)
+
+    def tearDown(self):
+        self.mod.DASHBOARD_URL, self.mod.DASHBOARD_STORE_DIR = self._old[0], self._old[1]
+        if self._old[2] is not None:
+            os.environ["MARVEEN_AGENT_TOKEN_FILE"] = self._old[2]
+        shutil.rmtree(self.store, ignore_errors=True)
+
+    def test_own_token_is_used(self):
+        p = os.path.join(self.store, "own")
+        with open(p, "w") as f:
+            f.write("own-zz\n")
+        os.environ["MARVEEN_AGENT_TOKEN_FILE"] = p
+        self.mod._notify_main_agent("zz-agent", "/d", "r")
+        self.assertEqual([c["auth"] for c in Rec.seen], ["Bearer own-zz"])
+
+    def test_missing_own_token_falls_back_and_names_the_sender(self):
+        with open(os.path.join(self.store, ".dashboard-token"), "w") as f:
+            f.write("shared\n")
+        self.mod._notify_main_agent("zz-agent", "/d", "r")
+        self.assertEqual([(c["auth"], c["agent"]) for c in Rec.seen], [("Bearer shared", "zz-agent")])
+
+    def test_no_token_sends_nothing(self):
+        self.mod._notify_main_agent("zz-agent", "/d", "r")
+        self.assertEqual(Rec.seen, [])
 
 
 if __name__ == "__main__":
