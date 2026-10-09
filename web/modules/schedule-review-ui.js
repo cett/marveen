@@ -20,3 +20,21 @@ export function saveToastKey(saved) {
   if (saved && saved.status === 'draft' && saved.tenant_id) return { key: 'tasks.toast.moved_draft', tenant: saved.tenant_id }
   return { key: 'tasks.toast.updated' }
 }
+
+// Number of tasks the review gate holds for a person (status pending_review). A never-approved
+// draft is not counted: it is a task nobody has asked to run yet, a pending_review one is a task
+// that was running and stopped because someone changed it. A non-array reads as zero.
+export function pendingReviewCount(tasks) {
+  if (!Array.isArray(tasks)) return 0
+  return tasks.filter((task) => task && task.status === 'pending_review').length
+}
+
+// Show the count on the sidebar badge, hidden at zero (same contract as the approvals and
+// updates badges). Takes the element so it is unit-tested without a DOM.
+export function applyPendingReviewBadge(badge, tasks) {
+  if (!badge) return 0
+  const count = pendingReviewCount(tasks)
+  badge.textContent = String(count)
+  badge.hidden = count === 0
+  return count
+}

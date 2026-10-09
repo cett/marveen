@@ -165,6 +165,22 @@
 .sb-link.active { color: var(--text); background: var(--accent-soft); }
 .sb-link.active svg { color: var(--accent); }
 .sb-badge { margin-left: auto; }
+/* Scheduled tasks held by the review gate (pending_review): hidden at zero. */
+.pending-review-badge {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--warning);
+  color: var(--color-white);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  vertical-align: middle;
+}
+.pending-review-badge[hidden] { display: none; }
 .sidebar-footer {
   padding-top: 12px;
   border-top: 1px solid var(--border);
