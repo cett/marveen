@@ -10,23 +10,20 @@ set -euo pipefail
 
 BASE="${1:-upstream/main}"
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
 
-if [ ! -f "$TOKEN_FILE" ]; then
+if [ ! -f "$INSTALL_DIR/store/.operator-token" ] && [ ! -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   echo "[pre-pr-review] Dashboard token not found, skipping cross-review." >&2
   exit 0
 fi
-
-DASHBOARD_TOKEN="$(cat "$TOKEN_FILE")"
 # Dashboard port: env WEB_PORT, else the install .env, else 3420.
 WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
 WEB_PORT="${WEB_PORT:-3420}"
-API="http://localhost:${WEB_PORT}/api/vault"
+# The vault read is admin:all: the operator's token, through the wrapper (never on a command line).
 
 get_secret() {
   local id="$1"
   local val
-  val="$(curl -sf -H "Authorization: Bearer $DASHBOARD_TOKEN" "$API/$id" 2>/dev/null)" || true
+  val="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash "$INSTALL_DIR/scripts/agent-api.sh" --token operator GET "/api/vault/$id" 2>/dev/null)" || true
   echo "$val" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null || true
 }
 

@@ -7,6 +7,9 @@
 #   BODY     a JSON string, "-" to read it from STDIN, or "@file" to send that file as is
 # Options (before METHOD):
 #   --agent ID          act as this agent (default: MARVEEN_AGENT_ID, else derived from the cwd)
+#   --max-time SECS     give up on the request after SECS seconds (default: no limit)
+#   --with-status       print the HTTP status as a last extra line after the body (what
+#                       `curl -w '\n%{http_code}'` gave), for scripts that branch on 201 vs 200
 #   --token KIND        agent (default) | operator | shared | admin | main
 #                         agent     the agent's own token (agents/<id>/.agent-token, the main
 #                                   agent's in the install root); a MISSING file falls back to the
@@ -39,11 +42,13 @@ STORE="${MARVEEN_STORE_DIR:-$BASE/store}"
 
 usage() { sed -n '2,/^set -uo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-AGENT="${MARVEEN_AGENT_ID:-}"; KIND="agent"
+AGENT="${MARVEEN_AGENT_ID:-}"; KIND="agent"; MAXTIME=""; WITHSTATUS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) [ $# -ge 2 ] || usage; AGENT="$2"; shift 2 ;;
     --token) [ $# -ge 2 ] || usage; KIND="$2"; shift 2 ;;
+    --max-time) [ $# -ge 2 ] || usage; MAXTIME="$2"; shift 2 ;;
+    --with-status) WITHSTATUS=1; shift ;;
     -h|--help) usage ;;
     --) shift; break ;;
     -*) echo "agent-api: unknown option $1" >&2; usage ;;
@@ -112,6 +117,7 @@ chmod 700 "$TMP"
 
 ARGS=(-sS -X "$METHOD" -w $'\n%{http_code}' -H "Content-Type: application/json")
 [ -n "$AGENT" ] && ARGS+=(-H "X-Agent-Id: $AGENT")
+case "$MAXTIME" in ""|*[!0-9]*) [ -z "$MAXTIME" ] || { echo "agent-api: --max-time takes whole seconds" >&2; exit 2; } ;; *) ARGS+=(--max-time "$MAXTIME") ;; esac
 if [ -n "$BODY" ]; then
   if [ "$BODY" = "-" ]; then cat > "$TMP/body"; ARGS+=(--data-binary "@$TMP/body")
   elif [ "${BODY#@}" != "$BODY" ]; then ARGS+=(--data-binary "$BODY")
@@ -127,4 +133,5 @@ fi
 [ "$RC" -eq 0 ] || exit "$RC"
 CODE="${RESP##*$'\n'}"
 printf '%s\n' "${RESP%$'\n'*}"
+[ "$WITHSTATUS" -eq 1 ] && printf '%s\n' "$CODE"
 case "$CODE" in 2??) exit 0 ;; *) echo "agent-api: HTTP $CODE ($METHOD $APIPATH)" >&2; exit 22 ;; esac

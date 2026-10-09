@@ -24,8 +24,9 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 # token is missing or the dashboard does not answer. The doctor reads database
 # facts through the API instead of opening the database file.
 api_get() {
-  [ -f store/.dashboard-token ] || return 1
-  curl -sf --max-time 5 -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}$1" 2>/dev/null
+  local out
+  out="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash scripts/agent-api.sh --token operator --max-time 5 GET "$1" 2>/dev/null)" || return 1
+  printf '%s\n' "$out"
 }
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
@@ -209,15 +210,15 @@ done
 
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
-if [ -f "store/.dashboard-token" ]; then
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
-  if [ "$HTTP" = "200" ]; then
+if [ -f "store/.operator-token" ] || [ -f "store/.dashboard-token" ]; then
+  HTTP_ERR="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash scripts/agent-api.sh --token operator --max-time 5 GET /api/agents 2>&1 >/dev/null)"
+  if [ -z "$HTTP_ERR" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else
-    fail "Dashboard API: HTTP $HTTP"
+    fail "Dashboard API: ${HTTP_ERR#agent-api: }"
   fi
 else
-  fail "store/.dashboard-token missing"
+  fail "no dashboard token (store/.operator-token or store/.dashboard-token) missing"
 fi
 
 # --- Database ---

@@ -130,6 +130,17 @@ bash "$W" --agent a FETCH /api/x >/dev/null 2>&1; check "bad method: exit 2" tes
 bash "$W" --agent a GET /x >/dev/null 2>&1; check "bad path: exit 2" test $? -eq 2
 bash "$W" --token nope GET /api/x >/dev/null 2>&1; check "bad --token: exit 2" test $? -eq 2
 
+# 11b max-time
+reset; bash "$W" --max-time 5 GET /api/x >/dev/null 2>&1
+check "--max-time passed to curl" grep -qx -- '--max-time' "$T/argv"
+bash "$W" --max-time abc GET /api/x >/dev/null 2>&1; check "bad --max-time: exit 2" test $? -eq 2
+
+# 11c with-status
+reset; OUT="$(bash "$W" --with-status GET /api/x 2>/dev/null)"
+check "--with-status: body then status line" test "$OUT" = "$(printf '{"ok":true}\n200')"
+OUT="$(STUB_CODE=201 bash "$W" --with-status POST /api/x '{}' 2>/dev/null)"
+check "--with-status: the exact 2xx code is reported" test "${OUT##*$'\n'}" = 201
+
 # 12 base url
 reset; DASHBOARD_BASE_URL=http://example.invalid:9 bash "$W" GET /api/x >/dev/null 2>&1
 check "DASHBOARD_BASE_URL honoured" grep -qx 'http://example.invalid:9/api/x' "$T/argv"

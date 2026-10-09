@@ -123,14 +123,16 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 # ── token ────────────────────────────────────────────────────────────────────
 
-TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
-[ -f "$TOKEN_FILE" ] || die "store/.dashboard-token not found -- is the dashboard running?"
-TOKEN="$(cat "$TOKEN_FILE")"
+[ -f "$INSTALL_DIR/store/.operator-token" ] || [ -f "$INSTALL_DIR/store/.dashboard-token" ] \
+  || die "no dashboard token (store/.operator-token or store/.dashboard-token) -- is the dashboard running?"
 BASE_URL="http://127.0.0.1:${WEB_PORT}"
 
+# api_call [--with-status] METHOD PATH [BODY|-]: the operator's token goes through the wrapper, never
+# onto a command line. With --with-status the output is the body and a last line with the HTTP status.
+api_call() { DASHBOARD_BASE_URL="$BASE_URL" bash "$INSTALL_DIR/scripts/agent-api.sh" --token operator "$@" 2>/dev/null; }
+
 # quick connectivity check
-HTTP_CHECK="$(curl -s -o /dev/null -w '%{http_code}' \
-  -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/artifacts" 2>/dev/null || true)"
+HTTP_CHECK="$(api_call --with-status GET /api/artifacts | tail -1)"
 [ "$HTTP_CHECK" = "200" ] || die "Cannot reach $BASE_URL/api/artifacts (HTTP $HTTP_CHECK). Is the dashboard running?"
 
 # ── auto-detect directories ───────────────────────────────────────────────────
@@ -201,10 +203,7 @@ print(json.dumps({'agent_id': sys.argv[1], 'title': sys.argv[2], 'kind': sys.arg
 " "$AGENT_ID" "$TITLE" "$KIND" "$MIME" "$FILE_CONTENT")"
     fi
 
-    IMPORT_RESP="$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/artifacts" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD" 2>/dev/null)"
+    IMPORT_RESP="$(printf '%s' "$PAYLOAD" | api_call --with-status POST /api/artifacts -)"
     IMPORT_STATUS="$(printf '%s' "$IMPORT_RESP" | tail -1)"
     # head -n -1 (all-but-last) is GNU-only; sed '$d' is POSIX and works on macOS
     IMPORT_BODY="$(printf '%s' "$IMPORT_RESP" | sed '$d')"
@@ -228,8 +227,7 @@ print(json.dumps({'agent_id': sys.argv[1], 'title': sys.argv[2], 'kind': sys.arg
     IMPORTED=$((IMPORTED + 1))
 
     # ── verify ──────────────────────────────────────────────────────────────
-    GET_RESP="$(curl -s -w '\n%{http_code}' "$BASE_URL/api/artifacts/$ARTIFACT_ID" \
-      -H "Authorization: Bearer $TOKEN" 2>/dev/null)"
+    GET_RESP="$(api_call --with-status GET "/api/artifacts/$ARTIFACT_ID")"
     GET_STATUS="$(printf '%s' "$GET_RESP" | tail -1)"
     # head -n -1 (all-but-last) is GNU-only; sed '$d' is POSIX and works on macOS
     GET_BODY="$(printf '%s' "$GET_RESP" | sed '$d')"
