@@ -24,6 +24,9 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks"))
+import agent_token  # noqa: E402
 from datetime import datetime
 from email.header import Header
 from email.mime.text import MIMEText
@@ -69,11 +72,13 @@ def build_signature():
 
 def fetch_digest_content(today):
     """Returns the digest/<today> workspace doc's content, or None if absent."""
-    with open(DASHBOARD_TOKEN_FILE, encoding="utf-8") as f:
-        dashboard_token = f.read().strip()
+    # Scheduled for the coordinator: its own token, the shared one only if that file is missing.
+    auth = agent_token.resolve(store_dir=os.path.dirname(DASHBOARD_TOKEN_FILE), kind=agent_token.KIND_MAIN, shared_file=DASHBOARD_TOKEN_FILE)
+    if not auth.token:
+        raise OSError("no dashboard token for the coordinator (own token or %s)" % DASHBOARD_TOKEN_FILE)
     query = urllib.parse.urlencode({"doc_key": f"digest/{today}"})
     url = f"{DASHBOARD_BASE}/api/workspace?{query}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {dashboard_token}"})
+    req = urllib.request.Request(url, headers=auth.headers())
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.load(resp)
     items = data.get("items", [])

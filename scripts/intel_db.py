@@ -52,6 +52,9 @@ import os
 import sys
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks"))
+import agent_token  # noqa: E402
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -91,16 +94,16 @@ def _base_url() -> str:
 
 
 def _request(method: str, path: str, payload: dict | None = None) -> dict:
-    try:
-        token = TOKEN_FILE.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise IntelError(f"cannot read the dashboard token ({TOKEN_FILE}): {exc}") from exc
+    # /api/intel is admin:all: the main agent's own token, any other caller the shared one (until T4).
+    auth = agent_token.resolve(store_dir=str(STORE_DIR), kind=agent_token.KIND_ADMIN, shared_file=str(TOKEN_FILE))
+    if not auth.token:
+        raise IntelError(f"cannot read the dashboard token ({TOKEN_FILE}): no token")
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(
         _base_url() + path,
         data=data,
         method=method,
-        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+        headers=auth.headers({"Content-Type": "application/json"}),
     )
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:

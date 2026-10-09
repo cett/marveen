@@ -198,6 +198,14 @@ class TestKinds(Base):
         r = self.res(kind=at.KIND_MAIN)
         self.assertEqual((r.source, r.agent_id), (at.SOURCE_FALLBACK, "m"))
 
+    def test_shared_file_names_the_shared_token_outright(self):
+        other = self.put("elsewhere/shared.token", "from-file")
+        self.put("store/.dashboard-token", "from-store")
+        r = self.res(agent_id="a", shared_file=other)
+        self.assertEqual((r.token, r.source), ("from-file", at.SOURCE_FALLBACK))
+        r = self.res(agent_id="a", kind=at.KIND_SHARED, shared_file=other)
+        self.assertEqual((r.token, r.source), ("from-file", at.SOURCE_SHARED))
+
     def test_operator_kind_reads_the_operator_file_and_falls_back(self):
         self.put("store/.dashboard-token", "shared")
         self.assertEqual(self.res(kind=at.KIND_OPERATOR).source, at.SOURCE_FALLBACK)

@@ -30,6 +30,9 @@ import sys
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks"))
+import agent_token  # noqa: E402
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
@@ -47,11 +50,13 @@ ALERT_MAX_CHARS = 190
 
 
 def fetch_summary(hours):
-    with open(DASHBOARD_TOKEN_FILE, encoding="utf-8") as f:
-        token = f.read().strip()
+    # A scheduled report, run for the coordinator: its own admin token, the shared one only if missing.
+    auth = agent_token.resolve(store_dir=STORE_DIR, kind=agent_token.KIND_MAIN, shared_file=DASHBOARD_TOKEN_FILE)
+    if not auth.token:
+        raise OSError("no dashboard token for the coordinator (own token or %s)" % DASHBOARD_TOKEN_FILE)
     req = urllib.request.Request(
         "%s/api/v1/rbac/shadow-log?summary=1&since_hours=%d" % (DASHBOARD_BASE, hours),
-        headers={"Authorization": "Bearer " + token},
+        headers=auth.headers(),
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode("utf-8"))

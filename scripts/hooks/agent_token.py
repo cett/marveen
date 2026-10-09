@@ -113,7 +113,7 @@ def agent_token_path(agent_id, install=None):
     return os.path.join(install, "agents", agent_id, AGENT_TOKEN_FILENAME)
 
 
-def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGENT):
+def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGENT, shared_file=None):
     """Pick the token for this process. agent_id wins over cwd; with neither, the process cwd
     decides. store_dir is where .dashboard-token lives (default <install>/store).
 
@@ -124,7 +124,8 @@ def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGE
     for a call that needs admin:all whoever makes it: the main agent's own (admin) token, everybody
     else the shared one. KIND_MAIN acts as the main agent whoever runs it, for the system scripts the
     dashboard or cron runs on the coordinator's behalf (its own admin token, the shared one only if
-    that file is missing)."""
+    that file is missing). shared_file names the shared token file outright, for the scripts whose
+    token path is a module constant (and the tests' seam); it replaces <store_dir>/.dashboard-token."""
     install = install or install_dir()
     store = store_dir or os.path.join(install, "store")
     if not agent_id:
@@ -132,7 +133,7 @@ def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGE
     if agent_id and ("/" in agent_id or agent_id.startswith(".")):
         agent_id = None
 
-    shared = lambda: _read(os.path.join(store, SHARED_TOKEN_FILENAME))
+    shared = lambda: _read(shared_file or os.path.join(store, SHARED_TOKEN_FILENAME))
     if kind == KIND_MAIN:
         agent_id, kind = main_agent_id(install) or agent_id, KIND_AGENT
     if kind == KIND_ADMIN:
