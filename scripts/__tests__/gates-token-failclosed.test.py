@@ -5,6 +5,12 @@ pins that: the same payloads give the same exit codes with the agent's own token
 shared token, with no token at all, and with the dashboard unreachable. A mutation (a gate that
 exits 0 when it has no token, i.e. fails open) must be CAUGHT by the same check.
 
+Scope: three gates decide (deny/allow) and so must fail closed: destructive-gate, post-tool-injection-gate
+and egress-gate.mjs. The other three token users only notify or write best-effort (browser-content-notice,
+artifact-store-sync, auto-skillify); their exit code is not a verdict, so they are not in this matrix.
+A NEW gate that can deny must be added here, with its deny and allow payloads, so that the same four
+token states are proven to leave its verdict unchanged.
+
 Privacy: neutral fixture data (agent id agent-a), temp directories.
 """
 import json

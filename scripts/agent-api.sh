@@ -13,7 +13,8 @@
 #   --token KIND        agent (default) | operator | shared | admin | main
 #                         agent     the agent's own token (agents/<id>/.agent-token, the main
 #                                   agent's in the install root); a MISSING file falls back to the
-#                                   shared token, loudly (see below)
+#                                   shared token (see below: the fallback is visible to the server,
+#                                   and on the terminal only with AGENT_API_VERBOSE=1)
 #                         operator  store/.operator-token, same fallback
 #                         shared    the shared dashboard token on purpose: for the endpoints that
 #                                   are still admin:all and that a fleet_agent token is refused on
