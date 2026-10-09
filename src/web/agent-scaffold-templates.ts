@@ -100,6 +100,31 @@ const AUTONOMY_BLOCK_RE = new RegExp(
   `${AUTONOMY_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AUTONOMY_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+// Rules for a headless sub-agent whose tmux pane nobody reads. Marker-delimited
+// so every existing agent CLAUDE.md receives it on respawn
+// (ensureNoReaderSection) and the text outside the markers is never touched.
+const NO_READER_BEGIN = '<!-- BEGIN GENERATED: no-reader-rules (auto-generated, do not edit by hand) -->'
+const NO_READER_END = '<!-- END GENERATED: no-reader-rules -->'
+const NO_READER_BLOCK_RE = new RegExp(
+  `${NO_READER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${NO_READER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Static text (no per-agent state). A tool rejection is deliberately NOT
+// something to retry: from inside the pane an automatic interrupt cannot be
+// told from a human's real "no", so a retry would bypass the human decision.
+// The agent reports it to the coordinator and repeats only on its answer.
+function buildNoReaderBody(): string {
+  return [
+    '## Panel és döntéskérés (NINCS OLVASÓ)',
+    '',
+    'A tmux panelt senki nem olvassa. Ami ott kérdésként vagy opciólistaként áll, senkihez nem jut el, a session pedig csak vár.',
+    '',
+    `- Ne zárd le a turnt kérdéssel vagy "A/B/C?" opciókkal. Ha döntés kell, kérd ${BOT_NAME}-től inter-agent üzenettel (/api/messages), és addig dolgozz azon, ami nem függ tőle.`,
+    `- Egy tool-elutasítás (pl. "The user doesn't want to proceed") emberi üzenet nélkül is megjöhet automatikus megszakításként, de a panelből nem tudod megkülönböztetni egy valódi emberi nemtől. Ezért az elutasított hívást ne futtasd újra és ne kerüld meg más úton: jelezd ${BOT_NAME}-nek az /api/messages-en (mit akartál, mi lett elutasítva), és csak az ő válasza után ismételd meg.`,
+    '- Fájlútvonalat ne állíts össze változóból (cd $S, @$P/...): a jóváhagyó így nem látja, mit engedélyez, és a védelmi kapuk is megakadhatnak. Írj literális utat, vagy használd a Write/Edit toolt.',
+  ].join('\n')
+}
+
 // Builds the text body that goes between the BEGIN/END markers.
 // Single source of truth -- called by both generateClaudeMd() (initial
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
@@ -229,6 +254,36 @@ export function ensureAutonomySection(name: string): void {
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// Idempotently ensures the no-reader rules block is present and current in a
+// sub-agent's CLAUDE.md. Called on every startAgentProcess() next to the other
+// ensure*Section() functions, so existing agents get the rules on respawn
+// without regenerating their CLAUDE.md. Same contract: no file -> skip; block
+// present -> replace ONLY the block (hand-written sections stay untouched);
+// absent -> append; identical result -> no write; writes are atomic.
+// Sub-agents only: the coordinator is the one the rules point at.
+export function ensureNoReaderSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${NO_READER_BEGIN}\n${buildNoReaderBody()}\n${NO_READER_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  // A replacer function, not a string: the block text contains "$S" / "$P".
+  const updated = NO_READER_BLOCK_RE.test(existing)
+    ? existing.replace(NO_READER_BLOCK_RE, () => block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
   atomicWriteFileSync(claudeMdPath, updated)
@@ -446,7 +501,8 @@ Output ONLY the markdown content, no code fences.`
   const autonomyBody = buildAutonomyBody(name)
   cleaned = cleaned.trimEnd()
     + '\n\n' + FLEET_ROSTER_BEGIN + '\n' + fleetBody + '\n' + FLEET_ROSTER_END
-    + '\n\n' + AUTONOMY_BEGIN + '\n' + autonomyBody + '\n' + AUTONOMY_END + '\n'
+    + '\n\n' + AUTONOMY_BEGIN + '\n' + autonomyBody + '\n' + AUTONOMY_END
+    + '\n\n' + NO_READER_BEGIN + '\n' + buildNoReaderBody() + '\n' + NO_READER_END + '\n'
   return cleaned
 }
 

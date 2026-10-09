@@ -70,6 +70,20 @@ describe('dismissSurveyModalIfPresent', () => {
     expect(mockLoggerInfo).toHaveBeenCalledWith({ session: 'sess-1' }, expect.stringContaining('rating modal'))
   })
 
+  it('ignores the question when it is only quoted high up in the pane', async () => {
+    const filler = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n')
+    mockCaptureTmux.mockReturnValue(`How is Claude doing this session?\n${filler}\n❯ `)
+    await dismissSurveyModalIfPresent('sess-1', null)
+    expect(mockRunTmux).not.toHaveBeenCalled()
+  })
+
+  it('still answers when the modal sits in the bottom lines under other output', async () => {
+    const filler = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n')
+    mockCaptureTmux.mockReturnValue(`${filler}\nHow is Claude doing this session? (optional)\n  1: Bad  2: Fine  3: Good  0: Dismiss`)
+    await dismissSurveyModalIfPresent('sess-1', null)
+    expect(mockRunTmux).toHaveBeenCalledWith(null, ['send-keys', '-t', 'sess-1', '0'], expect.anything())
+  })
+
   it('swallows a tmux capture failure and logs a warning', async () => {
     mockCaptureTmux.mockImplementation(() => { throw new Error('no such session') })
     await expect(dismissSurveyModalIfPresent('sess-1', null)).resolves.toBeUndefined()

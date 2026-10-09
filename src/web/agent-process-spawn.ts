@@ -5,7 +5,7 @@ import { MAIN_AGENT_ID, SUBAGENT_INBOX_TEE } from '../config.js'
 import { logger } from '../logger.js'
 import { detectPaneState } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentAuthMode, readAgentClaudePlan, readAgentDisplayName, readAgentMemoryIsolation, readAgentModel, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
-import { ensureAutonomySection, ensureFleetRosterSection, writeAgentSettingsFromProfile } from './agent-scaffold.js'
+import { ensureAutonomySection, ensureFleetRosterSection, ensureNoReaderSection, writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -222,6 +222,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     writeAgentSettingsFromProfile(name, profile)
     ensureFleetRosterSection(name)
     ensureAutonomySection(name)
+    ensureNoReaderSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot
@@ -463,11 +464,16 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // member. Killing the suggestion at the source removes the ghost the recovery
     // misreads. Env var verified present in claude.exe (CLAUDE_CODE_ENABLE_*).
     const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
+    // The "How is Claude doing this session?" rating modal steals the prompt
+    // and, with the blind recovery keys, ended up answering or cancelling the
+    // wrong thing in a headless session. Nobody reads these panes: switch the
+    // survey off at the source (dismissSurveyModalIfPresent stays as a backstop).
+    const surveyEnv = 'export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 && '
     // shSingleQuote(model) (card b7fa5281): the model is POSIX single-quote ESCAPED, which both keeps
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${surveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')

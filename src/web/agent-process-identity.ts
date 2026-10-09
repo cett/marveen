@@ -7,11 +7,19 @@ import { capturePane, captureTmux, delay, isSessionReadyForPrompt, runTmux, send
 import { startAgentProcess } from './agent-process-spawn.js'
 
 const SURVEY_MODAL_RX = /How is Claude doing this session/
+// The rating modal is drawn at the bottom of the live screen. Only the last
+// lines count, so a reply or log line that quotes the question higher up never
+// makes the dismiss send a stray "0" into the prompt.
+const SURVEY_LIVE_REGION_LINES = 12
+
+export function surveyModalVisible(pane: string): boolean {
+  return SURVEY_MODAL_RX.test(pane.split('\n').slice(-SURVEY_LIVE_REGION_LINES).join('\n'))
+}
 
 export async function dismissSurveyModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
-    if (!SURVEY_MODAL_RX.test(pane)) return
+    if (!surveyModalVisible(pane)) return
     runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
     // Modal close is one frame; settle window so the next send-keys lands in
     // the prompt input, not the now-stale modal handler.

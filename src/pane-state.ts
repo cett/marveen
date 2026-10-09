@@ -444,6 +444,53 @@ export function detectsBlockingMenu(pane: string): boolean {
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
+// Tool-approval prompt ("Do you want to proceed?" with a numbered Yes/No list,
+// footer "Esc to cancel"). It matches detectsBlockingMenu through the footer,
+// but it is NOT a stuck menu: a human or the coordinator is expected to answer
+// it, and Escape on it is the "No" answer -- it rejects the pending tool call
+// (observed 2026-10-09: the monitor's blind Escape refused a Bash approval
+// three times in one day on two sessions). The monitor must only alert here.
+//
+// Region-scoped to the bottom lines (the prompt replaces the input box, so a
+// quoted "Do you want to proceed?" higher up in a reply does not count) and it
+// needs the numbered Yes option, so prose alone never matches.
+const APPROVAL_REGION_LINES = 30
+const APPROVAL_QUESTION_RX = /Do you want to [^\n?]{0,100}\?/
+const APPROVAL_YES_RX = /^\s*(?:[❯>]\s*)?\d+\.\s+Yes\b/m
+const APPROVAL_NO_RX = /^\s*(?:[❯>]\s*)?\d+\.\s+No\b/m
+
+/**
+ * True when the pane shows a tool-approval prompt waiting for an answer.
+ * Pure + dependency-free. A busy pane (live spinner / esc-to-interrupt) is
+ * never an approval prompt: the tool is already running.
+ */
+export function detectsApprovalPrompt(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const region = pane.split('\n').slice(-APPROVAL_REGION_LINES).join('\n')
+  if (!APPROVAL_YES_RX.test(region)) return false
+  if (!APPROVAL_QUESTION_RX.test(region) && !APPROVAL_NO_RX.test(region)) return false
+  const footer = region.split('\n').slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footer)) return false
+  return true
+}
+
+export type MenuRecoveryAction = 'none' | 'alert-approval' | 'answer-model-consent' | 'escape'
+
+/**
+ * What the monitor may do to a pane it has just seen parked in a "menu" for the
+ * whole debounce window. Evaluated on a FRESH capture right before acting, so a
+ * menu that closed, or a tool that started running, in the meantime sends no
+ * key. Only a genuine menu earns the blind Escape: an approval prompt is
+ * alert-only, the model-consent dialog is answered, and anything that is no
+ * longer a blocking menu (busy, idle) is left alone.
+ */
+export function decideMenuRecoveryAction(pane: string | null): MenuRecoveryAction {
+  if (pane == null || !detectsBlockingMenu(pane)) return 'none'
+  if (detectsApprovalPrompt(pane)) return 'alert-approval'
+  if (detectsModelConsentDialog(pane)) return 'answer-model-consent'
+  return 'escape'
+}
+
 // Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
 // parks on before the prompt ever renders -- the per-project "Do you trust the
 // files in this folder?" consent, the --dangerously-skip-permissions "Bypass

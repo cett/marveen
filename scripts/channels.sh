@@ -291,6 +291,9 @@ fi
 # source removes the phantom entirely. Inherited by every sub-agent via the tmux
 # global env set below.
 export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+# The session-rating modal ("How is Claude doing this session?") steals the
+# prompt of a headless session; nobody reads the pane. Off at the source.
+export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
 
 CLAUDE="$(command -v claude)"
 TMUX="$(command -v tmux)"
@@ -327,7 +330,7 @@ TMUX="$(command -v tmux)"
 # independent of the tmux session-name check. Set ONLY here -- never in the
 # sub-agent spawn path (agent-process-spawn.ts) -- so a sub-agent's process
 # environment never carries it.
-MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 MARVEEN_COORDINATOR_PUSH_ALLOWED=1 && "
+MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 MARVEEN_COORDINATOR_PUSH_ALLOWED=1 && "
 
 # Resolve the main agent's model so we can pass --model explicitly. Without
 # --model claude-code falls back to its built-in default, which can drift
@@ -524,6 +527,7 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 fi
 # Propagate the prompt-suggestion disable to every sub-agent tmux session.
 $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
+$TMUX set-environment -g CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY 1 2>/dev/null || true
 
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone
