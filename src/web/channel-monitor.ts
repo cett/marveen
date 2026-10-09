@@ -34,7 +34,7 @@ import { matchDelivery } from './delivery-intent.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, decideMenuRecoveryAction, detectsFirstRunGate, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -1571,12 +1571,21 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // and 514 silent Sonnet turns on this install). Probe for the dialog
           // first and answer it safely (option 1, keep the configured model);
           // only a genuine menu gets the blind Escape.
-          const paneNow = capturePane(t.session)
-          if (paneNow != null && detectsModelConsentDialog(paneNow)) {
+          // The decision runs on a FRESH capture (decideMenuRecoveryAction): a
+          // menu that closed, or a tool that started running, since the
+          // debounce window sends no key. A tool-approval prompt ("Do you want
+          // to proceed?") is alert-only: Escape on it is the "No" answer and
+          // rejects the pending tool call (2026-10-09: three Bash approvals
+          // refused by the blind Escape on two sessions).
+          const action = decideMenuRecoveryAction(capturePane(t.session))
+          if (action === 'alert-approval') {
+            logger.warn({ session: t.session, agent: label }, 'Session is waiting on a tool-approval prompt -- alerting only (no keystrokes sent)')
+            sendAlert(`🛂 A(z) ${label} session egy jóváhagyó promptra vár (pl. "Do you want to proceed?"), és nem dolgozott fel üzeneteket. Nem nyúltam hozzá (az Escape elutasítaná a tool-hívást). Válaszolj: tmux attach -t ${t.session}`)
+          } else if (action === 'answer-model-consent') {
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
             await dismissModelConsentDialogIfPresent(t.session)
             sendAlert(`🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
-          } else {
+          } else if (action === 'escape') {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {
               execFileSync(TMUX, ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
@@ -1584,6 +1593,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
               logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
             }
             sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktiv menube (pl. /mcp) es nem dolgozott fel uzeneteket. Kikuldtem egy Escape-et, visszateritettem a prompthoz. Ha ismetlodik: tmux attach -t ${t.session}`)
+          } else {
+            logger.info({ session: t.session, agent: label }, 'Menu cleared before recovery -- no key sent')
           }
         }
       }
