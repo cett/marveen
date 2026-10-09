@@ -187,7 +187,8 @@ describe('tryHandleSettings', () => {
       expect(await tryHandleSettings(ctx)).toBe(true)
       expect(status()).toBe(200)
       expect(body()).toMatchObject({ ok: true, key: 'test.visible', value: '1', requiresRestart: false })
-      expect(mocks.setStoreWriteActor).toHaveBeenCalledWith('dashboard')
+      // A setting is fleet-wide (tenant null), and the actor string never decides a tenant.
+      expect(mocks.setStoreWriteActor).toHaveBeenCalledWith('dashboard', null)
       expect(mocks.logConfigChange).toHaveBeenCalledWith('test.visible', '0', '1', 'dashboard')
     })
 
@@ -198,7 +199,7 @@ describe('tryHandleSettings', () => {
         method: 'POST', path: '/api/settings', body: { key: 'test.visible', value: 'x', actor: 'jonas' },
       })
       await tryHandleSettings(ctx)
-      expect(mocks.setStoreWriteActor).toHaveBeenCalledWith('jonas')
+      expect(mocks.setStoreWriteActor).toHaveBeenCalledWith('jonas', null)
       expect(mocks.logConfigChange).toHaveBeenCalledWith('test.visible', expect.anything(), 'secret-value', 'jonas')
       expect((body() as any).key).toBe('test.visible')
     })

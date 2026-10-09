@@ -221,6 +221,13 @@ describe('the writers stamp the tenant', () => {
     logStoreFileEvent('f', 'write', 0, 1, 'solo')
     logStoreFileEvent('f', 'write', 0, 1, null)
     expect(tenantsOf('store_file_audit')).toEqual(['acme', null])
+    // The dashboard is an actor, not an agent: never filed under default. An announced tenant wins,
+    // null included; a shared agent without context stays unknown.
+    logStoreFileEvent('f', 'create', 0, 1, 'dashboard')
+    logStoreFileEvent('f', 'create', 0, 1, 'dashboard', 'beta')
+    logStoreFileEvent('f', 'create', 0, 1, 'solo', null)
+    logStoreFileEvent('f', 'create', 0, 1, 'solo', 'beta')
+    expect(tenantsOf('store_file_audit', "event_type = 'create'")).toEqual([null, 'beta', null, 'beta'])
     writeAgentAuditLog({ agent_id: 'shared', entity: 'kanban', action: 'create' })
     expect(tenantsOf('agent_audit_log')).toEqual(['beta'])
   })

@@ -149,7 +149,7 @@ describe('watch callback: event classification', () => {
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     capturedCallback!('rename', 'config-overrides.json')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('config-overrides.json', 'create', 0, 10, null)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('config-overrides.json', 'create', 0, 10, null, undefined)
   })
 
   // The S8B retirement migration renames the file to this suffix as its
@@ -194,7 +194,7 @@ describe('watch callback: event classification', () => {
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     capturedCallback!('rename', 'HANDOFF.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('HANDOFF.md', 'create', 0, 123, null)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('HANDOFF.md', 'create', 0, 123, null, undefined)
   })
 
   // Every current SENSITIVE_NAMES entry is also a SYSTEM_FILES entry, so the
@@ -248,11 +248,28 @@ describe('watch callback: event classification', () => {
     startStoreWatcher()
     setStoreWriteActor('kanban-route')
     capturedCallback!('rename', 'attributed.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('attributed.md', 'create', 0, 5, 'kanban-route')
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('attributed.md', 'create', 0, 5, 'kanban-route', undefined)
 
     // The slot must be consumed -- a later event with no actor set gets null.
     capturedCallback!('rename', 'unattributed.md')
-    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('unattributed.md', 'create', 0, 5, null)
+    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('unattributed.md', 'create', 0, 5, null, undefined)
+  })
+
+  it('hands the tenant a route announced to the log, null (fleet scope) included, and clears it with the actor', async () => {
+    mockStatSync.mockReturnValue({ size: 5 })
+    const { startStoreWatcher, setStoreWriteActor } = await loadWatcher()
+    startStoreWatcher()
+    setStoreWriteActor('dashboard', 'acme')
+    capturedCallback!('rename', 'tenant-file.json')
+    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('tenant-file.json', 'create', 0, 5, 'dashboard', 'acme')
+
+    setStoreWriteActor('dashboard', null)
+    capturedCallback!('rename', 'fleet-file.json')
+    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('fleet-file.json', 'create', 0, 5, 'dashboard', null)
+
+    // Consumed: the next event carries neither actor nor tenant.
+    capturedCallback!('rename', 'later.json')
+    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('later.json', 'create', 0, 5, null, undefined)
   })
 
   it('clears the write-actor slot even for a denylisted system-file event', async () => {
@@ -262,7 +279,7 @@ describe('watch callback: event classification', () => {
     setStoreWriteActor('some-route')
     capturedCallback!('rename', 'claudeclaw.db') // denylisted -> consumes but does not log
     capturedCallback!('rename', 'after-system-event.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('after-system-event.md', 'create', 0, 5, null)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('after-system-event.md', 'create', 0, 5, null, undefined)
   })
 
   it('a logStoreFileEvent failure is caught and logged as a warning', async () => {
@@ -282,7 +299,7 @@ describe('watch callback: event classification', () => {
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     capturedCallback!('rename', 'sub\\nested.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('sub/nested.md', 'create', 0, 5, null)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('sub/nested.md', 'create', 0, 5, null, undefined)
   })
 })
 
