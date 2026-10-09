@@ -171,17 +171,17 @@ class FleetAuthHeaders(unittest.TestCase):
         hooks = os.path.join(self.tmp, "scripts", "hooks")
         os.makedirs(hooks)
         os.makedirs(os.path.join(self.tmp, "store"))
-        os.makedirs(os.path.join(self.tmp, "agents", "zack"))
+        os.makedirs(os.path.join(self.tmp, "agents", "alpha"))
         self.module_path = os.path.join(hooks, "agent_token.py")
         shutil.copy(os.path.join(ROOT, "scripts", "hooks", "agent_token.py"), self.module_path)
         os.chmod(self.module_path, 0o644)
         for rel, tok in ((os.path.join("store", ".dashboard-token"), "shared-tok"),
-                         (os.path.join("agents", "zack", ".agent-token"), "own-tok")):
+                         (os.path.join("agents", "alpha", ".agent-token"), "own-tok")):
             with open(os.path.join(self.tmp, rel), "w") as f:
                 f.write(tok + "\n")
         self.prev_cwd = os.getcwd()
         self.addCleanup(os.chdir, self.prev_cwd)
-        os.chdir(os.path.join(self.tmp, "agents", "zack"))
+        os.chdir(os.path.join(self.tmp, "agents", "alpha"))
         self.prev_env = {k: os.environ.pop(k, None) for k in ("CLAW_DIR", "MARVEEN_AGENT_TOKEN_FILE", "MAIN_AGENT_ID")}
         self.addCleanup(lambda: [os.environ.__setitem__(k, v) for k, v in self.prev_env.items() if v is not None])
         os.environ["CLAW_DIR"] = self.tmp
@@ -189,13 +189,13 @@ class FleetAuthHeaders(unittest.TestCase):
     def test_uses_the_agents_own_token_and_names_it(self):
         h = self.fleet.auth_headers()
         self.assertEqual(h["Authorization"], "Bearer own-tok")
-        self.assertEqual(h["X-Agent-Id"], "zack")
+        self.assertEqual(h["X-Agent-Id"], "alpha")
 
     def test_falls_back_to_the_shared_token_when_the_own_file_is_missing(self):
         os.remove(os.path.join(self.tmp, "agents", "zack", ".agent-token"))
         h = self.fleet.auth_headers()
         self.assertEqual(h["Authorization"], "Bearer shared-tok")
-        self.assertEqual(h["X-Agent-Id"], "zack")
+        self.assertEqual(h["X-Agent-Id"], "alpha")
 
     def test_refuses_to_run_a_resolver_that_others_can_write(self):
         marker = os.path.join(self.tmp, "ran")

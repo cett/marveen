@@ -146,12 +146,12 @@ import json, sys, urllib.request, datetime
 # The calling agent's own token headers (the install's token resolver; never read the token file here).
 sys.path.insert(0, "{{INSTALL_DIR}}/scripts/hooks")
 import agent_token
-AUTH = agent_token.auth_headers(agent_id="jarvis", install="{{INSTALL_DIR}}")
+AUTH = agent_token.auth_headers(agent_id="{{MAIN_AGENT_ID}}", install="{{INSTALL_DIR}}")
 DATE = datetime.date.today().strftime("%Y-%m-%d")
 
 # content: a fenti Markdown az öt bucket valódi kimenetével kitöltve
 payload = json.dumps({
-    "agent_id": "jarvis",
+    "agent_id": "{{MAIN_AGENT_ID}}",
     "doc_key": f"dream/{DATE}",
     "title": f"Dream Engine {DATE}",
     "content": content,

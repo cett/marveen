@@ -3,7 +3,7 @@
 #
 # Usage:  bash scripts/agent-api.sh [options] METHOD PATH [BODY]
 #   METHOD   GET | POST | PUT | PATCH | DELETE
-#   PATH     /api/..., query string included, e.g. "/api/memories?agent=zack&q=term"
+#   PATH     /api/..., query string included, e.g. "/api/memories?agent=alpha&q=term"
 #   BODY     a JSON string, "-" to read it from STDIN, or "@file" to send that file as is
 # Options (before METHOD):
 #   --agent ID          act as this agent (default: MARVEEN_AGENT_ID, else derived from the cwd)
