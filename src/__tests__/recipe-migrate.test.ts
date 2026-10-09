@@ -396,6 +396,8 @@ describe('the dry-run CLI logic', () => {
     ].join('\n') + '\n')
     put(install, 'agents/zed/CLAUDE.md', `restart: curl -s -X POST ${AUTH} http://localhost:3420/api/agents/x/restart\n`)
     put(install, 'agents/zed/.claude/skills/s1/SKILL.md', `curl -s ${AUTH} http://localhost:3420/api/memories\n`)
+    put(install, '.claude/skills/m1/SKILL.md', `curl -s ${AUTH} http://localhost:3420/api/blackboard\n\`\`\`python\ntoken = open("store/.dashboard-token").read()\n\`\`\`\n`)
+    put(install, '.claude/skills/.git/hooks/sample.md', `curl -s ${AUTH} http://localhost:3420/api/blackboard\n`)
     put(install, 'agents/zed/.claude/skills/s1/data.bin', Buffer.from([0, 1, 2, 0, 99]))
     put(install, 'agents/zed/.claude/skills/s1/old.sh.bak', `curl -s ${AUTH} http://localhost:3420/api/memories\n`)
     put(install, 'agents/zed/.claude/skills/node_modules/pkg/index.js', `curl -s ${AUTH} http://localhost:3420/api/memories\n`)
@@ -462,6 +464,38 @@ describe('the dry-run CLI logic', () => {
     expect(md).toContain('[ADMIN]')
     expect(md).toContain('[generated block: autonomy-wiring]')
     expect(md).toContain('[hand-written]')
+  })
+
+  it('scans the main agent own skills under <install>/.claude/skills as owner "main"', async () => {
+    const report = await cli.runDryRun({ install, home, schedulesApi: false })
+    const m1 = report.files.find(f => f.path.endsWith('.claude/skills/m1/SKILL.md') && f.path.startsWith(install))
+    expect(m1?.source).toBe('main-skill')
+    expect(m1?.owner).toBe('main')
+    expect(m1?.edits.map(e => [e.line, e.adminOnly])).toEqual([[1, false]])
+    expect(m1?.manual.map(m => m.kind)).toContain('token-file-read')
+    // the agent skills and the global skills keep their own source and owner
+    expect(report.files.find(f => f.path.endsWith('s1/SKILL.md'))?.source).toBe('agent-skill')
+    expect(report.files.find(f => f.path.endsWith('g1/SKILL.md'))?.owner).toBe('global')
+    // .git inside the skills tree is not scanned
+    expect(report.files.some(f => f.path.includes('/.git/'))).toBe(false)
+    const md = cli.renderMarkdown(report)
+    expect(md).toContain('| main agent skills |')
+  })
+
+  it('reports a main-agent skill that calls an admin-only endpoint with --token admin', async () => {
+    put(install, '.claude/skills/m2/SKILL.md', `curl -s -X POST ${AUTH} http://localhost:3420/api/agents/x/restart\n`)
+    const report = await cli.runDryRun({ install, home, schedulesApi: false })
+    const m2 = report.files.find(f => f.path.endsWith('.claude/skills/m2/SKILL.md'))
+    expect(m2?.source).toBe('main-skill')
+    expect(m2?.edits[0].adminOnly).toBe(true)
+    expect(m2?.edits[0].replacement).toContain('--token admin POST /api/agents/x/restart')
+  })
+
+  it('counts a skills tree shared by install and home once (no duplicate main-skill hits)', async () => {
+    const report = await cli.runDryRun({ install, home: install, schedulesApi: false })
+    const shared = report.files.filter(f => f.path.endsWith('.claude/skills/m1/SKILL.md'))
+    expect(shared).toHaveLength(1)
+    expect(shared[0].source).toBe('global-skill')
   })
 
   it('takes the dashboard port from the install .env', async () => {
