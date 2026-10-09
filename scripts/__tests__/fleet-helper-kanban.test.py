@@ -192,7 +192,7 @@ class FleetAuthHeaders(unittest.TestCase):
         self.assertEqual(h["X-Agent-Id"], "alpha")
 
     def test_falls_back_to_the_shared_token_when_the_own_file_is_missing(self):
-        os.remove(os.path.join(self.tmp, "agents", "zack", ".agent-token"))
+        os.remove(os.path.join(self.tmp, "agents", "alpha", ".agent-token"))
         h = self.fleet.auth_headers()
         self.assertEqual(h["Authorization"], "Bearer shared-tok")
         self.assertEqual(h["X-Agent-Id"], "alpha")
