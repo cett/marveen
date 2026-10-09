@@ -14,7 +14,7 @@ import { avatarBust } from './agents.js'
 import { initTenantSelector, fetchAdminTenants } from './tenant-selector.js'
 import { can } from './rbac-client.js'
 import { buildSchedulePayload } from './schedule-payload.js'
-import { statusBadgeKey, activateUrl, saveToastKey } from './schedule-review-ui.js'
+import { statusBadgeKey, activateUrl, saveToastKey, applyPendingReviewBadge } from './schedule-review-ui.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
 
@@ -402,6 +402,21 @@ export async function loadScheduleAgents(tenant = null) {
   }
 }
 
+// Sidebar badge: how many tasks the review gate holds (pending_review). The count is taken from
+// the UNFILTERED list, never from the tenant-filtered one the page renders, so choosing a tenant
+// does not change it. Polled at boot and every few minutes by app.js, and refreshed after every
+// list load, which is what an activate, an edit or a delete ends with.
+export async function pollSchedulesBadge() {
+  try {
+    const res = await fetch('/api/schedules')
+    const badge = document.getElementById('schedulesPendingBadge')
+    if (!badge) return
+    if (!res.ok) { badge.hidden = true; return }
+    applyPendingReviewBadge(badge, await res.json())
+    badge.title = t('tasks.status.pending_review')
+  } catch {}
+}
+
 export async function loadSchedules() {
   try {
     // Re-checked here (not just in initSchedules): app.js fires initSchedules()
@@ -426,6 +441,7 @@ export async function loadSchedules() {
     schedules = await schedulesRes.json()
     renderScheduleList(schedules)
     if (currentScheduleView === 'timeline') renderTimeline(schedules)
+    pollSchedulesBadge()
     loadPendingRetries()
     loadSchedulerHeartbeat()
   } catch (err) {

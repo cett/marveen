@@ -431,6 +431,9 @@ initUpdates()
 // own load, so opening the page later reuses this same module fetch.
 lazyLoad('approvals', () => import('./modules/approvals.js')).then(m => m.pollApprovalsBadge())
 setInterval(() => lazyLoad('approvals', () => import('./modules/approvals.js')).then(m => m.pollApprovalsBadge()), 5 * 60_000)
+// Scheduled-task review badge: same pattern (boot + every 5 min, dedupes with the page's own load).
+lazyLoad('schedules', () => import('./modules/schedules.js')).then(m => m.pollSchedulesBadge())
+setInterval(() => lazyLoad('schedules', () => import('./modules/schedules.js')).then(m => m.pollSchedulesBadge()), 5 * 60_000)
 initChannelSetup()
 // Sidebar user block: populate asynchronously for session callers (non-fatal if token-auth).
 import('./modules/profile.js').then(m => m.initSidebarUser()).catch(() => {})
