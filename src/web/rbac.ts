@@ -13,9 +13,18 @@
 
 // ── Roles ──────────────────────────────────────────────────────────────────
 
-export type Role = 'admin' | 'agent' | 'read_only' | 'viewer'
+// The roles a dashboard user (a person) can hold. 'agent' here is the B2B tenant user, not a fleet agent.
+export type UserRole = 'admin' | 'agent' | 'read_only' | 'viewer'
 
-export const ALL_ROLES: readonly Role[] = ['admin', 'agent', 'read_only', 'viewer']
+// 'fleet_agent' is the role of a fleet agent's own API token (api_tokens.agent_id names the agent). It
+// is a machine principal, never a dashboard user's role: dashboard_users.role and the Users tab keep
+// the four UserRoles, and the dashboard's permission matrix mirrors only those.
+export const FLEET_AGENT_ROLE = 'fleet_agent' as const
+
+export type Role = UserRole | typeof FLEET_AGENT_ROLE
+
+// The dashboard-user roles (what the Users tab and its mirror files list). Not the fleet_agent role.
+export const ALL_ROLES: readonly UserRole[] = ['admin', 'agent', 'read_only', 'viewer']
 
 // ── Permissions ────────────────────────────────────────────────────────────
 
@@ -43,7 +52,27 @@ export const ALL_PERMISSIONS = [
   'federation:write',
 ] as const
 
-export type Permission = typeof ALL_PERMISSIONS[number]
+// Permissions that exist for the fleet's own plumbing: the endpoints agents and their hooks call on
+// themselves. Only the admin role and the fleet_agent role hold them; no tenant user (agent,
+// read_only, viewer) ever did, because every one of these endpoints was admin:all before. They are a
+// separate tuple so the dashboard's Users-tab matrix (a view of the roles a person can hold) does not
+// have to list machine permissions; fleet-agent-rbac.test.ts is the drift guard for this tuple.
+export const FLEET_AGENT_PERMISSIONS = [
+  'ledger:read',
+  'ledger:write',
+  'agent-state:read',
+  'agent-state:write',
+  'daily-log:read',
+  'daily-log:write',
+  'telemetry:write',
+  'artifacts:read',
+  'artifacts:write',
+  'skills:read',
+  'skills:write',
+  'fleet-config:read',
+] as const
+
+export type Permission = typeof ALL_PERMISSIONS[number] | typeof FLEET_AGENT_PERMISSIONS[number]
 
 // ── Permission sets per role ────────────────────────────────────────────────
 
@@ -68,6 +97,28 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'admin:all',
     'federation:read',
     'federation:write',
+    ...FLEET_AGENT_PERMISSIONS,
+  ]),
+  // A fleet agent's own token. The grant follows the T0 matrix: what an agent needs to run itself.
+  // "Own" scoping (the agent id comes from the token, a foreign one is a 403) is enforced per
+  // endpoint in the routes (fleet-agent-identity.ts); this set only decides which endpoints are
+  // reachable at all. Deliberately absent: admin:all (agent lifecycle, vault, tokens, rbac, intel),
+  // agents:write, federation:*. approvals:write reaches POST /api/approvals (a request); the route
+  // itself refuses a fleet_agent the resolving PATCH.
+  fleet_agent: new Set<Permission>([
+    'memories:read',
+    'memories:write',
+    'kanban:read',
+    'kanban:write',
+    'agents:read',
+    'messages:write',
+    'approvals:read',
+    'approvals:write',
+    'blackboard:read',
+    'blackboard:write',
+    'schedules:read',
+    'schedules:write',
+    ...FLEET_AGENT_PERMISSIONS,
   ]),
   agent: new Set<Permission>([
     'memories:read',
@@ -117,7 +168,7 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
 }
 
 export function hasPermission(role: Role, permission: Permission): boolean {
-  return ROLE_PERMISSIONS[role].has(permission)
+  return ROLE_PERMISSIONS[role]?.has(permission) ?? false
 }
 
 // ── Endpoint-to-permission lookup ──────────────────────────────────────────
@@ -186,6 +237,35 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'POST', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },
   { method: 'PUT', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },
   { method: 'DELETE', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },
+
+  // Fleet-agent plumbing: the endpoints an agent and its hooks call on themselves. Every one was
+  // admin:all (unmapped) before, and the permissions are held by admin and fleet_agent only, so no
+  // tenant user gains anything. Paths arrive normalised (/api/v1 -> /api). Read-side listings that
+  // reveal other agents' work (GET /api/hook-audit, /api/traces, /api/tool-log, /api/skill-usage*)
+  // stay unmapped on purpose: admin only. The ledger, state and taskstate routes check that the agent
+  // id in the path or body is the caller's own (fleet-agent-identity.ts).
+  { method: 'GET', pathPattern: '/api/conversation-ledger', prefix: true, permission: 'ledger:read' },
+  { method: 'POST', pathPattern: '/api/conversation-ledger', prefix: true, permission: 'ledger:write' },
+  { method: 'GET', pathPattern: '/api/agent-state', prefix: true, permission: 'agent-state:read' },
+  { method: 'PUT', pathPattern: '/api/agent-state', prefix: true, permission: 'agent-state:write' },
+  { method: 'GET', pathPattern: '/api/agent-taskstate', prefix: true, permission: 'agent-state:read' },
+  { method: 'POST', pathPattern: '/api/agent-taskstate', prefix: true, permission: 'agent-state:write' },
+  { method: 'DELETE', pathPattern: '/api/agent-taskstate', prefix: true, permission: 'agent-state:write' },
+  { method: 'GET', pathPattern: '/api/daily-log', prefix: true, permission: 'daily-log:read' },
+  { method: 'POST', pathPattern: '/api/daily-log', prefix: false, permission: 'daily-log:write' },
+  { method: 'POST', pathPattern: '/api/hook-audit', prefix: false, permission: 'telemetry:write' },
+  { method: 'POST', pathPattern: '/api/spans', prefix: false, permission: 'telemetry:write' },
+  { method: 'POST', pathPattern: '/api/skill-usage', prefix: false, permission: 'telemetry:write' },
+  { method: 'POST', pathPattern: '/api/tool-log', prefix: false, permission: 'telemetry:write' },
+  { method: 'GET', pathPattern: '/api/artifacts', prefix: true, permission: 'artifacts:read' },
+  { method: 'POST', pathPattern: '/api/artifacts', prefix: false, permission: 'artifacts:write' },
+  { method: 'GET', pathPattern: '/api/skills/sql', prefix: true, permission: 'skills:read' },
+  { method: 'POST', pathPattern: '/api/skills/sql', prefix: true, permission: 'skills:write' },
+  { method: 'PUT', pathPattern: '/api/skills/sql', prefix: true, permission: 'skills:write' },
+  { method: 'DELETE', pathPattern: '/api/skills/sql', prefix: true, permission: 'skills:write' },
+  { method: 'GET', pathPattern: '/api/egress-allowlist', prefix: false, permission: 'fleet-config:read' },
+  { method: 'GET', pathPattern: '/api/autonomy', prefix: false, permission: 'fleet-config:read' },
+  { method: 'GET', pathPattern: '/api/voice/directive', prefix: false, permission: 'fleet-config:read' },
 
   // Messages.
   { method: 'POST', pathPattern: '/api/messages', prefix: true, permission: 'messages:write' },
@@ -291,6 +371,9 @@ const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
   // POST prefix row for /api/schedules is schedules:write. (The route additionally requires a
   // signed-in admin, not just the admin role, because the shared token also carries it.)
   { method: 'POST', regex: /^\/api\/schedules\/[^/]+\/activate$/, permission: 'admin:all' },
+  // Which tenants may see a skill is the admin's decision: the access sub-resource stays admin-only
+  // even though the skill itself (the skills:read/write rows above) is reachable by a fleet agent.
+  { method: '*', regex: /^\/api\/skills\/sql\/[^/]+\/access(\/|$)/, permission: 'admin:all' },
 ]
 
 /**

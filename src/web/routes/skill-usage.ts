@@ -1,6 +1,7 @@
 import { logSkillUsage, getSkillUsageRows, getSkillUsageStats, getSkillUsageSummary } from '../../db.js'
 import { SKILL_USAGE_SOURCES, type SkillUsageSource } from '../../db/audit.js'
 import { readBody, json } from '../http-helpers.js'
+import { denyForeignAgent } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleSkillUsage(ctx: RouteContext): Promise<boolean> {
@@ -37,6 +38,7 @@ export async function tryHandleSkillUsage(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    if (denyForeignAgent(ctx, data.agent_id)) return true
     logSkillUsage(data.agent_id, data.skill_name, data.trigger_type, data.session_id, data.source)
     json(res, { ok: true })
     return true

@@ -9,12 +9,15 @@ import {
 import { MAIN_AGENT_ID } from '../../config.js'
 import { listAgentNames } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
+import { callerMayActAs, denyForeignAgent } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 // /api/conversation-ledger - the channel-turn transcript behind the ledger
 // hooks (capture, outbound, replay, live-drain). The hooks are thin clients;
 // reads and writes are idempotent so a retry or a spool flush is harmless.
-// Not in the RBAC table, so admin-only like the other internal plumbing.
+// RBAC: ledger:read/write, held by admin and fleet_agent. The agent id in the path or in an entry is
+// the caller's claim; a fleet_agent token may only claim its own (403 otherwise, nothing written),
+// the admin tokens of the main agent and the operator may name any agent.
 
 const MAX_BATCH = 500
 const AGENT_ID_RE = /^[^\x00-\x1f/\\]{1,128}$/
@@ -78,6 +81,11 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
       if (typeof turn === 'string') return bad(ctx, 'entries', turn)
       turns.push(turn)
     }
+    // All or nothing: one foreign entry in a batch refuses the whole batch before anything is stored.
+    if (turns.some(t => !callerMayActAs(ctx, t.agent_id))) {
+      json(res, { error: 'forbidden', hint: 'A fleet agent token may only act as its own agent' }, 403)
+      return true
+    }
     let inserted = 0
     for (const turn of turns) if (logLedgerTurn(turn)) inserted++
     json(res, { ok: true, received: turns.length, inserted })
@@ -93,6 +101,8 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
     return bad(ctx, 'agent_id', 'Malformed percent-encoding in path')
   }
   if (!AGENT_ID_RE.test(agentId)) return bad(ctx, 'agent_id', 'agent_id must be a plain agent name')
+  // Before the registered-agent check, so a foreign id is a 403 whether or not that agent exists.
+  if (denyForeignAgent(ctx, agentId)) return true
   if (!isRegisteredLedgerAgent(agentId)) return bad(ctx, 'agent_id', 'agent_id is not a registered agent')
 
   if (match[2] === 'recent') {

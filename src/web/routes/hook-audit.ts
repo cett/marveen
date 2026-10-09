@@ -1,5 +1,6 @@
 import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLog } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
+import { actingAgentId, denyForeignAgent } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 const VALID_HOOK_TYPES = new Set(['PreToolUse', 'PostToolUse', 'PreCompact', 'Stop'])
@@ -41,8 +42,10 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'trigger_source', hint: 'trigger_source must be one of watchdog, compact-monitor' }, 400)
       return true
     }
+    // A fleet_agent token records the verdicts of its own agent (an omitted agent_id is the token's).
+    if (data.agent_id && denyForeignAgent(ctx, data.agent_id)) return true
     insertHookAuditLog({
-      agent_id: data.agent_id ?? null,
+      agent_id: actingAgentId(ctx, data.agent_id, '') || null,
       hook_type: data.hook_type,
       verdict: data.verdict,
       tool_name: data.tool_name ?? null,

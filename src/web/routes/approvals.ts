@@ -8,6 +8,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { denyForeignAgent } from '../fleet-agent-identity.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 import { resolveApprovalTimeoutSeconds } from '../approval-timeout.js'
@@ -98,6 +99,11 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // A fleet_agent asks for approval as itself, in the tenant it is serving (never one it names).
+    if (denyForeignAgent(ctx, agent_id.trim())) return true
+    const requestTenant: string | null =
+      ctx.role === 'fleet_agent' ? (ctx.tenantId ?? null) : (typeof tenant_id === 'string' ? tenant_id.trim() || null : null)
+
     const id = randomUUID()
     const timeout_at = getTimeoutAt(category.trim(), timeout_seconds)
     const approval = createApproval({
@@ -107,7 +113,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_description: action_description.trim(),
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
-      tenant_id: typeof tenant_id === 'string' ? tenant_id.trim() || null : null,
+      tenant_id: requestTenant,
     })
 
     notifyMainAgent(approval)
@@ -128,6 +134,15 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const page = parsePagination(url.searchParams, res, { defaultLimit: 25, maxLimit: 500 })
     if (!page) return true
     const { limit, offset } = page
+
+    // A fleet_agent token lists its OWN requests, whatever ?agent= says, and gets no fleet-wide
+    // aggregates (the oldest-pending row would be another agent's request).
+    if (ctx.role === 'fleet_agent') {
+      if (agent_id !== undefined && denyForeignAgent(ctx, agent_id)) return true
+      const own = { agent_id: ctx.tokenAgentId, category, status }
+      json(res, { items: listApprovals({ ...own, limit, offset }), total: countApprovals(own), offset, limit, counts: {}, oldest_pending: null })
+      return true
+    }
 
     // Admin sees all tenants; non-admin session users are scoped to their own
     // tenant. Bearer-token (fleet agents) callers are treated as admin-equivalent
@@ -160,7 +175,13 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const idMatch = path.match(/^\/api\/approvals\/([^/]+)$/)
   if (idMatch && method === 'GET') {
     const approval = getApproval(idMatch[1])
-    if (!approval) {
+    // A fleet_agent reads its own requests only; a tenant user, those of its own tenant. Both get the
+    // same 404 as a missing id (no existence oracle).
+    const hidden = approval !== undefined && (
+      (ctx.role === 'fleet_agent' && approval.agent_id !== ctx.tokenAgentId) ||
+      (ctx.auth?.kind === 'session' && ctx.role !== 'admin' && approval.tenant_id !== ctx.tenantId)
+    )
+    if (!approval || hidden) {
       json(res, { error: 'not_found', hint: 'Not found' }, 404)
       return true
     }
@@ -170,6 +191,13 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // PATCH /api/approvals/:id -- resolve (approve/reject/timeout)
   if (idMatch && method === 'PATCH') {
+    // An approval is a human's (or the main agent's) decision. A fleet agent's token may ask for one
+    // (POST) and read it, never resolve it: approvals:write reaches this route only because the same
+    // permission also covers the request.
+    if (ctx.role === 'fleet_agent') {
+      json(res, { error: 'forbidden', hint: 'A fleet agent token cannot resolve approvals' }, 403)
+      return true
+    }
     let body: { status?: unknown; resolved_by?: unknown; telegram_message_id?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())

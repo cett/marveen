@@ -57,6 +57,7 @@ const SAMPLE_TOKEN_ROW = {
   revoked_at: null,
   last_used_at: null,
   rotated_from: null,
+  agent_id: null,
 }
 
 beforeEach(() => {

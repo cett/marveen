@@ -41,8 +41,10 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
     }),
   }
 })
+vi.mock('../agent-tokens.js', () => ({ issueAgentToken: vi.fn() }))
 vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
+  revokeApiTokensForAgent: vi.fn(),
   getOpenKanbanCountsByAssignee: vi.fn().mockReturnValue([]),
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
   isTenantAgentEnabled: vi.fn().mockReturnValue(true),

@@ -24,6 +24,8 @@ import {
   type ApiTokenRow,
 } from '../../db.js'
 import { logger } from '../../logger.js'
+import { MAIN_AGENT_ID } from '../../config.js'
+import { isKnownAgent } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -41,6 +43,7 @@ interface TokenPublic {
   revoked_at: number | null
   last_used_at: number | null
   rotated_from: number | null
+  agent_id: string | null
 }
 
 function toPublic(row: TokenRow): TokenPublic {
@@ -56,7 +59,13 @@ function generateToken(): string {
   return randomBytes(32).toString('hex')
 }
 
-const VALID_ROLES = new Set(['admin', 'agent', 'read_only', 'viewer'])
+const VALID_ROLES = new Set(['admin', 'agent', 'read_only', 'viewer', 'fleet_agent'])
+const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+
+/** An agent the fleet knows: the main agent or one with an agents/<name>/ directory. */
+function isFleetAgentId(agentId: string): boolean {
+  return agentId === MAIN_AGENT_ID || isKnownAgent(agentId)
+}
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
@@ -71,7 +80,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
   // POST /api/admin/tokens -- create
   if (method === 'POST' && path === '/api/admin/tokens') {
-    let parsed: { name?: unknown; role?: unknown; tenant_id?: unknown; expires_in_days?: unknown }
+    let parsed: { name?: unknown; role?: unknown; tenant_id?: unknown; expires_in_days?: unknown; agent_id?: unknown }
     try {
       const buf = await readBody(ctx.req)
       parsed = JSON.parse(buf.toString())
@@ -82,13 +91,36 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
     const name = typeof parsed.name === 'string' ? parsed.name.trim() : ''
     const role = typeof parsed.role === 'string' ? parsed.role.trim() : ''
-    const tenantId = typeof parsed.tenant_id === 'string' ? parsed.tenant_id.trim() : 'default'
+    let tenantId = typeof parsed.tenant_id === 'string' ? parsed.tenant_id.trim() : 'default'
+    const agentId = typeof parsed.agent_id === 'string' ? parsed.agent_id.trim() : ''
 
     if (!name) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
     if (!VALID_ROLES.has(role)) {
       json(res, { error: 'invalid_value', field: 'role', hint: `role must be one of: ${[...VALID_ROLES].join(', ')}` }, 400)
       return true
     }
+    if (parsed.agent_id !== undefined && parsed.agent_id !== null && (typeof parsed.agent_id !== 'string' || !AGENT_ID_RE.test(agentId))) {
+      json(res, { error: 'invalid_value', field: 'agent_id', hint: 'agent_id must be a plain agent name' }, 400)
+      return true
+    }
+    // The agent a token names: required for a fleet_agent token (the token IS that agent's identity),
+    // allowed on an admin token as a label (the main agent's own named admin token), meaningless on
+    // the tenant-user roles.
+    if (role === 'fleet_agent' && !agentId) {
+      json(res, { error: 'required', field: 'agent_id', hint: 'a fleet_agent token needs the agent_id it belongs to' }, 400)
+      return true
+    }
+    if (agentId && role !== 'fleet_agent' && role !== 'admin') {
+      json(res, { error: 'invalid_value', field: 'agent_id', hint: 'agent_id applies to fleet_agent and admin tokens only' }, 400)
+      return true
+    }
+    if (agentId && !isFleetAgentId(agentId)) {
+      json(res, { error: 'not_found', field: 'agent_id', hint: `unknown agent '${agentId}'` }, 404)
+      return true
+    }
+    // A fleet_agent token carries no tenant of its own: the tenant of a request is derived from the
+    // agent's serving context at request time, so the stored value is always the neutral default.
+    if (role === 'fleet_agent') tenantId = 'default'
 
     const now = Math.floor(Date.now() / 1000)
     const expiresInDays = typeof parsed.expires_in_days === 'number' ? parsed.expires_in_days : null
@@ -98,8 +130,8 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const hash = sha256hex(rawToken)
 
     try {
-      const row = insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt: now, expiresAt })
-      logger.info({ tokenId: row.id, name, role, tenantId }, 'api_token created')
+      const row = insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt: now, expiresAt, agentId: agentId || null })
+      logger.info({ tokenId: row.id, name, role, tenantId, agentId: agentId || null }, 'api_token created')
       // Return the raw token value ONCE -- it cannot be recovered after this response.
       json(res, { token: rawToken, ...toPublic(row) }, 201)
     } catch (e) {

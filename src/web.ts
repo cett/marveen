@@ -273,6 +273,14 @@ export function startWebServer(port = 3420): http.Server {
       res.end(JSON.stringify({ error: 'unauthorized', hint: 'Bearer token required' }))
       return
     }
+    // A fleet-agent token of a shared agent with no fresh tenant context: authenticated, but there is
+    // no tenant to act in. Refused here, before the RBAC gate, so it holds in shadow mode too.
+    if (requiresAuth(path, method) && auth.kind === 'token' && auth.tenantContextMissing) {
+      logger.warn({ path, method, agent: auth.agentId }, 'fleet agent token refused: no fresh tenant context for a shared agent')
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'forbidden', hint: 'No fresh tenant context for this shared agent' }))
+      return
+    }
     // RBAC gate: role + permission enforcement, shadow or hard, controlled by
     // RBAC_MODE env ('shadow' default). In shadow mode the gate only records
     // would-deny entries so Fázis 1 observation can surface unexpected denials
@@ -308,8 +316,10 @@ export function startWebServer(port = 3420): http.Server {
     try {
       if (deprecated) applyDeprecationHeaders(res)
 
-      const agentId = resolveAgentIdHeader(req)
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion, role, tenantId, agentId }
+      const tokenAgentId = auth.kind === 'token' ? auth.agentId : undefined
+      // A fleet_agent's identity is its token, whatever the header claims.
+      const agentId = role === 'fleet_agent' && tokenAgentId ? tokenAgentId : resolveAgentIdHeader(req)
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion, role, tenantId, agentId, tokenAgentId }
 
       if (await dispatcher.dispatch(routeCtx)) return
 

@@ -104,3 +104,6 @@ evidence/
 .evidence/
 transcripts/
 .session-capture/
+
+# Per-agent API token of the main agent (sub-agents keep theirs under agents/, already ignored)
+/.agent-token

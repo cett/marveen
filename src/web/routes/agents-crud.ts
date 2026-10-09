@@ -4,7 +4,8 @@ import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, getOpenKanbanCountsByAssignee, writeAgentAuditLog } from '../../db.js'
+import { createAgentMessage, getOpenKanbanCountsByAssignee, revokeApiTokensForAgent, writeAgentAuditLog } from '../../db.js'
+import { issueAgentToken } from '../../agent-tokens.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { setSecret, deleteSecret } from '../vault.js'
@@ -337,6 +338,13 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (existsSync(agentDir(name))) { json(res, { error: 'conflict', hint: 'An agent with this name already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
+    // The agent's own API token (agents/<name>/.agent-token, 0600). A failure does not undo the
+    // agent: it still works on the shared token, and `npm run agent-tokens -- issue <name>` retries.
+    try {
+      issueAgentToken(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'agent token could not be issued; issue it with `npm run agent-tokens`')
+    }
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
@@ -950,6 +958,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // non-existent agent (#857). A stale entry also starts a same-named new
     // agent immediately on next create -- unasked.
     removeDesiredAgent(name)
+    // A deleted agent keeps no credential (its token file goes with the directory).
+    revokeApiTokensForAgent(name, Math.floor(Date.now() / 1000))
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
     try {

@@ -1,5 +1,6 @@
 import { logToolCall, analyzeWorkflowCandidates, getRecentToolCalls } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
+import { actingAgentId, denyForeignAgent } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
@@ -21,7 +22,8 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
     }
     if (!data.session_id || !data.tool_name) { json(res, { error: 'required', hint: 'session_id and tool_name required' }, 400); return true }
     const success = data.success !== false
-    logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, success, data.agent_id ?? null, data.trace_id ?? null, data.duration_ms ?? null)
+    if (data.agent_id && denyForeignAgent(ctx, data.agent_id)) return true
+    logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, success, actingAgentId(ctx, data.agent_id, '') || null, data.trace_id ?? null, data.duration_ms ?? null)
     json(res, { ok: true })
     return true
   }

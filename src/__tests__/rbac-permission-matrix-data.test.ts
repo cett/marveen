@@ -6,7 +6,7 @@
 // hasPermission() from the real rbac.ts. If rbac.ts changes without updating
 // the mirror, this test fails in CI.
 import { describe, it, expect } from 'vitest'
-import { ALL_PERMISSIONS, ALL_ROLES, hasPermission, type Permission, type Role } from '../web/rbac.js'
+import { ALL_PERMISSIONS, ALL_ROLES, hasPermission, type Permission, type UserRole } from '../web/rbac.js'
 import {
   PERMISSION_MATRIX_ROLES,
   PERMISSION_MATRIX_CATEGORIES,
@@ -36,7 +36,7 @@ describe('rbac-permission-matrix-data mirror vs rbac.ts (drift guard)', () => {
     const mismatches: string[] = []
     for (const category of PERMISSION_MATRIX_CATEGORIES) {
       for (const perm of category.permissions) {
-        for (const role of PERMISSION_MATRIX_ROLES as Role[]) {
+        for (const role of PERMISSION_MATRIX_ROLES as UserRole[]) {
           const mirrored = perm.roles[role]
           const actual = hasPermission(role, perm.key as Permission)
           if (mirrored !== actual) {

@@ -72,6 +72,12 @@ export function checkPermission(
     return { allowed: false, status: 401, reason: 'no credentials' }
   }
 
+  // A fleet agent that serves several tenants and has no fresh tenant context cannot be given a
+  // tenant: refuse rather than fall back to a default (fail closed, decided for the agent tokens).
+  if (auth.kind === 'token' && auth.tenantContextMissing) {
+    return { allowed: false, status: 403, reason: 'shared agent has no fresh tenant context' }
+  }
+
   let role: Role
   try {
     role = resolveRole(auth)
