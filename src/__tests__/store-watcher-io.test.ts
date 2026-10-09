@@ -204,7 +204,7 @@ describe('watch callback: event classification', () => {
   // unreachable behaviour: if a future SENSITIVE_NAMES entry is NOT also
   // denylisted, that name would need its own reachable test.
   it('every currently-sensitive filename is also denylisted as a system file (isSensitive is unreachable today)', async () => {
-    const SENSITIVE_NAMES = ['.dashboard-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.federation-token', 'federation.json']
+    const SENSITIVE_NAMES = ['.dashboard-token', '.agent-token', '.operator-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.federation-token', 'federation.json']
     mockStatSync.mockReturnValue({ size: 5 })
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()

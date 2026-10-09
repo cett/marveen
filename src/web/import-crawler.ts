@@ -41,7 +41,7 @@ const SECRET_PATTERNS = [
   /passwd\s*[:=]\s*\S+/i,
   /jelszó\s*:\s*\S+/i,
   /token\s*[:=]\s*\S+/i,
-  /\.dashboard-token/,
+  /\.(?:dashboard|agent|operator)-token/,
   /api[_-]?key\s*[:=]\s*\S+/i,
   // IBAN-like: HU + 2 digits then groups of 4
   /\bHU\d{2}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}\b/,
@@ -52,7 +52,7 @@ function containsSecret(content: string): boolean {
 }
 
 // ── File type guards ─────────────────────────────────────────────────────────
-function isAllowedFile(filePath: string): { ok: boolean; reason?: string } {
+export function isAllowedFile(filePath: string): { ok: boolean; reason?: string } {
   const name = basename(filePath)
   const nameNoExt = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name
   const ext = extname(name).slice(1).toLowerCase()

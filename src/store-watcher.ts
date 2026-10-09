@@ -19,7 +19,7 @@ const SYSTEM_FILES = new Set([
   // Fleet and agent management
   'agents-desired.json', 'auto-restart.json',
   // Auth and secrets
-  '.dashboard-token', '.vault-key', 'vault.json', '.claude-oauth-token',
+  '.dashboard-token', '.agent-token', '.operator-token', '.vault-key', 'vault.json', '.claude-oauth-token',
   // Federation config + inbound peer token (written by /api/federation/peers)
   'federation.json', '.federation-token',
   // Capability-summary cache (written by the capability-summary runner);
@@ -46,7 +46,7 @@ const SYSTEM_RE = /\.pid$|\.tmp$|\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$|\.deprecat
 
 // Filenames whose presence is sensitive; the audit row is flagged so the UI
 // can show a sanitised label instead of hinting at secret values.
-const SENSITIVE_NAMES = new Set(['.dashboard-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.federation-token', 'federation.json'])
+const SENSITIVE_NAMES = new Set(['.dashboard-token', '.agent-token', '.operator-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.federation-token', 'federation.json'])
 
 // --- Agent attribution slot ---
 // Node.js is single-threaded; a route handler sets this before writing,
