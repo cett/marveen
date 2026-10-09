@@ -691,5 +691,48 @@ class BlackboardRowTest(unittest.TestCase):
             self.assertIsNone(mod.blackboard_row("agent-a", []))
 
 
+class AuthHeadersTest(unittest.TestCase):
+    """The sweep signs with the coordinator's own token; the shared token only when that file is missing."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="bbh-auth-")
+        self._env = os.environ.get("MARVEEN_AGENT_TOKEN_FILE")
+        os.environ.pop("MARVEEN_AGENT_TOKEN_FILE", None)
+        p = patch.object(mod, "STORE_DIR", self.tmp)
+        p.start()
+        self.addCleanup(p.stop)
+        p = patch.object(mod, "COORDINATOR", "zz-coordinator")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        if self._env is not None:
+            os.environ["MARVEEN_AGENT_TOKEN_FILE"] = self._env
+
+    def write(self, name, text):
+        p = os.path.join(self.tmp, name)
+        with open(p, "w") as f:
+            f.write(text)
+        return p
+
+    def test_own_token_wins(self):
+        os.environ["MARVEEN_AGENT_TOKEN_FILE"] = self.write("own", "own-c\n")
+        self.write(".dashboard-token", "shared\n")
+        h = mod._auth_headers()
+        self.assertEqual(h["Authorization"], "Bearer own-c")
+
+    def test_missing_own_token_falls_back_and_names_the_coordinator(self):
+        self.write(".dashboard-token", "shared\n")
+        h = mod._auth_headers()
+        self.assertEqual((h["Authorization"], h["X-Agent-Id"]), ("Bearer shared", "zz-coordinator"))
+
+    def test_no_token_at_all_raises_like_the_old_file_read(self):
+        with self.assertRaises(FileNotFoundError):
+            mod._auth_headers()
+
+
 if __name__ == "__main__":
     unittest.main()
