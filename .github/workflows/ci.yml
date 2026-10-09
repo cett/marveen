@@ -7,10 +7,11 @@ on:
     branches: [develop]
 
 # A new push to a pull request supersedes the run still going on its previous
-# head: cancel that one. Runs on develop/main are never cancelled, every merge
-# keeps its own complete run.
+# head: cancel that one. A push to develop/main gets a group of its own (its
+# sha): a shared group would let a newer push silently drop a pending run, and
+# its commits would never be checked.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
