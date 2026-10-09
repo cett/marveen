@@ -53,7 +53,8 @@ describe('renderFederationBlock', () => {
     expect(block).toContain('`teodor` (https://teodor.example)')
     expect(block).toContain('párosítás folyamatban') // unpaired peer marked
     expect(block).toContain('NEM')                    // explicit exception to the tmux/agents-list rule
-    expect(block).toContain('Authorization: Bearer')  // curl example carries auth (fix-agent-auth-headers.sh hazard)
+    expect(block).toContain('scripts/agent-api.sh')   // the recipe goes through the API wrapper (it adds the auth)
+    expect(block).not.toMatch(/Authorization: Bearer|dashboard-token/)
     expect(block).toContain('SAJÁT csatornádon')      // binary-results rule
   })
 
@@ -130,7 +131,8 @@ describe('renderSubAgentFederationBlock', () => {
       const block = renderSubAgentFederationBlock({ ...ID, lang })
       expect(block.startsWith(FEDERATION_BLOCK_BEGIN)).toBe(true)
       expect(block.endsWith(FEDERATION_BLOCK_END)).toBe(true)
-      expect(block).toContain('Authorization: Bearer')       // reply curl carries auth
+      expect(block).toContain('scripts/agent-api.sh')        // the reply goes through the API wrapper (it adds the auth)
+      expect(block).not.toMatch(/Authorization: Bearer|dashboard-token/)
       expect(block).not.toContain(FEDERATION_POLICY_ANCHOR)  // owner policy is the main agent's
       expect(Buffer.byteLength(block, 'utf-8')).toBeLessThan(2048)
     }

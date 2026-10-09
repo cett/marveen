@@ -19,7 +19,7 @@ import {
   type KanbanCard,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
@@ -39,14 +39,15 @@ const KANBAN_STATUSES = new Set<KanbanCard['status']>(['planned', 'in_progress',
 // dashboard UI -- and (2) mark the card done. This is the lightweight
 // alternative to spawning a separate per-session card for every agent run: the
 // result goes where the work was asked for, with zero extra board clutter. The
-// token is read from the store at call time (never embedded in the message).
+// commands go through the API wrapper, which resolves the agent's own token and hands it to curl on
+// stdin: no token (and no token path) is ever embedded in the message or on a command line.
 export function kanbanMoveInstructions(id: string, target: string): string {
-  const tokenPath = join(STORE_DIR, '.dashboard-token')
-  const base = `http://${WEB_HOST}:${WEB_PORT}`
-  const auth = `-H "Authorization: Bearer $(cat ${tokenPath})"`
-  const moveUrl = `${base}/api/kanban/${id}/move`
-  const commentUrl = `${base}/api/kanban/${id}/comments`
-  const cardUrl = `${base}/api/kanban/${id}`
+  const wrapper = join(PROJECT_ROOT, 'scripts', 'agent-api.sh')
+  const quotedWrapper = /^[\w./-]+$/.test(wrapper) ? wrapper : `'${wrapper.replace(/'/g, "'\\''")}'`
+  const api = `DASHBOARD_BASE_URL=http://${WEB_HOST}:${WEB_PORT} bash ${quotedWrapper} --agent ${target}`
+  const moveUrl = `/api/kanban/${id}/move`
+  const commentUrl = `/api/kanban/${id}/comments`
+  const cardUrl = `/api/kanban/${id}`
   // Escalation target when blocked: sub-agents hand back to the main agent
   // (their delegator), who triages and only escalates to the operator when
   // the block genuinely needs a human decision. Only the main agent itself
@@ -60,34 +61,26 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
     '1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
-    `  curl -s -X POST ${commentUrl} \\`,
-    `    ${auth} \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
+    `  ${api} POST ${commentUrl} \\`,
+    `    '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
     '',
     '2) Állítsd a kártyát done-ra:',
-    `  curl -s -X POST ${moveUrl} \\`,
-    `    ${auth} \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"done","actor":"${target}"}'`,
+    `  ${api} POST ${moveUrl} \\`,
+    `    '{"status":"done","actor":"${target}"}'`,
     '',
     // The "actor" field is not decoration: it is what tells the board WHO moved
     // the card. Without it a self-pickup (agent -> in_progress on its own card)
     // is indistinguishable from an assignment, and the dispatcher echoes the
     // task back at the agent that just started it.
     `Az "actor":"${target}" mezőt MINDEN mozgatásnál küldd el (ez mondja meg a táblának, hogy te mozgattad). Ha te magad veszed fel a kártyát in_progress-re, ott is:`,
-    `  curl -s -X POST ${moveUrl} \\`,
-    `    ${auth} \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"in_progress","actor":"${target}"}'`,
+    `  ${api} POST ${moveUrl} \\`,
+    `    '{"status":"in_progress","actor":"${target}"}'`,
     '',
     `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
     `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
     `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
-    `     curl -s -X PUT ${cardUrl} \\`,
-    `       ${auth} \\`,
-    `       -H 'Content-Type: application/json' \\`,
-    `       -d '{"assignee":"${escalateTo}"}'`,
+    `     ${api} PUT ${cardUrl} \\`,
+    `       '{"assignee":"${escalateTo}"}'`,
     `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással, "waiting" értékkel "done" helyett).`,
     isMainAgent
       ? `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`

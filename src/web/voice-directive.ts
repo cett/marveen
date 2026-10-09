@@ -1,7 +1,7 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { STORE_DIR, WEB_PORT } from '../config.js'
+import { PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { AGENTS_BASE_DIR } from './agent-config.js'
 
 // Resolve the directory where an agent's channel plugin stores its bot .env.
@@ -39,27 +39,31 @@ export function inboundIsAudio(kind: string | null | undefined, fileId: string |
 }
 
 // Build a ready-to-run TTS directive block injected after the STT transcript.
-// Returns null if the dashboard token cannot be read.
+// The command goes through the API wrapper, which resolves the agent's own token and hands it to
+// curl on stdin: no token is ever written into the directive, so none lands in the agent's context
+// or transcript. /api/voice/tts is still admin-only (no fleet_agent permission covers it), hence
+// `--token admin`: the main agent's own token, the shared one for everybody else, until T4.
+// Returns null if the directive cannot be built.
 export function buildTtsDirective(opts: {
   chatId: string
   stateDir: string
   voiceModel: string
+  agentId: string
 }): string | null {
   try {
-    const tokenPath = join(STORE_DIR, '.dashboard-token')
-    if (!existsSync(tokenPath)) return null
-    const token = readFileSync(tokenPath, 'utf-8').trim()
-    const { chatId, stateDir, voiceModel } = opts
+    const { chatId, stateDir, voiceModel, agentId } = opts
+    if (!/^[a-zA-Z0-9_-]+$/.test(agentId)) return null
     // Escape stateDir for embedding in a jq string argument
     const escapedStateDir = stateDir.replace(/'/g, "'\\''")
+    const wrapper = join(PROJECT_ROOT, 'scripts', 'agent-api.sh').replace(/'/g, "'\\''")
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
       `\`\`\`bash\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer ${token}" -d @-\n` +
+      `DASHBOARD_BASE_URL=http://localhost:${WEB_PORT} bash '${wrapper}' --agent ${agentId} --token admin POST /api/voice/tts -\n` +
       `\`\`\`\n` +
-      `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
+      `Szöveges választ NE küldj -- CSAK a fenti parancsot futtasd le a hangküldéshez.`
     )
   } catch {
     return null

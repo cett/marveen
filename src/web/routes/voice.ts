@@ -135,7 +135,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     // Audio is decided by the declared attachment kind, never by the mere
     // presence of a file id -- a document attachment is not a voice message.
     const inboundWasAudio = fileIdOk && inboundIsAudio(kindParam, fileParam)
-    const ttsParams = { chatId, stateDir, voiceModel: voiceCfg.voiceModel ?? 'hu_HU-imre-medium' }
+    const ttsParams = { chatId, stateDir, voiceModel: voiceCfg.voiceModel ?? 'hu_HU-imre-medium', agentId }
     const directive = voiceCfg.responseMode === 'text' ? null
       : voiceCfg.responseMode === 'voice' ? buildTtsDirective(ttsParams)
       : inboundWasAudio ? buildTtsDirective(ttsParams)  // auto: only when inbound was audio

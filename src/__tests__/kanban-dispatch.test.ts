@@ -99,9 +99,11 @@ describe('kanbanMoveInstructions', () => {
     expect(out).toContain('"status":"in_progress","actor":"cody"')
   })
 
-  it('keeps the bearer token out of the message (reads it at run time)', () => {
+  it('sends the calls through the API wrapper as the agent, with no token or token path in the message', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('$(cat ')
-    expect(out).toContain('.dashboard-token')
+    expect(out).toMatch(/DASHBOARD_BASE_URL=http:\/\/\S+ bash \S*scripts\/agent-api\.sh --agent cody POST \/api\/kanban\/abc123\/move/)
+    expect(out).toMatch(/--agent cody POST \/api\/kanban\/abc123\/comments/)
+    expect(out).toMatch(/--agent cody PUT \/api\/kanban\/abc123 /)
+    expect(out).not.toMatch(/Bearer|\.dashboard-token|curl/)
   })
 })
