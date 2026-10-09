@@ -8,7 +8,8 @@
 // It never writes to a scanned file and never calls a mutating API: files are read, the schedules
 // registry is read with one GET (only when the dashboard answers within 5 s). Exit code is always 0.
 //
-// Scanned: (a) global skills <home>/.claude/skills, (b) per-agent skills <install>/agents/*/.claude/skills,
+// Scanned: (a) global skills <home>/.claude/skills, (a2) the main agent's own skills <install>/.claude/skills
+// (owner "main"), (b) per-agent skills <install>/agents/*/.claude/skills,
 // (c) <install>/CLAUDE.md and <install>/agents/*/CLAUDE.md, (d) <home>/.claude/scheduled-tasks/*,
 // (e) the schedules registry (GET /api/schedules). Symlinks that leave a scanned root, binary files,
 // node_modules, .git and *.bak are skipped.
@@ -23,8 +24,8 @@ import { agentApi } from './lib/agent-api.mjs'
 
 // ── Report model ────────────────────────────────────────────────────────────
 
-export type Source = 'global-skill' | 'agent-skill' | 'claude-md' | 'schedule-file' | 'schedule-api'
-export const SOURCES: readonly Source[] = ['global-skill', 'agent-skill', 'claude-md', 'schedule-file', 'schedule-api']
+export type Source = 'global-skill' | 'main-skill' | 'agent-skill' | 'claude-md' | 'schedule-file' | 'schedule-api'
+export const SOURCES: readonly Source[] = ['global-skill', 'main-skill', 'agent-skill', 'claude-md', 'schedule-file', 'schedule-api']
 
 interface Annotated { block: string | null; where?: string }
 export type ReportEdit = Omit<PlanEdit, 'start' | 'end'> & Annotated
@@ -34,7 +35,7 @@ export type ReportInline = InlineAssignment & Annotated
 
 export interface FileReport {
   source: Source
-  /** "global", an agent id, or the agent a schedule belongs to. */
+  /** "global", "main" (the main agent's own skills), an agent id, or the agent a schedule belongs to. */
   owner: string
   /** The schedule name for (d) and (e). */
   schedule?: string
@@ -234,6 +235,10 @@ export async function runDryRun(opts: DryRunOptions): Promise<Report> {
   // (a) global skills
   for (const p of walkText(join(home, '.claude', 'skills'), seen, notes)) scanFile('global-skill', 'global', p)
 
+  // (a2) the main agent's own skills. When install and home are the same directory this is the same tree as (a)
+  // and the `seen` set keeps every file in the first source.
+  for (const p of walkText(join(install, '.claude', 'skills'), seen, notes)) scanFile('main-skill', 'main', p)
+
   // (b) + (c) per-agent skills and CLAUDE.md
   const agentsDir = join(install, 'agents')
   const agentIds: string[] = []
@@ -319,6 +324,7 @@ async function fetchSchedules(install: string): Promise<unknown[] | { note: stri
 
 const SOURCE_LABEL: Record<Source, string> = {
   'global-skill': 'global skills',
+  'main-skill': 'main agent skills',
   'agent-skill': 'agent skills',
   'claude-md': 'CLAUDE.md files',
   'schedule-file': 'scheduled-task files',
