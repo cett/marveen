@@ -69,6 +69,11 @@ describe('resolveToken', () => {
     put('store/.operator-token', 'op')
     expect(res({ agentId: 'a', kind: 'operator' }).token).toBe('op')
   })
+  it('kind admin is the main agent own token and the shared token for everyone else', () => {
+    put('.agent-token', 'own-m'); put('agents/a/.agent-token', 'own-a'); put('store/.dashboard-token', 'shared')
+    expect(res({ agentId: 'm', kind: 'admin' }).token).toBe('own-m')
+    expect(res({ agentId: 'a', kind: 'admin' }).token).toBe('shared')
+  })
   it('derives the identity from the cwd, and an unknown cwd is not an identity', () => {
     put('agents/a/.agent-token', 'own-a'); put('store/.dashboard-token', 'shared')
     expect(res({ cwd: join(install, 'agents', 'a', 'sub') }).token).toBe('own-a')

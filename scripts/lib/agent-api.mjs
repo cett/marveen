@@ -49,13 +49,15 @@ export function agentTokenPath(agentId, install = installDir(), env = process.en
 
 /**
  * kind: 'agent' (own token, shared fallback) | 'operator' (store/.operator-token, same fallback) |
- * 'shared' (the shared token on purpose, for endpoints that are still admin:all).
+ * 'shared' (the shared token on purpose, for endpoints that are still admin:all), 'admin' (an
+ * admin:all call whoever makes it: the main agent's own token, everybody else the shared one).
  * Returns { token, source, agentId, headers(base) }.
  */
 export function resolveToken({ agentId, cwd, kind = 'agent', installDir: install = installDir(), storeDir, env = process.env } = {}) {
   const store = storeDir ?? join(install, 'store')
   let id = agentId || agentIdFromCwd(cwd, install, env)
   if (id && (id.includes('/') || id.startsWith('.'))) id = null
+  if (kind === 'admin') kind = id && id === mainAgentId(install, env) ? 'agent' : 'shared'
   const shared = () => readTrim(join(store, '.dashboard-token'))
   const make = (token, source) => ({
     token, source, agentId: id ?? null,

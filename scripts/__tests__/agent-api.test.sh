@@ -86,6 +86,13 @@ reset; echo shared > "$INSTALL/store/.dashboard-token"
 bash "$W" --token operator GET /api/agents >/dev/null 2>&1
 check "--token operator: missing file falls back" grep -q 'Bearer shared' "$T/stdin"
 
+# 7b admin kind: main agent own token, everyone else shared
+reset; echo own-m > "$INSTALL/.agent-token"; echo own-a > "$INSTALL/agents/a/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
+bash "$W" --agent m --token admin POST /api/agents/x/restart >/dev/null 2>&1
+check "--token admin: main agent sends its own token" grep -q 'Bearer own-m' "$T/stdin"
+bash "$W" --agent a --token admin POST /api/agents/x/restart >/dev/null 2>&1
+check "--token admin: any other agent sends the shared token" grep -q 'Bearer shared' "$T/stdin"
+
 # 8 main agent: token in the install root, cwd decides the identity
 reset; echo own-m > "$INSTALL/.agent-token"
 ( cd "$INSTALL" && bash "$W" GET /api/agents >/dev/null 2>&1 )

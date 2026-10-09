@@ -7,7 +7,7 @@
 #   BODY     a JSON string, "-" to read it from STDIN, or "@file" to send that file as is
 # Options (before METHOD):
 #   --agent ID          act as this agent (default: MARVEEN_AGENT_ID, else derived from the cwd)
-#   --token KIND        agent (default) | operator | shared
+#   --token KIND        agent (default) | operator | shared | admin
 #                         agent     the agent's own token (agents/<id>/.agent-token, the main
 #                                   agent's in the install root); a MISSING file falls back to the
 #                                   shared token, loudly (see below)
@@ -15,6 +15,8 @@
 #                         shared    the shared dashboard token on purpose: for the endpoints that
 #                                   are still admin:all and that a fleet_agent token is refused on
 #                                   (agent start/stop/restart, vault, global skill writes) until T4
+#                         admin     for a call that needs admin:all whoever makes it: the main
+#                                   agent uses its own (admin) token, every other agent the shared one
 # Output: the response body on stdout. Exit 0 on a 2xx; 22 on any other HTTP status (the status
 # line goes to stderr, the body is still printed); curl's own code when the request never got an
 # answer; 2 on a usage error.
@@ -46,7 +48,7 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-case "$KIND" in agent|operator|shared) : ;; *) echo "agent-api: --token must be agent, operator or shared" >&2; exit 2 ;; esac
+case "$KIND" in agent|operator|shared|admin) : ;; *) echo "agent-api: --token must be agent, operator, shared or admin" >&2; exit 2 ;; esac
 [ $# -ge 2 ] || usage
 METHOD="$1"; APIPATH="$2"; BODY="${3-}"
 case "$METHOD" in GET|POST|PUT|PATCH|DELETE) : ;; *) echo "agent-api: bad METHOD '$METHOD'" >&2; exit 2 ;; esac
@@ -71,6 +73,9 @@ if [ -z "$AGENT" ]; then
 fi
 case "$AGENT" in */*|.*) AGENT="" ;; esac
 
+if [ "$KIND" = "admin" ]; then
+  if [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; then KIND="agent"; else KIND="shared"; fi
+fi
 SOURCE="none"; TOKEN=""
 read_shared() { TOKEN="$(read_token "$STORE/.dashboard-token")"; }
 case "$KIND" in

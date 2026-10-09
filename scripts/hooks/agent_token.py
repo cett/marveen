@@ -25,6 +25,7 @@ OPERATOR_TOKEN_FILENAME = ".operator-token"
 KIND_AGENT = "agent"
 KIND_OPERATOR = "operator"
 KIND_SHARED = "shared"
+KIND_ADMIN = "admin"
 
 SOURCE_AGENT = "agent"
 SOURCE_FALLBACK = "shared-fallback"
@@ -118,7 +119,9 @@ def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGE
     kind: KIND_AGENT (default) is the agent's own token with the shared fallback. KIND_OPERATOR is
     the operator's named admin token (store/.operator-token) with the same fallback, for the
     operator scripts. KIND_SHARED is the shared token on purpose, for the endpoints that are still
-    admin:all and that a fleet_agent token would be refused on until T4 decides them."""
+    admin:all and that a fleet_agent token would be refused on until T4 decides them. KIND_ADMIN is
+    for a call that needs admin:all whoever makes it: the main agent's own (admin) token, everybody
+    else the shared one."""
     install = install or install_dir()
     store = store_dir or os.path.join(install, "store")
     if not agent_id:
@@ -127,6 +130,8 @@ def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGE
         agent_id = None
 
     shared = lambda: _read(os.path.join(store, SHARED_TOKEN_FILENAME))
+    if kind == KIND_ADMIN:
+        kind = KIND_AGENT if agent_id and agent_id == main_agent_id(install) else KIND_SHARED
     if kind == KIND_SHARED:
         t = shared()
         return Resolved(t, SOURCE_SHARED if t else SOURCE_NONE, agent_id)
