@@ -47,6 +47,9 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import agent_token  # noqa: E402
+
 
 def _install_dir() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
@@ -65,14 +68,6 @@ def _web_port() -> str:
         except Exception:
             pass
     return port or "3420"
-
-
-def _dashboard_token() -> str:
-    try:
-        with open(os.path.join(_install_dir(), "store", ".dashboard-token")) as f:
-            return f.read().strip()
-    except OSError:
-        return ""
 
 
 def _main_agent_id() -> str:
@@ -418,8 +413,8 @@ def main() -> None:
 
     agent_id = _agent_id_from_cwd(cwd)
 
-    token = _dashboard_token()
-    if not token:
+    auth = agent_token.resolve(agent_id=agent_id, store_dir=os.path.join(_install_dir(), "store"))
+    if not auth.token:
         sys.exit(0)
 
     # This hook runs on every Bash call and every prompt, so logging must never hold the agent up: all the
@@ -446,10 +441,7 @@ def main() -> None:
                     urllib.request.Request(
                         f"http://localhost:{port}/api/skill-usage",
                         data=body,
-                        headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {token}",
-                        },
+                        headers=auth.headers({"Content-Type": "application/json"}),
                         method="POST",
                     ),
                     timeout=remaining,

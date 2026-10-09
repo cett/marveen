@@ -567,6 +567,7 @@ class _Stub(http.server.BaseHTTPRequestHandler):
         _Stub.posts.append({
             "path": self.path,
             "auth": self.headers.get("Authorization"),
+            "agent": self.headers.get("X-Agent-Id"),
             "body": json.loads(self.rfile.read(n) or b"{}"),
         })
         self.send_response(200)
@@ -585,6 +586,8 @@ class TestHookEndToEnd(unittest.TestCase):
         os.makedirs(os.path.join(self.root, "store"))
         os.makedirs(os.path.join(self.root, "agents", "agent-a"))
         shutil.copy(_HOOK_PATH, os.path.join(self.root, "scripts", "hooks", "skill-usage-capture.py"))
+        shutil.copy(os.path.join(os.path.dirname(_HOOK_PATH), "agent_token.py"),
+                    os.path.join(self.root, "scripts", "hooks", "agent_token.py"))
         with open(os.path.join(self.root, "store", ".dashboard-token"), "w") as f:
             f.write("tok-123\n")
         _Stub.posts = []
@@ -622,6 +625,18 @@ class TestHookEndToEnd(unittest.TestCase):
             "agent_id": "agent-a", "skill_name": "x", "trigger_type": "skill_read",
             "session_id": "sess-1", "source": "bash_script",
         })
+
+    def test_own_agent_token_is_used_when_present(self):
+        with open(os.path.join(self.root, "agents", "agent-a", ".agent-token"), "w") as f:
+            f.write("own-a\n")
+        self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s",
+                   "cwd": os.path.join(self.root, "agents", "agent-a")})
+        self.assertEqual(_Stub.posts[0]["auth"], "Bearer own-a")
+
+    def test_missing_agent_token_falls_back_to_the_shared_one_and_names_the_agent(self):
+        self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s",
+                   "cwd": os.path.join(self.root, "agents", "agent-a")})
+        self.assertEqual((_Stub.posts[0]["auth"], _Stub.posts[0]["agent"]), ("Bearer tok-123", "agent-a"))
 
     def test_skill_tool_posts_tool_call(self):
         self._run({"tool_name": "Skill", "tool_input": {"skill": "fleet-helper"}, "session_id": "s",

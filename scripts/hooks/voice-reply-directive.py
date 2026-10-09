@@ -20,6 +20,9 @@ import re
 import urllib.request
 import urllib.parse
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import agent_token  # noqa: E402
+
 
 def _project_root():
     # scripts/hooks/ -> project root (two dirs up)
@@ -38,14 +41,6 @@ def _web_port():
         except Exception:
             pass
     return port or "3420"
-
-
-def _token():
-    try:
-        with open(os.path.join(_project_root(), "store", ".dashboard-token")) as f:
-            return f.read().strip()
-    except Exception:
-        return ""
 
 
 def _main_agent_id():
@@ -107,8 +102,8 @@ def main():
     if not agent_id:
         sys.exit(0)
 
-    token = _token()
-    if not token:
+    auth = agent_token.resolve(agent_id=agent_id, store_dir=os.path.join(_project_root(), "store"))
+    if not auth.token:
         sys.exit(0)
 
     port = _web_port()
@@ -119,8 +114,7 @@ def main():
             url += "&kind=" + urllib.parse.quote(kind, safe="")
 
     try:
-        req = urllib.request.Request(url)
-        req.add_header("Authorization", "Bearer " + token)
+        req = urllib.request.Request(url, headers=auth.headers())
         with urllib.request.urlopen(req, timeout=55) as r:
             data = json.load(r)
     except Exception:

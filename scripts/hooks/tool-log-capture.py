@@ -10,6 +10,7 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import agent_token  # noqa: E402
 
 
 def _project_root() -> str:
@@ -29,14 +30,6 @@ def _web_port() -> str:
         except Exception:
             pass
     return port or "3420"
-
-
-def _dashboard_token() -> str:
-    try:
-        with open(os.path.join(_project_root(), "store", ".dashboard-token")) as f:
-            return f.read().strip()
-    except OSError:
-        return ''
 
 
 # Patterns that could reveal secrets if stored verbatim.
@@ -102,8 +95,10 @@ def main():
     if not session_id or not tool_name:
         sys.exit(0)
 
-    token = _dashboard_token()
-    if not token:
+    agent_id = ledger_lib.agent_id_from_cwd(cwd)
+    store = os.path.join(_project_root(), "store")
+    auth = agent_token.resolve(cwd=cwd, store_dir=store)
+    if not auth.token:
         sys.exit(0)
 
     port = _web_port()
@@ -114,7 +109,7 @@ def main():
         'tool_name': tool_name,
         'input_summary': _input_summary(tool_input, tool_name),
         'success': success,
-        'agent_id': ledger_lib.agent_id_from_cwd(cwd),
+        'agent_id': agent_id,
         # trace_id holds the CC-native tool_use_id: stable, unique per call,
         # present in both Pre and PostToolUse payloads (empirically verified).
         # No PreToolUse hook needed -- CC already gives us the correlation key
@@ -123,10 +118,11 @@ def main():
         'duration_ms': duration_ms,
     }).encode()
 
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {token}',
-    }
+    headers = auth.headers({'Content-Type': 'application/json'})
+    # /api/tool-log/prune is admin:all (only POST /api/tool-log is a fleet-agent endpoint): the
+    # main agent's own token covers it, every other agent keeps the shared token until T4.
+    prune_headers = agent_token.resolve(cwd=cwd, store_dir=store, kind=agent_token.KIND_ADMIN).headers(
+        {'Content-Type': 'application/json'})
 
     try:
         urllib.request.urlopen(
@@ -143,7 +139,7 @@ def main():
                 urllib.request.Request(
                     f'{base_url}/tool-log/prune',
                     data=b'{}',
-                    headers=headers,
+                    headers=prune_headers,
                     method='POST',
                 ),
                 timeout=3,
