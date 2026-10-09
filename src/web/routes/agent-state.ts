@@ -1,12 +1,13 @@
 import { AGENT_STATE_KEYS, getAgentState, setAgentState, type AgentStateKey } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
+import { denyForeignAgent } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 // Internal read/write of per-agent runtime state (agent_state table), for the
 // scheduled scripts that used to open the database file themselves
 // (blackboard-hygiene.py, the kanban-audit pre-check). The key set is closed:
 // a typo or an unrelated caller cannot create rows under arbitrary keys.
-// Unmapped in the RBAC table, so admin-only.
+// RBAC: agent-state:read/write (admin and fleet_agent); a fleet_agent reaches only its own agent.
 
 const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const KEYS = new Set<string>(AGENT_STATE_KEYS)
@@ -31,6 +32,7 @@ export async function tryHandleAgentState(ctx: RouteContext): Promise<boolean> {
     json(res, { error: 'invalid_value', field: 'agent_id', hint: 'agent_id must be a plain agent name' }, 400)
     return true
   }
+  if (denyForeignAgent(ctx, agentId)) return true
   if (!KEYS.has(key)) {
     json(res, { error: 'invalid_value', field: 'state_key', hint: `state_key must be one of ${[...KEYS].join(', ')}` }, 400)
     return true

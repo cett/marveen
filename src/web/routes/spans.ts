@@ -1,5 +1,6 @@
 import { upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces, queryOtelSpans, resolveAgentTenant } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
+import { callerMayActAs } from '../fleet-agent-identity.js'
 import { spansToOtelJson } from '../../otel-exporter.js'
 import type { RouteContext } from './types.js'
 
@@ -9,6 +10,8 @@ import type { RouteContext } from './types.js'
 // opt-in matrix). Admin (including every fleet agent on the shared
 // dashboard-token bearer) is unrestricted.
 function tenantBlocked(ctx: RouteContext, agentId: string): boolean {
+  // A fleet_agent token writes the spans of its own agent only (see fleet-agent-identity.ts).
+  if (ctx.role === 'fleet_agent') return !callerMayActAs(ctx, agentId)
   if (ctx.role === 'admin') return false
   const callerTenant = ctx.tenantId ?? 'default'
   return resolveAgentTenant(agentId) !== callerTenant
@@ -46,6 +49,15 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     if (data.agent_id && tenantBlocked(ctx, data.agent_id)) {
       json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
       return true
+    }
+    // A fleet_agent may also not touch a span another agent opened: the bare close above carries no
+    // agent_id, and an open with a known span id would overwrite the row.
+    if (ctx.role === 'fleet_agent') {
+      const existing = getOtelTrace(data.trace_id).find(s => s.span_id === data.span_id)
+      if (existing && !callerMayActAs(ctx, existing.agent_id)) {
+        json(res, { error: 'forbidden', hint: 'A fleet agent token may only act as its own agent' }, 403)
+        return true
+      }
     }
     if (data.end_ms !== undefined) {
       // Close path: update end_ms + status

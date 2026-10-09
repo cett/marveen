@@ -28,10 +28,15 @@ import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey } from './auth-device-keys.js'
 import { getValidApiToken, apiTokenHashExists, getDashboardUserAuthRow } from '../db.js'
+import { resolveWriteTenant } from '../db/write-tenant.js'
 import type { Role } from './rbac.js'
 
 export type AuthResult =
-  | { kind: 'token'; role?: Role; tenantId?: string; tokenName?: string }
+  // agentId: the agent a registered token belongs to (api_tokens.agent_id), the server-side identity
+  // that replaces the self-reported X-Agent-Id header. tenantContextMissing: a fleet_agent token of a
+  // shared agent with no fresh tenant context. It authenticates, but the gate refuses it (403) and
+  // checkPermission denies it too: no tenant can be named, so none is guessed (fail closed).
+  | { kind: 'token'; role?: Role; tenantId?: string; tokenName?: string; agentId?: string; tenantContextMissing?: boolean }
   | { kind: 'device'; device: string; deviceId: number }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string; role?: Role; tenantId?: string | null }
@@ -45,7 +50,7 @@ export type AuthResult =
 // would re-grant admin and bypass revocation).
 
 type ApiTokenResult =
-  | { found: true; role: Role; tenantId: string; name: string }
+  | { found: true; role: Role; tenantId: string; name: string; agentId: string | null }
   | { found: false; registeredButInvalid: boolean }
 
 export function resolveApiToken(bearer: string): ApiTokenResult {
@@ -55,10 +60,25 @@ export function resolveApiToken(bearer: string): ApiTokenResult {
   const validRow = getValidApiToken(hash, now)
 
   if (validRow) {
-    return { found: true, role: validRow.role as Role, tenantId: validRow.tenant_id, name: validRow.name }
+    return { found: true, role: validRow.role as Role, tenantId: validRow.tenant_id, name: validRow.name, agentId: validRow.agent_id }
   }
 
   return { found: false, registeredButInvalid: apiTokenHashExists(hash) }
+}
+
+// A fleet_agent token names the agent, and the tenant is NOT on the token: it is the tenant of the
+// work the agent is doing right now (a fresh agent_tenant_context for a shared agent, the one tenant
+// of an agent that serves only one, 'default' for a fleet-internal one). A shared agent without a
+// fresh context has no tenant to name: the result carries tenantContextMissing and the gate refuses.
+function resolveFleetAgentToken(found: Extract<ApiTokenResult, { found: true }>): AuthResult {
+  const agentId = found.agentId
+  // The table CHECK keeps this from happening; a row without an agent would be a token of nobody.
+  if (!agentId) return { kind: 'none' }
+  const tenantId = resolveWriteTenant(agentId)
+  if (tenantId === null) {
+    return { kind: 'token', role: 'fleet_agent', tokenName: found.name, agentId, tenantContextMissing: true }
+  }
+  return { kind: 'token', role: 'fleet_agent', tenantId, tokenName: found.name, agentId }
 }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -140,7 +160,14 @@ export function resolveAuth(
   if (bearerValue && dbLookups) {
     const result = resolveApiToken(bearerValue)
     if (result.found) {
-      return { kind: 'token', role: result.role, tenantId: result.tenantId, tokenName: result.name }
+      if (result.role === 'fleet_agent') return resolveFleetAgentToken(result)
+      return {
+        kind: 'token',
+        role: result.role,
+        tenantId: result.tenantId,
+        tokenName: result.name,
+        ...(result.agentId ? { agentId: result.agentId } : {}),
+      }
     }
     if (result.registeredButInvalid) {
       return { kind: 'none' }

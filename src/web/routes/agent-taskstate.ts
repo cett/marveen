@@ -1,4 +1,5 @@
 import { readBody, json } from '../http-helpers.js'
+import { denyForeignAgent } from '../fleet-agent-identity.js'
 import {
   readTaskState,
   writeTaskState,
@@ -21,6 +22,14 @@ import type { RouteContext } from './types.js'
 
 export async function tryHandleAgentTaskState(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
+
+  // Every variant names the agent in its first path segment; a fleet_agent token reaches only its own.
+  const anyMatch = path.match(/^\/api\/agent-taskstate\/([^/]+)/)
+  if (anyMatch) {
+    let named: string
+    try { named = decodeURIComponent(anyMatch[1]) } catch { json(res, { error: 'invalid_value', field: 'agent', hint: 'Malformed percent-encoding in path' }, 400); return true }
+    if (denyForeignAgent(ctx, named)) return true
+  }
 
   const replayMatch = path.match(/^\/api\/agent-taskstate\/([^/]+)\/replay$/)
   if (replayMatch && method === 'GET') {

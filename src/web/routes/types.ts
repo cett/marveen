@@ -49,6 +49,11 @@ export interface RouteContext {
    *  auth/role/tenant truth -- a route may use it only to WARN (never block)
    *  when a write's claimed owner doesn't match who actually sent it. */
   agentId?: string
+  /** The agent a registered api_tokens row belongs to (set for a fleet_agent token, and for a named
+   *  admin token that carries an agent id as a label). Unlike `agentId` this IS an identity: it comes
+   *  from the credential, not from the caller's own claim. For a fleet_agent token `agentId` above is
+   *  set to the same value, so the owner-mismatch warnings compare against the real identity. */
+  tokenAgentId?: string
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

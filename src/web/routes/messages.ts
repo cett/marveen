@@ -104,8 +104,21 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note, assign, complete, envelope: envelopeRaw, no_pii_scrub } = JSON.parse(body.toString()) as
+    const { from: claimedFrom, to, content, origin_note, assign, complete, envelope: envelopeRaw, no_pii_scrub } = JSON.parse(body.toString()) as
       { from: string; to: string; content: string; origin_note?: string; assign?: boolean; complete?: boolean; envelope?: unknown; no_pii_scrub?: boolean }
+    // The sender of a fleet_agent token's message is the agent the token names: an omitted `from` is
+    // filled in, a different one is refused. (The other principals keep claiming any registered
+    // sender, as before; the shared dashboard token cannot be held to one.)
+    let from = claimedFrom
+    if (ctx.role === 'fleet_agent') {
+      const own = ctx.tokenAgentId ?? ''
+      if (claimedFrom?.trim() && sanitizeAgentIdent(claimedFrom) !== sanitizeAgentIdent(own)) {
+        logger.warn({ claimed: claimedFrom.trim(), tokenAgent: own }, 'Rejected /api/messages POST: from differs from the agent of the token')
+        json(res, { error: 'forbidden', hint: 'from must be the agent of the token' }, 403)
+        return true
+      }
+      from = own
+    }
     // Free-form handoff envelope -- a string is stored verbatim
     // (caller already serialized it), anything else is JSON.stringify'd so a
     // plain object body still round-trips through the TEXT column.
@@ -174,7 +187,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // have its `from` registered in partner_senders for that tenant. Fleet
     // agents and the owner do not reach this branch -- they always use the
     // default/admin path below. Audit both accept and reject for partner sends.
-    const isPartnerTenant = ctx.tenantId != null && ctx.tenantId !== 'default'
+    // A fleet_agent token is not a partner: its tenant is the one its agent is serving right now
+    // (never an external sender), and `from` was already pinned to the token's agent above.
+    const isPartnerTenant = ctx.role !== 'fleet_agent' && ctx.tenantId != null && ctx.tenantId !== 'default'
     if (isPartnerTenant) {
       const cleanFrom = sanitizeAgentIdent(from)
       const allowed = isAuthorizedPartnerSender(cleanFrom, ctx.tenantId!)

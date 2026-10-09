@@ -15,12 +15,15 @@ export interface ApiTokenRow {
   revoked_at: number | null
   last_used_at: number | null
   rotated_from: number | null
+  /** The agent the token belongs to; NULL for a token that names no agent (the dashboard token). */
+  agent_id: string | null
 }
 
 export interface ValidApiTokenRow {
   role: string
   tenant_id: string
   name: string
+  agent_id: string | null
 }
 
 /** Enrolls the dashboard token as an admin token. Returns 1 when a row was inserted, 0 when it already existed. */
@@ -39,7 +42,7 @@ export function enrollDashboardApiToken(tokenHash: string, now: number): number 
 export function getValidApiToken(tokenHash: string, now: number): ValidApiTokenRow | undefined {
   return db
     .prepare(
-      `SELECT role, tenant_id, name FROM api_tokens
+      `SELECT role, tenant_id, name, agent_id FROM api_tokens
        WHERE token_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
     )
     .get(tokenHash, now) as ValidApiTokenRow | undefined
@@ -65,14 +68,26 @@ export function insertApiToken(row: {
   tenantId: string
   createdAt: number
   expiresAt: number | null
+  agentId?: string | null
 }): ApiTokenRow {
   return db
     .prepare(
-      `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, agent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        RETURNING *`,
     )
-    .get(row.tokenHash, row.name, row.role, row.tenantId, row.createdAt, row.expiresAt) as ApiTokenRow
+    .get(row.tokenHash, row.name, row.role, row.tenantId, row.createdAt, row.expiresAt, row.agentId ?? null) as ApiTokenRow
+}
+
+/** The not-revoked, not-expired tokens of one agent, newest first. */
+export function listActiveApiTokensForAgent(agentId: string, now: number): ApiTokenRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM api_tokens
+       WHERE agent_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all(agentId, now) as ApiTokenRow[]
 }
 
 export function revokeApiToken(id: number, now: number): void {
@@ -84,7 +99,7 @@ export function revokeApiToken(id: number, now: number): void {
  * a moment with zero or two valid tokens. Returns the new row.
  */
 export function rotateApiToken(
-  old: Pick<ApiTokenRow, 'id' | 'name' | 'role' | 'tenant_id'>,
+  old: Pick<ApiTokenRow, 'id' | 'name' | 'role' | 'tenant_id' | 'agent_id'>,
   newTokenHash: string,
   now: number,
   expiresAt: number | null,
@@ -92,9 +107,9 @@ export function rotateApiToken(
   db.transaction(() => {
     db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ?').run(now, old.id)
     db.prepare(
-      `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, rotated_from)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(newTokenHash, old.name, old.role, old.tenant_id, now, expiresAt, old.id)
+      `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, rotated_from, agent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(newTokenHash, old.name, old.role, old.tenant_id, now, expiresAt, old.id, old.agent_id)
   })()
   return db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(newTokenHash) as ApiTokenRow
 }
