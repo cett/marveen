@@ -32,6 +32,13 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
   listAgentNames: () => ['alpha', 'beta', 'solo', 'shared'],
   isKnownAgent: (n: string) => ['alpha', 'beta', 'solo', 'shared', 'main-agent'].includes(n),
 }))
+// The skill routes mirror every write to <project>/agents/<name>/.claude/skills on disk: keep the test off the real tree.
+vi.mock('../web/skill-regen.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/skill-regen.js')>()),
+  regenSingleSkillFile: () => ({ written: false, reason: 'test' }),
+  removeGeneratedSkillFile: () => {},
+  removeGeneratedCompanionFile: () => {},
+}))
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
