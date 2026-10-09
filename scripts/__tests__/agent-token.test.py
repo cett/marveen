@@ -167,5 +167,25 @@ class TestNoLeak(Base):
         self.assertEqual(h["Content-Type"], "application/json")
 
 
+class TestKinds(Base):
+    def test_shared_kind_uses_the_shared_token_even_with_an_own_token(self):
+        self.put("agents/a/.agent-token", "own-a")
+        self.put("store/.dashboard-token", "shared")
+        r = self.res(agent_id="a", kind=at.KIND_SHARED)
+        self.assertEqual((r.token, r.source), ("shared", at.SOURCE_SHARED))
+        self.assertEqual(r.headers()["X-Agent-Id"], "a")
+
+    def test_shared_kind_with_no_shared_token_is_none(self):
+        self.put("agents/a/.agent-token", "own-a")
+        self.assertEqual(self.res(agent_id="a", kind=at.KIND_SHARED).source, at.SOURCE_NONE)
+
+    def test_operator_kind_reads_the_operator_file_and_falls_back(self):
+        self.put("store/.dashboard-token", "shared")
+        self.assertEqual(self.res(kind=at.KIND_OPERATOR).source, at.SOURCE_FALLBACK)
+        self.put("store/.operator-token", "op")
+        r = self.res(kind=at.KIND_OPERATOR)
+        self.assertEqual((r.token, r.source), ("op", at.SOURCE_OPERATOR))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,9 +20,16 @@ import os
 
 AGENT_TOKEN_FILENAME = ".agent-token"
 SHARED_TOKEN_FILENAME = ".dashboard-token"
+OPERATOR_TOKEN_FILENAME = ".operator-token"
+
+KIND_AGENT = "agent"
+KIND_OPERATOR = "operator"
+KIND_SHARED = "shared"
 
 SOURCE_AGENT = "agent"
 SOURCE_FALLBACK = "shared-fallback"
+SOURCE_SHARED = "shared"
+SOURCE_OPERATOR = "operator"
 SOURCE_NONE = "none"
 
 _ENV_TOKEN_FILE = "MARVEEN_AGENT_TOKEN_FILE"
@@ -104,23 +111,38 @@ def agent_token_path(agent_id, install=None):
     return os.path.join(install, "agents", agent_id, AGENT_TOKEN_FILENAME)
 
 
-def resolve(agent_id=None, cwd=None, store_dir=None, install=None):
+def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGENT):
     """Pick the token for this process. agent_id wins over cwd; with neither, the process cwd
-    decides. store_dir is where .dashboard-token lives (default <install>/store)."""
+    decides. store_dir is where .dashboard-token lives (default <install>/store).
+
+    kind: KIND_AGENT (default) is the agent's own token with the shared fallback. KIND_OPERATOR is
+    the operator's named admin token (store/.operator-token) with the same fallback, for the
+    operator scripts. KIND_SHARED is the shared token on purpose, for the endpoints that are still
+    admin:all and that a fleet_agent token would be refused on until T4 decides them."""
     install = install or install_dir()
+    store = store_dir or os.path.join(install, "store")
     if not agent_id:
         agent_id = agent_id_from_cwd(cwd, install)
     if agent_id and ("/" in agent_id or agent_id.startswith(".")):
         agent_id = None
 
-    explicit = os.environ.get(_ENV_TOKEN_FILE, "").strip()
-    own = _read(explicit) if explicit else (_read(agent_token_path(agent_id, install)) if agent_id else "")
-    if own:
-        return Resolved(own, SOURCE_AGENT, agent_id)
+    shared = lambda: _read(os.path.join(store, SHARED_TOKEN_FILENAME))
+    if kind == KIND_SHARED:
+        t = shared()
+        return Resolved(t, SOURCE_SHARED if t else SOURCE_NONE, agent_id)
 
-    shared = _read(os.path.join(store_dir or os.path.join(install, "store"), SHARED_TOKEN_FILENAME))
-    if shared:
-        return Resolved(shared, SOURCE_FALLBACK, agent_id)
+    if kind == KIND_OPERATOR:
+        own, own_source = _read(os.path.join(store, OPERATOR_TOKEN_FILENAME)), SOURCE_OPERATOR
+    else:
+        explicit = os.environ.get(_ENV_TOKEN_FILE, "").strip()
+        own = _read(explicit) if explicit else (_read(agent_token_path(agent_id, install)) if agent_id else "")
+        own_source = SOURCE_AGENT
+    if own:
+        return Resolved(own, own_source, agent_id)
+
+    t = shared()
+    if t:
+        return Resolved(t, SOURCE_FALLBACK, agent_id)
     return Resolved("", SOURCE_NONE, agent_id)
 
 
