@@ -79,15 +79,20 @@ export function insertApiToken(row: {
     .get(row.tokenHash, row.name, row.role, row.tenantId, row.createdAt, row.expiresAt, row.agentId ?? null) as ApiTokenRow
 }
 
-/** The not-revoked, not-expired tokens of one agent, newest first. */
-export function listActiveApiTokensForAgent(agentId: string, now: number): ApiTokenRow[] {
+/** The not-revoked, not-expired tokens carrying this name, newest first. */
+export function listActiveApiTokensByName(name: string, now: number): ApiTokenRow[] {
   return db
     .prepare(
       `SELECT * FROM api_tokens
-       WHERE agent_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+       WHERE name = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
        ORDER BY created_at DESC, id DESC`,
     )
-    .all(agentId, now) as ApiTokenRow[]
+    .all(name, now) as ApiTokenRow[]
+}
+
+/** Revokes every active token that belongs to the agent (an agent that is deleted keeps no credential). */
+export function revokeApiTokensForAgent(agentId: string, now: number): number {
+  return db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL').run(now, agentId).changes
 }
 
 export function revokeApiToken(id: number, now: number): void {
