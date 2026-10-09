@@ -21,7 +21,7 @@ describe('generated CLAUDE.md: schedule-create example', () => {
 
   it('goes through the wrapper prefix, which names the agent (--agent) and so sends X-Agent-Id', () => {
     expect(example[0]).toMatch(/^\$\{api\} POST \/api\/schedules '/)
-    expect(SRC).toMatch(/return `\$\{origin\}bash \$\{wrapper\} --agent \$\{name\}`/)
+    expect(SRC).toMatch(/return `DASHBOARD_BASE_URL=\$\{dashboardOrigin\} bash \$\{wrapper\} --agent \$\{name\}`/)
   })
 
   it('explains the header and the tenant_required outcome for a shared agent', () => {

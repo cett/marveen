@@ -34,7 +34,7 @@ Output: 0-2 konkrét skill-javaslat. Mindegyikhez: cím + 1 mondat indoklás + "
 # A backfill {"count":0} = NINCS mit backfillelni (minden kész), NEM 0 vektorizált.
 CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-health
 # Ha NEM 100%, hívd meg a backfill endpoint-ot (Ollamaval embeddeli a hiányzó ID-kat):
-bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories/backfill
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories/backfill
 
 # Antikvált hot-tier (>7 napos hot: az utolsó hozzáférés, ennek hiányában a létrehozás ideje régebbi 7 napnál)
 CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-stale-hot 7

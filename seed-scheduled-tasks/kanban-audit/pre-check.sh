@@ -8,6 +8,7 @@
 # The calls go through the API wrapper, which resolves the agent's own token
 # (the token never appears on a command line).
 API="{{INSTALL_DIR}}/scripts/agent-api.sh"
+export DASHBOARD_BASE_URL="http://localhost:{{WEB_PORT}}"
 AGENT_ID="{{MAIN_AGENT_ID}}"
 command -v curl >/dev/null 2>&1 || exit 1
 command -v python3 >/dev/null 2>&1 || exit 1

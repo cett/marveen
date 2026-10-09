@@ -104,9 +104,11 @@ describe('PORTCHAIN1: the port chain follows WEB_PORT on a NON-default port', ()
       ownerName: 'Owner', webPort: Number(PORT),
     })
     expect(rendered).not.toContain('3420')
-    expect(rendered).toContain(`localhost:${PORT}/api/memories`)
-    expect(rendered).toContain(`localhost:${PORT}/api/daily-log`)
-    expect(rendered).toContain(`localhost:${PORT}/api/agent-taskstate`)
+    // The calls go through the API wrapper; the port is named outright in front of each one.
+    const call = (path: string) => `DASHBOARD_BASE_URL=http://localhost:${PORT} bash /opt/install/scripts/agent-api.sh POST ${path}`
+    expect(rendered).toContain(call('/api/memories'))
+    expect(rendered).toContain(call('/api/daily-log'))
+    expect(rendered).toContain(call('/api/agent-taskstate'))
     expect(() => JSON.parse(rendered)).not.toThrow()
   })
 

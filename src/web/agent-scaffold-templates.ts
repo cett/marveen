@@ -30,12 +30,11 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
 // command line, in the generated file or in a transcript; it also sends X-Agent-Id. The path MUST be
 // absolute: sub-agents run from agents/<name>/, where a relative `scripts/agent-api.sh` does not exist.
 const apiWrapperPath = join(PROJECT_ROOT, 'scripts', 'agent-api.sh')
-// The recipe prefix for one agent. Without DASHBOARD_PUBLIC_URL the wrapper finds the dashboard by
-// itself (the install's WEB_PORT); a distributed deployment names its origin outright.
+// The recipe prefix for one agent. The origin is named outright (as the old curl examples did): the
+// wrapper's own lookup reads the install's .env, which need not hold the port this process runs on.
 function apiCmd(name: string): string {
   const wrapper = /^[\w./-]+$/.test(apiWrapperPath) ? apiWrapperPath : `'${apiWrapperPath.replace(/'/g, "'\\''")}'`
-  const origin = dashboardOrigin === `http://localhost:${WEB_PORT}` ? '' : `DASHBOARD_BASE_URL=${dashboardOrigin} `
-  return `${origin}bash ${wrapper} --agent ${name}`
+  return `DASHBOARD_BASE_URL=${dashboardOrigin} bash ${wrapper} --agent ${name}`
 }
 // Identity values the template substitution injects. Pulled out so the
 // substitution is a pure, parameterizable function (the runtime binds these to

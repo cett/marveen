@@ -90,14 +90,12 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
   })
 
   // The examples call the API through the wrapper prefix (apiCmd), which is where the origin goes:
-  // a DASHBOARD_PUBLIC_URL deployment gets DASHBOARD_BASE_URL=<origin> in front, a localhost one
-  // lets the wrapper find the dashboard itself.
+  // DASHBOARD_BASE_URL=<origin> in front of every call (the public URL when set, else localhost:port).
   it('puts the dashboard origin into the wrapper prefix (apiCmd), not into each example', () => {
     const apiCmdStart = src.indexOf('function apiCmd(')
     expect(apiCmdStart).toBeGreaterThan(0)
     const apiCmdBody = src.slice(apiCmdStart, src.indexOf('\n}\n', apiCmdStart))
     expect(apiCmdBody).toContain('DASHBOARD_BASE_URL=${dashboardOrigin}')
-    expect(apiCmdBody).toContain('http://localhost:${WEB_PORT}')
     expect(apiCmdBody).toContain('--agent ${name}')
   })
 
