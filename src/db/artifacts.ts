@@ -58,6 +58,11 @@ const DEFAULT_MIME: Record<ArtifactKind, string> = {
   binary:   'application/octet-stream',
 }
 
+/** The agent that stored the artifact with this cloud URL, if any. */
+export function getArtifactAgentByCloudUrl(cloudUrl: string): string | undefined {
+  return (db.prepare('SELECT agent_id FROM artifacts WHERE cloud_url = ?').get(cloudUrl) as { agent_id: string } | undefined)?.agent_id
+}
+
 export function createArtifact(params: CreateArtifactParams): { id: string; updated: boolean } {
   const mime = params.mime ?? DEFAULT_MIME[params.kind]
   const meta = JSON.stringify(params.meta ?? {})

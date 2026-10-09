@@ -20,6 +20,11 @@ import { tryHandleSpans } from '../web/routes/spans.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import { tryHandleAdminTokens } from '../web/routes/tokens.js'
+import { tryHandleHookAudit } from '../web/routes/hook-audit.js'
+import { tryHandleSkillUsage } from '../web/routes/skill-usage.js'
+import { tryHandleToolLog } from '../web/routes/tool-log.js'
+import { tryHandleArtifacts } from '../web/routes/artifacts.js'
+import { tryHandleSkills } from '../web/routes/skills.js'
 import type { RouteContext, RouteHandler } from '../web/routes/types.js'
 
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
@@ -38,7 +43,8 @@ function mint(raw: string, agentId: string | null, role: 'fleet_agent' | 'admin'
 
 const HANDLERS: RouteHandler[] = [
   tryHandleConversationLedger, tryHandleAgentState, tryHandleAgentTaskState, tryHandleDailyLog,
-  tryHandleSpans, tryHandleMessages, tryHandleApprovals, tryHandleAdminTokens,
+  tryHandleSpans, tryHandleMessages, tryHandleApprovals, tryHandleAdminTokens, tryHandleHookAudit,
+  tryHandleSkillUsage, tryHandleToolLog, tryHandleArtifacts, tryHandleSkills,
 ]
 
 // The gate of web.ts in miniature: same calls, same order.
@@ -337,5 +343,57 @@ describe('token management with agent_id', () => {
     expect((await request('tok-boo', 'GET', '/api/conversation-ledger/boo/recent')).status).toBe(200)
     expect((await request('the-file-token', 'DELETE', `/api/admin/tokens/${id}/revoke`)).status).toBe(200)
     expect((await request('tok-boo', 'GET', '/api/conversation-ledger/boo/recent')).status).toBe(401)
+  })
+})
+
+describe('telemetry, artifacts and skills hold a fleet_agent to its own agent', () => {
+  it('hook-audit, tool-log and skill-usage: own and omitted agent_id pass, a foreign one is a 403 and nothing is stored', async () => {
+    const audit = (agent?: string) => request('tok-rick', 'POST', '/api/hook-audit', { hook_type: 'PreToolUse', verdict: 'allow', ...(agent ? { agent_id: agent } : {}) })
+    expect((await audit('rick')).status).toBe(200)
+    expect((await audit()).status).toBe(200)
+    expect((await audit('boo')).status).toBe(403)
+    const rows = getDb().prepare('SELECT agent_id FROM hook_audit_log').all() as { agent_id: string | null }[]
+    expect(rows.map(r => r.agent_id)).toEqual(['rick', 'rick'])
+    const tool = (agent: string) => request('tok-rick', 'POST', '/api/tool-log', { session_id: 's', tool_name: 'Bash', agent_id: agent })
+    expect((await tool('rick')).status).toBe(200)
+    expect((await tool('boo')).status).toBe(403)
+    const usage = (agent: string) => request('tok-rick', 'POST', '/api/skill-usage', { agent_id: agent, skill_name: 'x', trigger_type: 'tool_call' })
+    expect((await usage('rick')).status).toBe(200)
+    expect((await usage('boo')).status).toBe(403)
+  })
+
+  it('artifacts: own agent only, and another agent cloud artifact cannot be taken over', async () => {
+    const make = (token: string, agent: string, extra: object = {}) =>
+      request(token, 'POST', '/api/artifacts', { agent_id: agent, title: 't', kind: 'markdown', content: 'c', ...extra })
+    expect((await make('tok-rick', 'rick')).status).toBe(201)
+    expect((await make('tok-rick', 'boo')).status).toBe(403)
+    expect((await make('tok-boo', 'boo', { cloud_url: 'https://claude.ai/artifact/x', source: 'cloud:artifact' })).status).toBe(201)
+    expect((await make('tok-rick', 'rick', { cloud_url: 'https://claude.ai/artifact/x', source: 'cloud:artifact' })).status).toBe(403)
+  })
+
+  it('approvals: the list and a single read show only the own requests', async () => {
+    const mine = await request('tok-rick', 'POST', '/api/approvals', { agent_id: 'rick', category: 'c', action_description: 'mine' })
+    const theirs = await request('tok-boo', 'POST', '/api/approvals', { agent_id: 'boo', category: 'c', action_description: 'theirs' })
+    const list = await request('tok-rick', 'GET', '/api/approvals')
+    expect((list.body['items'] as { id: string }[]).map(i => i.id)).toEqual([mine.body['id']])
+    expect(list.body['oldest_pending']).toBeNull()
+    expect((await request('tok-rick', 'GET', '/api/approvals?agent=boo')).status).toBe(403)
+    expect((await request('tok-rick', 'GET', `/api/approvals/${theirs.body['id']}`)).status).toBe(404)
+    expect((await request('the-file-token', 'GET', `/api/approvals/${theirs.body['id']}`)).status).toBe(200)
+  })
+
+  it('skills: only the own agent skills are writable; global, other agents and tenant skills are not', async () => {
+    const put = (token: string, id: string) => request(token, 'PUT', `/api/skills/sql/${encodeURIComponent(id)}`, { content: '---\nname: s\ndescription: d\n---\nbody' })
+    expect((await put('tok-rick', 'agent/rick/my-skill')).status).toBe(201)
+    expect((await put('tok-rick', 'agent/rick/my-skill')).status).toBe(200)
+    expect((await put('tok-rick', 'agent/boo/their-skill')).status).toBe(403)
+    expect((await put('tok-rick', 'global/shared-skill')).status).toBe(403)
+    expect((await request('tok-rick', 'POST', '/api/skills/sql', { name: 'tenant skill', content: 'c' })).status).toBe(403)
+    expect((await request('tok-rick', 'DELETE', `/api/skills/sql/${encodeURIComponent('agent/boo/their-skill')}`)).status).toBe(403)
+    expect((await request('tok-rick', 'GET', `/api/skills/sql/${encodeURIComponent('agent/rick/my-skill')}`)).status).toBe(200)
+    expect((await request('tok-rick', 'PUT', `/api/skills/sql/${encodeURIComponent('agent/rick/my-skill')}/files/${encodeURIComponent('scripts/a.sh')}`, { content: 'echo' })).status).toBe(201)
+    await put('the-file-token', 'agent/boo/their-skill')
+    expect((await request('tok-rick', 'PUT', `/api/skills/sql/${encodeURIComponent('agent/boo/their-skill')}/files/${encodeURIComponent('scripts/a.sh')}`, { content: 'echo' })).status).toBe(404)
+    expect((await request('tok-rick', 'DELETE', `/api/skills/sql/${encodeURIComponent('agent/rick/my-skill')}`)).status).toBe(200)
   })
 })

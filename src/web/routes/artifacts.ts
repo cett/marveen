@@ -1,9 +1,10 @@
 import { readJsonBody, json } from '../http-helpers.js'
 import {
-  createArtifact, listArtifacts, countArtifacts, getArtifact, deleteArtifact, getArtifactStats,
+  createArtifact, getArtifactAgentByCloudUrl, listArtifacts, countArtifacts, getArtifact, deleteArtifact, getArtifactStats,
   renameArtifact, ARTIFACT_TITLE_MAX_LENGTH,
   ARTIFACT_KINDS, type ArtifactKind,
 } from '../../db/artifacts.js'
+import { denyForeignAgent } from '../fleet-agent-identity.js'
 import { signViewToken, verifyViewToken } from '../view-token.js'
 import { logger } from '../../logger.js'
 import { parsePagination } from '../utils/pagination.js'
@@ -71,6 +72,17 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
   }
   if (body.content === undefined || body.content === null) {
     json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true
+  }
+
+  // A fleet_agent token stores artifacts as its own agent only, and cannot take over (UPSERT on the
+  // cloud URL) an artifact another agent stored.
+  if (denyForeignAgent(ctx, body.agent_id.trim())) return true
+  if (ctx.role === 'fleet_agent' && body.cloud_url?.trim()) {
+    const owner = getArtifactAgentByCloudUrl(body.cloud_url.trim())
+    if (owner !== undefined && owner !== ctx.tokenAgentId) {
+      json(ctx.res, { error: 'forbidden', hint: 'That cloud artifact belongs to another agent' }, 403)
+      return true
+    }
   }
 
   const isAdmin = ctx.role === 'admin'

@@ -662,6 +662,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const isAdmin = ctx.role === 'admin'
   const callerTenantId = ctx.tenantId ?? null
 
+  // A fleet_agent token (an agent's own credential) may change only the skills of ITS OWN agent
+  // ("agent/<token agent>/<name>", fleet tenant). It may read those plus the fleet-wide global ones.
+  // It never writes a global skill, another agent's skill or a tenant-level skill (those are read by
+  // other agents' sessions, so a write there would be a way into them): that stays admin work.
+  const fleetAgent = ctx.role === 'fleet_agent'
+  const isOwnAgentSkill = (skillId: string): boolean =>
+    fleetAgent && !!ctx.tokenAgentId && skillId.startsWith(`agent/${ctx.tokenAgentId}/`) && fileBackedSkillSpec(skillId) !== null
+  const fleetReadable = (skillId: string, skillTenant: string): boolean =>
+    fleetAgent && skillTenant === 'fleet' && (skillId.startsWith('global/') || isOwnAgentSkill(skillId))
+
   // Skill ids contain '/' ("global/<dir>", "agent/<id>/<dir>"), so clients send
   // them percent-encoded (encodeURIComponent) as ONE path segment; the raw
   // '/' form cannot be matched by the [^/]+ segments below. url.pathname keeps
@@ -680,12 +690,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
 
   if (sqlSkillsBase && method === 'GET') {
-    const rows = isAdmin ? listAllSkills() : (callerTenantId ? listSkillsForTenant(callerTenantId) : [])
+    let rows = isAdmin ? listAllSkills() : (callerTenantId ? listSkillsForTenant(callerTenantId) : [])
+    if (fleetAgent) {
+      const have = new Set(rows.map(r => r.id))
+      rows = [...rows, ...listAllSkills().filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
+    }
     json(res, { skills: rows })
     return true
   }
 
   if (sqlSkillsBase && method === 'POST') {
+    if (fleetAgent) { json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
     if (!isAdmin && !callerTenantId) { json(res, { error: 'forbidden', hint: 'No tenant scope' }, 403); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
@@ -713,7 +728,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     const row = getSkill(id)
     if (!row) { json(res, { error: 'not_found' }, 404); return true }
-    if (!isAdmin) {
+    if (!isAdmin && !fleetReadable(id, row.tenant_id)) {
       if (!callerTenantId) { json(res, { error: 'not_found' }, 404); return true }
       if (row.tenant_id !== callerTenantId) {
         const grants = listSkillAccess(id)
@@ -732,8 +747,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // the PUT (admin only, fleet tenant): the skill writers are DB-first, so an agent that
     // has the content must be able to create the row, not just patch an existing one.
     const createSpec = existing ? null : fileBackedSkillSpec(id)
-    if (!existing && !(createSpec && isAdmin)) { json(res, { error: 'not_found' }, 404); return true }
-    if (existing && !isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    if (fleetAgent && !isOwnAgentSkill(id)) { json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
+    if (!existing && !(createSpec && (isAdmin || isOwnAgentSkill(id)))) { json(res, { error: 'not_found' }, 404); return true }
+    if (existing && !isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
@@ -764,9 +780,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (sqlSkillIdMatch && method === 'DELETE') {
     const id = decodeSegment(sqlSkillIdMatch[1])
     if (id === null) return badSegment()
+    if (fleetAgent && !isOwnAgentSkill(id)) { json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
-    if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    if (!isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     const companionFiles = listSkillFiles(id)   // read before the delete removes them
     deleteSkill(id)
     // The file is only a generated cache of the row: drop it too, or the loader
@@ -787,8 +804,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     const skill = getSkill(id)
     if (!skill) { json(res, { error: 'not_found' }, 404); return true }
-    const canWrite = isAdmin || callerTenantId === skill.tenant_id
-    const canRead = canWrite || (!!callerTenantId && listSkillAccess(id).some(g => g.tenant_id === callerTenantId))
+    const canWrite = isAdmin || (fleetAgent ? isOwnAgentSkill(id) : callerTenantId === skill.tenant_id)
+    const canRead = canWrite || fleetReadable(id, skill.tenant_id) || (!!callerTenantId && listSkillAccess(id).some(g => g.tenant_id === callerTenantId))
     if (!canRead) { json(res, { error: 'not_found' }, 404); return true }
     const fileView = (f: { rel_path: string; content: Buffer; mode: number; updated_at: number }) =>
       ({ rel_path: f.rel_path, size: f.content.length, mode: f.mode, updated_at: f.updated_at })

@@ -135,6 +135,15 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (!page) return true
     const { limit, offset } = page
 
+    // A fleet_agent token lists its OWN requests, whatever ?agent= says, and gets no fleet-wide
+    // aggregates (the oldest-pending row would be another agent's request).
+    if (ctx.role === 'fleet_agent') {
+      if (agent_id !== undefined && denyForeignAgent(ctx, agent_id)) return true
+      const own = { agent_id: ctx.tokenAgentId, category, status }
+      json(res, { items: listApprovals({ ...own, limit, offset }), total: countApprovals(own), offset, limit, counts: {}, oldest_pending: null })
+      return true
+    }
+
     // Admin sees all tenants; non-admin session users are scoped to their own
     // tenant. Bearer-token (fleet agents) callers are treated as admin-equivalent
     // for reads (they use the global dashboard token, no tenant affiliation).
@@ -166,7 +175,13 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const idMatch = path.match(/^\/api\/approvals\/([^/]+)$/)
   if (idMatch && method === 'GET') {
     const approval = getApproval(idMatch[1])
-    if (!approval) {
+    // A fleet_agent reads its own requests only; a tenant user, those of its own tenant. Both get the
+    // same 404 as a missing id (no existence oracle).
+    const hidden = approval !== undefined && (
+      (ctx.role === 'fleet_agent' && approval.agent_id !== ctx.tokenAgentId) ||
+      (ctx.auth?.kind === 'session' && ctx.role !== 'admin' && approval.tenant_id !== ctx.tenantId)
+    )
+    if (!approval || hidden) {
       json(res, { error: 'not_found', hint: 'Not found' }, 404)
       return true
     }
