@@ -31,30 +31,19 @@ describe('feedback survey is disabled at every launch site', () => {
   })
 })
 
-describe('generated sub-agent CLAUDE.md: no-reader rules', () => {
+describe('no-reader rules block (single source of truth)', () => {
   const src = read('src/web/agent-scaffold-templates.ts')
-  const start = src.indexOf('## Panel és döntéskérés (NINCS OLVASÓ)')
-  const end = src.indexOf('## Delegálás és QA', start)
-  const block = start >= 0 ? src.slice(start, end) : ''
 
-  it('has the section, placed before the delegation section', () => {
-    expect(start).toBeGreaterThan(0)
-    expect(end).toBeGreaterThan(start)
+  it('is appended to a generated CLAUDE.md as a marker block, not left to the model', () => {
+    expect(src).toMatch(/NO_READER_BEGIN \+ '\\n' \+ buildNoReaderBody\(\) \+ '\\n' \+ NO_READER_END/)
+    // the LLM prompt no longer carries a hand-copied version of the section
+    const promptStart = src.indexOf('export async function generateClaudeMd')
+    const promptEnd = src.indexOf('Output ONLY the markdown content', promptStart)
+    expect(src.slice(promptStart, promptEnd)).not.toContain('NINCS OLVASÓ')
   })
 
-  it('says nobody reads the pane and to ask the coordinator through /api/messages', () => {
-    expect(block).toContain('A tmux panelt senki nem olvassa')
-    expect(block).toContain('/api/messages')
-    expect(block).toContain('${BOT_NAME}')
-  })
-
-  it('treats a tool rejection without a human message as an interrupt, not a decision', () => {
-    expect(block).toContain('emberi üzenet nélküli tool-elutasítás')
-    expect(block).toContain('automatikus megszakítás')
-  })
-
-  it('forbids file paths assembled from variables', () => {
-    expect(block).toContain('változóból')
-    expect(block).toContain('literális utat')
+  it('is ensured on every sub-agent respawn', () => {
+    const spawn = read('src/web/agent-process-spawn.ts')
+    expect(spawn).toContain('ensureNoReaderSection(name)')
   })
 })
