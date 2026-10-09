@@ -68,6 +68,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import agent_token  # noqa: E402
 
 # Commands no agent decides on its own -- each destroys data or state
 # irreversibly, not a style preference.
@@ -102,24 +103,17 @@ def _web_port():
     return port or '3420'
 
 
-def _dashboard_token():
-    try:
-        with open(os.path.join(_project_root(), 'store', '.dashboard-token')) as f:
-            return f.read().strip()
-    except OSError:
-        return ''
-
-
-def _post(base_url, token, endpoint, payload):
-    """Best-effort POST -- never raises, never affects the verdict."""
-    if not token:
+def _post(base_url, auth, endpoint, payload):
+    """Best-effort POST -- never raises, never affects the verdict. A missing token only means the
+    audit row is not written: it never changes what the gate decides."""
+    if not auth.token:
         return
     try:
         urllib.request.urlopen(
             urllib.request.Request(
                 f'{base_url}{endpoint}',
                 data=json.dumps(payload).encode(),
-                headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {token}'},
+                headers=auth.headers({'Content-Type': 'application/json'}),
                 method='POST',
             ),
             timeout=3,
@@ -129,9 +123,9 @@ def _post(base_url, token, endpoint, payload):
 
 
 def _notify_block(agent_id, tool_name, reason):
-    token = _dashboard_token()
+    auth = agent_token.resolve(agent_id=agent_id, store_dir=os.path.join(_project_root(), 'store'))
     base_url = f'http://localhost:{_web_port()}/api'
-    _post(base_url, token, '/hook-audit', {
+    _post(base_url, auth, '/hook-audit', {
         'agent_id': agent_id,
         'hook_type': 'PreToolUse',
         'verdict': 'deny',
