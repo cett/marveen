@@ -65,7 +65,8 @@ marveen/
 
   store/                  -- runtime state (gitignored)
     claudeclaw.db         -- SQLite database
-    .dashboard-token      -- Bearer token (0600)
+    .dashboard-token      -- shared Bearer token (0600), the fallback and the admin-only calls until enforcement
+    .operator-token       -- the operator's own admin token (0600), `npm run agent-tokens -- issue-operator`
     .claude-oauth-token   -- Fleet OAuth token (0600)
     model-fallback-state.json -- active model-fallback downgrades (per agent)
     command-task-health.json  -- failure streaks of type=command scheduled tasks
@@ -73,6 +74,7 @@ marveen/
   agents/                 -- fleet agents directory
     <name>/
       CLAUDE.md           -- agent instructions
+      .agent-token        -- the agent's own API token (0600); the main agent's lives in the project root
       .mcp.json           -- MCP configuration
       .claude/channels/   -- channel token + pairing state
 

@@ -22,18 +22,43 @@ cp templates/CLAUDE.md.tpl agents/<name>/CLAUDE.md
 cp templates/.mcp.json.tpl agents/<name>/.mcp.json
 ```
 
+### Ágens API tokenek és az API wrapper
+
+Minden ágens a saját tokenjével hívja a dashboard API-t (`agents/<id>/.agent-token`; a fő ágensé a projekt gyökerében van), nem a közös `store/.dashboard-token`-nel. Az üzemeltetőnek is van sajátja (`store/.operator-token`). Kezelésük a telepítést futtató gépen megy, a dashboard állhat:
+
+```bash
+npm run agent-tokens -- issue [--rotate] [--dry-run] [<ágens>...]   # alapból a fő ágens és minden ágens
+npm run agent-tokens -- issue-operator [--rotate]
+npm run agent-tokens -- list
+npm run agent-tokens -- revoke <ágens>
+```
+
+A fájlok `0600` jogúak, a parancs a fájlt írja ki, tokent soha, a mentés szándékosan kihagyja őket (visszaállítás után újra ki kell adni; a `doctor.sh` jelzi a hiányzót).
+
+A receptek, hookok és scriptek az API-t a `scripts/agent-api.sh`-n át hívják: az választja ki a megfelelő tokent és stdin-en adja a curl-nek, így nem látszik se a folyamatlistában, se a transzkriptben:
+
+```bash
+bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main] METHOD /api/... [BODY | - | @fájl]
+```
+
+- `agent` (alapértelmezett) a hívó ágens saját tokenje; az ágens a `--agent`, a `MARVEEN_AGENT_ID` vagy a munkakönyvtár (`agents/<id>/`, a projekt gyökere a fő ágens) alapján dől el.
+- `operator` az üzemeltető tokenje. `admin` az olyan hívásra való, amihez admin szerep kell bárki hívja: a fő ágens a sajátját használja, mindenki más a közöset. `shared` szándékosan a közös token. `main` a fő ágensként lép fel (rendszerscriptek).
+- Azokra a végpontokra, ahol egy sima ágens-tokent elutasítanak (ágens start/stop/restart, vault, egress-engedélyezőlista írás, globális skill írás), az érvényesítésig a közös token marad: használj `--token admin` vagy `--token operator` kapcsolót.
+- A hiányzó vagy üres token-fájl a közös tokenre esik vissza, és a kérés viszi az `X-Agent-Id`-t, így a `GET /api/token-shadow` mutatja, ki esett vissza. Ha a token megvan, de elutasítják (visszavont, elavult), nincs újrapróba a közösön: az elfedné a hibát.
+- Kilépési kód: 0 2xx-nél, 22 bármilyen más HTTP státusznál (a státusz stderr-re megy, a törzs továbbra is kiíródik).
+
+Érvényesítés még nincs: a közös token mindenhol tovább működik.
+
 ### Ágens indítása és leállítása
 
 Az ágenseket a dashboard kezeli automatikusan. Kézzel:
 
 ```bash
 # Indítás
-curl -s -X POST http://localhost:3420/api/agents/<name>/start \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)"
+bash scripts/agent-api.sh --token operator POST /api/agents/<name>/start
 
 # Leállítás
-curl -s -X POST http://localhost:3420/api/agents/<name>/stop \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)"
+bash scripts/agent-api.sh --token operator POST /api/agents/<name>/stop
 ```
 
 Vagy közvetlenül a tmux session-t is kezelheted:
@@ -48,8 +73,7 @@ tmux kill-session -t agent-<name>  # leállítás
 A flotta-ágensek a `fleet_blackboard` táblában jelzik egymásnak az aktuális állapotukat. A blackboard lekérdezhető az API-n:
 
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  http://localhost:3420/api/blackboard
+bash scripts/agent-api.sh GET /api/blackboard
 ```
 
 Egy ágens munka közben frissíti a saját sorát (`status: active/done/blocked`), így a többi ágens és a dashboard látja, ki mivel foglalkozik.
@@ -59,10 +83,7 @@ Egy ágens munka közben frissíti a saját sorát (`status: active/done/blocked
 Az ágensek az `agent_messages` tábla üzenetsoron keresztül kommunikálnak:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"from":"kuldo-agent","to":"cimzett-agent","content":"Feladat leírása"}'
+bash scripts/agent-api.sh POST /api/messages '{"from":"kuldo-agent","to":"cimzett-agent","content":"Feladat leírása"}'
 ```
 
 Az üzenet a cél-ágens tmux session-jébe kerül injektálásra; az ágens feldolgozza és a saját csatornáján válaszol.
@@ -94,10 +115,7 @@ Az API tokenek a `/api/v1/admin/tokens` végponton kezelhetők:
 
 ```bash
 # Új token létrehozása
-curl -s -X POST http://localhost:3420/api/v1/admin/tokens \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{
+bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
     "name": "partner-token",
     "role": "agent",
     "tenant_id": "acme-corp",
@@ -107,10 +125,7 @@ curl -s -X POST http://localhost:3420/api/v1/admin/tokens \
 
 ```bash
 # Token visszavonása
-curl -s -X PATCH http://localhost:3420/api/v1/admin/tokens/<id> \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"revoked": true}'
+bash scripts/agent-api.sh --token operator PATCH /api/v1/admin/tokens/<id> '{"revoked": true}'
 ```
 
 ### B2B partner beléptetése
@@ -436,14 +451,10 @@ Egy "partnergép" ágens üzenete a helyi `agent_messages` táblán keresztül k
 
 ```bash
 # Saját public key megjelenítése (beléptetéshez)
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  http://localhost:3420/api/federation/key
+bash scripts/agent-api.sh --token operator GET /api/federation/key
 
 # Partnergép kulcsának regisztrálása
-curl -s -X POST http://localhost:3420/api/federation/enroll \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"bundle": "<base64-bundle-a-partnertol>"}'
+bash scripts/agent-api.sh --token operator POST /api/federation/enroll '{"bundle": "<base64-bundle-a-partnertol>"}'
 ```
 
 A kulcscsere mindkét irányban elvégzendő; a beállítás a dashboard Beállítások > Föderáció oldalán is elvégezhető.
