@@ -33,6 +33,16 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+// Optional observer of every request body that readBody finishes reading (the Phase T2 shadow
+// counter registers one to see which agent ids a body names). It is told AFTER the body is complete,
+// cannot change it, and a throwing observer is ignored: it must never fail or delay a request.
+type RequestBodyObserver = (req: http.IncomingMessage, body: Buffer) => void
+let requestBodyObserver: RequestBodyObserver | null = null
+
+export function setRequestBodyObserver(fn: RequestBodyObserver | null): void {
+  requestBodyObserver = fn
+}
+
 export function readBody(
   req: http.IncomingMessage,
   opts: { maxBytes?: number } = {},
@@ -50,7 +60,13 @@ export function readBody(
       }
       chunks.push(c)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('end', () => {
+      const body = Buffer.concat(chunks)
+      if (requestBodyObserver) {
+        try { requestBodyObserver(req, body) } catch { /* an observer fault never fails the request */ }
+      }
+      resolve(body)
+    })
     req.on('error', reject)
   })
 }
