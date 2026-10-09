@@ -8,6 +8,10 @@
 #     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
 #       (memories, kanban, artifacts, artifacts_fts*, vec_artifacts* tables)
 #     store/.dashboard-token   (dashboard bearer)
+#     NOT in the archive, on purpose: the per-agent tokens (agents/*/.agent-token, the main agent's
+#     .agent-token in the project root) and store/.operator-token. They are re-issuable and a backup
+#     does not need them. After a restore run `npm run agent-tokens -- issue` and
+#     `npm run agent-tokens -- issue-operator`; scripts/doctor.sh reports a missing one.
 #     store/vault.json         (ENCRYPTED secret vault; the key is NOT in this archive)
 #     .env                     (project root secrets)
 #     scheduled-tasks.json     (legacy, if present)
