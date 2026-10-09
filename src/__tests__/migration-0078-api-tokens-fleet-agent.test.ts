@@ -59,20 +59,20 @@ describe('0078 rebuild', () => {
 
   it('accepts a fleet_agent token only with an agent_id', () => {
     applyMigrations(db, dir)
-    db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at, agent_id) VALUES ('h-rick', 'fleet-agent:rick', 'fleet_agent', 1, 'rick')").run()
+    db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at, agent_id) VALUES ('h-alpha', 'fleet-agent:alpha', 'fleet_agent', 1, 'alpha')").run()
     expect(() => db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at) VALUES ('h-x', 'n', 'fleet_agent', 1)").run()).toThrow(/CHECK/)
     expect(() => db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at, agent_id) VALUES ('h-y', 'n', 'fleet_agent', 1, '')").run()).toThrow(/CHECK/)
   })
 
   it('lets a token of another role carry an agent_id as a label, and still refuses an unknown role', () => {
     applyMigrations(db, dir)
-    db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at, agent_id) VALUES ('h-main', 'main', 'admin', 1, 'jarvis')").run()
+    db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at, agent_id) VALUES ('h-main', 'main', 'admin', 1, 'main-agent')").run()
     expect(() => db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at) VALUES ('h-z', 'n', 'root', 1)").run()).toThrow(/CHECK/)
   })
 
   it('allows several tokens per agent (rotation) and keeps token_hash unique', () => {
     applyMigrations(db, dir)
-    const ins = db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at, agent_id) VALUES (?, 'fleet-agent:rick', 'fleet_agent', 1, 'rick')")
+    const ins = db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at, agent_id) VALUES (?, 'fleet-agent:alpha', 'fleet_agent', 1, 'alpha')")
     ins.run('h-1')
     ins.run('h-2')
     expect(() => ins.run('h-1')).toThrow(/UNIQUE/)

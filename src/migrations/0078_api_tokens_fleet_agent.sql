@@ -31,7 +31,7 @@ DROP TABLE api_tokens;
 CREATE TABLE api_tokens (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash    TEXT    NOT NULL UNIQUE,   -- SHA-256 hex of the raw token
-  name          TEXT    NOT NULL,          -- human label, e.g. "default-admin", "fleet-agent:rick"
+  name          TEXT    NOT NULL,          -- human label, e.g. "default-admin", "fleet-agent:alpha"
   role          TEXT    NOT NULL
                   CHECK(role IN ('admin', 'agent', 'read_only', 'viewer', 'fleet_agent')),
   tenant_id     TEXT    NOT NULL DEFAULT 'default',
