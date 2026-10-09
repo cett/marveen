@@ -19,15 +19,14 @@ set -uo pipefail
 
 # base dir = the parent of this script's dir (scripts/..), so it works from any CWD / any install
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PORT="${MARVEEN_WEB_PORT:-3420}"
-TOKEN_FILE="$BASE/store/.dashboard-token"
-URL="http://localhost:${PORT}/api/messages"
+# The call goes through scripts/agent-api.sh: the sender's OWN token (the dashboard takes the sender
+# identity from it), the shared token only when that file is missing; never on a command line.
+API="$BASE/scripts/agent-api.sh"
 LOG="$BASE/store/agent-msg-failures.log"
 
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
 [ "$C" = "-" ] && C="$(cat)"
-[ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
-TOKEN="$(cat "$TOKEN_FILE")"
+[ -r "$API" ] || { echo "FAIL: the API wrapper is missing: $API"; exit 1; }
 
 # --- Homoglyph gate, BEFORE the payload is built -----------------------------
 # On the RAW text, not on the JSON: json.dumps escapes a Cyrillic letter into
@@ -83,12 +82,13 @@ fi
 
 BODY="$(FROM="$FROM" TO="$TO" C="$C" python3 -c 'import json,os; print(json.dumps({"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}))')"
 
+ERRF="$(mktemp "${TMPDIR:-/tmp}/agent-msg.XXXXXX")"; trap 'rm -f "$ERRF"' EXIT
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
   attempt=$((attempt+1))
-  RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
-  CODE="$(printf '%s' "$RESP" | tail -n1)"
-  JSON="$(printf '%s' "$RESP" | sed '$d')"
+  JSON="$(printf '%s' "$BODY" | bash "$API" --agent "$FROM" POST /api/messages - 2>"$ERRF")"; RC=$?
+  if [ "$RC" -eq 0 ]; then CODE=200
+  else CODE="$(sed -n 's/^agent-api: HTTP \([0-9]*\).*/\1/p' "$ERRF" | head -n1)"; fi
   ID="$(printf '%s' "$JSON" | python3 -c 'import sys,json
 try:
   d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")

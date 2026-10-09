@@ -39,7 +39,7 @@ BIN="$SANDBOX/bin"; mkdir -p "$BIN"
 # dependence on the working tree's store/. HELPER keeps pointing at the copy.
 FAKE="$SANDBOX/repo"
 mkdir -p "$FAKE/scripts/lib" "$FAKE/store"
-cp "$HELPER" "$FAKE/scripts/agent-msg.sh"
+cp "$HELPER" "$FAKE/scripts/agent-msg.sh"; cp "$ROOT/scripts/agent-api.sh" "$FAKE/scripts/agent-api.sh"
 cp "$ROOT"/scripts/lib/homoglyph.py "$ROOT"/scripts/lib/mixed_script.py "$FAKE/scripts/lib/"
 printf 'test-token\n' > "$FAKE/store/.dashboard-token"
 HELPER="$FAKE/scripts/agent-msg.sh"
@@ -49,6 +49,8 @@ HELPER="$FAKE/scripts/agent-msg.sh"
 cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "${CURL_CALLS:-/dev/null}"
+# The wrapper hands the body over as a file (--data-binary @file), never in argv: record it too.
+for a in "$@"; do case "$a" in @*) { cat "${a#@}"; echo; } >> "${CURL_CALLS:-/dev/null}" ;; esac; done
 printf '{"id":4242}\n200'
 STUB
 chmod +x "$BIN/curl"
@@ -72,6 +74,7 @@ send() {  # send <content-or-dash> [extra env assignments via ENVX]
 ENVX= send "tiszta magyar szoveg, arvizturo tukorfurogep"
 ok "clean text is still sent" "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED"
 ok "  ...and the helper reports the id" "$(printf '%s' "$OUT" | grep -q 'id=4242' && echo 0 || echo 1)" "out: $OUT"
+ok "  ...and the token is never on the curl command line" "$(grep -q 'test-token' "$SANDBOX/calls.txt" && echo 1 || echo 0)" "the token reached curl's argv"
 
 # THE ASSERTION THAT FAILS WITHOUT THE GATE.
 ENVX= send "szennyezett sz${CY}veg egy lathatatlan betuvel"
