@@ -93,6 +93,12 @@ check "--token admin: main agent sends its own token" grep -q 'Bearer own-m' "$T
 bash "$W" --agent a --token admin POST /api/agents/x/restart >/dev/null 2>&1
 check "--token admin: any other agent sends the shared token" grep -q 'Bearer shared' "$T/stdin"
 
+# 7c main kind: the main agent's token whoever runs it
+reset; echo own-m > "$INSTALL/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
+( cd "$T" && bash "$W" --token main GET /api/agents >/dev/null 2>&1 )
+check "--token main: main agent token from any cwd" grep -q 'Bearer own-m' "$T/stdin"
+check "--token main: names the main agent" grep -qx 'X-Agent-Id: m' "$T/argv"
+
 # 8 main agent: token in the install root, cwd decides the identity
 reset; echo own-m > "$INSTALL/.agent-token"
 ( cd "$INSTALL" && bash "$W" GET /api/agents >/dev/null 2>&1 )

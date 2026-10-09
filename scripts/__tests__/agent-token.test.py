@@ -188,6 +188,16 @@ class TestKinds(Base):
         a = self.res(agent_id="a", kind=at.KIND_ADMIN)
         self.assertEqual((a.token, a.source), ("shared", at.SOURCE_SHARED))
 
+    def test_main_kind_acts_as_the_main_agent_whoever_runs_it(self):
+        self.put(".agent-token", "own-m")
+        self.put("agents/a/.agent-token", "own-a")
+        r = self.res(agent_id="a", kind=at.KIND_MAIN)
+        self.assertEqual((r.token, r.source, r.agent_id), ("own-m", at.SOURCE_AGENT, "m"))
+        self.put("store/.dashboard-token", "shared")
+        os.remove(os.path.join(self.install, ".agent-token"))
+        r = self.res(kind=at.KIND_MAIN)
+        self.assertEqual((r.source, r.agent_id), (at.SOURCE_FALLBACK, "m"))
+
     def test_operator_kind_reads_the_operator_file_and_falls_back(self):
         self.put("store/.dashboard-token", "shared")
         self.assertEqual(self.res(kind=at.KIND_OPERATOR).source, at.SOURCE_FALLBACK)
