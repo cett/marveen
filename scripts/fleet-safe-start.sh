@@ -34,7 +34,6 @@ INSTALL_DIR="$(cd "$HERE/.." && pwd)"
 _env_val() { [[ -f "$INSTALL_DIR/.env" ]] && grep -E "^$1=" "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"'"'"'\r'; }
 MAIN_AGENT_ID="$(_env_val MAIN_AGENT_ID)"; MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 STORE="${MARVEEN_STORE:-$HOME/marveen/store}"
-TOKEN_FILE="$STORE/.dashboard-token"
 DASH="${MARVEEN_DASHBOARD_URL:-http://localhost:3420}"
 # Core = started first / never throttled. Defaults to THIS install's main agent
 # so the primary bot always comes up; override with MARVEEN_CORE_AGENTS.
@@ -43,12 +42,14 @@ STAGGER_SEC="${MARVEEN_STAGGER_SEC:-20}"
 
 log() { echo "[fleet-safe-start] $*"; }
 
+# Restarting agents is admin:all: the operator's token, through the wrapper (never on a command line).
+api() { MARVEEN_STORE_DIR="$STORE" DASHBOARD_BASE_URL="$DASH" bash "$HERE/agent-api.sh" --token operator "$@" 2>/dev/null; }
+
 [[ -x "$GATE" ]] || { log "gate script not found/executable: $GATE"; exit 1; }
-[[ -f "$TOKEN_FILE" ]] || { log "no dashboard token at $TOKEN_FILE"; exit 1; }
-TOKEN="$(cat "$TOKEN_FILE")"
+[[ -f "$STORE/.operator-token" || -f "$STORE/.dashboard-token" ]] || { log "no dashboard token in $STORE"; exit 1; }
 
 # Fetch agents (name + running) from the dashboard.
-agents_json="$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$DASH/api/agents" 2>/dev/null)"
+agents_json="$(api --max-time 10 GET /api/agents)"
 [[ -z "$agents_json" ]] && { log "could not reach $DASH/api/agents"; exit 1; }
 
 # Emit "name running" lines. running is true/false.
@@ -86,8 +87,7 @@ start_one() {
   fi
   local body='{}'; (( FRESH )) && body='{"fresh":true}'
   local ok
-  ok="$(curl -s --max-time 30 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-        -d "$body" "$DASH/api/agents/$name/start" 2>/dev/null)"
+  ok="$(printf '%s' "$body" | api --max-time 30 POST "/api/agents/$name/start" -)"
   if printf '%s' "$ok" | grep -q '"ok":true'; then
     log "started: $name"; return 0
   fi
