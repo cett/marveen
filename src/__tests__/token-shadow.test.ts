@@ -31,7 +31,8 @@ vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<ty
 
 const MAIN = 'agent-main'
 
-const sharedAuth: AuthResult = { kind: 'token' }
+const sharedAuth: AuthResult = { kind: 'token' } // the file token before it is enrolled in api_tokens
+const enrolledSharedAuth: AuthResult = { kind: 'token', role: 'admin', tenantId: 'default', tokenName: 'dashboard' } // what it resolves as once enrolled
 const fleetAuth = (agent: string): AuthResult => ({ kind: 'token', role: 'fleet_agent', tenantId: 'default', tokenName: `fleet_agent:${agent}`, agentId: agent })
 const mainAdminAuth: AuthResult = { kind: 'token', role: 'admin', tokenName: `admin:${MAIN}`, agentId: MAIN }
 const operatorAuth: AuthResult = { kind: 'token', role: 'admin', tokenName: 'operator' }
@@ -146,6 +147,10 @@ describe('resolveShadowCaller', () => {
   it('the main agent named admin token is an identity, not a fleet_agent and not the shared token', () => {
     expect(resolveShadowCaller(mainAdminAuth, undefined)).toEqual({ caller: MAIN, source: 'token', shared: false, fleetAgent: false })
   })
+  it('the shared token enrolled in api_tokens (named dashboard, no agent) is the shared token too', () => {
+    expect(resolveShadowCaller(enrolledSharedAuth, 'agent-a')).toEqual({ caller: 'agent-a', source: 'self_declared', shared: true, fleetAgent: false })
+    expect(resolveShadowCaller({ ...enrolledSharedAuth, agentId: 'agent-a' }, undefined)).toMatchObject({ shared: false, source: 'token' }) // a name does not outrank an agent
+  })
   it('the shared file token takes the X-Agent-Id header as a self-declaration', () => {
     expect(resolveShadowCaller(sharedAuth, 'agent-a')).toEqual({ caller: 'agent-a', source: 'self_declared', shared: true, fleetAgent: false })
     expect(resolveShadowCaller(sharedAuth, undefined)).toEqual({ caller: '', source: 'none', shared: true, fleetAgent: false })
@@ -208,6 +213,11 @@ describe('shared_token_use', () => {
       ['/api/kanban', 'agent-a', 'self_declared', 'curl', 2],
       ['/api/kanban/:id', 'agent-a', 'self_declared', 'none', 1],
     ])
+  })
+
+  it('counts the enrolled shared token the same way', () => {
+    observe(enrolledSharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
+    expect(rows('shared_token_use').map((r) => [r.caller, r.caller_source, r.count])).toEqual([['agent-a', 'self_declared', 1]])
   })
 
   it('does not count the other credentials, the main-agent token, the operator token or a fleet token', () => {

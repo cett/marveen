@@ -93,6 +93,8 @@ beforeEach(() => {
   mint('tok-alpha', 'alpha')
   mint('tok-beta', 'beta')
   mint('tok-main-agent', 'main-agent', 'admin')
+  // The shared dashboard token as production has it: enrolled in api_tokens as 'dashboard', admin, no agent.
+  insertApiToken({ tokenHash: sha('the-enrolled-token'), name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: null })
 })
 
 describe('the counter sees what the routes decide', () => {
@@ -113,6 +115,13 @@ describe('the counter sees what the routes decide', () => {
     const r = await request('the-file-token', 'GET', '/api/daily-log?agent=beta', undefined, { 'x-agent-id': 'alpha' })
     expect(r.status).toBe(200) // the counter changes nothing: the shared token is still admin
     expect(rows('shared_token_use')).toEqual([expect.objectContaining({ route: '/api/daily-log', caller: 'alpha', caller_source: 'self_declared', count: 1 })])
+    expect(rows('agent_id_mismatch')).toEqual([expect.objectContaining({ caller: 'alpha', caller_source: 'self_declared', target: 'beta' })])
+  })
+
+  it('the shared token enrolled as dashboard in api_tokens (the production shape) is counted like the file token', async () => {
+    const r = await request('the-enrolled-token', 'GET', '/api/daily-log?agent=beta', undefined, { 'x-agent-id': 'alpha' })
+    expect(r.status).toBe(200)
+    expect(rows('shared_token_use')).toEqual([expect.objectContaining({ caller: 'alpha', caller_source: 'self_declared', count: 1 })])
     expect(rows('agent_id_mismatch')).toEqual([expect.objectContaining({ caller: 'alpha', caller_source: 'self_declared', target: 'beta' })])
   })
 

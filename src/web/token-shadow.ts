@@ -4,8 +4,8 @@
 // outage), and the numbers live in the aggregate table token_usage_shadow (migration 0079).
 //
 // What is counted (category -> meaning):
-//   shared_token_use                 a request authenticated with the shared file-based dashboard
-//                                    token (no registered token name, no agent). Who it was is the
+//   shared_token_use                 a request authenticated with the shared dashboard token (the
+//                                    file token, enrolled in api_tokens as 'dashboard'; no agent). Who it was is the
 //                                    X-Agent-Id header: a SELF-DECLARATION (caller_source
 //                                    'self_declared'), or nobody ('none').
 //   agent_id_mismatch                a non-main-agent caller names ANOTHER agent on an endpoint that
@@ -69,6 +69,13 @@ export const TOKEN_SHADOW_CATEGORIES = [
 ] as const
 export type TokenShadowCategory = (typeof TOKEN_SHADOW_CATEGORIES)[number]
 
+/**
+ * The name the shared dashboard token is enrolled under in api_tokens (db/api-tokens.ts). Once
+ * enrolled it resolves as a NAMED admin token with no agent, so the shared token is either the
+ * file token with no name (before enrollment) or the token carrying this name.
+ */
+export const DASHBOARD_TOKEN_NAME = 'dashboard'
+
 /** The admin read endpoint; never counted itself (reading the counter must not move it). */
 export const TOKEN_SHADOW_ROUTE = '/api/token-shadow'
 
@@ -131,7 +138,7 @@ export function resolveShadowCaller(auth: AuthResult, headerAgentId: string | un
   if (auth.agentId) {
     return { caller: cleanAgentId(auth.agentId), source: 'token', shared: false, fleetAgent: auth.role === 'fleet_agent' }
   }
-  if (auth.tokenName) return null // a registered token that names no agent: not the shared token
+  if (auth.tokenName && auth.tokenName !== DASHBOARD_TOKEN_NAME) return null // a registered token that names no agent (the operator's): not the shared token
   const declared = cleanAgentId(headerAgentId)
   return { caller: declared, source: declared ? 'self_declared' : 'none', shared: true, fleetAgent: false }
 }
