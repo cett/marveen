@@ -9,6 +9,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
+import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile, importCompanionFilesOfDir } from '../skill-regen.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from '../../skill-files.js'
@@ -671,6 +672,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     fleetAgent && !!ctx.tokenAgentId && skillId.startsWith(`agent/${ctx.tokenAgentId}/`) && fileBackedSkillSpec(skillId) !== null
   const fleetReadable = (skillId: string, skillTenant: string): boolean =>
     fleetAgent && skillTenant === 'fleet' && (skillId.startsWith('global/') || isOwnAgentSkill(skillId))
+  // Phase T2 shadow counter: a skill write this narrowing refuses is counted (never changes the answer).
+  const countFleetSkillDenial = (skillId: string): void => recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
 
   // Skill ids contain '/' ("global/<dir>", "agent/<id>/<dir>"), so clients send
   // them percent-encoded (encodeURIComponent) as ONE path segment; the raw
@@ -700,7 +703,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillsBase && method === 'POST') {
-    if (fleetAgent) { json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
+    if (fleetAgent) { countFleetSkillDenial(''); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
     if (!isAdmin && !callerTenantId) { json(res, { error: 'forbidden', hint: 'No tenant scope' }, 403); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
@@ -747,7 +750,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // the PUT (admin only, fleet tenant): the skill writers are DB-first, so an agent that
     // has the content must be able to create the row, not just patch an existing one.
     const createSpec = existing ? null : fileBackedSkillSpec(id)
-    if (fleetAgent && !isOwnAgentSkill(id)) { json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
+    if (fleetAgent && !isOwnAgentSkill(id)) { countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     if (!existing && !(createSpec && (isAdmin || isOwnAgentSkill(id)))) { json(res, { error: 'not_found' }, 404); return true }
     if (existing && !isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
@@ -780,7 +783,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (sqlSkillIdMatch && method === 'DELETE') {
     const id = decodeSegment(sqlSkillIdMatch[1])
     if (id === null) return badSegment()
-    if (fleetAgent && !isOwnAgentSkill(id)) { json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
+    if (fleetAgent && !isOwnAgentSkill(id)) { countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
@@ -828,7 +831,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
-      if (!canWrite) { json(res, { error: 'not_found' }, 404); return true }
+      if (!canWrite) { if (fleetAgent) countFleetSkillDenial(id); json(res, { error: 'not_found' }, 404); return true }
 
       if (method === 'DELETE') {
         const f = getSkillFile(id, rel)
