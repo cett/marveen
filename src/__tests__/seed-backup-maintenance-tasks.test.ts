@@ -87,11 +87,11 @@ describe('seed task shape', () => {
     expect(resort).toBeGreaterThan(-1)
     expect(links).toBeGreaterThan(resort)
     expect(command).toContain('{{WEB_PORT}}')
-    // curl -f makes an HTTP error fail, and each step must be gated on `"ok":true`
-    // and chained with && so a failed resort skips (and fails) the whole task.
-    expect(command.match(/curl -sf /g)).toHaveLength(2)
+    // Each step must be gated on `"ok":true` (an HTTP error body has none) and chained with &&
+    // so a failed resort skips (and fails) the whole task.
+    expect(command.match(/bash "\$API" /g)).toHaveLength(2)
     expect(command.match(/grep -q '"ok":true'/g)).toHaveLength(2)
-    expect(command).toContain("| grep -q '\"ok\":true' && curl")
+    expect(command).toContain("| grep -q '\"ok\":true' && bash")
   })
 })
 
@@ -145,9 +145,13 @@ describe('seeding into the schedules DB', () => {
       type: 'command', prompt: '', enabled: 1, agent: 'main-agent',
       schedule: '15 3 * * *', timeout_ms: 480000, fail_threshold: 1, status: 'live',
     })
-    expect(maint?.command).toContain("cat '/opt/marveen/store/.dashboard-token'")
-    expect(maint?.command).toContain('http://localhost:4567/api/memories/resort')
-    expect(maint?.command).toContain('http://localhost:4567/api/memories/links/maintain')
+    // The calls go through the API wrapper (own token resolved there, never on the command line).
+    expect(maint?.command).toContain("'/opt/marveen/scripts/agent-api.sh'")
+    expect(maint?.command).toContain("DASHBOARD_BASE_URL='http://localhost:4567'")
+    expect(maint?.command).toContain('--agent main-agent')
+    expect(maint?.command).not.toMatch(/dashboard-token|Bearer/)
+    expect(maint?.command).toContain('/api/memories/resort')
+    expect(maint?.command).toContain('/api/memories/links/maintain')
     expect(maint?.command).not.toContain('{{')
     expect(backup?.command).not.toContain('{{')
   })

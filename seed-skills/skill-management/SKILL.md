@@ -88,8 +88,7 @@ description: {one-line, specific about triggers}
 4. Save it through the API (the skills DB is the source of truth, `SKILL.md` is a generated cache): `PUT /api/skills/sql/global%2F{name}` with body `{"content": "<the SKILL.md text>"}` (id `agent/<agent>/{name}` for an agent-local skill; the `/` in the id must be `%2F`; build the JSON with a script, e.g. `python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))'`)
    ```bash
    python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))' < draft.md \
-     | curl -s -X PUT "http://localhost:3420/api/skills/sql/global%2F{name}" \
-         -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d @-
+     | bash scripts/agent-api.sh --token admin PUT /api/skills/sql/global%2F{name} -
    ```
 5. Update `.skill-index.md` if it exists
 
@@ -120,8 +119,7 @@ Rules:
 2. Ask for confirmation: "Delete skill '{name}'? This removes the skill and its generated directory."
 3. On confirmation delete the row; the server removes the generated file and directory itself (only if the file was not hand-edited):
 ```bash
-curl -s -X DELETE "http://localhost:3420/api/skills/sql/global%2F${NAME}" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)"
+bash scripts/agent-api.sh --token admin DELETE "/api/skills/sql/global%2F${NAME}"
 ```
 4. Update `.skill-index.md` if it exists
 

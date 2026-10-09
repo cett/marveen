@@ -10,11 +10,13 @@ description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done arch
 
 ## Autonómia-szint (config-vezérelt, KÖTELEZŐ ELŐSZÖR)
 
-Olvasd be az API-ból (a szintek az `autonomy_categories` táblában élnek): `curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/autonomy | python3 -c "import sys,json; [print(c['key'], c['level']) for c in json.load(sys.stdin)['categories'] if c['key'] in ('kanban_archive_done','kanban_stuck_nudge')]"`.
+Az API hívásokat az `agent-api.sh` wrapperen át küldd (a saját tokenedet maga oldja fel és adja át a curl-nek). A dashboard címe `http://localhost:{{WEB_PORT}}`; ha a wrapper nem találná meg, add meg: `DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}}`.
+
+Olvasd be az API-ból (a szintek az `autonomy_categories` táblában élnek): `bash {{INSTALL_DIR}}/scripts/agent-api.sh --agent {{MAIN_AGENT_ID}} GET /api/autonomy | python3 -c "import sys,json; [print(c['key'], c['level']) for c in json.load(sys.stdin)['categories'] if c['key'] in ('kanban_archive_done','kanban_stuck_nudge')]"`.
 
 A két kategória szintje szabályozza a 2. és 4. lépést:
-- **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj magadtól; POST /api/approvals (Bearer token, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_archive_done", action_description pl. "X db 7+ napos done kártya archiválásra vár") -- ez MEGJELENIK a Jóváhagyások képernyőn ÉS értesít (notifyMainAgent). Kérdezd le a döntést GET /api/approvals/<id>-vel: approved → archiválj, rejected/timeout → ne, naplózd. level 1 → csak jelezd a számot.
-- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól; POST /api/approvals (Bearer token, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_stuck_nudge", action_description a beakadt kártyák listájával) -- a Jóváhagyások képernyőn látszik + értesít. approved → pingeld az assignee-ket, rejected/timeout → ne. level 1 → csak listázd a beakadt taskokat.
+- **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj magadtól; POST /api/approvals (a wrapperen át, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_archive_done", action_description pl. "X db 7+ napos done kártya archiválásra vár") -- ez MEGJELENIK a Jóváhagyások képernyőn ÉS értesít (notifyMainAgent). Kérdezd le a döntést GET /api/approvals/<id>-vel: approved → archiválj, rejected/timeout → ne, naplózd. level 1 → csak jelezd a számot.
+- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól; POST /api/approvals (a wrapperen át, kötelező `agent_id`: "{{MAIN_AGENT_ID}}", category "kanban_stuck_nudge", action_description a beakadt kártyák listájával) -- a Jóváhagyások képernyőn látszik + értesít. approved → pingeld az assignee-ket, rejected/timeout → ne. level 1 → csak listázd a beakadt taskokat.
 
 Két külön hiba-eset, ne keverd össze:
 - **Az API nem érhető el** (hálózati hiba, timeout, nem 200-as válasz) → default **level 1** (biztonságos alapállapot: csak jelez, nem cselekszik).
@@ -26,8 +28,7 @@ Két külön hiba-eset, ne keverd össze:
 
 2. **Tisztítás**: 7+ napos done kártyák archiválása. A kanban lista a nem archivált kártyákat adja, az `updated_at` Unix másodperc:
    ```bash
-   TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
-   curl -s -H "Authorization: Bearer $TOKEN" http://localhost:{{WEB_PORT}}/api/kanban | python3 -c "
+   bash {{INSTALL_DIR}}/scripts/agent-api.sh --agent {{MAIN_AGENT_ID}} GET /api/kanban | python3 -c "
    import sys, json, time
    week_ago = time.time() - 7 * 86400
    for c in json.load(sys.stdin):
@@ -35,14 +36,13 @@ Két külön hiba-eset, ne keverd össze:
            print(c['id'])
    "
    ```
-   Minden kapott `<id>`-re: `curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:{{WEB_PORT}}/api/kanban/<id>/archive`.
+   Minden kapott `<id>`-re: `bash {{INSTALL_DIR}}/scripts/agent-api.sh --agent {{MAIN_AGENT_ID}} POST /api/kanban/<id>/archive`.
 
 3. **Beakadt task detection** (előző audit óta nem mozdult): in_progress kártyák amik `updated_at < last_audit_at`:
    ```bash
-   TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
-   LAST=$(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:{{WEB_PORT}}/api/agent-state/{{MAIN_AGENT_ID}}/kanban_audit_last_audit_at | python3 -c "import sys,json; print(int(json.load(sys.stdin).get('value', 0)))" 2>/dev/null)
+   LAST=$(bash {{INSTALL_DIR}}/scripts/agent-api.sh --agent {{MAIN_AGENT_ID}} GET /api/agent-state/{{MAIN_AGENT_ID}}/kanban_audit_last_audit_at | python3 -c "import sys,json; print(int(json.load(sys.stdin).get('value', 0)))" 2>/dev/null)
    [ -z "$LAST" ] && LAST=0
-   curl -s -H "Authorization: Bearer $TOKEN" http://localhost:{{WEB_PORT}}/api/kanban | LAST="$LAST" python3 -c "
+   bash {{INSTALL_DIR}}/scripts/agent-api.sh --agent {{MAIN_AGENT_ID}} GET /api/kanban | LAST="$LAST" python3 -c "
    import sys, json, os, time
    last = int(os.environ['LAST'])
    rows = [c for c in json.load(sys.stdin) if c['status'] == 'in_progress' and c['updated_at'] < last]
@@ -58,7 +58,7 @@ Két külön hiba-eset, ne keverd össze:
 
 5. **State frissítés** (a futás VÉGÉN), upsert az `agent_state` tárolóba:
    ```bash
-   curl -s -X PUT -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" -H "Content-Type: application/json" -d "{\"value\": $(date +%s)}" http://localhost:{{WEB_PORT}}/api/agent-state/{{MAIN_AGENT_ID}}/kanban_audit_last_audit_at
+   bash {{INSTALL_DIR}}/scripts/agent-api.sh --agent {{MAIN_AGENT_ID}} PUT /api/agent-state/{{MAIN_AGENT_ID}}/kanban_audit_last_audit_at "{\"value\": $(date +%s)}"
    ```
 
 6. **Delegálatlan kártyák**: in_progress/waiting/planned amiknek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.

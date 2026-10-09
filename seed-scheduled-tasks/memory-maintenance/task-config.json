@@ -4,7 +4,7 @@
   "enabled": true,
   "type": "command",
   "description": "Napi memória-karbantartás LLM nélkül: tier-átsorolás és memory_versions prune (POST /api/memories/resort), majd a link-gráf karbantartása (POST /api/memories/links/maintain). Hibánál a command-task health Telegram-riasztást küld.",
-  "command": "TOKEN=$(cat '{{INSTALL_DIR}}/store/.dashboard-token'); curl -sf --max-time 120 -X POST http://localhost:{{WEB_PORT}}/api/memories/resort -H \"Content-Type: application/json\" -H \"Authorization: Bearer $TOKEN\" -d '{}' | grep -q '\"ok\":true' && curl -sf --max-time 300 -X POST http://localhost:{{WEB_PORT}}/api/memories/links/maintain -H \"Content-Type: application/json\" -H \"Authorization: Bearer $TOKEN\" -d '{}' | grep -q '\"ok\":true'",
+  "command": "API='{{INSTALL_DIR}}/scripts/agent-api.sh'; export DASHBOARD_BASE_URL='http://localhost:{{WEB_PORT}}'; bash \"$API\" --agent {{MAIN_AGENT_ID}} --max-time 120 POST /api/memories/resort '{}' | grep -q '\"ok\":true' && bash \"$API\" --agent {{MAIN_AGENT_ID}} --max-time 300 POST /api/memories/links/maintain '{}' | grep -q '\"ok\":true'",
   "timeoutMs": 480000,
   "failThreshold": 1,
   "createdAt": 0

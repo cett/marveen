@@ -3,8 +3,9 @@
 ClaudeClaw fleet helper - shared, deterministic plumbing so agents don't burn
 tokens hand-rolling curl/SQL/escaping in the model.
 
-Covers: dashboard API auth (token always read from store/.dashboard-token, never
-hardcoded), memory save/search, daily log, inter-agent messages, agent list,
+Covers: dashboard API auth (the calling agent's own token, resolved through the install's
+scripts/hooks/agent_token.py; the shared store/.dashboard-token only as its visible fallback;
+never hardcoded), memory save/search, daily log, inter-agent messages, agent list,
 kanban read helpers, and Telegram MarkdownV2 escaping.
 
 Importable as a module or used from the CLI. See README.md for usage.
@@ -43,15 +44,29 @@ def base_url():
     return os.environ.get("CLAW_BASE", "http://localhost:3420").rstrip("/")
 
 
-def token():
-    with open(os.path.join(project_dir(), "store", ".dashboard-token")) as f:
-        return f.read().strip()
+def auth_headers():
+    """Authorization (+ X-Agent-Id) for the calling agent: its own token, resolved by the
+    install's agent_token module so the contract lives in one place. If that module cannot be
+    loaded, the shared token is read directly, as this helper always did."""
+    root = project_dir()
+    hooks = os.path.join(root, "scripts", "hooks")
+    try:
+        sys.path.insert(0, hooks)
+        try:
+            import agent_token
+            return agent_token.auth_headers(install=root)
+        finally:
+            sys.path.remove(hooks)
+    except Exception:
+        with open(os.path.join(root, "store", ".dashboard-token")) as f:
+            return {"Authorization": "Bearer " + f.read().strip()}
 
 
 def api(method, path, payload=None, timeout=20):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(base_url() + path, data=data, method=method)
-    req.add_header("Authorization", "Bearer " + token())
+    for k, v in auth_headers().items():
+        req.add_header(k, v)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:

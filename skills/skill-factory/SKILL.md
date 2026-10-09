@@ -70,10 +70,7 @@ The skills DB is the source of truth; `SKILL.md` on disk is a generated cache. C
 
 ```bash
 SKILL_NAME="[kebab-case-name]"
-python3 - <<'PY' | curl -s -X PUT "http://localhost:3420/api/skills/sql/global%2F$SKILL_NAME" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d @-
+python3 - <<'PY' | bash scripts/agent-api.sh --token admin PUT "/api/skills/sql/global%2F$SKILL_NAME" -
 import json
 content = """---
 name: [skill-name]
@@ -116,8 +113,7 @@ If the workflow involves scripts or templates, they are stored in the DB too (`s
 
 ```bash
 python3 -c 'import json,sys; print(json.dumps({"content": open(sys.argv[1]).read()}))' ./run.sh \
-  | curl -s -X PUT "http://localhost:3420/api/skills/sql/global%2F$SKILL_NAME/files/scripts%2Frun.sh" \
-      -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d @-
+  | bash scripts/agent-api.sh --token admin PUT "/api/skills/sql/global%2F$SKILL_NAME/files/scripts%2Frun.sh" -
 ```
 
 - `scripts/`: Executable code for deterministic/repetitive tasks (add `"mode": 493` for an executable file; `content_base64` for binary)

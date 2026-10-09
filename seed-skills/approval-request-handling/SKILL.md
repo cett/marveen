@@ -43,10 +43,7 @@ Az `id` rövid előtagja is elég a válaszhoz, ha egyértelmű -- de a PATCH-he
 
 ### 3. Zárd le
 ```bash
-curl -s -X PATCH "http://localhost:3420/api/approvals/<id>" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
-  -d '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
+bash scripts/agent-api.sh PATCH /api/approvals/<id> '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
 ```
 - `status`: `approved` | `rejected` | `timeout` -- más érték 400.
 - `resolved_by`: **kötelező, nem lehet üres string** (400). Írj bele beszédes forrást
@@ -74,8 +71,8 @@ Egy rövid visszaigazolás. Ha nem szólsz, nem tudja, hogy a döntése célba �
 - **Több párhuzamos kérés esetén az `id` a horgony**, nem a sorrend. Ha két kérés
   fut, és a tulajdonos csak annyit ír, hogy "IGEN", **kérdezz vissza, melyikre** --
   ne tippelj.
-- **A `Bearer` token soha ne kerüljön a csatornára** vagy logba: mindig
-  `$(cat <install>/store/.dashboard-token)` formában add át.
+- **A token soha ne kerüljön a csatornára** vagy logba: a hívásokat a
+  `scripts/agent-api.sh` wrapperen át küldd, az stdin-en adja át a curl-nek (parancssorban sosem szerepel).
 
 ## Ellenőrzés
 
