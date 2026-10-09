@@ -61,7 +61,7 @@ A dashboard Felhasználók fülének "Szerepkör-jogosultság mátrix" nézete a
 
 ### Az alap bearer token
 
-A telepítéskor generált `store/.dashboard-token` fájl egy admin szerepkörű, globális hatókörű tokent tartalmaz. A futó ágensek ezt a tokent használják -- ez változatlan marad.
+A telepítéskor generált `store/.dashboard-token` fájl egy admin szerepkörű, globális hatókörű tokent tartalmaz. Az ágensenkénti tokenek érvényesítéséig minden ágensnél tovább működik; az ágensek most már a saját tokenjükkel hívják az API-t (`agents/<id>/.agent-token`), és erre csak akkor esnek vissza, ha a saját fájljuk hiányzik (lásd a fork-guide F07 fejezetét).
 
 ### API-tokenek (Tokenek fül)
 
@@ -115,7 +115,7 @@ A `rbac-shadow-monitor` ütemezett parancs-feladat (naponta 07:30, LLM nélkül)
 **Visszaállítás.** Ha az enforce hibás elutasítást okoz, állítsd a szerver környezetében (`.env`) `RBAC_MODE=shadow` értékre, és indítsd újra a dashboardot (a mód induláskor olvasódik). A módtól független útvonal-szabályok (ütemezés, alapcsomag, ágens-export admin-ellenőrzése) shadow módban is érvényben maradnak.
 
 **Elfogadott kockázatok:**
-- A flotta bearer tokenje (`store/.dashboard-token`) admin szerepkörű, ezért a futó ágensek nem tenant-korlátosak. A tenant-határt a tenant-felhasználók saját tokenje és belépése kapja.
+- A flotta bearer tokenje (`store/.dashboard-token`) admin szerepkörű, ezért egy ágens, ami erre esik vissza, nem tenant-korlátos. A tenant-határt a tenant-felhasználók saját tokenje és belépése kapja.
 - A főágens szándékosan kívül van a tenant-skill kapun: egy fail-closed hook leállíthatná a flotta koordinációját.
 - A Marveen nem üzemeltet saját MCP-szervert, ezért MCP-szinten nincs tenant-szűrés. A katalógus szerverei külsők, és nem ismerik a tenant-azonosítót.
 

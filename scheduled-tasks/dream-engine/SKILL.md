@@ -34,7 +34,7 @@ Output: 0-2 konkrét skill-javaslat. Mindegyikhez: cím + 1 mondat indoklás + "
 # A backfill {"count":0} = NINCS mit backfillelni (minden kész), NEM 0 vektorizált.
 CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-health
 # Ha NEM 100%, hívd meg a backfill endpoint-ot (Ollamaval embeddeli a hiányzó ID-kat):
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories/backfill -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)"
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories/backfill
 
 # Antikvált hot-tier (>7 napos hot: az utolsó hozzáférés, ennek hiányában a létrehozás ideje régebbi 7 napnál)
 CLAW_DIR={{INSTALL_DIR}} python3 ~/.claude/skills/fleet-helper/scripts/fleet.py mem-stale-hot 7
@@ -141,14 +141,17 @@ Az öt bucket kimenetét állítsd össze az alábbi Markdown struktúra szerint
 Workspace_docs írás (upsert -- ugyanaznap újrafuttatva felülírja):
 
 ```python
-import json, urllib.request, datetime
+import json, sys, urllib.request, datetime
 
-TOKEN = open("{{INSTALL_DIR}}/store/.dashboard-token").read().strip()
+# The calling agent's own token headers (the install's token resolver; never read the token file here).
+sys.path.insert(0, "{{INSTALL_DIR}}/scripts/hooks")
+import agent_token
+AUTH = agent_token.auth_headers(agent_id="{{MAIN_AGENT_ID}}", install="{{INSTALL_DIR}}")
 DATE = datetime.date.today().strftime("%Y-%m-%d")
 
 # content: a fenti Markdown az öt bucket valódi kimenetével kitöltve
 payload = json.dumps({
-    "agent_id": "jarvis",
+    "agent_id": "{{MAIN_AGENT_ID}}",
     "doc_key": f"dream/{DATE}",
     "title": f"Dream Engine {DATE}",
     "content": content,
@@ -158,7 +161,7 @@ payload = json.dumps({
 req = urllib.request.Request(
     "http://localhost:{{WEB_PORT}}/api/workspace",
     data=payload.encode(),
-    headers={"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"},
+    headers={"Content-Type": "application/json", **AUTH},
     method="POST"
 )
 with urllib.request.urlopen(req) as r:

@@ -22,12 +22,15 @@ import sys
 import urllib.request
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import agent_token  # noqa: E402
+
 # Hooks live in <install>/scripts/hooks/; resolve the install root from THIS
 # file's location (same computation as ledger_lib.py's _install_dir()), so it
 # is correct regardless of the machine or the session's cwd.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 MARVEEN_ROOT = os.path.dirname(os.path.dirname(_HERE))
-DASHBOARD_TOKEN_PATH = os.path.join(MARVEEN_ROOT, "store/.dashboard-token")
+DASHBOARD_STORE_DIR = os.path.join(MARVEEN_ROOT, "store")
 DASHBOARD_URL = "http://localhost:3420"
 
 
@@ -184,9 +187,8 @@ def _run_claude(prompt: str) -> str:
 
 
 def _notify_main_agent(agent_name: str, draft_path: str, reason: str) -> None:
-    try:
-        token = open(DASHBOARD_TOKEN_PATH).read().strip()
-    except Exception:
+    auth = agent_token.resolve(agent_id=agent_name, store_dir=DASHBOARD_STORE_DIR)
+    if not auth.token:
         return
     content = (
         f"[auto-skillify] {agent_name}: skill draft generálva ({reason})\n"
@@ -198,10 +200,7 @@ def _notify_main_agent(agent_name: str, draft_path: str, reason: str) -> None:
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/messages",
             data=payload.encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
+            headers=auth.headers({"Content-Type": "application/json"}),
             method="POST",
         )
         urllib.request.urlopen(req, timeout=5)

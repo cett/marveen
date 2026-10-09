@@ -16,10 +16,7 @@ Nézd át az elmúlt 4 óra munkádat. A cél: amit megtanultál, ne vesszen el 
 Ha volt fontos döntés, preferencia, tanulság vagy szakmai minta, mentsd EL AZONNAL:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
-  -d '{"agent_id":"{{AGENT_NAME}}","content":"...","category":"warm","keywords":"..."}'
+bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories '{"agent_id":"{{AGENT_NAME}}","content":"...","category":"warm","keywords":"..."}'
 ```
 
 Az `agent_id` a TIÉD: **{{AGENT_NAME}}**. Ne írj mást.
@@ -36,8 +33,7 @@ Az `agent_id` a TIÉD: **{{AGENT_NAME}}**. Ne írj mást.
 
 Mentés ELŐTT keress rá, van-e már erről emléked -- ha van, azt frissítsd, ne duplikálj:
 ```bash
-curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent={{AGENT_NAME}}&q=KULCSSZO"
+bash {{INSTALL_DIR}}/scripts/agent-api.sh GET '/api/memories?agent={{AGENT_NAME}}&q=KULCSSZO'
 ```
 
 ## 2. Skill reflexió (KÖTELEZŐ ha volt komplex munka)

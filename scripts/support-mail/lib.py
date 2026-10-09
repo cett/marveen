@@ -7,7 +7,10 @@ nothing operator-specific is baked into the repo. The mailbox password lives
 ONLY in the vault and is fetched at runtime via the dashboard vault API; it is
 never written to disk or printed.
 """
-import json, os, urllib.request
+import json, os, sys, urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+import agent_token  # noqa: E402
 from pathlib import Path
 
 # Project root = scripts/support-mail/lib.py -> two levels up. Never hardcode it.
@@ -47,10 +50,13 @@ def password() -> str:
         raise RuntimeError(
             "support mailbox not configured: set SUPPORT_MAILBOX and SUPPORT_VAULT_KEY in .env"
         )
-    tok = (ROOT / "store" / ".dashboard-token").read_text().strip()
+    # The vault read is admin:all: the main agent's own token, any other caller the shared one (until T4).
+    auth = agent_token.resolve(store_dir=str(ROOT / "store"), kind=agent_token.KIND_ADMIN)
+    if not auth.token:
+        raise RuntimeError("no dashboard token in %s" % (ROOT / "store"))
     req = urllib.request.Request(
         f"http://localhost:{WEB_PORT}/api/vault/{VAULT_KEY}",
-        headers={"Authorization": "Bearer " + tok},
+        headers=auth.headers(),
     )
     pw = json.load(urllib.request.urlopen(req, timeout=10)).get("value", "")
     if not pw:

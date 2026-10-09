@@ -5,8 +5,8 @@ goal: do deterministic work (fetch / filter / SQL / format / escape) in Python
 instead of burning model tokens doing it inside the LLM turn. Python 3 stdlib
 only.
 
-No secrets or personal data are baked in: the dashboard token is read from
-`store/.dashboard-token` at call time, paths come from `CLAW_DIR` (or are
+No secrets or personal data are baked in: the calling agent's own dashboard token is
+resolved at call time (the install's token resolver, the shared token only as its fallback), paths come from `CLAW_DIR` (or are
 auto-detected), and any personal sender/keyword lists live in a gitignored
 `mail_rules.json` (see `mail_rules.example.json`).
 
@@ -83,7 +83,7 @@ mail_rules.example.json  # copy to mail_rules.json (gitignored) with real values
 ```
 
 ## Safety notes
-- Token is read from `store/.dashboard-token` at call time. Never print or commit it.
+- The token is the calling agent's own, resolved at call time. Never print or commit it.
 - Kanban helpers are READ-ONLY; mutations stay in your own audited flows.
 - `mail_rules.json` (your real senders) must be gitignored (see `.gitignore`).
 

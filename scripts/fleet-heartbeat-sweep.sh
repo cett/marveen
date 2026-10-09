@@ -11,8 +11,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOKEN="$(cat "$ROOT/store/.dashboard-token")"
 API="http://localhost:3420"
+# The sweep runs on the coordinator's behalf: its own admin token (the shared one only if that file
+# is missing), through the wrapper -- the token never goes on a command line.
+api() { DASHBOARD_BASE_URL="$API" bash "$ROOT/scripts/agent-api.sh" --token main "$@" 2>/dev/null; }
 
 _read_main_agent_id() {
   local env_file="$ROOT/.env"
@@ -95,7 +97,7 @@ echo "[$(ts)] fleet-heartbeat sweep start (stagger=${STAGGER}s)" >> "$LOG"
 # main agent of a tenant other than `default`. A shared agent (enabled for `default` too) stays in.
 # Missing tenant fields (an older /api/agents) read as "not tenant-only": nothing is skipped.
 TENANT_ONLY='((.tenantIds // []) as $t | (($t | length) > 0 and ($t | index("default")) == null)) or ((.primaryTenantId // "default") != "default")'
-AGENTS_JSON="$(curl -s -H "Authorization: Bearer $TOKEN" "$API/api/agents" || true)"
+AGENTS_JSON="$(api GET /api/agents || true)"
 AGENTS="$(printf '%s' "$AGENTS_JSON" \
   | jq -r ".[] | select(.running==true) | select(($TENANT_ONLY) | not) | .name" 2>/dev/null | grep -vx "$MAIN_AGENT" || true)"
 TENANT_SKIPPED="$(printf '%s' "$AGENTS_JSON" \
@@ -113,8 +115,8 @@ COUNT=0
 for AGENT in $AGENTS; do
   PAYLOAD="$(jq -nc --arg from "$MAIN_AGENT" --arg to "$AGENT" --arg content "$DIRECTIVE" \
     '{from:$from, to:$to, content:$content}')"
-  RESP="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/api/messages" \
-    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$PAYLOAD" || echo "000")"
+  RESP="$(printf '%s' "$PAYLOAD" | api --with-status POST /api/messages - | tail -n1 || true)"
+  RESP="${RESP:-000}"
   echo "[$(ts)]   -> $AGENT : HTTP $RESP" >> "$LOG"
   COUNT=$((COUNT+1))
   sleep "$STAGGER"

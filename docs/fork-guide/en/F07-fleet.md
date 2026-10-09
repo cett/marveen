@@ -22,18 +22,43 @@ cp templates/CLAUDE.md.tpl agents/<name>/CLAUDE.md
 cp templates/.mcp.json.tpl agents/<name>/.mcp.json
 ```
 
+### Agent API tokens and the API wrapper
+
+Every agent calls the dashboard API with its own token (`agents/<id>/.agent-token`; the main agent's lives in the project root), not with the shared `store/.dashboard-token`. The operator has one of their own too (`store/.operator-token`). Manage them on the machine that hosts the install, the dashboard may be stopped:
+
+```bash
+npm run agent-tokens -- issue [--rotate] [--dry-run] [<agent>...]   # default: the main agent and every agent
+npm run agent-tokens -- issue-operator [--rotate]
+npm run agent-tokens -- list
+npm run agent-tokens -- revoke <agent>
+```
+
+The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose (reissue after a restore; `doctor.sh` reports a missing one).
+
+Recipes, hooks and scripts call the API through `scripts/agent-api.sh`, which picks the right token and hands it to curl on stdin, so it never shows up in a process list or a transcript:
+
+```bash
+bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main] METHOD /api/... [BODY | - | @file]
+```
+
+- `agent` (default) is the calling agent's own token; the agent comes from `--agent`, `MARVEEN_AGENT_ID`, or the working directory (`agents/<id>/`, the project root is the main agent).
+- `operator` is the operator's token. `admin` is for a call that needs the admin role whoever makes it: the main agent uses its own token, every other agent the shared one. `shared` is the shared token on purpose. `main` acts as the main agent (system scripts).
+- The endpoints a regular agent token is refused on (agent start/stop/restart, vault, egress allowlist writes, global skill writes) stay on the shared token until enforcement: use `--token admin` or `--token operator`.
+- A missing or empty token file falls back to the shared token and the request carries `X-Agent-Id`, so `GET /api/token-shadow` shows who fell back. A token that is present but refused (revoked, stale) is never retried on the shared one: that would hide the fault.
+- Exit code 0 on a 2xx, 22 on any other HTTP status (the status goes to stderr, the body is still printed).
+
+Nothing is enforced yet: the shared token keeps working everywhere.
+
 ### Starting and stopping agents
 
 The dashboard manages agents automatically. Manual control via the API:
 
 ```bash
 # Start
-curl -s -X POST http://localhost:3420/api/agents/<name>/start \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)"
+bash scripts/agent-api.sh --token operator POST /api/agents/<name>/start
 
 # Stop
-curl -s -X POST http://localhost:3420/api/agents/<name>/stop \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)"
+bash scripts/agent-api.sh --token operator POST /api/agents/<name>/stop
 ```
 
 Or directly via the tmux session:
@@ -48,8 +73,7 @@ tmux kill-session -t agent-<name>  # stop
 Fleet agents signal their current status via the `fleet_blackboard` table. Query the blackboard:
 
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  http://localhost:3420/api/blackboard
+bash scripts/agent-api.sh GET /api/blackboard
 ```
 
 An agent updates its own row while working (`status: active/done/blocked`), so other agents and the dashboard can see who is doing what.
@@ -59,10 +83,7 @@ An agent updates its own row while working (`status: active/done/blocked`), so o
 Agents communicate via the `agent_messages` queue:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"from":"sender-agent","to":"target-agent","content":"Task description"}'
+bash scripts/agent-api.sh POST /api/messages '{"from":"sender-agent","to":"target-agent","content":"Task description"}'
 ```
 
 The message is injected into the target agent's tmux session; the agent processes it and responds on its own channel.
@@ -94,10 +115,7 @@ API tokens are managed at `/api/v1/admin/tokens`:
 
 ```bash
 # Create a token
-curl -s -X POST http://localhost:3420/api/v1/admin/tokens \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{
+bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
     "name": "partner-token",
     "role": "agent",
     "tenant_id": "acme-corp",
@@ -107,10 +125,7 @@ curl -s -X POST http://localhost:3420/api/v1/admin/tokens \
 
 ```bash
 # Revoke a token
-curl -s -X PATCH http://localhost:3420/api/v1/admin/tokens/<id> \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"revoked": true}'
+bash scripts/agent-api.sh --token operator PATCH /api/v1/admin/tokens/<id> '{"revoked": true}'
 ```
 
 ### Onboarding a B2B partner
@@ -436,14 +451,10 @@ A message from a "partner machine" agent is delivered through the local `agent_m
 
 ```bash
 # Display your own public key (to share with the partner)
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  http://localhost:3420/api/federation/key
+bash scripts/agent-api.sh --token operator GET /api/federation/key
 
 # Register the partner's key
-curl -s -X POST http://localhost:3420/api/federation/enroll \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"bundle": "<base64-bundle-from-partner>"}'
+bash scripts/agent-api.sh --token operator POST /api/federation/enroll '{"bundle": "<base64-bundle-from-partner>"}'
 ```
 
 Key exchange must be performed in both directions. The setup is also available from the dashboard Settings > Federation page.

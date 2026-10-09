@@ -97,29 +97,23 @@ A memória 3 rétegből áll (hot/warm/cold) + napi napló.
 
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-A dashboard `/api/*` végpontjai Bearer tokennel védettek. A token a
-`store/.dashboard-token` fájlban van, minden példában behúzva.
+A dashboard `/api/*` végpontjai Bearer tokennel védettek. A recepteket a
+`scripts/agent-api.sh` wrapperen át hívd: a SAJÁT tokenedet maga oldja fel és adja át
+a curl-nek (stdin-en, nem a parancssorban), te soha ne olvasd be és ne írd ki a token-fájlt.
 
 Memória mentés:
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories '{"agent_id":"{{MAIN_AGENT_ID}}","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
 ```
 
 Napi napló (append-only):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/daily-log '{"agent_id":"{{MAIN_AGENT_ID}}","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
 ```
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:{{WEB_PORT}}/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh GET '/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm'
 ```
 
 ## Kanban tábla
@@ -138,11 +132,11 @@ lasd, hanem masok aktualis allapotat is meg tudd nezni delegalas/koordinacio elo
 
 Munka kezdetekor (upsert -- egy ugynoknek EGY sora van, nem duplikal):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/blackboard -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"{{MAIN_AGENT_ID}}","task_ref":"<kanban-kartya-id-ha-van>","status":"active","summary":"Rovid leiras mit csinalsz most, max 500 kar"}'
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/blackboard '{"agent_id":"{{MAIN_AGENT_ID}}","task_ref":"<kanban-kartya-id-ha-van>","status":"active","summary":"Rovid leiras mit csinalsz most, max 500 kar"}'
 ```
 Munka vegen vagy allapotvaltaskor (ugyanaz a POST, frissiti a sort):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/blackboard -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"{{MAIN_AGENT_ID}}","status":"done","summary":"Kesz: rovid osszefoglalo"}'
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/blackboard '{"agent_id":"{{MAIN_AGENT_ID}}","status":"done","summary":"Kesz: rovid osszefoglalo"}'
 ```
 Ha elakadsz: `status: "blocked"`, a summary-ban a blokkolo oka -- ez segit masoknak eldonteni, ra tudnak-e segiteni.
 Ha a blokk megszunt es a munka kesz, allitsd a sort `status: "done"`-ra (ugyanaz a POST): a `blocked` sort semmi nem takaritja automatikusan, a stale-sweeper nem erinti.
@@ -150,7 +144,7 @@ Ha blokkolsz es mas tud segiteni (restart, auth, dontes), a blocked sor mellett 
 
 Masok allapotanak lekerdezese (utolso 10 bejegyzes, friss->regi):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/blackboard
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh GET /api/blackboard
 ```
 
 Reszletes recept es buktatok: `fleet-dashboard-api` skill.
@@ -162,10 +156,7 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 ### Feladat létrehozása API-n keresztül
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/schedules '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
 ```
 
 ### Típusok:
@@ -192,10 +183,7 @@ Az ágensek közvetlenül tudnak egymásnak üzenni egy közös SQLite üzenetso
 Ha delegálni akarsz egy feladatot másik ágensnek, használd az API-t:
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"from": "{{MAIN_AGENT_ID}}", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/messages '{"from": "{{MAIN_AGENT_ID}}", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
 ```
 
 **MEGBÍZHATÓ KÜLDÉS (verify + retry) — KÖTELEZŐ:** a gyakori `curl -s ... >/dev/null && echo sent` minta VESZÉLYES: a curl `0`-val tér vissza akkor is, ha a szerver ELUTASÍTOTTA a kérést (401/400/5xx), így NÉMA küldés-hiba keletkezik — a címzett sosem kapja meg az üzenetet, és két ágens végtelenül várhat egymásra. Egy üzenet CSAK akkor számít elküldöttnek, ha a válaszban visszajött egy `id` (`{"id":<n>,"status":"pending",...}` HTTP 200-zal). Vagy használd a `scripts/agent-msg.sh` helpert (HTTP-státusz + `id` ellenőrzés + 3x újraküldés + hiba-napló), vagy nyers curl-nél KÖTELEZŐ ellenőrizni a HTTP-kódot ÉS az `id`-t, és újraküldeni ha nincs:
@@ -212,7 +200,7 @@ A rendszer automatikusan:
 
 ### Fontos szabályok
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
-- Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/agents`
+- Az elérhető ágensek listája: `DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh GET /api/agents`
 
 ### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
 
@@ -246,10 +234,7 @@ A forrás a skills DB. A `SKILL.md` (és a `scripts/`, `references/` kísérő f
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre skill-t az API-n. Létrehozás és módosítás ugyanaz a hívás; az id URL-kódolt (`global/skill-nev` -> `global%2Fskill-nev`, a `/` nem szerepelhet nyersen):
 
 ```bash
-curl -s -X PUT "http://localhost:{{WEB_PORT}}/api/skills/sql/global%2FSKILL-NEV" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d @skill.json
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh --token admin PUT /api/skills/sql/global%2FSKILL-NEV @skill.json
 ```
 
 A `skill.json` a teljes SKILL.md tartalom: `{"content": "<frontmatter + szekciók>"}` (a `description` opcionális, alapból a frontmatterből jön). Generáld a JSON-t szkripttel (pl. `python3 -c 'import json...'`), ne escape-elj kézzel. A tartalom:
@@ -311,11 +296,7 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 Minden generált artifaktet (HTML, Markdown, JSON, szöveg, riport, diagram) **alapból a DB-backed artifact store-ba** ments -- NE laza fájlba vagy a felhő Artifact tool-ba.
 
 ```bash
-TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
-curl -s -X POST http://127.0.0.1:3420/api/artifacts \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/artifacts '{
     "agent_id": "{{BOT_NAME}}",
     "title":    "Riport 2026-08",
     "kind":     "html",

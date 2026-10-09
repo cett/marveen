@@ -81,6 +81,9 @@ DASHBOARD_BASE = os.environ.get("MARVEEN_DASHBOARD_BASE", "http://localhost:3420
 STORE_DIR = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(REPO_ROOT, "store")
 DASHBOARD_TOKEN_FILE = os.path.join(STORE_DIR, ".dashboard-token")
 
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "hooks"))
+import agent_token  # noqa: E402
+
 
 
 def _main_agent_id():
@@ -218,9 +221,13 @@ def next_counters(counters, lagging, held=()):
     return new, escalate
 
 
-def _token():
-    with open(DASHBOARD_TOKEN_FILE, encoding="utf-8") as f:
-        return f.read().strip()
+def _auth_headers():
+    """The coordinator's own admin token (X-Agent-Id names it); the shared token only when that
+    file is missing. Raises when there is no token at all, as the old file read did."""
+    auth = agent_token.resolve(agent_id=COORDINATOR, store_dir=STORE_DIR)
+    if not auth.token:
+        raise FileNotFoundError("no dashboard token for %s (own token or %s)" % (COORDINATOR, DASHBOARD_TOKEN_FILE))
+    return auth.headers({"Content-Type": "application/json"})
 
 
 def _api(path, payload=None, method=None):
@@ -229,7 +236,7 @@ def _api(path, payload=None, method=None):
         DASHBOARD_BASE + path,
         data=data,
         method=method or ("POST" if payload is not None else "GET"),
-        headers={"Authorization": "Bearer " + _token(), "Content-Type": "application/json"},
+        headers=_auth_headers(),
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode("utf-8") or "null")

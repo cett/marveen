@@ -105,6 +105,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import agent_token  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_PATH = Path(os.environ.get("BROWSER_CONTENT_LOG", REPO_ROOT / "store" / "browser-content.log"))
@@ -355,22 +356,14 @@ def _web_port():
     return port or "3420"
 
 
-def _dashboard_token():
-    try:
-        with open(os.path.join(_project_root(), "store", ".dashboard-token")) as f:
-            return f.read().strip()
-    except OSError:
-        return ""
-
-
 def _notify_hook_audit(agent_id, session_id, tool_name, reason, content_hash):
     """Best-effort mirror into hook_audit_log, so the event shows on the
     dashboard without reading store/browser-content.log. Only called when a
     pattern actually matched -- see the FORK ADAPTATION docstring section for
     why a clean page gets no dashboard row. Never raises, never affects the
     hook's own exit code (this hook never blocks)."""
-    token = _dashboard_token()
-    if not token:
+    auth = agent_token.resolve(agent_id=agent_id, store_dir=os.path.join(_project_root(), "store"))
+    if not auth.token:
         return
     try:
         urllib.request.urlopen(
@@ -385,7 +378,7 @@ def _notify_hook_audit(agent_id, session_id, tool_name, reason, content_hash):
                     "reason": reason,
                     "session_id": session_id,
                 }).encode(),
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+                headers=auth.headers({"Content-Type": "application/json"}),
                 method="POST",
             ),
             timeout=3,

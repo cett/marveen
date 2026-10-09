@@ -27,10 +27,7 @@ Nézd át az utolsó 30 perc beszélgetéseidet. Két dolgot csinálj:
 Ha volt fontos döntés, preferencia, tanulság vagy bármi ami később hasznos, mentsd el:
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
-  -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
+DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
 ```
 
 `category` lehet: `hot` (aktív), `warm` (preferencia/config), `cold` (tanulság), `shared` (más agent-nek is).

@@ -26,8 +26,10 @@ make_root() { # $1 = case name; prints the ROOT
   local r="$TMPDIR_BASE/$1"
   mkdir -p "$r/scripts" "$r/store" "$r/bin"
   cp "$SWEEP" "$r/scripts/fleet-heartbeat-sweep.sh"
+  cp "$(dirname "$SWEEP")/agent-api.sh" "$r/scripts/agent-api.sh"
   echo "test-token" > "$r/store/.dashboard-token"
-  printf '#!/bin/sh\necho "[]"\n' > "$r/bin/curl"; chmod +x "$r/bin/curl"
+  # The sweep talks through scripts/agent-api.sh, which asks curl for `-w '\n%{http_code}'`: the stub answers in that shape.
+  printf '#!/bin/sh\necho "[]"\nprintf 200\n' > "$r/bin/curl"; chmod +x "$r/bin/curl"
   # A date stub: with FIXED_NOW set, `date +%s` answers it, so a boundary (resets_at == now) is exact and
   # not a race against the wall clock. Every other date call (the log timestamps) passes through.
   printf '#!/bin/sh\nif [ -n "${FIXED_NOW:-}" ] && [ "$*" = "+%%s" ]; then echo "$FIXED_NOW"; else exec /bin/date "$@"; fi\n' > "$r/bin/date"; chmod +x "$r/bin/date"
@@ -187,10 +189,10 @@ make_agents_root() {
 #!/bin/sh
 post=0; payload=""
 while [ \$# -gt 0 ]; do
-  case "\$1" in -X) [ "\$2" = POST ] && post=1;; -d) payload="\$2";; esac
+  case "\$1" in -X) [ "\$2" = POST ] && post=1;; --data-binary) payload="\$(cat "\${2#@}")";; esac
   shift
 done
-if [ "\$post" = 1 ]; then printf '%s\n' "\$payload" >> "$r/posts.log"; printf 200; else cat "$r/agents.json"; fi
+if [ "\$post" = 1 ]; then printf '%s\n' "\$payload" >> "$r/posts.log"; printf '\n200'; else cat "$r/agents.json"; printf '\n200'; fi
 STUB
   chmod +x "$r/bin/curl"
   echo "$r"

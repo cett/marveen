@@ -36,15 +36,29 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('"from":"heartbeat"')
   })
 
-  it('uses the supplied store dir (absolute) for the DB and token paths', () => {
+  it('uses the supplied store dir (absolute) for the DB', () => {
     const out = renderHeartbeatClaudeMd(ID)
     expect(out).toContain('/srv/app/store/claudeclaw.db')
-    expect(out).toContain('cat /srv/app/store/.dashboard-token')
+  })
+
+  it('reaches the API as the heartbeat agent through the wrapper: no token file, no Bearer header in the prompt', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // installDir defaults to the parent of storeDir
+    expect(out).toContain('bash /srv/app/scripts/agent-api.sh --agent heartbeat GET /api/schedules')
+    expect(out).toContain("sys.path.insert(0,'/srv/app/scripts/hooks')")
+    expect(out).toContain("agent_token.auth_headers(agent_id='heartbeat', install='/srv/app')")
+    expect(out).not.toMatch(/\.dashboard-token|Authorization: Bearer|TOKEN=/)
+  })
+
+  it('an explicit installDir wins over the storeDir parent', () => {
+    const out = renderHeartbeatClaudeMd({ ...ID, installDir: '/opt/marveen' })
+    expect(out).toContain('bash /opt/marveen/scripts/agent-api.sh --agent heartbeat')
+    expect(out).not.toContain('/srv/app/scripts')
   })
 
   it('uses the supplied dashboard origin for the messages API', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('http://localhost:3420/api/messages')
+    expect(out).toContain('DASHBOARD_BASE_URL=http://localhost:3420 bash /srv/app/scripts/agent-api.sh --agent heartbeat POST /api/messages')
   })
 
   it('targets the configured calendar account when one is set', () => {
@@ -124,7 +138,7 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(b).toContain("across Omar's systems")
     expect(b).toContain('"to":"atlas"')
     expect(b).toContain('/data/store/claudeclaw.db')
-    expect(b).toContain('http://localhost:9000/api/messages')
+    expect(b).toContain('DASHBOARD_BASE_URL=http://localhost:9000 bash /data/scripts/agent-api.sh')
   })
 })
 
@@ -239,7 +253,7 @@ describe('deferred MCP tools (HBCALMCP808)', () => {
 describe('kanban extraction is a shipped one-liner, never an improvised pipe+heredoc (HBHEREDOC819)', () => {
   it('ships the complete python3 -c extractor with every counts field', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain(`python3 -c "import json,urllib.request;`)
+    expect(out).toContain(`python3 -c "import json,sys,urllib.request;`)
     expect(out).toContain(`${ID.dashboardOrigin}/api/kanban/heartbeat-summary`)
     expect(out).toMatch(/COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s/)
   })

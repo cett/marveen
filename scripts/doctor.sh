@@ -24,8 +24,9 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 # token is missing or the dashboard does not answer. The doctor reads database
 # facts through the API instead of opening the database file.
 api_get() {
-  [ -f store/.dashboard-token ] || return 1
-  curl -sf --max-time 5 -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}$1" 2>/dev/null
+  local out
+  out="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash scripts/agent-api.sh --token operator --max-time 5 GET "$1" 2>/dev/null)" || return 1
+  printf '%s\n' "$out"
 }
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
@@ -207,17 +208,37 @@ for f in scripts/hooks/ledger-capture.py scripts/hooks/ledger-outbound.py script
   if [ -f "$f" ]; then ok "$f"; else fail "$f missing"; fi
 done
 
+# --- Agent tokens ---
+# Each agent signs its dashboard calls with its own token file (agents/<id>/.agent-token, the main
+# agent's in the project root) and the operator scripts use store/.operator-token. They are not in the
+# backup, so a restored install lacks them until the issuer runs. While the shared token still works
+# (T3, no enforcement) a missing one is a warning, not a failure.
+echo -e "\n${BOLD}Agent tokens${RESET}"
+MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' ')"
+MISSING_TOKENS=""
+[ -f ".agent-token" ] || MISSING_TOKENS="$MISSING_TOKENS ${MAIN_ID:-main}"
+for d in agents/*/; do
+  [ -f "${d}CLAUDE.md" ] || [ -f "${d}agent-config.json" ] || continue
+  [ -f "${d}.agent-token" ] || MISSING_TOKENS="$MISSING_TOKENS $(basename "$d")"
+done
+if [ -n "$MISSING_TOKENS" ]; then
+  warn "no agent token for:${MISSING_TOKENS} -- run: npm run agent-tokens -- issue"
+else
+  ok "Agent tokens: present for the main agent and every agent"
+fi
+if [ -f "store/.operator-token" ]; then ok "Operator token: present"; else warn "store/.operator-token missing -- run: npm run agent-tokens -- issue-operator"; fi
+
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
-if [ -f "store/.dashboard-token" ]; then
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
-  if [ "$HTTP" = "200" ]; then
+if [ -f "store/.operator-token" ] || [ -f "store/.dashboard-token" ]; then
+  HTTP_ERR="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash scripts/agent-api.sh --token operator --max-time 5 GET /api/agents 2>&1 >/dev/null)"
+  if [ -z "$HTTP_ERR" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else
-    fail "Dashboard API: HTTP $HTTP"
+    fail "Dashboard API: ${HTTP_ERR#agent-api: }"
   fi
 else
-  fail "store/.dashboard-token missing"
+  fail "no dashboard token (store/.operator-token or store/.dashboard-token) missing"
 fi
 
 # --- Database ---

@@ -3,7 +3,9 @@
 # Run: bash scripts/__tests__/kanban-audit-pre-check.test.sh
 #
 # The pre-check reads the board and the last-audit time through the dashboard
-# API. A stub `curl` on PATH answers the two endpoints, so the real script runs
+# API, by way of scripts/agent-api.sh (the real wrapper, copied into the case
+# dir). A stub `curl` on PATH answers the two endpoints in the shape of
+# `curl -w '\n%{http_code}'`, which the wrapper reads, so the real script runs
 # unmodified (after the same placeholder substitution the seeder does) without
 # a dashboard. Fail-open is the contract: every failure must exit non-zero so
 # the runner starts the LLM instead of silently skipping the audit.
@@ -26,22 +28,26 @@ LAST_AUDIT=$((NOW - 4 * 3600))
 BEFORE_AUDIT=$((NOW - 6 * 3600))
 AFTER_AUDIT=$((NOW - 1 * 3600))
 
-# Case dir layout: store/.dashboard-token, bin/curl (stub), pre-check.sh (rendered).
+# Case dir layout: store/ (the shared token), scripts/agent-api.sh (the real wrapper),
+# bin/curl (stub), pre-check.sh (rendered).
 # The stub serves $CASE/kanban.json for /api/kanban and, for the agent-state
 # URL, the status in $CASE/state.code with the body in $CASE/state.json.
 make_case() { # name -> echoes the case dir
   local d="$TMPDIR_BASE/$1"
-  mkdir -p "$d/store" "$d/bin"
+  mkdir -p "$d/store" "$d/bin" "$d/scripts"
   echo "test-token" > "$d/store/.dashboard-token"
+  cp "$INSTALL_DIR/scripts/agent-api.sh" "$d/scripts/agent-api.sh"
   sed -e "s|{{INSTALL_DIR}}|$d|g" -e "s/{{WEB_PORT}}/3420/g" -e "s/{{MAIN_AGENT_ID}}/testbot/g" "$SEED" > "$d/pre-check.sh"
   cat > "$d/bin/curl" <<'STUB'
 #!/bin/bash
 CASE="$(cd "$(dirname "$0")/.." && pwd)"
 for a in "$@"; do url="$a"; done
+# Like the dashboard: no Bearer header on the request (the wrapper hands it over on stdin) = 401.
+if ! grep -q 'Bearer ' 2>/dev/null; then printf '{"error":"unauthorized"}\n401'; exit 0; fi
 case "$url" in
   */api/kanban)
     [ -f "$CASE/kanban.fail" ] && exit 22
-    cat "$CASE/kanban.json" ;;
+    cat "$CASE/kanban.json"; printf '\n200' ;;
   */api/agent-state/testbot/kanban_audit_last_audit_at)
     [ -f "$CASE/state.fail" ] && exit 7
     printf '%s\n%s' "$(cat "$CASE/state.json" 2>/dev/null)" "$(cat "$CASE/state.code")" ;;

@@ -51,7 +51,7 @@ journalctl --user -u marveen-channels -f
 
 ### Restart via the API
 
-If the dashboard is running, a restart can also be triggered at the `/api/updates/apply` endpoint (using the `store/.dashboard-token` Bearer token).
+If the dashboard is running, a restart can also be triggered at the `/api/updates/apply` endpoint (call it through `bash scripts/agent-api.sh --token operator POST /api/updates/apply`; the wrapper reads the token, you never put it on a command line).
 
 ## Updating
 
@@ -133,9 +133,7 @@ Agents that serve several tenants keep each tenant's skills inside that tenant's
 **Bind a source to a tenant** (chat, dashboard user or inter-agent sender, per agent) with the admin API:
 
 ```bash
-curl -s -X PUT http://localhost:3420/api/v1/admin/channel-bindings \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
-  -d '{"agent_id":"<agent>","channel":"telegram","external_id":"<chat id>","tenant_id":"<tenant>"}'
+bash scripts/agent-api.sh --token operator PUT /api/v1/admin/channel-bindings '{"agent_id":"<agent>","channel":"telegram","external_id":"<chat id>","tenant_id":"<tenant>"}'
 # GET lists (?tenant_id= / ?agent_id=), DELETE unbinds (?agent_id=&channel=&external_id=)
 ```
 
@@ -157,9 +155,7 @@ Limits: this enforces the **use** of tenant skills, best-effort on the shell sid
 The starter pack (one daily-summary scheduled task, details: F07 "Tenant starter pack") is not created by itself: neither a new tenant nor an existing one gets it automatically. An admin asks for it, per tenant, at any time; the request is idempotent, and repeating it never overwrites anything. On the dashboard the **Starter pack** button on the Tenants tab does it; through the API:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/v1/admin/tenants/<tenant>/starter-pack \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
-  -d '{"agent_id":"<agent>"}'
+bash scripts/agent-api.sh --token operator POST /api/v1/admin/tenants/<tenant>/starter-pack '{"agent_id":"<agent>"}'
 # the body may be omitted: the agent is the tenant's main agent, failing that the only enabled agent
 # GET on the same path only reads: the state, and the agent a create would choose
 ```
@@ -242,7 +238,7 @@ The archive has two groups:
 
 **`repo/` group** (relative to the project root):
 - `store/claudeclaw.db` (+ `-shm`/`-wal`) — database (after WAL checkpoint)
-- `store/.dashboard-token` — Bearer token
+- `store/.dashboard-token` — shared Bearer token
 - `store/vault.json` — the *encrypted* secret vault (the key is not in the archive)
 - `.env` — main configuration
 - `agents/*/CLAUDE.md`, `SOUL.md`, `.mcp.json` — agent identities
@@ -299,9 +295,8 @@ The dashboard does the same at every start unless `SKILL_SQL_REGEN=0`; with the 
 Running agent sessions load their skills at start, so restart them afterwards (the loop covers the sub-agents; the main agent is restarted the same way with `POST /api/agents/<MAIN_AGENT_ID>/restart`, which goes through its channels service):
 
 ```bash
-TOKEN=$(cat store/.dashboard-token)
-for a in $(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/agents | python3 -c 'import sys,json; print(" ".join(x["name"] for x in json.load(sys.stdin)))'); do
-  curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3420/api/agents/$a/restart"; echo " $a"
+for a in $(bash scripts/agent-api.sh --token operator GET /api/agents | python3 -c 'import sys,json; print(" ".join(x["name"] for x in json.load(sys.stdin)))'); do
+  bash scripts/agent-api.sh --token operator POST "/api/agents/$a/restart"; echo " $a"
 done
 ```
 
@@ -356,7 +351,9 @@ Sensitive files and their permissions:
 | File | Permission | Contents |
 |------|-----------|---------|
 | `.env` | `0600` | Bot tokens, auth key |
-| `store/.dashboard-token` | `0600` | Dashboard Bearer token |
+| `store/.dashboard-token` | `0600` | Shared dashboard Bearer token |
+| `store/.operator-token` | `0600` | The operator's own admin token |
+| `agents/<id>/.agent-token`, `.agent-token` (main agent) | `0600` | The agent's own API token |
 | `store/.claude-oauth-token` | `0600` | Fleet OAuth token |
 | `~/.claude/channels/*/.env` | `0600` | Channel bot tokens |
 | `~/.claude/channels/*/access.json` | `0644` | Pairing state (not sensitive) |

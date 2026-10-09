@@ -34,7 +34,7 @@
 // from config via currentHeartbeatIdentity().
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   PROJECT_ROOT,
   STORE_DIR,
@@ -90,8 +90,11 @@ export interface HeartbeatIdentity {
   botName: string
   // The main agent's id for inter-agent routing (MAIN_AGENT_ID).
   mainAgentId: string
-  // Absolute path to store/ (holds the DB and the dashboard token).
+  // Absolute path to store/ (holds the DB).
   storeDir: string
+  // Absolute path to the install root, where scripts/agent-api.sh and scripts/hooks live. Defaults
+  // to the parent of storeDir (the default layout), so a test identity can leave it out.
+  installDir?: string
   // Dashboard origin for the inter-agent message POST, e.g.
   // http://localhost:3420.
   dashboardOrigin: string
@@ -108,6 +111,7 @@ export function currentHeartbeatIdentity(): HeartbeatIdentity {
     botName: BOT_NAME,
     mainAgentId: MAIN_AGENT_ID,
     storeDir: STORE_DIR,
+    installDir: PROJECT_ROOT,
     dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT),
     calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
   }
@@ -133,6 +137,7 @@ export function shouldBootHeartbeatAgent(opts: { respawnEnabled: boolean; agentE
 //   - Structured-text format so the main agent can parse or relay verbatim
 //     depending on signal-to-noise.
 export function renderHeartbeatClaudeMd(id: HeartbeatIdentity): string {
+  const installDir = id.installDir ?? dirname(id.storeDir)
   const calendarTarget = id.calendarAccount
     ? `against \`${id.calendarAccount}\``
     : 'against your primary calendar (whatever account the calendar MCP server is authenticated as)'
@@ -194,7 +199,7 @@ When you receive the heartbeat prompt:
      as written, do not recompose it:
 
      \`\`\`bash
-     python3 -c "import json,urllib.request; tok=open('${id.storeDir}/.dashboard-token').read().strip(); d=json.load(urllib.request.urlopen(urllib.request.Request('${id.dashboardOrigin}/api/kanban/heartbeat-summary', headers={'Authorization':'Bearer '+tok}))); c=d['counts']; print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s' % (c['urgent'],c['in_progress'],c['waiting'],c['planned'],c['new_hot_memories_1h'],d.get('waiting_shown'))); [print('URGENT',x['id'],x['title']) for x in d['urgent']]; [print('WAITING',x['id'],x['title']) for x in d['waiting']]"
+     python3 -c "import json,sys,urllib.request; sys.path.insert(0,'${installDir}/scripts/hooks'); import agent_token; d=json.load(urllib.request.urlopen(urllib.request.Request('${id.dashboardOrigin}/api/kanban/heartbeat-summary', headers=agent_token.auth_headers(agent_id='${HEARTBEAT_AGENT_NAME}', install='${installDir}')))); c=d['counts']; print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s' % (c['urgent'],c['in_progress'],c['waiting'],c['planned'],c['new_hot_memories_1h'],d.get('waiting_shown'))); [print('URGENT',x['id'],x['title']) for x in d['urgent']]; [print('WAITING',x['id'],x['title']) for x in d['waiting']]"
      \`\`\`
 
      The command is ONE line on purpose: it survives copy-paste from any
@@ -247,8 +252,7 @@ When you receive the heartbeat prompt:
      deployment, and a count taken from it reports 0 forever):
 
      \`\`\`bash
-     curl -s -H "Authorization: Bearer $(cat ${id.storeDir}/.dashboard-token)" \\
-       ${id.dashboardOrigin}/api/schedules \\
+     DASHBOARD_BASE_URL=${id.dashboardOrigin} bash ${installDir}/scripts/agent-api.sh --agent ${HEARTBEAT_AGENT_NAME} GET /api/schedules \\
        | python3 -c "import json,sys; r=json.load(sys.stdin); print(sum(1 for x in r if x.get('enabled')))"
      \`\`\`
 
@@ -324,11 +328,8 @@ When you receive the heartbeat prompt:
 3. **Send** that string to the main agent via the dashboard API:
 
    \`\`\`bash
-   TOKEN=$(cat ${id.storeDir}/.dashboard-token)
-   curl -s -X POST ${id.dashboardOrigin}/api/messages \\
-     -H "Content-Type: application/json" \\
-     -H "Authorization: Bearer $TOKEN" \\
-     -d '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
+   DASHBOARD_BASE_URL=${id.dashboardOrigin} bash ${installDir}/scripts/agent-api.sh --agent ${HEARTBEAT_AGENT_NAME} POST /api/messages \\
+     '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
    \`\`\`
 
 4. **Stop.** Do not Telegram-reply, do not Slack, do not message

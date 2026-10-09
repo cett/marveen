@@ -154,8 +154,10 @@ elif [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
 else
   REVERTED="nem (a fa DIRTY, kezi beavatkozas kell)"
 fi
-TOKEN_FILE="$PROD_ROOT/store/.dashboard-token"
-[ -r "$TOKEN_FILE" ] || exit 0
+# The alert goes out as the main agent through the API wrapper (its own token, the token never on a
+# command line); no wrapper, no alert.
+API_WRAPPER="$PROD_ROOT/scripts/agent-api.sh"
+[ -r "$API_WRAPPER" ] || exit 0
 # 'from' must be a registered fleet agent id (the API rejects made-up names,
 # measured 2026-08-22) -- the source is named in the content prefix instead.
 # The alert MUST name the tree it fired in: without it a test alert raised
@@ -163,10 +165,8 @@ TOKEN_FILE="$PROD_ROOT/store/.dashboard-token"
 # reader starts an investigation (cost one wasted round on 2026-08-22).
 ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
 ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-marveen}"
-curl -s -m 5 -X POST "$ORIGIN/api/messages" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
-  -d "{\"from\":\"marveen\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" >/dev/null 2>&1 || true
+printf '%s' "{\"from\":\"marveen\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" \
+  | DASHBOARD_BASE_URL="$ORIGIN" bash "$API_WRAPPER" --token main --max-time 5 POST /api/messages - >/dev/null 2>&1 || true
 exit 0
 EOF
 chmod +x "$HOOK_DIR/post-checkout"

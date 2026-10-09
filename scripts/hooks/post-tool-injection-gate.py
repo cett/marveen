@@ -33,6 +33,7 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import agent_token  # noqa: E402
 
 # In scope: MCP tool calls and WebFetch (external content). Everything else
 # (Bash, Read, Edit, Write, Grep, Glob, WebSearch's own query, ...) is skipped.
@@ -87,24 +88,17 @@ def _web_port() -> str:
     return port or "3420"
 
 
-def _dashboard_token() -> str:
-    try:
-        with open(os.path.join(_project_root(), "store", ".dashboard-token")) as f:
-            return f.read().strip()
-    except OSError:
-        return ''
-
-
-def _post(base_url: str, token: str, endpoint: str, payload: dict) -> None:
-    """Best-effort POST -- never raises, never affects the verdict."""
-    if not token:
+def _post(base_url: str, auth, endpoint: str, payload: dict) -> None:
+    """Best-effort POST -- never raises, never affects the verdict. A missing token only means the
+    audit row / alert is not sent: it never changes what the gate decides."""
+    if not auth.token:
         return
     try:
         urllib.request.urlopen(
             urllib.request.Request(
                 f'{base_url}{endpoint}',
                 data=json.dumps(payload).encode(),
-                headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {token}'},
+                headers=auth.headers({'Content-Type': 'application/json'}),
                 method='POST',
             ),
             timeout=3,
@@ -114,10 +108,10 @@ def _post(base_url: str, token: str, endpoint: str, payload: dict) -> None:
 
 
 def _notify_block(agent_id, session_id, tool_name, reason, content_hash) -> None:
-    token = _dashboard_token()
+    auth = agent_token.resolve(agent_id=agent_id, store_dir=os.path.join(_project_root(), 'store'))
     base_url = f'http://localhost:{_web_port()}/api'
 
-    _post(base_url, token, '/hook-audit', {
+    _post(base_url, auth, '/hook-audit', {
         'agent_id': agent_id,
         'hook_type': 'PostToolUse',
         'verdict': 'deny',
@@ -130,7 +124,7 @@ def _notify_block(agent_id, session_id, tool_name, reason, content_hash) -> None
     # Rare event by design -- worth a visible Telegram alert, not just a log
     # row. Jarvis is the fleet's supervision channel and relays urgent
     # inter-agent messages to Telegram itself.
-    _post(base_url, token, '/messages', {
+    _post(base_url, auth, '/messages', {
         'from': agent_id or 'unknown',
         'to': 'jarvis',
         'content': (

@@ -47,7 +47,12 @@ export const BLOCKED_EXTENSIONS = new Set([
 ])
 
 /** File basenames (no extension) that are unconditionally blocked. */
-export const BLOCKED_BASENAMES = new Set(['id_rsa', 'id_ed25519'])
+export const BLOCKED_BASENAMES = new Set([
+  'id_rsa', 'id_ed25519',
+  // The dashboard's own bearer-token files: the shared one, each agent's (agents/<id>/.agent-token,
+  // and the main agent's in the install root) and the operator's.
+  '.dashboard-token', '.agent-token', '.operator-token',
+])
 
 /** Valid interval_hours values. */
 export const VALID_INTERVALS = new Set([1, 2, 4, 24])

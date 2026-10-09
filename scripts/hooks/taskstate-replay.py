@@ -20,6 +20,10 @@ import os
 import json
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import agent_token  # noqa: E402
+
+
 def _project_root():
     # scripts/hooks/ -> project root is two up.
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,14 +45,6 @@ def _web_port():
 
 
 API = "http://localhost:%s/api" % _web_port()
-
-
-def _token():
-    try:
-        with open(os.path.join(_project_root(), "store", ".dashboard-token"), "r") as f:
-            return f.read().strip()
-    except Exception:
-        return ""
 
 
 def _main_agent_id():
@@ -89,9 +85,8 @@ def _agent_id_from_cwd(cwd):
     return None
 
 
-def _req(method, path, token):
-    req = urllib.request.Request(API + path, method=method)
-    req.add_header("Authorization", "Bearer " + token)
+def _req(method, path, auth):
+    req = urllib.request.Request(API + path, method=method, headers=auth.headers())
     with urllib.request.urlopen(req, timeout=5) as r:
         return json.load(r)
 
@@ -105,13 +100,14 @@ def main():
     agent = _agent_id_from_cwd(payload.get("cwd"))
     if not agent:
         sys.exit(0)  # main agent / unknown -> not a sub-agent task-state target
-    token = _token()
-    if not token:
+    auth = agent_token.resolve(
+        agent_id=agent, store_dir=os.path.join(_project_root(), "store"))
+    if not auth.token:
         sys.exit(0)
 
     # READ: ask the dashboard whether to replay (it applies source/consumed/TTL/empty).
     try:
-        res = _req("GET", "/agent-taskstate/%s/replay?source=%s" % (agent, source), token)
+        res = _req("GET", "/agent-taskstate/%s/replay?source=%s" % (agent, source), auth)
     except Exception:
         sys.exit(0)  # dashboard unavailable -> no-op (fail-safe)
     inject = (res or {}).get("additionalContext")
@@ -130,7 +126,7 @@ def main():
     # MARK CONSUMED -- only AFTER a successful print, so a crash before this
     # leaves the record re-injectable on the next start.
     try:
-        _req("POST", "/agent-taskstate/%s/consume" % agent, token)
+        _req("POST", "/agent-taskstate/%s/consume" % agent, auth)
     except Exception:
         pass  # best effort; worst case it replays once more next start
 

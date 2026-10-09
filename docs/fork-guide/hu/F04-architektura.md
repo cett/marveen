@@ -65,7 +65,8 @@ marveen/
 
   store/                  -- futásidejű állapot (gitignored)
     claudeclaw.db         -- SQLite adatbázis
-    .dashboard-token      -- Bearer token (0600)
+    .dashboard-token      -- közös Bearer token (0600), a tartalék és az admin-only hívások, az érvényesítésig
+    .operator-token       -- az üzemeltető saját admin tokenje (0600), `npm run agent-tokens -- issue-operator`
     .claude-oauth-token   -- Fleet OAuth token (0600)
     model-fallback-state.json -- aktív model-fallback lefokozások (ágensenként)
     command-task-health.json  -- a type=command ütemezett feladatok hibasorozatai
@@ -73,6 +74,7 @@ marveen/
   agents/                 -- flotta-ágensek könyvtára
     <name>/
       CLAUDE.md           -- ágens instrukciók
+      .agent-token        -- az ágens saját API tokenje (0600); a fő ágensé a projekt gyökerében van
       .mcp.json           -- MCP konfiguráció
       .claude/channels/   -- csatorna token + párosítás
 

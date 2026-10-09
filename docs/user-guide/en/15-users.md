@@ -61,7 +61,7 @@ The "Role-permission matrix" view on the Users tab mirrors live source data -- t
 
 ### The base bearer token
 
-The `store/.dashboard-token` file generated at install time holds an admin-role, globally-scoped token. Running agents use this token -- it stays unchanged.
+The `store/.dashboard-token` file generated at install time holds an admin-role, globally-scoped token. Until the per-agent tokens are enforced it keeps working for every agent; each agent now calls the API with its own token (`agents/<id>/.agent-token`) and falls back to this one only when its own file is missing (see the fork guide, F07).
 
 ### API tokens (Tokens tab)
 
@@ -115,7 +115,7 @@ The `rbac-shadow-monitor` scheduled command task (daily at 07:30, no LLM) summar
 **Rollback.** If enforce causes a wrong refusal, set `RBAC_MODE=shadow` in the server environment (`.env`) and restart the dashboard (the mode is read at startup). The route rules that do not depend on the mode (schedules, starter pack, the agent export's admin check) stay in force in shadow mode as well.
 
 **Accepted risks:**
-- The fleet bearer token (`store/.dashboard-token`) has the admin role, so the running agents are not tenant-limited. The tenant boundary applies to tenant users' own tokens and logins.
+- The fleet bearer token (`store/.dashboard-token`) has the admin role, so an agent that falls back to it is not tenant-limited. The tenant boundary applies to tenant users' own tokens and logins.
 - The main agent is deliberately outside the tenant skill gate: a fail-closed hook could stop the fleet's coordination.
 - Marveen does not run an MCP server of its own, so there is no tenant filter at the MCP layer. The catalog servers are external and do not know the tenant id.
 

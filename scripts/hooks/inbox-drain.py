@@ -22,6 +22,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import agent_token  # noqa: E402
 
 
 def _web_port():
@@ -53,17 +54,16 @@ def main():
         sys.exit(0)  # sub-agents are delivered by the router push path
 
     try:
-        token_path = os.path.join(ledger_lib._install_dir(), "store", ".dashboard-token")
-        with open(token_path) as f:
-            token = f.read().strip()
-        if not token:
+        auth = agent_token.resolve(
+            agent_id=agent_id, store_dir=os.path.join(ledger_lib._install_dir(), "store"))
+        if not auth.token:
             sys.exit(0)
         url = "http://127.0.0.1:%s/api/agents/%s/drain-inbox" % (_web_port(), agent_id)
         req = urllib.request.Request(
             url,
             data=b"{}",
             method="POST",
-            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            headers=auth.headers({"Content-Type": "application/json"}),
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.load(resp)

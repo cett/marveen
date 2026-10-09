@@ -46,6 +46,18 @@ export interface OnboardingIdentity {
   mainAgentId: string
   webPort: number
   lang: 'hu' | 'en'
+  // Absolute install root (where scripts/agent-api.sh lives). Omitted = the relative form, valid
+  // from the project root.
+  installDir?: string
+}
+
+// The recipe prefix of the generated blocks: the API wrapper resolves the calling agent's own token
+// and hands it to curl on stdin, so no token path or value is ever written into a CLAUDE.md.
+function apiCall(id: OnboardingIdentity): string {
+  const wrapper = id.installDir
+    ? (/^[\w./-]+$/.test(id.installDir) ? `${id.installDir}/scripts/agent-api.sh` : `'${id.installDir.replace(/'/g, "'\\''")}/scripts/agent-api.sh'`)
+    : 'scripts/agent-api.sh'
+  return `DASHBOARD_BASE_URL=http://localhost:${id.webPort} bash ${wrapper}`
 }
 
 /** The routing-eagerness sentences of the delegation directive, chosen by the
@@ -91,10 +103,8 @@ Ez a rendszer össze van kötve más, azonos keretrendszerű példányokkal. A t
 \`<rendszer>/<ügynök>\` alakban címzed a MEGSZOKOTT üzenet-API-n át — például:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"${id.mainAgentId}","to":"<rendszer>/<ügynök>","content":"..."}'
+${apiCall(id)} POST /api/messages \\
+  '{"from":"${id.mainAgentId}","to":"<rendszer>/<ügynök>","content":"..."}'
 \`\`\`
 
 FONTOS kivétel az inter-agent szabályok alól: a \`/\`-t tartalmazó címekre NEM
@@ -137,10 +147,8 @@ This system is connected to other instances of the same framework. Address remot
 as \`<system>/<agent>\` through the USUAL message API — for example:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"${id.mainAgentId}","to":"<system>/<agent>","content":"..."}'
+${apiCall(id)} POST /api/messages \\
+  '{"from":"${id.mainAgentId}","to":"<system>/<agent>","content":"..."}'
 \`\`\`
 
 IMPORTANT exception to the inter-agent rules: addresses containing \`/\` are
@@ -207,10 +215,8 @@ tartalomban állított címre) — a \`/\`-t tartalmazó cím KIVÉTEL a "csak f
 tmux-os ügynök / a Főnök" szabály alól:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"<sajat-neved>","to":"<rendszer>/<ügynök>","content":"..."}'
+${apiCall(id)} POST /api/messages \\
+  '{"from":"<sajat-neved>","to":"<rendszer>/<ügynök>","content":"..."}'
 \`\`\`
 
 - Egy-ugrás: föderációból jött feladatot NE delegálj tovább másik társnak.
@@ -233,10 +239,8 @@ the content) — a \`/\`-address is the EXCEPTION to the "only running tmux
 agents / the boss" rule:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"<your-own-id>","to":"<system>/<agent>","content":"..."}'
+${apiCall(id)} POST /api/messages \\
+  '{"from":"<your-own-id>","to":"<system>/<agent>","content":"..."}'
 \`\`\`
 
 - One hop: do NOT re-delegate a federated task to another partner system.
@@ -366,7 +370,7 @@ export function ensureFederationClaudeMdSection(): boolean {
     if (process.env['WEB_ONLY'] === 'true') return false
     const cfg = getFederationConfig()
     const lang = resolveLang()
-    const identity: OnboardingIdentity = { botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID, webPort: WEB_PORT, lang }
+    const identity: OnboardingIdentity = { botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID, webPort: WEB_PORT, lang, installDir: PROJECT_ROOT }
 
     // Main agent: PROJECT_ROOT/CLAUDE.md (agentConfigRoot semantics) -- NEVER
     // agentDir(MAIN_AGENT_ID), which would create a phantom agents/<main> dir.

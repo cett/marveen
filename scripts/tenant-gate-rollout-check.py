@@ -32,6 +32,9 @@ import sys
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks"))
+import agent_token  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.dirname(HERE)
 GATE_MATCHER = "Skill|Read|Edit|Write|NotebookEdit|Glob|Grep|Bash"
@@ -62,12 +65,10 @@ def fetch_status(root, base_url=None):
     restart onto this version, which is the documented first run), FAIL for every other problem."""
     base = (base_url or os.environ.get("MARVEEN_DASHBOARD_BASE") or "http://localhost:%s" % web_port(root)).rstrip("/")
     store = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(root, "store")
-    try:
-        with open(os.path.join(store, ".dashboard-token")) as f:
-            token = f.read().strip()
-    except OSError as err:
-        return None, "cannot read the dashboard token (%s)" % err, "FAIL"
-    req = urllib.request.Request(base + "/api/admin/tenant-gate-status", headers={"Authorization": "Bearer " + token})
+    auth = agent_token.resolve(store_dir=store, kind=agent_token.KIND_OPERATOR)
+    if not auth.token:
+        return None, "cannot read the dashboard token (no operator or dashboard token in %s)" % store, "FAIL"
+    req = urllib.request.Request(base + "/api/admin/tenant-gate-status", headers=auth.headers())
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8")), None, None

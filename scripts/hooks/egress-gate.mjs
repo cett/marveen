@@ -221,13 +221,17 @@ function writeRuntimeCache(list) {
   }
 }
 
-// The dashboard bearer token this install's fleet skills already use
-// (store/.dashboard-token) -- same trust boundary as reading
-// store/egress-allowlist.json directly used to be, since either way this
-// hook already has filesystem access to the store/ directory.
-function readDashboardToken() {
+// The calling agent's own dashboard token (agents/<id>/.agent-token), else the shared one
+// (store/.dashboard-token) while T3 has no enforcement: scripts/lib/agent-api.mjs holds the
+// resolution. The token only decides which identity the allowlist is FETCHED under; the verdict
+// never depends on it (no token, a token the dashboard refuses, or an unloadable resolver all
+// end in the same file fallback below). A dynamic import keeps a missing resolver from taking
+// the whole gate down at load time.
+async function readDashboardAuth() {
   try {
-    return readFileSync(join(REPO_ROOT, 'store', '.dashboard-token'), 'utf-8').trim()
+    const { resolveToken } = await import('../lib/agent-api.mjs')
+    const auth = resolveToken({ cwd: process.cwd() })
+    return auth.token ? auth : null
   } catch {
     return null
   }
@@ -237,13 +241,13 @@ function readDashboardToken() {
 // null on ANY failure (no token file, connection refused, timeout, non-200,
 // malformed body) -- the caller falls back to the file, never throws.
 async function fetchRuntimeAllowlistFromApi() {
-  const token = readDashboardToken()
-  if (!token) return null
+  const auth = await readDashboardAuth()
+  if (!auth) return null
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS)
   try {
     const res = await fetch(`http://localhost:${DASHBOARD_PORT}/api/v1/egress-allowlist`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: auth.headers(),
       signal: controller.signal,
     })
     if (!res.ok) return null

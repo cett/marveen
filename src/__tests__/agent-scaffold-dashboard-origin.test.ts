@@ -89,20 +89,35 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
     expect(fnBody).not.toContain('http://localhost:3420')
   })
 
-  it('references dashboardOrigin in the memory API curl example', () => {
-    expect(fnBody).toContain('${dashboardOrigin}/api/memories')
+  // The examples call the API through the wrapper prefix (apiCmd), which is where the origin goes:
+  // DASHBOARD_BASE_URL=<origin> in front of every call (the public URL when set, else localhost:port).
+  it('puts the dashboard origin into the wrapper prefix (apiCmd), not into each example', () => {
+    const apiCmdStart = src.indexOf('function apiCmd(')
+    expect(apiCmdStart).toBeGreaterThan(0)
+    const apiCmdBody = src.slice(apiCmdStart, src.indexOf('\n}\n', apiCmdStart))
+    expect(apiCmdBody).toContain('DASHBOARD_BASE_URL=${dashboardOrigin}')
+    expect(apiCmdBody).toContain('--agent ${name}')
   })
 
-  it('references dashboardOrigin in the daily-log API curl example', () => {
-    expect(fnBody).toContain('${dashboardOrigin}/api/daily-log')
+  it('sends the memory API example through the wrapper prefix', () => {
+    expect(fnBody).toContain('${api} POST /api/memories')
   })
 
-  it('references dashboardOrigin in the schedules API curl example', () => {
-    expect(fnBody).toContain('${dashboardOrigin}/api/schedules')
+  it('sends the daily-log API example through the wrapper prefix', () => {
+    expect(fnBody).toContain('${api} POST /api/daily-log')
   })
 
-  it('references dashboardOrigin in the inter-agent messages API curl example', () => {
-    expect(fnBody).toContain('${dashboardOrigin}/api/messages')
+  it('sends the schedules API example through the wrapper prefix', () => {
+    expect(fnBody).toContain('${api} POST /api/schedules')
+  })
+
+  it('sends the inter-agent messages API example through the wrapper prefix', () => {
+    expect(fnBody).toContain('${api} POST /api/messages')
+  })
+
+  it('leaves no raw curl or dashboardOrigin URL in the prompt body', () => {
+    expect(fnBody).not.toMatch(/curl -s/)
+    expect(fnBody).not.toContain('${dashboardOrigin}/api/')
   })
 
   it('defines dashboardOrigin using resolveDashboardOrigin', () => {
@@ -129,13 +144,13 @@ describe('renderHeartbeatClaudeMd: respects dashboardOrigin', () => {
   it('uses a public URL when dashboardOrigin is set to one', () => {
     const id: HeartbeatIdentity = { ...BASE, dashboardOrigin: 'https://marveen.example.com' }
     const out = renderHeartbeatClaudeMd(id)
-    expect(out).toContain('https://marveen.example.com/api/messages')
-    expect(out).not.toContain('http://localhost:3420/api/messages')
+    expect(out).toContain('DASHBOARD_BASE_URL=https://marveen.example.com bash ')
+    expect(out).not.toContain('DASHBOARD_BASE_URL=http://localhost:3420')
   })
 
   it('falls back to localhost when dashboardOrigin is the localhost default', () => {
     const out = renderHeartbeatClaudeMd(BASE)
-    expect(out).toContain('http://localhost:3420/api/messages')
+    expect(out).toContain('DASHBOARD_BASE_URL=http://localhost:3420 bash ')
   })
 
   it('emits no hardcoded hostname other than the dashboardOrigin host', () => {

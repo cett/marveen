@@ -2,7 +2,7 @@
 // voice-inbound-audio.test.ts (inboundIsAudio) and voice-error-shapes.test.ts
 // (which stubs the whole module out). This file covers:
 //   - resolveAgentChannelStateDir: all 3 candidate-match branches + fallback
-//   - buildTtsDirective: missing token, happy path, quote-escaping, exception
+//   - buildTtsDirective: happy path, no token in the text, quote-escaping, bad agent id
 //   - inboundIsAudio: a couple of extra edge cases (null/undefined/mixed case)
 //     for completeness, kept small since the bulk already lives elsewhere.
 
@@ -10,7 +10,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('node:fs', () => ({
   existsSync: vi.fn(),
-  readFileSync: vi.fn(),
 }))
 
 vi.mock('node:os', () => ({
@@ -18,7 +17,7 @@ vi.mock('node:os', () => ({
 }))
 
 vi.mock('../config.js', () => ({
-  STORE_DIR: '/mock/store',
+  PROJECT_ROOT: '/mock/install',
   WEB_PORT: 4242,
 }))
 
@@ -26,7 +25,7 @@ vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
 }))
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import {
   resolveAgentChannelStateDir,
   buildTtsDirective,
@@ -34,7 +33,6 @@ import {
 } from '../web/voice-directive.js'
 
 const mockExistsSync = vi.mocked(existsSync)
-const mockReadFileSync = vi.mocked(readFileSync)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -71,31 +69,25 @@ describe('resolveAgentChannelStateDir', () => {
 // ── buildTtsDirective ─────────────────────────────────────────────────────────
 
 describe('buildTtsDirective', () => {
-  const BASE_OPTS = { chatId: '123456', stateDir: '/mock/state/dir', voiceModel: 'hu_HU-imre-medium' }
+  const BASE_OPTS = { chatId: '123456', stateDir: '/mock/state/dir', voiceModel: 'hu_HU-imre-medium', agentId: 'alpha' }
 
-  it('returns null when the dashboard token file does not exist', () => {
-    mockExistsSync.mockReturnValue(false)
-    expect(buildTtsDirective(BASE_OPTS)).toBeNull()
-    expect(mockReadFileSync).not.toHaveBeenCalled()
-  })
-
-  it('builds the directive string with chatId, voiceModel, port and token embedded', () => {
-    mockExistsSync.mockReturnValue(true)
-    mockReadFileSync.mockReturnValue('sekrit-token-abc\n')
+  it('builds the directive with chatId, voiceModel, port and the API wrapper call', () => {
     const result = buildTtsDirective(BASE_OPTS)
     expect(result).not.toBeNull()
     expect(result).toContain('"chat_id":"123456"')
     expect(result).toContain('"voice_model":"hu_HU-imre-medium"')
     expect(result).toContain('"state_dir":"/mock/state/dir"')
-    expect(result).toContain('localhost:4242')
-    expect(result).toContain('Bearer sekrit-token-abc')
-    // token must be trimmed (trailing newline from the file stripped)
-    expect(result).not.toContain('sekrit-token-abc\n')
+    expect(result).toContain("DASHBOARD_BASE_URL=http://localhost:4242 bash '/mock/install/scripts/agent-api.sh' --agent alpha --token admin POST /api/voice/tts -")
+  })
+
+  it('never writes a token (or a curl with an Authorization header) into the directive', () => {
+    const result = buildTtsDirective(BASE_OPTS) as string
+    expect(result).not.toMatch(/Bearer|Authorization|dashboard-token|curl/)
+    // and it does not even read a token file: only the channel-dir lookup touches the fs
+    expect(mockExistsSync).not.toHaveBeenCalled()
   })
 
   it('escapes a single quote in stateDir for safe embedding in the jq arg', () => {
-    mockExistsSync.mockReturnValue(true)
-    mockReadFileSync.mockReturnValue('tok')
     const dirWithQuote = "/mock/state/it's/here"
     const result = buildTtsDirective({ ...BASE_OPTS, stateDir: dirWithQuote })
     const expectedEscaped = dirWithQuote.replace(/'/g, "'\\''")
@@ -104,12 +96,9 @@ describe('buildTtsDirective', () => {
     expect(result).not.toContain(`"state_dir":"${dirWithQuote}"`)
   })
 
-  it('returns null when reading the token throws', () => {
-    mockExistsSync.mockReturnValue(true)
-    mockReadFileSync.mockImplementation(() => {
-      throw new Error('boom: permission denied')
-    })
-    expect(buildTtsDirective(BASE_OPTS)).toBeNull()
+  it('returns null for an agent id that is not a plain name (it goes onto a command line)', () => {
+    expect(buildTtsDirective({ ...BASE_OPTS, agentId: 'alpha; rm -rf /' })).toBeNull()
+    expect(buildTtsDirective({ ...BASE_OPTS, agentId: '' })).toBeNull()
   })
 })
 

@@ -3,8 +3,9 @@
 ClaudeClaw fleet helper - shared, deterministic plumbing so agents don't burn
 tokens hand-rolling curl/SQL/escaping in the model.
 
-Covers: dashboard API auth (token always read from store/.dashboard-token, never
-hardcoded), memory save/search, daily log, inter-agent messages, agent list,
+Covers: dashboard API auth (the calling agent's own token, resolved through the install's
+scripts/hooks/agent_token.py; the shared store/.dashboard-token only as its visible fallback;
+never hardcoded), memory save/search, daily log, inter-agent messages, agent list,
 kanban read helpers, and Telegram MarkdownV2 escaping.
 
 Importable as a module or used from the CLI. See README.md for usage.
@@ -15,6 +16,7 @@ Config (no hardcoded paths or secrets):
               until a `store/.dashboard-token` is found.
   CLAW_BASE - dashboard base url (default http://localhost:3420).
 """
+import importlib.util
 import json
 import os
 import sys
@@ -43,15 +45,43 @@ def base_url():
     return os.environ.get("CLAW_BASE", "http://localhost:3420").rstrip("/")
 
 
-def token():
-    with open(os.path.join(project_dir(), "store", ".dashboard-token")) as f:
-        return f.read().strip()
+def auth_headers():
+    """Authorization (+ X-Agent-Id) for the calling agent: its own token, resolved by the
+    install's agent_token module so the contract lives in one place. If that module cannot be
+    loaded, the shared token is read directly, as this helper always did."""
+    root = project_dir()
+    mod = _load_agent_token(root)
+    if mod is not None:
+        try:
+            return mod.auth_headers(install=root)
+        except Exception:
+            pass
+    with open(os.path.join(root, "store", ".dashboard-token")) as f:
+        return {"Authorization": "Bearer " + f.read().strip()}
+
+
+def _load_agent_token(root):
+    """Load <root>/scripts/hooks/agent_token.py by explicit path (no sys.path change), and only when
+    the file is the current user's and not group/world writable: the root may have been found by
+    walking up from the working directory, so it must not be able to plant code that runs here."""
+    path = os.path.join(root, "scripts", "hooks", "agent_token.py")
+    try:
+        st = os.stat(path)
+        if st.st_uid != os.getuid() or st.st_mode & 0o022:
+            return None
+        spec = importlib.util.spec_from_file_location("fleet_agent_token", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
 
 
 def api(method, path, payload=None, timeout=20):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(base_url() + path, data=data, method=method)
-    req.add_header("Authorization", "Bearer " + token())
+    for k, v in auth_headers().items():
+        req.add_header(k, v)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:

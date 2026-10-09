@@ -4,8 +4,10 @@ raises on failure -- the caller decides whether that is a spool, a warning or a
 silent no-op, because a hook must never break the session over a dashboard
 that is down.
 
-The port comes from WEB_PORT (env, then <install>/.env, default 3420) and the
-bearer token from <store>/.dashboard-token. Test override: DASHBOARD_BASE_URL.
+The port comes from WEB_PORT (env, then <install>/.env, default 3420). The bearer token is the
+calling agent's own (agent_token.resolve): its agents/<id>/.agent-token, and only when that file is
+missing the shared <store>/.dashboard-token, with X-Agent-Id naming the caller so the token-shadow
+meter can tell the fallback from an unmigrated call. Test override: DASHBOARD_BASE_URL.
 """
 import json
 import os
@@ -14,6 +16,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hook_db_path import db_path  # noqa: E402
+import agent_token  # noqa: E402
 
 
 def install_dir():
@@ -45,20 +48,13 @@ def base_url():
     return (os.environ.get("DASHBOARD_BASE_URL") or "http://localhost:%s" % _port()).rstrip("/")
 
 
-def _headers():
-    headers = {"Content-Type": "application/json"}
-    try:
-        with open(os.path.join(store_dir(), ".dashboard-token")) as f:
-            token = f.read().strip()
-        if token:
-            headers["Authorization"] = "Bearer " + token
-    except Exception:
-        pass
-    return headers
+def _headers(agent_id=None, kind=agent_token.KIND_AGENT):
+    return agent_token.resolve(agent_id=agent_id, store_dir=store_dir(), kind=kind).headers(
+        {"Content-Type": "application/json"})
 
 
-def request(method, path, body=None, timeout=2):
+def request(method, path, body=None, timeout=2, agent_id=None, kind=agent_token.KIND_AGENT):
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(base_url() + path, data=data, method=method, headers=_headers())
+    req = urllib.request.Request(base_url() + path, data=data, method=method, headers=_headers(agent_id, kind))
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8") or "null")

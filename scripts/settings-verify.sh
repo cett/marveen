@@ -15,16 +15,13 @@ set -euo pipefail
 MODE="${1:-before}"
 OUTPUT="settings-${MODE}.txt"
 PORT="${WEB_PORT:-3420}"
-TOKEN_FILE="${TOKEN_FILE:-store/.dashboard-token}"
 
-if [[ ! -f "${TOKEN_FILE}" ]]; then
-  echo "Nincs dashboard token: ${TOKEN_FILE}" >&2
+if [[ ! -f store/.operator-token && ! -f store/.dashboard-token ]]; then
+  echo "Nincs dashboard token (store/.operator-token vagy store/.dashboard-token)" >&2
   exit 1
 fi
 
-curl -sf \
-  -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" \
-  "http://localhost:${PORT}/api/settings" \
+DASHBOARD_BASE_URL="http://localhost:${PORT}" bash "$(dirname "$0")/agent-api.sh" --token operator GET /api/settings \
 | jq -r '.settings | sort_by(.key) | .[] | "\(.key)=\(.value // "")"' \
 > "${OUTPUT}"
 

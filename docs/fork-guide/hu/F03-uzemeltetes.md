@@ -51,7 +51,7 @@ journalctl --user -u marveen-channels -f
 
 ### Dashboard újraindítás az API-n keresztül
 
-Ha a dashboard fut, az újraindítás elvégezhető a `/api/updates/apply` végponton is (a `store/.dashboard-token` Bearer-tokennel).
+Ha a dashboard fut, az újraindítás elvégezhető a `/api/updates/apply` végponton is (hívd a `bash scripts/agent-api.sh --token operator POST /api/updates/apply` wrapperen át: a token-fájlt a wrapper olvassa, parancssorba te sosem írod).
 
 ## Frissítés
 
@@ -133,9 +133,7 @@ A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk k
 **Forrás tenanthez kötése** (chat, dashboard-felhasználó vagy inter-agent feladó, ágensenként) az admin API-val:
 
 ```bash
-curl -s -X PUT http://localhost:3420/api/v1/admin/channel-bindings \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
-  -d '{"agent_id":"<ágens>","channel":"telegram","external_id":"<chat id>","tenant_id":"<tenant>"}'
+bash scripts/agent-api.sh --token operator PUT /api/v1/admin/channel-bindings '{"agent_id":"<ágens>","channel":"telegram","external_id":"<chat id>","tenant_id":"<tenant>"}'
 # GET listáz (?tenant_id= / ?agent_id=), DELETE megszünteti (?agent_id=&channel=&external_id=)
 ```
 
@@ -157,9 +155,7 @@ Korlátok: ez a tenant-skillek **használatát** kényszeríti ki, a shell oldal
 Az alapcsomag (egy napi összefoglaló ütemezett feladat, részletek: F07 "Tenant alapcsomag") nem jön létre magától: sem új tenantnál, sem a már meglévőknél nincs automatikus utólagos létrehozás. Az admin kéri, tenantonként, bármikor; a kérés idempotens, ismétlése sosem ír felül semmit. A dashboardon a Tenantok fül **Alapcsomag** gombja végzi, API-n:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/v1/admin/tenants/<tenant>/starter-pack \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json" \
-  -d '{"agent_id":"<ágens>"}'
+bash scripts/agent-api.sh --token operator POST /api/v1/admin/tenants/<tenant>/starter-pack '{"agent_id":"<ágens>"}'
 # a törzs elhagyható: az ágens a tenant fő ágense, ennek hiányában az egyetlen engedélyezett ágens
 # GET ugyanezen az útvonalon csak olvas: az állapotot és azt az ágenst adja, amelyet a létrehozás választana
 ```
@@ -242,7 +238,7 @@ Az archívum két csoportból áll:
 
 **`repo/` csoport** (a projekt könyvtárához képest relatív):
 - `store/claudeclaw.db` (+ `-shm`/`-wal`) -- az adatbázis (WAL-checkpoint után)
-- `store/.dashboard-token` -- Bearer token
+- `store/.dashboard-token` -- közös Bearer token
 - `store/vault.json` -- a *titkosított* titokvault (a kulcs nincs az archívumban)
 - `.env` -- fő konfiguráció
 - `agents/*/CLAUDE.md`, `SOUL.md`, `.mcp.json` -- ágens-identitások
@@ -301,9 +297,8 @@ A dashboard minden indulásnál ugyanezt teszi, hacsak `SKILL_SQL_REGEN=0`; kika
 A futó ágens-sessionök induláskor töltik be a skilleket, ezért utána indítsd újra őket (a ciklus az alágenseket fedi; a fő ágenst ugyanígy a `POST /api/agents/<MAIN_AGENT_ID>/restart` indítja újra, ami a channels szolgáltatáson át megy):
 
 ```bash
-TOKEN=$(cat store/.dashboard-token)
-for a in $(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/agents | python3 -c 'import sys,json; print(" ".join(x["name"] for x in json.load(sys.stdin)))'); do
-  curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3420/api/agents/$a/restart"; echo " $a"
+for a in $(bash scripts/agent-api.sh --token operator GET /api/agents | python3 -c 'import sys,json; print(" ".join(x["name"] for x in json.load(sys.stdin)))'); do
+  bash scripts/agent-api.sh --token operator POST "/api/agents/$a/restart"; echo " $a"
 done
 ```
 
@@ -360,7 +355,9 @@ Az érzékeny fájlok jogosultságai:
 | Fájl | Jogosultság | Tartalom |
 |------|------------|---------|
 | `.env` | `0600` | Bot tokenek, auth kulcs |
-| `store/.dashboard-token` | `0600` | Dashboard Bearer token |
+| `store/.dashboard-token` | `0600` | Közös dashboard Bearer token |
+| `store/.operator-token` | `0600` | Az üzemeltető saját admin tokenje |
+| `agents/<id>/.agent-token`, `.agent-token` (fő ágens) | `0600` | Az ágens saját API tokenje |
 | `store/.claude-oauth-token` | `0600` | Fleet OAuth token |
 | `~/.claude/channels/*/.env` | `0600` | Csatorna bot tokenek |
 | `~/.claude/channels/*/access.json` | `0644` | Párosítási állapot (nem titkos) |

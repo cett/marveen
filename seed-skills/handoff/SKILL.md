@@ -35,7 +35,7 @@ Collect data from these sources (skip any that return empty):
 ```bash
 # Active kanban cards (assigned to current agent or recently touched)
 AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:3420/api/kanban \
+bash scripts/agent-api.sh GET /api/kanban \
   | AGENT_ID="$AGENT_ID" python3 -c "
 import json, os, sys
 me = os.environ['AGENT_ID']
@@ -45,17 +45,14 @@ for c in cards[:10]:
     print({k: c.get(k) for k in ('id', 'title', 'status', 'priority', 'assignee', 'description')})"
 
 # Hot memories from last 24h
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent=$AGENT_ID&category=hot&limit=10"
+bash scripts/agent-api.sh GET "/api/memories?agent=$AGENT_ID&category=hot&limit=10"
 
 # Recent warm memories (project context)
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent=$AGENT_ID&category=warm&limit=5"
+bash scripts/agent-api.sh GET "/api/memories?agent=$AGENT_ID&category=warm&limit=5"
 
 # Today's daily log
 DATE=$(date +%Y-%m-%d)
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/daily-log?agent=$AGENT_ID&date=$DATE"
+bash scripts/agent-api.sh GET "/api/daily-log?agent=$AGENT_ID&date=$DATE"
 ```
 
 Also include from your current conversation context:
@@ -112,10 +109,7 @@ Keep each step concrete enough to execute without asking questions.}
 **Inter-agent mode** (`target=` specified): Send the full HANDOFF.md content as an inter-agent message:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d "{\"from\":\"$AGENT_ID\",\"to\":\"TARGET\",\"content\":\"[HANDOFF] purpose: ... \n\n$(cat HANDOFF.md)\"}"
+bash scripts/agent-api.sh POST /api/messages "{\"from\":\"$AGENT_ID\",\"to\":\"TARGET\",\"content\":\"[HANDOFF] purpose: ... \\n\\n$(cat HANDOFF.md)\"}"
 ```
 
 ### 4. Confirm

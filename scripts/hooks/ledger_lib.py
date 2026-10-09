@@ -132,8 +132,9 @@ def _store_dir():
     return dashboard_api.store_dir()
 
 
-def _request(method, path, body=None, timeout=READ_TIMEOUT):
-    return dashboard_api.request(method, path, body, timeout=timeout)
+def _request(method, path, body=None, timeout=READ_TIMEOUT, agent_id=None):
+    # The ledger is per agent: the token that signs the call must be that agent's own.
+    return dashboard_api.request(method, path, body, timeout=timeout, agent_id=agent_id)
 
 
 def _spool_path(agent_id):
@@ -180,7 +181,7 @@ def _flush_spool(agent_id):
                 pass  # a torn line is dropped
         if entries:
             try:
-                _request("POST", "/api/conversation-ledger", {"entries": entries}, timeout=WRITE_TIMEOUT)
+                _request("POST", "/api/conversation-ledger", {"entries": entries}, timeout=WRITE_TIMEOUT, agent_id=agent_id)
             except Exception:
                 for e in entries:
                     _spool(e)
@@ -194,7 +195,7 @@ def _flush_spool(agent_id):
 def _write(entry):
     """Send one turn; on failure spool it. Never raises."""
     try:
-        _request("POST", "/api/conversation-ledger", entry, timeout=WRITE_TIMEOUT)
+        _request("POST", "/api/conversation-ledger", entry, timeout=WRITE_TIMEOUT, agent_id=entry.get("agent_id"))
     except Exception:
         _spool(entry)
         return
@@ -232,7 +233,7 @@ def recent(agent_id, limit=RECENT_LIMIT):
     """The last `limit` turns for this agent, oldest-first. Rows: (direction, chat_id, text, ts).
     Raises when the dashboard cannot be reached."""
     path = "/api/conversation-ledger/%s/recent?limit=%d" % (urllib.parse.quote(str(agent_id), safe=""), int(limit))
-    data = _request("GET", path)
+    data = _request("GET", path, agent_id=agent_id)
     return [(t["direction"], t["chat_id"], t["text"], t["ts"]) for t in data["turns"]]
 
 
@@ -242,7 +243,7 @@ def open_question_with_age(agent_id):
     live-drain hook, which needs the age for its grace window. Raises when the
     dashboard cannot be reached."""
     path = "/api/conversation-ledger/%s/open-question" % urllib.parse.quote(str(agent_id), safe="")
-    q = _request("GET", path)["open_question"]
+    q = _request("GET", path, agent_id=agent_id)["open_question"]
     if not q:
         return None
     return (q["chat_id"], q["message_id"], q["text"], q["ts"], q["created_at"])

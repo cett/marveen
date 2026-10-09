@@ -15,6 +15,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import agent_token  # noqa: E402
 
 # Extension -> artifact kind mapping (matches ARTIFACT_KINDS in db/artifacts.ts)
 _EXT_KIND = {
@@ -44,14 +45,6 @@ def _web_port() -> str:
         except Exception:
             pass
     return port or '3420'
-
-
-def _dashboard_token() -> str:
-    try:
-        with open(os.path.join(_project_root(), 'store', '.dashboard-token')) as f:
-            return f.read().strip()
-    except OSError:
-        return ''
 
 
 def _is_valid_claude_url(url: str) -> bool:
@@ -149,12 +142,12 @@ def main() -> None:
         except Exception:
             content = ''
 
-    token = _dashboard_token()
-    if not token:
-        sys.exit(0)
-
     cwd = payload.get('cwd') or ''
     agent_id = ledger_lib.agent_id_from_cwd(cwd)
+
+    auth = agent_token.resolve(cwd=cwd, store_dir=os.path.join(_project_root(), 'store'))
+    if not auth.token:
+        sys.exit(0)
 
     body = json.dumps({
         'agent_id': agent_id,
@@ -167,10 +160,7 @@ def main() -> None:
 
     port = _web_port()
     url = f'http://localhost:{port}/api/artifacts'
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {token}',
-    }
+    headers = auth.headers({'Content-Type': 'application/json'})
 
     try:
         req = urllib.request.Request(url, data=body, headers=headers, method='POST')

@@ -18,11 +18,7 @@ Ejjelente egyszer (default: 04:00) automatikusan fut. Elvegzi:
 ## Eljaras
 
 ```bash
-TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
-RESULT=$(curl -s -X POST http://localhost:3420/api/memories/links/maintain \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{}')
+RESULT=$(bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories/links/maintain '{}')
 echo "$RESULT"
 ```
 
@@ -36,11 +32,7 @@ Egyebkent csendes heartbeat (type: heartbeat).
 ## Threshold override
 
 ```bash
-TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
-curl -s -X POST http://localhost:3420/api/memories/links/maintain \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"weight_threshold":0.2,"max_age_seconds":259200}'
+bash {{INSTALL_DIR}}/scripts/agent-api.sh POST /api/memories/links/maintain '{"weight_threshold":0.2,"max_age_seconds":259200}'
 ```
 
 ## Telepites

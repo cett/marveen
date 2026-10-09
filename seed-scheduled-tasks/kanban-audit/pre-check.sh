@@ -4,25 +4,28 @@
 # in_progress cards since the last audit.
 # Reads through the dashboard API (the kanban board and the agent_state store),
 # not the database file. Fail open (non-zero exit -> the runner starts the LLM)
-# instead of a silent SKIP when the dashboard, the token, curl or python3 is
-# unavailable.
-TOKEN_FILE="{{INSTALL_DIR}}/store/.dashboard-token"
-BASE="http://localhost:{{WEB_PORT}}"
+# instead of a silent SKIP when the dashboard, curl or python3 is unavailable.
+# The calls go through the API wrapper, which resolves the agent's own token
+# (the token never appears on a command line).
+API="{{INSTALL_DIR}}/scripts/agent-api.sh"
+export DASHBOARD_BASE_URL="http://localhost:{{WEB_PORT}}"
 AGENT_ID="{{MAIN_AGENT_ID}}"
 command -v curl >/dev/null 2>&1 || exit 1
 command -v python3 >/dev/null 2>&1 || exit 1
-[ -r "$TOKEN_FILE" ] || exit 1
-TOKEN=$(cat "$TOKEN_FILE") || exit 1
+[ -r "$API" ] || exit 1
 
 # The board listing already leaves archived cards out. It also archives done
 # cards past the dashboard's own window (KANBAN_ARCHIVE_DONE_DAYS), which can be
 # longer than the 7 days counted here, so those are still left for the audit.
-CARDS=$(curl -sf --max-time 10 -H "Authorization: Bearer $TOKEN" "$BASE/api/kanban") || exit 1
+CARDS=$(bash "$API" --agent "$AGENT_ID" --max-time 10 GET /api/kanban 2>/dev/null) || exit 1
 
 # Last audit timestamp lives in agent_state (migrated from kanban-audit-state.json).
 # 404 = no audit has run yet; any other non-200 answer is a failure, not "never".
-STATE=$(curl -s --max-time 10 -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN" \
-  "$BASE/api/agent-state/$AGENT_ID/kanban_audit_last_audit_at") || exit 1
+# The wrapper exits 22 on a non-2xx answer (the 404 case) but still prints the body.
+STATE=$(bash "$API" --agent "$AGENT_ID" --max-time 10 --with-status \
+  GET "/api/agent-state/$AGENT_ID/kanban_audit_last_audit_at" 2>/dev/null)
+STATE_RC=$?
+[ "$STATE_RC" -eq 0 ] || [ "$STATE_RC" -eq 22 ] || exit 1
 STATE_CODE=${STATE##*$'\n'}
 STATE_BODY=${STATE%$'\n'*}
 case "$STATE_CODE" in

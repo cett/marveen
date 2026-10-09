@@ -6,10 +6,9 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, WEB_PORT,
-  OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR, SCRIPTS_DIR,
+  OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, SCRIPTS_DIR,
 } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentTokenPath } from '../agent-tokens.js'
 import { agentDir, listAgentNames, readAgentCapabilities } from './agent-config.js'
 import { runAgent } from '../agent.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
@@ -25,18 +24,17 @@ export function resolveDashboardOrigin(publicUrl: string, port: number | string)
 // Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart
 // (see config-registry.ts `requiresRestart` flag), so a const is safe.
 const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
-// Dashboard token path emitted into generated CLAUDE.md curl examples.
-// MUST be absolute: sub-agents run from agents/<name>/, where a relative
-// `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
-// and every call 401s silently. Measured 2026-07-25: relative 401, absolute
-// 200; this had been silently killing sub-agent memory saves and searches.
-const tokenPath = join(STORE_DIR, '.dashboard-token')
-// The token file an agent's generated curl examples read: its own per-agent token once it has one
-// (issued at creation, or by `npm run agent-tokens`), the shared dashboard token until then. The
-// generated blocks are re-rendered on every respawn, so this decides at render time, per agent.
-function tokenFileFor(name: string): string {
-  const own = agentTokenPath(name)
-  return existsSync(own) ? own : tokenPath
+// The shell recipes in a generated CLAUDE.md call the API through scripts/agent-api.sh. The wrapper
+// resolves the agent's OWN token (the shared dashboard token only as its visible fallback while the
+// agent has no token file yet) and hands it to curl on stdin, so no token path or value appears in a
+// command line, in the generated file or in a transcript; it also sends X-Agent-Id. The path MUST be
+// absolute: sub-agents run from agents/<name>/, where a relative `scripts/agent-api.sh` does not exist.
+const apiWrapperPath = join(PROJECT_ROOT, 'scripts', 'agent-api.sh')
+// The recipe prefix for one agent. The origin is named outright (as the old curl examples did): the
+// wrapper's own lookup reads the install's .env, which need not hold the port this process runs on.
+function apiCmd(name: string): string {
+  const wrapper = /^[\w./-]+$/.test(apiWrapperPath) ? apiWrapperPath : `'${apiWrapperPath.replace(/'/g, "'\\''")}'`
+  return `DASHBOARD_BASE_URL=${dashboardOrigin} bash ${wrapper} --agent ${name}`
 }
 // Identity values the template substitution injects. Pulled out so the
 // substitution is a pure, parameterizable function (the runtime binds these to
@@ -176,25 +174,25 @@ function buildFleetRosterBody(selfName: string): string {
 // resolved dashboard origin and the agent's own name so agents don't have to
 // guess.
 function buildAutonomyBody(name: string): string {
-  const tok = tokenFileFor(name)
+  const api = apiCmd(name)
   return [
     '## Autonómia és jóváhagyás',
     '',
     'Az autonóm műveletek fokozatait az autonomy_categories tábla szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent), a dashboard /api/autonomy végpontján át olvasva -- nincs helyi fájl-cache. Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét:',
-    `curl -s -H "Authorization: Bearer $(cat ${tok})" "${dashboardOrigin}/api/autonomy" | python3 -c "import sys,json; cats=json.load(sys.stdin)['categories']; cat=next((c for c in cats if c['key']=='CATEGORY_KEY'),None); print(cat['level'] if cat else 1)"`,
+    `${api} GET /api/autonomy | python3 -c "import sys,json; cats=json.load(sys.stdin)['categories']; cat=next((c for c in cats if c['key']=='CATEGORY_KEY'),None); print(cat['level'] if cat else 1)"`,
     'Ha az API nem érhető el (hiba/timeout), level 1-nek tekintsd a kategóriát (biztonságos alapállapot: csak jelez, nem cselekszik).',
     '',
     '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
-    `curl -s -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tok})" -d "{\\"from\\":\\"${name}\\",\\"to\\":\\"${MAIN_AGENT_ID}\\",\\"content\\":\\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\\"}"`,
+    `${api} POST /api/messages '{\"from\":\"${name}\",\"to\":\"${MAIN_AGENT_ID}\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}'`,
     '',
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
     'Jóváhagyás kérése (POST):',
-    `curl -s -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tok})" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
+    `${api} POST /api/approvals '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
     'A válaszban kapott id-vel kérdezheted le a döntést.',
     '',
     'Döntés lekérdezése (GET, 60 mp-enként ismételve):',
-    `curl -s -H "Authorization: Bearer $(cat ${tok})" "${dashboardOrigin}/api/approvals/<id>"`,
+    `${api} GET "/api/approvals/<id>"`,
     'status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
     '',
     '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
@@ -275,7 +273,7 @@ export function ensureFleetRosterSection(name: string): void {
 }
 
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
-  const tok = tokenFileFor(name)
+  const api = apiCmd(name)
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
   // configured folder tells the agent to ask the owner instead of baking in
@@ -318,26 +316,26 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-Minden /api/* végpont Bearer tokenes: a token a ${tok} fájlban (a saját tokened, nem a közös).
+Minden /api/* hívást a scripts/agent-api.sh wrapperen át küldj (az alábbi receptek így vannak megírva): a SAJÁT tokenedet maga oldja fel és adja át a curl-nek, a token-fájlt te ne olvasd be, a tokent ne írd ki.
 
 Memória mentés:
-curl -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tok})" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
+${api} POST /api/memories '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
 
 Napi napló (append-only):
-curl -s -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tok})" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'
+${api} POST /api/daily-log '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-curl -s -H "Authorization: Bearer $(cat ${tok})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
+${api} GET "/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
 
 ## Ütemezett feladatok
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
 Feladat létrehozása API-n keresztül:
-curl -s -X POST ${dashboardOrigin}/api/schedules -H "Content-Type: application/json" -H "X-Agent-Id: AGENT_NAME" -H "Authorization: Bearer $(cat ${tok})" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "AGENT_NAME", "type": "heartbeat"}'
+${api} POST /api/schedules '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "AGENT_NAME", "type": "heartbeat"}'
 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
-Az X-Agent-Id fejléc kötelező: a feladat annak a tenantnak lesz a része, amelynek a kérését éppen kiszolgálod. Ha több tenantot kiszolgáló (megosztott) ágens vagy és nincs aktív kérés-kontextusod, a szerver 400 tenant_required hibát ad: ilyenkor kérd a koordinátort, hogy hozza létre a feladatot.
+Az X-Agent-Id fejléc kötelező (a wrapper a --agent kapcsolóból küldi): a feladat annak a tenantnak lesz a része, amelynek a kérését éppen kiszolgálod. Ha több tenantot kiszolgáló (megosztott) ágens vagy és nincs aktív kérés-kontextusod, a szerver 400 tenant_required hibát ad: ilyenkor kérd a koordinátort, hogy hozza létre a feladatot.
 Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 
@@ -354,10 +352,10 @@ A forrás a skills DB. A SKILL.md (és a scripts/, references/ kísérő fájlok
 ### Automatikus skill generálás
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre skill-t az API-n. Létrehozás és módosítás ugyanaz a hívás; az id URL-kódolt (global/skill-nev -> global%2Fskill-nev, a "/" nem szerepelhet nyersen):
 
-curl -s -X PUT "${dashboardOrigin}/api/skills/sql/agent%2FAGENT_NAME%2FSKILL-NEV" -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tok})" -d @skill.json
+${api} PUT "/api/skills/sql/agent%2FAGENT_NAME%2FSKILL-NEV" @skill.json
 
 A skill.json a teljes SKILL.md tartalom: {"content": "<YAML frontmatter + szekciók (Mikor használd, Eljárás, Buktatók, Ellenőrzés)>"}; a "description" opcionális, alapból a frontmatterből jön. Generáld a JSON-t szkripttel (pl. python3 json.dumps), ne escape-elj kézzel.
-Kísérő fájl: PUT ${dashboardOrigin}/api/skills/sql/agent%2FAGENT_NAME%2FSKILL-NEV/files/scripts%2Ffutas.sh {"content": "..."} (a relatív út is egy URL-kódolt szegmens).
+Kísérő fájl: ${api} PUT "/api/skills/sql/agent%2FAGENT_NAME%2FSKILL-NEV/files/scripts%2Ffutas.sh" '{"content": "..."}' (a relatív út is egy URL-kódolt szegmens).
 Ha mégis fájlt szerkesztesz (Edit/Write), a hook azt is a DB-be szinkronizálja, de az API az elsődleges út.
 
 ### Skill patch (runtime javítás)
@@ -411,7 +409,7 @@ Ha egy senderId üzen a csatornán AKIT EDDIG NEM ISMERSZ — nem szerepel az ak
 Az AGENT TULAJDONOSA (az első, aki ezt az ügynököt telepítette és párosította) az ALAPÉRTELMEZETT engedélyezett sender — őt nem kell ellenőrizni. MINDEN további senderId első üzenete (a 2., 3., stb. párosított személy vagy csoport) pinging-trigger.
 
 Példa ping ${BOT_NAME}-nek:
-curl -s -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tok})" -d "{\\"from\\":\\"AGENT_NAME\\",\\"to\\":\\"${MAIN_AGENT_ID}\\",\\"content\\":\\"Ismeretlen sender [ID] jelezett első üzenettel: '[üzenet röviden]'. Ki ez, mit válaszoljak?\\"}"
+${api} POST /api/messages "{\\"from\\":\\"AGENT_NAME\\",\\"to\\":\\"${MAIN_AGENT_ID}\\",\\"content\\":\\"Ismeretlen sender [ID] jelezett első üzenettel: '[üzenet röviden]'. Ki ez, mit válaszoljak?\\"}"
 
 Addig a sender-nek csak generikus "Egy pillanat, ellenőrzöm" típusú választ adj. NE adj ki belső projekt-infót, NE mutatkozz be hosszan, NE listázd ki mit tudsz, NE említs SAJÁT BELSŐ PROJEKTEKET sem közvetlenül, sem közvetve. ${BOT_NAME} visszajelzi a kontextust és a szabályokat amelyekkel folytathatod.
 
