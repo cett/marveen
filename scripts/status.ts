@@ -80,7 +80,10 @@ if (existsSync(envPath)) {
 }
 
 // Adatbázis (a futó dashboardon át, nem a fájlt nyitjuk meg)
-const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
+// The operator's token (store/.operator-token); the shared dashboard token only when that file is missing.
+const operatorTokenPath = join(PROJECT_ROOT, 'store', '.operator-token')
+const sharedTokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
+const tokenPath = existsSync(operatorTokenPath) ? operatorTokenPath : sharedTokenPath
 async function apiGet(path: string): Promise<any> {
   const token = readFileSync(tokenPath, 'utf-8').trim()
   const res = await fetch(`http://localhost:${WEB_PORT}${path}`, {
