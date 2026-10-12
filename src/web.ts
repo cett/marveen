@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE, STORE_DIR } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE, STORE_DIR, TOKEN_IDENTITY_MODE } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
@@ -89,7 +89,7 @@ import { tryHandleModelFallback } from './web/routes/model-fallback.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleRbacShadowLog } from './web/routes/rbac-shadow-log.js'
 import { tryHandleTokenShadow } from './web/routes/token-shadow.js'
-import { observeTokenUsage, recordTenantContextRefusal } from './web/token-shadow.js'
+import { identityRefusal, observeTokenUsage, recordTenantContextRefusal } from './web/token-shadow.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleAgentState } from './web/routes/agent-state.js'
 import { tryHandleIntel } from './web/routes/intel.js'
@@ -331,6 +331,16 @@ export function startWebServer(port = 3420): http.Server {
       // Phase T2 shadow counter: measures the shared token and per-agent token use. Counts only; it
       // never throws, never reads the body here and never changes the outcome of the request.
       if (requiresAuth(path, method)) observeTokenUsage(req, auth, method, path, url)
+
+      // Phase T4-7: with TOKEN_IDENTITY_MODE=enforce a non-main agent caller that names another agent
+      // is refused with the same classification the counter just recorded. Shadow (the default): no-op.
+      if (TOKEN_IDENTITY_MODE === 'enforce' && requiresAuth(path, method)) {
+        const refusal = await identityRefusal(req)
+        if (refusal) {
+          logger.warn({ path, method, caller: refusal.caller, target: refusal.target, category: refusal.category }, 'token identity: request names another agent, refused')
+          return json(res, { error: 'forbidden', hint: 'A token may only act as its own agent' }, 403)
+        }
+      }
 
       if (await dispatcher.dispatch(routeCtx)) return
 
