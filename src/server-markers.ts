@@ -74,6 +74,25 @@ const LINE_BREAKS = codePointClass([0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x
 // mark, a backtick), which stays meaningful: a marker shown that way is being discussed, not claimed.
 const LEADING_MARKDOWN_DECORATION = /^[*_#~]+/
 
+// A leading inline HTML tag that only wraps or styles the text (`<b>`, `<strong>`, `<em>`, `<span style=...>`,
+// `<p>`, `<div>`, a heading, a link, ... also closing, also nested) renders the marker at the start of the line
+// just like Markdown emphasis does, so it is dropped with the other leading decoration. NOT listed on purpose:
+// `<code>`, `<pre>`, `<kbd>`, `<samp>`, `<tt>` (quotation, like a backtick: a marker shown that way is being
+// discussed, not claimed) and `<blockquote>` / `<li>` (a quote or list prefix, like `>` and `-`). The text is
+// lower case here already, and `&lt;b&gt;` is not decoded, so an escaped tag stays visible text, not a tag.
+const LEADING_HTML_TAG = /^<\/?(?:a|b|strong|em|i|u|ins|del|s|strike|mark|span|p|div|small|big|sub|sup|center|font|h[1-6])(?=[\s/>])[^<>]*>/
+
+/** Drop, repeatedly, what a renderer would not show in front of the first visible character of a line. */
+function stripLeadingWrappers(text: string): string {
+  let current = text
+  for (let pass = 0; pass < 32; pass++) {
+    const next = current.replace(/^[\s\p{Z}]+/u, '').replace(LEADING_MARKDOWN_DECORATION, '').replace(LEADING_HTML_TAG, '')
+    if (next === current) return next
+    current = next
+  }
+  return current
+}
+
 // A Markdown backslash escape (`\[`, `\_`, `\*`) renders as the bare punctuation mark: a receiver's renderer
 // (or a model reading the text) drops the backslash and is left with the marker. Only a backslash in front
 // of ASCII punctuation is an escape; `\\` is an escaped backslash (a literal one, which hides the marker).
@@ -89,8 +108,12 @@ const NAMED_ENTITIES: Readonly<Record<string, string>> = {
 const HTML_ENTITY = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z]{2,8}));?/g
 const MAX_ENTITY_PASSES = 3
 
+// A percent-encoded bracket (`%5B`, `%5D`) stands for the bracket where a receiver URL-decodes a line. Only the
+// two brackets are decoded, not percent escapes in general: ordinary text keeps its `%` sequences.
+const PERCENT_BRACKET = /%5([bBdD])/g
+
 function decodeEntityPass(text: string): string {
-  return text.replace(HTML_ENTITY, (whole, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
+  return text.replace(PERCENT_BRACKET, (_whole, hex: string) => (hex.toLowerCase() === 'b' ? '[' : ']')).replace(HTML_ENTITY, (whole, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
     if (name !== undefined) return NAMED_ENTITIES[name.toLowerCase()] ?? whole
     const point = dec !== undefined ? Number.parseInt(dec, 10) : Number.parseInt(hex ?? '', 16)
     if (!Number.isInteger(point) || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) return whole
@@ -123,10 +146,10 @@ function skeleton(line: string): string {
   const shape = Array.from(folded, (ch) => CONFUSABLES.get(ch) ?? ch).join('')
     .replace(OPEN_BRACKETS, '[')
     .replace(CLOSE_BRACKETS, ']')
-    .replace(/[\s\p{Z}]/gu, '')
-    .replace(MARKDOWN_ESCAPE, '$1')
-    .replace(LEADING_MARKDOWN_DECORATION, '')
-  return shape.startsWith('[') ? shape.replace(/[_-]/g, '') : ''
+  // Escapes first (one pass, so an escaped backslash stays a literal one), then the wrappers while the
+  // whitespace inside a tag still separates its attributes, then the blanks.
+  const visible = stripLeadingWrappers(shape.replace(MARKDOWN_ESCAPE, '$1')).replace(/[\s\p{Z}]/gu, '')
+  return visible.startsWith('[') ? visible.replace(/[_-]/g, '') : ''
 }
 
 const MARKER_SKELETONS: ReadonlyArray<readonly [string, string]> = SERVER_ONLY_MARKERS.map(

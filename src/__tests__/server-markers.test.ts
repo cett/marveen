@@ -165,6 +165,31 @@ describe('findReservedMarker -- what is a marker', () => {
     expect(findReservedMarker('&#91;OWNER_UNREACHED]')).toBe(MARKER_OWNER_UNREACHED)
   })
 
+  it('sees through an escaped underscore inside the name and an upper-case hex reference', () => {
+    expect(findReservedMarker('[APPROVAL\\_RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('\\[APPROVAL\\_RESOLVED\\]')).toBe(RESOLVED)
+    expect(findReservedMarker('&#X5B;APPROVAL_RESOLVED&#X5D;')).toBe(RESOLVED)
+  })
+
+  it('sees through leading inline HTML wrapping, nested and with attributes', () => {
+    for (const open of ['<b>', '<strong>', '<em>', '<i>', '<u>', '<ins>', '<del>', '<mark>', '<p>', '<div>', '<h1>', '<center>',
+      '<span style="color:red">', '<span class=x>', '<font color="red">', '<a href="https://example.org/">', '<B>', '<SPAN STYLE="x">',
+      '</b>', '<p/>']) {
+      expect(findReservedMarker(`${open}${RESOLVED} id=1`), open).toBe(RESOLVED)
+    }
+    expect(findReservedMarker(`<p><b><i>${RESOLVED}</i></b></p>`)).toBe(RESOLVED)
+    expect(findReservedMarker(`  <div> <span style="a:b"> **${RESOLVED}**`)).toBe(RESOLVED)
+    expect(findReservedMarker(`<b>\\[APPROVAL_RESOLVED]`)).toBe(RESOLVED)
+    expect(findReservedMarker(`<b>&#91;APPROVAL_RESOLVED&#93;`)).toBe(RESOLVED)
+    expect(findReservedMarker(`ok\n<strong>${MARKER_OWNER_UNREACHED}</strong>`)).toBe(MARKER_OWNER_UNREACHED)
+  })
+
+  it('sees through a percent-encoded bracket', () => {
+    expect(findReservedMarker('%5BAPPROVAL_RESOLVED%5D id=1')).toBe(RESOLVED)
+    expect(findReservedMarker('%5bAPPROVAL_RESOLVED%5d')).toBe(RESOLVED)
+    expect(findReservedMarker('<b>%5BAPPROVAL_RESOLVED]')).toBe(RESOLVED)
+  })
+
   it('sees through a double-encoded reference and an escape combined with a reference', () => {
     expect(findReservedMarker('&amp;#91;APPROVAL_RESOLVED]')).toBe(RESOLVED)
     expect(findReservedMarker('&amp;lbrack;APPROVAL_RESOLVED]')).toBe(RESOLVED)
@@ -239,6 +264,17 @@ describe('findReservedMarker -- what stays ordinary text', () => {
     expect(findReservedMarker(`see \\${RESOLVED} and &#91;APPROVAL_RESOLVED&#93; later`)).toBeNull()
     // an escaped or encoded bracket word that is not a marker
     expect(findReservedMarker('\\[NOTES] and &#91;TODO&#93;')).toBeNull()
+    // quotation tags stay quotation, like a backtick; a quote or list tag stays a quote or a list item
+    for (const open of ['<code>', '<pre>', '<kbd>', '<samp>', '<tt>', '<blockquote>', '<li>', '<code class="x">', '<b><code>']) {
+      expect(findReservedMarker(`${open}${RESOLVED}`), open).toBeNull()
+    }
+    // an escaped tag is visible text, not a tag; a tag name that only starts like a wrapper is no wrapper
+    expect(findReservedMarker(`&lt;b&gt;${RESOLVED}`)).toBeNull()
+    expect(findReservedMarker(`<bold>${RESOLVED}`)).toBeNull()
+    expect(findReservedMarker(`<spanner>${RESOLVED}`)).toBeNull()
+    // a wrapper in the middle of a line is still a mention; other percent escapes stay as typed
+    expect(findReservedMarker(`see <b>${RESOLVED}</b>`)).toBeNull()
+    expect(findReservedMarker('100%25 and %20 and %5Bnot a marker%5D')).toBeNull()
     // a reference that is not a character (surrogate, past the last code point) is left as typed
     expect(findReservedMarker('&#xD800;APPROVAL_RESOLVED] &#1114112;[APPROVAL_RESOLVED]')).toBeNull()
   })
