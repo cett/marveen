@@ -28,6 +28,7 @@ mean "let it through". The block message says how to make it inspectable.
 Contract: PreToolUse. Reads the hook payload on stdin, exit 0 = allow,
 exit 2 = block (stderr goes back to the model).
 """
+import bisect
 import json
 import os
 import re
@@ -70,8 +71,28 @@ import sys
 # resze es MEGMARAD -- csak a torzs esik ki. Enelkul (a) forditott
 # sorrendnel a torzs parancsnak latszott (FP), (b) a bevezeto sor
 # eldobasa a heredoc-taplalt VALODI kuldot vesztette volna el (FN).
-_HEREDOC = re.compile(r"(<<-?\s*'?(\w+)'?[^\n]*)\n.*?\n\2(?=\s|$)", re.S)
+#
+# A heredoc is found by _scan_heredocs() (below), ONE LINEAR PASS, not by a regex. The old
+# single regex (an intro `<<-?\s*'?(\w+)'?[^\n]*`, a newline, then a lazy body up to
+# `\n<TAG>`) was superlinear on hostile input: `<<` plus a long run of word characters
+# and no newline backtracked quadratically through the intro, and every never-closed opener
+# re-scanned the rest of the string for its closer (50 openers x 100K did not finish in
+# 90 s). A hook still running at its timeout is NOT a deny (the host treats it as
+# non-blocking), so a slow classifier is a fail-OPEN. Same decision as before, bounded work.
+# Mirrored in scripts/email-send-gate.mjs (scanHeredocs); keep the two identical.
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+# KWSPLIT924: shell reserved words that put the NEXT word in command position.
+# The segmenter splits on operators only, so `if true; then sendmail x; fi`
+# gave the segment [then, sendmail, x] whose "program" was `then`: the send was
+# not recognised and the copy audit was silently skipped (same for do / else /
+# elif / { / !, and the condition after if / while / until). They are stripped
+# ONLY at the head of a segment, i.e. in command position, never as separators:
+# `echo then sendmail x` stays a single echo. `in` is deliberately NOT here: the
+# words after it are data, and `for m in sendmail msmtp; do which $m; done` must
+# stay false. `for` / `case` are not here either: the word after them is a name
+# or a subject, not a command. Mirrored in email-send-gate.mjs (CMD_POSITION_KEYWORDS);
+# the shared send-invocation-cases.json binds the two.
+_CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
 _PYTHON = re.compile(r"^python3?$", re.I)
@@ -94,6 +115,22 @@ _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 _CODE_SEND = re.compile(
     r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
 )
+# Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE, not run by its
+# file name -- `import send`, `from send import main`, runpy, __import__/import_module,
+# or a spec built from send.py. The file-name rule below never saw these, so the call
+# went past the approval gate. Case-sensitive on purpose (Python names are), and
+# `send` must be the whole module name: `import sendgrid_x` or a "send" word in a
+# string stays out. Mirrored in email-send-gate.mjs (CODE_SEND_MODULE).
+_CODE_SEND_MODULE = re.compile(
+    r"\bimport\s+(?:[\w.]+\s*,\s*)*send\b(?![\w.])"
+    r"|\bfrom\s+send\s+import\b"
+    r"|\brunpy\b[^\n]*\bsend\b"
+    r"|\b(?:__import__|import_module)\s*\(\s*['\"]send['\"]"
+    r"|\bspec_from_file_location\b[^\n]*\bsend\.py\b"
+    # The same class on the Graph sender (src/graph-mail.ts, export sendMail): renamed on
+    # import, or reached by a string key -- the call itself then never reads `sendMail(`.
+    r"|\bsendMail\s+as\b|\[\s*['\"]sendMail['\"]\s*\]"
+)
 _CODE_EXECISH = re.compile(
     r"\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(",
     re.I,
@@ -102,12 +139,110 @@ _CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
 
 
 def _code_string_sends(code: str) -> bool:
-    if _CODE_SEND.search(code):
+    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code):
         return True
     return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
+
+
+def _url_arg(t: str) -> str:
+    """curl takes its URL as `--url https://...` (two tokens, the URL is its own token) or as
+    `--url=https://...` (ONE token): the target pattern is anchored to the token start, so
+    the glued form is read after its `--url=` prefix. Mirrored in email-send-gate.mjs (urlArg)."""
+    return t[len("--url="):] if t.startswith("--url=") else t
+
+# RESENDGATE826: a resend-celu curl/wget csak akkor KULDES, ha a METODUS az.
+# A korabbi minta metodus-vak volt, es egy read-only GET /domains (nincs torzs,
+# nincs cimzett) ugyanugy fail-closed elutasitast kapott -- pont egy domain-
+# verifikacios MERES akadt el rajta. A szukites iranya szigoru: a metodust
+# FELISMERNI kell (explicit -X/--request/--method, vagy implicit POST a
+# torzs-flagekbol); ha nem allapithato meg (valtozo, config-fajl, csonka flag),
+# marad a fail-closed. Egy "nincs felismerheto torzs -> atmegy" szabaly a
+# kaput utne ki, ezert ILYEN AG NINCS.
+_CURL_BODY_OPTS = {
+    "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+    "--data-ascii", "-F", "--form", "--form-string", "--json",
+    "-T", "--upload-file",
+    # wget torzs-flagek
+    "--post-data", "--post-file", "--body-data", "--body-file",
+}
+_SAFE_METHODS = {"GET", "HEAD"}
+
+
+# RESENDGETTWIN1010: a httpie (`http`) metodusa POZICIONALIS (http POST URL),
+# a torzse `kulcs=ertek` / `kulcs:=json` elem -- egyiket sem ismeri az alabbi
+# curl/wget flag-olvaso, ezert a `http POST .../emails to=...` "read" lett, es a
+# kapu atengedte. A httpie-re a metodus itt nem dontheto: fail-closed.
+_HTTPIE = re.compile(r"^http$", re.I)
+
+
+def _curl_resend_verdict(prog, rest):
+    """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
+    if _HTTPIE.match(prog):
+        return "unknown"
+    method = None
+    has_body = False
+    get_forced = False
+    i, n = 0, len(rest)
+    while i < n:
+        t = rest[i]
+        if t in ("-X", "--request", "--method"):
+            if i + 1 >= n or not rest[i + 1].isalpha():
+                return "unknown"  # csonka vagy valtozo ($METHOD) -- nem dontheto
+            method = rest[i + 1].upper()
+            i += 2
+            continue
+        if t.startswith("--request=") or t.startswith("--method="):
+            m = t.split("=", 1)[1]
+            if not m.isalpha():
+                return "unknown"
+            method = m.upper()
+            i += 1
+            continue
+        if t in ("-G", "--get"):
+            get_forced = True
+            i += 1
+            continue
+        if t in ("-K", "--config"):
+            return "unknown"  # a config-fajl rejtett metodust/torzset hordozhat
+        if t in _CURL_BODY_OPTS or any(
+            t.startswith(o + "=") for o in _CURL_BODY_OPTS if o.startswith("--")
+        ):
+            has_body = True
+            i += 1
+            continue
+        if t.startswith("-") and not t.startswith("--") and len(t) > 1:
+            # egy-kotojeles cluster (-sS, -sX POST, -sd '{}'): a betuk kotegelve
+            letters = t[1:]
+            if "X" in letters:
+                after = letters.split("X", 1)[1]
+                if after:
+                    if not after.isalpha():
+                        return "unknown"
+                    method = after.upper()
+                else:
+                    if i + 1 >= n or not rest[i + 1].isalpha():
+                        return "unknown"
+                    method = rest[i + 1].upper()
+                    i += 1
+            elif "d" in letters or "F" in letters or "T" in letters:
+                has_body = True
+            elif "G" in letters:
+                get_forced = True
+            elif "K" in letters:
+                return "unknown"
+            i += 1
+            continue
+        i += 1
+    if method is not None and method not in _SAFE_METHODS:
+        return "send"
+    if has_body and not get_forced:
+        # implicit POST (curl -d/-F/--json/-T alapertelmezese), vagy egy
+        # gyanus "GET torzzsel" alak -- mindketto kuldeskent kezelve
+        return "send"
+    return "read"
 # A tovabbi kuldes-jellegu literalok, amikre a parse-hiba eseten (es CSAK
 # akkor) konzervativan visszaesunk -- lasd is_send_invocation vegen.
 _FALLBACK_LITERALS = re.compile(
@@ -146,22 +281,132 @@ def _mask_subshell_markers(cmd: str) -> str:
     return "".join(out)
 
 
+# --- bounded heredoc scan -------------------------------------
+# Hard limits, measured on 365k real Bash calls of the fleet (max command 32 KB, max 7
+# heredoc openers, longest opener line 1.7 KB): each limit is 4x or more above anything
+# seen. Over a limit the gate does NOT guess: it DENIES ("too large to inspect",
+# fail-closed), because an inspection that cannot finish inside the hook timeout would
+# otherwise let the call through.
+MAX_CMD_CHARS = 131072
+MAX_HEREDOC_OPENERS = 32
+MAX_OPENER_LINE_CHARS = 4096
+
+
+class InspectionLimit(Exception):
+    """The command is too large to inspect inside the hook timeout (the caller DENIES)."""
+
+
+_HEREDOC_INTRO = re.compile(r"<<-?\s*'?(\w+)")
+_LINE_RUN = re.compile(r"\w+")
+_WS_CHAR = re.compile(r"\s")
+
+
+def _build_closer_index(cmd: str):
+    r"""Closing-line candidates of the whole command, built in ONE pass: every line that
+    starts with a word-character run followed by whitespace or the end of the string (the
+    old regex's `\n<TAG>(?=\s|$)`). A closer for delimiter TAG is exactly such a line
+    whose run equals a PREFIX of the opener's word (the old regex backtracked `\w+` to
+    shorter delimiters), so a query is a few dict lookups, not a rescan."""
+    by_run = {}
+    n = len(cmd)
+    nl = cmd.find("\n")
+    while nl != -1:
+        s = nl + 1
+        r = _LINE_RUN.match(cmd, s)
+        if r:
+            e = r.end()
+            if e == n or _WS_CHAR.match(cmd, e):
+                by_run.setdefault(r.group(), []).append(s)
+        nl = cmd.find("\n", s)
+    return by_run, sorted({len(k) for k in by_run}, reverse=True)
+
+
+def _find_closer(index, word: str, min_start: int):
+    """(start, delim_len) of the first closer line start >= min_start for the longest usable
+    prefix of `word`, or None."""
+    by_run, lengths_desc = index
+    for k in lengths_desc:
+        if k > len(word):
+            continue
+        lst = by_run.get(word[:k])
+        if not lst or lst[-1] < min_start:
+            continue
+        return lst[bisect.bisect_left(lst, min_start)], k
+    return None
+
+
+_last_scan = (None, None)
+
+
+def _scan_heredocs(cmd: str):
+    """The matches the old regex found, left to right and non-overlapping, as tuples
+    (start, intro_end, body_start, body_end, end): intro = cmd[start:intro_end] (the old
+    group 1), body = cmd[body_start:body_end] (keeps its final newline), end = just past
+    the closing tag. Raises InspectionLimit over a limit."""
+    global _last_scan
+    if _last_scan[0] == cmd:
+        return _last_scan[1]
+    if len(cmd) > MAX_CMD_CHARS:
+        raise InspectionLimit(f"command is {len(cmd)} characters, the limit is {MAX_CMD_CHARS}")
+    found = []
+    index = None
+    openers = 0
+    i = cmd.find("<<")
+    while i != -1:
+        m = _HEREDOC_INTRO.match(cmd, i)
+        if not m:
+            i = cmd.find("<<", i + 1)
+            continue
+        openers += 1
+        if openers > MAX_HEREDOC_OPENERS:
+            raise InspectionLimit(f"more than {MAX_HEREDOC_OPENERS} heredoc openers")
+        q = cmd.find("\n", m.end())
+        if q != -1:
+            if index is None:
+                index = _build_closer_index(cmd)
+            closer = _find_closer(index, m.group(1), q + 2)
+            if closer:
+                if q - (cmd.rfind("\n", 0, i) + 1) > MAX_OPENER_LINE_CHARS:
+                    raise InspectionLimit(
+                        f"a heredoc opener line is longer than {MAX_OPENER_LINE_CHARS} characters")
+                end = closer[0] + closer[1]
+                found.append((i, q, q + 1, closer[0], end))
+                i = cmd.find("<<", end)
+                continue
+        i = cmd.find("<<", i + 1)
+    _last_scan = (cmd, found)
+    return found
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """cmd with every heredoc BODY cut and its opening line kept (the old regex `sub` with group 1)."""
+    out = []
+    pos = 0
+    for (_start, intro_end, _bs, _be, end) in _scan_heredocs(cmd):
+        out.append(cmd[pos:intro_end])
+        pos = end
+    if not pos:
+        return cmd
+    out.append(cmd[pos:])
+    return "".join(out)
+
+
 def _segments_tokens(cmd: str):
     """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
+    lex = shlex.shlex(_mask_subshell_markers(_strip_heredoc_bodies(cmd)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     segments, cur = [], []
     for tok in lex:
-        # shlex(punctuation_chars) returns a RUN of operator characters as ONE
-        # token, so `$(date); sendmail ...` (after the subshell mask:
-        # `;date); sendmail`) yields the token ");" -- which is not in the
-        # list, did not split, left `sendmail` mid-segment, and the send was
-        # NOT recognised: the copy audit was silently skipped. The JS twin
-        # (email-send-gate.mjs) says true on the same input. A token made ONLY
-        # of operator characters is always an operator sequence, so it
-        # separates.
+        # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
+        # characters as ONE token, so `$(date); sendmail ...` (after the
+        # subshell mask: `;date); sendmail`) yielded the token ");" -- not in
+        # the list, so it did not split, `sendmail` landed mid-segment, and the
+        # send was NOT recognised: the copy audit was silently skipped. The JS
+        # twin (email-send-gate.mjs) said true on the same input; nothing in
+        # the conformance list covered it. A token made ONLY of operator
+        # characters is always an operator sequence, so it separates.
         if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&") or (tok and set(tok) <= set("();|&")):
             if cur:
                 segments.append(cur)
@@ -173,9 +418,109 @@ def _segments_tokens(cmd: str):
     return segments
 
 
+# SENDWRAP924: a wrapper in front of the sender -- `sudo sendmail x`,
+# `time -p sendmail x`, `env -i sendmail x`, `timeout 10 sendmail x` -- made
+# the wrapper the "program", so the send was not recognised and the copy audit
+# was silently skipped (13 measured shapes, both copies). A wrapper is stepped
+# over WITH its own flags: a flag that takes a value consumes it, so in
+# `sudo -u sendmail true` the program is `true`, not `sendmail`.
+# name -> (short flags taking a value, long flags taking a value, positional
+# arguments before the command). An UNKNOWN long flag without `=` may or may
+# not take a value, so both readings are tried and either one being a send
+# counts: an unknown flag errs toward auditing, never toward skipping.
+# `command -v/-V` looks a name up and runs nothing. `function NAME` and
+# `coproc [NAME]` put their body in command position. Mirrored in
+# email-send-gate.mjs (WRAPPERS / commandHeads); send-invocation-cases.json
+# binds the two.
+_WRAPPERS = {
+    "time": ("fo", ("format", "output"), 0),
+    "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
+                             "role", "type", "chdir", "chroot", "command-timeout"), 0),
+    "env": ("uCS", ("unset", "chdir", "split-string"), 0),
+    "nohup": ("", (), 0),
+    "nice": ("n", ("adjustment",), 0),
+    "exec": ("a", (), 0),
+    "command": ("", (), 0),
+    "xargs": ("ILnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
+                           "max-procs", "max-chars", "process-slot-var"), 0),
+    "timeout": ("sk", ("signal", "kill-after"), 1),
+    # setsid: for future use and symmetry. NOT measured local traffic: the hits the
+    # first count found all sat inside quoted remote (ssh) command strings or heredoc
+    # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
+    "setsid": ("", (), 0),
+}
+_HEAD_DEPTH = 8
+
+
+# A wrapper with more unknown long flags than this (`sudo --a --a --a ...`) is refused as too
+# large to inspect: every flag opens one more reading of the rest, so the heads were O(n^2)
+# (40k flags: 49 s here, an out-of-memory crash in the JS twin -- both fail-open). Real
+# wrappers carry at most a few unknown flags.
+MAX_WRAPPER_FLAG_STARTS = 32
+
+
+def _command_heads(toks, _d: int = 0):
+    """Every token list that can be the real command of this segment, after the
+    leading assignments, command-position keywords and wrappers are stepped over."""
+    skip = 0
+    while skip < len(toks) and (_ENV_ASSIGN.match(toks[skip]) or toks[skip] in _CMD_POSITION_KEYWORDS):
+        skip += 1
+    if skip:
+        toks = toks[skip:]
+    if not toks:
+        return [toks]
+    w = _basename(toks[0])
+    if _d >= _HEAD_DEPTH:
+        # Still a wrapper at the depth bound: the real command is out of sight,
+        # so it counts as a send (None) -- the bound errs toward auditing, like
+        # an unknown flag does. It used to return the wrapper itself, and nine
+        # nested wrappers + sendmail was silently skipped (Samu, #1521 review).
+        return [None] if (w in _WRAPPERS or w in ("function", "coproc")) else [toks]
+    if w == "function":
+        return _command_heads(toks[2:], _d + 1)
+    if w == "coproc":
+        return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    spec = _WRAPPERS.get(w)
+    if spec is None:
+        return [toks]
+    short_val, long_val, positionals = spec
+    i, starts = 1, []
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            i += 1
+            break
+        if t.startswith("--"):
+            if "=" not in t and t[2:] in long_val:
+                i += 2
+                continue
+            if "=" not in t:
+                starts.append(i + 2)
+            i += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            if w == "command" and ("v" in t or "V" in t):
+                return []
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+            i += 2 if k == len(t) - 1 else 1
+            continue
+        break
+    if len(starts) > MAX_WRAPPER_FLAG_STARTS:
+        raise InspectionLimit(f"a wrapper carries more than {MAX_WRAPPER_FLAG_STARTS} unknown long flags")
+    starts.insert(0, i)
+    heads = []
+    for s in starts:
+        heads += _command_heads(toks[s + positionals:], _d + 1)
+    return heads
+
+
 def _segment_is_send(toks, depth: int) -> bool:
-    while toks and _ENV_ASSIGN.match(toks[0]):
-        toks = toks[1:]
+    return any(_head_is_send(h, depth) for h in _command_heads(toks))
+
+
+def _head_is_send(toks, depth: int) -> bool:
+    if toks is None:  # the depth bound was hit on a wrapper: audit it
+        return True
     if not toks:
         return False
     prog = _basename(toks[0])
@@ -197,6 +542,12 @@ def _segment_is_send(toks, depth: int) -> bool:
     candidates = [prog] + (
         [_basename(rest[0])] if rest and (_PYTHON.match(prog) or _NODEISH.match(prog)) else []
     )
+    # Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender run by module
+    # name; it gets the same --to rule as the file-name form.
+    if _PYTHON.match(prog):
+        for i, t in enumerate(rest):
+            if t == "-m" and i + 1 < len(rest) and rest[i + 1].rsplit(".", 1)[-1] == "send":
+                candidates.append("send.py")
     if any(_SENDPY.match(c) for c in candidates) and any(
         t == "--to" or t.startswith("--to=") for t in rest
     ):
@@ -205,13 +556,135 @@ def _segment_is_send(toks, depth: int) -> bool:
     if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
         return True
     # curl/wget: a cel-token akkor is muvelet, ha idezojelben allt -- a
-    # horgonyzott minta valasztja el a payload-belseji emlitestol
-    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
-        return True
+    # horgonyzott minta valasztja el a payload-belseji emlitestol.
+    # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
+    # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
+    # tovabbra is fail-closed.
+    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(_url_arg(t)) for t in rest):
+        return _curl_resend_verdict(prog, rest) != "read"
     return False
 
 
+def wrapper_depth_hit(cmd: str) -> bool:
+    """True when some segment is still a wrapper at the depth bound, so it was
+    counted as a send without the real command being seen (HEADDEPTH924). The
+    gate uses it to say WHY it blocks: "I could not audit the letter" is the
+    wrong reason for `nohup x9 git status` (Marveen, #1522 review)."""
+    # Only when the depth bound is the WHOLE reason: if a visible segment is a
+    # send on its own (`sendmail x; sudo x9 true`), that send is the reason,
+    # and the ordinary wording must stay (Samu, #1523 review).
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    heads = [h for toks in segments for h in _command_heads(toks)]
+    return any(h is None for h in heads) and not any(
+        h is not None and _head_is_send(h, 0) for h in heads)
+
+
+# Issue #1853, the heredoc form: the segmenter drops every heredoc BODY (it is data
+# to the shell), but when the command that opens it is an interpreter
+# (`python3 - <<'PY'`, `node <<EOF`) the body IS the program, and a send in it went
+# unseen. The opening line is read up to its `<<`; when its last command word there
+# is python/node-ish, the body is judged with the -c / -e code rule. A heuristic
+# of the same naive class as the -c rule (see the boundary note above).
+# NARROWED (Geri's #1855 review, a 14-day replay: 1 real catch, 17 false): inside a heredoc
+# body the program is mostly PROSE that a script writes (an hourly report whose text held a
+# card id with SENDMAIL in it, next to `subprocess`). So the exec + sender-literal half of the
+# code rule takes the literal here only as a lowercase, QUOTED command word: a string that
+# starts with sendmail/msmtp/swaks or ends a path in send.py, as an argv item or an os.system
+# command is written. The real catch (`['python3', '.../send.py', '--to', ...]`) keeps it.
+# Development heredocs that patch or test the gates, and mention `import send` in a string,
+# still hit the module rule: that is the price of a naive rule, accepted.
+# NOT COVERED, named so nobody counts them as covered: a program the classifier never reads --
+# `python3 /tmp/x.py`, `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, and
+# `python3 -c "exec(open('/tmp/x.py').read())"`; also a here-string fed to an interpreter
+# (`python3 <<<'import send'`) and a CommonJS destructuring rename of the Graph sender
+# (`const { sendMail: s } = require(...)`).
+# A heredoc fed to a SHELL (`bash <<EOF`, `sh -s <<EOF`) is a shell program: its body is
+# judged with this classifier itself, one level deeper (Geri/Samu, #1855).
+# WRITTEN, THEN RUN IN THE SAME COMMAND (Samu/Geri, #1855: two of the three real gate-passing
+# sends in the sample had this shape): `cat > $S/x.py <<'EOF' ... EOF; python3 $S/x.py`. When a
+# heredoc writes a file (`cat > P <<TAG` or `cat <<TAG > P`) and the same command runs an
+# interpreter or a shell on the same path token P, the body is judged as if it had been fed to
+# that program directly. The match is by the exact token: `./x.py` and `x.py` are different. A
+# file written by one Bash call and run by ANOTHER stays out of reach (named above).
+# PIPED (Samu/Geri, #1855): `cat <<'EOF' | bash` or `| python3 -` hands the body to the
+# program through the pipe on the heredoc's opening line, and it is judged the same way.
+_HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
+
+
+def _heredoc_body_sends(body: str) -> bool:
+    if _CODE_SEND.search(body) or _CODE_SEND_MODULE.search(body):
+        return True
+    return bool(_CODE_EXECISH.search(body) and _HEREDOC_SENDER_ARGV.search(body))
+
+
+_HEREDOC_SHELL = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|zsh|dash)\b[^\n<]*$", re.I)
+_HEREDOC_INTERP = re.compile(
+    r"(?:^|[\s;&|(])(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$", re.I
+)
+
+
+_HEREDOC_PIPE = re.compile(r"\|\s*(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b", re.I)
+_HEREDOC_REDIRECT = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
+
+
+def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
+    """A heredoc body written to a file that the same command then runs (see the note above)."""
+    if not written:
+        return False
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    for toks in segments:
+        for head in _command_heads(toks):
+            if not head:
+                continue
+            prog = _basename(head[0])
+            args = [t for t in head[1:] if not t.startswith("-")]
+            if prog.lower() == "npx" and args:
+                args = args[1:]  # npx <runner> <file>
+            if not args or args[0] not in written:
+                continue
+            body = written[args[0]]
+            if (_PYTHON.match(prog) or _NODEISH.match(prog)) and _heredoc_body_sends(body):
+                return True
+            if _WRAPPER_SHELL.match(prog) and depth < 3 and is_send_invocation(body, _depth=depth + 1):
+                return True
+    return False
+
+
+def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
+    written = {}
+    for (start, intro_end, body_start, body_end, _end) in _scan_heredocs(cmd):
+        line_start = cmd.rfind("\n", 0, start) + 1
+        intro = cmd[start:intro_end]
+        body = cmd[body_start:body_end]
+        w = _HEREDOC_REDIRECT.search(cmd[line_start:start] + intro)
+        if w:
+            written[w.group(2)] = body
+        piped = _HEREDOC_PIPE.search(intro)
+        if piped:
+            if _WRAPPER_SHELL.match(piped.group(1)):
+                if depth < 3 and is_send_invocation(body, _depth=depth + 1):
+                    return True
+            elif _heredoc_body_sends(body):
+                return True
+        head = cmd[line_start:start]
+        if _HEREDOC_INTERP.search(head):
+            if _heredoc_body_sends(body):
+                return True
+        elif _HEREDOC_SHELL.search(head) and depth < 3:
+            if is_send_invocation(body, _depth=depth + 1):
+                return True
+    return _written_then_run(cmd, written, depth)
+
+
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    if _heredoc_program_sends(cmd, _depth):
+        return True
     try:
         segments = _segments_tokens(cmd)
     except ValueError:
@@ -902,7 +1375,20 @@ def main():
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not is_send_invocation(cmd):
+        try:
+            sends = is_send_invocation(cmd)
+        except InspectionLimit as exc:
+            # Fail-closed with an explicit exit 2: a hook still running at its timeout is
+            # NON-blocking in the host, so a command the classifier cannot finish on is
+            # refused up front instead of being waved through.
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU: TILTVA -- a parancs tul nagy ahhoz, hogy a kapu "
+                f"atvizsgalja ({exc}), es egy vizsgalhatatlan parancs nem mehet at.\n"
+                "Bontsd kisebb parancsokra (nagy szoveget fajlba irj a Write tool-lal), "
+                "aztan futtasd ujra.\n"
+            )
+            sys.exit(2)
+        if not sends:
             inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
     else:
