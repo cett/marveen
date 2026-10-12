@@ -36,6 +36,10 @@ Az új kártya alapértelmezés szerint "Tervezett" státusszal kerül a táblá
 | **Magas** | Előnyt élvez a normálaknál |
 | **Sürgős** | Azonnali figyelmet igényel |
 
+A kártya prioritása az egész kártyán látszik: a **Sürgős** kártya pirosas, a **Magas** kártya kiemelő színű árnyalatot kap (sötét témában erősebbet), a **Normál** és az **Alacsony** sima marad. Ha egy kártya régóta áll, a bal szélén az elavulás-csík megmarad.
+
+A nézetváltó mellett a tábla összegei látszanak: „X nyitott / Y a táblán” (nyitott = minden, ami nem a Kész oszlopban van). Ha projekt-, felelős- vagy címkeszűrő van bekapcsolva, kiegészül: „(Z látszik)”. Az összeg és az oszlopok fejlécében lévő szám a teljes táblát számolja akkor is, ha egy oszlopból még csak az első 20 kártya van betöltve.
+
 ---
 
 ## Kártya részletei

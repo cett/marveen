@@ -21,6 +21,7 @@ import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { can } from './rbac-client.js'
 import { sumInProgressSeconds, formatActiveTime } from './kanban-active-time.js'
+import { kanbanColumnCount, kanbanBoardTotals } from './kanban-totals.js'
 
 // ── Injected dependencies ────────────────────────────────────────────────────
 let _openModal = null, _closeModal = null, _wireColumn = null, _wireCardTouch = null, _loadIdeasPage = null
@@ -548,12 +549,16 @@ function renderKanban() {
     if (grouped[card.status]) grouped[card.status].push(card)
   }
 
-  // Update counts (embedded subtasks don't count as separate cards)
-  document.getElementById('countPlanned').textContent = grouped.planned.length
-  document.getElementById('countInProgress').textContent = grouped.in_progress.length
-  document.getElementById('countTesting').textContent = grouped.testing.length
-  document.getElementById('countWaiting').textContent = grouped.waiting.length
-  document.getElementById('countDone').textContent = grouped.done.length
+  // Update counts (embedded subtasks don't count as separate cards). In paged
+  // mode the cards the server still holds for a column count too, so a
+  // 25-card column reads 25, not the 20 that happen to be loaded.
+  const columnCounts = {}
+  for (const [status, cards] of Object.entries(grouped)) {
+    columnCounts[status] = kanbanColumnCount(cards.length, _kanbanColumnPaging[status], _kanbanPagedMode)
+    const countEl = document.getElementById(WIP_COUNT_IDS[status])
+    if (countEl) countEl.textContent = columnCounts[status]
+  }
+  renderKanbanBoardTotals(visibleCardIds.size)
 
   const flatBoard = document.getElementById('kanbanBoard')
   const swimlaneBoard = document.getElementById('kanbanSwimlaneBoard')
@@ -608,11 +613,11 @@ function renderKanban() {
     // WIP limit badges (count/limit + colour) on the flat board too -- previously
     // only the swimlane view updated these, so a configured limit never showed
     // on the default flat board.
-    updateWipBadges(grouped)
+    updateWipBadges(grouped, columnCounts)
   } else {
     flatBoard.hidden = true
     swimlaneBoard.hidden = false
-    renderSwimlaneBoard(grouped, embeddedSubtaskIds)
+    renderSwimlaneBoard(grouped, embeddedSubtaskIds, columnCounts)
   }
 }
 
@@ -649,7 +654,7 @@ function kanbanSwimlaneMeta(key) {
   return { label, avatarClass: match ? match.type : 'unknown', avatarChar: (label[0] || '?').toUpperCase() }
 }
 
-function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
+function renderSwimlaneBoard(grouped, embeddedSubtaskIds, columnCounts) {
   const board = document.getElementById('kanbanSwimlaneBoard')
   board.innerHTML = ''
 
@@ -732,7 +737,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
   updateSubtaskBadges(embeddedSubtaskIds)
 
   // WIP limit badges: update column-header count spans with "count/limit" when configured
-  updateWipBadges(grouped)
+  updateWipBadges(grouped, columnCounts)
 }
 
 // Map column status keys to their count-span IDs
@@ -744,7 +749,21 @@ const WIP_COUNT_IDS = {
   done: 'countDone',
 }
 
-function updateWipBadges(grouped) {
+// "{open} open / {all} on the board", plus "({n} shown)" while a filter
+// narrows the board. The numbers come from kanban-totals.js.
+function renderKanbanBoardTotals(visibleCount) {
+  const el = document.getElementById('kanbanBoardTotals')
+  if (!el) return
+  const filtered = !!kanbanProjectFilter || !!kanbanAssigneeFilter || kanbanLabelFilter.size > 0
+  const { open, all, shown } = kanbanBoardTotals({
+    cards: kanbanCards, pagedMode: _kanbanPagedMode, paging: _kanbanColumnPaging, filtered, visibleCount,
+  })
+  let text = t('kanban.totals', { open, all })
+  if (shown !== null) text += ' ' + t('kanban.totals_shown', { n: shown })
+  el.textContent = text
+}
+
+function updateWipBadges(grouped, columnCounts) {
   const cfg = window._marveen?.kanbanWip
   for (const [status, cards] of Object.entries(grouped)) {
     const el = document.getElementById(WIP_COUNT_IDS[status])
@@ -752,13 +771,13 @@ function updateWipBadges(grouped) {
     const limit = cfg?.limits?.[status] || 0
     if (!limit) {
       // No limit configured: restore plain count and clear WIP styling
-      el.textContent = cards.length
+      el.textContent = columnCounts?.[status] ?? cards.length
       delete el.dataset.wip
       el.style.color = ''
       el.style.borderColor = ''
       continue
     }
-    const count = cards.length
+    const count = columnCounts?.[status] ?? cards.length
     el.textContent = `${count}/${limit}`
     let state, color
     if (count > limit) {
