@@ -1568,13 +1568,18 @@ echo ""
 echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
 echo ""
 
-# Read dashboard token for access URL
-DASH_TOKEN=""
-if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-  DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
-fi
-if [ -n "$DASH_TOKEN" ]; then
-  echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
+# One-time browser enrollment link (the shared token never goes into a URL). The dashboard may
+# still be coming up, so ask a few times.
+DASH_URL=""
+for _try in 1 2 3 4 5 6 7 8 9 10; do
+  if DASH_URL=$(cd "$INSTALL_DIR" && npm run --silent dashboard-url 2>/dev/null | tail -n 1) && [ -n "$DASH_URL" ]; then
+    break
+  fi
+  DASH_URL=""
+  sleep 2
+done
+if [ -n "$DASH_URL" ]; then
+  echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}${DASH_URL}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
 else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"

@@ -59,13 +59,13 @@ describe('shipped recipes call the API through scripts/agent-api.sh', () => {
 // script that opens the file itself bypasses the per-agent token and cannot be moved when the
 // fallback goes: this fails on any such line in the repository, with no per-file allowance.
 // Scope: every text file outside tests and fixtures (`__tests__`, `*.test.*`, `test_*.py`), the
-// changelog and the build/vendor directories. The one carve-out is the pair of installers, which
-// print the human's dashboard login URL (see INSTALLER_LOGIN_URL).
+// changelog and the build/vendor directories. There is no carve-out: the installers print the
+// human's login link by asking the running dashboard for a one-time enrollment code
+// (`npm run dashboard-url`), so even they never open the shared token file.
 const REPO_SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'store', 'coverage', '__tests__', '__pycache__', 'test-results', 'playwright-report', 'agents', 'backups'])
 const REPO_TEXT_EXT = /\.(ts|mjs|js|py|sh|md|json|ya?ml|template|ps1)$/
 const TEST_FILE = /(\.test\.[a-z]+$|\/test_[^/]*\.py$)/
 const REPO_SKIP_FILES = new Set(['CHANGELOG.md', 'package-lock.json'])
-const INSTALLER_LOGIN_URL = new Set(['install-linux.sh', 'install-macos.sh'])
 const SHARED_FILE = String.raw`\.dashboard-token`
 const DIRECT_READS: Array<{ name: string; re: RegExp }> = [
   { name: 'cat of the shared token file', re: new RegExp(String.raw`\bcat\s+["']?[^\s"'|;)]*` + SHARED_FILE) },
@@ -104,16 +104,16 @@ describe('nothing reads the shared dashboard token file directly', () => {
     }
   })
 
-  it('has no direct read outside the installers', () => {
+  it('has no direct read anywhere, installers included', () => {
     const bad = files
-      .filter((f) => !INSTALLER_LOGIN_URL.has(relative(ROOT, f)))
       .flatMap((f) => directReads(readFileSync(f, 'utf-8')).map((h) => `${relative(ROOT, f)}:${h.line} ${h.what}`))
     expect(bad).toEqual([])
   })
 
-  it('the installers are the only files left with a direct read, and only that one line each', () => {
-    const left = [...INSTALLER_LOGIN_URL].map((f) => [f, directReads(readFileSync(join(ROOT, f), 'utf-8')).length])
-    expect(left).toEqual([['install-linux.sh', 1], ['install-macos.sh', 1]])
+  it('the installers are scanned too', () => {
+    const rel = files.map((f) => relative(ROOT, f))
+    expect(rel).toContain('install-linux.sh')
+    expect(rel).toContain('install-macos.sh')
   })
 
   it('the detector fires on the shapes the scripts used, and not on the resolvers', () => {

@@ -6,6 +6,10 @@
 // Idempotent: INSERT OR IGNORE -- the UNIQUE constraint on token_hash means a
 // second call (restart, redeploy) is a no-op with zero side effects.
 //
+// Rotation: enrolling a hash revokes every other active `dashboard` row, so a rotated-away
+// shared token stops authenticating (it resolves as registered-but-invalid, never as the
+// legacy file-token fallback). The row being enrolled is never un-revoked.
+//
 // Rollback: DELETE FROM api_tokens WHERE name = 'dashboard'
 // The fallback in auth-gate.ts (step 2 in the precedence list) immediately
 // takes over -- no server restart required.
@@ -19,7 +23,7 @@ export function bootstrapDashboardToken(rawToken: string): void {
     const hash = createHash('sha256').update(rawToken).digest('hex')
     const now = Math.floor(Date.now() / 1000)
     if (enrollDashboardApiToken(hash, now) > 0) {
-      logger.info('api_tokens: dashboard token enrolled (role=admin, no expiry)')
+      logger.info('api_tokens: dashboard token enrolled (role=admin, no expiry); earlier dashboard rows revoked')
     }
   } catch (err) {
     // Non-fatal: the legacy file-token fallback in auth-gate.ts keeps working.

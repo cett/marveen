@@ -51,11 +51,11 @@ function toPublic(row: TokenRow): TokenPublic {
   return rest
 }
 
-function sha256hex(raw: string): string {
+export function sha256hex(raw: string): string {
   return createHash('sha256').update(raw).digest('hex')
 }
 
-function generateToken(): string {
+export function generateToken(): string {
   return randomBytes(32).toString('hex')
 }
 

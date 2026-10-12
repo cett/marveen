@@ -35,6 +35,8 @@ npm run agent-tokens -- revoke <ágens>
 
 A fájlok `0600` jogúak, a parancs a fájlt írja ki, tokent soha, a mentés szándékosan kihagyja őket (visszaállítás után újra ki kell adni; a `doctor.sh` jelzi a hiányzót).
 
+A dashboardot megnyitó ember sem a közös tokent használja: az `npm run dashboard-url` (operátor-aláírású, a dashboardnak futnia kell) `<origin>/?enroll=<egyszer használható kód>` linket ír ki, amit a böngésző a saját, nevesített, visszavonható admin tokenjére cserél (`POST /api/auth/enroll-browser`; a kódot a `POST /api/admin/browser-enroll-codes` adja, csak globális admin, egyszer használható, 10 perc, memóriában él). A telepítők a végén ilyen linket írnak ki.
+
 A receptek, hookok és scriptek az API-t a `scripts/agent-api.sh`-n át hívják: az választja ki a megfelelő tokent és stdin-en adja a curl-nek, így nem látszik se a folyamatlistában, se a transzkriptben:
 
 ```bash

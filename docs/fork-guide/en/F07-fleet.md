@@ -35,6 +35,8 @@ npm run agent-tokens -- revoke <agent>
 
 The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose (reissue after a restore; `doctor.sh` reports a missing one).
 
+A person opening the dashboard does not use the shared token either: `npm run dashboard-url` (operator-signed, the dashboard must run) prints `<origin>/?enroll=<one-time code>`, which the browser trades for its own named, revocable admin token (`POST /api/auth/enroll-browser`; codes are issued by `POST /api/admin/browser-enroll-codes`, global admin only, single use, 10 minutes, kept in memory). The installers print such a link at the end.
+
 Recipes, hooks and scripts call the API through `scripts/agent-api.sh`, which picks the right token and hands it to curl on stdin, so it never shows up in a process list or a transcript:
 
 ```bash

@@ -230,10 +230,10 @@ _t() {
     en:macos.migrate_missing) echo "  migrate.sh not found. Use the dashboard: http://localhost:${WEB_PORT:-3420} -> Migration" ;;
     hu:macos.migrate_missing) echo "  A migrate.sh nem található. Használd a dashboardot: http://localhost:${WEB_PORT:-3420} -> Költöztetés" ;;
     # ── Done section ──────────────────────────────────────────────────
-    en:dash.token_hint) echo "  (Open once; the browser will remember the token)" ;;
-    hu:dash.token_hint) echo "  (Nyisd meg egyszer, utana a bongeszo megjegyzi a tokent)" ;;
-    en:dash.no_token_hint) echo "  (The token URL can be found in the server log)" ;;
-    hu:dash.no_token_hint) echo "  (A tokenes URL-t a szerver logban talalod)" ;;
+    en:dash.token_hint) echo "  (Single-use link, valid 10 minutes: the browser enrolls itself and keeps its own token)" ;;
+    hu:dash.token_hint) echo "  (Egyszer hasznalhato link, 10 percig ervenyes: a bongeszo beenrollol es megtartja a sajat tokenjet)" ;;
+    en:dash.no_token_hint) echo "  (Run npm run dashboard-url in the install folder for a login link)" ;;
+    hu:dash.no_token_hint) echo "  (Futtasd a telepitesi mappaban: npm run dashboard-url, es kapsz egy belepo linket)" ;;
     en:telegram.write_hint) echo "  Telegram: Write to your bot!" ;;
     hu:telegram.write_hint) echo "  Telegram: Irj a botodnak!" ;;
     en:next_steps.title) echo "  Next steps:" ;;

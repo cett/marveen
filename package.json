@@ -10,6 +10,7 @@
     "setup": "tsx scripts/setup.ts",
     "status": "tsx scripts/status.ts",
     "remote-enroll": "tsx scripts/remote-access-enroll.ts",
+    "dashboard-url": "tsx scripts/dashboard-url.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",
     "agent-tokens": "tsx scripts/agent-tokens.ts",
     "install-seed-tenant": "tsx scripts/install-seed-tenant.ts",
