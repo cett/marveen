@@ -25,6 +25,15 @@ launchctl list | grep <agent-id>
 
 > `<agent-id>` is the `MAIN_AGENT_ID` value in `.env` (e.g. `marveen`).
 
+#### Helper launchd jobs (macOS)
+
+The helper installers (`install-channel-keepalive-probe.sh`, `install-channel-coordinator.sh`, `install-channel-watchdog.sh`) build the launchd label from the install's own id: `com.<service-id>.channel-keepalive-probe`, `com.<service-id>.channel-coordinator`, `com.<service-id>.channel-watchdog`. The id is the `SERVICE_ID` value in the install's `.env`, else `MAIN_AGENT_ID`, else `marveen`. Two installs under one user therefore no longer overwrite each other's helper job. On a default install the label is still `com.marveen.<name>`, so nothing moves.
+
+- Read the label without installing anything: `scripts/install-channel-keepalive-probe.sh --print-label`.
+- Rollout (a manual step, a few minutes without the keepalive): on an install that was already renamed (`SERVICE_ID` is not `marveen`), run the installer again with `--load`. The installer retires the install's own old `com.marveen.<name>` job (only when the plist's `WorkingDirectory` is this tree; another install's `com.marveen.*` job is left alone) and loads the new one.
+- Way back: restore the previous version, run the installer again with `--load` (it writes the old `com.marveen.<name>` label again), then unload the new job: `launchctl bootout gui/$(id -u)/com.<service-id>.<name>` and delete `~/Library/LaunchAgents/com.<service-id>.<name>.plist`.
+- `SERVICE_ID` must consist of letters, digits, `_` or `-`; any other value makes the installer warn and use `marveen`.
+
 ### Linux (systemd)
 
 ```bash
