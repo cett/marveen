@@ -166,6 +166,24 @@ describe('deleteTenant: agent-keyed rows', () => {
   })
 })
 
+describe('deleteTenant: the approval journal', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  it("removes the deleted tenant's approval events and leaves every other tenant's", () => {
+    createTenant(TARGET, 'Gone')
+    createTenant(SIBLING, 'Sibling')
+    for (const t of [TARGET, SIBLING, 'default']) {
+      db().prepare("INSERT INTO approval_events (approval_id, tenant_id, event, created_at) VALUES (?, ?, 'consumed', 0)").run(`ap-${t}`, t)
+    }
+    deleteTenant(TARGET)
+    expect(count('approval_events', TARGET)).toBe(0)
+    expect(count('approval_events', SIBLING)).toBe(1)
+    expect(count('approval_events', 'default')).toBe(1)
+  })
+})
+
 describe('deleteTenant: drift guard', () => {
   it('every table with a tenant_id column is either purged, handled, agent-keyed or explicitly exempt', () => {
     initDatabase(':memory:')

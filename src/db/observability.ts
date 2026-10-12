@@ -440,7 +440,7 @@ export const TENANT_PURGE_AGENT_KEYED_TABLES = ['agent_settings', 'agent_state',
 
 // Tables deleteTenant handles with its own statements (children, vec0 sync, FK order, file I/O).
 export const TENANT_PURGE_HANDLED_TABLES = [
-  'approvals', 'agent_messages', 'agent_tenant_context', 'artifacts', 'dashboard_users', 'device_keys',
+  'approval_events', 'approvals', 'agent_messages', 'agent_tenant_context', 'artifacts', 'dashboard_users', 'device_keys',
   'import_audit_log', 'import_memories', 'import_sources', 'kanban_cards', 'memories', 'partner_senders',
   'schedules', 'skill_tenant_access', 'skills', 'tenant_agent_availability', 'tenant_channel_bindings',
   'vault_ssh_keys', 'vault_ssh_servers', 'workspace_docs',
@@ -521,7 +521,8 @@ export function deleteTenant(tenantId: string): TenantDeleteResult {
     db.prepare('DELETE FROM partner_senders WHERE tenant_id = ?').run(tenantId)
     db.prepare('DELETE FROM device_keys WHERE tenant_id = ?').run(tenantId)
 
-    // 4. Drop all approvals
+    // 4. Drop all approvals, and their journal
+    db.prepare('DELETE FROM approval_events WHERE tenant_id = ?').run(tenantId)
     db.prepare('DELETE FROM approvals WHERE tenant_id = ?').run(tenantId)
 
     // 5. Drop messages and import memories

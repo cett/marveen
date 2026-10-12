@@ -120,6 +120,16 @@ export interface Approval {
   resolved_at: number | null
   resolved_by: string | null
   tenant_id: string
+  // Optional on the type so older fixtures keep compiling; the columns exist on every row (migration 0080).
+  /** 1 = the category was human-only when the request was made (a snapshot, it does not follow later changes). */
+  human_only?: number
+  /** How the decision arrived: 'dashboard_session' | 'bearer'. NULL while pending and for rows decided before 0080. */
+  resolved_via?: string | null
+  /** 64 lowercase hex: the hash of the exact action this approval covers. NULL = the requester gave none. */
+  content_hash?: string | null
+  consumed_at?: number | null
+  consumed_by?: string | null
+  consumed_ref?: string | null
 }
 
 export function createApproval(params: {
@@ -130,11 +140,14 @@ export function createApproval(params: {
   action_payload?: string | null
   timeout_at?: number | null
   tenant_id?: string | null
+  human_only?: boolean
+  content_hash?: string | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
+  const humanOnly = params.human_only ? 1 : 0
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, tenant_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, tenant_id, human_only, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -144,6 +157,8 @@ export function createApproval(params: {
     params.timeout_at ?? null,
     now,
     params.tenant_id ?? 'default',
+    humanOnly,
+    params.content_hash ?? null,
   )
   return {
     id: params.id,
@@ -158,6 +173,12 @@ export function createApproval(params: {
     resolved_at: null,
     resolved_by: null,
     tenant_id: params.tenant_id ?? 'default',
+    human_only: humanOnly,
+    resolved_via: null,
+    content_hash: params.content_hash ?? null,
+    consumed_at: null,
+    consumed_by: null,
+    consumed_ref: null,
   }
 }
 
@@ -167,15 +188,76 @@ export function getApproval(id: string): Approval | undefined {
 
 // Approving or rejecting a request whose deadline has passed is refused even in the up-to-60 s window
 // before the sweeper marks it `timeout`; recording the `timeout` status itself stays allowed.
-export function resolveApproval(id: string, status: 'approved' | 'rejected' | 'timeout', resolvedBy: string, telegramMessageId?: number | null): boolean {
+export function resolveApproval(
+  id: string,
+  status: 'approved' | 'rejected' | 'timeout',
+  resolvedBy: string,
+  telegramMessageId?: number | null,
+  resolvedVia?: ApprovalResolvedVia | null,
+): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
     UPDATE approvals
     SET status = ?, resolved_at = ?, resolved_by = ?,
-        telegram_message_id = COALESCE(?, telegram_message_id)
+        telegram_message_id = COALESCE(?, telegram_message_id),
+        resolved_via = ?
     WHERE id = ? AND status = 'pending'
       AND (? = 'timeout' OR timeout_at IS NULL OR timeout_at > ?)
-  `).run(status, now, resolvedBy, telegramMessageId ?? null, id, status, now).changes > 0
+  `).run(status, now, resolvedBy, telegramMessageId ?? null, resolvedVia ?? null, id, status, now).changes > 0
+}
+
+/** How a decision reached the server: a logged-in dashboard session, or any bearer token. */
+export type ApprovalResolvedVia = 'dashboard_session' | 'bearer'
+
+/**
+ * The kinds of approval_events rows. The table has no CHECK on `event` (widening one needs a table
+ * rebuild, see migration 0081), so this union is what keeps the writers honest.
+ */
+export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied'
+
+/**
+ * Append one row to the approval journal. The journal is for diagnosis: nothing branches on it, and a
+ * failure to write it must not turn a refusal into a success, so the caller decides what to do with a
+ * throw (the callers on a refusal path catch it).
+ */
+export function recordApprovalEvent(params: {
+  approval_id: string
+  tenant_id?: string | null
+  event: ApprovalEventKind
+  reason?: string | null
+  actor?: string | null
+  ref?: string | null
+}): void {
+  db.prepare(`
+    INSERT INTO approval_events (approval_id, tenant_id, event, reason, actor, ref, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    params.approval_id,
+    params.tenant_id ?? 'default',
+    params.event,
+    params.reason ?? null,
+    params.actor ?? null,
+    params.ref ?? null,
+    Math.floor(Date.now() / 1000),
+  )
+}
+
+export interface ApprovalEvent {
+  id: number
+  approval_id: string
+  tenant_id: string
+  event: string
+  reason: string | null
+  actor: string | null
+  ref: string | null
+  created_at: number
+}
+
+/** The journal rows of one approval, oldest first. */
+export function listApprovalEvents(approvalId: string): ApprovalEvent[] {
+  return db
+    .prepare('SELECT * FROM approval_events WHERE approval_id = ? ORDER BY created_at ASC, id ASC')
+    .all(approvalId) as ApprovalEvent[]
 }
 
 // agent_id/category use LIKE substring matching, not exact equality -- this
