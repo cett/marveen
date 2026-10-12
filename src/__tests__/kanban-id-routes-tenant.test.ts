@@ -210,6 +210,32 @@ describe('move: the orderedIds column list is cut down to the caller\'s own tena
   })
 })
 
+describe('PATCH /parent and breakdown/accept: the references and the tenant of what is created', () => {
+  const tree = (id: string) => getDb().prepare('SELECT parent_id, tenant_id FROM kanban_cards WHERE id = ?').get(id) as { parent_id: string | null; tenant_id: string }
+
+  it("an own card cannot be moved under another tenant's card (404, unchanged)", async () => {
+    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: ACME_CARD })).status).toBe(404)
+    expect((await callAs(acmeUser(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: DEFAULT_CARD })).status).toBe(404)
+    expect(tree(DEFAULT_CARD).parent_id).toBeNull()
+    expect(tree(ACME_CARD).parent_id).toBeNull()
+  })
+
+  it('an own card moves under an own parent and detaches again (200); an admin may cross', async () => {
+    createKanbanCard({ id: 'parent-default', title: 'P', tenant_id: 'default' })
+    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect(tree(DEFAULT_CARD).parent_id).toBe('parent-default')
+    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: null })).status).toBe(200)
+    expect((await callAs(admin(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+  })
+
+  it('the subtasks of an accepted breakdown carry the tenant of the card they hang under', async () => {
+    const subtasks = { subtasks: [{ title: 'sub', description: '', assignee: null, priority: 'normal' }] }
+    expect((await callAs(acmeUser(), 'POST', `/api/kanban/${ACME_CARD}/breakdown/accept`, subtasks)).status).toBe(200)
+    const kids = getDb().prepare("SELECT tenant_id FROM kanban_cards WHERE parent_id = ? AND title = 'sub'").all(ACME_CARD) as Array<{ tenant_id: string }>
+    expect(kids).toEqual([{ tenant_id: 'acme' }])
+  })
+})
+
 describe('POST /api/kanban: a parent_id in the body is held to the caller\'s tenant', () => {
   const count = () => (getDb().prepare('SELECT COUNT(*) AS n FROM kanban_cards').get() as { n: number }).n
 
