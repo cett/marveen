@@ -247,23 +247,35 @@ describe('POST /api/kanban -- session-auth audit', () => {
 
 // ── PUT /api/kanban/:id (card update) ─────────────────────────────────────────
 
-describe('PUT /api/kanban/:id -- session-auth audit', () => {
-  it('writes audit row with username when session-auth user updates a card', async () => {
+describe('PUT /api/kanban/:id -- audit actor', () => {
+  // updateKanbanCard writes the audit row itself (mocked here); the route's job is to name the caller.
+  it('names the signed-in user as the actor of a card update', async () => {
     const { ctx } = makeCtx('PUT', '/api/kanban/card1', { status: 'done' }, SESSION_AUTH)
     await tryHandleKanban(ctx)
-    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledOnce()
-    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(expect.objectContaining({
-      agent_id: 'jane.doe',
-      entity: 'kanban',
-      action: 'update',
-      entity_id: 'card1',
-    }))
+    expect(vi.mocked(db.updateKanbanCard)).toHaveBeenCalledWith('card1', { status: 'done' }, { id: 'jane.doe', source: 'session' })
+    expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalled() // one row, written by the db layer
   })
 
-  it('does NOT write audit row for token-auth callers on card update', async () => {
+  it('names the agent of a fleet token as the actor, not the assignee', async () => {
+    const { ctx } = makeCtx('PUT', '/api/kanban/card1', { status: 'done' }, TOKEN_AUTH)
+    ctx.role = 'fleet_agent'
+    ctx.tokenAgentId = 'alpha'
+    ctx.agentId = 'alpha'
+    await tryHandleKanban(ctx)
+    expect(vi.mocked(db.updateKanbanCard)).toHaveBeenCalledWith('card1', { status: 'done' }, { id: 'alpha', source: 'token' })
+  })
+
+  it('records a header-only identity as self-declared', async () => {
+    const { ctx } = makeCtx('PUT', '/api/kanban/card1', { status: 'done' }, TOKEN_AUTH)
+    ctx.agentId = 'beta'
+    await tryHandleKanban(ctx)
+    expect(vi.mocked(db.updateKanbanCard)).toHaveBeenCalledWith('card1', { status: 'done' }, { id: 'beta', source: 'self_declared' })
+  })
+
+  it('passes no actor for a caller nobody can name (the db layer falls back to the assignee)', async () => {
     const { ctx } = makeCtx('PUT', '/api/kanban/card1', { status: 'done' }, TOKEN_AUTH)
     await tryHandleKanban(ctx)
-    expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(db.updateKanbanCard)).toHaveBeenCalledWith('card1', { status: 'done' }, undefined)
   })
 })
 

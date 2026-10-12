@@ -270,6 +270,12 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Messages.
   { method: 'POST', pathPattern: '/api/messages', prefix: true, permission: 'messages:write' },
   { method: 'POST', pathPattern: '/api/v1/messages', prefix: true, permission: 'messages:write' },
+  // PUT /api/messages/:id is the executor writing a delegated message's outcome (done / failed /
+  // refused). Without a row it fell through to admin:all, so an agent's own token could not close
+  // the messages addressed to it. The route holds the tenant check and, for a fleet_agent token,
+  // the recipient check (only the agent a message is addressed to closes it).
+  { method: 'PUT', pathPattern: '/api/messages', prefix: true, permission: 'messages:write' },
+  { method: 'PUT', pathPattern: '/api/v1/messages', prefix: true, permission: 'messages:write' },
 
   // Agents -- read-only for broad roles.
   { method: 'GET', pathPattern: '/api/agents', prefix: true, permission: 'agents:read' },
@@ -284,19 +290,28 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Kanban.
   { method: 'GET', pathPattern: '/api/kanban', prefix: true, permission: 'kanban:read' },
   { method: 'POST', pathPattern: '/api/kanban', prefix: true, permission: 'kanban:write' },
+  // PUT updates a card (PUT /api/kanban/:id) or a label (PUT /api/kanban/labels/:id). It had no row,
+  // so it resolved to admin:all and every non-admin caller got a 403 on a plain card edit: a
+  // fleet_agent token, and a tenant user (role agent) of the dashboard. The routes scope both to the
+  // caller's tenant (a foreign card or label answers 404).
+  { method: 'PUT', pathPattern: '/api/kanban', prefix: true, permission: 'kanban:write' },
   { method: 'PATCH', pathPattern: '/api/kanban', prefix: true, permission: 'kanban:write' },
   { method: 'DELETE', pathPattern: '/api/kanban', prefix: true, permission: 'kanban:write' },
   { method: 'GET', pathPattern: '/api/v1/kanban', prefix: true, permission: 'kanban:read' },
   { method: 'POST', pathPattern: '/api/v1/kanban', prefix: true, permission: 'kanban:write' },
+  { method: 'PUT', pathPattern: '/api/v1/kanban', prefix: true, permission: 'kanban:write' },
   { method: 'PATCH', pathPattern: '/api/v1/kanban', prefix: true, permission: 'kanban:write' },
   { method: 'DELETE', pathPattern: '/api/v1/kanban', prefix: true, permission: 'kanban:write' },
 
   // Memories.
   { method: 'GET', pathPattern: '/api/memories', prefix: true, permission: 'memories:read' },
   { method: 'POST', pathPattern: '/api/memories', prefix: true, permission: 'memories:write' },
+  // PUT /api/memories/:id edits a memory; the route scopes it to the caller's tenant (404 otherwise).
+  { method: 'PUT', pathPattern: '/api/memories', prefix: true, permission: 'memories:write' },
   { method: 'DELETE', pathPattern: '/api/memories', prefix: true, permission: 'memories:write' },
   { method: 'GET', pathPattern: '/api/v1/memories', prefix: true, permission: 'memories:read' },
   { method: 'POST', pathPattern: '/api/v1/memories', prefix: true, permission: 'memories:write' },
+  { method: 'PUT', pathPattern: '/api/v1/memories', prefix: true, permission: 'memories:write' },
   { method: 'DELETE', pathPattern: '/api/v1/memories', prefix: true, permission: 'memories:write' },
 
   // Recall, overview and me -- non-admin readable (memories:read is the narrowest fitting permission).
