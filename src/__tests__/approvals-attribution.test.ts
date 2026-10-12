@@ -29,8 +29,10 @@ const mockCreateApproval = vi.fn()
 const mockListApprovals = vi.fn()
 const mockExpireTimedOutApprovals = vi.fn()
 const mockCreateAgentMessage = vi.fn()
+const mockWriteAgentAuditLog = vi.fn()
 
 vi.mock('../db.js', () => ({
+  get writeAgentAuditLog() { return mockWriteAgentAuditLog },
   get createApproval() { return mockCreateApproval },
   get getApproval() { return mockGetApproval },
   get resolveApproval() { return mockResolveApproval },
@@ -151,6 +153,50 @@ describe('PATCH /api/approvals/:id -- token-auth attribution comes from the toke
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(200)
     expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'ops-token', null)
+  })
+})
+
+describe('PATCH /api/approvals/:id -- the body\'s resolved_by is kept as a declared label in the audit detail', () => {
+  const patch = (body: object, auth: RouteContext['auth'], extra: Partial<RouteContext> = {}) =>
+    makeCtx('PATCH', '/api/approvals/appr-001', body, auth, { role: 'admin', ...extra })
+  const auditDetail = () => {
+    expect(mockWriteAgentAuditLog).toHaveBeenCalledTimes(1)
+    return mockWriteAgentAuditLog.mock.calls[0]![0] as { agent_id: string; action: string; detail: Record<string, unknown> }
+  }
+
+  it('records a body resolved_by that differs from the authenticated resolver as declared_resolved_by', async () => {
+    const { ctx } = patch({ status: 'approved', resolved_by: 'telegram_text' }, { kind: 'token', tokenName: 'ops-token' })
+    await tryHandleApprovals(ctx)
+    const entry = auditDetail()
+    expect(entry.agent_id).toBe('ops-token')
+    expect(entry.detail).toEqual({ status: 'approved', requested_by: 'agent-d', declared_resolved_by: 'telegram_text' })
+  })
+
+  it('trims the declared label', async () => {
+    const { ctx } = patch({ status: 'approved', resolved_by: '  telegram_text  ' }, { kind: 'token', tokenName: 'ops-token' })
+    await tryHandleApprovals(ctx)
+    expect(auditDetail().detail.declared_resolved_by).toBe('telegram_text')
+  })
+
+  it('leaves declared_resolved_by out when the body names the authenticated resolver itself', async () => {
+    const { ctx } = patch({ status: 'approved', resolved_by: 'alice' }, { kind: 'session', user: 'alice' })
+    await tryHandleApprovals(ctx)
+    expect(auditDetail().detail).not.toHaveProperty('declared_resolved_by')
+  })
+
+  it('leaves declared_resolved_by out when the body names nobody, or only whitespace', async () => {
+    await tryHandleApprovals(patch({ status: 'approved' }, { kind: 'token', tokenName: 'ops-token' }).ctx)
+    expect(auditDetail().detail).not.toHaveProperty('declared_resolved_by')
+    mockWriteAgentAuditLog.mockClear()
+    await tryHandleApprovals(patch({ status: 'approved', resolved_by: '   ' }, { kind: 'token', tokenName: 'ops-token' }).ctx)
+    expect(auditDetail().detail).not.toHaveProperty('declared_resolved_by')
+  })
+
+  it('a legacy call with no auth stores the body label as the resolver, so there is nothing separate to declare', async () => {
+    const { ctx } = makeCtx('PATCH', '/api/approvals/appr-001', { status: 'approved', resolved_by: 'dashboard' }, undefined)
+    await tryHandleApprovals(ctx)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'dashboard', null)
+    expect(auditDetail().detail).not.toHaveProperty('declared_resolved_by')
   })
 })
 
