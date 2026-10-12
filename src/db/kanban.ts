@@ -452,8 +452,10 @@ export function listArchivedKanbanCards(opts: {
   from?: number
   to?: number
   limit: number
+  /** Only this tenant's cards; omitted or null = every tenant (the admin view). */
+  tenantId?: string | null
 }): ArchivedKanbanCard[] {
-  const { project, label, from, to, limit } = opts
+  const { project, label, from, to, limit, tenantId } = opts
   let sql = `
     SELECT DISTINCT kc.id, kc.title, kc.status, kc.project, kc.priority, kc.assignee, kc.archived_at, kc.updated_at
     FROM kanban_cards kc
@@ -467,6 +469,7 @@ export function listArchivedKanbanCards(opts: {
     params.push(label)
   }
   sql += ' WHERE kc.archived_at IS NOT NULL'
+  if (tenantId) { sql += ' AND kc.tenant_id = ?'; params.push(tenantId) }
   if (project) { sql += ' AND kc.project = ?'; params.push(project) }
   if (from)    { sql += ' AND kc.archived_at >= ?'; params.push(from) }
   if (to)      { sql += ' AND kc.archived_at <= ?'; params.push(to) }
@@ -475,10 +478,13 @@ export function listArchivedKanbanCards(opts: {
   return db.prepare(sql).all(...params) as ArchivedKanbanCard[]
 }
 
-export function listKanbanProjects(): string[] {
+/** The project names of the active cards; `tenantId` limits them to that tenant (omitted or null = every tenant). */
+export function listKanbanProjects(tenantId?: string | null): string[] {
   const rows = db.prepare(
-    "SELECT DISTINCT project FROM kanban_cards WHERE project IS NOT NULL AND project != '' AND archived_at IS NULL ORDER BY project"
-  ).all() as Array<{ project: string }>
+    `SELECT DISTINCT project FROM kanban_cards
+     WHERE project IS NOT NULL AND project != '' AND archived_at IS NULL AND (? IS NULL OR tenant_id = ?)
+     ORDER BY project`
+  ).all(tenantId ?? null, tenantId ?? null) as Array<{ project: string }>
   return rows.map(r => r.project)
 }
 
