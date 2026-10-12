@@ -373,7 +373,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/kanban-projects' && method === 'GET') {
-    json(res, listKanbanProjects())
+    json(res, listKanbanProjects(effectiveTenantId))
     return true
   }
 
@@ -509,7 +509,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const to      = sp.get('to')    ? Number(sp.get('to'))    : undefined
     const limit   = Math.min(Number(sp.get('limit') ?? 0) || Number(getEffectiveSettingValue('KANBAN_ARCHIVED_MAX_ROWS')), 5000)
     const labelsByCard = getLabelsForAllCards()
-    const cards = listArchivedKanbanCards({ project, label, from, to, limit })
+    const cards = listArchivedKanbanCards({ project, label, from, to, limit, tenantId: effectiveTenantId })
       .map(card => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
     json(res, { cards, total: cards.length, limit })
     return true
