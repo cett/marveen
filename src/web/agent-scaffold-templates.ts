@@ -125,6 +125,63 @@ function buildNoReaderBody(): string {
   ].join('\n')
 }
 
+// The work-document rule: a plan, brief, report, note, draft or checklist lives ONLY in the
+// workspace_docs table, never in a loose file (binary files excepted). Marker-delimited so every
+// existing CLAUDE.md, the coordinator's included, receives it (ensureWorkDocSection) and the text
+// outside the markers is never touched.
+const WORKDOC_BEGIN = '<!-- BEGIN GENERATED: workdoc-rule (auto-generated, do not edit by hand) -->'
+const WORKDOC_END = '<!-- END GENERATED: workdoc-rule -->'
+const WORKDOC_BLOCK_RE = new RegExp(
+  `${WORKDOC_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${WORKDOC_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Static per install: the only variable is the absolute path of the upload script (sub-agents run
+// from agents/<name>/, where a relative scripts/ path does not exist), the same reason apiCmd()
+// names its wrapper outright.
+function buildWorkDocBody(name: string): string {
+  const putPath = join(PROJECT_ROOT, 'scripts', 'workspace-put.py')
+  const put = /^[\w./-]+$/.test(putPath) ? putPath : `'${putPath.replace(/'/g, "'\\''")}'`
+  return [
+    '## Munkadokumentum: csak SQL-be (workspace_docs)',
+    '',
+    '- Munkadokumentum (terv, brief, jelentés, jegyzet, piszkozat, checklist) CSAK a workspace_docs táblába kerül (POST /api/v1/workspace), lokális fájlba soha. Kivétel a bináris fájl (kép, pdf, zip).',
+    `- Recept: \`workspace-doc-write\` skill. A törzset a Write eszközzel a session scratchpadba írd, majd: \`python3 ${put} --file <út> --doc-key <típus>/<kártya> --type plan|brief|report|notes --agent ${name} --delete-source\`. Az átmeneti törzs a feltöltés után törlődik.`,
+    '- Nem munkadokumentum, fájl maradhat: CLAUDE.md, SOUL.md, HANDOFF.md, skill- és memória-fájlok, és minden, ami git worktree-ben él (kód, docs/, CHANGELOG).',
+    '- Delegáláskor SOSE nevezz meg helyi fájlútvonalat a dokumentumnak: add meg a doc_key-t.',
+  ].join('\n')
+}
+
+// Idempotently ensures the work-document rule block is present and current in an agent's
+// CLAUDE.md, the main agent's (PROJECT_ROOT/CLAUDE.md) included. Called on every sub-agent
+// respawn next to the other ensure*Section() functions and on dashboard startup for the main
+// agent, so existing agents get the rule without regenerating their CLAUDE.md. Same contract:
+// no file -> skip; block present -> replace ONLY the block; absent -> append; identical result
+// -> no write; writes are atomic.
+export function ensureWorkDocSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${WORKDOC_BEGIN}\n${buildWorkDocBody(name)}\n${WORKDOC_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  // A replacer function, not a string: an install path containing "$&" must never be read as
+  // a replacement pattern.
+  const updated = WORKDOC_BLOCK_RE.test(existing)
+    ? existing.replace(WORKDOC_BLOCK_RE, () => block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 // Builds the text body that goes between the BEGIN/END markers.
 // Single source of truth -- called by both generateClaudeMd() (initial
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
@@ -502,7 +559,8 @@ Output ONLY the markdown content, no code fences.`
   cleaned = cleaned.trimEnd()
     + '\n\n' + FLEET_ROSTER_BEGIN + '\n' + fleetBody + '\n' + FLEET_ROSTER_END
     + '\n\n' + AUTONOMY_BEGIN + '\n' + autonomyBody + '\n' + AUTONOMY_END
-    + '\n\n' + NO_READER_BEGIN + '\n' + buildNoReaderBody() + '\n' + NO_READER_END + '\n'
+    + '\n\n' + NO_READER_BEGIN + '\n' + buildNoReaderBody() + '\n' + NO_READER_END
+    + '\n\n' + WORKDOC_BEGIN + '\n' + buildWorkDocBody(name) + '\n' + WORKDOC_END + '\n'
   return cleaned
 }
 
