@@ -39,7 +39,7 @@ This section describes recovery paths for situations where you forgot your passw
 The CLI writes directly to the database (no HTTP, no auth gate), so it works even when the web login is misconfigured or unreachable:
 
 ```bash
-npm run dashboard-user -- list                           # list existing users
+npm run dashboard-user -- list                           # list existing users with role and tenant
 npm run dashboard-user -- reset-password <user>          # reset a forgotten password
 npm run dashboard-user -- remove <user>                  # delete a user
 npm run dashboard-user -- sessions:clear [<user>]        # clear browser sessions
