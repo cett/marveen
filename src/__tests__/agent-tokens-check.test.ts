@@ -20,7 +20,8 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
 }))
 
 import { initDatabase, enrollDashboardApiToken, revokeApiTokensForAgent, getDb } from '../db.js'
-import { checkAgentTokens, issueAgentToken, issueOperatorToken, agentTokenPath, operatorTokenPath } from '../agent-tokens.js'
+import Database from 'better-sqlite3'
+import { archiveSharedTokenAge, checkAgentTokens, issueAgentToken, issueOperatorToken, agentTokenPath, operatorTokenPath } from '../agent-tokens.js'
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const AGENTS = ['main-agent', 'alpha', 'beta']
@@ -123,6 +124,45 @@ describe('checkAgentTokens', () => {
     issueAll()
     const raw = readFileSync(agentTokenPath('alpha'), 'utf-8').trim()
     expect(JSON.stringify(checkAgentTokens(AGENTS))).not.toContain(raw)
+  })
+})
+
+describe('archiveSharedTokenAge: a backup against the live shared token', () => {
+  // an "archive database": a file with just the api_tokens columns the comparison reads
+  function archiveDb(rows: Array<{ createdAt: number; revokedAt?: number }>, withTable = true): string {
+    const file = join(state.root, `archive-${Math.random().toString(36).slice(2)}.db`)
+    const d = new Database(file)
+    if (withTable) {
+      d.exec('CREATE TABLE api_tokens (id INTEGER PRIMARY KEY, name TEXT, created_at INTEGER, revoked_at INTEGER)')
+      for (const r of rows) d.prepare("INSERT INTO api_tokens (name, created_at, revoked_at) VALUES ('dashboard', ?, ?)").run(r.createdAt, r.revokedAt ?? null)
+    }
+    d.close()
+    return file
+  }
+
+  it('the live shared token is newer than the archive\'s: `predates` (restoring would resurrect the old one)', () => {
+    enrollDashboardApiToken(sha('live-token'), 5000)
+    expect(archiveSharedTokenAge(archiveDb([{ createdAt: 1000 }]))).toBe('predates')
+  })
+
+  it('the same age or an older live token: `current`', () => {
+    enrollDashboardApiToken(sha('live-token'), 5000)
+    expect(archiveSharedTokenAge(archiveDb([{ createdAt: 5000 }]))).toBe('current')
+    expect(archiveSharedTokenAge(archiveDb([{ createdAt: 9000 }]))).toBe('current')
+  })
+
+  it('a revoked row in the archive does not count: the newest ACTIVE one decides', () => {
+    enrollDashboardApiToken(sha('live-token'), 5000)
+    expect(archiveSharedTokenAge(archiveDb([{ createdAt: 1000 }, { createdAt: 9000, revokedAt: 9500 }]))).toBe('predates')
+  })
+
+  it('`unknown` when the archive has no table, no active row, or is not a database; or the live side has no row', () => {
+    enrollDashboardApiToken(sha('live-token'), 5000)
+    expect(archiveSharedTokenAge(archiveDb([], false))).toBe('unknown')
+    expect(archiveSharedTokenAge(archiveDb([]))).toBe('unknown')
+    expect(archiveSharedTokenAge(join(state.root, 'no-such.db'))).toBe('unknown')
+    getDb().prepare("UPDATE api_tokens SET revoked_at = 1 WHERE name = 'dashboard'").run()
+    expect(archiveSharedTokenAge(archiveDb([{ createdAt: 1000 }]))).toBe('unknown')
   })
 })
 

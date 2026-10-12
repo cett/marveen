@@ -29,11 +29,12 @@ Every agent calls the dashboard API with its own token (`agents/<id>/.agent-toke
 ```bash
 npm run agent-tokens -- issue [--rotate] [--dry-run] [<agent>...]   # default: the main agent and every agent
 npm run agent-tokens -- issue-operator [--rotate]
+npm run agent-tokens -- check [<agent>...]   # read-only: does each token file match an active token? exit 1 if not
 npm run agent-tokens -- list
 npm run agent-tokens -- revoke <agent>
 ```
 
-The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose (reissue after a restore; `doctor.sh` reports a missing one).
+The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose. After a restore, follow the steps in F03, "After a restore: API tokens" (`doctor.sh` and `agent-tokens check` report a missing or stale one).
 
 A person opening the dashboard does not use the shared token either: `npm run dashboard-url` (operator-signed, the dashboard must run) prints `<origin>/?enroll=<one-time code>`, which the browser trades for its own named, revocable admin token (`POST /api/auth/enroll-browser`; codes are issued by `POST /api/admin/browser-enroll-codes`, global admin only, single use, 10 minutes, kept in memory). The installers print such a link at the end.
 

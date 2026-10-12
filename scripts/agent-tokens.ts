@@ -14,7 +14,7 @@
 import { MAIN_AGENT_ID } from '../src/config.js'
 import { initDatabase, listApiTokenRows, revokeApiTokensForAgent } from '../src/db.js'
 import { listAgentNames } from '../src/web/agent-config.js'
-import { agentTokenPath, checkAgentTokens, issueAgentToken, issueOperatorToken } from '../src/agent-tokens.js'
+import { agentTokenPath, archiveSharedTokenAge, checkAgentTokens, issueAgentToken, issueOperatorToken } from '../src/agent-tokens.js'
 
 function usage(): never {
   process.stderr.write(
@@ -22,6 +22,7 @@ function usage(): never {
     '  agent-tokens issue [--rotate] [--dry-run] [<agent>...]\n' +
     '  agent-tokens issue-operator [--rotate]\n' +
     '  agent-tokens check [<agent>...]\n' +
+    '  agent-tokens archive-shared-age <extracted-archive.db>\n' +
     '  agent-tokens list\n' +
     '  agent-tokens revoke <agent>\n',
   )
@@ -61,6 +62,9 @@ if (cmd === 'issue') {
   const { rows, ok } = checkAgentTokens(targets)
   for (const r of rows) process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
   process.exit(ok ? 0 : 1)
+} else if (cmd === 'archive-shared-age' && names.length === 1) {
+  // Used by verify-restore.sh on its extracted copy of an archive's database: predates | current | unknown.
+  process.stdout.write(`${archiveSharedTokenAge(names[0]!)}\n`)
 } else if (cmd === 'list') {
   for (const t of listApiTokenRows().filter(r => r.revoked_at === null)) {
     process.stdout.write(`${t.id}\t${t.name}\t${t.role}\t${t.agent_id ?? '-'}\t${t.tenant_id}\t${new Date(t.created_at * 1000).toISOString()}\n`)

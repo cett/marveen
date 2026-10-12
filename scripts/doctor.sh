@@ -214,19 +214,41 @@ done
 # backup, so a restored install lacks them until the issuer runs. While the shared token still works
 # (T3, no enforcement) a missing one is a warning, not a failure.
 echo -e "\n${BOLD}Agent tokens${RESET}"
-MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' ')"
-MISSING_TOKENS=""
-[ -f ".agent-token" ] || MISSING_TOKENS="$MISSING_TOKENS ${MAIN_ID:-main}"
-for d in agents/*/; do
-  [ -f "${d}CLAUDE.md" ] || [ -f "${d}agent-config.json" ] || continue
-  [ -f "${d}.agent-token" ] || MISSING_TOKENS="$MISSING_TOKENS $(basename "$d")"
-done
-if [ -n "$MISSING_TOKENS" ]; then
-  warn "no agent token for:${MISSING_TOKENS} -- run: npm run agent-tokens -- issue"
+# `agent-tokens check` is read-only and compares every token file with the database: a file that is
+# present but not (or no longer) an active token for its subject is as useless as a missing one, which
+# a presence test cannot see (an older database restored under newer files). Exit 1 = findings; any
+# other failure (no node_modules, no tsx) falls back to the presence test below.
+TOKEN_CHECK_OUT="$(npm run --silent agent-tokens -- check 2>/dev/null)"
+TOKEN_CHECK_RC=$?
+if [ "$TOKEN_CHECK_RC" -eq 0 ]; then
+  ok "Agent tokens: every token file matches an active token (main agent, agents, operator)"
+elif [ "$TOKEN_CHECK_RC" -eq 1 ] && [ -n "$TOKEN_CHECK_OUT" ]; then
+  while IFS="$(printf '\t')" read -r t_subject t_status t_role t_path; do
+    [ -n "$t_subject" ] && [ "$t_status" != "ok" ] || continue
+    case "$t_subject" in
+      operator) t_fix="npm run agent-tokens -- issue-operator" ;;
+      shared)   t_fix="see docs/fork-guide/en/F03-operations.md, 'After a restore: API tokens'" ;;
+      *)        t_fix="npm run agent-tokens -- issue ${t_subject}" ;;
+    esac
+    warn "token ${t_subject}: ${t_status} -- run: ${t_fix}"
+  done <<EOF
+$TOKEN_CHECK_OUT
+EOF
 else
-  ok "Agent tokens: present for the main agent and every agent"
+  MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' ')"
+  MISSING_TOKENS=""
+  [ -f ".agent-token" ] || MISSING_TOKENS="$MISSING_TOKENS ${MAIN_ID:-main}"
+  for d in agents/*/; do
+    [ -f "${d}CLAUDE.md" ] || [ -f "${d}agent-config.json" ] || continue
+    [ -f "${d}.agent-token" ] || MISSING_TOKENS="$MISSING_TOKENS $(basename "$d")"
+  done
+  if [ -n "$MISSING_TOKENS" ]; then
+    warn "no agent token for:${MISSING_TOKENS} -- run: npm run agent-tokens -- issue"
+  else
+    ok "Agent tokens: present for the main agent and every agent (agent-tokens check could not run)"
+  fi
+  if [ -f "store/.operator-token" ]; then ok "Operator token: present"; else warn "store/.operator-token missing -- run: npm run agent-tokens -- issue-operator"; fi
 fi
-if [ -f "store/.operator-token" ]; then ok "Operator token: present"; else warn "store/.operator-token missing -- run: npm run agent-tokens -- issue-operator"; fi
 
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"

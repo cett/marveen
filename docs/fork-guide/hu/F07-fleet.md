@@ -29,11 +29,12 @@ Minden ágens a saját tokenjével hívja a dashboard API-t (`agents/<id>/.agent
 ```bash
 npm run agent-tokens -- issue [--rotate] [--dry-run] [<ágens>...]   # alapból a fő ágens és minden ágens
 npm run agent-tokens -- issue-operator [--rotate]
+npm run agent-tokens -- check [<ágens>...]   # csak olvas: minden token-fájl egyezik-e egy aktív tokennel? 1-es kilépés, ha nem
 npm run agent-tokens -- list
 npm run agent-tokens -- revoke <ágens>
 ```
 
-A fájlok `0600` jogúak, a parancs a fájlt írja ki, tokent soha, a mentés szándékosan kihagyja őket (visszaállítás után újra ki kell adni; a `doctor.sh` jelzi a hiányzót).
+A fájlok `0600` jogúak, a parancs a fájlt írja ki, tokent soha, a mentés szándékosan kihagyja őket. Visszaállítás után kövesd az F03 "Visszaállítás után: API tokenek" lépéseit (a `doctor.sh` és az `agent-tokens check` jelzi a hiányzó vagy elavult fájlt).
 
 A dashboardot megnyitó ember sem a közös tokent használja: az `npm run dashboard-url` (operátor-aláírású, a dashboardnak futnia kell) `<origin>/?enroll=<egyszer használható kód>` linket ír ki, amit a böngésző a saját, nevesített, visszavonható admin tokenjére cserél (`POST /api/auth/enroll-browser`; a kódot a `POST /api/admin/browser-enroll-codes` adja, csak globális admin, egyszer használható, 10 perc, memóriában él). A telepítők a végén ilyen linket írnak ki.
 

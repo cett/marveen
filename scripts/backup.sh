@@ -2,7 +2,7 @@
 # Marveen backup.
 #
 # The archive has two top-level groups so a restore is unambiguous about
-# where each file belongs (see docs/MIGRATION.md):
+# where each file belongs (see docs/fork-guide/en/F03-operations.md, "Backup and restore"):
 #
 #   repo/   -> extract under the project root (this repo)
 #     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
@@ -10,8 +10,9 @@
 #     store/.dashboard-token   (dashboard bearer)
 #     NOT in the archive, on purpose: the per-agent tokens (agents/*/.agent-token, the main agent's
 #     .agent-token in the project root) and store/.operator-token. They are re-issuable and a backup
-#     does not need them. After a restore run `npm run agent-tokens -- issue` and
-#     `npm run agent-tokens -- issue-operator`; scripts/doctor.sh reports a missing one.
+#     does not need them. After a restore run `npm run agent-tokens -- issue`,
+#     `npm run agent-tokens -- issue-operator` and `npm run agent-tokens -- check`; scripts/doctor.sh
+#     reports a missing or stale one.
 #     store/vault.json         (ENCRYPTED secret vault; the key is NOT in this archive)
 #     .env                     (project root secrets)
 #     scheduled-tasks.json     (legacy, if present)
@@ -54,7 +55,7 @@
 #   into the Keychain WITHOUT putting the key on a command line (argv is visible to other
 #   processes via ps): run `security add-generic-password -U -s com.marveen.vault -a master-key -w`
 #   with -w as the last option and no value, then paste the key when it prompts.
-# Full runbook: docs/MIGRATION.md.
+# Full runbook: docs/fork-guide/en/F03-operations.md ("Backup and restore", "After a restore: API tokens").
 
 set -euo pipefail
 
@@ -230,7 +231,7 @@ fi
   echo "host: $(hostname 2>/dev/null || echo '?')   user: ${USER:-?}   home: ${HOME}"
   echo "repo root: ${REPO_ROOT}"
   echo "Restore: tar -xpzf <archive> -C <tmp>; copy repo/* -> project root, home/* -> \$HOME."
-  echo "See docs/MIGRATION.md for the full runbook (TCC, launchd paths, one-bot-one-poller, venv rebuild)."
+  echo "See docs/fork-guide/en/F03-operations.md (Backup and restore) for the runbook. Run the token steps (agent-tokens issue, issue-operator, check) BEFORE the dashboard and the agents start."
   if [[ -n "${VAULT_KEY_SOURCE}" ]]; then
     echo "vault key: separate file $(basename "${VAULT_KEY_OUT}") (NOT in this archive; source: ${VAULT_KEY_SOURCE})"
   elif [[ -f store/vault.json ]]; then
