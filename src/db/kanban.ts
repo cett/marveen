@@ -133,15 +133,28 @@ export function createKanbanCard(card: {
   ).get(status) as { m: number | null }
   const sortOrder = (maxRow?.m ?? -1) + 1
 
-  db.prepare(
-    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, depth, due_date, sort_order, created_at, updated_at, tenant_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    card.id, card.title, card.description ?? null, status,
-    card.assignee ?? null, card.priority ?? 'normal',
-    card.project ?? null, card.parent_id ?? null, depth, dueDate, sortOrder, now, now,
-    card.tenant_id ?? 'default',
-  )
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, depth, due_date, sort_order, created_at, updated_at, tenant_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      card.id, card.title, card.description ?? null, status,
+      card.assignee ?? null, card.priority ?? 'normal',
+      card.project ?? null, card.parent_id ?? null, depth, dueDate, sortOrder, now, now,
+      card.tenant_id ?? 'default',
+    )
+    // A card BORN in a status other than 'planned' gets its opening event row
+    // here, because nothing else will ever write one for it: kanban_card_events
+    // is only appended on a MOVE, so a card created straight into in_progress had
+    // no history and its "time in progress" read "not measured" forever.
+    // from_status is NULL, which is the honest value -- the card came into being
+    // here, it did not move from somewhere.
+    if (status !== 'planned') {
+      db.prepare(
+        'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(card.id, null, status, card.assignee ?? null, now)
+    }
+  })()
   try {
     writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'create', entity_id: card.id, detail: { title: card.title, status, priority: card.priority ?? 'normal' } })
   } catch { /* audit failure must not abort card creation */ }

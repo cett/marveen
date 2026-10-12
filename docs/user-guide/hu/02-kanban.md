@@ -44,6 +44,7 @@ Egy kártyára kattintva megnyílik a részlet-panel:
 
 - **Cím és leírás** - szerkeszthető
 - **Státusz, prioritás, felelős, határidő** - módosítható
+- **Folyamatban töltött idő** - mennyi ideig állt a kártya a Folyamatban oszlopban, minden ott töltött szakaszt összeadva (például `3 ó 20 p` vagy `2 nap 4 ó`). A panel a kártya saját állapotváltásaiból számolja, így mindenkinek ugyanaz, aki a kártyát láthatja. Ez falióra szerinti idő az oszlopban, nem munkaidő: az éjszakára Folyamatban hagyott kártya az éjszakát is beleszámolja, ezért felső korlátként olvasd (a súgószöveg is ezt mondja). A `nem mért` azt jelenti, hogy a kártyának még nincs állapot-története (régebbi kártya, amely a napló indítása óta nem mozdult), ez más, mint a `még nem volt folyamatban`, ami mért nulla.
 - **Szülő** - megadható szülő-kártya (alfeladatok szervezéséhez)
 - **Alfeladatok** - a kártyán belüli kisebb lépések listája; az elvégzett arány látható a kártya-összefoglalón is (`X/Y alfeladat`)
 - **Megjegyzések** - időrendben; a saját megjegyzéseid bármikor hozzáadhatók

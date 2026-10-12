@@ -20,6 +20,7 @@ import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { can } from './rbac-client.js'
+import { sumInProgressSeconds, formatActiveTime } from './kanban-active-time.js'
 
 // ── Injected dependencies ────────────────────────────────────────────────────
 let _openModal = null, _closeModal = null, _wireColumn = null, _wireCardTouch = null, _loadIdeasPage = null
@@ -1231,6 +1232,26 @@ async function renderCardLabelsSection(card) {
 }
 
 // === Card detail ===
+// Fills the "Time in progress" meta item from the card's own status-change log.
+// Fire-and-forget: the panel is usable while it loads, and a failed request just
+// leaves the value at "not measured".
+async function loadActiveTime(card) {
+  const el = document.getElementById('metaActiveValue')
+  if (!el) return
+  let text = null
+  try {
+    const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/events`)
+    if (res.ok) {
+      const events = await res.json()
+      text = formatActiveTime(sumInProgressSeconds(events, Math.floor(Date.now() / 1000), card), t)
+    }
+  } catch { /* shown as not measured */ }
+  // The panel may have been re-rendered for another card while the request was in flight.
+  if (!el.isConnected) return
+  el.textContent = text ?? t('kanban.active.none')
+  el.title = text ? t('kanban.active.tooltip') : t('kanban.active.tooltip_none')
+}
+
 export async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
@@ -1273,6 +1294,10 @@ export async function showCardDetail(card) {
       <span class="meta-label">${t('kanban.meta.deadline')}</span>
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString(getLang() === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
     </div>
+    <div class="meta-item">
+      <span class="meta-label">${t('kanban.meta.active')}</span>
+      <span class="meta-value" id="metaActiveValue">${t('kanban.active.loading')}</span>
+    </div>
     ${card.status === 'waiting' && card.waiting_for ? `
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.waiting_for')}</span>
@@ -1280,6 +1305,7 @@ export async function showCardDetail(card) {
     </div>
     ` : ''}
   `
+  loadActiveTime(card)
 
   // Inline edit for status on detail view. HTML5 drag & drop is the only way to
   // change a card's column, and it is dead on touch devices (no dragstart is

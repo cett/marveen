@@ -44,6 +44,7 @@ Clicking a card opens the detail panel:
 
 - **Title and description** - editable
 - **Status, priority, assignee, due date** - modifiable
+- **Time in progress** - how long the card has stood in the In progress column, summed over every stay (for example `3h 20m` or `2d 4h`). It is worked out in the panel from the card's own status changes, so it is the same for everyone who may see the card. It is wall-clock time in the column, not time worked: a card left in progress overnight counts the night, so read it as an upper bound (the tooltip says so). `not measured` means the card has no status history yet (older cards that have not moved since the history was started), which is different from `never been in progress`, a measured zero.
 - **Parent** - set a parent card (for organizing subtasks)
 - **Subtasks** - smaller steps within the card; progress ratio is shown on the card summary (`X/Y subtasks`)
 - **Comments** - chronological; you can add your own comments at any time
