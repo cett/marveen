@@ -11,7 +11,7 @@ import { readBody, json } from '../http-helpers.js'
 import { denyForeignAgent } from '../fleet-agent-identity.js'
 import { checkCategory, humanSessionOf, isHumanOnly } from '../approval-human-only.js'
 import {
-  notifyOwnerOfHumanOnlyRequest, humanOnlyRequestLine, ownerUnreachedLine, approvalResolvedLine,
+  notifyOwnerOfHumanOnlyRequest, humanOnlyRequestLine, ownerUnreachedLine, approvalResolvedLine, approvalRequestLine,
 } from '../approval-owner-notice.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
@@ -101,15 +101,7 @@ function sendSystemMessage(to: string, content: string, approval: Approval): voi
 
 function notifyMainAgent(approval: Approval): void {
   try {
-    const content = [
-      `[APPROVAL_REQUEST]`,
-      `id=${approval.id}`,
-      `agent=${approval.agent_id}`,
-      `category=${approval.category}`,
-      `action=${approval.action_description}`,
-      `timeout_at=${approval.timeout_at ?? 'null'}`,
-    ].join(' ')
-    createAgentMessage('system', MAIN_AGENT_ID, content)
+    createAgentMessage('system', MAIN_AGENT_ID, approvalRequestLine(approval))
   } catch (err) {
     // Non-fatal: the approval is created regardless; main-agent notification is best-effort
     logger.warn({ err, approvalId: approval.id }, 'Failed to notify main agent of approval request')

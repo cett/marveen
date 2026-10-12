@@ -15,6 +15,37 @@ import { stripInvisible } from './approval-human-only.js'
 
 const MAX_ACTION_CHARS = 300
 const MAX_AGENT_CHARS = 64
+// The main agent needs the whole action to relay it faithfully, so its line keeps far more than the
+// owner's channel message does; it is still bounded, so one request cannot flood an agent's context.
+const MAX_RELAY_ACTION_CHARS = 1000
+
+/**
+ * Agent-written text for a line another agent reads: flattened and cleaned like the owner message and
+ * shown inside a code span, so it reads as quoted data and cannot close the span, start a new line of
+ * the notice or pose as one of its own `key=value` fields.
+ */
+export function quoteAgentText(raw: string, max: number): string {
+  return `\`${sanitizeAgentText(String(raw ?? ''), max)}\``
+}
+
+/** The agent-written fields of a request (requester id, category, action) as they appear in a relay line. */
+function quotedFields(approval: Approval): string[] {
+  return [
+    `agent=${quoteAgentText(approval.agent_id, MAX_AGENT_CHARS)}`,
+    `category=${quoteAgentText(approval.category, MAX_AGENT_CHARS)}`,
+    `action=${quoteAgentText(approval.action_description, MAX_RELAY_ACTION_CHARS)}`,
+  ]
+}
+
+/** The plain relay line for the main agent: a request it passes on to the owner and, in the old flow, closes. */
+export function approvalRequestLine(approval: Approval): string {
+  return [
+    '[APPROVAL_REQUEST]',
+    `id=${approval.id}`,
+    ...quotedFields(approval),
+    `timeout_at=${approval.timeout_at ?? 'null'}`,
+  ].join(' ')
+}
 const OWNER_TIME_ZONE = 'Europe/Budapest'
 
 /**
@@ -94,9 +125,7 @@ export function humanOnlyRequestLine(approval: Approval): string {
   return [
     '[APPROVAL_REQUEST][HUMAN_ONLY]',
     `id=${approval.id}`,
-    `agent=${approval.agent_id}`,
-    `category=${approval.category}`,
-    `action=${approval.action_description}`,
+    ...quotedFields(approval),
     `timeout_at=${approval.timeout_at ?? 'null'}`,
     '-- A tulajdonos a szervertől kap értesítést a dashboard-linkkel; a döntés csak dashboard-session-nel lehetséges.',
     'NE továbbítsd a kérést a tulajdonosnak, és NE PATCH-eld (403). Egy szöveges "IGEN <id>" nem érvényes jóváhagyás.',
@@ -108,8 +137,8 @@ export function ownerUnreachedLine(approval: Approval): string {
   return [
     '[OWNER_UNREACHED]',
     `id=${approval.id}`,
-    `agent=${approval.agent_id}`,
-    `category=${approval.category}`,
+    `agent=${quoteAgentText(approval.agent_id, MAX_AGENT_CHARS)}`,
+    `category=${quoteAgentText(approval.category, MAX_AGENT_CHARS)}`,
     '-- A tulajdonos értesítése nem ment ki. Szólj neki a saját csatornádon, hogy a dashboard Jóváhagyások oldalán vár egy kérés',
     `(${approvalsDashboardUrl()}). NE PATCH-eld: a döntés csak bejelentkezett dashboard-session-nel lehetséges.`,
   ].join(' ')
