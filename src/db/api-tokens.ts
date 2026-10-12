@@ -68,6 +68,17 @@ export function apiTokenHashExists(tokenHash: string): boolean {
   return !!db.prepare('SELECT id FROM api_tokens WHERE token_hash = ?').get(tokenHash)
 }
 
+/** When the active `dashboard` row (the shared token) was enrolled, epoch seconds; 0 when there is none. */
+export function latestActiveDashboardTokenAt(): number {
+  const row = db.prepare("SELECT MAX(created_at) AS t FROM api_tokens WHERE name = 'dashboard' AND revoked_at IS NULL").get() as { t: number | null }
+  return row.t ?? 0
+}
+
+/** The row registered under this hash in any state (active, expired or revoked), or undefined. */
+export function getApiTokenRowByHash(tokenHash: string): ApiTokenRow | undefined {
+  return db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(tokenHash) as ApiTokenRow | undefined
+}
+
 export function listApiTokenRows(): ApiTokenRow[] {
   return db.prepare('SELECT * FROM api_tokens ORDER BY created_at DESC').all() as ApiTokenRow[]
 }

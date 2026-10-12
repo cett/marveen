@@ -29,11 +29,12 @@ Every agent calls the dashboard API with its own token (`agents/<id>/.agent-toke
 ```bash
 npm run agent-tokens -- issue [--rotate] [--dry-run] [<agent>...]   # default: the main agent and every agent
 npm run agent-tokens -- issue-operator [--rotate]
+npm run agent-tokens -- check [<agent>...]   # read-only: does each token file match an active token? exit 1 if not
 npm run agent-tokens -- list
 npm run agent-tokens -- revoke <agent>
 ```
 
-The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose (reissue after a restore; `doctor.sh` reports a missing one).
+The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose. After a restore, follow the steps in F03, "After a restore: API tokens" (`doctor.sh` and `agent-tokens check` report a missing or stale one).
 
 A person opening the dashboard does not use the shared token either: `npm run dashboard-url` (operator-signed, the dashboard must run) prints `<origin>/?enroll=<one-time code>`, which the browser trades for its own named, revocable admin token (`POST /api/auth/enroll-browser`; codes are issued by `POST /api/admin/browser-enroll-codes`, global admin only, single use, 10 minutes, kept in memory). The installers print such a link at the end.
 
@@ -50,6 +51,14 @@ bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main
 - Exit code 0 on a 2xx, 22 on any other HTTP status (the status goes to stderr, the body is still printed).
 
 Nothing is enforced yet: the shared token keeps working everywhere.
+
+#### Go-live gate: is the shared token still in use?
+
+`python3 scripts/token-shadow-gate.py --window-start <YYYY-MM-DD>` reads the shadow counter over a measurement window and answers PASS (exit 0), FAIL (exit 1) or INCONCLUSIVE (exit 2). Rotating the shared token waits for a PASS. The window starts at the first 00:00 UTC after the last deploy that touched a call path (the deploy day itself mixes before and after) and needs 7 full UTC days plus today.
+
+- **FAIL**: shared-token use that nothing excuses (the main agent's own declared use, a browser page with no caller and the gate's own canary are the only exceptions, each listed with its reason and expiry in the script), or any `agent_id_mismatch`, `foreign_row_access`, `missing_tenant_context` or `shared_agent_memories_no_tenant` row. The report lists the rows and the last hit; the window restarts after it. Every deploy that changes a call path restarts the clock.
+- **INCONCLUSIVE** (never a PASS): the window is too short; an enabled schedule that runs at most weekly has not run in the window; a monthly-or-rarer schedule has no manual run in the window or no clean recipe dry-run (`--manual-run NAME`, `--dry-run-clean NAME` attest them); the dashboard's uptime is not confirmed (`--uptime-confirmed`: it must not have stood still for more than 24 hours on any window day); the canary did not move the counter; a query hit the row limit or the counter holds `_overflow` / `_invalid` rows. A zero count only counts when the counter is proven alive: the gate makes one shared-token call as `gate-canary` and requires the count to grow.
+- The gate reads with the operator's own token and refuses to read through the shared one (its reads would land in the counter it judges). `TOKEN_SHADOW_WINDOW_START=YYYY-MM-DD` in `.env` makes `doctor.sh` print the gate state as an informational line.
 
 ### Starting and stopping agents
 
