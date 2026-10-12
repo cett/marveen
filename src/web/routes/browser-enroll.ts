@@ -16,6 +16,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { consumeEnrollCode, issueEnrollCode } from '../browser-enroll-codes.js'
 import { generateToken, sha256hex } from './tokens.js'
+import { denyAgentCredentialIssue } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 const ENROLL_BODY_MAX_BYTES = 2 * 1024
@@ -34,6 +35,7 @@ export async function tryHandleBrowserEnroll(ctx: RouteContext): Promise<boolean
   const { path, method, req, res } = ctx
 
   if (method === 'POST' && path === '/api/admin/browser-enroll-codes') {
+    if (denyAgentCredentialIssue(ctx, 'admin.browser_enroll_code.create')) return true
     if (!isGlobalAdmin(ctx)) {
       json(res, { error: 'forbidden', hint: 'Only a global admin can issue a browser enrollment code' }, 403)
       return true

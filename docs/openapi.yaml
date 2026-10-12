@@ -4721,6 +4721,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `forbidden`. With `APPROVAL_HUMAN_ONLY_ENFORCE=1` and at least one enabled dashboard user,
+            only a person logged in as a global admin may create a user: any token, a device key and any
+            other session get `code` `human_session_required`. With no enabled user (first run) a bearer
+            token still works. Also returned for the tenant and role cross-field rules.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: "`conflict` — username already exists"
           content:
@@ -4813,7 +4823,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: "`forbidden` — self-disable or last-admin protection"
+          description: >
+            `forbidden`. Self-disable or last-admin protection. With `APPROVAL_HUMAN_ONLY_ENFORCE=1` and at
+            least one enabled dashboard user, only a person logged in as a global admin may change a user
+            (role, password, disabled): any token, a device key and any other session get `code`
+            `human_session_required`.
           content:
             application/json:
               schema:
@@ -4849,7 +4863,10 @@ paths:
                   ok:
                     type: boolean
         "403":
-          description: "`forbidden` — self-delete or last-admin protection"
+          description: >
+            `forbidden`. Self-delete or last-admin protection. With `APPROVAL_HUMAN_ONLY_ENFORCE=1` and at
+            least one enabled dashboard user, only a person logged in as a global admin may delete a user:
+            any token, a device key and any other session get `code` `human_session_required`.
           content:
             application/json:
               schema:
@@ -5350,7 +5367,10 @@ paths:
                     type: integer
                     description: Unix seconds.
         "403":
-          description: Caller is not a global admin
+          description: >
+            Caller is not a global admin. With `APPROVAL_HUMAN_ONLY_ENFORCE=1` a fleet agent token and a
+            token that names an agent (the main agent's included) also get `code`
+            `human_session_required`; the operator's token and a session still work.
           content:
             application/json:
               schema:
