@@ -24,6 +24,10 @@ The scratchpad is recognised by the path convention <tmp>/claude-<uid>/<project>
 variable that names it. Anywhere else, pass --scratchpad-root <dir> (its last path component must be
 "scratchpad"); without either, --delete-source is refused.
 
+doc_key prefixes: plan, brief, report, notes, draft (each implies a type; draft is notes) or
+series-<slug> (lowercase slug; implies no type, --type chooses one, default notes), then 1-3 more
+segments, 2-4 segments in all.
+
 Exit codes: 0 success, 1 runtime failure (API, read-back mismatch, source changed), 2 usage or
 validation error. Pure standard library, Python 3.9 compatible.
 
@@ -44,7 +48,14 @@ CONTENT_TYPES = ("text", "code")
 SIZE_LIMITS = {"text": 2 * 1024 * 1024, "code": 4 * 1024 * 1024}  # mirrors WORKSPACE_DOC_SIZE_LIMITS
 # doc_key prefix -> the workspace_docs type it implies (draft/ is a flavour of notes)
 PREFIX_TYPE = {"plan": "plan", "brief": "brief", "report": "report", "notes": "notes", "draft": "notes"}
-SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# A series document lives under series-<slug>/...; the slug names the series (for example a multi-part
+# article). The prefix implies no fixed type, so --type picks one and defaults to SERIES_DEFAULT_TYPE.
+# The slug is stricter than a plain segment: lowercase letters, digits, '_' and '-', no dot.
+SERIES_PREFIX = "series-"
+# \Z, not $: "$" also matches before a trailing newline, which would let a control character through.
+SERIES_HEAD_RE = re.compile(r"^series-[a-z0-9][a-z0-9_-]*\Z")
+SERIES_DEFAULT_TYPE = "notes"
+SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 AGENT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SCRATCH_RE = re.compile(
@@ -65,9 +76,18 @@ def validate_doc_key(key):
     if not key or len(key) > MAX_KEY_LEN:
         raise Fail("doc_key must be 1-%d characters" % MAX_KEY_LEN, 2)
     parts = key.split("/")
-    if parts[0] not in PREFIX_TYPE:
+    if parts[0].startswith(SERIES_PREFIX):
+        if not SERIES_HEAD_RE.match(parts[0]):
+            raise Fail(
+                "doc_key series prefix %r: use %s<slug> with a lowercase slug (letters, digits, '_', '-')"
+                % (parts[0], SERIES_PREFIX),
+                2,
+            )
+    elif parts[0] not in PREFIX_TYPE:
         raise Fail(
-            "doc_key must start with one of: %s (got %r)" % (", ".join(sorted(PREFIX_TYPE)), parts[0]), 2
+            "doc_key must start with one of: %s or %s<slug> (got %r)"
+            % (", ".join(sorted(PREFIX_TYPE)), SERIES_PREFIX, parts[0]),
+            2,
         )
     if len(parts) < 2 or len(parts) > 4:
         raise Fail("doc_key needs 2-4 segments, e.g. plan/<card> or notes/<agent>/<date>-<topic>", 2)
@@ -181,8 +201,10 @@ def build_parser():
     )
     p.add_argument("--file", required=True, help="source file path, or - for stdin")
     p.add_argument("--doc-key", required=True, help="plan/<card> | brief/<card> | report/<card> | "
-                   "notes/<agent>/<date>-<topic> | draft/<series>/<part>-vN")
-    p.add_argument("--type", choices=TYPES, help="document type (default: implied by the doc_key prefix)")
+                   "notes/<agent>/<date>-<topic> | draft/<series>/<part>-vN | series-<slug>/<part>")
+    p.add_argument("--type", choices=TYPES, help="document type (default: implied by the doc_key prefix; "
+                   "a series-<slug> prefix implies none, so it defaults to %s and any type may be given)"
+                   % SERIES_DEFAULT_TYPE)
     p.add_argument("--task-ref", help="kanban card reference stored with the document")
     p.add_argument("--title", help="document title (default: first markdown heading, else the doc_key)")
     p.add_argument("--agent", help="author agent id (default: MARVEEN_AGENT_ID, BOT_NAME, launch config)")
@@ -196,10 +218,11 @@ def build_parser():
 
 def run(args, env):
     key = validate_doc_key(args.doc_key)
-    implied = PREFIX_TYPE[key.split("/")[0]]
-    doc_type = args.type or implied
-    if doc_type != implied:
-        raise Fail("--type %s does not match the doc_key prefix %r (expects %s)" % (doc_type, key.split("/")[0], implied), 2)
+    prefix = key.split("/")[0]
+    implied = PREFIX_TYPE.get(prefix)  # None for series-<slug>: no fixed type
+    doc_type = args.type or implied or SERIES_DEFAULT_TYPE
+    if implied is not None and doc_type != implied:
+        raise Fail("--type %s does not match the doc_key prefix %r (expects %s)" % (doc_type, prefix, implied), 2)
     if args.file == "-" and args.delete_source:
         raise Fail("--delete-source needs a real file, not stdin", 2)
     agent = resolve_agent(args.agent, env)
