@@ -560,6 +560,15 @@ components:
           enum: [pending, approved, rejected, timeout]
         resolved_by:
           type: [string, "null"]
+          description: The authenticated resolver; `human:session:<user>` when a human-only request was decided by a dashboard session.
+        resolved_via:
+          type: [string, "null"]
+          enum: [dashboard_session, bearer, null]
+          description: How the decision arrived. Null while pending and for rows decided before this field existed.
+        human_only:
+          type: integer
+          enum: [0, 1]
+          description: 1 when the category was human-only at the time of the request (a snapshot). Such a request is decided only by a global admin dashboard session when `APPROVAL_HUMAN_ONLY_ENFORCE=1`.
         timeout_at:
           type: [integer, "null"]
         created_at:
@@ -2299,6 +2308,8 @@ paths:
       description: |
         Self-approval guard — the requesting agent cannot approve its own request. A request past its `timeout_at` cannot be approved or rejected any more.
 
+        Human-only requests (the categories `email_send` and `email_standing_recipient`, plus any category an admin marked `human_only`): with `APPROVAL_HUMAN_ONLY_ENFORCE=1` the only caller that can decide one, with any `status`, is a person logged in to the dashboard with a global admin session (role `admin`, no tenant). Every token (the main agent's, the operator's, the shared token, a browser token, a device, a fleet agent) and every other session gets `403` with `code` `human_only_category`; the attempt is journaled in `approval_events`. The session cookie counts whatever Authorization header the request also carries. The stored resolver is `human:session:<user>` and the body's `resolved_by` is ignored. Without the flag (the default) the request is decided as before and the journal records that it would have been refused.
+
         Who resolved it is the authenticated caller, never the body: a session user, a federation peer, an enrolled device, the agent a token names, the name of a registered token, or `shared-token` for the legacy file token. The self-approval guard runs on that identity. `resolved_by` in the body is only a self-declared label (for example the channel the decision came by); when it differs from the caller it is kept in the audit detail as `declared_resolved_by`.
       requestBody:
         required: true
@@ -2333,7 +2344,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Self-approval not allowed
+          description: Self-approval not allowed, or (with `APPROVAL_HUMAN_ONLY_ENFORCE=1`) a human-only request decided without a human session (`code` `human_only_category`)
           content:
             application/json:
               schema:
@@ -4284,7 +4295,10 @@ paths:
       tags: [autonomy]
       operationId: getAutonomyConfig
       summary: Current autonomy level configuration
-      description: Each category carries `level`, `locked`, `maxLevel` and `timeoutMinutes` (null means the 24-hour ceiling applies).
+      description: |
+        Each category carries `level`, `locked`, `maxLevel`, `humanOnly` (a category an agent may never
+        decide for itself: the built-in floor plus what an admin marked) and `timeoutMinutes` (null
+        means the 24-hour ceiling applies).
       responses:
         "200":
           description: Autonomy config
@@ -4303,11 +4317,18 @@ paths:
             schema:
               type: object
               required: [key]
-              description: At least one of `level` and `timeout_minutes` is required.
+              description: At least one of `level`, `timeout_minutes` and `human_only` is required.
               properties:
                 key:
                   type: string
                   description: The category key
+                human_only:
+                  type: boolean
+                  description: |
+                    Mark the category as human-only (`true`) or take the mark off (`false`). Admin only.
+                    Taking the mark off needs a person logged in to the dashboard (a global admin session,
+                    `403` `human_session_required` for a token) and never works on the built-in floor
+                    (`email_send`, `email_standing_recipient`: `403` `human_only_floor`).
                 level:
                   type: integer
                   minimum: 1

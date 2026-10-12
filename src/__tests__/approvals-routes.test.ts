@@ -18,6 +18,7 @@ vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
   STORE_DIR,
   MAIN_AGENT_ID: 'marveen',
+  APPROVAL_HUMAN_ONLY_ENFORCE: false,
 }))
 
 vi.mock('../db.js', () => ({
@@ -47,6 +48,8 @@ vi.mock('../db.js', () => ({
   expireTimedOutApprovals: vi.fn().mockReturnValue(0),
   createAgentMessage: vi.fn(),
   writeAgentAuditLog: vi.fn(),
+  listHumanOnlyCategoryKeys: vi.fn().mockReturnValue([]),
+  recordApprovalEvent: vi.fn(),
 }))
 
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from '../web/routes/approvals.js'
