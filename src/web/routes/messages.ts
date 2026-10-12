@@ -20,6 +20,7 @@ import { isKnownAgent } from '../agent-config.js'
 import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { claimsServerSender, findReservedMarker, reservedMarkerRefusal } from '../../server-markers.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
@@ -126,8 +127,38 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       envelopeRaw === undefined || envelopeRaw === null
         ? null
         : typeof envelopeRaw === 'string' ? envelopeRaw : JSON.stringify(envelopeRaw)
+    // A non-string field (number, array, object) used to throw out of `.trim()` below as a 500; the
+    // marker filter reads `content` as text, so it is refused here, before anything looks inside it.
+    for (const [field, value] of [['from', from], ['to', to], ['content', content]] as const) {
+      if (value !== undefined && value !== null && typeof value !== 'string') {
+        json(res, { error: 'invalid_value', field, hint: `${field} must be a string` }, 400)
+        return true
+      }
+    }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'required', hint: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // Security: `system` is the server's own sender, the only one whose text may carry the server-only
+    // markers (the approval notices). The body's `from` is self-declared for every caller but a
+    // fleet_agent token, so without this a caller could claim it and walk past the marker filter below.
+    // Nobody posts as `system` over HTTP (the server writes those rows in-process), so this costs no
+    // legitimate caller; it holds even if a directory called `system` exists or SYSTEM_SENDER_IDS
+    // names it, and for every spelling that sanitizes to it.
+    if (claimsServerSender(from)) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST claiming the server sender')
+      json(res, { error: 'forbidden', code: 'reserved_sender', hint: 'from is reserved for messages the server itself sends' }, 403)
+      return true
+    }
+    // The marker filter (see server-markers.ts). Checked on the text as sent, before any rewriting.
+    const reservedMarker = findReservedMarker(content)
+    if (reservedMarker) {
+      logger.warn({ from: from.trim(), to: to.trim(), marker: reservedMarker }, 'Rejected /api/messages POST: content starts a line with a server-only marker')
+      try {
+        writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from) || 'unknown', entity: 'message', action: 'reserved_marker_denied',
+          detail: { from: from.trim(), to: to.trim(), marker: reservedMarker, principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
+      } catch { /* audit failure must not turn a refusal into an acceptance */ }
+      json(res, reservedMarkerRefusal(reservedMarker), 400)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -453,6 +484,20 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         detail: { status: newStatus, message_to: existing.to_agent, reason: 'not_recipient_denied', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       logger.warn({ id, tokenAgent: ctx.tokenAgentId, messageTo: existing.to_agent }, 'Rejected PUT /api/messages/:id: the token agent is not the recipient')
       json(res, { error: 'forbidden', hint: 'Only the recipient agent can write the outcome of a message' }, 403)
+      return true
+    }
+
+    // The outcome text is copied into the [Eredmény] notice that goes back to the sender under the
+    // executor's name, so it is a second way to put text in front of another agent: same filter as a
+    // direct message. Checked before the row is closed, so a refused result leaves the message open.
+    const reservedInResult = findReservedMarker(result)
+    if (reservedInResult) {
+      logger.warn({ id, marker: reservedInResult }, 'Rejected PUT /api/messages/:id: result starts a line with a server-only marker')
+      try {
+        writeAgentAuditLog({ agent_id: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', entity: 'message', action: 'reserved_marker_denied', entity_id: id,
+          detail: { marker: reservedInResult, field: 'result', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
+      } catch { /* audit failure must not turn a refusal into an acceptance */ }
+      json(res, { ...reservedMarkerRefusal(reservedInResult), field: 'result' }, 400)
       return true
     }
 

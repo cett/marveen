@@ -34,6 +34,7 @@ import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-messa
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { recordDelivery } from './delivery-intent.js'
+import { oneLine } from './approval-owner-notice.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -133,7 +134,8 @@ export function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: str
     // A failed message to the main agent can't happen (pull model), but guard
     // anyway so we never loop a notification back onto itself.
     if (msg.to_agent === MAIN_AGENT_ID) return
-    const preview = (msg.content ?? '').slice(0, 220)
+    // One line, for the same reason as the backlog summary: this notice is sent as `system`.
+    const preview = oneLine(msg.content ?? '').slice(0, 220)
     createAgentMessage(
       'system',
       MAIN_AGENT_ID,
@@ -384,8 +386,9 @@ let batchedMsgIdsThisTick: Set<number> = new Set()
  * the router will deliver on the next tick.
  *
  * Only called from the reconnect pre-pass, once per reconnect cycle per agent.
+ * Exported for tests.
  */
-function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: number): void {
+export function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: number): void {
   // Split: messages older than BATCH_AGE_MS get batched; recent ones stay for
   // individual delivery. The age threshold is measured against the message's
   // own created_at, not the youngest in the batch.
@@ -411,7 +414,9 @@ function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: n
     const sender = m.from_agent || 'unknown'
     senders.set(sender, (senders.get(sender) ?? 0) + 1)
     const dt = new Date(m.created_at * 1000).toISOString().replace('T', ' ').slice(0, 19)
-    const preview = m.content.length > 120 ? m.content.slice(0, 120) + '…' : m.content
+    // One line: the summary goes out as `system`, so no line of a quoted message may start with a server-only marker.
+    const flat = oneLine(m.content)
+    const preview = flat.length > 120 ? flat.slice(0, 120) + '…' : flat
     lines.push(`[${dt}] ${sender}: ${preview}`)
   }
   lines.push('')

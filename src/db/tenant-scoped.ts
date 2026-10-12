@@ -13,6 +13,7 @@ import { basename } from 'node:path'
 import { KANBAN_SEQ_COLUMN } from './kanban.js'
 import { db } from './connection.js'
 import { syncVecMemoryDelete } from './vector.js'
+import { assertNoReservedMarker } from '../server-markers.js'
 
 export interface ScopedMemory {
   id: number
@@ -214,6 +215,8 @@ export function listTenantMessagesFor(tenantId: string, toAgent: string, status?
 }
 
 export function insertTenantMessage(tenantId: string, fromAgent: string, toAgent: string, content: string): number {
+  // Same gate as createAgentMessage: this is a second INSERT into agent_messages.
+  assertNoReservedMarker(fromAgent, content)
   const row = db
     .prepare(
       `INSERT INTO agent_messages (from_agent, to_agent, content, status, tenant_id, created_at)
