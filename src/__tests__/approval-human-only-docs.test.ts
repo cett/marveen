@@ -107,7 +107,9 @@ describe('kanban-audit seed skill', () => {
     expect(KANBAN_AUDIT).toContain('humanOnly')
     expect(KANBAN_AUDIT).toMatch(/SOHA ne PATCH-eld \(403 `human_only_category`\)/)
     expect(KANBAN_AUDIT).toContain('[APPROVAL_RESOLVED]')
-    expect(KANBAN_AUDIT).toMatch(/csak `approved` esetén cselekedj/)
+    // The notice is only a hint: the decision is what the server answers on GET.
+    expect(KANBAN_AUDIT).toMatch(/az `\[APPROVAL_RESOLVED\]` üzenet csak jelzés/)
+    expect(KANBAN_AUDIT).toMatch(/csak akkor cselekedj, ha a szerver válasza `status=approved` és `resolved_via=dashboard_session`/)
   })
 
   it('keeps its own approval flow for the ordinary case', () => {
