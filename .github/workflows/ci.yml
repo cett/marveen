@@ -204,6 +204,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # A pull request needs the history to tell what it changed (the vitest
+          # step below diffs against the base); a push to develop needs none.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -257,6 +261,16 @@ jobs:
             bash "$f" || fail=1
           done
           exit $fail
+
+      - name: Vitest on the changed files
+        # The full suite runs on push to develop (Coverage below). A pull request
+        # runs `vitest related` on the TypeScript it changed, so a stale or broken
+        # test fails the PR, not the develop that merged it. See the script for the
+        # skip and whole-suite fallback rules.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci-vitest-related.sh "$BASE_SHA"
 
       - name: Coverage
         # #894/B: the full vitest suite (with coverage instrumentation) now
