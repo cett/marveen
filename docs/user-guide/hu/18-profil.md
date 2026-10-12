@@ -39,7 +39,7 @@ Ez a szekció a belépési visszautakat írja le arra az esetre, ha elfelejtett�
 A CLI közvetlenül az adatbázist írja (nincs HTTP, nincs auth-kapu), ezért akkor is működik, ha a webes belépés félre van konfigurálva vagy nem érhető el:
 
 ```bash
-npm run dashboard-user -- list                           # kik léteznek
+npm run dashboard-user -- list                           # kik léteznek, szerepkörrel és tenanttal
 npm run dashboard-user -- reset-password <felhasznalo>   # elfelejtett jelszó visszaállítása
 npm run dashboard-user -- remove <felhasznalo>           # user törlése
 npm run dashboard-user -- sessions:clear [<felhasznalo>] # böngésző-sessionök törlése

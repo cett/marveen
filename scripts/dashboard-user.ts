@@ -28,6 +28,7 @@ import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/
 import { revokeAllForUser } from '../src/web/auth-sessions.js'
 import { securityReset } from '../src/web/security-reset.js'
 import { notifySecurityEvent } from '../src/notify.js'
+import { formatUserLine } from './lib/dashboard-user-format.js'
 
 function usage(): never {
   process.stderr.write(
@@ -139,10 +140,7 @@ async function main(): Promise<void> {
         process.stdout.write('No dashboard users (token-only mode).\n')
         break
       }
-      for (const u of users) {
-        const created = new Date(u.created_at * 1000).toISOString()
-        process.stdout.write(`${u.username}${u.disabled ? ' (disabled)' : ''}  created ${created}\n`)
-      }
+      for (const u of users) process.stdout.write(`${formatUserLine(u)}\n`)
       break
     }
     case 'remove': {
