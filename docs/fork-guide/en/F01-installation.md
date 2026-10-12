@@ -86,6 +86,8 @@ OAuth token: sk-ant-oat01-...
 
 If you skip this, the services will not start. You can provide the token later with `scripts/auth.sh`.
 
+On macOS the installer also makes an early headless check (`claude --print`). It checks the Claude login of the terminal you are sitting at (what the Telegram pairing step uses), not the credential of the background services: the token you just entered is not saved yet at that point, and the services' own credential is checked separately further down. A failure here is a warning, not a prediction that the agents will fail; if you want to use `claude` from that terminal, run `claude /login`.
+
 ### Personal information
 
 ```
@@ -187,6 +189,8 @@ http://localhost:3420
 ```
 
 If you changed the port, use that port instead.
+
+On macOS the installer only prints "successfully installed" when both launchd services were seen running. If one of them did not start, the closing banner says that the services are NOT running yet, repeats which unit is missing and the repair command last (it registers the unit with `launchctl bootstrap` first and then runs `launchctl kickstart`, so one copy-paste works whether or not the unit was registered), and the installer exits with status 3. A scripted install (CI, ssh) therefore stops instead of reporting a healthy install; status 1 stays the code for a build that aborted.
 
 ## 5. Telegram pairing
 
