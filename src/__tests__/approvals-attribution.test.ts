@@ -198,7 +198,7 @@ describe('PATCH /api/approvals/:id -- the body\'s resolved_by is kept as a decla
   it('a legacy call with no auth stores the body label as the resolver, so there is nothing separate to declare', async () => {
     const { ctx } = makeCtx('PATCH', '/api/approvals/appr-001', { status: 'approved', resolved_by: 'dashboard' }, undefined)
     await tryHandleApprovals(ctx)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'dashboard', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'dashboard', null, null)
     expect(auditDetail().detail).not.toHaveProperty('declared_resolved_by')
   })
 })
