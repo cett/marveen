@@ -53,6 +53,8 @@ journalctl --user -u marveen-channels -f
 
 Ha a dashboard fut, az újraindítás elvégezhető a `/api/updates/apply` végponton is (hívd a `bash scripts/agent-api.sh --token operator POST /api/updates/apply` wrapperen át: a token-fájlt a wrapper olvassa, parancssorba te sosem írod).
 
+Induláskor a dashboard átveszi a `WEB_PORT` portot a saját előző példányától: a portot tartó node folyamatot leállítja. Ez csak ennek az installnak a folyamatára vonatkozik (a parancssora vagy a munkakönyvtára a telepítési fa alatt van). Ha egy másik telepítés vagy másik checkout dashboardja tartja ugyanazt a portot (például azonos `WEB_PORT` egy kipróbálásra előkészített másolatban), azt a dashboard nem bántja: a napló a `Port holder belongs to a different install, leaving alone` sort írja, az indítás pedig `EADDRINUSE` hibával áll le. Ilyenkor adj a másik telepítésnek külön `WEB_PORT` értéket.
+
 ## Frissítés
 
 ```bash
