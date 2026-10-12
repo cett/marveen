@@ -113,7 +113,7 @@ function refuseMainAgentHookWrite(name: string, fn: string): boolean {
 const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
 
 // Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
-type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
+type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; type?: string; prompt?: string; [k: string]: unknown }> }
 
 /**
  * Returns true when the command is unsafe to register in shared settings:
@@ -180,6 +180,48 @@ export function upgradeLegacyHookCommands(
   return changed
 }
 
+// An agent-type hook (the PreCompact memory-save prompt) whose text still tells the agent to read the
+// shared dashboard token file with cat and curl with it. The template moved to the scripts/agent-api.sh
+// wrapper (the agent's own token), but ensureAgentHooks only ever added missing command hooks, so an
+// agent scaffolded before that kept the old recipe: every compaction made a shared-token call, and the
+// path in it (a /Documents/marveen checkout) does not exist on this install, so it also 401'd.
+const LEGACY_PROMPT_MARKERS = ['/store/.dashboard-token', '/Documents/marveen']
+
+/**
+ * In-place upgrade of agent-type hook prompts: an existing prompt that carries a legacy marker is
+ * replaced with the template's prompt for the same event. A prompt without a marker is left alone
+ * (an operator's own edit), and an identical one is a no-op, so this is idempotent.
+ *
+ * Exported for unit testing.
+ */
+export function upgradeLegacyAgentPrompts(
+  existingHooks: Record<string, unknown>,
+  tplHooks: Record<string, unknown>,
+): boolean {
+  let changed = false
+  for (const [event, tplEntries] of Object.entries(tplHooks)) {
+    const existEntries = existingHooks[event]
+    if (!Array.isArray(existEntries)) continue
+    for (const tplEntry of tplEntries as HookEntry[]) {
+      for (const tplHook of tplEntry.hooks ?? []) {
+        if (tplHook.type !== 'agent' || typeof tplHook.prompt !== 'string') continue
+        if (LEGACY_PROMPT_MARKERS.some((m) => (tplHook.prompt as string).includes(m))) continue
+        for (const existEntry of existEntries as HookEntry[]) {
+          for (const existHook of existEntry.hooks ?? []) {
+            if (existHook.type !== 'agent' || typeof existHook.prompt !== 'string') continue
+            if (existHook.prompt === tplHook.prompt) continue
+            if (!LEGACY_PROMPT_MARKERS.some((m) => (existHook.prompt as string).includes(m))) continue
+            existHook.prompt = tplHook.prompt
+            if (tplHook.timeout != null) existHook.timeout = tplHook.timeout
+            changed = true
+          }
+        }
+      }
+    }
+  }
+  return changed
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -217,6 +259,7 @@ export function ensureAgentHooks(name: string): boolean {
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
     const existingHooks = existing.hooks as Record<string, unknown>
     let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
+    if (upgradeLegacyAgentPrompts(existingHooks, tplHooks)) changed = true
     for (const [event, handlers] of Object.entries(tplHooks)) {
       if (!existingHooks[event]) {
         existingHooks[event] = handlers

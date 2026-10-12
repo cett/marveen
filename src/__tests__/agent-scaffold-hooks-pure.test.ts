@@ -10,7 +10,7 @@
 // checks against the real shipped gate scripts (email-send-gate.mjs,
 // self-pace-gate.mjs, hooks/egress-gate.mjs, hooks/destructive-gate.py).
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -20,6 +20,7 @@ import {
   hookCommandWired,
   isUnsafeHookCommand,
   upgradeLegacyHookCommands,
+  upgradeLegacyAgentPrompts,
   isPublicFetchHost,
   ownerAllowedDomains,
   renderQuarantineReader,
@@ -116,6 +117,52 @@ describe('upgradeLegacyHookCommands', () => {
     const tpl = { UserPromptSubmit: [{ hooks: [{ command: '/tmp/staleness-guard.py' }] }] }
     expect(upgradeLegacyHookCommands(existing, tpl)).toBe(false)
     expect(existing.UserPromptSubmit[0].hooks[0].command).toBe('python3 /old/path/staleness-guard.py')
+  })
+})
+
+describe('upgradeLegacyAgentPrompts', () => {
+  const LEGACY = 'cat ~/Documents/marveen/store/.dashboard-token then curl -H "Authorization: Bearer $T"'
+  const CURRENT = 'bash ./scripts/agent-api.sh POST /api/memories'
+  type AgentHook = { type: string; prompt: string; timeout?: number }
+  const pre = (h: AgentHook) => ({ PreCompact: [{ matcher: 'auto', hooks: [h] }] })
+
+  it('replaces an agent prompt that still reads the shared token file with the template prompt', () => {
+    const existing = pre({ type: 'agent', prompt: LEGACY, timeout: 60 })
+    const changed = upgradeLegacyAgentPrompts(existing, pre({ type: 'agent', prompt: CURRENT, timeout: 180 }))
+    expect(changed).toBe(true)
+    expect(existing.PreCompact[0].hooks[0]).toEqual({ type: 'agent', prompt: CURRENT, timeout: 180 })
+  })
+
+  it('is idempotent: the second pass changes nothing', () => {
+    const existing = pre({ type: 'agent', prompt: LEGACY })
+    const tpl = pre({ type: 'agent', prompt: CURRENT })
+    upgradeLegacyAgentPrompts(existing, tpl)
+    expect(upgradeLegacyAgentPrompts(existing, tpl)).toBe(false)
+  })
+
+  it('leaves an operator-edited prompt without a legacy marker alone', () => {
+    const existing = pre({ type: 'agent', prompt: 'my own compaction notes' })
+    expect(upgradeLegacyAgentPrompts(existing, pre({ type: 'agent', prompt: CURRENT }))).toBe(false)
+    expect(existing.PreCompact[0].hooks[0].prompt).toBe('my own compaction notes')
+  })
+
+  it('never writes a template prompt that itself carries a legacy marker', () => {
+    const existing = pre({ type: 'agent', prompt: LEGACY })
+    expect(upgradeLegacyAgentPrompts(existing, pre({ type: 'agent', prompt: LEGACY + ' again' }))).toBe(false)
+    expect(existing.PreCompact[0].hooks[0].prompt).toBe(LEGACY)
+  })
+
+  it('does not touch command hooks', () => {
+    const existing = { PreCompact: [{ hooks: [{ type: 'command', command: LEGACY }] }] }
+    expect(upgradeLegacyAgentPrompts(existing, pre({ type: 'agent', prompt: CURRENT }))).toBe(false)
+  })
+})
+
+describe('the settings template', () => {
+  it('no agent prompt in it reads the shared token file or names a checkout under Documents', () => {
+    const tpl = readFileSync(join(process.cwd(), 'templates', 'settings.json.template'), 'utf-8')
+    expect(tpl).not.toContain('.dashboard-token')
+    expect(tpl).not.toContain('/Documents/marveen')
   })
 })
 

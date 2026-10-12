@@ -171,6 +171,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- A fleet agent's compaction prompt no longer tells it to read the shared dashboard token file. `ensureAgentHooks` only added missing command hooks, so an agent scaffolded before the template moved to `scripts/agent-api.sh` kept a `PreCompact` prompt that `cat`s `store/.dashboard-token` and curls with it, from a checkout path that does not exist on the install. At startup an agent prompt that still carries that recipe is replaced with the template's; a prompt without it (an operator's own edit) is left alone.
 - **[API]** `GET /api/kanban/archived` and `GET /api/kanban-projects` are limited to the caller's own tenant for a non-admin caller (a fleet agent token or a tenant user). Before, both listed across every tenant: the titles, projects and assignees of other tenants' archived cards, and the project names of their active cards. An admin still sees all tenants, or one with `?tenant=`.
 - **[API]** `PATCH /api/kanban/:id/parent` and `POST /api/kanban/:id/breakdown/accept` hold the tenant line for a non-admin caller (a fleet agent token or a tenant user). The reparent now needs both the card and the new parent to belong to the caller's tenant, and the breakdown needs the card to; a foreign id is a 404 like a missing one, so ids cannot be probed, and nothing is moved, created or commented. The subtasks a breakdown creates now carry the tenant of the card they hang under (they used to land in `default`). Admin callers keep the cross-tenant reach.
 
