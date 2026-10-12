@@ -2,7 +2,11 @@
 
 Phase T3: the consumers move from the shared dashboard token (store/.dashboard-token) to the
 calling agent's own token (agents/<id>/.agent-token; the main agent's lives in the install root).
-Resolution order, always the same:
+Which agent the process is: an explicit id, else the working directory (<install>/agents/<id>/...,
+the install root = the main agent), else what the spawner set in the environment (MARVEEN_AGENT_ID,
+or CLAUDE_CONFIG_DIR = <install>/agents/<id>/.claude-config) -- so a hook or script that runs from
+a worktree or a scratch directory is still the agent that launched it, not an anonymous caller.
+Resolution order for the token, always the same:
 
   1. MARVEEN_AGENT_TOKEN_FILE (explicit file; the test seam and the odd install)
   2. the agent's own token file
@@ -35,6 +39,8 @@ SOURCE_OPERATOR = "operator"
 SOURCE_NONE = "none"
 
 _ENV_TOKEN_FILE = "MARVEEN_AGENT_TOKEN_FILE"
+_ENV_AGENT_ID = "MARVEEN_AGENT_ID"
+_ENV_CONFIG_DIR = "CLAUDE_CONFIG_DIR"
 
 
 class Resolved:
@@ -106,6 +112,31 @@ def agent_id_from_cwd(cwd=None, install=None):
     return None
 
 
+def agent_id_from_env(install=None):
+    """The identity the spawner gave this process, for a working directory that names nobody (a
+    worktree, a scratch directory). MARVEEN_AGENT_ID wins; otherwise CLAUDE_CONFIG_DIR does:
+    <install>/agents/<id>/.claude-config is that agent's, <install>/.channels-config the main
+    agent's. Both are set when the session is launched, not by where it later `cd`s."""
+    v = os.environ.get(_ENV_AGENT_ID, "").strip()
+    if v:
+        return v
+    cfg = os.environ.get(_ENV_CONFIG_DIR, "").strip()
+    if not cfg:
+        return None
+    install = (install or install_dir()).rstrip("/")
+    cfg = os.path.normpath(cfg)
+    agents_root = os.path.join(install, "agents") + os.sep
+    if cfg.startswith(agents_root):
+        parts = cfg[len(agents_root):].split(os.sep)
+        if len(parts) >= 2 and parts[0] and parts[1] == ".claude-config":
+            return parts[0]
+        return None
+    main_cfg = os.path.join(install, ".channels-config")
+    if cfg == main_cfg or cfg.startswith(main_cfg + os.sep):
+        return main_agent_id(install)
+    return None
+
+
 def agent_token_path(agent_id, install=None):
     install = install or install_dir()
     if agent_id and agent_id == main_agent_id(install):
@@ -129,7 +160,7 @@ def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGE
     install = install or install_dir()
     store = store_dir or os.path.join(install, "store")
     if not agent_id:
-        agent_id = agent_id_from_cwd(cwd, install)
+        agent_id = agent_id_from_cwd(cwd, install) or agent_id_from_env(install)
     if agent_id and ("/" in agent_id or agent_id.startswith(".")):
         agent_id = None
 

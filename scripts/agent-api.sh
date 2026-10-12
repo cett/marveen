@@ -6,7 +6,8 @@
 #   PATH     /api/..., query string included, e.g. "/api/memories?agent=alpha&q=term"
 #   BODY     a JSON string, "-" to read it from STDIN, or "@file" to send that file as is
 # Options (before METHOD):
-#   --agent ID          act as this agent (default: MARVEEN_AGENT_ID, else derived from the cwd)
+#   --agent ID          act as this agent (default: MARVEEN_AGENT_ID, else derived from the cwd, else
+#                       from CLAUDE_CONFIG_DIR: a worktree or scratch cwd names nobody, the launch does)
 #   --max-time SECS     give up on the request after SECS seconds (default: no limit)
 #   --with-status       print the HTTP status as a last extra line after the body (what
 #                       `curl -w '\n%{http_code}'` gave), for scripts that branch on 201 vs 200
@@ -77,6 +78,18 @@ if [ -z "$AGENT" ]; then
   case "$PWD" in
     "$BASE"/agents/*) AGENT="${PWD#"$BASE"/agents/}"; AGENT="${AGENT%%/*}" ;;
     "$BASE") AGENT="$MAIN" ;;
+  esac
+fi
+if [ -z "$AGENT" ]; then
+  # A working directory that names nobody (a worktree, a scratch directory): the config directory
+  # the session was launched with does. <install>/agents/<id>/.claude-config is that agent's,
+  # <install>/.channels-config the main agent's.
+  CFG="${CLAUDE_CONFIG_DIR:-}"
+  case "$CFG" in
+    "$BASE"/agents/*)
+      CFG_REST="${CFG#"$BASE"/agents/}"; CFG_ID="${CFG_REST%%/*}"
+      case "${CFG_REST#"$CFG_ID"/}" in .claude-config|.claude-config/*) AGENT="$CFG_ID" ;; esac ;;
+    "$BASE"/.channels-config|"$BASE"/.channels-config/*) AGENT="$MAIN" ;;
   esac
 fi
 case "$AGENT" in */*|.*) AGENT="" ;; esac

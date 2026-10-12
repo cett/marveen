@@ -25,9 +25,10 @@ class Base(unittest.TestCase):
         self.install = tempfile.mkdtemp(prefix="t3-install-")
         os.makedirs(os.path.join(self.install, "store"))
         os.makedirs(os.path.join(self.install, "agents", "a"))
-        self._env = {k: os.environ.get(k) for k in ("MAIN_AGENT_ID", "MARVEEN_AGENT_TOKEN_FILE")}
+        self._env = {k: os.environ.get(k) for k in ("MAIN_AGENT_ID", "MARVEEN_AGENT_TOKEN_FILE", "MARVEEN_AGENT_ID", "CLAUDE_CONFIG_DIR")}
         os.environ["MAIN_AGENT_ID"] = "m"
-        os.environ.pop("MARVEEN_AGENT_TOKEN_FILE", None)
+        for k in ("MARVEEN_AGENT_TOKEN_FILE", "MARVEEN_AGENT_ID", "CLAUDE_CONFIG_DIR"):
+            os.environ.pop(k, None)
 
     def tearDown(self):
         shutil.rmtree(self.install, ignore_errors=True)
@@ -46,6 +47,69 @@ class Base(unittest.TestCase):
 
     def res(self, **kw):
         return at.resolve(install=self.install, **kw)
+
+
+class TestIdentityFromTheLaunch(Base):
+    """A working directory that names nobody (a worktree, a scratch directory) must not turn the
+    caller anonymous: the environment the session was launched with names it."""
+
+    def setUp(self):
+        super().setUp()
+        self.put("agents/a/.agent-token", "own-a")
+        self.put(".agent-token", "own-m")
+        self.put("store/.dashboard-token", "shared")
+        self.scratch = tempfile.mkdtemp(prefix="t3-scratch-")
+        self.addCleanup(shutil.rmtree, self.scratch, True)
+
+    def test_a_scratch_cwd_alone_is_anonymous_and_on_the_shared_token(self):
+        r = self.res(cwd=self.scratch)
+        self.assertEqual((r.token, r.source, r.agent_id), ("shared", at.SOURCE_FALLBACK, None))
+        self.assertNotIn("X-Agent-Id", r.headers())
+
+    def test_config_dir_of_an_agent_names_it(self):
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.install, "agents", "a", ".claude-config")
+        r = self.res(cwd=self.scratch)
+        self.assertEqual((r.token, r.source, r.agent_id), ("own-a", at.SOURCE_AGENT, "a"))
+        self.assertEqual(r.headers()["X-Agent-Id"], "a")
+
+    def test_a_path_below_the_config_dir_and_a_trailing_slash_still_name_it(self):
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.install, "agents", "a", ".claude-config", "projects") + "/"
+        self.assertEqual(self.res(cwd=self.scratch).agent_id, "a")
+
+    def test_the_main_agents_channels_config_names_the_main_agent(self):
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.install, ".channels-config")
+        r = self.res(cwd=self.scratch)
+        self.assertEqual((r.token, r.source, r.agent_id), ("own-m", at.SOURCE_AGENT, "m"))
+
+    def test_only_the_config_dir_of_THIS_install_counts(self):
+        other = tempfile.mkdtemp(prefix="t3-other-")
+        self.addCleanup(shutil.rmtree, other, True)
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(other, "agents", "a", ".claude-config")
+        self.assertIsNone(self.res(cwd=self.scratch).agent_id)
+
+    def test_an_agent_dir_that_is_not_a_config_dir_names_nobody(self):
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.install, "agents", "a", "notes")
+        self.assertIsNone(self.res(cwd=self.scratch).agent_id)
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.install, "agents", "a")
+        self.assertIsNone(self.res(cwd=self.scratch).agent_id)
+
+    def test_the_marveen_agent_id_variable_wins_over_the_config_dir(self):
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.install, "agents", "a", ".claude-config")
+        os.environ["MARVEEN_AGENT_ID"] = "m"
+        self.assertEqual(self.res(cwd=self.scratch).agent_id, "m")
+
+    def test_the_working_directory_still_wins_over_the_environment(self):
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.install, "agents", "a", ".claude-config")
+        self.assertEqual(self.res(cwd=self.install).agent_id, "m")
+
+    def test_an_explicit_agent_id_wins_over_everything(self):
+        os.environ["MARVEEN_AGENT_ID"] = "m"
+        self.assertEqual(self.res(agent_id="a", cwd=self.scratch).agent_id, "a")
+
+    def test_a_path_like_agent_id_in_the_environment_is_ignored(self):
+        os.environ["MARVEEN_AGENT_ID"] = "../x"
+        r = self.res(cwd=self.scratch)
+        self.assertEqual((r.agent_id, r.source), (None, at.SOURCE_FALLBACK))
 
 
 class TestResolution(Base):

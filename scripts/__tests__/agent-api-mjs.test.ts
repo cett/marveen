@@ -26,6 +26,45 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(install, { recursive: true, force: true }))
 
+describe('identity from the launch (a cwd that names nobody)', () => {
+  let scratch: string
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 't3-mjs-scratch-'))
+    put('agents/a/.agent-token', 'own-a'); put('.agent-token', 'own-m'); put('store/.dashboard-token', 'shared')
+  })
+  afterEach(() => rmSync(scratch, { recursive: true, force: true }))
+
+  it('a scratch cwd alone is anonymous and on the shared token', () => {
+    const r = res({ cwd: scratch })
+    expect([r.token, r.source, r.agentId]).toEqual(['shared', 'shared-fallback', null])
+    expect(r.headers()['X-Agent-Id']).toBeUndefined()
+  })
+  it('the config dir of an agent names it, also below it and with a trailing slash', () => {
+    for (const dir of [join(install, 'agents', 'a', '.claude-config'), join(install, 'agents', 'a', '.claude-config', 'projects') + '/']) {
+      const r = res({ cwd: scratch, env: env({ CLAUDE_CONFIG_DIR: dir }) })
+      expect([r.token, r.source, r.agentId]).toEqual(['own-a', 'agent', 'a'])
+    }
+  })
+  it('the main agent channels config dir names the main agent', () => {
+    const r = res({ cwd: scratch, env: env({ CLAUDE_CONFIG_DIR: join(install, '.channels-config') }) })
+    expect([r.token, r.agentId]).toEqual(['own-m', 'm'])
+  })
+  it('names nobody for an agent dir that is no config dir, or another install', () => {
+    for (const dir of [join(install, 'agents', 'a', 'notes'), join(install, 'agents', 'a'), join(tmpdir(), 'elsewhere', 'agents', 'a', '.claude-config')]) {
+      expect(res({ cwd: scratch, env: env({ CLAUDE_CONFIG_DIR: dir }) }).agentId).toBeNull()
+    }
+  })
+  it('MARVEEN_AGENT_ID wins over the config dir; the working directory and an explicit id win over both', () => {
+    const e = env({ MARVEEN_AGENT_ID: 'm', CLAUDE_CONFIG_DIR: join(install, 'agents', 'a', '.claude-config') })
+    expect(res({ cwd: scratch, env: e }).agentId).toBe('m')
+    expect(res({ cwd: join(install, 'agents', 'a'), env: e }).agentId).toBe('a')
+    expect(res({ agentId: 'a', cwd: scratch, env: e }).agentId).toBe('a')
+  })
+  it('ignores a path-like MARVEEN_AGENT_ID', () => {
+    expect(res({ cwd: scratch, env: env({ MARVEEN_AGENT_ID: '../x' }) }).agentId).toBeNull()
+  })
+})
+
 describe('resolveToken', () => {
   it('prefers the agent own token over the shared one', () => {
     put('agents/a/.agent-token', 'own-a\n'); put('store/.dashboard-token', 'shared')

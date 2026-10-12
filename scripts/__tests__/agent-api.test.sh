@@ -30,7 +30,7 @@ STUB
 chmod +x "$T/bin/curl"
 
 export STUB_DIR="$T"; export PATH="$T/bin:$PATH"
-export MAIN_AGENT_ID=m; unset MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE MARVEEN_WEB_PORT WEB_PORT
+export MAIN_AGENT_ID=m; unset MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE MARVEEN_WEB_PORT WEB_PORT CLAUDE_CONFIG_DIR
 reset() { rm -f "$T/calls" "$T/argv" "$T/stdin" "$T/body"; rm -f "$INSTALL/store/".*-token "$INSTALL/store/.dashboard-token" "$INSTALL/agents/a/.agent-token" "$INSTALL/.agent-token"; }
 
 echo "agent-api tests"
@@ -109,6 +109,25 @@ check "sub-agent: token from the cwd" grep -q 'Bearer own-a' "$T/stdin"
 reset; echo shared > "$INSTALL/store/.dashboard-token"
 ( cd "$T" && bash "$W" GET /api/agents >/dev/null 2>&1 )
 check "unknown cwd: shared token, no caller header" bash -c "grep -q 'Bearer shared' '$T/stdin' && ! grep -q 'X-Agent-Id' '$T/argv'"
+
+# 8b a cwd that names nobody: the launch's config dir does
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
+( cd "$T" && CLAUDE_CONFIG_DIR="$INSTALL/agents/a/.claude-config" bash "$W" GET /api/agents >/dev/null 2>&1 )
+check "scratch cwd + agent config dir: the agent's own token" grep -q 'Bearer own-a' "$T/stdin"
+check "scratch cwd + agent config dir: names the agent" grep -qx 'X-Agent-Id: a' "$T/argv"
+( cd "$T" && CLAUDE_CONFIG_DIR="$INSTALL/agents/a/.claude-config/projects/" bash "$W" GET /api/agents >/dev/null 2>&1 )
+check "scratch cwd + path below the config dir: still the agent" grep -qx 'X-Agent-Id: a' "$T/argv"
+reset; echo own-m > "$INSTALL/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
+( cd "$T" && CLAUDE_CONFIG_DIR="$INSTALL/.channels-config" bash "$W" GET /api/agents >/dev/null 2>&1 )
+check "scratch cwd + main channels config dir: the main agent's token" grep -q 'Bearer own-m' "$T/stdin"
+reset; echo shared > "$INSTALL/store/.dashboard-token"
+( cd "$T" && CLAUDE_CONFIG_DIR="$INSTALL/agents/a/notes" bash "$W" GET /api/agents >/dev/null 2>&1 )
+check "an agent directory that is not a config dir names nobody" bash -c "grep -q 'Bearer shared' '$T/stdin' && ! grep -q 'X-Agent-Id' '$T/argv'"
+( cd "$T" && CLAUDE_CONFIG_DIR="$T/other/agents/a/.claude-config" bash "$W" GET /api/agents >/dev/null 2>&1 )
+check "another install's config dir names nobody" bash -c "! grep -q 'X-Agent-Id' '$T/argv'"
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
+( cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/a/.claude-config" bash "$W" GET /api/agents >/dev/null 2>&1 )
+check "the working directory still wins over the config dir" grep -q 'Bearer own-m' "$T/stdin"
 
 # 9 explicit token file
 reset; echo explicit > "$T/tok"; echo shared > "$INSTALL/store/.dashboard-token"

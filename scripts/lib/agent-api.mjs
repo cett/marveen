@@ -5,7 +5,7 @@
 // token (401) is never retried on the shared one. Nothing here throws on a missing file, logs, or
 // puts the token anywhere but the Authorization header.
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const SOURCE_AGENT = 'agent'
@@ -41,6 +41,27 @@ export function agentIdFromCwd(cwd, install = installDir(), env = process.env) {
   return null
 }
 
+/**
+ * The identity the spawner gave this process, for a working directory that names nobody (a
+ * worktree, a scratch directory): MARVEEN_AGENT_ID, else CLAUDE_CONFIG_DIR -- <install>/agents/<id>/.claude-config
+ * is that agent's, <install>/.channels-config the main agent's. Set at launch, not by a later `cd`.
+ */
+export function agentIdFromEnv(install = installDir(), env = process.env) {
+  const v = (env.MARVEEN_AGENT_ID || '').trim()
+  if (v) return v
+  const cfg = (env.CLAUDE_CONFIG_DIR || '').trim()
+  if (!cfg) return null
+  const root = install.replace(/\/+$/, '')
+  const c = normalize(cfg).replace(/\/+$/, '')
+  const agents = join(root, 'agents') + '/'
+  if (c.startsWith(agents)) {
+    const parts = c.slice(agents.length).split('/')
+    return parts.length >= 2 && parts[0] && parts[1] === '.claude-config' ? parts[0] : null
+  }
+  const main = join(root, '.channels-config')
+  return c === main || c.startsWith(main + '/') ? mainAgentId(root, env) : null
+}
+
 export function agentTokenPath(agentId, install = installDir(), env = process.env) {
   return agentId === mainAgentId(install, env)
     ? join(install, '.agent-token')
@@ -56,7 +77,7 @@ export function agentTokenPath(agentId, install = installDir(), env = process.en
  */
 export function resolveToken({ agentId, cwd, kind = 'agent', installDir: install = installDir(), storeDir, env = process.env } = {}) {
   const store = storeDir ?? join(install, 'store')
-  let id = agentId || agentIdFromCwd(cwd, install, env)
+  let id = agentId || agentIdFromCwd(cwd, install, env) || agentIdFromEnv(install, env)
   if (id && (id.includes('/') || id.startsWith('.'))) id = null
   if (kind === 'main') { id = mainAgentId(install, env) ?? id; kind = 'agent' }
   if (kind === 'admin') kind = id && id === mainAgentId(install, env) ? 'agent' : 'shared'
