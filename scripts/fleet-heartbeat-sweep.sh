@@ -11,10 +11,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-API="http://localhost:3420"
 # The sweep runs on the coordinator's behalf: its own admin token (the shared one only if that file
-# is missing), through the wrapper -- the token never goes on a command line.
-api() { DASHBOARD_BASE_URL="$API" bash "$ROOT/scripts/agent-api.sh" --token main "$@" 2>/dev/null; }
+# is missing), through the wrapper -- the token never goes on a command line. The wrapper also finds
+# the dashboard port (MARVEEN_WEB_PORT, WEB_PORT, this install's .env, then 3420), so none is set here.
+api() { bash "$ROOT/scripts/agent-api.sh" --token main "$@" 2>/dev/null; }
 
 _read_main_agent_id() {
   local env_file="$ROOT/.env"

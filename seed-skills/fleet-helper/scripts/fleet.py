@@ -14,7 +14,8 @@ Config (no hardcoded paths or secrets):
   CLAW_DIR  - project root (the dir containing `store/`). If unset, the project
               root is auto-detected by walking up from the current directory
               until a `store/.dashboard-token` is found.
-  CLAW_BASE - dashboard base url (default http://localhost:3420).
+  CLAW_BASE - dashboard base url (default http://localhost:<port>; the port is MARVEEN_WEB_PORT,
+              WEB_PORT, WEB_PORT in the install's .env, then 3420).
 """
 import importlib.util
 import json
@@ -41,8 +42,25 @@ def project_dir():
     raise RuntimeError("project root not found (set CLAW_DIR to the dir containing store/)")
 
 
+def _web_port():
+    """Dashboard port: MARVEEN_WEB_PORT, WEB_PORT, WEB_PORT in the install's .env (parsed, never
+    sourced), then 3420 (the same chain as scripts/agent-api.sh)."""
+    port = os.environ.get("MARVEEN_WEB_PORT") or os.environ.get("WEB_PORT")
+    if not port:
+        try:
+            with open(os.path.join(project_dir(), ".env"), encoding="utf-8") as f:
+                for raw in f:
+                    key, _, val = raw.strip().partition("=")
+                    if key.strip() == "WEB_PORT" and val.strip():
+                        port = val.strip().strip('"').strip("'")
+                        break
+        except (OSError, RuntimeError):
+            pass
+    return port or "3420"
+
+
 def base_url():
-    return os.environ.get("CLAW_BASE", "http://localhost:3420").rstrip("/")
+    return (os.environ.get("CLAW_BASE") or "http://localhost:%s" % _web_port()).rstrip("/")
 
 
 def auth_headers():

@@ -77,7 +77,24 @@ import urllib.request
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
-DASHBOARD_BASE = os.environ.get("MARVEEN_DASHBOARD_BASE", "http://localhost:3420")
+def _web_port():
+    """Dashboard port: MARVEEN_WEB_PORT, WEB_PORT, REPO_ROOT/.env (parsed, never sourced), then 3420
+    (the same chain as scripts/agent-api.sh)."""
+    port = os.environ.get("MARVEEN_WEB_PORT") or os.environ.get("WEB_PORT")
+    if not port:
+        try:
+            with open(os.path.join(REPO_ROOT, ".env"), encoding="utf-8") as f:
+                for raw in f:
+                    key, _, val = raw.strip().partition("=")
+                    if key.strip() == "WEB_PORT" and val.strip():
+                        port = val.strip().strip('"').strip("'")
+                        break
+        except OSError:
+            pass
+    return port or "3420"
+
+
+DASHBOARD_BASE = os.environ.get("MARVEEN_DASHBOARD_BASE") or "http://localhost:%s" % _web_port()
 STORE_DIR = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(REPO_ROOT, "store")
 DASHBOARD_TOKEN_FILE = os.path.join(STORE_DIR, ".dashboard-token")
 

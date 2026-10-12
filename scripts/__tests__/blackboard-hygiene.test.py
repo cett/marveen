@@ -31,6 +31,64 @@ HEARTBEAT = "[memoria-heartbeat] Ideje a periodikus memoria-heartbeatednek."
 SPINNER_PANE = "output\nFlibbertigibbeting… (32m 37s · esc)\n"
 
 
+class DashboardPortTest(unittest.TestCase):
+    """The dashboard address is not a literal: MARVEEN_DASHBOARD_BASE, else the install's port."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        self._saved_root = mod.REPO_ROOT
+        mod.REPO_ROOT = self.tmp
+        self.addCleanup(setattr, mod, "REPO_ROOT", self._saved_root)
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+
+    def env(self, **kw):
+        base = {k: v for k, v in os.environ.items() if k not in ("MARVEEN_WEB_PORT", "WEB_PORT", "MARVEEN_DASHBOARD_BASE")}
+        base.update(kw)
+        return patch.dict(os.environ, base, clear=True)
+
+    def write_env(self, text):
+        with open(os.path.join(self.tmp, ".env"), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_default_is_3420_with_no_env_and_no_file(self):
+        with self.env():
+            self.assertEqual(mod._web_port(), "3420")
+
+    def test_dotenv_web_port_is_used_quotes_stripped(self):
+        self.write_env('MAIN_AGENT_ID=x\nWEB_PORT="3521"\n')
+        with self.env():
+            self.assertEqual(mod._web_port(), "3521")
+
+    def test_environment_beats_dotenv_and_marveen_web_port_beats_web_port(self):
+        self.write_env("WEB_PORT=3521\n")
+        with self.env(WEB_PORT="3622"):
+            self.assertEqual(mod._web_port(), "3622")
+        with self.env(WEB_PORT="3622", MARVEEN_WEB_PORT="3723"):
+            self.assertEqual(mod._web_port(), "3723")
+
+    def test_a_commented_or_empty_web_port_line_is_not_a_port(self):
+        self.write_env("# WEB_PORT=1111\nWEB_PORT=\n")
+        with self.env():
+            self.assertEqual(mod._web_port(), "3420")
+
+    def test_module_base_follows_the_port_and_an_explicit_base_wins(self):
+        self.write_env("WEB_PORT=3521\n")
+
+        def load_fresh():
+            spec = importlib.util.spec_from_file_location("blackboard_hygiene_fresh", _SCRIPT_PATH)
+            fresh = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fresh)
+            return fresh
+
+        # The module reads its own REPO_ROOT (the script's parent), so exercise the env chain here and the
+        # explicit override through a fresh load.
+        with self.env(WEB_PORT="3521"):
+            self.assertEqual(load_fresh().DASHBOARD_BASE, "http://localhost:3521")
+        with self.env(WEB_PORT="3521", MARVEEN_DASHBOARD_BASE="http://example.test:9"):
+            self.assertEqual(load_fresh().DASHBOARD_BASE, "http://example.test:9")
+
+
 class PaneActiveTest(unittest.TestCase):
     def test_spinner_line_alone_counts(self):
         self.assertTrue(mod.pane_is_active("Flibbertigibbeting… (32m 37s"))

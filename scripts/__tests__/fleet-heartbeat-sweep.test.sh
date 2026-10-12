@@ -228,6 +228,27 @@ OUT="$(run_sweep "$R")"
 case "$OUT" in *"no running sub-agents found"*) pass "ends with the nothing-to-do line";; *) fail "no nothing-to-do line: $OUT";; esac
 
 echo ""
+echo "(h) the dashboard port is not a literal: .env WEB_PORT, then env, then 3420"
+# make_url_root CASE: a curl stub that records every URL it is asked for and answers with no agents.
+make_url_root() {
+  local r; r="$(make_root "$1")"
+  cat > "$r/bin/curl" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in http*) printf '%s\n' "\$a" >> "$r/urls.log";; esac; done
+printf '[]\n200'
+STUB
+  chmod +x "$r/bin/curl"
+  echo "$r"
+}
+used_url() { head -n1 "$1/urls.log" 2>/dev/null; }
+R="$(make_url_root h-default)"; MARVEEN_WEB_PORT= WEB_PORT= run_sweep "$R" >/dev/null
+case "$(used_url "$R")" in "http://localhost:3420/"*) pass "no .env, no env: the default 3420";; *) fail "default port: '$(used_url "$R")'";; esac
+R="$(make_url_root h-envfile)"; echo "WEB_PORT=3521" > "$R/.env"; MARVEEN_WEB_PORT= WEB_PORT= run_sweep "$R" >/dev/null
+case "$(used_url "$R")" in "http://localhost:3521/"*) pass ".env WEB_PORT=3521 is the port called";; *) fail ".env port: '$(used_url "$R")'";; esac
+R="$(make_url_root h-envvar)"; echo "WEB_PORT=3521" > "$R/.env"; MARVEEN_WEB_PORT= WEB_PORT=3622 run_sweep "$R" >/dev/null
+case "$(used_url "$R")" in "http://localhost:3622/"*) pass "the WEB_PORT env wins over .env";; *) fail "env port: '$(used_url "$R")'";; esac
+
+echo ""
 echo "======================================="
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
