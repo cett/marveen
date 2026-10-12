@@ -1920,6 +1920,8 @@ window._i18n.hu = {
   'auth.card.active_sessions':    'Aktív munkamenetek',
   'auth.card.token_mode':         'Ez a munkamenet a hozzáférési tokennel lépett be (a Bridge és a flotta-eszközök saját kulccsal nyitnak, ezért sosem kérnek jelszót). A jelszavas belépésed ettől függetlenül él és működik: böngészőből a bejelentkező oldalon bármikor használhatod.',
   'auth.card.switch_to_login':    'Bejelentkezés jelszóval',
+  'auth.entry.signin':            'Bejelentkezés',
+  'auth.entry.title':             'Bejelentkezés jelszóval. Az emberi jóváhagyásokat csak bejelentkezett session döntheti el, token nem.',
 
   'auth.devices.title':            'Eszközkulcsok',
   'auth.devices.desc':             'Eszközönkénti kulcs a Bridge-hez vagy telefonhoz: külön visszavonható, a közös token nem változik. A kulcs csak a létrehozáskor látható.',

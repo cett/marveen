@@ -24,6 +24,7 @@ import { can } from './modules/rbac-client.js'
 import { isPageAllowed, isTabAllowed, initNavGating, STATUS_BLOCK_PERMISSION } from './modules/nav-gate.js'
 import { renderPaginator } from './modules/paginator.js'
 import { initGlobalKanbanSearch } from './modules/kanban-search.js'
+import { enrollUnlessSession } from './modules/auth-entry.js'
 
 // ── Lazy-load helper ──────────────────────────────────────────────────────────
 // Deduplicates module loads: the Promise is stored on first call, subsequent calls
@@ -116,7 +117,17 @@ function mainAgentId() {
     urlParams.delete('enroll')
     const clean = window.location.pathname + (urlParams.toString() ? '?' + urlParams : '') + window.location.hash
     window.history.replaceState({}, '', clean)
-    enrollPromise = enrollWithCode(urlEnroll).then((token) => {
+    // A browser that already holds a login session keeps it: the token the code would buy beats the
+    // session cookie at the auth gate, so a person who is signed in could no longer decide a
+    // human-only approval. The probe goes out without the bearer header, so it answers for the cookie.
+    enrollPromise = enrollUnlessSession({
+      code: urlEnroll,
+      probeStatus: async () => {
+        const r = await originalFetch('/api/auth/status')
+        return r.ok ? r.json() : null
+      },
+      exchange: enrollWithCode,
+    }).then((token) => {
       if (!token) return
       sessionToken = token
       try { localStorage.setItem(TOKEN_KEY, token) } catch { /* storage blocked */ }
