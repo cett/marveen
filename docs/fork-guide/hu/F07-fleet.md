@@ -50,7 +50,13 @@ bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main
 - A hiányzó vagy üres token-fájl a közös tokenre esik vissza, és a kérés viszi az `X-Agent-Id`-t, így a `GET /api/token-shadow` mutatja, ki esett vissza. Ha a token megvan, de elutasítják (visszavont, elavult), nincs újrapróba a közösön: az elfedné a hibát.
 - Kilépési kód: 0 2xx-nél, 22 bármilyen más HTTP státusznál (a státusz stderr-re megy, a törzs továbbra is kiíródik).
 
-Érvényesítés még nincs: a közös token mindenhol tovább működik.
+Alapból nincs érvényesítés: a közös token mindenhol tovább működik.
+
+#### Identitás-érvényesítés (`TOKEN_IDENTITY_MODE`)
+
+A `TOKEN_IDENTITY_MODE` (`src/config.ts`, induláskor a környezetből vagy az `.env`-ből olvasódik) `shadow`, hacsak nem pontosan `enforce`. `shadow`-ban a fenti számláló csak számol. `enforce`-ban ugyanez az osztályozás elutasít: az a kérés, amelynek hívója nem a főágens, és másik ágenst nevez meg, 403-at kap (`forbidden`, "A token may only act as its own agent" tanács), még az útvonal lefutása előtt. A hívó az az ágens, akit a fleet-agent token megnevez, vagy a közös-tokenes kérés `X-Agent-Id`-ja; az a közös-tokenes kérés, amely senkit nem deklarál, hívó nélküli és átmegy, ezt csak a közös token nem-főágensektől való elvétele zárja. Akkor kapcsold be, ha a fenti közös-token kapu PASS-t ad és a közös token rotálva van. Visszaállítás: `TOKEN_IDENTITY_MODE=shadow` és a dashboard újraindítása.
+
+Hogy mi számít ágens megnevezésének, a jogosultsági mátrixot követi (`WATCHED` a `src/web/token-shadow.ts`-ben, `enforce` mező): az ágensenkénti végpontokon (ledger, agent state, task state, daily log, spans, hook audit, tool log, skill usage, artifacts, approvals, messages, schedules) minden metódus; a memories, workspace és blackboard végpontokon csak az írás (más ágens sorainak olvasása marad engedélyezett); a kanbanon soha (tenant szerint szűkített). Az útvonalat, a lekérdezést és a JSON törzset ellenőrzi; a törzset méretétől függetlenül és a köteg minden elemét, és elutasítja az ágens-kulcs alatti nem-string értéket. Az a végpont is elutasítást kap, amely ágens nélkül a főágensként cselekszik (memories, ütemezés-írás, közös-tokenes hívó daily-logja): nem-főágens hívónál a "senkit nem nevez meg" jelentése "a főágenst nevezi meg". Az inter-agent `from` a `/api/messages` ágens-kulcsa, tehát a közös-tokenes üzenetnek attól az ágenstől kell jönnie, aki magát deklarálta.
 
 #### Go-live kapu: használja-e még valaki a közös tokent?
 

@@ -43,11 +43,20 @@ export function setRequestBodyObserver(fn: RequestBodyObserver | null): void {
   requestBodyObserver = fn
 }
 
+// A body is read off the socket once. The gate that checks which agent a body names (T4-7) reads it
+// before the route does, so the finished body is kept per request and a second readBody on the same
+// request gets the same bytes instead of waiting for an 'end' that already happened.
+const readBodies = new WeakMap<http.IncomingMessage, Buffer>()
+
 export function readBody(
   req: http.IncomingMessage,
   opts: { maxBytes?: number } = {},
 ): Promise<Buffer> {
   const maxBytes = opts.maxBytes ?? DEFAULT_READ_BODY_MAX_BYTES
+  const done = readBodies.get(req)
+  if (done) {
+    return done.length > maxBytes ? Promise.reject(new RequestBodyTooLargeError(maxBytes)) : Promise.resolve(done)
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
@@ -62,6 +71,7 @@ export function readBody(
     })
     req.on('end', () => {
       const body = Buffer.concat(chunks)
+      readBodies.set(req, body)
       if (requestBodyObserver) {
         try { requestBodyObserver(req, body) } catch { /* an observer fault never fails the request */ }
       }

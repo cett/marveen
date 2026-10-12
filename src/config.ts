@@ -364,6 +364,17 @@ export const RBAC_MODE: 'shadow' | 'enforce' =
     ? 'enforce'
     : 'shadow'
 
+// Token identity mode (Phase T4-7). The token shadow counter (src/web/token-shadow.ts) already
+// classifies a request by whether it names an agent other than its caller: in 'shadow' (the default)
+// that is counted and nothing else. In 'enforce' the same classification refuses the request with a
+// 403. Off by default on purpose: enforce is switched on only after the shared token is gone from
+// every non-main agent (T4-5) and the token shadow shows a clean window (T4-3). Rollback:
+// TOKEN_IDENTITY_MODE=shadow and a restart.
+export const TOKEN_IDENTITY_MODE: 'shadow' | 'enforce' =
+  (process.env['TOKEN_IDENTITY_MODE'] ?? env['TOKEN_IDENTITY_MODE'] ?? 'shadow').trim().toLowerCase() === 'enforce'
+    ? 'enforce'
+    : 'shadow'
+
 // Kanban card aging visual thresholds (hours since last update) and colours.
 // Override per-install via .env; defaults match the design spec (24/72/168h).
 export const KANBAN_AGING_WARN_H = parseInt(env['KANBAN_AGING_WARN_H'] ?? '24', 10)

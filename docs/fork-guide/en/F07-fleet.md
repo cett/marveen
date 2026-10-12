@@ -50,7 +50,13 @@ bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main
 - A missing or empty token file falls back to the shared token and the request carries `X-Agent-Id`, so `GET /api/token-shadow` shows who fell back. A token that is present but refused (revoked, stale) is never retried on the shared one: that would hide the fault.
 - Exit code 0 on a 2xx, 22 on any other HTTP status (the status goes to stderr, the body is still printed).
 
-Nothing is enforced yet: the shared token keeps working everywhere.
+Nothing is enforced by default: the shared token keeps working everywhere.
+
+#### Identity enforce (`TOKEN_IDENTITY_MODE`)
+
+`TOKEN_IDENTITY_MODE` (`src/config.ts`, read at startup from the environment or `.env`) is `shadow` unless it is exactly `enforce`. In `shadow` the counter above only counts. In `enforce` the same classification refuses: a request whose caller is not the main agent and that names another agent gets a 403 (`forbidden`, hint "A token may only act as its own agent") before the route runs. The caller is the agent a fleet-agent token names, or the `X-Agent-Id` of a shared-token request; a shared-token request that declares nobody has no caller and passes, so only taking the shared token away from the non-main agents closes that. Switch it on after the shared-token gate above says PASS and the shared token is rotated. Rollback: `TOKEN_IDENTITY_MODE=shadow` and a dashboard restart.
+
+What counts as naming an agent follows the permission matrix (`WATCHED` in `src/web/token-shadow.ts`, field `enforce`): on the per-agent endpoints (ledger, agent state, task state, daily log, spans, hook audit, tool log, skill usage, artifacts, approvals, messages, schedules) any method; on memories, workspace and the blackboard only a write (reading another agent's rows stays allowed); on kanban never (it is scoped by tenant). The path, the query and the JSON body are checked; a body is checked whatever its size and every entry of a batch, and a value under the agent key that is not a string is refused. A route that acts as the main agent when no agent is named (memories, a schedule write, the daily log of a shared-token caller) is refused too: for a non-main caller "names nobody" means "names the main agent". The inter-agent `from` is the agent key of `/api/messages`, so a shared-token message must come from the agent that declared itself.
 
 #### Go-live gate: is the shared token still in use?
 

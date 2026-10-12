@@ -57,7 +57,7 @@ import {
 } from '../db.js'
 import { resolveWriteTenant } from '../db/write-tenant.js'
 import { resolveAgentIdHeader, type AuthResult } from './auth-gate.js'
-import { setRequestBodyObserver } from './http-helpers.js'
+import { readBody, RequestBodyTooLargeError, setRequestBodyObserver } from './http-helpers.js'
 
 export const TOKEN_SHADOW_CATEGORIES = [
   'shared_token_use',
@@ -194,6 +194,35 @@ export function collectBodyAgents(data: unknown, keys: readonly string[]): strin
   return [...out]
 }
 
+/**
+ * What a body names, for a refusal (T4-7). Same shape as collectBodyAgents (the top level and the
+ * objects of top-level arrays) but with no cap on the entries of a batch, and it also reports a value
+ * under a watched key that is not a string (a number, an array, an object): a route may coerce such
+ * a value into an agent id, so the gate cannot read it as "names nobody".
+ */
+export function inspectBodyAgents(data: unknown, keys: readonly string[]): { named: string[]; odd: boolean } {
+  const named = new Set<string>()
+  let odd = false
+  const take = (obj: unknown): void => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return
+    for (const k of keys) {
+      const v = (obj as Record<string, unknown>)[k]
+      if (v === undefined || v === null) continue
+      if (typeof v !== 'string') odd = true
+      else if (v.trim()) named.add(v)
+    }
+  }
+  take(data)
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    for (const v of Object.values(data as Record<string, unknown>)) {
+      if (Array.isArray(v)) v.forEach(take)
+    }
+  } else if (Array.isArray(data)) {
+    data.forEach(take)
+  }
+  return { named: [...named], odd }
+}
+
 // ── watched endpoints ───────────────────────────────────────────────────────
 
 interface WatchSpec {
@@ -214,6 +243,21 @@ interface WatchSpec {
   bodyKeys: readonly string[]
   /** A GET with none of queryKeys lists across agents. */
   listsAcrossAgents?: boolean
+  /**
+   * What TOKEN_IDENTITY_MODE=enforce refuses on this endpoint (T0 matrix): 'any' = every method that
+   * names another agent, 'write' = only a write (a read of another agent's rows is allowed), 'none' =
+   * never (the endpoint is scoped by tenant, not by agent). Counting does not depend on it.
+   */
+  enforce: 'any' | 'write' | 'none'
+  /**
+   * The route acts as the MAIN agent when the request names no agent (`agent_id || MAIN_AGENT_ID`).
+   * For a caller that is not the main agent, enforce reads "names nobody" as "names the main agent":
+   * 'always' = every caller, 'shared' = only a shared-token caller (a fleet_agent token falls back to
+   * its own agent there, see actingAgentId). `on` = the methods it holds for. `bodyKey` / `queryKey`
+   * are the ONE field the route reads its agent from (its other spellings are ignored by the route,
+   * so they must not count as naming the agent here).
+   */
+  omittedMain?: { who: 'always' | 'shared'; on: 'write' | 'any'; bodyKey: string; queryKey?: string }
 }
 
 const AGENT_QUERY = ['agent', 'agent_id'] as const
@@ -221,44 +265,44 @@ const AGENT_BODY = ['agent_id', 'agent'] as const
 const NONE: ReadonlySet<string> = new Set()
 
 const WATCHED: readonly WatchSpec[] = [
-  { prefix: '/api/conversation-ledger', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/agent-state', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/agent-taskstate', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/daily-log', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/spans', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/hook-audit', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/tool-log', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/skill-usage', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/artifacts', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/approvals', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY },
-  { prefix: '/api/messages', kind: 'own', queryKeys: [], bodyKeys: ['from'] },
+  { prefix: '/api/conversation-ledger', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/agent-state', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/agent-taskstate', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/daily-log', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any', omittedMain: { who: 'shared', on: 'any', bodyKey: 'agent_id', queryKey: 'agent' } },
+  { prefix: '/api/spans', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/hook-audit', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/tool-log', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/skill-usage', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/artifacts', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/approvals', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/messages', kind: 'own', queryKeys: [], bodyKeys: ['from'], enforce: 'any' },
   {
     prefix: '/api/memories', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     owner: (p) => (/^\d+$/.test(p) ? getMemoryOwnerRow(Number(p))?.agent_id : undefined),
-    queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true,
+    queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'write', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent_id' },
   },
   {
     prefix: '/api/workspace', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     owner: (p) => peekWorkspaceDoc(p)?.agent_id,
-    queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true,
+    queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'write',
   },
   {
     prefix: '/api/kanban', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     paramLiterals: new Set(['labels', 'heartbeat-summary', 'assignees', 'archived', 'search']),
     owner: (p) => getKanbanCard(p)?.assignee,
-    queryKeys: ['assignee'], bodyKeys: ['assignee'],
+    queryKeys: ['assignee'], bodyKeys: ['assignee'], enforce: 'none',
   },
   {
     prefix: '/api/blackboard', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     paramLiterals: new Set(['history']),
     owner: (p) => getBlackboardRowById(p)?.agent_id,
-    queryKeys: ['agent_id'], bodyKeys: ['agent_id'],
+    queryKeys: ['agent_id'], bodyKeys: ['agent_id'], enforce: 'write',
   },
   {
     prefix: '/api/schedules', kind: 'unscoped', paramSeg: 0, paramName: ':name',
     paramLiterals: new Set(['tick-status', 'agents', 'expand-questions', 'expand-prompt', 'pending']),
     owner: (p) => getScheduleFromDb(p)?.agent,
-    queryKeys: AGENT_QUERY, bodyKeys: ['agent'],
+    queryKeys: AGENT_QUERY, bodyKeys: ['agent'], enforce: 'any', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent' },
   },
 ]
 
@@ -402,8 +446,94 @@ function agentHasNoTenant(agentId: string): boolean {
 
 // ── request entry points ────────────────────────────────────────────────────
 
-interface Pending { base: Base; spec: WatchSpec; recorded: Set<string> }
+interface Pending { base: Base; spec: WatchSpec; recorded: Set<string>; caller: string; refusable: boolean; omittedMain: boolean }
 const pendingBodies = new WeakMap<http.IncomingMessage, Pending>()
+
+// ── enforcement (T4-7, TOKEN_IDENTITY_MODE=enforce) ─────────────────────────
+//
+// The classification above is the whole decision: a request by a non-main agent caller that names
+// another agent, on an endpoint whose `enforce` allows it, is the one TOKEN_IDENTITY_MODE=enforce
+// refuses. Nothing here runs in shadow mode (web.ts only calls identityRefusal in enforce mode); the
+// observer only remembers its verdict per request, so the path and query are classified once.
+//
+// A caller is the token's agent (a fleet_agent token) or the X-Agent-Id of a shared-token request.
+// A shared-token request with no X-Agent-Id has no caller and passes: only taking the shared token
+// away from the non-main agents (T4-5) closes that.
+//
+// The body is the one place the gate has to wait for: the agent ids it names are only known once it is
+// read. identityRefusal reads it (readBody keeps it for the route) and parses it whatever its size,
+// with no cap on the entries of a batch: a limit that the counter needs to stay cheap must not be a
+// way round a refusal.
+
+interface PathVerdict { caller: string; hit: ShadowHit }
+const pathVerdicts = new WeakMap<http.IncomingMessage, PathVerdict>()
+
+function isWriteMethod(method: string): boolean {
+  return method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
+}
+
+function enforceApplies(spec: WatchSpec, method: string): boolean {
+  return spec.enforce === 'any' || (spec.enforce === 'write' && isWriteMethod(method))
+}
+
+/** True when the body is an object whose `key` is a non-empty string (what a route reading that key sees). */
+function namesAgentAtTop(data: unknown, key: string | undefined): boolean {
+  if (!key || !data || typeof data !== 'object' || Array.isArray(data)) return false
+  const v = (data as Record<string, unknown>)[key]
+  return typeof v === 'string' && v.trim() !== ''
+}
+
+/** True when a request of this caller that names no agent acts as the main agent on this endpoint. */
+function omittedMeansMain(spec: WatchSpec, method: string, shared: boolean): boolean {
+  const o = spec.omittedMain
+  if (!o) return false
+  if (o.who === 'shared' && !shared) return false
+  return o.on === 'any' || isWriteMethod(method)
+}
+
+export interface IdentityRefusal {
+  caller: string
+  /** The agent the request named (or whose row it addressed) that is not the caller. */
+  target: string
+  category: TokenShadowCategory
+}
+
+/**
+ * The refusal TOKEN_IDENTITY_MODE=enforce gives this request, or null to let it through. Call after
+ * observeTokenUsage and only in enforce mode. May read the request body (kept for the route).
+ * Never throws: a fault in the check lets the request through, as the counter does, because a bug
+ * here must not become an outage; the route-level checks of the fleet_agent endpoints still hold.
+ */
+export async function identityRefusal(
+  req: http.IncomingMessage,
+  mainAgentId: string = MAIN_AGENT_ID,
+): Promise<IdentityRefusal | null> {
+  try {
+    const verdict = pathVerdicts.get(req)
+    if (verdict) return { caller: verdict.caller, target: verdict.hit.target, category: verdict.hit.category }
+    const pending = pendingBodies.get(req)
+    if (!pending || !pending.refusable) return null
+    const body = await readBody(req)
+    if (body.length === 0) return null
+    let data: unknown
+    try { data = JSON.parse(body.toString('utf8')) } catch { return null } // the route's 400 to give
+    const { named, odd } = inspectBodyAgents(data, pending.spec.bodyKeys)
+    // A value a route might coerce into an agent id is not "names nobody": refuse it.
+    if (odd) return { caller: pending.caller, target: INVALID, category: 'agent_id_mismatch' }
+    const hit = identityHits({ kind: pending.spec.kind, caller: pending.caller, mainAgentId, targets: named })[0]
+    if (hit) return { caller: pending.caller, target: hit.target, category: hit.category }
+    // Names nobody in the one field the route reads, on a route that then acts as the main agent. The
+    // other keys and the entries of a batch do not count: the route ignores them.
+    if (pending.omittedMain && !namesAgentAtTop(data, pending.spec.omittedMain?.bodyKey)) {
+      return { caller: pending.caller, target: mainAgentId.trim().toLowerCase(), category: 'agent_id_mismatch' }
+    }
+    return null
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) throw err // the route would have refused it the same way
+    warnThrottled(err, 'token-shadow: identity refusal check failed')
+    return null
+  }
+}
 
 /**
  * Observe one authenticated request, after the auth and RBAC gates and before dispatch. Synchronous
@@ -461,6 +591,7 @@ export function observeTokenUsage(
         }
       }
     }
+    const pathNamed = targets.size > 0
     let queryNamed = false
     for (const k of spec.queryKeys) {
       const v = url.searchParams.get(k)
@@ -468,16 +599,26 @@ export function observeTokenUsage(
     }
 
     const recorded = new Set<string>()
+    const refusable = enforceApplies(spec, method)
+    // A write takes its agent from the body only (the route ignores the query), a read from the query key.
+    const queryKeyNamed = !!spec.omittedMain?.queryKey && !!url.searchParams.get(spec.omittedMain.queryKey)?.trim()
+    const omittedMain = refusable && !pathNamed && omittedMeansMain(spec, method, who.shared) && (isWriteMethod(method) || !queryKeyNamed)
+    // A read that names no agent, on a route that then acts as the main agent. (A write may still name
+    // the agent in its body: that is decided when the body is read.)
+    if (omittedMain && !isWriteMethod(method)) {
+      pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: mainAgentId.trim().toLowerCase() } })
+    }
     for (const hit of identityHits({ kind: spec.kind, caller: who.caller, mainAgentId, targets })) {
       recordTokenShadow(base, hit)
       recorded.add(hit.target)
+      if (refusable && !pathVerdicts.has(req)) pathVerdicts.set(req, { caller: who.caller, hit })
     }
     if (spec.listsAcrossAgents && method === 'GET' && param === undefined && !queryNamed) {
       recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
     }
 
-    if (spec.bodyKeys.length > 0 && (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE')) {
-      pendingBodies.set(req, { base, spec, recorded })
+    if (spec.bodyKeys.length > 0 && isWriteMethod(method)) {
+      pendingBodies.set(req, { base, spec, recorded, caller: who.caller, refusable, omittedMain })
     }
   } catch (err) {
     warnThrottled(err, 'token-shadow: observe failed')
