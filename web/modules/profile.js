@@ -1,6 +1,8 @@
 // Self-service profile page for session-authenticated dashboard users.
 // Handles: identity display, display_name/email edit, password change, session logout-all.
 
+import { applySignInEntry } from './auth-entry.js'
+
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const $ = (id) => document.getElementById(id)
 const t = (k, fb) => (typeof window.t === 'function' ? window.t(k) : null) ?? fb
@@ -264,6 +266,7 @@ export async function initSidebarUser() {
     const statusR = await fetch('/api/auth/status')
     if (!statusR.ok) return
     const status = await statusR.json()
+    applySignInEntry(status)
     if (status.method !== 'session' || !status.user) return
     const profile = await fetchMe()
     if (!profile) return

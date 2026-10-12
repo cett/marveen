@@ -19,6 +19,27 @@
 .sb-user:hover { border-color: var(--accent); background: var(--accent-soft); }
 .sb-user.active { border-color: var(--accent); background: var(--accent-soft); }
 
+/* Always-visible way to the password login while the browser is on a token. */
+.sb-signin {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.sb-signin[hidden] { display: none !important; }
+.sb-signin:hover { background: var(--bg-card); }
+
 .sb-user-avatar {
   width: 30px;
   height: 30px;

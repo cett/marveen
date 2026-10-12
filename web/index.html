@@ -201,6 +201,12 @@
         </div>
       </div>
     </nav>
+    <!-- Állandó belépő: token-módban (pl. enroll linkkel nyitott böngésző) jelenik meg, ha van jelszavas
+         login. Az emberi jóváhagyást csak jelszavas session döntheti el, token nem. -->
+    <button type="button" class="sb-signin" id="navSignIn" hidden data-i18n-title="auth.entry.title" title="Jelszavas bejelentkezés: az emberi jóváhagyásokhoz kell">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      <span data-i18n="auth.entry.signin">Bejelentkezés</span>
+    </button>
     <!-- Bejelentkezett felhasználó blokk (session-auth esetén jelenik meg) -->
     <a href="#" class="sb-user" id="navProfile" data-page="profile" hidden>
       <div class="sb-user-avatar" id="sbUserAvatar"></div>
