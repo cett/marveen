@@ -87,7 +87,7 @@ function makeCtx(
     },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url } as unknown as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, role: 'admin' } as unknown as RouteContext, out }
 }
 
 describe('PATCH /api/kanban/:id/parent -- status code from code, not string', () => {
