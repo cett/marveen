@@ -45,6 +45,7 @@ import {
   bumpTokenShadow,
   countTokenShadowRowsForDay,
   deleteTokenShadowRowsBefore,
+  explainServingTenantMiss,
   getBlackboardRowById,
   getKanbanCard,
   getMemoryOwnerRow,
@@ -511,7 +512,9 @@ export function recordTenantContextRefusal(req: http.IncomingMessage, auth: Auth
     if (!who || who.source !== 'token') return
     recordTokenShadow(
       { method, route: normalizeRoute(rawPath), client: classifyClient(req.headers['user-agent']), caller: who.caller, callerSource: 'token' },
-      { category: 'missing_tenant_context', target: '' },
+      // target = why there was no tenant (no_row | unknown | conflict | stale | not_serving | error):
+      // the counter says what to fix, not only that something failed.
+      { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) },
     )
   } catch (err) {
     warnThrottled(err, 'token-shadow: refusal record failed')

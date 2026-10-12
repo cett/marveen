@@ -4,7 +4,6 @@ import sys
 import os
 import json
 import re
-import random
 import urllib.request
 import urllib.error
 
@@ -119,11 +118,6 @@ def main():
     }).encode()
 
     headers = auth.headers({'Content-Type': 'application/json'})
-    # /api/tool-log/prune is admin:all (only POST /api/tool-log is a fleet-agent endpoint): the
-    # main agent's own token covers it, every other agent keeps the shared token until T4.
-    prune_headers = agent_token.resolve(cwd=cwd, store_dir=store, kind=agent_token.KIND_ADMIN).headers(
-        {'Content-Type': 'application/json'})
-
     try:
         urllib.request.urlopen(
             urllib.request.Request(f'{base_url}/tool-log', data=body, headers=headers, method='POST'),
@@ -132,21 +126,8 @@ def main():
     except Exception:
         pass  # never block the agent
 
-    # Prune old entries with ~1% probability to keep the table from growing indefinitely.
-    if random.random() < 0.01:
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request(
-                    f'{base_url}/tool-log/prune',
-                    data=b'{}',
-                    headers=prune_headers,
-                    method='POST',
-                ),
-                timeout=3,
-            )
-        except Exception:
-            pass
-
+    # No pruning from here: the spans this writes are pruned by the dashboard's daily decay sweep
+    # (OTEL_SPAN_RETENTION_DAYS), and there is no /api/tool-log/prune route to call.
     sys.exit(0)
 
 

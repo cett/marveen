@@ -2,7 +2,7 @@
  * Dashboard smoke tests.
  *
  * Prerequisites: the dashboard must be running and DASHBOARD_TOKEN must be set.
- *   DASHBOARD_TOKEN=$(cat store/.dashboard-token) npm run smoke
+ *   DASHBOARD_TOKEN=<an admin API token, e.g. the operator token> npm run smoke
  *
  * What these tests catch: a single JS syntax error or undefined global that
  * silently breaks the entire dashboard (blank page / stuck UI).

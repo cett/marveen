@@ -2,7 +2,7 @@
  * PR-D smoke: the post-rollback diagnosis offer on the Updates page.
  *
  * Prerequisites: the dashboard must be running and DASHBOARD_TOKEN set.
- *   DASHBOARD_TOKEN=$(cat store/.dashboard-token) npm run smoke
+ *   DASHBOARD_TOKEN=<an admin API token, e.g. the operator token> npm run smoke
  *
  * Uses route interception (never boots a second server) to feed the three
  * update states and asserts the UI offers / withholds the opt-in fixer, and

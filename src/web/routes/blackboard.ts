@@ -1,6 +1,7 @@
 import { listBlackboardRows, getBlackboardRowById, blackboardRowExistsForAgent, getLastOutboundMessageTimes, getLastBlackboardChangeTimes, updateBlackboardRowById, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, deactivatePlanForAgent, listActivePlansForAgents, type BlackboardRow, type ActivePlanForAgent } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { callerMayActAs } from '../fleet-agent-identity.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
@@ -199,8 +200,11 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     // Cross-tenant write guard: a non-admin caller may only post on behalf of
     // an agent that resolves to their own tenant. '_multi_' (shared) agents
     // can never be written by a non-admin caller either, since the sentinel
-    // never equals a real ctx.tenantId.
-    if (ctx.role !== 'admin') {
+    // never equals a real ctx.tenantId. The one exception is a fleet agent's own
+    // row: its token names the agent, and the gate has already required a fresh
+    // tenant context for a shared one, so a shared agent can post its own state.
+    const ownRowOfFleetAgent = ctx.role === 'fleet_agent' && callerMayActAs(ctx, agent_id)
+    if (ctx.role !== 'admin' && !ownRowOfFleetAgent) {
       const expectedTenant = resolveAgentTenant(agent_id)
       const callerTenant = ctx.tenantId ?? 'default'
       if (expectedTenant !== callerTenant) {

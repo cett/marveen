@@ -118,6 +118,29 @@ export function getServingTenant(agentId: string, nowSeconds: number = Math.floo
 }
 
 /**
+ * Why getServingTenant has no answer for this agent, as a short counter label (the token-shadow
+ * target): no_row (no context was ever written), unknown / conflict (the source of the last prompt
+ * could not be proven), stale (older than the max age), not_serving (the agent no longer serves the
+ * tenant of its bound context), error. 'fresh' when the context does answer.
+ */
+export function explainServingTenantMiss(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): string {
+  try {
+    const row = db
+      .prepare('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?')
+      .get(agentId) as { tenant_id: string | null; status: string; updated_at: number } | undefined
+    if (!row) return 'no_row'
+    if ((row.status !== 'bound' && row.status !== 'default') || !row.tenant_id) return row.status === 'conflict' ? 'conflict' : 'unknown'
+    const parsed = Number.parseInt(process.env['TENANT_CONTEXT_MAX_AGE_SECONDS'] ?? '', 10)
+    const maxAge = Number.isFinite(parsed) ? parsed : DEFAULT_CONTEXT_MAX_AGE_SECONDS
+    if (maxAge > 0 && nowSeconds - (row.updated_at ?? 0) > maxAge) return 'stale'
+    if (row.status === 'default') return 'fresh'
+    return agentServesTenant(agentId, row.tenant_id) ? 'fresh' : 'not_serving'
+  } catch {
+    return 'error'
+  }
+}
+
+/**
  * Tenant a message sent BY this agent is stamped with: the tenant of the request the agent is serving
  * (agent_tenant_context, status 'bound') so a delegation inherits it. Anything else (no context, default,
  * unknown, conflict, stale, the agent no longer serving the tenant, a DB error) is 'default', the

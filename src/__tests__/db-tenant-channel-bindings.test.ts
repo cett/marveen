@@ -193,4 +193,33 @@ describe('tenant channel bindings', () => {
       expect(agents()).toEqual([])
     })
   })
+
+  describe('explainServingTenantMiss: why a shared agent has no tenant right now', () => {
+    const NOW = 1_800_000_000
+    const setContext = (tenant: string, status: string, updatedAt = NOW) =>
+      dbMod.getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)')
+        .run('agent-a', tenant, status, updatedAt)
+    const enable = (tenant: string) =>
+      dbMod.getDb().prepare('INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES (?, ?, 1)').run(tenant, 'agent-a')
+
+    it('names each reason, and agrees with getServingTenant about when there is an answer', () => {
+      const cases: Array<[string, () => void, string, string | null]> = [
+        ['no row', () => {}, 'no_row', null],
+        ['unknown source', () => setContext('', 'unknown'), 'unknown', null],
+        ['conflicting sources', () => setContext('', 'conflict'), 'conflict', null],
+        ['stale bound context', () => { enable('acme'); setContext('acme', 'bound', NOW - 43201) }, 'stale', null],
+        ['stale default context', () => setContext('default', 'default', NOW - 43201), 'stale', null],
+        ['bound tenant the agent no longer serves', () => setContext('acme', 'bound'), 'not_serving', null],
+        ['fresh bound context', () => { enable('acme'); setContext('acme', 'bound') }, 'fresh', 'acme'],
+        ['fresh default context', () => setContext('default', 'default'), 'fresh', 'default'],
+      ]
+      for (const [name, arrange, reason, serving] of cases) {
+        dbMod.getDb().prepare('DELETE FROM agent_tenant_context').run()
+        dbMod.getDb().prepare('DELETE FROM tenant_agent_availability').run()
+        arrange()
+        expect([name, dbMod.explainServingTenantMiss('agent-a', NOW)]).toEqual([name, reason])
+        expect([name, dbMod.getServingTenant('agent-a', NOW)]).toEqual([name, serving])
+      }
+    })
+  })
 })

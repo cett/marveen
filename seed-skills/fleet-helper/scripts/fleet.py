@@ -4,7 +4,7 @@ ClaudeClaw fleet helper - shared, deterministic plumbing so agents don't burn
 tokens hand-rolling curl/SQL/escaping in the model.
 
 Covers: dashboard API auth (the calling agent's own token, resolved through the install's
-scripts/hooks/agent_token.py; the shared store/.dashboard-token only as its visible fallback;
+scripts/hooks/agent_token.py; that module falls back to the shared token visibly, this file never reads it;
 never hardcoded), memory save/search, daily log, inter-agent messages, agent list,
 kanban read helpers, and Telegram MarkdownV2 escaping.
 
@@ -48,16 +48,12 @@ def base_url():
 def auth_headers():
     """Authorization (+ X-Agent-Id) for the calling agent: its own token, resolved by the
     install's agent_token module so the contract lives in one place. If that module cannot be
-    loaded, the shared token is read directly, as this helper always did."""
+    loaded (or is not trusted), the helper stops: it never reads the shared token file itself."""
     root = project_dir()
     mod = _load_agent_token(root)
-    if mod is not None:
-        try:
-            return mod.auth_headers(install=root)
-        except Exception:
-            pass
-    with open(os.path.join(root, "store", ".dashboard-token")) as f:
-        return {"Authorization": "Bearer " + f.read().strip()}
+    if mod is None:
+        raise RuntimeError("scripts/hooks/agent_token.py is missing or not trusted (owned by another user, or group/world writable)")
+    return mod.auth_headers(install=root)
 
 
 def _load_agent_token(root):

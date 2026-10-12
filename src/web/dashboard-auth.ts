@@ -9,17 +9,29 @@ import { atomicWriteFileSync } from './atomic-write.js'
 // (mode 0600) and auto-generated on first run. Static assets (/, /index.html,
 // /style.css, /app.js, /avatars/*) and the auth-status endpoint stay public
 // so the UI can bootstrap itself.
-const DASHBOARD_TOKEN_PATH = join(STORE_DIR, '.dashboard-token')
+const DASHBOARD_TOKEN_FILE = '.dashboard-token'
+const DASHBOARD_TOKEN_PATH = join(STORE_DIR, DASHBOARD_TOKEN_FILE)
 
-export function loadOrCreateDashboardToken(): string {
+/**
+ * The active dashboard token, read-only: DASHBOARD_TOKEN env first, then the token file of
+ * storeDir. '' when there is none -- unlike loadOrCreateDashboardToken it never mints one. The
+ * token file belongs to this module: other server code that needs the value (a scrub list) asks
+ * here instead of opening the file.
+ */
+export function readDashboardToken(storeDir: string = STORE_DIR): string {
   const fromEnv = process.env.DASHBOARD_TOKEN?.trim()
   if (fromEnv) return fromEnv
+  const file = storeDir === STORE_DIR ? DASHBOARD_TOKEN_PATH : join(storeDir, DASHBOARD_TOKEN_FILE)
   try {
-    if (existsSync(DASHBOARD_TOKEN_PATH)) {
-      const cached = readFileSync(DASHBOARD_TOKEN_PATH, 'utf-8').trim()
-      if (cached) return cached
-    }
-  } catch { /* fall through and regenerate */ }
+    return existsSync(file) ? readFileSync(file, 'utf-8').trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+export function loadOrCreateDashboardToken(): string {
+  const existing = readDashboardToken()
+  if (existing) return existing
   const fresh = randomBytes(32).toString('hex')
   mkdirSync(STORE_DIR, { recursive: true })
   atomicWriteFileSync(DASHBOARD_TOKEN_PATH, fresh, { mode: 0o600 })

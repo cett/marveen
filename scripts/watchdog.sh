@@ -51,10 +51,9 @@ fi
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-TOKEN=""
-if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-  TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
-fi
+# The replay below reads another agent's inbox, so it acts as the operator (store/.operator-token,
+# admin) through the API wrapper: the token never reaches this script's variables or a command line.
+API="$INSTALL_DIR/scripts/agent-api.sh"
 
 # Replays delivered-but-not-completed messages from the last 2 hours into
 # a freshly restarted agent session. Called after a confirmed restart.
@@ -62,15 +61,11 @@ replay_unfinished_messages() {
   local AGENT_ID="$1"
   local SESSION_NAME="$2"
 
-  [ -z "$TOKEN" ] && return
-
   local NOW CUTOFF RESPONSE TMPDATA
   NOW=$(date +%s)
   CUTOFF=$(( NOW - 7200 ))
 
-  RESPONSE=$(curl -s -m 5 \
-    -H "Authorization: Bearer $TOKEN" \
-    "http://localhost:${WEB_PORT}/api/messages?to=${AGENT_ID}&limit=200" 2>/dev/null) || return
+  RESPONSE=$(bash "$API" --token operator --max-time 5 GET "/api/messages?to=${AGENT_ID}&limit=200" 2>/dev/null) || return
 
   [ -z "$RESPONSE" ] || [ "$RESPONSE" = "[]" ] && return
 
