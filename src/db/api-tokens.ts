@@ -26,16 +26,30 @@ export interface ValidApiTokenRow {
   agent_id: string | null
 }
 
-/** Enrolls the dashboard token as an admin token. Returns 1 when a row was inserted, 0 when it already existed. */
+/**
+ * Enrolls the dashboard token as an admin token. Returns 1 when a row was inserted, 0 when it already existed.
+ * A new hash means the shared token was rotated: the `dashboard` rows of the previous token(s) are
+ * revoked in the same transaction, so a rotated-away token stops working instead of lingering as a second
+ * valid admin credential. The row of the hash being enrolled is never touched (a row revoked on purpose stays revoked).
+ */
 export function enrollDashboardApiToken(tokenHash: string, now: number): number {
-  return db
-    .prepare(
-      `INSERT INTO api_tokens
-         (token_hash, name, role, created_at)
-       VALUES (?, 'dashboard', 'admin', ?)
-       ON CONFLICT DO NOTHING`,
-    )
-    .run(tokenHash, now).changes
+  return db.transaction(() => {
+    const inserted = db
+      .prepare(
+        `INSERT INTO api_tokens
+           (token_hash, name, role, created_at)
+         VALUES (?, 'dashboard', 'admin', ?)
+         ON CONFLICT DO NOTHING`,
+      )
+      .run(tokenHash, now).changes
+    if (inserted > 0) {
+      db.prepare(
+        `UPDATE api_tokens SET revoked_at = ?
+         WHERE name = 'dashboard' AND token_hash != ? AND revoked_at IS NULL`,
+      ).run(now, tokenHash)
+    }
+    return inserted
+  })()
 }
 
 /** The token row when it is neither revoked nor expired at `now`. */

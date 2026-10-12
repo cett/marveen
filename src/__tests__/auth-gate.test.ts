@@ -49,6 +49,7 @@ describe('requiresAuth (gated-path predicate)', () => {
   it('leaves the public probes ungated', () => {
     expect(requiresAuth('/api/auth/status', 'GET')).toBe(false)
     expect(requiresAuth('/api/auth/login', 'POST')).toBe(false)
+    expect(requiresAuth('/api/auth/enroll-browser', 'POST')).toBe(false)
     expect(requiresAuth('/api/marveen/avatar', 'GET')).toBe(false)
     expect(requiresAuth('/api/agents/zara/avatar', 'GET')).toBe(false)
   })
@@ -56,6 +57,9 @@ describe('requiresAuth (gated-path predicate)', () => {
     expect(requiresAuth('/api/memories', 'GET')).toBe(true)
     expect(requiresAuth('/api/memories', 'POST')).toBe(true)
     expect(requiresAuth('/api/auth/users', 'POST')).toBe(true)
+    // Only the enrollment POST is public; the code-issuing route and any other verb are gated.
+    expect(requiresAuth('/api/auth/enroll-browser', 'GET')).toBe(true)
+    expect(requiresAuth('/api/admin/browser-enroll-codes', 'POST')).toBe(true)
     expect(requiresAuth('/.well-known/fleetq', 'GET')).toBe(true)
   })
   it('gates the docs viewer -- not a public endpoint despite serving plain markdown', () => {

@@ -109,6 +109,8 @@ import { tryHandleImportMemories } from './web/routes/import-memories.js'
 import { tryHandleBackups } from './web/routes/backups.js'
 import { tryHandleBlackboard } from './web/routes/blackboard.js'
 import { tryHandleAdminTokens } from './web/routes/tokens.js'
+import { tryHandleBrowserEnroll } from './web/routes/browser-enroll.js'
+import { issueEnrollCode, enrollUrl } from './web/browser-enroll-codes.js'
 import { tryHandleAdminB2b } from './web/routes/admin-b2b.js'
 import { tryHandleMe } from './web/routes/me.js'
 import { getDb } from './db.js'
@@ -134,6 +136,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleBackups)
   .add(tryHandleBlackboard)
   .add(tryHandleAdminTokens)
+  .add(tryHandleBrowserEnroll)
   .add(tryHandleAdminB2b)
   .add(tryHandleMe)
   .add(tryHandleArtifacts)
@@ -398,13 +401,14 @@ export function startWebServer(port = 3420): http.Server {
 
   server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
-    // Do NOT log the bearer token: launchd/journal/pipe captures of the
-    // structured log would otherwise carry a root-equivalent credential.
-    // Print the bootstrap URL directly to stderr instead so it shows in the
-    // interactive terminal but does not land in the pino log stream.
-    const bootstrapUrl = `http://127.0.0.1:${port}/?token=${DASHBOARD_TOKEN}`
+    // Do NOT log the shared bearer token, and do not put it in a URL either: launchd/journal/pipe
+    // captures and browser history would carry a root-equivalent credential. The URL carries a
+    // single-use enrollment code instead (10 minutes, in memory); the browser trades it for its own
+    // revocable token. Printed to stderr so it shows in the interactive terminal but not in the
+    // pino log stream. `npm run dashboard-url` prints a fresh one at any time.
+    const { code } = issueEnrollCode()
     process.stderr.write(
-      `\nDashboard access URL (paste into browser, token is stored afterward):\n  ${bootstrapUrl}\n\n`
+      `\nDashboard access URL (single use, valid 10 minutes; \`npm run dashboard-url\` prints a new one):\n  ${enrollUrl(`http://127.0.0.1:${port}`, code)}\n\n`
     )
   })
 

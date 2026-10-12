@@ -126,10 +126,13 @@ export function isFederationWireEndpoint(path: string, method: string): boolean 
 
 // Public (ungated) surfaces. These mirror the old inline exceptions exactly,
 // plus the new POST /api/auth/login (public + throttled) so the login form can
-// reach the server before a session exists.
+// reach the server before a session exists, and POST /api/auth/enroll-browser (public +
+// throttled) so a fresh browser can trade its one-time code for a token.
 export function requiresAuth(path: string, method: string): boolean {
   if (path === '/api/auth/status' && method === 'GET') return false
   if (path === '/api/auth/login' && method === 'POST') return false
+  // Spends a one-time enrollment code; the code is the credential, throttled in the handler.
+  if (path === '/api/auth/enroll-browser' && method === 'POST') return false
   if (method === 'GET' && (path === '/api/marveen/avatar' || /^\/api\/agents\/[^/]+\/avatar$/.test(path))) return false
   // Artifact view endpoint is HMAC-token gated, not Bearer; exclude from the
   // standard auth gate so the browser can open it without an Authorization header.
