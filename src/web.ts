@@ -16,7 +16,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -614,6 +614,7 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) {
     ensureFederationClaudeMdSection()
     ensureAutonomySection(MAIN_AGENT_ID)
+    ensureWorkDocSection(MAIN_AGENT_ID)
   }
 
   // ADR-001: on startup, reconnect agents whose tmux sessions survived the

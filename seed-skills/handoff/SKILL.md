@@ -19,12 +19,12 @@ description: Generate a HANDOFF.md context transfer document for session continu
 |----------|----------|-------------|
 | `purpose` | YES | What the next session should do with this context |
 | `target` | no | Agent name (e.g. `target=dev2`) -- sends via inter-agent message instead of writing file |
-| `output` | no | File path override (default: project root `HANDOFF.md`) |
+| `output` | no | File path override (default: project root `HANDOFF.md`). Never point it at a work-document location (plans, briefs, reports, notes, drafts go to workspace_docs, see the `workspace-doc-write` skill) |
 
 Examples:
 - `/handoff purpose="Continue the Pipedrive connector PR review and address CI failures"`
 - `/handoff purpose="Finish the scheduler forceSend implementation" target=dev2`
-- `/handoff purpose="Debug the auth redirect loop" output=/tmp/handoff-auth.md`
+- `/handoff purpose="Debug the auth redirect loop"`
 
 ## Procedure
 
@@ -123,6 +123,7 @@ Report to the user/caller:
 
 - Do NOT include secrets, tokens, or .env values in the handoff
 - Do NOT include full file contents -- use paths and line numbers
+- Do NOT use `output=` to write a work document (plan, brief, report, notes) to a loose file: those belong in workspace_docs
 - Keep it under 3000 words -- the receiving session needs room to work
 - If `target=` agent is not running (check tmux), warn and fall back to file mode
 - The handoff is a snapshot -- it goes stale. Include the timestamp prominently

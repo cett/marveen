@@ -47,3 +47,10 @@ describe('no-reader rules block (single source of truth)', () => {
     expect(spawn).toContain('ensureNoReaderSection(name)')
   })
 })
+
+describe('work-document rule block wiring', () => {
+  it('is ensured on every sub-agent respawn and for the main agent at dashboard startup', () => {
+    expect(read('src/web/agent-process-spawn.ts')).toContain('ensureWorkDocSection(name)')
+    expect(read('src/web.ts')).toContain('ensureWorkDocSection(MAIN_AGENT_ID)')
+  })
+})

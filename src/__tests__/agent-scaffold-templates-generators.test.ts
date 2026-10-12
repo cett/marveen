@@ -84,6 +84,16 @@ describe('generateClaudeMd', () => {
     expect(out).toContain('<!-- END GENERATED: autonomy-wiring -->')
   })
 
+  it('appends the generated work-document rule block after the no-reader block', async () => {
+    mockRunAgent.mockResolvedValue({ text: 'Plain body.' })
+    const out = await generateClaudeMd('newagent', 'x', 'sonnet')
+    const begin = out.indexOf('<!-- BEGIN GENERATED: workdoc-rule (auto-generated, do not edit by hand) -->')
+    expect(begin).toBeGreaterThan(out.indexOf('<!-- END GENERATED: no-reader-rules -->'))
+    expect(out).toContain('<!-- END GENERATED: workdoc-rule -->')
+    expect(out).toContain('--agent newagent --delete-source')
+    expect(out.trimEnd().endsWith('<!-- END GENERATED: workdoc-rule -->')).toBe(true)
+  })
+
   it('places the generated sections after the LLM content, not before', async () => {
     mockRunAgent.mockResolvedValue({ text: 'Plain body, no fences.' })
     const out = await generateClaudeMd('newagent', 'x', 'sonnet')
