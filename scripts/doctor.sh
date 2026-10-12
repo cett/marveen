@@ -250,6 +250,18 @@ else
   if [ -f "store/.operator-token" ]; then ok "Operator token: present"; else warn "store/.operator-token missing -- run: npm run agent-tokens -- issue-operator"; fi
 fi
 
+# --- Shared token go-live gate (informational, never a failure) ---
+# TOKEN_SHADOW_WINDOW_START=YYYY-MM-DD in .env is the first UTC day of the measurement clock (see
+# scripts/token-shadow-gate.py). The line shows where the gate stands; without the operator's
+# attestations (--uptime-confirmed, --dry-run-clean) an INCONCLUSIVE here is expected, so it is
+# informational only. Each run makes one canary call (caller gate-canary) the gate excuses.
+GATE_START="$(grep -E '^TOKEN_SHADOW_WINDOW_START=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' ')"
+if [ -n "$GATE_START" ] && command -v python3 >/dev/null 2>&1; then
+  GATE_STATE="$(python3 scripts/token-shadow-gate.py --window-start "$GATE_START" --json 2>/dev/null | python3 -c 'import sys, json; print(json.load(sys.stdin)["state"])' 2>/dev/null)"
+  echo -e "\n${BOLD}Shared token gate${RESET}"
+  ok "token-shadow-gate: ${GATE_STATE:-INCONCLUSIVE} (window start ${GATE_START}); details: python3 scripts/token-shadow-gate.py --window-start ${GATE_START}"
+fi
+
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.operator-token" ] || [ -f "store/.dashboard-token" ]; then

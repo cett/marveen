@@ -52,6 +52,14 @@ bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main
 
 Érvényesítés még nincs: a közös token mindenhol tovább működik.
 
+#### Go-live kapu: használja-e még valaki a közös tokent?
+
+A `python3 scripts/token-shadow-gate.py --window-start <ÉÉÉÉ-HH-NN>` egy mérési ablakon olvassa a shadow-számlálót, és PASS (0), FAIL (1) vagy INCONCLUSIVE (2) választ ad. A közös token rotálása PASS-ra vár. Az ablak az utolsó, hívási utat érintő deploy utáni első 00:00 UTC-kor indul (maga a deploy-nap a deploy előtti és utáni hívásokat keveri), és 7 teljes UTC napot plusz a mai napot kéri.
+
+- **FAIL**: olyan közös-token használat, amit semmi nem menti (kivétel csak a főágens saját, bejelentett használata, a hívó nélküli böngészőoldal és a kapu saját canary hívása, mindegyik indoklással és lejárattal a scriptben), vagy bármilyen `agent_id_mismatch`, `foreign_row_access`, `missing_tenant_context`, `shared_agent_memories_no_tenant` sor. A jelentés kilistázza a sorokat és az utolsó találatot; az ablak utána újraindul. Minden hívási utat módosító deploy újraindítja az órát.
+- **INCONCLUSIVE** (soha nem PASS): az ablak túl rövid; egy legfeljebb heti ütemezés nem futott az ablakban; egy havi vagy ritkább ütemezésnek nincs kézi futása az ablakban vagy tiszta recept-dry-runja (`--manual-run NÉV`, `--dry-run-clean NÉV` igazolja); a dashboard üzemideje nincs megerősítve (`--uptime-confirmed`: egyetlen ablak-napon sem állhatott több mint 24 órát); a canary nem mozdította a számlálót; egy lekérdezés elérte a sorlimitet, vagy a számláló `_overflow` / `_invalid` sort tartalmaz. A nulla csak akkor számít, ha a számláló bizonyítottan él: a kapu egy közös-token hívást tesz `gate-canary` néven, és a számnak nőnie kell.
+- A kapu az operátor saját tokenjével olvas, és megtagadja az olvasást a közös tokenen át (az olvasásai abba a számlálóba esnének, amit épp elbírál). Az `.env`-ben a `TOKEN_SHADOW_WINDOW_START=ÉÉÉÉ-HH-NN` beállítással a `doctor.sh` tájékoztató sorban kiírja a kapu állapotát.
+
 ### Ágens indítása és leállítása
 
 Az ágenseket a dashboard kezeli automatikusan. Kézzel:

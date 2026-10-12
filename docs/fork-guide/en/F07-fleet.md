@@ -52,6 +52,14 @@ bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main
 
 Nothing is enforced yet: the shared token keeps working everywhere.
 
+#### Go-live gate: is the shared token still in use?
+
+`python3 scripts/token-shadow-gate.py --window-start <YYYY-MM-DD>` reads the shadow counter over a measurement window and answers PASS (exit 0), FAIL (exit 1) or INCONCLUSIVE (exit 2). Rotating the shared token waits for a PASS. The window starts at the first 00:00 UTC after the last deploy that touched a call path (the deploy day itself mixes before and after) and needs 7 full UTC days plus today.
+
+- **FAIL**: shared-token use that nothing excuses (the main agent's own declared use, a browser page with no caller and the gate's own canary are the only exceptions, each listed with its reason and expiry in the script), or any `agent_id_mismatch`, `foreign_row_access`, `missing_tenant_context` or `shared_agent_memories_no_tenant` row. The report lists the rows and the last hit; the window restarts after it. Every deploy that changes a call path restarts the clock.
+- **INCONCLUSIVE** (never a PASS): the window is too short; an enabled schedule that runs at most weekly has not run in the window; a monthly-or-rarer schedule has no manual run in the window or no clean recipe dry-run (`--manual-run NAME`, `--dry-run-clean NAME` attest them); the dashboard's uptime is not confirmed (`--uptime-confirmed`: it must not have stood still for more than 24 hours on any window day); the canary did not move the counter; a query hit the row limit or the counter holds `_overflow` / `_invalid` rows. A zero count only counts when the counter is proven alive: the gate makes one shared-token call as `gate-canary` and requires the count to grow.
+- The gate reads with the operator's own token and refuses to read through the shared one (its reads would land in the counter it judges). `TOKEN_SHADOW_WINDOW_START=YYYY-MM-DD` in `.env` makes `doctor.sh` print the gate state as an informational line.
+
 ### Starting and stopping agents
 
 The dashboard manages agents automatically. Manual control via the API:
