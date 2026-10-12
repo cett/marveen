@@ -12,6 +12,11 @@ import { atomicWriteFileSync } from './atomic-write.js'
 const DASHBOARD_TOKEN_FILE = '.dashboard-token'
 const DASHBOARD_TOKEN_PATH = join(STORE_DIR, DASHBOARD_TOKEN_FILE)
 
+/** Where the shared dashboard token file lives (store/.dashboard-token); for callers that only look at the file's hash. */
+export function dashboardTokenFilePath(storeDir: string = STORE_DIR): string {
+  return join(storeDir, DASHBOARD_TOKEN_FILE)
+}
+
 /**
  * The active dashboard token, read-only: DASHBOARD_TOKEN env first, then the token file of
  * storeDir. '' when there is none -- unlike loadOrCreateDashboardToken it never mints one. The

@@ -16,9 +16,11 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, STORE_DIR } from './config.js'
-import { getDb, insertApiToken, listActiveApiTokensByName, rotateApiToken, revokeApiToken } from './db.js'
+import { getApiTokenRowByHash, getDb, insertApiToken, listActiveApiTokensByName, rotateApiToken, revokeApiToken } from './db.js'
+import { readEnvFile } from './env.js'
 import { atomicWriteFileSync } from './web/atomic-write.js'
 import { agentConfigRoot } from './web/agent-config.js'
+import { dashboardTokenFilePath } from './web/dashboard-auth.js'
 
 export const AGENT_TOKEN_FILENAME = '.agent-token'
 export const OPERATOR_TOKEN_FILENAME = '.operator-token'
@@ -112,4 +114,68 @@ export function issueAgentToken(agentId: string, opts: { rotate?: boolean; now?:
 /** The operator's own named admin token (for the scripts an operator runs), instead of the shared file token. */
 export function issueOperatorToken(opts: { rotate?: boolean; now?: number } = {}): IssueResult {
   return issue({ subject: 'operator', name: 'operator', role: 'admin', agentId: null, path: operatorTokenPath() }, opts)
+}
+
+export type CheckStatus =
+  | 'ok'
+  | 'missing'
+  | 'unknown_hash'
+  | 'revoked'
+  | 'wrong_role'
+  | 'shared_mismatch'
+  | 'shared_in_env'
+
+export interface CheckRow {
+  /** The agent id, `operator`, or `shared` for the dashboard token. */
+  subject: string
+  status: CheckStatus
+  /** The role the token file is expected to carry; '-' for the shared token. */
+  role: string
+  /** Where the token file is. The token itself is never part of a result. */
+  path: string
+}
+
+export interface CheckResult {
+  rows: CheckRow[]
+  /** True when every row is `ok`. */
+  ok: boolean
+}
+
+function checkSpec(spec: Spec, now: number): CheckRow {
+  const row = (status: CheckStatus): CheckRow => ({ subject: spec.subject, status, role: spec.role, path: spec.path })
+  const fileHash = readTokenHash(spec.path)
+  if (!fileHash) return row('missing')
+  const found = getApiTokenRowByHash(fileHash)
+  if (!found) return row('unknown_hash')
+  if (found.revoked_at !== null || (found.expires_at !== null && found.expires_at <= now)) return row('revoked')
+  if (found.role !== spec.role || found.name !== spec.name || found.agent_id !== spec.agentId) return row('wrong_role')
+  return row('ok')
+}
+
+/**
+ * Read-only audit of the token files an install needs after a restore: one row per agent id given,
+ * then the operator, saying whether the file holds a token the database still accepts for that subject.
+ * Then the shared dashboard token: its file must hash to the active `dashboard` row (`shared_mismatch`
+ * otherwise), and `shared_in_env` flags a DASHBOARD_TOKEN set in .env or the environment (the shared
+ * token should not live there: the archive carries .env). A shared token file that does not exist is
+ * not a finding (the dashboard draws a fresh one at its next start). Nothing is written and no token
+ * value leaves this function.
+ */
+export function checkAgentTokens(agentIds: string[], opts: { now?: number; includeOperator?: boolean; includeShared?: boolean } = {}): CheckResult {
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const rows: CheckRow[] = agentIds.map(id => checkSpec(agentSpec(id), now))
+  if (opts.includeOperator !== false) {
+    rows.push(checkSpec({ subject: 'operator', name: 'operator', role: 'admin', agentId: null, path: operatorTokenPath() }, now))
+  }
+  if (opts.includeShared !== false) {
+    const sharedPath = dashboardTokenFilePath(STORE_DIR)
+    const fileHash = readTokenHash(sharedPath)
+    if (fileHash) {
+      const matches = listActiveApiTokensByName('dashboard', now).some(r => r.token_hash === fileHash)
+      rows.push({ subject: 'shared', status: matches ? 'ok' : 'shared_mismatch', role: '-', path: sharedPath })
+    }
+    const inEnv = (readEnvFile(['DASHBOARD_TOKEN']).DASHBOARD_TOKEN ?? '').trim() !== '' || (process.env.DASHBOARD_TOKEN ?? '').trim() !== ''
+    if (inEnv) rows.push({ subject: 'shared', status: 'shared_in_env', role: '-', path: '.env' })
+  }
+  return { rows, ok: rows.every(r => r.status === 'ok') }
 }

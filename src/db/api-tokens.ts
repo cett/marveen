@@ -68,6 +68,11 @@ export function apiTokenHashExists(tokenHash: string): boolean {
   return !!db.prepare('SELECT id FROM api_tokens WHERE token_hash = ?').get(tokenHash)
 }
 
+/** The row registered under this hash in any state (active, expired or revoked), or undefined. */
+export function getApiTokenRowByHash(tokenHash: string): ApiTokenRow | undefined {
+  return db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(tokenHash) as ApiTokenRow | undefined
+}
+
 export function listApiTokenRows(): ApiTokenRow[] {
   return db.prepare('SELECT * FROM api_tokens ORDER BY created_at DESC').all() as ApiTokenRow[]
 }

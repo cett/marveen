@@ -3,6 +3,7 @@
 //
 //   npm run agent-tokens -- issue [--rotate] [--dry-run] [<agent>...]   # default: the main agent and every agent
 //   npm run agent-tokens -- issue-operator [--rotate]
+//   npm run agent-tokens -- check [<agent>...]                          # read-only; exit 1 if any file is not ok
 //   npm run agent-tokens -- list
 //   npm run agent-tokens -- revoke <agent>
 //
@@ -13,13 +14,14 @@
 import { MAIN_AGENT_ID } from '../src/config.js'
 import { initDatabase, listApiTokenRows, revokeApiTokensForAgent } from '../src/db.js'
 import { listAgentNames } from '../src/web/agent-config.js'
-import { agentTokenPath, issueAgentToken, issueOperatorToken } from '../src/agent-tokens.js'
+import { agentTokenPath, checkAgentTokens, issueAgentToken, issueOperatorToken } from '../src/agent-tokens.js'
 
 function usage(): never {
   process.stderr.write(
     'Usage:\n' +
     '  agent-tokens issue [--rotate] [--dry-run] [<agent>...]\n' +
     '  agent-tokens issue-operator [--rotate]\n' +
+    '  agent-tokens check [<agent>...]\n' +
     '  agent-tokens list\n' +
     '  agent-tokens revoke <agent>\n',
   )
@@ -53,6 +55,12 @@ if (cmd === 'issue') {
 } else if (cmd === 'issue-operator') {
   const r = issueOperatorToken({ rotate: flags.has('--rotate') })
   process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+} else if (cmd === 'check') {
+  // Read-only: one line per expected token file, exit 1 when any is not `ok`.
+  const targets = names.length > 0 ? names : [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
+  const { rows, ok } = checkAgentTokens(targets)
+  for (const r of rows) process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+  process.exit(ok ? 0 : 1)
 } else if (cmd === 'list') {
   for (const t of listApiTokenRows().filter(r => r.revoked_at === null)) {
     process.stdout.write(`${t.id}\t${t.name}\t${t.role}\t${t.agent_id ?? '-'}\t${t.tenant_id}\t${new Date(t.created_at * 1000).toISOString()}\n`)
