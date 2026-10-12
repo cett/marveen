@@ -207,7 +207,9 @@ jobs:
         with:
           # A pull request needs the history to tell what it changed (the vitest
           # step below diffs against the base); a push to develop needs none.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # The values are strings on purpose: in an expression 0 is falsy, so
+          # `cond && 0 || 1` would evaluate to 1 on a pull request too.
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
