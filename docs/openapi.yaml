@@ -1712,7 +1712,9 @@ paths:
         message of another tenant answers exactly like a missing id (404, same
         body), so message ids cannot be probed across tenants. Admin callers
         are not restricted. The `[Eredmény]` completion notice sent back to the
-        delegator is stored in the original message's tenant.
+        delegator is stored in the original message's tenant. A `fleet_agent`
+        token (an agent's own token) may only update messages addressed to its
+        own agent; another agent's message is a 403.
       requestBody:
         required: true
         content:
@@ -1744,6 +1746,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+        "403":
+          description: >-
+            The token is a fleet_agent token and the message is addressed to
+            another agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: >-
             Message not found, invalid status transition, or the message
