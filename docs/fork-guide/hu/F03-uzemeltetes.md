@@ -25,6 +25,15 @@ launchctl list | grep <agent-id>
 
 > Az `<agent-id>` az `.env` fájl `MAIN_AGENT_ID` értéke (pl. `marveen`).
 
+#### Segéd-launchd feladatok (macOS)
+
+A segéd-telepítők (`install-channel-keepalive-probe.sh`, `install-channel-coordinator.sh`, `install-channel-watchdog.sh`) a launchd-címkét az install saját azonosítójából képezik: `com.<service-id>.channel-keepalive-probe`, `com.<service-id>.channel-coordinator`, `com.<service-id>.channel-watchdog`. Az azonosító az install `.env` fájljának `SERVICE_ID` értéke, ennek hiányában a `MAIN_AGENT_ID`, végül `marveen`. Így két telepítés egy felhasználó alatt nem írja felül egymás segéd-feladatát. Alapértelmezett telepítésnél a címke változatlanul `com.marveen.<név>`, tehát nem mozdul semmi.
+
+- A címke kiolvasása telepítés nélkül: `scripts/install-channel-keepalive-probe.sh --print-label`.
+- Bevezetés (kézi lépés, pár perc kiesés a keepalive-ban): egy már átnevezett installnál (a `SERVICE_ID` nem `marveen`) futtasd újra a telepítőt `--load` kapcsolóval. A telepítő kivezeti az install saját régi `com.marveen.<név>` feladatát (csak akkor, ha a plist `WorkingDirectory` értéke ez a fa; másik install `com.marveen.*` feladatához nem nyúl), majd az újat tölti be.
+- Visszaút: állítsd vissza a korábbi verziót, futtasd újra a telepítőt `--load` kapcsolóval (újra a régi `com.marveen.<név>` címkét írja), majd az újat told le: `launchctl bootout gui/$(id -u)/com.<service-id>.<név>` és töröld a `~/Library/LaunchAgents/com.<service-id>.<név>.plist` fájlt.
+- A `SERVICE_ID` betűből, számból, `_` vagy `-` karakterből állhat; más érték esetén a telepítő figyelmeztet és `marveen`-t használ.
+
 ### Linux (systemd)
 
 ```bash

@@ -24,7 +24,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LABEL="com.marveen.channel-watchdog"
+# com.<SERVICE_ID>.channel-watchdog, not a fixed com.marveen.channel-watchdog -- two installs
+# under one user must not share (and overwrite) one helper job.
+. "$SCRIPT_DIR/launchd-label.sh"
+LABEL="$(helper_launchd_label "$PROJECT_DIR" channel-watchdog)"
+# The label can be asked for without installing anything.
+if [ "${1:-}" = "--print-label" ]; then printf '%s\n' "$LABEL"; exit 0; fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 WATCHDOG="$PROJECT_DIR/scripts/channel-watchdog.sh"
 
@@ -37,6 +42,7 @@ if [ ! -f "$WATCHDOG" ]; then
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
+retire_legacy_helper_label "$PROJECT_DIR" channel-watchdog "$LABEL" "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
