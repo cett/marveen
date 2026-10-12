@@ -17,6 +17,7 @@ import {
   countPlannedKanbanCards,
   writeAgentAuditLog,
   type KanbanCard,
+  type KanbanAuditActor,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -30,6 +31,15 @@ import { getEffectiveSettingValue } from '../../settings-store.js'
 import { scopeToTenant } from '../tenant-scope.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
+
+// The caller of a card edit, for the audit row: the agent of the token (a credential), else the signed-in
+// user, else the agent the caller says it is (X-Agent-Id; only a claim, recorded as such).
+function kanbanAuditActor(ctx: RouteContext): KanbanAuditActor | undefined {
+  if (ctx.tokenAgentId) return { id: ctx.tokenAgentId, source: 'token' }
+  if (ctx.auth?.kind === 'session' && ctx.auth.user) return { id: ctx.auth.user, source: 'session' }
+  if (ctx.agentId) return { id: ctx.agentId, source: 'self_declared' }
+  return undefined
+}
 
 const KANBAN_STATUSES = new Set<KanbanCard['status']>(['planned', 'in_progress', 'waiting', 'testing', 'done'])
 
@@ -403,12 +413,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (due === undefined) { json(res, { error: 'invalid_value', field: 'due_date', hint: 'due_date must be an integer epoch in seconds, a YYYY-MM-DD date or null' }, 400); return true }
       data.due_date = due
     }
-    if (updateKanbanCard(id, data)) {
-      try {
-        if (ctx.auth?.kind === 'session' && ctx.auth.user) {
-          writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'kanban', action: 'update', entity_id: id })
-        }
-      } catch { /* audit failure must not abort card update */ }
+    // A card id in the body is a reference to another row: a non-admin caller may only point at a card of
+    // its own tenant. Without this, moving a card under a foreign tenant's parent (parent_id) would work
+    // across the tenant line even though the card itself is checked above. A foreign parent answers like a
+    // missing one (404), so ids cannot be probed.
+    if (!isAdmin && effectiveTenantId !== null && typeof data.parent_id === 'string' && data.parent_id) {
+      if (!scopeToTenant(effectiveTenantId).kanban.get(data.parent_id)) {
+        json(res, { error: 'not_found', field: 'parent_id', hint: 'Szülő kártya nem található' }, 404)
+        return true
+      }
+    }
+    // updateKanbanCard writes the audit row itself, attributed to the caller.
+    if (updateKanbanCard(id, data, kanbanAuditActor(ctx))) {
       json(res, { ok: true })
       return true
     }

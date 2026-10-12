@@ -90,7 +90,7 @@ bash scripts/agent-api.sh POST /api/messages '{"from":"sender-agent","to":"targe
 
 The message is injected into the target agent's tmux session; the agent processes it and responds on its own channel.
 
-The executor closes a delegated message with `PUT /api/messages/<id>` (`status`: `done`, `failed` or `refused`, optional `result`). The delegator then receives a completion notice that starts with `[Eredmény]`; that notice is stored in the same tenant as the original message, so a tenant-scoped delegator sees the result of its own request.
+The executor closes a delegated message with `PUT /api/messages/<id>` (`status`: `done`, `failed` or `refused`, optional `result`). The delegator then receives a completion notice that starts with `[Eredmény]`; that notice is stored in the same tenant as the original message, so a tenant-scoped delegator sees the result of its own request. An agent's own token can close only the messages addressed to that agent (a foreign message is a 403, and one of another tenant a 404); the admin tokens can close any. To change a card's status use `POST /api/kanban/<id>/move` (body `status`, `actor`), which also wakes the assignee and updates the parent card; `PUT /api/kanban/<id>` is for the other fields (title, description, priority, assignee, project) and does neither.
 
 Tenant rule for this endpoint: a non-admin caller can only update messages of its own tenant (a message without a tenant counts as `default`). A message of another tenant answers exactly like a missing id (`404 not_found`), so message ids cannot be probed across tenants; the rejected attempt is written to the audit log. Admin callers are not restricted.
 

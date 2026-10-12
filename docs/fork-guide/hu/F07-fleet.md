@@ -90,7 +90,7 @@ bash scripts/agent-api.sh POST /api/messages '{"from":"kuldo-agent","to":"cimzet
 
 Az üzenet a cél-ágens tmux session-jébe kerül injektálásra; az ágens feldolgozza és a saját csatornáján válaszol.
 
-A végrehajtó a `PUT /api/messages/<id>` hívással zárja le a kiosztott üzenetet (`status`: `done`, `failed` vagy `refused`, opcionális `result`). A delegáló ezután egy `[Eredmény]` kezdetű teljesítési értesítőt kap; ez az értesítő az eredeti üzenet tenantjába kerül, így a tenant-hatókörű delegáló látja a saját kérésének az eredményét.
+A végrehajtó a `PUT /api/messages/<id>` hívással zárja le a kiosztott üzenetet (`status`: `done`, `failed` vagy `refused`, opcionális `result`). A delegáló ezután egy `[Eredmény]` kezdetű teljesítési értesítőt kap; ez az értesítő az eredeti üzenet tenantjába kerül, így a tenant-hatókörű delegáló látja a saját kérésének az eredményét. Egy ágens saját tokenje csak az ahhoz az ágenshez címzett üzeneteket zárhatja le (idegen üzenet 403, másik tenanté 404); az admin tokenek bármelyiket. Kártya státuszát a `POST /api/kanban/<id>/move` hívással változtasd (`status`, `actor` a body-ban), ez az assignee-t is felébreszti és a szülő kártyát is frissíti; a `PUT /api/kanban/<id>` a többi mezőre való (cím, leírás, prioritás, assignee, projekt), és egyiket sem teszi.
 
 Tenant-szabály erre a végpontra: nem-admin hívó csak a saját tenantjának üzenetét módosíthatja (a tenant nélküli üzenet `default`-nak számít). Másik tenant üzenete pontosan úgy válaszol, mint egy nem létező azonosító (`404 not_found`), így az üzenet-azonosítók tenantok között nem tapogathatók végig; az elutasított kísérlet bekerül az audit-naplóba. Az admin hívót nem korlátozza.
 

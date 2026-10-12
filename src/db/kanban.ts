@@ -164,7 +164,17 @@ export function parseKanbanDueDate(v: unknown): number | null | undefined {
   return ms / 1000
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
+/**
+ * Who made a card edit, for the audit row. `token` is the agent a credential names, `session` a signed-in
+ * dashboard user, `self_declared` the X-Agent-Id header of a caller the credential cannot name (the shared
+ * token): the last one is a claim, not an identity, and the row says so.
+ */
+export interface KanbanAuditActor {
+  id: string
+  source: 'token' | 'session' | 'self_declared'
+}
+
+export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: KanbanAuditActor): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
   if ('due_date' in fields) {
@@ -202,7 +212,15 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
   if (ok) {
     if (parentChanging) cascadeDepth(id, newDepth)
     try {
-      writeAgentAuditLog({ agent_id: f.assignee || 'system', entity: 'kanban', action: 'update', entity_id: id, detail: { status: f.status, priority: f.priority } })
+      // The audit row names whoever made the edit; the assignee is only the fallback for a caller nobody can name
+      // (a script on the shared token), because an agent that edits another agent's card is not the assignee.
+      writeAgentAuditLog({
+        agent_id: actor?.id ?? (f.assignee || 'system'),
+        entity: 'kanban',
+        action: 'update',
+        entity_id: id,
+        detail: { status: f.status, priority: f.priority, ...(actor ? { actor_source: actor.source } : {}) },
+      })
     } catch { /* audit failure must not abort card update */ }
   }
   return ok

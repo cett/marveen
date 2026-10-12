@@ -445,6 +445,17 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }
     }
 
+    // A fleet_agent token writes the outcome of the messages addressed to ITS agent, nobody else's:
+    // inside one tenant an agent could otherwise close, fail or refuse a colleague's task and fire the
+    // [Eredmény] notification for it. The other principals keep the tenant check above only.
+    if (ctx.role === 'fleet_agent' && existing && sanitizeAgentIdent(existing.to_agent) !== sanitizeAgentIdent(ctx.tokenAgentId ?? '')) {
+      writeAgentAuditLog({ agent_id: ctx.tokenAgentId ?? 'unknown', entity: 'message', action: 'update', entity_id: id,
+        detail: { status: newStatus, message_to: existing.to_agent, reason: 'not_recipient_denied', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
+      logger.warn({ id, tokenAgent: ctx.tokenAgentId, messageTo: existing.to_agent }, 'Rejected PUT /api/messages/:id: the token agent is not the recipient')
+      json(res, { error: 'forbidden', hint: 'Only the recipient agent can write the outcome of a message' }, 403)
+      return true
+    }
+
     let ok = false
     if (newStatus === 'done') ok = markMessageDone(id, result)
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
