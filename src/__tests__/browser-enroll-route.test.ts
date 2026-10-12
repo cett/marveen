@@ -89,13 +89,15 @@ describe('POST /api/auth/enroll-browser', () => {
     expect(out.status).toBe(400)
   })
 
-  it('throttles after repeated wrong codes: 429 with Retry-After, even for a correct code', async () => {
+  it('throttles repeated wrong codes with 429 and Retry-After, but still accepts a live code', async () => {
     const { code } = issueEnrollCode()
     for (let i = 0; i < 10; i++) expect((await enroll(`wrong-${i}`)).status).toBe(401)
-    const blocked = await enroll(code)
+    const blocked = await enroll('wrong-again')
     expect(blocked.status).toBe(429)
     expect(blocked.body).toMatchObject({ error: 'limit_exceeded' })
     expect(Number(blocked.headers['Retry-After'])).toBeGreaterThan(0)
+    // spraying wrong codes must not lock the legitimate enrollment out
+    expect((await enroll(code)).status).toBe(201)
   })
 
   it('mints a token that is revoked alone: the gate then refuses it, the others stay valid', async () => {

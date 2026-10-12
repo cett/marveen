@@ -28,9 +28,12 @@ export interface ValidApiTokenRow {
 
 /**
  * Enrolls the dashboard token as an admin token. Returns 1 when a row was inserted, 0 when it already existed.
- * A new hash means the shared token was rotated: the `dashboard` rows of the previous token(s) are
- * revoked in the same transaction, so a rotated-away token stops working instead of lingering as a second
- * valid admin credential. The row of the hash being enrolled is never touched (a row revoked on purpose stays revoked).
+ * Every other active `dashboard` row is revoked in the same transaction, on every call (not only when a row
+ * was inserted): a rotated-away token stops working instead of lingering as a second valid admin credential,
+ * and an install that already holds two active rows is cleaned up on its next boot. The row of the hash being
+ * enrolled is never touched, so a row revoked on purpose stays revoked, and so does the old token of an
+ * A -> B -> A restore of the token file (rotate by deleting the file, which draws a fresh token; recover a
+ * locked-out file token with the rollback in web/token-bootstrap.ts).
  */
 export function enrollDashboardApiToken(tokenHash: string, now: number): number {
   return db.transaction(() => {
@@ -42,12 +45,10 @@ export function enrollDashboardApiToken(tokenHash: string, now: number): number 
          ON CONFLICT DO NOTHING`,
       )
       .run(tokenHash, now).changes
-    if (inserted > 0) {
-      db.prepare(
-        `UPDATE api_tokens SET revoked_at = ?
-         WHERE name = 'dashboard' AND token_hash != ? AND revoked_at IS NULL`,
-      ).run(now, tokenHash)
-    }
+    db.prepare(
+      `UPDATE api_tokens SET revoked_at = ?
+       WHERE name = 'dashboard' AND token_hash != ? AND revoked_at IS NULL`,
+    ).run(now, tokenHash)
     return inserted
   })()
 }

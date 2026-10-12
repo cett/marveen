@@ -63,13 +63,27 @@ describe('consumeEnrollCode', () => {
 })
 
 describe('failed-attempt throttle', () => {
-  it('throttles after 10 failures in the window, even for a correct code', () => {
-    const { code } = issueEnrollCode(T0)
+  it('throttles a wrong code after 10 failures in the window', () => {
     for (let i = 0; i < 10; i++) expect(consumeEnrollCode(`wrong-${i}`, T0 + i)).toEqual({ ok: false, reason: 'invalid' })
-    const blocked = consumeEnrollCode(code, T0 + 100)
-    expect(blocked.ok).toBe(false)
-    expect(blocked).toMatchObject({ reason: 'throttled' })
+    const blocked = consumeEnrollCode('wrong-again', T0 + 100)
+    expect(blocked).toMatchObject({ ok: false, reason: 'throttled' })
     expect((blocked as { retryAfterS: number }).retryAfterS).toBeGreaterThan(0)
+  })
+
+  it('never refuses a live code, however many wrong codes were sprayed first (no lockout)', () => {
+    const { code } = issueEnrollCode(T0)
+    for (let i = 0; i < 50; i++) consumeEnrollCode(`wrong-${i}`, T0 + i)
+    expect(consumeEnrollCode('wrong-after', T0 + 60)).toMatchObject({ reason: 'throttled' })
+    expect(consumeEnrollCode(code, T0 + 100)).toEqual({ ok: true })
+    // and it was spent: the same code is now just another wrong code
+    expect(consumeEnrollCode(code, T0 + 200)).toMatchObject({ ok: false, reason: 'throttled' })
+  })
+
+  it('a throttled attempt does not extend the failure window', () => {
+    for (let i = 0; i < 10; i++) consumeEnrollCode(`wrong-${i}`, T0)
+    for (let i = 0; i < 100; i++) consumeEnrollCode(`spray-${i}`, T0 + 5 * 60 * 1000)
+    // the original failures drain at T0 + 10 min; the sprayed ones were never recorded
+    expect(consumeEnrollCode('later', T0 + 10 * 60 * 1000 + 1)).toEqual({ ok: false, reason: 'invalid' })
   })
 
   it('9 failures do not throttle', () => {

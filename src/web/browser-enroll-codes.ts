@@ -11,8 +11,9 @@
 // a code is kept, so a heap dump or a debug print of the store does not yield a usable code.
 //
 // Brute force: a code is 192 random bits, so guessing is not the realistic attack; the throttle
-// below still caps the failed-attempt rate (a wrong code is a signal worth bounding) and, while
-// it is tripped, refuses even a correct code, the same way the login throttle does.
+// below still caps the failed-attempt rate (a wrong code is a signal worth bounding): once it is
+// tripped, a code that does not match gets 429 instead of 401. A code that matches is always
+// accepted, so spraying wrong codes cannot lock a legitimate enrollment out.
 
 import { createHash, randomBytes } from 'node:crypto'
 
@@ -67,16 +68,20 @@ export type EnrollAttempt =
  * mints anything, so two concurrent requests with the same code cannot both succeed.
  */
 export function consumeEnrollCode(code: string, now: number = Date.now()): EnrollAttempt {
-  pruneFailures(now)
-  if (failures.length >= MAX_FAILURES_IN_WINDOW) {
-    const retry = Math.ceil((failures[0] + FAILURE_WINDOW_MS - now) / 1000)
-    return { ok: false, reason: 'throttled', retryAfterS: Math.max(1, retry) }
-  }
   pruneExpired(now)
+  // A live code is never refused by the throttle. The code is 192 random bits, so letting a
+  // correct one through costs nothing against guessing, while a throttle that also refused it
+  // would let anyone who can reach the port lock the legitimate enrollment out by spraying
+  // wrong codes (the failure counter is global, there is no usable client address on loopback).
   const hash = hashCode(code)
   if (code && live.has(hash)) {
     live.delete(hash)
     return { ok: true }
+  }
+  pruneFailures(now)
+  if (failures.length >= MAX_FAILURES_IN_WINDOW) {
+    const retry = Math.ceil((failures[0] + FAILURE_WINDOW_MS - now) / 1000)
+    return { ok: false, reason: 'throttled', retryAfterS: Math.max(1, retry) }
   }
   failures.push(now)
   return { ok: false, reason: 'invalid' }

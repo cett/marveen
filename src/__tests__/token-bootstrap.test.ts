@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, getDb, enrollDashboardApiToken } from '../db.js'
 import { bootstrapDashboardToken } from '../web/token-bootstrap.js'
 import { resolveApiToken } from '../web/auth-gate.js'
 
@@ -116,6 +116,25 @@ describe('bootstrapDashboardToken', () => {
       bootstrapDashboardToken('t2')
       bootstrapDashboardToken('t3')
       expect(states().map((r) => r.revoked_at !== null)).toEqual([true, true, false])
+    })
+
+    it('cleans up two active rows left by an install from before rotation revoked the old one', () => {
+      const now = Math.floor(Date.now() / 1000)
+      for (const t of ['legacy-a', 'legacy-b']) {
+        db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at) VALUES (?, 'dashboard', 'admin', ?)").run(sha256(t), now)
+      }
+      expect(enrollDashboardApiToken(sha256('legacy-b'), now)).toBe(0) // the row exists, nothing inserted
+      expect(resolveApiToken('legacy-a')).toEqual({ found: false, registeredButInvalid: true })
+      expect(resolveApiToken('legacy-b')).toMatchObject({ found: true })
+    })
+
+    it('restoring an old token file (A -> B -> A) revokes B and does not resurrect A', () => {
+      bootstrapDashboardToken('token-a')
+      bootstrapDashboardToken('token-b')
+      bootstrapDashboardToken('token-a')
+      expect(resolveApiToken('token-b')).toEqual({ found: false, registeredButInvalid: true })
+      // A was revoked by the first rotation and is not un-revoked; the rollback in the module header is the way back
+      expect(resolveApiToken('token-a')).toEqual({ found: false, registeredButInvalid: true })
     })
 
     it('a restart with the same token revokes nothing', () => {
