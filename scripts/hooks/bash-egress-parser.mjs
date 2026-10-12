@@ -1197,6 +1197,18 @@ const GATE_MSG =
   'tarsaik vagy interpreter-egysoros kulso celra, akkor is, ha a cel valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
   '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
+// A heredoc / here-string body or a read loop that carries an external URL is denied even when the call
+// goes to localhost and the URL is only text in the payload (the one-liner rule, see 4c in the header).
+// The way out for a dashboard call is the wrapper, which sends its body as data and never runs an
+// interpreter heredoc: say so in the deny, so the agent takes the sanctioned path instead of retrying.
+const WRAPPER_HINT =
+  ' Ha ez egy dashboard-hivas (localhost), amely kulso URL-t csak idez a szovegben (pl. PR-link egy uzenetben): ' +
+  'ne interpreter-heredocbol kuldd, hanem a wrapperrel: bash scripts/agent-api.sh [--agent <nev>] POST /api/... \'<json>\' ' +
+  '(a torzs adat, nem futtatott kod).'
+export function denyMessage(r) {
+  const base = `${GATE_MSG} (hoszt: ${(r.hosts ?? []).join(', ')})`
+  return typeof r.reason === 'string' && r.reason.startsWith('heredoc-') ? base + WRAPPER_HINT : base
+}
 function isInvokedDirectly() {
   try { return realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] ? realpathSync(process.argv[1]) : '') } catch { return false }
 }
@@ -1211,7 +1223,7 @@ if (isInvokedDirectly()) {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })
       appendFileSync(BLOCK_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: process.cwd(), reason: r.reason, hosts: r.hosts }) + '\n')
     } catch { /* the deny still stands; a log failure must not turn it into an allow */ }
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `${GATE_MSG} (hoszt: ${r.hosts.join(', ')})` } }))
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: denyMessage(r) } }))
   }
   process.exit(0)
 }

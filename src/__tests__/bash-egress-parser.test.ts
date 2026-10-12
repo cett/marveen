@@ -427,6 +427,9 @@ describe('heredoc-fed interpreters', () => {
         env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: join(dir, 'none.json') },
       })
       expect(run(PY_EXT).stdout).toContain('"permissionDecision":"deny"')
+      // the deny names the sanctioned way (the wrapper) for a heredoc body, and only for that
+      expect(run(PY_EXT).stdout).toContain('scripts/agent-api.sh')
+      expect(run('curl -s https://example.org/x').stdout).not.toContain('agent-api.sh')
       expect(readFileSync(join(dir, 'blocks.jsonl'), 'utf-8')).toContain('"reason":"heredoc-external"')
       expect(run(PY_EXT.replace('https://example.org/', 'http://localhost:3420/api/health')).stdout).toBe('')
       expect(run('while read u; do curl -s "$u"; done <<< "https://example.org/"').stdout).toContain('"permissionDecision":"deny"')
