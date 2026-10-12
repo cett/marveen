@@ -21,6 +21,7 @@
 import type http from 'node:http'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
+import { APPROVAL_HUMAN_ONLY_ENFORCE } from '../../config.js'
 import { parseCookies, SESSION_COOKIE_NAME } from '../auth-gate.js'
 import {
   hashPassword,
@@ -117,8 +118,8 @@ const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-// { authenticated, method, user, device, login_available, setup_required }.
-// authenticated keeps its exact old meaning for token callers (existing probes
+// { authenticated, method, user, device, role, tenant_id, human_only_enforced, login_available,
+// setup_required }. authenticated keeps its exact old meaning for token callers (existing probes
 // parse only that field): a valid bearer -> authenticated:true. A device key is
 // an authenticated principal too (method:'device', device:<key name>).
 function statusPayload(ctx: RouteContext) {
@@ -131,6 +132,12 @@ function statusPayload(ctx: RouteContext) {
   // distinguish a global admin (role=admin, tenant_id=null) from a tenant-scoped user.
   const role = auth?.kind === 'session' ? (ctx.role ?? null) : null
   const tenant_id = auth?.kind === 'session' ? (ctx.tenantId !== undefined ? ctx.tenantId : null) : null
+  // Whether the human-only approval rule binds on this server, so the Approvals page can tell a
+  // request only a person can decide from one a token may still decide. This probe is public and
+  // pre-auth, so the flag is told to an authenticated caller only: an anonymous caller always gets
+  // false, the same as a server with the rule off, and learns nothing about the security mode. Always
+  // a boolean (never absent) so the two shapes cannot be told apart.
+  const human_only_enforced = authenticated && APPROVAL_HUMAN_ONLY_ENFORCE
   return {
     authenticated,
     method,
@@ -138,6 +145,7 @@ function statusPayload(ctx: RouteContext) {
     device,
     role,
     tenant_id,
+    human_only_enforced,
     login_available: countDashboardUsers(false) >= 1,
     setup_required: countDashboardUsers(true) === 0,
   }

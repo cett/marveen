@@ -3,25 +3,32 @@
 // a dead button: a badge on the row, a banner with a Sign in button, and approve/reject disabled for a
 // viewer who cannot decide it. Part 1 tests the pure decision helpers; part 2 runs the real
 // web/modules/approvals.js against a minimal fake DOM so the rendered rows are what is asserted; part 3
-// holds the wiring (markup, CSS, i18n) as string contracts, the house idiom for frontend code.
+// holds the wiring (markup, CSS, i18n) as string contracts, the house idiom for frontend code. The lock
+// and the banner follow the server flag `human_only_enforced`: with the rule off (or the flag absent, as
+// from an older server, or the probe failed) the page keeps the badge and nothing else.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import vm from 'node:vm'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  isHumanOnlyRow, canDecideHumanOnly, isLockedForViewer, shouldShowHumanOnlyBanner,
+  isHumanOnlyRow, canDecideHumanOnly, isHumanOnlyEnforced, isLockedForViewer, shouldShowHumanOnlyBanner,
 } from '../../web/modules/approval-human-only.js'
 import { readAllCss } from './css-helper.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const read = (p: string) => readFileSync(join(__dirname, '../../web', p), 'utf-8')
 
-const ADMIN_SESSION = { authenticated: true, method: 'session', user: 'person-a', role: 'admin', tenant_id: null }
-const TENANT_SESSION = { authenticated: true, method: 'session', user: 'user-b', role: 'admin', tenant_id: 'tenant-a' }
-const MEMBER_SESSION = { authenticated: true, method: 'session', user: 'user-b', role: 'member', tenant_id: null }
-const TOKEN = { authenticated: true, method: 'token', user: null, role: null, tenant_id: null }
-const DEVICE = { authenticated: true, method: 'device', role: null, tenant_id: null }
+// The status answers of an enforcing server (human_only_enforced: true); ADVISORY() re-labels one as the
+// same viewer on a server with the rule off.
+const ADMIN_SESSION = { authenticated: true, method: 'session', user: 'person-a', role: 'admin', tenant_id: null, human_only_enforced: true }
+const TENANT_SESSION = { authenticated: true, method: 'session', user: 'user-b', role: 'admin', tenant_id: 'tenant-a', human_only_enforced: true }
+const MEMBER_SESSION = { authenticated: true, method: 'session', user: 'user-b', role: 'member', tenant_id: null, human_only_enforced: true }
+const TOKEN = { authenticated: true, method: 'token', user: null, role: null, tenant_id: null, human_only_enforced: true }
+const DEVICE = { authenticated: true, method: 'device', role: null, tenant_id: null, human_only_enforced: true }
+const ADVISORY = (s: object) => ({ ...s, human_only_enforced: false })
+// What an older server answers: the same viewer, no such field at all.
+const NO_FLAG = (s: object) => { const { human_only_enforced: _f, ...rest } = s as Record<string, unknown>; return rest }
 
 describe('isHumanOnlyRow', () => {
   it('reads the stored snapshot flag', () => {
@@ -61,25 +68,64 @@ describe('isLockedForViewer and the banner rule', () => {
   const pendingPlain = { id: 'a2', status: 'pending', human_only: 0 }
   const doneHo = { id: 'a3', status: 'approved', human_only: 1 }
 
-  it('locks a pending human-only row for everyone but the global admin session', () => {
-    expect(isLockedForViewer(pendingHo, TOKEN)).toBe(true)
-    expect(isLockedForViewer(pendingHo, TENANT_SESSION)).toBe(true)
-    expect(isLockedForViewer(pendingHo, null)).toBe(true)
-    expect(isLockedForViewer(pendingHo, ADMIN_SESSION)).toBe(false)
+  it('locks a pending human-only row for everyone but the global admin session, when enforced', () => {
+    expect(isLockedForViewer(pendingHo, TOKEN, true)).toBe(true)
+    expect(isLockedForViewer(pendingHo, TENANT_SESSION, true)).toBe(true)
+    expect(isLockedForViewer(pendingHo, null, true)).toBe(true)
+    expect(isLockedForViewer(pendingHo, ADMIN_SESSION, true)).toBe(false)
   })
 
   it('never locks a plain row, and never a resolved one (nothing left to decide)', () => {
-    expect(isLockedForViewer(pendingPlain, TOKEN)).toBe(false)
-    expect(isLockedForViewer(doneHo, TOKEN)).toBe(false)
-    expect(isLockedForViewer(null, TOKEN)).toBe(false)
+    expect(isLockedForViewer(pendingPlain, TOKEN, true)).toBe(false)
+    expect(isLockedForViewer(doneHo, TOKEN, true)).toBe(false)
+    expect(isLockedForViewer(null, TOKEN, true)).toBe(false)
   })
 
-  it('shows the banner only when a pending human-only row is locked for this viewer', () => {
-    expect(shouldShowHumanOnlyBanner([pendingPlain, pendingHo], TOKEN)).toBe(true)
-    expect(shouldShowHumanOnlyBanner([pendingPlain, pendingHo], ADMIN_SESSION)).toBe(false)
-    expect(shouldShowHumanOnlyBanner([pendingPlain, doneHo], TOKEN)).toBe(false)
-    expect(shouldShowHumanOnlyBanner([], TOKEN)).toBe(false)
-    expect(shouldShowHumanOnlyBanner(null as any, TOKEN)).toBe(false)
+  it('shows the banner only when a pending human-only row is locked for this viewer, when enforced', () => {
+    expect(shouldShowHumanOnlyBanner([pendingPlain, pendingHo], TOKEN, true)).toBe(true)
+    expect(shouldShowHumanOnlyBanner([pendingPlain, pendingHo], ADMIN_SESSION, true)).toBe(false)
+    expect(shouldShowHumanOnlyBanner([pendingPlain, doneHo], TOKEN, true)).toBe(false)
+    expect(shouldShowHumanOnlyBanner([], TOKEN, true)).toBe(false)
+    expect(shouldShowHumanOnlyBanner(null as any, TOKEN, true)).toBe(false)
+  })
+
+  // With the rule off the server still lets a token decide such a request, so nothing is a dead button.
+  it.each([
+    ['false (the rule is off)', false],
+    ['undefined (an older server, or the argument left out)', undefined],
+    ['null', null],
+    ['the string "true" (only a real boolean counts)', 'true'],
+    ['the number 1', 1],
+  ])('with the flag %s nothing is locked and there is no banner', (_name, flag) => {
+    for (const viewer of [TOKEN, TENANT_SESSION, DEVICE, MEMBER_SESSION, ADMIN_SESSION, null]) {
+      expect(isLockedForViewer(pendingHo, viewer, flag as any)).toBe(false)
+      expect(shouldShowHumanOnlyBanner([pendingPlain, pendingHo], viewer, flag as any)).toBe(false)
+    }
+  })
+
+  it('the flag is the only thing that changes: the same row and viewer flip with it', () => {
+    expect(isLockedForViewer(pendingHo, TOKEN, true)).toBe(true)
+    expect(isLockedForViewer(pendingHo, TOKEN, false)).toBe(false)
+    expect(shouldShowHumanOnlyBanner([pendingHo], TOKEN, true)).toBe(true)
+    expect(shouldShowHumanOnlyBanner([pendingHo], TOKEN, false)).toBe(false)
+  })
+})
+
+describe('isHumanOnlyEnforced', () => {
+  it('is true only for an explicit true in the status answer', () => {
+    expect(isHumanOnlyEnforced({ authenticated: true, human_only_enforced: true })).toBe(true)
+  })
+
+  it.each([
+    ['false', { authenticated: true, human_only_enforced: false }],
+    ['absent (an older server)', { authenticated: true, method: 'token' }],
+    ['null', { authenticated: true, human_only_enforced: null }],
+    ['the string "true"', { authenticated: true, human_only_enforced: 'true' }],
+    ['the number 1', { authenticated: true, human_only_enforced: 1 }],
+    ['no answer (the probe failed)', null],
+    ['an undefined answer', undefined],
+  ])('is false for %s', (_name, status) => {
+    expect(isHumanOnlyEnforced(status as any)).toBe(false)
   })
 })
 
@@ -181,11 +227,46 @@ describe('approvals.js rendering', () => {
     ['a tenant-scoped admin session', TENANT_SESSION],
     ['a non-admin session', MEMBER_SESSION],
     ['a device key', DEVICE],
-    ['an unknown viewer (the status probe failed)', 'fail'],
   ])('%s cannot decide it either: disabled buttons and the banner', async (_name, viewer) => {
     const { tbody, banner } = await renderFor(viewer)
     for (const b of decideButtons(rowHtml(tbody, 'h1'))) expect(b).toMatch(/\sdisabled\b/)
     expect(banner.hidden).toBe(false)
+  })
+
+  // The rule is off (advisory): the server lets a token decide such a request, so the page must not
+  // lock anything. The badge stays, because the row is still a human-only request.
+  it.each([
+    ['a token', ADVISORY(TOKEN)],
+    ['a device key', ADVISORY(DEVICE)],
+    ['a tenant-scoped admin session', ADVISORY(TENANT_SESSION)],
+    ['a non-admin session', ADVISORY(MEMBER_SESSION)],
+    ['a global admin session', ADVISORY(ADMIN_SESSION)],
+  ])('with the rule off, %s keeps active buttons, the badge and no banner', async (_name, viewer) => {
+    const { tbody, banner } = await renderFor(viewer)
+    const row = rowHtml(tbody, 'h1')
+    expect(row).toContain('approvals-humanonly-badge')
+    const buttons = decideButtons(row)
+    expect(buttons).toHaveLength(2)
+    for (const b of buttons) {
+      expect(b).not.toMatch(/\sdisabled\b/)
+      expect(b).not.toContain('Can only be decided from a password login')
+    }
+    expect(banner.hidden).toBe(true)
+  })
+
+  // An older server does not send the field; a failed probe sends nothing at all. Both read as advisory.
+  it.each([
+    ['a token on an older server (no flag in the answer)', NO_FLAG(TOKEN)],
+    ['a tenant-scoped session on an older server', NO_FLAG(TENANT_SESSION)],
+    ['an answer with the flag null', { ...TOKEN, human_only_enforced: null }],
+    ['an answer with the flag as the string "true"', { ...TOKEN, human_only_enforced: 'true' }],
+    ['an unknown viewer (the status probe failed)', 'fail'],
+  ])('%s: advisory, active buttons and no banner', async (_name, viewer) => {
+    const { tbody, banner } = await renderFor(viewer)
+    const row = rowHtml(tbody, 'h1')
+    expect(row).toContain('approvals-humanonly-badge')
+    for (const b of decideButtons(row)) expect(b).not.toMatch(/\sdisabled\b/)
+    expect(banner.hidden).toBe(true)
   })
 
   it('a resolved human-only row carries the badge but has nothing to lock, and alone it raises no banner', async () => {
@@ -226,6 +307,10 @@ describe('wiring contracts', () => {
   it('the page asks who the viewer is with the credential a decision carries (the patched fetch)', () => {
     expect(MOD).toMatch(/import \{[^}]*isLockedForViewer[^}]*\} from '\.\/approval-human-only\.js'/)
     expect(MOD).toContain("fetch('/api/auth/status')")
+    // Both call sites hand the server flag to the helpers.
+    expect(MOD).toMatch(/import \{[^}]*isHumanOnlyEnforced[^}]*\} from '\.\/approval-human-only\.js'/)
+    expect(MOD).toContain('isLockedForViewer(a, _viewerStatus, isHumanOnlyEnforced(_viewerStatus))')
+    expect(MOD).toContain('shouldShowHumanOnlyBanner(_approvalsPage, _viewerStatus, isHumanOnlyEnforced(_viewerStatus))')
     // The decision itself is untouched: the server stays the gate.
     expect(MOD).toContain("method: 'PATCH'")
   })

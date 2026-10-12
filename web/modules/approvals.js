@@ -4,7 +4,7 @@ import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { renderPaginator } from './paginator.js'
-import { isHumanOnlyRow, isLockedForViewer, shouldShowHumanOnlyBanner } from './approval-human-only.js'
+import { isHumanOnlyRow, isHumanOnlyEnforced, isLockedForViewer, shouldShowHumanOnlyBanner } from './approval-human-only.js'
 
 
 
@@ -18,8 +18,10 @@ let _approvalsCountdownInterval = null
 const _approvalsState = { status: '', agent: '', category: '', offset: 0 }
 let _approvalsPage = []
 let _approvalsTenantGetter = null
-// Who the viewer is, from /api/auth/status (null when the probe failed). Decides which human-only
-// rows would be a dead approve/reject button; the server still refuses any non-session caller.
+// Who the viewer is, and whether the server enforces the human-only rule, from /api/auth/status (null
+// when the probe failed). Decides which human-only rows would be a dead approve/reject button, but only
+// while the rule is enforced; with it off (or unknown) nothing is locked. The server still refuses any
+// non-session caller when it enforces.
 let _viewerStatus = null
 
 // .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
@@ -123,7 +125,8 @@ async function _loadApprovalsPageInternal() {
 }
 
 // The probe goes out with the same credential as the decision does, so it describes the caller the
-// server will see. A failure is "unknown viewer": human-only rows then show as locked, never as open.
+// server will see. A failure is "unknown viewer", which also means "rule not known to be enforced": the
+// page then behaves as it did before the rule existed (badge only), and the server remains the gate.
 async function _fetchViewerStatus() {
   try {
     const r = await fetch('/api/auth/status')
@@ -133,7 +136,7 @@ async function _fetchViewerStatus() {
 
 function _renderHumanOnlyBanner() {
   const banner = document.getElementById('approvalsHumanOnlyBanner')
-  if (banner) banner.hidden = !shouldShowHumanOnlyBanner(_approvalsPage, _viewerStatus)
+  if (banner) banner.hidden = !shouldShowHumanOnlyBanner(_approvalsPage, _viewerStatus, isHumanOnlyEnforced(_viewerStatus))
 }
 
 function _renderApprovalsStats(counts, oldestPending) {
@@ -184,9 +187,10 @@ function _renderApprovalsTable(total) {
     const time = a.requested_at ? new Date(a.requested_at * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' }) : '-'
     const badge = _approvalBadge(a.status)
     const countdown = isPending && a.timeout_at ? `<span class="approvals-countdown" data-timeout="${a.timeout_at}" id="cd-${a.id}"></span>` : (a.timeout_at ? '-' : '')
-    // A human-only request this viewer cannot decide keeps its buttons visible but disabled, with the
-    // reason as a tooltip (the banner above explains how to sign in).
-    const locked = isLockedForViewer(a, _viewerStatus)
+    // While the server enforces the rule, a human-only request this viewer cannot decide keeps its
+    // buttons visible but disabled, with the reason as a tooltip (the banner above explains how to
+    // sign in). With the rule off the buttons stay active.
+    const locked = isLockedForViewer(a, _viewerStatus, isHumanOnlyEnforced(_viewerStatus))
     const lockAttrs = locked ? ` disabled title="${escapeAttr(t('approvals.humanonly.locked'))}"` : ''
     const humanOnlyBadge = isHumanOnlyRow(a)
       ? ` <span class="approvals-humanonly-badge" title="${escapeAttr(t('approvals.humanonly.badge_title'))}">${escapeHtml(t('approvals.humanonly.badge'))}</span>`
