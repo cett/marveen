@@ -564,6 +564,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const parentId = decodeURIComponent(acceptMatch[1])
     const parent = getKanbanCard(parentId)
     if (!parent) { json(res, { error: 'not_found', hint: 'Szülő kártya nem található' }, 404); return true }
+    // A non-admin caller may only break down a card of its own tenant; a foreign one answers like a missing one.
+    if (!isAdmin && effectiveTenantId !== null && !scopeToTenant(effectiveTenantId).kanban.get(parentId)) {
+      json(res, { error: 'not_found', hint: 'Szülő kártya nem található' }, 404)
+      return true
+    }
     if (parent.depth >= 2) { json(res, { error: 'limit_exceeded', field: 'parent_id', hint: 'Szülő kártya már maximális mélységen van (depth 2)' }, 400); return true }
     const body = await readBody(req)
     const { subtasks } = JSON.parse(body.toString()) as {
@@ -586,6 +591,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
           priority: (st.priority as any) ?? 'normal',
           project: parent.project ?? undefined,
           parent_id: parentId,
+          // the subtasks belong to the tenant of the card they hang under
+          tenant_id: parent.tenant_id,
         })
         ids.push(id)
       }
@@ -622,6 +629,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(parentPatchMatch[1])
     const body = await readBody(req)
     const { parent_id } = JSON.parse(body.toString()) as { parent_id: string | null }
+    // A non-admin caller may only move a card of its own tenant, and only under a parent of its own tenant;
+    // either foreign id answers like a missing one (404), so ids cannot be probed across tenants.
+    if (!isAdmin && effectiveTenantId !== null) {
+      const own = scopeToTenant(effectiveTenantId).kanban
+      if (!own.get(id) || (parent_id && !own.get(parent_id))) {
+        json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
+        return true
+      }
+    }
     const result = reparentKanbanCard(id, parent_id ?? null)
     if (!result.ok) {
       const status = result.code === 'not_found' ? 404 : 400
