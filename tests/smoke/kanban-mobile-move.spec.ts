@@ -2,7 +2,7 @@
  * Mobile kanban card-move smoke tests.
  *
  * Prerequisites: the dashboard must be running and DASHBOARD_TOKEN must be set.
- *   DASHBOARD_TOKEN=$(cat store/.dashboard-token) npx playwright test tests/smoke/kanban-mobile-move.spec.ts
+ *   DASHBOARD_TOKEN=<an admin API token, e.g. the operator token> npx playwright test tests/smoke/kanban-mobile-move.spec.ts
  *
  * What these catch: the board being effectively read-only on a phone. HTML5
  * drag & drop never fires on touch, so BOTH paths added for mobile are

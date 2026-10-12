@@ -4,6 +4,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { platform } from 'node:os'
 import { SERVICE_ID, WEB_PORT, launchdStatusPattern, systemdStatusUnits } from '../src/config.js'
+// @ts-expect-error plain .mjs, no declaration file
+import { agentApi, resolveToken } from './lib/agent-api.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..')
@@ -80,20 +82,14 @@ if (existsSync(envPath)) {
 }
 
 // Adatbázis (a futó dashboardon át, nem a fájlt nyitjuk meg)
-// The operator's token (store/.operator-token); the shared dashboard token only when that file is missing.
-const operatorTokenPath = join(PROJECT_ROOT, 'store', '.operator-token')
-const sharedTokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
-const tokenPath = existsSync(operatorTokenPath) ? operatorTokenPath : sharedTokenPath
+// Signed as the operator through the API client (scripts/lib/agent-api.mjs): this script never reads a token file.
+const apiEnv = { ...process.env, MARVEEN_WEB_PORT: String(WEB_PORT) }
 async function apiGet(path: string): Promise<any> {
-  const token = readFileSync(tokenPath, 'utf-8').trim()
-  const res = await fetch(`http://localhost:${WEB_PORT}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(5000),
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const r = await agentApi('GET', path, undefined, { kind: 'operator', timeoutMs: 5000, env: apiEnv })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.body
 }
-if (existsSync(tokenPath)) {
+if (resolveToken({ kind: 'operator', env: apiEnv }).source !== 'none') {
   try {
     const stats = await apiGet('/api/memories/stats')
     ok('Adatbazis', 'valaszol a dashboardon at')

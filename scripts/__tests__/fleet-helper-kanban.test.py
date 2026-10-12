@@ -202,9 +202,14 @@ class FleetAuthHeaders(unittest.TestCase):
         with open(self.module_path, "a") as f:
             f.write("\nopen(%r, 'w').close()\n" % marker)
         os.chmod(self.module_path, 0o666)
-        h = self.fleet.auth_headers()
+        with self.assertRaises(RuntimeError):
+            self.fleet.auth_headers()
         self.assertFalse(os.path.exists(marker), "a group/world-writable resolver was executed")
-        self.assertEqual(h, {"Authorization": "Bearer shared-tok"})
+
+    def test_never_reads_the_shared_file_itself_when_the_resolver_is_missing(self):
+        os.remove(self.module_path)
+        with self.assertRaises(RuntimeError):
+            self.fleet.auth_headers()
 
 
 if __name__ == "__main__":

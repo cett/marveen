@@ -8,6 +8,7 @@
 //   npm run remote-enroll -- "ssh-ed25519 <base64 key> marveen-remote:<uuid>"
 //   npm run remote-enroll -- --host 203.0.113.10 --port 2222 "<public key line>"
 //   npm run remote-enroll -- --web-port 3421 "<public key line>"
+//   npm run remote-enroll -- --name "Office phone" "<public key line>"
 //   npm run remote-enroll -- --no-dashboard-token "<public key line>"
 //
 // --port is the SSH port; --web-port is the dashboard port the enrolled key may
@@ -17,17 +18,18 @@
 // (INSTUX1): the tunnel opens a dead port and the app reports "dashboard not
 // running" forever.
 //
-// The bundle includes the dashboard bearer token (store/.dashboard-token) by
-// default so the connecting app can authenticate against the dashboard. Such a
-// bundle is a SECRET: hand it over on a private channel only, never by email.
-// Pass --no-dashboard-token to emit a token-free bundle (the device user must
-// then obtain the dashboard access URL out of band).
+// The bundle carries a device key minted for THIS device only (POST
+// /api/auth/device-keys: named, revocable one by one from the dashboard). The
+// shared dashboard token never goes into a bundle. Such a bundle is a SECRET:
+// hand it over on a private channel only, never by email. Enrolling the same
+// key line again replaces its device key. The dashboard must be running to mint
+// the key. Pass --no-dashboard-token to emit a key-free bundle (the device user
+// must then obtain the dashboard access URL out of band).
 
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import {
   validatePublicKeyLine,
   buildRestrictedLine,
@@ -40,7 +42,10 @@ import {
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
+import { defaultDeviceKeyName, mintDeviceKey, type DeviceKeyApi } from '../src/remote-enroll-device-key.js'
 import { WEB_PORT as ENV_WEB_PORT } from '../src/config.js'
+// @ts-expect-error plain .mjs, no declaration file
+import { agentApi } from './lib/agent-api.mjs'
 
 interface Args {
   keyLine?: string
@@ -48,6 +53,8 @@ interface Args {
   port: number
   webPort: number
   includeDashboardToken: boolean
+  /** Name of the device key in the dashboard's device-key list. */
+  name?: string
 }
 
 /** Dashboard port default: the install's actual WEB_PORT, read from the same
@@ -70,6 +77,10 @@ function parseArgs(argv: string[]): Args {
       out.host = v
     } else if (a === '--no-dashboard-token') {
       out.includeDashboardToken = false
+    } else if (a === '--name') {
+      const v = argv[++i]
+      if (!v) fail('--name requires a value')
+      out.name = v
     } else if (a === '--port') {
       const v = argv[++i]
       if (!v) fail('--port requires a value')
@@ -140,22 +151,16 @@ function obtainHostKey(): { body: string; source: string } | null {
   })
 }
 
-/**
- * Read the dashboard bearer token the same way the running dashboard resolves
- * it: DASHBOARD_TOKEN env first, then store/.dashboard-token relative to the
- * repo root (this script lives in scripts/). Returns null when neither exists;
- * enrollment still succeeds, the bundle just carries no token.
- */
-function readDashboardToken(): string | null {
-  const fromEnv = process.env.DASHBOARD_TOKEN?.trim()
-  if (fromEnv) return fromEnv
-  const scriptDir = dirname(fileURLToPath(import.meta.url))
-  const tokenPath = join(scriptDir, '..', 'store', '.dashboard-token')
+/** Mint the device key through the dashboard API, signed as the operator. */
+async function mintForDevice(installId: string, name: string): Promise<string> {
+  const api: DeviceKeyApi = (method, path, body) => agentApi(method, path, body, { kind: 'operator', timeoutMs: 5000 })
   try {
-    const cached = readFileSync(tokenPath, 'utf8').trim()
-    return cached.length > 0 ? cached : null
-  } catch {
-    return null
+    return await mintDeviceKey(api, installId, name)
+  } catch (err) {
+    if (err instanceof RemoteEnrollError) throw err
+    throw new RemoteEnrollError(
+      `could not reach the dashboard to mint the device key (is it running?): ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
 }
 
@@ -173,6 +178,24 @@ async function main(): Promise<void> {
     throw err
   }
 
+  // The consuming side requires the host key, so a bundle without one would be
+  // unusable -- fail hard, and before anything is written.
+  const explicitHost = args.host
+  const host = explicitHost ?? primaryIPv4() ?? hostname()
+  const resolved = obtainHostKey()
+  if (resolved === null) {
+    fail(
+      'could not obtain this machine\'s ssh-ed25519 host key ' +
+        `(checked ${HOST_KEY_PUB_CANDIDATES.join(', ')} and ssh-keyscan on 127.0.0.1). ` +
+        'Ensure the SSH server is running (on macOS: System Settings > General > Sharing > Remote Login), then re-run.',
+    )
+  }
+
+  // Mint the device key before the authorized_keys entry: a failure here leaves nothing behind.
+  const deviceKey = args.includeDashboardToken
+    ? await mintForDevice(parsed.installId, args.name ?? defaultDeviceKeyName(parsed.installId))
+    : null
+
   const restrictedLine = buildRestrictedLine(parsed, args.webPort)
   const sshDir = join(homedir(), '.ssh')
 
@@ -189,20 +212,6 @@ async function main(): Promise<void> {
     `${result.action === 'replaced' ? 'Replaced' : 'Added'} restricted entry for marveen-remote:${parsed.installId} in ${result.authorizedKeysPath}\n`,
   )
 
-  // Assemble the connection bundle. The consuming side requires the host key,
-  // so a bundle without one would be unusable -- fail hard instead of emitting
-  // it silently. (The enrolled authorized_keys entry above is harmless on its
-  // own and stays; re-running after fixing the SSH server replaces it by id.)
-  const explicitHost = args.host
-  const host = explicitHost ?? primaryIPv4() ?? hostname()
-  const resolved = obtainHostKey()
-  if (resolved === null) {
-    fail(
-      'could not obtain this machine\'s ssh-ed25519 host key ' +
-        `(checked ${HOST_KEY_PUB_CANDIDATES.join(', ')} and ssh-keyscan on 127.0.0.1). ` +
-        'Ensure the SSH server is running (on macOS: System Settings > General > Sharing > Remote Login), then re-run.',
-    )
-  }
   process.stderr.write(`host key: ${resolved.source}\n`)
   if (!explicitHost) {
     process.stderr.write(
@@ -220,21 +229,13 @@ async function main(): Promise<void> {
     webPort: args.webPort,
   }
 
-  if (args.includeDashboardToken) {
-    const dashboardToken = readDashboardToken()
-    if (dashboardToken === null) {
-      process.stderr.write(
-        'warning: no dashboard token found (DASHBOARD_TOKEN env or store/.dashboard-token); ' +
-          'emitting a token-free bundle. The device will need the dashboard access URL out of band.\n',
-      )
-    } else {
-      bundleInput.dashboardToken = dashboardToken
-      process.stderr.write(
-        'NOTE: this bundle contains the dashboard access token. Treat it as a secret: ' +
-          'hand it over on a private channel, never by email or shared chat. ' +
-          'Use --no-dashboard-token to emit a token-free bundle.\n',
-      )
-    }
+  if (deviceKey !== null) {
+    bundleInput.dashboardToken = deviceKey
+    process.stderr.write(
+      'NOTE: this bundle contains a dashboard device key for this device only (revocable from the dashboard). ' +
+        'Treat it as a secret: hand it over on a private channel, never by email or shared chat. ' +
+        'Use --no-dashboard-token to emit a key-free bundle.\n',
+    )
   }
 
   const encoded = encodeBundle(buildBundle(bundleInput))
