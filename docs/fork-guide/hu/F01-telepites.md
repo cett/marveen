@@ -86,6 +86,8 @@ OAuth token: sk-ant-oat01-...
 
 Ha kihagyod, a szolgáltatások nem indulnak el. A token később is megadható a `scripts/auth.sh` szkripttel.
 
+macOS-en a telepítő korán egy headless próbát is végez (`claude --print`). Ez annak a terminálnak a Claude-bejelentkezését ellenőrzi, amelyben ülsz (ezt használja a Telegram-párosítás lépése), nem a háttérszolgáltatások hitelesítőjét: az imént megadott token ekkor még nincs elmentve, a szolgáltatások saját kulcsát a telepítő lejjebb külön ellenőrzi. A hiba itt figyelmeztetés, nem előrejelzés arról, hogy az ügynökök nem fognak működni; ha ebből a terminálból akarsz `claude`-ot használni, futtasd: `claude /login`.
+
 ### Személyes adatok
 
 ```
@@ -187,6 +189,8 @@ http://localhost:3420
 ```
 
 Ha a portot megváltoztattad, azt a portot használd.
+
+macOS-en a telepítő csak akkor ír „sikeresen telepítve” üzenetet, ha mindkét launchd szolgáltatást futni látta. Ha az egyik nem indult el, a záró felirat azt mondja, hogy a szolgáltatások MÉG NEM FUTNAK, a végén újra kiírja, melyik egység hiányzik, és a javítóparancsot (előbb `launchctl bootstrap`-pel regisztrálja az egységet, utána `launchctl kickstart`, így egyetlen bemásolás működik akkor is, ha az egység nem volt regisztrálva), a telepítő pedig 3-as kilépési kóddal áll meg. Egy szkriptelt telepítés (CI, ssh) így megáll ahelyett, hogy egészséges telepítést jelentene; az 1-es kód továbbra is az összeomlott buildé.
 
 ## 5. Telegram párosítás
 

@@ -355,11 +355,16 @@ else
   fi
 fi
 
-# Pre-flight headless probe — Issue #179.
+# Pre-flight headless probe (Issue #179, scope corrected).
 # `claude auth login` may exit 0 even when the resulting token is unusable for
-# headless queries (browser flow interrupted, stale cached state, etc.). The
-# agent-create flow runs `claude --print` under the hood; surface the failure
-# here while the user is still at the install prompt.
+# headless queries (browser flow interrupted, stale cached state, etc.). This
+# probe runs with the OPERATOR's environment and Keychain only, so it checks the
+# login of the terminal the user is sitting at (what the pairing step's
+# `claude` uses) -- NOT the agents' credential. The launchd units read .env and
+# store/.claude-oauth-token, the token entered above is not even saved yet, and
+# the fail-closed service-auth gate further down probes exactly that path. So a
+# failure here must not predict that agent creation will fail: it did, falsely,
+# on every token-based install over SSH.
 echo ""
 echo -e "  ${DIM}$(_t macos.headless_test)${NC}"
 # The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
@@ -377,8 +382,8 @@ if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
 else
   warn "$(_t macos.headless_fail)"
   echo -e "    ${DIM}Kimenet: ${CLAUDE_PROBE_OUT:-<ures>}${NC}"
-  echo -e "    ${DIM}Tipikus okok: nincs ervenyes auth, halozati problema, regi claude CLI.${NC}"
-  echo -e "    ${DIM}Javitas: \`claude --version\` -> \`claude /login\` (vagy ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN beallitas) -> \`claude --print \"ping\"\` ujra.${NC}"
+  echo -e "    ${DIM}Tipikus okok: ebben a terminálban nincs Claude-bejelentkezés (pl. SSH-n át), hálózati probléma, régi claude CLI.${NC}"
+  echo -e "    ${DIM}Javítás, ha ebből a terminálból használod a claude-ot (pl. a párosításhoz): \`claude /login\` -> \`claude --print \"ping\"\` újra.${NC}"
 fi
 
 INSTALL_STEP="personal-info"
@@ -1429,11 +1434,32 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 # both entry points behave identically.
 . "$INSTALL_DIR/scripts/launchd-unit.sh"
 
+# The remedy for a unit that is not running. A function because the closing
+# summary repeats it word for word: whoever reads only the end of the run must
+# get the same commands as the mid-run block.
+print_services_remedy() {
+  echo -e "    ${BOLD}Javítás most:${NC}"
+  # kickstart alone cannot start a unit that was never REGISTERED in the gui
+  # domain -- and that is exactly the state this fires in most often (an
+  # SSH-driven install cannot bootstrap into gui/$UID; measured live, rc=5 EIO).
+  # The remedy the user runs from a GUI terminal must be state-agnostic:
+  # bootstrap first (registers + RunAtLoad-starts; errors harmlessly if already
+  # registered), then kickstart (covers the registered-but-dead state).
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${DASHBOARD_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${CHANNELS_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
+  echo -e "    ${DIM}Ellenőrzés: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+}
+
+# The outcome is kept, like INSTALL_AUTH_STATE / CHANNELS_GATE_STATE, so the
+# closing banner and the exit status can tell the truth about it.
+SERVICES_STATE="unknown"
 DASHBOARD_PID="$(start_launchd_unit "$DASHBOARD_PLIST")"
 CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"
 if [ -n "$DASHBOARD_PID" ] && [ -n "$CHANNELS_PID" ]; then
+  SERVICES_STATE="ok"
   echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva (dashboard pid $DASHBOARD_PID, channels pid $CHANNELS_PID)"
 else
+  SERVICES_STATE="down"
   warn "A SZOLGALTATASOK NEM INDULTAK EL -- a bot igy senkinek nem fog valaszolni."
   # `if` rather than `[ ... ] && echo`: when the unit DID come up the test
   # returns 1, the && list returns 1, and the ERR trap would abort right here --
@@ -1451,10 +1477,7 @@ else
   # return value is ever inspected. "Loaded but not started" was a diagnosis
   # nobody measured -- the same defect as the banner above it.
   echo -e "    ${DIM}A unit-fajlok a helyukon vannak, de futo folyamatot nem talaltunk.${NC}"
-  echo -e "    ${BOLD}Javitas most:${NC}"
-  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
-  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
-  echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+  print_services_remedy
 fi
 
 # Verify channel plugin is working
@@ -1565,7 +1588,12 @@ fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
+# "successfully installed" only when the services were seen running.
+if [ "${SERVICES_STATE:-unknown}" = "down" ]; then
+  echo -e "${BOLD}${ORANGE}$(_t success_installed_services_down)${NC}"
+else
+  echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
+fi
 echo ""
 
 # One-time browser enrollment link (the shared token never goes into a URL). The dashboard may
@@ -1608,4 +1636,18 @@ if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
   fi
   echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
   echo ""
+fi
+
+# The services' state is repeated LAST too, with the same remedy, and a run
+# whose main units are not running does not exit 0 -- so a scripted install can
+# tell (scripts/start.sh already exits 1 in the same situation). 3, not 1: 1 is
+# what fail() and the ERR trap use for a build that aborted.
+if [ "${SERVICES_STATE:-unknown}" = "down" ]; then
+  echo ""
+  echo -e "  ${RED}✗ A SZOLGÁLTATÁSOK NEM FUTNAK:${NC}"
+  if [ -z "${DASHBOARD_PID:-}" ]; then echo -e "    ${DIM}  - ${DASHBOARD_PLIST}: nem fut${NC}"; fi
+  if [ -z "${CHANNELS_PID:-}" ]; then echo -e "    ${DIM}  - ${CHANNELS_PLIST}: nem fut${NC}"; fi
+  print_services_remedy
+  echo ""
+  exit 3
 fi

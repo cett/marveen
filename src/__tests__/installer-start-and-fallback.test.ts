@@ -279,8 +279,11 @@ describe('install-macos.sh -- launchd units must be verified, not assumed', () =
     const before = tail.slice(0, banner!.index)
     expect(before).toMatch(new RegExp(`${FN}\\s`))
     expect(before).toMatch(/if \[ -n "\$DASHBOARD_PID" \] && \[ -n "\$CHANNELS_PID" \]/)
-    // and there must be a loud else-branch for the failure the operator hit
-    expect(tail.slice(banner!.index)).toMatch(/launchctl kickstart/)
+    // and there must be a loud else-branch for the failure the operator hit. The
+    // remedy lines live in print_services_remedy (the closing summary
+    // repeats them), so: the branch calls it, and the function carries kickstart.
+    expect(tail.slice(banner!.index)).toMatch(/\n\s+print_services_remedy\n/)
+    expect(MACOS).toMatch(/print_services_remedy\(\) \{[\s\S]*?launchctl kickstart[\s\S]*?\n\}/)
   })
 
   // scripts/start.sh carried the identical defect: measured live on 26.5.1 it
@@ -310,4 +313,35 @@ describe('every touched shell entry point stays parseable', () => {
       expect(() => execFileSync('bash', ['-n', join(ROOT, f)], { stdio: 'pipe' })).not.toThrow()
     },
   )
+})
+
+describe('install-macos.sh -- the not-started remedy must work on an UNREGISTERED unit (REMEDYCMD807)', () => {
+  // The remedy screen fires precisely when start_launchd_unit could not bring
+  // the units up -- on an SSH-driven install because gui/$UID bootstrap fails
+  // there (measured live: rc=5 EIO), so the unit is usually NOT REGISTERED at
+  // all. `launchctl kickstart` cannot start an unregistered unit, so a
+  // kickstart-only remedy is guaranteed dead advice in the most common state.
+  // The printed remedy must be state-agnostic: bootstrap the plist first, then
+  // kickstart the label.
+  // anchored on the remedy function itself: the first 'Javitas most' in the
+  // file is the AUTH gate's, and the accented line no longer matches that spelling
+  const remedy = MACOS.slice(MACOS.indexOf('print_services_remedy() {'))
+
+  it('bootstraps the plist before kickstarting, for both units', () => {
+    for (const unit of ['DASHBOARD_PLIST', 'CHANNELS_PLIST']) {
+      const line = remedy.split('\n').find((l) => l.includes('bootstrap') && l.includes(unit))
+      expect(line, `bootstrap remedy line for ${unit}`).toBeTruthy()
+      expect(line).toMatch(/launchctl bootstrap gui\//)
+      expect(line).toMatch(/\.plist/)
+      // kickstart follows ON THE SAME LINE so a copy-paste of one line works
+      // regardless of whether the unit was registered.
+      expect(line!.indexOf('bootstrap')).toBeLessThan(line!.indexOf('kickstart'))
+    }
+  })
+
+  it('never offers kickstart WITHOUT a preceding bootstrap on the same line', () => {
+    const kickLines = remedy.split('\n').filter((l) => l.includes('kickstart') && l.includes('BLUE'))
+    expect(kickLines.length).toBeGreaterThan(0)
+    for (const l of kickLines) expect(l).toContain('bootstrap')
+  })
 })
