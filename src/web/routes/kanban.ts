@@ -413,6 +413,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (due === undefined) { json(res, { error: 'invalid_value', field: 'due_date', hint: 'due_date must be an integer epoch in seconds, a YYYY-MM-DD date or null' }, 400); return true }
       data.due_date = due
     }
+    // A card id in the body is a reference to another row: a non-admin caller may only point at a card of
+    // its own tenant. Without this, moving a card under a foreign tenant's parent (parent_id) would work
+    // across the tenant line even though the card itself is checked above. A foreign parent answers like a
+    // missing one (404), so ids cannot be probed.
+    if (!isAdmin && effectiveTenantId !== null && typeof data.parent_id === 'string' && data.parent_id) {
+      if (!scopeToTenant(effectiveTenantId).kanban.get(data.parent_id)) {
+        json(res, { error: 'not_found', field: 'parent_id', hint: 'Szülő kártya nem található' }, 404)
+        return true
+      }
+    }
     // updateKanbanCard writes the audit row itself, attributed to the caller.
     if (updateKanbanCard(id, data, kanbanAuditActor(ctx))) {
       json(res, { ok: true })

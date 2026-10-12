@@ -138,6 +138,20 @@ describe('PUT /api/kanban/:id by role', () => {
     expect(getKanbanCard(cardDefault)?.title).toBe('Default card')
   })
 
+  it("a non-admin cannot move a card under ANOTHER tenant's parent (404), but can under its own tenant's", async () => {
+    createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
+    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(404)
+    expect(getKanbanCard(cardDefault)?.parent_id ?? null).toBeNull()
+    expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { parent_id: 'parent-default' })).status).toBe(404)
+    expect(getKanbanCard(cardAcme)?.parent_id ?? null).toBeNull()
+
+    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect(getKanbanCard(cardDefault)?.parent_id).toBe('parent-default')
+    // admin keeps the cross-tenant reach, and null (detach) is not a reference
+    expect((await callAs(tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(200)
+    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: null })).status).toBe(200)
+  })
+
   it('a label edit is reachable the same way', async () => {
     const made = await callAs(tokenAuth('tok-alpha'), 'POST', '/api/kanban/labels', { name: 'bug' })
     expect(made.status).toBe(200)
