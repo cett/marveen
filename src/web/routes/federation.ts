@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
 import { createAgentMessage, failPendingFederatedMessages } from '../../db.js'
 import { logger } from '../../logger.js'
+import { findReservedMarker, reservedMarkerRefusal } from '../../server-markers.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { isKnownAgent, readAgentDisplayName, readAgentModel } from '../agent-config.js'
 import { parseQualifiedId, isValidIdSegment, formatQualifiedId } from '../federation/address.js'
@@ -333,6 +334,15 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       const { status: vStatus, ...errBody } = verdict
       logger.warn({ fedIn: true, callerPeer: callerPeerId, reason: verdict.error, status: vStatus }, 'federation inbox: rejected message')
       json(res, errBody, vStatus)
+      return true
+    }
+
+    // A peer's text must not pass for one of this server's own notices either: the approval markers are
+    // server-only (server-markers.ts). Refused before the dedup bookkeeping, so a refused ref is not remembered.
+    const reservedMarker = findReservedMarker(verdict.content)
+    if (reservedMarker) {
+      logger.warn({ fedIn: true, callerPeer: callerPeerId, from: verdict.from, marker: reservedMarker }, 'federation inbox: rejected message starting a line with a server-only marker')
+      json(res, reservedMarkerRefusal(reservedMarker), 400)
       return true
     }
 

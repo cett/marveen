@@ -9,6 +9,7 @@
 import type http from 'node:http'
 import { listHumanOnlyCategoryKeys, getDashboardUserAuthRow } from '../db.js'
 import { logger } from '../logger.js'
+import { stripInvisible } from '../invisible-text.js'
 import { parseCookies, SESSION_COOKIE_NAME } from './auth-gate.js'
 import { resolveSession } from './auth-sessions.js'
 
@@ -17,21 +18,9 @@ export const HUMAN_ONLY_FLOOR: readonly string[] = ['email_send', 'email_standin
 
 const MAX_CATEGORY_LENGTH = 64
 
-// Control, format and zero-width code points: they render as nothing, so they must not make two names
-// differ. Ranges are listed as numbers so the source carries no invisible character itself.
-const INVISIBLE_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x0000, 0x001f], [0x007f, 0x009f], [0x00ad, 0x00ad], [0x061c, 0x061c], [0x180e, 0x180e],
-  [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0xfeff, 0xfeff],
-]
-
-export function stripInvisible(s: string): string {
-  let out = ''
-  for (const ch of s) {
-    const cp = ch.codePointAt(0) ?? 0
-    if (!INVISIBLE_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi)) out += ch
-  }
-  return out
-}
+// Control, format and zero-width code points must not make two names differ: the table lives in
+// invisible-text.ts (shared with the reserved-marker filter) and is re-exported for existing importers.
+export { stripInvisible }
 
 /** NFKC, invisible characters removed, trimmed, lower case. The shape a category is compared in. */
 function normalize(raw: string): string {

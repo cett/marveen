@@ -11,7 +11,14 @@ import { deliverToChannel } from '../notify.js'
 import { WEB_HOST, WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import type { Approval } from '../db.js'
-import { stripInvisible } from './approval-human-only.js'
+import { stripInvisible } from '../invisible-text.js'
+import {
+  MARKER_APPROVAL_REQUEST, MARKER_APPROVAL_REQUEST_HUMAN_ONLY, MARKER_APPROVAL_RESOLVED, MARKER_OWNER_UNREACHED,
+} from '../server-markers.js'
+
+// The list of server-only markers lives in server-markers.ts (the database layer enforces it and cannot
+// import this module); it is re-exported here, next to the builders that use it.
+export { SERVER_ONLY_MARKERS } from '../server-markers.js'
 
 const MAX_ACTION_CHARS = 300
 const MAX_AGENT_CHARS = 64
@@ -37,10 +44,10 @@ function quotedFields(approval: Approval): string[] {
   ]
 }
 
-/** The plain relay line for the main agent: a request it passes on to the owner and, in the old flow, closes. */
+/** Main-agent line for a request anyone may decide (enforcement off, or an ordinary category). */
 export function approvalRequestLine(approval: Approval): string {
   return [
-    '[APPROVAL_REQUEST]',
+    MARKER_APPROVAL_REQUEST,
     `id=${approval.id}`,
     ...quotedFields(approval),
     `timeout_at=${approval.timeout_at ?? 'null'}`,
@@ -57,6 +64,16 @@ export function sanitizeAgentText(raw: string, max: number): string {
   const flat = stripInvisible(raw.replace(/\s+/g, ' ')).replace(/`/g, "'").trim()
   const points = Array.from(flat)
   return points.length > max ? `${points.slice(0, max).join('').trimEnd()}…` : flat
+}
+
+/**
+ * Agent-written text for a system inter-agent line: all whitespace (line breaks included) becomes one
+ * space and invisible characters go. Without it a multi-line action text would put a server-only marker
+ * at the start of a line of a SERVER-authored message, the one place the sender filter cannot refuse it.
+ */
+export function oneLine(raw: unknown): string {
+  // \s misses NEL and the file/group/record separators, which a reader still sees as line breaks.
+  return stripInvisible(String(raw ?? '').replace(/[\s\u001c-\u001e\u0085]+/g, ' ')).trim()
 }
 
 /**
@@ -123,7 +140,7 @@ export async function notifyOwnerOfHumanOnlyRequest(
 /** Main-agent line for a human-only request: it is told not to relay or decide, only to know. */
 export function humanOnlyRequestLine(approval: Approval): string {
   return [
-    '[APPROVAL_REQUEST][HUMAN_ONLY]',
+    MARKER_APPROVAL_REQUEST_HUMAN_ONLY,
     `id=${approval.id}`,
     ...quotedFields(approval),
     `timeout_at=${approval.timeout_at ?? 'null'}`,
@@ -135,7 +152,7 @@ export function humanOnlyRequestLine(approval: Approval): string {
 /** Main-agent line for when the owner message did not go out: say it on your own channel, still do not decide. */
 export function ownerUnreachedLine(approval: Approval): string {
   return [
-    '[OWNER_UNREACHED]',
+    MARKER_OWNER_UNREACHED,
     `id=${approval.id}`,
     `agent=${quoteAgentText(approval.agent_id, MAX_AGENT_CHARS)}`,
     `category=${quoteAgentText(approval.category, MAX_AGENT_CHARS)}`,
@@ -147,9 +164,9 @@ export function ownerUnreachedLine(approval: Approval): string {
 /** Requester line once a human-only request is decided. Carries the outcome, nothing about who decided. */
 export function approvalResolvedLine(approval: Approval): string {
   return [
-    '[APPROVAL_RESOLVED]',
-    `id=${approval.id}`,
-    `status=${approval.status}`,
-    `via=${approval.resolved_via ?? 'unknown'}`,
+    MARKER_APPROVAL_RESOLVED,
+    `id=${oneLine(approval.id)}`,
+    `status=${oneLine(approval.status)}`,
+    `via=${oneLine(approval.resolved_via ?? 'unknown')}`,
   ].join(' ')
 }

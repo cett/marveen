@@ -9,6 +9,7 @@ import { getDelegationTenant } from './tenant-channel-bindings.js'
 import { KanbanCard } from './kanban.js'
 import { Tenant, getTenantForMainAgent, COMPLETION_REPORT_PREFIX } from './observability.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { assertNoReservedMarker } from '../server-markers.js'
 
 export interface HeartbeatKanbanSummary {
   urgent: KanbanCard[]
@@ -145,6 +146,10 @@ export function createAgentMessage(
   // (the [Eredmény] notice) must not pick up whatever tenant the executor happens to be serving now.
   pinTenant: boolean = false,
 ): AgentMessage {
+  // The one choke point of the JS writers: nobody but the server's own sender may open a line with a
+  // server-only marker (the approval notices). Throws ReservedMarkerError; the HTTP routes check first
+  // and answer 400, an internal caller's own try/catch logs it.
+  assertNoReservedMarker(from, content)
   const now = Math.floor(Date.now() / 1000)
   // A delegation inherits the tenant of the request the sending agent is serving; an explicit non-default
   // tenant (partner sends) and messages for federated recipients are left as given.

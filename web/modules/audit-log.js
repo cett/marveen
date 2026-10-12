@@ -155,7 +155,7 @@ function _entityCell(entry) {
 // Gated/rejected agent-source actions worth calling out visually: a denied
 // or auto-timed-out attempt is easy to miss among routine create/update rows
 // otherwise, since they all render as the same plain text today.
-const _dangerActions = new Set(['pii_scrub_bypass', 'pii_scrub_attempt_denied'])
+const _dangerActions = new Set(['pii_scrub_bypass', 'pii_scrub_attempt_denied', 'reserved_marker_denied'])
 const _warnActions = new Set(['skip_not_live', 'timeout_sweep'])
 
 function _actionCell(entry) {

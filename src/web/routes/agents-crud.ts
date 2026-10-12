@@ -139,6 +139,7 @@ import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
+import { oneLine } from '../approval-owner-notice.js'
 import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists, tenantSummaryFields } from './agents-helpers.js'
 import { visibleAgentSet, callerCanSeeAgent, scopeTenantFieldsToCaller, isAdminCaller } from './agent-tenant-scope.js'
 
@@ -424,7 +425,9 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     try {
       const runningAgents = listAgentNames().filter(a => a !== name && isAgentRunning(a))
       for (const target of [MAIN_AGENT_ID, ...runningAgents]) {
-        createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${description}. Udv neki ha legkozelebb beszeltek!`)
+        // The description is caller-written free text inside a message that goes out as `system`, which
+        // the marker filter trusts: one line, so no line of it can start with a server-only marker.
+        createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${oneLine(description)}. Udv neki ha legkozelebb beszeltek!`)
       }
     } catch (err) {
       logger.warn({ err, name }, 'Agent created, but the team notification failed')
