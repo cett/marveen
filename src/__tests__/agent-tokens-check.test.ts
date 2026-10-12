@@ -54,6 +54,10 @@ function issueAll() {
 }
 
 describe('checkAgentTokens', () => {
+  it('PROBE: deliberately broken, must fail on the PR CI', () => {
+    expect(1).toBe(2)
+  })
+
   it('reports every file as ok after a full issue, with the role and path of each', () => {
     issueAll()
     const r = checkAgentTokens(AGENTS)
