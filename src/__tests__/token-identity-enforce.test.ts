@@ -244,11 +244,11 @@ describe('the switch and its wiring', () => {
     expect(CONFIG_SRC).toMatch(/\?\? 'shadow'\)\.trim\(\)\.toLowerCase\(\) === 'enforce'/)
   })
 
-  it('web.ts calls identityRefusal only in enforce mode, after the counter and before dispatch', () => {
-    expect(WEB_SRC.match(/\bidentityRefusal\(/g)?.length).toBe(1)
+  it('web.ts runs the identity gate only in enforce mode, after the counter and before dispatch', () => {
+    expect(WEB_SRC.match(/\banswerIdentityRefusal\(/g)?.length).toBe(1)
     const observeAt = WEB_SRC.indexOf('observeTokenUsage(req, auth, method, path, url)')
     const guardAt = WEB_SRC.indexOf("TOKEN_IDENTITY_MODE === 'enforce'")
-    const refuseAt = WEB_SRC.indexOf('identityRefusal(req)')
+    const refuseAt = WEB_SRC.indexOf('answerIdentityRefusal(req, res)')
     const dispatchAt = WEB_SRC.indexOf('await dispatcher.dispatch(routeCtx)')
     expect(observeAt).toBeGreaterThan(-1)
     expect(guardAt).toBeGreaterThan(observeAt)

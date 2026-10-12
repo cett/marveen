@@ -57,7 +57,7 @@ import {
 } from '../db.js'
 import { resolveWriteTenant } from '../db/write-tenant.js'
 import { resolveAgentIdHeader, type AuthResult } from './auth-gate.js'
-import { readBody, RequestBodyTooLargeError, setRequestBodyObserver } from './http-helpers.js'
+import { json, readBody, RequestBodyTooLargeError, SCHEDULE_BODY_MAX_BYTES, setRequestBodyObserver } from './http-helpers.js'
 
 export const TOKEN_SHADOW_CATEGORIES = [
   'shared_token_use',
@@ -241,6 +241,8 @@ interface WatchSpec {
   owner?: (param: string) => string | null | undefined
   queryKeys: readonly string[]
   bodyKeys: readonly string[]
+  /** The size cap of the route's own body read, when it is tighter than the default; the gate reads with the same cap. */
+  bodyMaxBytes?: number
   /** A GET with none of queryKeys lists across agents. */
   listsAcrossAgents?: boolean
   /**
@@ -302,7 +304,7 @@ const WATCHED: readonly WatchSpec[] = [
     prefix: '/api/schedules', kind: 'unscoped', paramSeg: 0, paramName: ':name',
     paramLiterals: new Set(['tick-status', 'agents', 'expand-questions', 'expand-prompt', 'pending']),
     owner: (p) => getScheduleFromDb(p)?.agent,
-    queryKeys: AGENT_QUERY, bodyKeys: ['agent'], enforce: 'any', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent' },
+    queryKeys: AGENT_QUERY, bodyKeys: ['agent'], bodyMaxBytes: SCHEDULE_BODY_MAX_BYTES, enforce: 'any', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent' },
   },
 ]
 
@@ -463,7 +465,8 @@ const pendingBodies = new WeakMap<http.IncomingMessage, Pending>()
 // The body is the one place the gate has to wait for: the agent ids it names are only known once it is
 // read. identityRefusal reads it (readBody keeps it for the route) and parses it whatever its size,
 // with no cap on the entries of a batch: a limit that the counter needs to stay cheap must not be a
-// way round a refusal.
+// way round a refusal. It reads with the size cap of the route that follows (WatchSpec.bodyMaxBytes),
+// so a body that route would refuse as too large is refused here the same way, not read in full first.
 
 interface PathVerdict { caller: string; hit: ShadowHit }
 const pathVerdicts = new WeakMap<http.IncomingMessage, PathVerdict>()
@@ -513,7 +516,7 @@ export async function identityRefusal(
     if (verdict) return { caller: verdict.caller, target: verdict.hit.target, category: verdict.hit.category }
     const pending = pendingBodies.get(req)
     if (!pending || !pending.refusable) return null
-    const body = await readBody(req)
+    const body = await readBody(req, { maxBytes: pending.spec.bodyMaxBytes })
     if (body.length === 0) return null
     let data: unknown
     try { data = JSON.parse(body.toString('utf8')) } catch { return null } // the route's 400 to give
@@ -532,6 +535,28 @@ export async function identityRefusal(
     if (err instanceof RequestBodyTooLargeError) throw err // the route would have refused it the same way
     warnThrottled(err, 'token-shadow: identity refusal check failed')
     return null
+  }
+}
+
+/**
+ * The enforce gate as web.ts runs it: answers the request itself (true) when identityRefusal refuses
+ * it, or when the body it had to read is over the route's own size cap, and returns false to let the
+ * request on to its route. The 413 is the one the routes give for an oversized body.
+ */
+export async function answerIdentityRefusal(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+  try {
+    const refusal = await identityRefusal(req)
+    if (!refusal) return false
+    logger.warn(
+      { path: req.url?.split('?')[0], method: req.method, caller: refusal.caller, target: refusal.target, category: refusal.category },
+      'token identity: request names another agent, refused',
+    )
+    json(res, { error: 'forbidden', hint: 'A token may only act as its own agent' }, 403)
+    return true
+  } catch (err) {
+    if (!(err instanceof RequestBodyTooLargeError)) throw err
+    json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)
+    return true
   }
 }
 

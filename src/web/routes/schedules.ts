@@ -10,7 +10,7 @@ import { runAgent } from '../../agent.js'
 import { logger } from '../../logger.js'
 import { toPendingRetryView } from '../../pending-retries.js'
 import { isValidCronShape } from '../cron.js'
-import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
+import { readBody, json, RequestBodyTooLargeError, SCHEDULE_BODY_MAX_BYTES } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
 import { DEFAULT_SCHEDULE_TENANT, creatorTenant, scheduleAgentNamesForTenant, scheduleAgentServesTenant } from '../schedule-tenant.js'
@@ -251,7 +251,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   if (path === '/api/schedules' && method === 'POST') {
     let body: Buffer
     try {
-      body = await readBody(req, { maxBytes: 256 * 1024 })
+      body = await readBody(req, { maxBytes: SCHEDULE_BODY_MAX_BYTES })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
         json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)
@@ -415,7 +415,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
     let body: Buffer
     try {
-      body = await readBody(req, { maxBytes: 256 * 1024 })
+      body = await readBody(req, { maxBytes: SCHEDULE_BODY_MAX_BYTES })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
         json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)

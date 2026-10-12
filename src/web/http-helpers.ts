@@ -24,6 +24,10 @@ export const MIME: Record<string, string> = {
 // real cap (e.g. schedule endpoints cap at 256KB) pass `maxBytes`.
 export const DEFAULT_READ_BODY_MAX_BYTES = 20 * 1024 * 1024
 
+// The tighter cap of the schedule endpoints. The identity gate reads a schedule body with the same
+// cap, so it refuses an oversized one exactly as the route does.
+export const SCHEDULE_BODY_MAX_BYTES = 256 * 1024
+
 export class RequestBodyTooLargeError extends Error {
   readonly limit: number
   constructor(limit: number) {

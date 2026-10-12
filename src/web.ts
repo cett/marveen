@@ -89,7 +89,7 @@ import { tryHandleModelFallback } from './web/routes/model-fallback.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleRbacShadowLog } from './web/routes/rbac-shadow-log.js'
 import { tryHandleTokenShadow } from './web/routes/token-shadow.js'
-import { identityRefusal, observeTokenUsage, recordTenantContextRefusal } from './web/token-shadow.js'
+import { answerIdentityRefusal, observeTokenUsage, recordTenantContextRefusal } from './web/token-shadow.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleAgentState } from './web/routes/agent-state.js'
 import { tryHandleIntel } from './web/routes/intel.js'
@@ -335,11 +335,7 @@ export function startWebServer(port = 3420): http.Server {
       // Phase T4-7: with TOKEN_IDENTITY_MODE=enforce a non-main agent caller that names another agent
       // is refused with the same classification the counter just recorded. Shadow (the default): no-op.
       if (TOKEN_IDENTITY_MODE === 'enforce' && requiresAuth(path, method)) {
-        const refusal = await identityRefusal(req)
-        if (refusal) {
-          logger.warn({ path, method, caller: refusal.caller, target: refusal.target, category: refusal.category }, 'token identity: request names another agent, refused')
-          return json(res, { error: 'forbidden', hint: 'A token may only act as its own agent' }, 403)
-        }
+        if (await answerIdentityRefusal(req, res)) return
       }
 
       if (await dispatcher.dispatch(routeCtx)) return
