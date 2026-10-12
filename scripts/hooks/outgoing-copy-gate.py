@@ -28,6 +28,7 @@ mean "let it through". The block message says how to make it inspectable.
 Contract: PreToolUse. Reads the hook payload on stdin, exit 0 = allow,
 exit 2 = block (stderr goes back to the model).
 """
+import bisect
 import json
 import os
 import re
@@ -70,7 +71,15 @@ import sys
 # resze es MEGMARAD -- csak a torzs esik ki. Enelkul (a) forditott
 # sorrendnel a torzs parancsnak latszott (FP), (b) a bevezeto sor
 # eldobasa a heredoc-taplalt VALODI kuldot vesztette volna el (FN).
-_HEREDOC = re.compile(r"(<<-?\s*'?(\w+)'?[^\n]*)\n.*?\n\2(?=\s|$)", re.S)
+#
+# A heredoc is found by _scan_heredocs() (below), ONE LINEAR PASS, not by a regex. The old
+# single regex (an intro `<<-?\s*'?(\w+)'?[^\n]*`, a newline, then a lazy body up to
+# `\n<TAG>`) was superlinear on hostile input: `<<` plus a long run of word characters
+# and no newline backtracked quadratically through the intro, and every never-closed opener
+# re-scanned the rest of the string for its closer (50 openers x 100K did not finish in
+# 90 s). A hook still running at its timeout is NOT a deny (the host treats it as
+# non-blocking), so a slow classifier is a fail-OPEN. Same decision as before, bounded work.
+# Mirrored in scripts/email-send-gate.mjs (scanHeredocs); keep the two identical.
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 # KWSPLIT924: shell reserved words that put the NEXT word in command position.
 # The segmenter splits on operators only, so `if true; then sendmail x; fi`
@@ -136,6 +145,13 @@ def _code_string_sends(code: str) -> bool:
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
+
+
+def _url_arg(t: str) -> str:
+    """curl takes its URL as `--url https://...` (two tokens, the URL is its own token) or as
+    `--url=https://...` (ONE token): the target pattern is anchored to the token start, so
+    the glued form is read after its `--url=` prefix. Mirrored in email-send-gate.mjs (urlArg)."""
+    return t[len("--url="):] if t.startswith("--url=") else t
 
 # RESENDGATE826: a resend-celu curl/wget csak akkor KULDES, ha a METODUS az.
 # A korabbi minta metodus-vak volt, es egy read-only GET /domains (nincs torzs,
@@ -265,10 +281,120 @@ def _mask_subshell_markers(cmd: str) -> str:
     return "".join(out)
 
 
+# --- bounded heredoc scan -------------------------------------
+# Hard limits, measured on 365k real Bash calls of the fleet (max command 32 KB, max 7
+# heredoc openers, longest opener line 1.7 KB): each limit is 4x or more above anything
+# seen. Over a limit the gate does NOT guess: it DENIES ("too large to inspect",
+# fail-closed), because an inspection that cannot finish inside the hook timeout would
+# otherwise let the call through.
+MAX_CMD_CHARS = 131072
+MAX_HEREDOC_OPENERS = 32
+MAX_OPENER_LINE_CHARS = 4096
+
+
+class InspectionLimit(Exception):
+    """The command is too large to inspect inside the hook timeout (the caller DENIES)."""
+
+
+_HEREDOC_INTRO = re.compile(r"<<-?\s*'?(\w+)")
+_LINE_RUN = re.compile(r"\w+")
+_WS_CHAR = re.compile(r"\s")
+
+
+def _build_closer_index(cmd: str):
+    r"""Closing-line candidates of the whole command, built in ONE pass: every line that
+    starts with a word-character run followed by whitespace or the end of the string (the
+    old regex's `\n<TAG>(?=\s|$)`). A closer for delimiter TAG is exactly such a line
+    whose run equals a PREFIX of the opener's word (the old regex backtracked `\w+` to
+    shorter delimiters), so a query is a few dict lookups, not a rescan."""
+    by_run = {}
+    n = len(cmd)
+    nl = cmd.find("\n")
+    while nl != -1:
+        s = nl + 1
+        r = _LINE_RUN.match(cmd, s)
+        if r:
+            e = r.end()
+            if e == n or _WS_CHAR.match(cmd, e):
+                by_run.setdefault(r.group(), []).append(s)
+        nl = cmd.find("\n", s)
+    return by_run, sorted({len(k) for k in by_run}, reverse=True)
+
+
+def _find_closer(index, word: str, min_start: int):
+    """(start, delim_len) of the first closer line start >= min_start for the longest usable
+    prefix of `word`, or None."""
+    by_run, lengths_desc = index
+    for k in lengths_desc:
+        if k > len(word):
+            continue
+        lst = by_run.get(word[:k])
+        if not lst or lst[-1] < min_start:
+            continue
+        return lst[bisect.bisect_left(lst, min_start)], k
+    return None
+
+
+_last_scan = (None, None)
+
+
+def _scan_heredocs(cmd: str):
+    """The matches the old regex found, left to right and non-overlapping, as tuples
+    (start, intro_end, body_start, body_end, end): intro = cmd[start:intro_end] (the old
+    group 1), body = cmd[body_start:body_end] (keeps its final newline), end = just past
+    the closing tag. Raises InspectionLimit over a limit."""
+    global _last_scan
+    if _last_scan[0] == cmd:
+        return _last_scan[1]
+    if len(cmd) > MAX_CMD_CHARS:
+        raise InspectionLimit(f"command is {len(cmd)} characters, the limit is {MAX_CMD_CHARS}")
+    found = []
+    index = None
+    openers = 0
+    i = cmd.find("<<")
+    while i != -1:
+        m = _HEREDOC_INTRO.match(cmd, i)
+        if not m:
+            i = cmd.find("<<", i + 1)
+            continue
+        openers += 1
+        if openers > MAX_HEREDOC_OPENERS:
+            raise InspectionLimit(f"more than {MAX_HEREDOC_OPENERS} heredoc openers")
+        q = cmd.find("\n", m.end())
+        if q != -1:
+            if index is None:
+                index = _build_closer_index(cmd)
+            closer = _find_closer(index, m.group(1), q + 2)
+            if closer:
+                if q - (cmd.rfind("\n", 0, i) + 1) > MAX_OPENER_LINE_CHARS:
+                    raise InspectionLimit(
+                        f"a heredoc opener line is longer than {MAX_OPENER_LINE_CHARS} characters")
+                end = closer[0] + closer[1]
+                found.append((i, q, q + 1, closer[0], end))
+                i = cmd.find("<<", end)
+                continue
+        i = cmd.find("<<", i + 1)
+    _last_scan = (cmd, found)
+    return found
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """cmd with every heredoc BODY cut and its opening line kept (the old regex `sub` with group 1)."""
+    out = []
+    pos = 0
+    for (_start, intro_end, _bs, _be, end) in _scan_heredocs(cmd):
+        out.append(cmd[pos:intro_end])
+        pos = end
+    if not pos:
+        return cmd
+    out.append(cmd[pos:])
+    return "".join(out)
+
+
 def _segments_tokens(cmd: str):
     """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
+    lex = shlex.shlex(_mask_subshell_markers(_strip_heredoc_bodies(cmd)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     segments, cur = [], []
@@ -326,11 +452,21 @@ _WRAPPERS = {
 _HEAD_DEPTH = 8
 
 
+# A wrapper with more unknown long flags than this (`sudo --a --a --a ...`) is refused as too
+# large to inspect: every flag opens one more reading of the rest, so the heads were O(n^2)
+# (40k flags: 49 s here, an out-of-memory crash in the JS twin -- both fail-open). Real
+# wrappers carry at most a few unknown flags.
+MAX_WRAPPER_FLAG_STARTS = 32
+
+
 def _command_heads(toks, _d: int = 0):
     """Every token list that can be the real command of this segment, after the
     leading assignments, command-position keywords and wrappers are stepped over."""
-    while toks and (_ENV_ASSIGN.match(toks[0]) or toks[0] in _CMD_POSITION_KEYWORDS):
-        toks = toks[1:]
+    skip = 0
+    while skip < len(toks) and (_ENV_ASSIGN.match(toks[skip]) or toks[skip] in _CMD_POSITION_KEYWORDS):
+        skip += 1
+    if skip:
+        toks = toks[skip:]
     if not toks:
         return [toks]
     w = _basename(toks[0])
@@ -369,6 +505,8 @@ def _command_heads(toks, _d: int = 0):
             i += 2 if k == len(t) - 1 else 1
             continue
         break
+    if len(starts) > MAX_WRAPPER_FLAG_STARTS:
+        raise InspectionLimit(f"a wrapper carries more than {MAX_WRAPPER_FLAG_STARTS} unknown long flags")
     starts.insert(0, i)
     heads = []
     for s in starts:
@@ -422,7 +560,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
     # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
     # tovabbra is fail-closed.
-    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
+    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(_url_arg(t)) for t in rest):
         return _curl_resend_verdict(prog, rest) != "read"
     return False
 
@@ -520,22 +658,21 @@ def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
 
 def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     written = {}
-    for m in _HEREDOC.finditer(cmd):
-        opener = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()] + m.group(1)
-        w = _HEREDOC_REDIRECT.search(opener)
+    for (start, intro_end, body_start, body_end, _end) in _scan_heredocs(cmd):
+        line_start = cmd.rfind("\n", 0, start) + 1
+        intro = cmd[start:intro_end]
+        body = cmd[body_start:body_end]
+        w = _HEREDOC_REDIRECT.search(cmd[line_start:start] + intro)
         if w:
-            written[w.group(2)] = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
-        piped = _HEREDOC_PIPE.search(m.group(1))
+            written[w.group(2)] = body
+        piped = _HEREDOC_PIPE.search(intro)
         if piped:
-            pbody = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
             if _WRAPPER_SHELL.match(piped.group(1)):
-                if depth < 3 and is_send_invocation(pbody, _depth=depth + 1):
+                if depth < 3 and is_send_invocation(body, _depth=depth + 1):
                     return True
-            elif _heredoc_body_sends(pbody):
+            elif _heredoc_body_sends(body):
                 return True
-        line_start = cmd.rfind("\n", 0, m.start()) + 1
-        head = cmd[line_start:m.start()]
-        body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+        head = cmd[line_start:start]
         if _HEREDOC_INTERP.search(head):
             if _heredoc_body_sends(body):
                 return True
@@ -1238,7 +1375,20 @@ def main():
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not is_send_invocation(cmd):
+        try:
+            sends = is_send_invocation(cmd)
+        except InspectionLimit as exc:
+            # Fail-closed with an explicit exit 2: a hook still running at its timeout is
+            # NON-blocking in the host, so a command the classifier cannot finish on is
+            # refused up front instead of being waved through.
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU: TILTVA -- a parancs tul nagy ahhoz, hogy a kapu "
+                f"atvizsgalja ({exc}), es egy vizsgalhatatlan parancs nem mehet at.\n"
+                "Bontsd kisebb parancsokra (nagy szoveget fajlba irj a Write tool-lal), "
+                "aztan futtasd ujra.\n"
+            )
+            sys.exit(2)
+        if not sends:
             inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
     else:

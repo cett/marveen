@@ -910,6 +910,41 @@
       "name": "#1855 control: a cat heredoc without a pipe that mentions send.py --to",
       "cmd": "cat <<'EOF'\npython3 scripts/support-mail/send.py --to a@example.invalid\nEOF",
       "expected": false
+    },
+    {
+      "name": "curl --url=<resend>, one glued token, with a body is a send",
+      "cmd": "curl --url=https://api.resend.com/emails -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "curl --url=<resend> with headers and a JSON body is a send",
+      "cmd": "curl -s --url=https://api.resend.com/emails -H 'Authorization: Bearer x' -d '{\"to\":\"a@example.invalid\"}'",
+      "expected": true
+    },
+    {
+      "name": "curl --url=<resend> with an explicit POST and no scheme is a send",
+      "cmd": "curl -X POST --url=api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "control: curl --url=<resend> read-only GET is not a send",
+      "cmd": "curl --url=https://api.resend.com/domains",
+      "expected": false
+    },
+    {
+      "name": "control: curl --url=<other host> that merely mentions the domain in its path is not a send",
+      "cmd": "curl --url=https://example.com/?r=api.resend.com -d x",
+      "expected": false
+    },
+    {
+      "name": "unclosed heredoc openers do not hide a later sender",
+      "cmd": "cat <<A\ncat <<B\ncat <<C\nsendmail a@example.invalid",
+      "expected": true
+    },
+    {
+      "name": "control: unclosed heredoc openers around harmless lines are not a send",
+      "cmd": "cat <<A\ncat <<B\necho hi\nls",
+      "expected": false
     }
   ]
 }

@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GATE = os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
@@ -82,6 +83,50 @@ with tempfile.TemporaryDirectory() as _tmp:
     _ok2 = ("NEM TOLTHETO BE" in _err) and ("mixed_script" in _err)
     failed.append(_name2) if not _ok2 else None
     print(f"  [{'PASS' if _ok2 else 'FAIL'}] {_name2}: stderr={_err[:120]!r}")
+
+# --- A HOOK THAT DOES NOT FINISH IS A HOOK THAT DOES NOT BLOCK -------
+# The host blocks only on exit 2 (or a deny decision); a hook that is still running at its
+# timeout (10 s in the settings) is NON-blocking, so a command the classifier cannot finish on
+# was waved through. The heredoc scan used to be superlinear (a lazy regex re-run for every
+# never-closed opener, plus an intro that backtracked quadratically): 50 openers x 100K did not
+# finish in 90 s. The cases below run the REAL hook with a wall-clock bound, so a regression
+# shows as a TIMEOUT here instead of as an unchecked send in the field.
+HOOK_BUDGET_S = 8  # the settings give the hook 10 s
+
+
+def run_gate_timed(command: str):
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}).encode()
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run([sys.executable, GATE], input=payload, capture_output=True, timeout=HOOK_BUDGET_S)
+    except subprocess.TimeoutExpired:
+        return None, time.monotonic() - t0, ""
+    return proc.returncode, time.monotonic() - t0, proc.stderr.decode("utf-8", "replace")
+
+
+ADVERSARIAL = [
+    ("200 never-closed heredoc openers + 100K padding is DENIED (too large), not a hang",
+     "".join(f"cat <<T{i}\n" for i in range(200)) + "x" * 100000, 2, "tul nagy"),
+    ("50 openers, each followed by a 2K word and no newline, is DENIED (was: > 20 s)",
+     " ".join("<<" + "A" * 2000 for _ in range(50)), 2, "tul nagy"),
+    ("`<<` + 100K word characters finishes and passes (was: > 12 s)",
+     "cat <<" + "A" * 100000, 0, ""),
+    ("32 never-closed openers + 100K padding (the allowed maximum) finishes and passes",
+     "".join(f"cat <<T{i}\n" for i in range(32)) + "x" * 100000, 0, ""),
+    ("a wrapper with 30000 unknown flags is DENIED (was: > 12 s)",
+     "sudo " + "--a " * 30000 + "true", 2, "tul nagy"),
+    ("a command over the size limit is DENIED, even a harmless one",
+     "echo " + "x" * 140000, 2, "tul nagy"),
+]
+for name, command, want, needle in ADVERSARIAL:
+    code, secs, err = run_gate_timed(command)
+    if code is None:
+        ok, shown = False, f"TIMED OUT after {HOOK_BUDGET_S}s (a timed-out hook is NON-blocking: fail-OPEN)"
+    else:
+        ok = code == want and needle in err and secs < HOOK_BUDGET_S
+        shown = f"exit={code} want={want} in {secs:.2f}s"
+    failed.append(name) if not ok else None
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {shown}")
 
 print()
 if failed:

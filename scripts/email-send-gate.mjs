@@ -73,7 +73,15 @@ const SEND_PATTERNS = [
 // is KEPT -- only the body is cut. Without this, marker-first spellings
 // leaked the body into command position (FP), and dropping the intro
 // would have lost a heredoc-fed real sender (FN).
-const HEREDOC_RE = /(<<-?\s*'?(\w+)'?[^\n]*)\n[\s\S]*?\n\2(?=\s|$)/g
+//
+// The heredoc is found by scanHeredocs() below, ONE LINEAR PASS, not by a regex. The old
+// single regex (an intro `<<-?\s*'?(\w+)'?[^\n]*`, a newline, then a lazy body up to
+// `\n<TAG>`) was superlinear on hostile input: a `<<` followed by a long run of word
+// characters and no newline backtracked quadratically through the intro, and every
+// never-closed opener re-scanned the rest of the string for its closer. A hook that is
+// still running at its timeout is NOT a deny (the host treats it as non-blocking), so a
+// slow classifier is a fail-OPEN. Same decision as before, with a bound on the work.
+// Mirrored in hooks/outgoing-copy-gate.py (_scan_heredocs); keep the two identical.
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 // KWSPLIT924: shell reserved words that put the NEXT word in command position.
 // Stripped only at the head of a segment, never used as separators -- see the
@@ -88,6 +96,10 @@ const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
+// curl takes its URL as `--url https://...` (two tokens, the URL is its own token) or as
+// `--url=https://...` (ONE token): the target pattern is anchored to the token start, so the
+// glued form is read after its `--url=` prefix. Mirrored in outgoing-copy-gate.py (_url_arg).
+const urlArg = (t) => (t.startsWith('--url=') ? t.slice('--url='.length) : t)
 // RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
 // outgoing-copy-gate.py :: _curl_resend_verdict). Until now this copy was
 // method-blind and denied a read-only GET /domains the python copy passed.
@@ -207,10 +219,126 @@ export function maskSubshellMarkers(cmd) {
   return out
 }
 
+// --- bounded heredoc scan -------------------------------------
+// Hard limits, measured on 365k real Bash calls of the fleet (max command 32 KB, max
+// 7 heredoc openers, longest opener line 1.7 KB): each limit is 4x or more above
+// anything seen. Over a limit the gate does NOT guess: it DENIES, "too large to
+// inspect" (fail-closed), because an inspection that cannot finish inside the hook
+// timeout would otherwise let the call through.
+export const MAX_CMD_CHARS = 131072
+export const MAX_HEREDOC_OPENERS = 32
+export const MAX_OPENER_LINE_CHARS = 4096
+
+export class InspectionLimitError extends Error {
+  constructor(reason) {
+    super(reason)
+    this.name = 'InspectionLimitError'
+    this.reason = reason
+  }
+}
+
+const HEREDOC_INTRO = /<<-?\s*'?(\w+)/y
+const LINE_RUN = /\w+/y
+const WS_CHAR = /\s/
+
+// Closing-line candidates of the whole command, built in ONE pass: every line that
+// starts with a word-character run followed by whitespace or the end of the string
+// (the old regex's `\n<TAG>(?=\s|$)`). A closer for delimiter `TAG` is exactly such a
+// line whose run equals a PREFIX of the opener's word (the old regex backtracked
+// `\w+` to shorter delimiters), so a query is a few Map lookups, not a rescan.
+function buildCloserIndex(cmd) {
+  const byRun = new Map()
+  const lengths = new Set()
+  for (let nl = cmd.indexOf('\n'); nl !== -1; nl = cmd.indexOf('\n', nl + 1)) {
+    const s = nl + 1
+    LINE_RUN.lastIndex = s
+    const r = LINE_RUN.exec(cmd)
+    if (!r) continue
+    const e = s + r[0].length
+    if (e !== cmd.length && !WS_CHAR.test(cmd[e])) continue
+    const list = byRun.get(r[0])
+    if (list) list.push(s)
+    else byRun.set(r[0], [s])
+    lengths.add(r[0].length)
+  }
+  return { byRun, lengthsDesc: [...lengths].sort((a, b) => b - a) }
+}
+
+// First closer line start >= minStart for the longest usable prefix of `word`, or -1.
+function findCloser(index, word, minStart) {
+  for (const k of index.lengthsDesc) {
+    if (k > word.length) continue
+    const list = index.byRun.get(word.slice(0, k))
+    if (!list || list[list.length - 1] < minStart) continue
+    let lo = 0
+    let hi = list.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (list[mid] >= minStart) hi = mid
+      else lo = mid + 1
+    }
+    return { start: list[lo], delimLen: k }
+  }
+  return null
+}
+
+// Same matches the old regex found, left to right and non-overlapping:
+//   { start, introEnd, bodyStart, bodyEnd, end }
+// m[1] = cmd.slice(start, introEnd), the body = cmd.slice(bodyStart, bodyEnd) (keeps its
+// final newline), end = just past the closing tag. Throws InspectionLimitError over a limit.
+let lastScan = { cmd: null, found: null }
+export function scanHeredocs(cmd) {
+  if (lastScan.cmd === cmd) return lastScan.found
+  if (cmd.length > MAX_CMD_CHARS) {
+    throw new InspectionLimitError(`command is ${cmd.length} characters, the limit is ${MAX_CMD_CHARS}`)
+  }
+  const found = []
+  let index = null
+  let openers = 0
+  let i = cmd.indexOf('<<')
+  while (i !== -1) {
+    HEREDOC_INTRO.lastIndex = i
+    const m = HEREDOC_INTRO.exec(cmd)
+    if (!m) { i = cmd.indexOf('<<', i + 1); continue }
+    if (++openers > MAX_HEREDOC_OPENERS) {
+      throw new InspectionLimitError(`more than ${MAX_HEREDOC_OPENERS} heredoc openers`)
+    }
+    const q = cmd.indexOf('\n', i + m[0].length)
+    if (q !== -1) {
+      index ??= buildCloserIndex(cmd)
+      const closer = findCloser(index, m[1], q + 2)
+      if (closer) {
+        const lineStart = cmd.lastIndexOf('\n', i - 1) + 1
+        if (q - lineStart > MAX_OPENER_LINE_CHARS) {
+          throw new InspectionLimitError(`a heredoc opener line is longer than ${MAX_OPENER_LINE_CHARS} characters`)
+        }
+        const end = closer.start + closer.delimLen
+        found.push({ start: i, introEnd: q, bodyStart: q + 1, bodyEnd: closer.start, end })
+        i = cmd.indexOf('<<', end)
+        continue
+      }
+    }
+    i = cmd.indexOf('<<', i + 1)
+  }
+  lastScan = { cmd, found }
+  return found
+}
+
+// cmd with every heredoc BODY cut and its opening line kept (the old `replace(RE, '$1')`).
+function stripHeredocBodies(cmd) {
+  let out = ''
+  let pos = 0
+  for (const h of scanHeredocs(cmd)) {
+    out += cmd.slice(pos, h.introEnd)
+    pos = h.end
+  }
+  return pos === 0 ? cmd : out + cmd.slice(pos)
+}
+
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
 export function segmentsTokens(cmd) {
-  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'))
+  const s = maskSubshellMarkers(stripHeredocBodies(cmd))
   const segments = []
   let cur = []
   let tok = ''
@@ -259,10 +387,16 @@ const WRAPPERS = new Map([
   ['setsid', ['', [], 0]],
 ])
 const HEAD_DEPTH = 8
+// A wrapper with more unknown long flags than this (`sudo --a --a --a ...`) is refused as too
+// large to inspect: every flag opens one more reading of the rest, so the heads were O(n^2)
+// (40k flags: an out-of-memory crash in this copy, 49 s in the python twin -- both fail-open).
+// Real wrappers carry at most a few unknown flags.
+export const MAX_WRAPPER_FLAG_STARTS = 32
 
 function commandHeads(toksIn, d = 0) {
-  let toks = toksIn
-  while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
+  let skip = 0
+  while (skip < toksIn.length && (ENV_ASSIGN.test(toksIn[skip]) || CMD_POSITION_KEYWORDS.has(toksIn[skip]))) skip++
+  const toks = skip ? toksIn.slice(skip) : toksIn
   if (!toks.length) return [toks]
   const w = basename(toks[0])
   // Still a wrapper at the depth bound: counts as a send (null), see the python twin.
@@ -291,6 +425,9 @@ function commandHeads(toksIn, d = 0) {
       continue
     }
     break
+  }
+  if (starts.length > MAX_WRAPPER_FLAG_STARTS) {
+    throw new InspectionLimitError(`a wrapper carries more than ${MAX_WRAPPER_FLAG_STARTS} unknown long flags`)
   }
   starts.unshift(i)
   return starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
@@ -330,7 +467,7 @@ function headIsSend(toks, depth) {
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
-  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
+  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(urlArg(t)))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
   return false
@@ -342,7 +479,8 @@ export function wrapperDepthHit(cmd) {
   let segments
   try {
     segments = segmentsTokens(cmd)
-  } catch {
+  } catch (e) {
+    if (e instanceof InspectionLimitError) throw e
     return false
   }
   // Only when the bound is the WHOLE reason: a visible send in another segment wins.
@@ -388,7 +526,7 @@ const HEREDOC_REDIRECT = /(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a
 function writtenThenRun(cmd, written, depth) {
   if (!written.size) return false
   let segments
-  try { segments = segmentsTokens(cmd) } catch { return false }
+  try { segments = segmentsTokens(cmd) } catch (e) { if (e instanceof InspectionLimitError) throw e; return false }
   for (const toks of segments) {
     for (const head of commandHeads(toks)) {
       if (!head || !head.length) continue
@@ -405,21 +543,19 @@ function writtenThenRun(cmd, written, depth) {
 }
 function heredocProgramSends(cmd, depth = 0) {
   const written = new Map()
-  for (const m of cmd.matchAll(HEREDOC_RE)) {
-    const opener = cmd.slice(cmd.lastIndexOf('\n', m.index - 1) + 1, m.index) + m[1]
-    const w = HEREDOC_REDIRECT.exec(opener)
-    if (w) written.set(w[2], cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length))
-    const piped = HEREDOC_PIPE.exec(m[1])
+  for (const h of scanHeredocs(cmd)) {
+    const lineStart = cmd.lastIndexOf('\n', h.start - 1) + 1
+    const intro = cmd.slice(h.start, h.introEnd)
+    const body = cmd.slice(h.bodyStart, h.bodyEnd)
+    const w = HEREDOC_REDIRECT.exec(cmd.slice(lineStart, h.start) + intro)
+    if (w) written.set(w[2], body)
+    const piped = HEREDOC_PIPE.exec(intro)
     if (piped) {
-      const pbody = cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length)
       if (WRAPPER_SHELL.test(piped[1])) {
-        if (depth < 3 && isSendInvocation(pbody, depth + 1)) return true
-      } else if (heredocBodySends(pbody)) return true
+        if (depth < 3 && isSendInvocation(body, depth + 1)) return true
+      } else if (heredocBodySends(body)) return true
     }
-    const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
-    const head = cmd.slice(lineStart, m.index)
-    const bodyStart = m.index + m[1].length + 1
-    const body = cmd.slice(bodyStart, m.index + m[0].length - m[2].length)
+    const head = cmd.slice(lineStart, h.start)
     if (HEREDOC_INTERP.test(head)) {
       if (heredocBodySends(body)) return true
     } else if (HEREDOC_SHELL.test(head) && depth < 3) {
@@ -434,7 +570,8 @@ export function isSendInvocation(cmd, depth = 0) {
   let segments
   try {
     segments = segmentsTokens(cmd)
-  } catch {
+  } catch (e) {
+    if (e instanceof InspectionLimitError) throw e
     // Unparseable command: fall back to the LEGACY content patterns, so on
     // this path the gate is exactly as strict as before -- never weaker.
     return SEND_PATTERNS.some((re) => re.test(cmd))
@@ -454,9 +591,24 @@ export function gateDecision(toolName, toolInput) {
   if (/send_email/i.test(name)) return { deny: true }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
-    if (isSendInvocation(cmd)) return { deny: true }
+    try {
+      if (isSendInvocation(cmd)) return { deny: true }
+    } catch (e) {
+      // Fail-closed: a command too large to inspect inside the hook timeout is refused,
+      // not waved through (a timed-out hook is non-blocking in the host).
+      if (e instanceof InspectionLimitError) return { deny: true, tooLarge: e.reason }
+      throw e
+    }
   }
   return { deny: false }
+}
+
+export function buildTooLargeMsg(reason) {
+  return (
+    'TILTVA (governance hard-gate): a parancs tul nagy ahhoz, hogy a kapu atvizsgalja ' +
+    `(${reason}), es egy vizsgalhatatlan parancs nem mehet at. ` +
+    'Bontsd kisebb parancsokra (nagy szoveget fajlba irj a Write tool-lal), aztan futtasd ujra.'
+  )
 }
 
 // Pure builder for the deny message, so the brand/owner substitution is
@@ -530,8 +682,15 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny } = gateDecision(payload?.tool_name, payload?.tool_input)
-  if (shouldDeny) {
+  let decision
+  try {
+    decision = gateDecision(payload?.tool_name, payload?.tool_input)
+  } catch (e) {
+    // An uncaught throw would exit 1, which the host treats as NON-blocking: fail-open.
+    deny(`TILTVA (governance hard-gate): a kapu belso hibaja (${e?.message ?? e}), a parancs nem vizsgalhato.`)
+  }
+  if (decision.deny) {
+    if (decision.tooLarge) deny(buildTooLargeMsg(decision.tooLarge))
     const { botName, ownerName } = readBrandEnv()
     deny(buildGateMsg(botName, ownerName))
   }
