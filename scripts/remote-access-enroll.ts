@@ -18,13 +18,14 @@
 // (INSTUX1): the tunnel opens a dead port and the app reports "dashboard not
 // running" forever.
 //
-// The bundle carries a device key minted for THIS device only (POST
-// /api/auth/device-keys: named, revocable one by one from the dashboard). The
-// shared dashboard token never goes into a bundle. Such a bundle is a SECRET:
-// hand it over on a private channel only, never by email. Enrolling the same
-// key line again replaces its device key. The dashboard must be running to mint
-// the key. Pass --no-dashboard-token to emit a key-free bundle (the device user
-// must then obtain the dashboard access URL out of band).
+// The bundle carries an admin token minted for THIS device only (POST
+// /api/admin/tokens: named after the device, revocable on its own from the
+// dashboard with DELETE /api/admin/tokens/:id/revoke). The shared dashboard
+// token never goes into a bundle. Such a bundle is a SECRET: hand it over on a
+// private channel only, never by email. Enrolling the same key line again
+// replaces its token. The dashboard must be running to mint it. Pass
+// --no-dashboard-token to emit a token-free bundle (the device user must then
+// obtain the dashboard access URL out of band).
 
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -42,7 +43,7 @@ import {
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
-import { defaultDeviceKeyName, mintDeviceKey, type DeviceKeyApi } from '../src/remote-enroll-device-key.js'
+import { deviceTokenName, mintDeviceToken, type DeviceTokenApi } from '../src/remote-enroll-device-key.js'
 import { WEB_PORT as ENV_WEB_PORT } from '../src/config.js'
 // @ts-expect-error plain .mjs, no declaration file
 import { agentApi } from './lib/agent-api.mjs'
@@ -53,7 +54,7 @@ interface Args {
   port: number
   webPort: number
   includeDashboardToken: boolean
-  /** Name of the device key in the dashboard's device-key list. */
+  /** Label of the device token in the dashboard's token list. */
   name?: string
 }
 
@@ -151,15 +152,15 @@ function obtainHostKey(): { body: string; source: string } | null {
   })
 }
 
-/** Mint the device key through the dashboard API, signed as the operator. */
+/** Mint the device token through the dashboard API, signed as the operator. */
 async function mintForDevice(installId: string, name: string): Promise<string> {
-  const api: DeviceKeyApi = (method, path, body) => agentApi(method, path, body, { kind: 'operator', timeoutMs: 5000 })
+  const api: DeviceTokenApi = (method, path, body) => agentApi(method, path, body, { kind: 'operator', timeoutMs: 5000 })
   try {
-    return await mintDeviceKey(api, installId, name)
+    return await mintDeviceToken(api, installId, name)
   } catch (err) {
     if (err instanceof RemoteEnrollError) throw err
     throw new RemoteEnrollError(
-      `could not reach the dashboard to mint the device key (is it running?): ${err instanceof Error ? err.message : String(err)}`,
+      `could not reach the dashboard to mint the device token (is it running?): ${err instanceof Error ? err.message : String(err)}`,
     )
   }
 }
@@ -191,9 +192,9 @@ async function main(): Promise<void> {
     )
   }
 
-  // Mint the device key before the authorized_keys entry: a failure here leaves nothing behind.
+  // Mint the device token before the authorized_keys entry: a failure here leaves nothing behind.
   const deviceKey = args.includeDashboardToken
-    ? await mintForDevice(parsed.installId, args.name ?? defaultDeviceKeyName(parsed.installId))
+    ? await mintForDevice(parsed.installId, deviceTokenName(args.name, parsed.installId))
     : null
 
   const restrictedLine = buildRestrictedLine(parsed, args.webPort)
@@ -232,7 +233,7 @@ async function main(): Promise<void> {
   if (deviceKey !== null) {
     bundleInput.dashboardToken = deviceKey
     process.stderr.write(
-      'NOTE: this bundle contains a dashboard device key for this device only (revocable from the dashboard). ' +
+      'NOTE: this bundle contains an admin dashboard token for this device only (revocable from the dashboard). ' +
         'Treat it as a secret: hand it over on a private channel, never by email or shared chat. ' +
         'Use --no-dashboard-token to emit a key-free bundle.\n',
     )
