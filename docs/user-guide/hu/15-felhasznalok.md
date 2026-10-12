@@ -63,6 +63,15 @@ A dashboard Felhasználók fülének "Szerepkör-jogosultság mátrix" nézete a
 
 A telepítéskor generált `store/.dashboard-token` fájl egy admin szerepkörű, globális hatókörű tokent tartalmaz. Az ágensenkénti tokenek érvényesítéséig minden ágensnél tovább működik; az ágensek most már a saját tokenjükkel hívják az API-t (`agents/<id>/.agent-token`), és erre csak akkor esnek vissza, ha a saját fájljuk hiányzik (lásd a fork-guide F07 fejezetét).
 
+### A dashboard megnyitása új böngészőben
+
+A dashboard linkje már nem tartalmazza a közös tokent. Egyszer használható belépő kódot tartalmaz: `http://localhost:3420/?enroll=<kód>`. A szerver indításkor kiír egyet, az `npm run dashboard-url` bármikor újat (`--base https://a-te-hosztod` tunnelhez vagy LAN-címhez). Nyisd meg egyszer: a böngésző a kódot a saját tokenjére cseréli, elmenti, és a kódot kiveszi a címsorból.
+
+- A kód **egyszer** használható és **10 perc** után lejár; a szerver újraindítása az el nem használtakat érvényteleníti. Ha a link lejártat jelez, kérj újat.
+- Minden böngésző saját admin tokent kap, `browser <dátum> <címke>` néven. A **Tokenek** fülön látod, és ott visszavonhatod anélkül, hogy más böngészőt kijelentkeztetnél.
+- A mobil-login QR (oldalsáv) ugyanígy működik: friss, egyszer használható kódot hordoz, így a telefon saját tokent kap.
+- A már tokennel rendelkező böngésző tovább működik, és a régi `?token=` link is megnyílik. Ha a közös tokent rotálod (a token fájl törlése és újraindítás), a régi megszűnik működni.
+
 ### API-tokenek (Tokenek fül)
 
 A **Tokenek** fülön további tokeneket hozhatsz létre. Minden tokennek van:

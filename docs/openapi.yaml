@@ -5284,6 +5284,103 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /admin/browser-enroll-codes:
+    post:
+      tags: [admin]
+      operationId: adminIssueBrowserEnrollCode
+      summary: Issue a one-time browser enrollment code (admin)
+      description: >
+        Returns a single-use code, valid for 10 minutes and kept in the server's
+        memory only (a restart invalidates unused codes). The browser opens
+        `<origin>/?enroll=<code>`, which trades the code for its own admin token
+        through `POST /api/auth/enroll-browser`. Global admin only: a
+        tenant-scoped admin, a device key and an agent token get 403, because
+        the code buys a default-tenant admin token. `npm run dashboard-url`
+        calls this and prints the URL.
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Code issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, expires_at]
+                properties:
+                  code:
+                    type: string
+                    description: The raw code, shown once.
+                  expires_at:
+                    type: integer
+                    description: Unix seconds.
+        "403":
+          description: Caller is not a global admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /auth/enroll-browser:
+    post:
+      tags: [auth]
+      operationId: enrollBrowser
+      summary: Trade a one-time enrollment code for a browser token
+      description: >
+        Public (the code is the credential). Spends the code and mints an admin
+        token of the default tenant, named `browser <date> <tag>`, with no expiry,
+        listed by `GET /api/admin/tokens` and revoked on its own with
+        `DELETE /api/admin/tokens/{id}/revoke`. The raw token is returned once.
+        A code works once; a wrong or expired code is 401. After 10 failed
+        attempts in 10 minutes a code that does not match is 429 instead
+        (`Retry-After`) until the failures drain out of the window; a live code
+        is still accepted, so wrong codes cannot lock an enrollment out.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        "201":
+          description: Token minted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, id, name]
+                properties:
+                  token:
+                    type: string
+                    description: The raw token, shown once.
+                  id:
+                    type: integer
+                  name:
+                    type: string
+        "400":
+          description: Body is not valid JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid, spent or expired code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many failed attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   # ---------------------------------------------------------------------------
   # Tier 3 — internal / status (x-internal: true)
   # ---------------------------------------------------------------------------

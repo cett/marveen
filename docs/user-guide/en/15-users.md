@@ -63,6 +63,15 @@ The "Role-permission matrix" view on the Users tab mirrors live source data -- t
 
 The `store/.dashboard-token` file generated at install time holds an admin-role, globally-scoped token. Until the per-agent tokens are enforced it keeps working for every agent; each agent now calls the API with its own token (`agents/<id>/.agent-token`) and falls back to this one only when its own file is missing (see the fork guide, F07).
 
+### Opening the dashboard in a new browser
+
+The dashboard link no longer contains the shared token. It contains a one-time enrollment code: `http://localhost:3420/?enroll=<code>`. The server prints one when it starts, and `npm run dashboard-url` prints a fresh one at any time (`--base https://your-host` for a tunnel or LAN address). Open it once: the browser exchanges the code for a token of its own, saves it, and removes the code from the address bar.
+
+- A code works **once** and expires after **10 minutes**; a restart of the server invalidates the unused ones. Ask for a new one if the link says it expired.
+- Every browser gets its own admin token, named `browser <date> <tag>`. You see it in the **Tokens** tab and can revoke it there without logging out any other browser.
+- The mobile-login QR (sidebar) works the same way: it carries a fresh one-time code, so the phone gets its own token.
+- A browser that already holds a token keeps working, and an old `?token=` link still opens. If you rotate the shared token (delete the token file and restart), the old one stops working.
+
 ### API tokens (Tokens tab)
 
 The **Tokens** tab lets you create additional tokens. Each token has:
