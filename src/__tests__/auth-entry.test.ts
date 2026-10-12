@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  holdsSession, shouldOfferSignIn, enrollUnlessSession, applySignInEntry, type SignInEntryDoc,
+  holdsSession, shouldOfferSignIn, enrollUnlessSession, adoptUrlTokenUnlessSession, applySignInEntry, type SignInEntryDoc,
 } from '../../web/modules/auth-entry.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -95,6 +95,36 @@ describe('enrollUnlessSession', () => {
   })
 })
 
+describe('adoptUrlTokenUnlessSession', () => {
+  const probe = (p: () => Promise<any>) => vi.fn(p)
+
+  it('hands back the link token when the browser holds no session or only a token', async () => {
+    for (const status of [{ authenticated: false, method: null }, TOKEN, { authenticated: true, method: 'device' }]) {
+      expect(await adoptUrlTokenUnlessSession({ token: 'url-token', probeStatus: probe(async () => status) })).toBe('url-token')
+    }
+  })
+
+  it('does NOT adopt it when the browser holds a session: the token would beat the cookie', async () => {
+    const probeStatus = probe(async () => SESSION)
+    expect(await adoptUrlTokenUnlessSession({ token: 'url-token', probeStatus })).toBe('')
+    expect(probeStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('adopts it when the probe fails or answers nothing (the way it worked before the probe)', async () => {
+    for (const p of [async () => { throw new Error('offline') }, async () => null]) {
+      expect(await adoptUrlTokenUnlessSession({ token: 'url-token', probeStatus: probe(p) })).toBe('url-token')
+    }
+  })
+
+  it('does nothing without a token, and asks nothing', async () => {
+    for (const token of ['', null, undefined]) {
+      const probeStatus = probe(async () => SESSION)
+      expect(await adoptUrlTokenUnlessSession({ token, probeStatus })).toBe('')
+      expect(probeStatus).not.toHaveBeenCalled()
+    }
+  })
+})
+
 describe('applySignInEntry', () => {
   function fakeDoc() {
     const listeners: Array<(e: { preventDefault(): void }) => void> = []
@@ -139,13 +169,21 @@ describe('wiring contracts', () => {
   const HTML = read('index.html')
 
   it('the enrollment exchange in app.js goes through the session check, with a bearer-less probe', () => {
-    expect(APP).toMatch(/import \{ enrollUnlessSession \} from '\.\/modules\/auth-entry\.js'/)
+    expect(APP).toMatch(/import \{ enrollUnlessSession, adoptUrlTokenUnlessSession \} from '\.\/modules\/auth-entry\.js'/)
     expect(APP).toMatch(/enrollUnlessSession\(\{[\s\S]*?code: urlEnroll[\s\S]*?\}\)/)
-    // The probe must not carry the bearer: originalFetch, not the patched window.fetch.
-    expect(APP).toMatch(/probeStatus: async \(\) => \{\s*const r = await originalFetch\('\/api\/auth\/status'\)/)
+    // The probe is one shared function that must not carry the bearer: originalFetch, not the patched window.fetch.
+    expect(APP).toMatch(/async function probeCookieStatus\(\) \{\s*const r = await originalFetch\('\/api\/auth\/status'\)/)
+    expect(APP).toMatch(/probeStatus: probeCookieStatus,\s*exchange: enrollWithCode/)
     // The old direct call is gone: nothing trades the URL code without the check.
     expect(APP).not.toMatch(/enrollPromise = enrollWithCode\(/)
-    expect(APP).toMatch(/exchange: enrollWithCode/)
+  })
+
+  it('the ?token= link in app.js goes through the session check and every /api call waits for it', () => {
+    expect(APP).toMatch(/adoptUrlTokenUnlessSession\(\{ token: urlToken, probeStatus: probeCookieStatus \}\)/)
+    // No synchronous adoption of the URL token any more.
+    expect(APP).not.toMatch(/let sessionToken = urlToken/)
+    expect(APP).not.toMatch(/localStorage\.setItem\(TOKEN_KEY, urlToken\)/)
+    expect(APP).toMatch(/if \(urlTokenPromise\) await urlTokenPromise/)
   })
 
   it('the sidebar entry is hidden by default, a button, and labelled', () => {

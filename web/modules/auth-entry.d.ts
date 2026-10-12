@@ -11,6 +11,10 @@ export function enrollUnlessSession(args: {
   probeStatus: () => Promise<AuthStatus | null>
   exchange: (code: string) => Promise<string>
 }): Promise<string>
+export function adoptUrlTokenUnlessSession(args: {
+  token: string | null | undefined
+  probeStatus: () => Promise<AuthStatus | null>
+}): Promise<string>
 export interface SignInEntryDoc {
   getElementById(id: string): {
     hidden: boolean

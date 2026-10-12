@@ -20,6 +20,7 @@ vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/store',
   MAIN_AGENT_ID: 'marveen',
   APP_TZ: 'UTC',
+  APPROVAL_HUMAN_ONLY_ENFORCE: false,
 }))
 
 vi.mock('../logger.js', () => ({

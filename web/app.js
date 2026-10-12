@@ -24,7 +24,7 @@ import { can } from './modules/rbac-client.js'
 import { isPageAllowed, isTabAllowed, initNavGating, STATUS_BLOCK_PERMISSION } from './modules/nav-gate.js'
 import { renderPaginator } from './modules/paginator.js'
 import { initGlobalKanbanSearch } from './modules/kanban-search.js'
-import { enrollUnlessSession } from './modules/auth-entry.js'
+import { enrollUnlessSession, adoptUrlTokenUnlessSession } from './modules/auth-entry.js'
 
 // ── Lazy-load helper ──────────────────────────────────────────────────────────
 // Deduplicates module loads: the Promise is stored on first call, subsequent calls
@@ -82,17 +82,33 @@ function mainAgentId() {
   // Some iOS/Safari privacy modes purge or block localStorage (especially over
   // plain http / non-primary origins); an in-memory copy keeps the session
   // authenticated even when the persisted copy is unavailable.
-  let sessionToken = urlToken || ''
+  let sessionToken = ''
+  const originalFetch = window.fetch.bind(window)
+
+  // Asks who the browser is WITHOUT the bearer header, so the answer is for the session cookie alone.
+  // A failed probe is null ("no session"), which keeps the old behaviour of adopting a token.
+  async function probeCookieStatus() {
+    const r = await originalFetch('/api/auth/status')
+    return r.ok ? r.json() : null
+  }
+
+  // A legacy ?token= link leaves the address bar at once. The token is adopted only after the probe
+  // says the browser holds no login session: an adopted token beats the session cookie at the auth
+  // gate, so a signed-in person could no longer decide a human-only approval. Requests wait for the
+  // decision (urlTokenPromise), so the first API calls already carry the right credential.
+  let urlTokenPromise = null
   if (urlToken) {
-    try { localStorage.setItem(TOKEN_KEY, urlToken) } catch { /* storage blocked */ }
     urlParams.delete('token')
     const clean = window.location.pathname + (urlParams.toString() ? '?' + urlParams : '') + window.location.hash
     window.history.replaceState({}, '', clean)
+    urlTokenPromise = adoptUrlTokenUnlessSession({ token: urlToken, probeStatus: probeCookieStatus }).then((token) => {
+      if (!token) return
+      sessionToken = token
+      try { localStorage.setItem(TOKEN_KEY, token) } catch { /* storage blocked */ }
+    })
   } else {
     try { sessionToken = localStorage.getItem(TOKEN_KEY) || '' } catch { /* storage blocked */ }
   }
-
-  const originalFetch = window.fetch.bind(window)
 
   // Trades a one-time enrollment code for this browser's own token. Resolves to the token, or ''
   // when the code is spent/expired/throttled (the caller then falls back to whatever it had).
@@ -122,10 +138,7 @@ function mainAgentId() {
     // human-only approval. The probe goes out without the bearer header, so it answers for the cookie.
     enrollPromise = enrollUnlessSession({
       code: urlEnroll,
-      probeStatus: async () => {
-        const r = await originalFetch('/api/auth/status')
-        return r.ok ? r.json() : null
-      },
+      probeStatus: probeCookieStatus,
       exchange: enrollWithCode,
     }).then((token) => {
       if (!token) return
@@ -143,6 +156,7 @@ function mainAgentId() {
       url.startsWith('/api/') ||
       (url.startsWith(window.location.origin + '/api/'))
     if (isSameOriginApi) {
+      if (urlTokenPromise) await urlTokenPromise
       if (enrollPromise) await enrollPromise
       let token = sessionToken
       if (!token) { try { token = localStorage.getItem(TOKEN_KEY) } catch { token = '' } }
