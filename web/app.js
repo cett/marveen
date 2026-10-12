@@ -57,10 +57,12 @@ function closeModal(overlay) {
 
 
 // === Dashboard auth bootstrap ===
-// The server prints an URL like http://127.0.0.1:3420/?token=XXX on startup.
-// On first visit we pluck the token out of the URL, store it in localStorage,
-// strip it from the visible URL, and then inject it into every /api/* fetch
-// as a Bearer header so the server lets us through.
+// The server prints an URL like http://127.0.0.1:3420/?enroll=CODE on startup
+// (`npm run dashboard-url` prints a fresh one). CODE is single-use and short-lived: on first
+// visit we strip it from the visible URL, trade it at POST /api/auth/enroll-browser for this
+// browser's OWN revocable token, store that in localStorage, and inject it into every /api/*
+// fetch as a Bearer header so the server lets us through. A browser that already holds a token
+// (or arrives with a legacy ?token=XXX link) keeps working the same way.
 
 // The main (channels) agent's real id. The backend /api/marveen route returns
 // the configured MAIN_AGENT_ID (NOT the literal "marveen") in window._marveen;
@@ -90,6 +92,38 @@ function mainAgentId() {
   }
 
   const originalFetch = window.fetch.bind(window)
+
+  // Trades a one-time enrollment code for this browser's own token. Resolves to the token, or ''
+  // when the code is spent/expired/throttled (the caller then falls back to whatever it had).
+  async function enrollWithCode(code) {
+    try {
+      const r = await originalFetch('/api/auth/enroll-browser', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      })
+      if (!r.ok) return ''
+      const body = await r.json()
+      return body && typeof body.token === 'string' ? body.token : ''
+    } catch { return '' }
+  }
+
+  // The code leaves the address bar at once (a reload or a bookmark must not replay a spent code).
+  // Requests wait for the exchange, so the first API calls already carry the new token.
+  let enrollPromise = null
+  const urlEnroll = urlParams.get('enroll')
+  if (urlEnroll) {
+    urlParams.delete('enroll')
+    const clean = window.location.pathname + (urlParams.toString() ? '?' + urlParams : '') + window.location.hash
+    window.history.replaceState({}, '', clean)
+    enrollPromise = enrollWithCode(urlEnroll).then((token) => {
+      if (!token) return
+      sessionToken = token
+      try { localStorage.setItem(TOKEN_KEY, token) } catch { /* storage blocked */ }
+    })
+  }
+  window.__marveenEnrollWithCode = enrollWithCode
+
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input))
     // Only attach the token to same-origin API calls. Relative paths always
@@ -98,6 +132,7 @@ function mainAgentId() {
       url.startsWith('/api/') ||
       (url.startsWith(window.location.origin + '/api/'))
     if (isSameOriginApi) {
+      if (enrollPromise) await enrollPromise
       let token = sessionToken
       if (!token) { try { token = localStorage.getItem(TOKEN_KEY) } catch { token = '' } }
       if (token) {
@@ -146,8 +181,8 @@ function mainAgentId() {
       showStandaloneTokenPrompt(TOKEN_KEY)
     } else {
       alert(
-        'Dashboard authentication failed. Check the server log for the access URL ' +
-        '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
+        'Dashboard authentication failed. Run "npm run dashboard-url" on the server for a ' +
+        'fresh single-use login link (the server log also prints one at startup), then open it in your browser.'
       )
     }
   }
@@ -219,9 +254,9 @@ function mainAgentId() {
   window.showLoginOverlay = showLoginOverlay
 
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
-  // The user pastes the access token (the value after ?token= in the server's
-  // startup URL, or from the dashboard Settings / mobile-login QR); it is saved
-  // to this app instance's localStorage and the page reloads authenticated.
+  // The user pastes the login link (or code) from the server's startup output or
+  // `npm run dashboard-url`, or a token from the dashboard mobile-login QR; it is
+  // saved to this app instance's localStorage and the page reloads authenticated.
   function showStandaloneTokenPrompt(tokenKey) {
     if (document.getElementById('mv-token-overlay')) return
     // Lang files are not yet loaded here; use a local inline lookup so EN mode works.
@@ -229,15 +264,17 @@ function mainAgentId() {
     const _pwa = {
       hu: {
         title: 'Hozzáférés szükséges',
-        desc: 'A home-screen app saját tárhelye még üres. Illeszd be a dashboard access tokent (a szerver indítási URL-jében a ?token= utáni rész, vagy a Beállítások / mobil-login QR), és elmentődik ehhez az apphoz.',
+        desc: 'A home-screen app saját tárhelye még üres. Illeszd be a belépő linket (a szerver indításakor vagy az `npm run dashboard-url` parancs írja ki; egyszer használható, 10 percig érvényes), és az app kap egy saját tokent.',
         btn: 'Mentés és újratöltés',
-        empty_token: 'Üres token.'
+        empty_token: 'Üres token.',
+        enroll_failed: 'A link lejárt vagy már felhasználták. Kérj újat: npm run dashboard-url'
       },
       en: {
         title: 'Access Required',
-        desc: "The home-screen app's own storage is empty. Paste the dashboard access token (the part after ?token= in the server startup URL, or from Settings / mobile-login QR), and it will be saved for this app.",
+        desc: "The home-screen app's own storage is empty. Paste the login link (printed at server startup or by `npm run dashboard-url`; single use, valid 10 minutes) and this app gets its own token.",
         btn: 'Save & Reload',
-        empty_token: 'Empty token.'
+        empty_token: 'Empty token.',
+        enroll_failed: 'The link expired or was already used. Get a new one: npm run dashboard-url'
       }
     }
     const _p = _pwa[_lang] || _pwa.hu
@@ -261,9 +298,23 @@ function mainAgentId() {
     document.body.appendChild(overlay)
     const input = overlay.querySelector('#mv-token-input')
     const errEl = overlay.querySelector('#mv-token-err')
-    const submit = () => {
+    const submit = async () => {
       const raw = (input.value || '').trim()
       if (!raw) { errEl.textContent = _p.empty_token; return }
+      // A pasted enrollment link: trade its one-time code for this app's own token.
+      if (raw.includes('enroll=')) {
+        let code = null
+        try { code = new URL(raw).searchParams.get('enroll') } catch { /* not a full URL */ }
+        if (!code) {
+          const m = raw.match(/[?&#]enroll=([^&#\s]+)/)
+          if (m) { try { code = decodeURIComponent(m[1]) } catch { code = m[1] } }
+        }
+        const enrolled = code ? await window.__marveenEnrollWithCode(code) : ''
+        if (!enrolled) { errEl.textContent = _p.enroll_failed; return }
+        localStorage.setItem(tokenKey, enrolled)
+        window.location.reload()
+        return
+      }
       // Accept either a bare token or the whole startup URL (the user often
       // pastes the full https://host/?token=... link). Pull just the token out.
       let token = raw
@@ -1039,10 +1090,10 @@ document.addEventListener('DOMContentLoaded', boot, { once: true })
 if (document.readyState !== 'loading') boot();
 
 
-// === Mobile login (QR of the ?token= bootstrap URL) ===
-// The desktop is already authenticated, so the token lives in localStorage.
-// We render it as a QR purely client-side and show it in a modal; the phone
-// scans it and stores the token locally. The token never travels through chat.
+// === Mobile login (QR of a one-time ?enroll= URL) ===
+// The desktop is already authenticated. It asks the server for a single-use enrollment code,
+// renders the URL as a QR purely client-side and shows it in a modal; the phone scans it and
+// trades the code for its OWN token (revocable on its own). This browser's token never leaves it.
 (function setupMobileLogin() {
   const btn = document.getElementById('mobileLoginBtn')
   const overlay = document.getElementById('mobileLoginOverlay')
@@ -1084,7 +1135,16 @@ if (document.readyState !== 'loading') boot();
         return
       }
     }
-    const url = base + '/?token=' + token
+    let url
+    try {
+      const r = await fetch('/api/admin/browser-enroll-codes', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } })
+      const issued = r.ok ? await r.json() : null
+      if (!issued || !issued.code) throw new Error('HTTP ' + r.status)
+      url = base + '/?enroll=' + encodeURIComponent(issued.code)
+    } catch (e) {
+      qrBox.innerHTML = `<p class="muted">${t('mobile_login.qr_error', { msg: escapeHtml(String(e && e.message || e)) })}</p>`
+      return
+    }
     try {
       const qr = qrcode(0, 'M') // typeNumber 0 = auto-fit, ECC level M
       qr.addData(url)
