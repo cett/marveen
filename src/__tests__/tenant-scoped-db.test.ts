@@ -45,6 +45,34 @@ describe('kanban cards: the shape and order the board gets from a tenant list', 
   })
 })
 
+describe('kanban cards: the status-filtered list stays inside the tenant', () => {
+  it('never returns the other tenant\'s cards of the same status, with or without paging', () => {
+    for (let i = 0; i < 3; i++) insertTenantKanbanCard('t-a', `a-${i}`, `A ${i}`, 'in_progress')
+    for (let i = 0; i < 2; i++) insertTenantKanbanCard('t-b', `b-${i}`, `B ${i}`, 'in_progress')
+    insertTenantKanbanCard('t-a', 'a-done', 'A done', 'done')
+    insertTenantKanbanCard('t-b', 'b-done', 'B done', 'done')
+
+    const idsOf = (tenant: string, status: string, limit?: number, offset?: number) =>
+      listTenantKanbanCards(tenant, status, limit, offset).map(c => c.id).sort()
+
+    expect(idsOf('t-a', 'in_progress')).toEqual(['a-0', 'a-1', 'a-2'])
+    expect(idsOf('t-b', 'in_progress')).toEqual(['b-0', 'b-1'])
+    expect(idsOf('t-a', 'done')).toEqual(['a-done'])
+    expect(idsOf('t-b', 'done')).toEqual(['b-done'])
+    // a page larger than the tenant's own rows must not be filled from the other tenant
+    expect(idsOf('t-b', 'in_progress', 10, 0)).toEqual(['b-0', 'b-1'])
+    expect(idsOf('t-b', 'in_progress', 10, 1)).toHaveLength(1)
+    expect(listTenantKanbanCards('t-nobody', 'in_progress')).toEqual([])
+  })
+
+  it('leaves out the tenant\'s archived cards of that status', () => {
+    insertTenantKanbanCard('t-a', 'a-live', 'live', 'planned')
+    insertTenantKanbanCard('t-a', 'a-old', 'old', 'planned')
+    getDb().prepare('UPDATE kanban_cards SET archived_at = 1 WHERE id = ?').run('a-old')
+    expect(listTenantKanbanCards('t-a', 'planned').map(c => c.id)).toEqual(['a-live'])
+  })
+})
+
 describe('kanban cards', () => {
   it('lists, counts and paginates only the given tenant', () => {
     for (let i = 0; i < 5; i++) insertTenantKanbanCard('t-a', `a-${i}`, `A ${i}`)
