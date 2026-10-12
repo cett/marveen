@@ -14,9 +14,11 @@ export interface AutonomyCategoryRow {
   timeout_minutes: number | null
   updated_at: number
   updated_by: string
+  /** 1 = a category an agent may never decide for itself (migration 0080); adds to the code's floor. */
+  human_only?: number
 }
 
-const SELECT_COLUMNS = 'key, label, level, locked, max_level, timeout_minutes, updated_at, updated_by'
+const SELECT_COLUMNS = 'key, label, level, locked, max_level, timeout_minutes, updated_at, updated_by, human_only'
 
 export function listAutonomyCategories(): AutonomyCategoryRow[] {
   return db.prepare(`SELECT ${SELECT_COLUMNS} FROM autonomy_categories ORDER BY key`).all() as AutonomyCategoryRow[]
@@ -39,6 +41,17 @@ export function setAutonomyCategoryTimeout(key: string, timeoutMinutes: number |
   db.prepare(
     `UPDATE autonomy_categories SET timeout_minutes = ?, updated_at = unixepoch(), updated_by = ? WHERE key = ?`
   ).run(timeoutMinutes, updatedBy, key)
+}
+
+/** Keys of the categories marked human-only in the table (the code's floor is not in here). */
+export function listHumanOnlyCategoryKeys(): string[] {
+  return (db.prepare('SELECT key FROM autonomy_categories WHERE human_only = 1').all() as { key: string }[]).map((r) => r.key)
+}
+
+export function setAutonomyCategoryHumanOnly(key: string, humanOnly: boolean, updatedBy: string): void {
+  db.prepare(
+    `UPDATE autonomy_categories SET human_only = ?, updated_at = ?, updated_by = ? WHERE key = ?`
+  ).run(humanOnly ? 1 : 0, Math.floor(Date.now() / 1000), updatedBy, key)
 }
 
 // Full row upsert, used by fleet-transfer.ts import (replaces the whole

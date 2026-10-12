@@ -95,7 +95,7 @@ describe('tryHandleAutonomy', () => {
     await tryHandleAutonomy(ctx)
     expect(out.status).toBe(200)
     const deploy = out.body.categories.find((c: any) => c.key === 'deploy')
-    expect(deploy).toEqual({ key: 'deploy', label: 'Deploy', level: 1, locked: false, maxLevel: 3, timeoutMinutes: null })
+    expect(deploy).toEqual({ key: 'deploy', label: 'Deploy', level: 1, locked: false, maxLevel: 3, timeoutMinutes: null, humanOnly: false })
     const safety = out.body.categories.find((c: any) => c.key === 'safety')
     expect(safety.locked).toBe(true)
   })

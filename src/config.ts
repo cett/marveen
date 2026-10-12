@@ -364,6 +364,14 @@ export const RBAC_MODE: 'shadow' | 'enforce' =
     ? 'enforce'
     : 'shadow'
 
+// Human-only approval categories. Off by default: the rules (a category an agent may never decide for
+// itself, the dashboard-session-only decision on such a request, the category name checks on
+// POST /api/approvals) only bind when APPROVAL_HUMAN_ONLY_ENFORCE=1; with anything else a bearer
+// token still resolves a human-only approval, and the journal says so. The value is read once at start,
+// so it cannot be flipped at runtime by an API call; rollback is unset + restart.
+export const APPROVAL_HUMAN_ONLY_ENFORCE: boolean =
+  (process.env['APPROVAL_HUMAN_ONLY_ENFORCE'] ?? env['APPROVAL_HUMAN_ONLY_ENFORCE'] ?? '').trim() === '1'
+
 // Token identity mode (Phase T4-7). The token shadow counter (src/web/token-shadow.ts) already
 // classifies a request by whether it names an agent other than its caller: in 'shadow' (the default)
 // that is counted and nothing else. In 'enforce' the same classification refuses the request with a

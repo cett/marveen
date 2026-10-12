@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import { PROJECT_ROOT, MAIN_AGENT_ID } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, APPROVAL_HUMAN_ONLY_ENFORCE } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, countApprovals,
   getApprovalStatusCounts, getOldestPendingApproval, expireTimedOutApprovals,
-  createAgentMessage, writeAgentAuditLog, getAutonomyCategory,
-  type Approval,
+  createAgentMessage, writeAgentAuditLog, getAutonomyCategory, recordApprovalEvent,
+  type Approval, type ApprovalResolvedVia,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { denyForeignAgent } from '../fleet-agent-identity.js'
+import { checkCategory, humanSessionOf, isHumanOnly } from '../approval-human-only.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 import { resolveApprovalTimeoutSeconds } from '../approval-timeout.js'
@@ -24,6 +25,36 @@ function getTimeoutAt(category: string, requestedSeconds: unknown): number {
   }
   return Math.floor(Date.now() / 1000) + resolveApprovalTimeoutSeconds(categoryMinutes, requestedSeconds)
 }
+
+/** A request is human-only when its row says so (a snapshot, so a later widening of the set also reaches it) or its category is. */
+function isHumanOnlyApproval(approval: Approval | undefined): boolean {
+  return approval !== undefined && (approval.human_only === 1 || isHumanOnly(approval.category))
+}
+
+/**
+ * Journal a decision attempted on a human-only approval without a human session. In enforce mode it is
+ * refused; otherwise it went through and the row says it only would have been. Never throws: a journal
+ * fault must not turn a refusal into a success.
+ */
+function journalNonHumanDecision(approval: Approval, actor: string | undefined): void {
+  try {
+    recordApprovalEvent({
+      approval_id: approval.id,
+      tenant_id: approval.tenant_id,
+      event: 'bearer_denied',
+      reason: APPROVAL_HUMAN_ONLY_ENFORCE ? 'human_only_category' : 'human_only_category_advisory',
+      actor: actor ?? null,
+    })
+  } catch (err) {
+    logger.warn({ err, approvalId: approval.id }, 'Could not journal a decision attempted without a human session')
+  }
+}
+
+const HUMAN_ONLY_REFUSAL = {
+  error: 'forbidden',
+  code: 'human_only_category',
+  hint: 'This approval is human-only: it is decided by a person logged in to the dashboard, not by a token',
+} as const
 
 function notifyMainAgent(approval: Approval): void {
   try {
@@ -104,12 +135,26 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const requestTenant: string | null =
       ctx.role === 'fleet_agent' ? (ctx.tenantId ?? null) : (typeof tenant_id === 'string' ? tenant_id.trim() || null : null)
 
+    // With enforcement on, the category is stored in its canonical form and a spelling that reads as a
+    // human-only category without being it is refused (an unguarded twin of the gated name). Without it
+    // the name is stored as sent, as before; the human-only snapshot below is taken either way.
+    let storedCategory = category.trim()
+    if (APPROVAL_HUMAN_ONLY_ENFORCE) {
+      const checked = checkCategory(category)
+      if (!checked.ok) {
+        json(res, { error: 'invalid_value', field: 'category', code: checked.error, hint: checked.hint }, 400)
+        return true
+      }
+      storedCategory = checked.category
+    }
+
     const id = randomUUID()
-    const timeout_at = getTimeoutAt(category.trim(), timeout_seconds)
+    const timeout_at = getTimeoutAt(storedCategory, timeout_seconds)
     const approval = createApproval({
       id,
       agent_id: agent_id.trim(),
-      category: category.trim(),
+      category: storedCategory,
+      human_only: isHumanOnly(storedCategory),
       action_description: action_description.trim(),
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
@@ -195,6 +240,8 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // (POST) and read it, never resolve it: approvals:write reaches this route only because the same
     // permission also covers the request.
     if (ctx.role === 'fleet_agent') {
+      const asked = getApproval(idMatch[1])
+      if (asked && isHumanOnlyApproval(asked)) journalNonHumanDecision(asked, ctx.tokenAgentId)
       json(res, { error: 'forbidden', hint: 'A fleet agent token cannot resolve approvals' }, 403)
       return true
     }
@@ -221,19 +268,38 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       ctx.auth?.user ?? ctx.auth?.peer ?? ctx.auth?.device ?? ctx.tokenAgentId ?? ctx.auth?.tokenName ??
       (ctx.auth?.kind === 'token' ? 'shared-token' : undefined)
     const declared: string | undefined = typeof resolved_by === 'string' && resolved_by.trim() ? resolved_by.trim() : undefined
-    const effectiveResolvedBy: string | undefined = principal ?? declared
+    let effectiveResolvedBy: string | undefined = principal ?? declared
 
     if (!effectiveResolvedBy) {
       json(res, { error: 'required', field: 'resolved_by', hint: 'resolved_by is required' }, 400)
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
+    const target = getApproval(idMatch[1])
+
+    // Human-only approval: the one way to decide it is a person's dashboard session (a global admin),
+    // whatever token the request also carries and whatever status it asks for (a rejection or a timeout
+    // by a token is as much a decision as an approval). Without enforcement the request goes through as
+    // before, and the journal records that it would have been refused.
+    let resolvedVia: ApprovalResolvedVia | null = ctx.auth?.kind === 'session' ? 'dashboard_session' : ctx.auth ? 'bearer' : null
+    if (target && isHumanOnlyApproval(target)) {
+      const human = humanSessionOf(req)
+      if (human) {
+        resolvedVia = 'dashboard_session'
+        if (APPROVAL_HUMAN_ONLY_ENFORCE) effectiveResolvedBy = `human:session:${human.user}`
+      } else {
+        journalNonHumanDecision(target, effectiveResolvedBy)
+        if (APPROVAL_HUMAN_ONLY_ENFORCE) {
+          json(res, HUMAN_ONLY_REFUSAL, 403)
+          return true
+        }
+      }
+    }
 
     // Self-approval guard: the requesting agent cannot approve its own request. It runs on the
     // authenticated principal above, so a body naming someone else no longer slips past it. It does not
     // close self-approval by itself (the main agent relays a human's decision under its own token); the
     // real control lives on the main-agent side (approval-request-handling skill).
-    const target = getApproval(idMatch[1])
     if (target && effectiveResolvedBy === target.agent_id) {
       json(res, { error: 'forbidden', hint: 'The requesting agent cannot approve its own request' }, 403)
       return true
@@ -254,7 +320,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const updated = resolveApproval(idMatch[1], status, effectiveResolvedBy, msgId)
+    const updated = resolveApproval(idMatch[1], status, effectiveResolvedBy, msgId, resolvedVia)
     if (!updated) {
       // Either not found or already resolved
       const existing = getApproval(idMatch[1])

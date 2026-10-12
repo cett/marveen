@@ -17,6 +17,7 @@ vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp',
   STORE_DIR: '/tmp/store',
   MAIN_AGENT_ID: 'marveen',
+  APPROVAL_HUMAN_ONLY_ENFORCE: false,
 }))
 
 vi.mock('../logger.js', () => ({
@@ -39,6 +40,8 @@ vi.mock('../db.js', () => ({
   get listApprovals() { return mockListApprovals },
   get expireTimedOutApprovals() { return mockExpireTimedOutApprovals },
   get createAgentMessage() { return mockCreateAgentMessage },
+  listHumanOnlyCategoryKeys: () => [],
+  recordApprovalEvent: () => undefined,
 }))
 
 import { tryHandleApprovals } from '../web/routes/approvals.js'
@@ -97,7 +100,7 @@ describe('PATCH /api/approvals/:id -- session-auth attribution', () => {
     await tryHandleApprovals(ctx)
 
     expect(out.status).toBe(200)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'alice', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'alice', null, 'dashboard_session')
   })
 
   it('resolved_by in response reflects the session username, not the body value', async () => {
@@ -123,20 +126,20 @@ describe('PATCH /api/approvals/:id -- token-auth attribution comes from the toke
     const { ctx, out } = patch({ status: 'approved', resolved_by: 'someone-else' }, { kind: 'token', tokenName: 'ops-token' })
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(200)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'ops-token', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'ops-token', null, 'bearer')
   })
 
   it('prefers the agent the token names over the token name', async () => {
     const { ctx } = patch({ status: 'approved', resolved_by: 'someone-else' }, { kind: 'token', tokenName: 'ops-token' }, { tokenAgentId: 'main-agent' })
     await tryHandleApprovals(ctx)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'main-agent', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'main-agent', null, 'bearer')
   })
 
   it('records the legacy shared token as shared-token, and needs no resolved_by from it', async () => {
     const { ctx, out } = patch({ status: 'approved' }, { kind: 'token' })
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(200)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'shared-token', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'shared-token', null, 'bearer')
   })
 
   it('runs the self-approval guard on the authenticated identity, so a body naming someone else does not slip past', async () => {
@@ -152,7 +155,7 @@ describe('PATCH /api/approvals/:id -- token-auth attribution comes from the toke
     const { ctx, out } = patch({ status: 'approved', resolved_by: 'agent-d' }, { kind: 'token', tokenName: 'ops-token' })
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(200)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'ops-token', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'ops-token', null, 'bearer')
   })
 })
 
@@ -195,7 +198,7 @@ describe('PATCH /api/approvals/:id -- the body\'s resolved_by is kept as a decla
   it('a legacy call with no auth stores the body label as the resolver, so there is nothing separate to declare', async () => {
     const { ctx } = makeCtx('PATCH', '/api/approvals/appr-001', { status: 'approved', resolved_by: 'dashboard' }, undefined)
     await tryHandleApprovals(ctx)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'dashboard', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'dashboard', null, null)
     expect(auditDetail().detail).not.toHaveProperty('declared_resolved_by')
   })
 })

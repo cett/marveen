@@ -2,9 +2,11 @@ import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import {
   listAutonomyCategories, getAutonomyCategory, setAutonomyCategoryLevel, setAutonomyCategoryTimeout, writeAgentAuditLog,
+  setAutonomyCategoryHumanOnly,
   type AutonomyCategoryRow,
 } from '../../db.js'
 import { MAX_CATEGORY_TIMEOUT_MINUTES } from '../approval-timeout.js'
+import { humanSessionOf, isHumanOnlyFloorKey } from '../approval-human-only.js'
 import type { RouteContext } from './types.js'
 
 // Wire shape kept identical to the retired JSON side-car so the dashboard
@@ -19,6 +21,8 @@ function toWireCategory(row: AutonomyCategoryRow) {
     locked: row.locked === 1,
     maxLevel: row.max_level,
     timeoutMinutes: row.timeout_minutes,
+    // A category an agent may never decide for itself: the code's floor plus what an admin marked.
+    humanOnly: isHumanOnlyFloorKey(row.key) || row.human_only === 1,
   }
 }
 
@@ -40,14 +44,37 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/autonomy' && method === 'POST') {
     try {
       const body = await readBody(req)
-      const parsed = JSON.parse(body.toString()) as { key?: unknown; level?: unknown; timeout_minutes?: unknown }
-      const { key, level, timeout_minutes } = parsed
+      const parsed = JSON.parse(body.toString()) as { key?: unknown; level?: unknown; timeout_minutes?: unknown; human_only?: unknown }
+      const { key, level, timeout_minutes, human_only } = parsed
       const hasLevel = level !== undefined
       const hasTimeout = 'timeout_minutes' in parsed
+      const hasHumanOnly = human_only !== undefined
 
-      if (!key || typeof key !== 'string' || (!hasLevel && !hasTimeout) || (hasLevel && (typeof level !== 'number' || level < 1 || level > 3))) {
+      if (!key || typeof key !== 'string' || (!hasLevel && !hasTimeout && !hasHumanOnly) || (hasLevel && (typeof level !== 'number' || level < 1 || level > 3))) {
         json(res, { error: 'invalid_value', hint: 'Invalid key or level (must be 1-3)' }, 400)
         return true
+      }
+
+      // human_only: mark a category as one an agent may never decide for itself, or take the mark off.
+      // Marking is an admin's call (a token included); taking it off needs a person's dashboard session,
+      // and never works on the code's floor (a category that is human-only whatever the table says).
+      if (hasHumanOnly) {
+        if (typeof human_only !== 'boolean') {
+          json(res, { error: 'invalid_value', field: 'human_only', hint: 'human_only must be true or false' }, 400)
+          return true
+        }
+        if (ctx.role !== 'admin') {
+          json(res, { error: 'forbidden', hint: 'Only an admin can change whether a category is human-only' }, 403)
+          return true
+        }
+        if (!human_only && isHumanOnlyFloorKey(key)) {
+          json(res, { error: 'forbidden', code: 'human_only_floor', hint: `Category "${key}" is human-only by design and cannot be lowered` }, 403)
+          return true
+        }
+        if (!human_only && !humanSessionOf(req)) {
+          json(res, { error: 'forbidden', code: 'human_session_required', hint: 'Taking a category out of the human-only set needs a person logged in to the dashboard' }, 403)
+          return true
+        }
       }
 
       // timeout_minutes: a whole number of minutes, or null to fall back to the 24 h ceiling. Admin only,
@@ -82,6 +109,18 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
       }
 
       if (hasLevel) setAutonomyCategoryLevel(key, level as number, 'dashboard')
+      if (hasHumanOnly) {
+        setAutonomyCategoryHumanOnly(key, human_only as boolean, 'dashboard')
+        try {
+          writeAgentAuditLog({
+            agent_id: ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system',
+            entity: 'approval',
+            action: 'update',
+            entity_id: key,
+            detail: { autonomy_category: key, human_only_from: cat.human_only === 1, human_only_to: human_only },
+          })
+        } catch { /* audit failure must not abort the write */ }
+      }
       if (hasTimeout) {
         setAutonomyCategoryTimeout(key, timeout_minutes as number | null, 'dashboard')
         try {

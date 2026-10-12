@@ -227,7 +227,12 @@ export interface Approval {
   /** Optional JSON payload for the action */
   action_payload?: string | null;
   status: 'pending' | 'approved' | 'rejected' | 'timeout';
+  /** The authenticated resolver; `human:session:<user>` when a human-only request was decided by a dashboard session. */
   resolved_by?: string | null;
+  /** How the decision arrived. Null while pending and for rows decided before this field existed. */
+  resolved_via?: 'dashboard_session' | 'bearer' | 'null' | null;
+  /** 1 when the category was human-only at the time of the request (a snapshot). Such a request is decided only by a global admin dashboard session when `APPROVAL_HUMAN_ONLY_ENFORCE=1`. */
+  human_only?: number;
   timeout_at?: number | null;
   created_at: number;
   resolved_at?: number | null;
