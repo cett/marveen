@@ -208,6 +208,24 @@ Egy kategória mezői (a `GET /api/autonomy` válasz `categories` tömbjének el
 
 Az ágensek (a CLAUDE.md-instrukció szerint) a `GET /api/autonomy`-t hívják egy kategória aktuális szintjének lekérdezéséhez, nem fájlt olvasnak -- ha a dashboard nem elérhető, a biztonságos alapállapot level 1 (csak jelez).
 
+## Csak-ember jóváhagyások
+
+Egyes jóváhagyási kérést nem dönthet el sem ágens, sem token, csak ember. Ilyen a `email_send` és az `email_standing_recipient` kategória (a kódban rögzített: egyetlen API-hívás sem veszi le), továbbá minden kategória, amit egy admin a `POST /api/autonomy` hívással és `"human_only": true` értékkel megjelöl (a `GET /api/autonomy` `humanOnly`-ként mutatja; visszakapcsolni csak admin session tudja, beépített kategóriánál soha).
+
+**A kapcsoló.** `APPROVAL_HUMAN_ONLY_ENFORCE=1` a dashboard `.env` fájljában, indításkor egyszer olvasódik (módosításhoz újraindítás kell; az API nem tudja állítani). Kikapcsolva (ez az alap) a régi működés marad: a fő agent továbbítja a kérést a tulajdonosnak, és a saját tokenjével zárja le, az alábbiak nem történnek meg, a jóváhagyási napló pedig csak azt rögzíti, mit utasítottak volna vissza.
+
+**Bekapcsolva:**
+- A human-only kategóriájú `POST /api/approvals` egy csatornaüzenetet küld a tulajdonosnak: a kérő, a kategória, a lejárat Europe/Budapest időben, az action első 300 karaktere, és a Jóváhagyások oldal címe: `http://<WEB_HOST, különben 127.0.0.1>:<WEB_PORT>/#approvals`. A link csak azon a gépen nyílik meg, ahol a dashboard fut (telefonról nem), és nem hordoz tokent vagy kódot. Az üzenettel nem lehet dönteni: nincs visszagépelhető szó, nincs gomb.
+- A fő agent `[APPROVAL_REQUEST][HUMAN_ONLY]` üzenetet kap (nem továbbítja, nem PATCH-eli), és ha a csatornaüzenet nem ment ki, `[OWNER_UNREACHED]` üzenetet is (ilyenkor a saját csatornáján szól a tulajdonosnak; a kérés mindkét esetben létrejön, és egy `owner_unreached` sor kerül az `approval_events`-be). A kérő `[APPROVAL_RESOLVED] id=<id> status=<status> via=<via>` üzenetet kap, ha a kérés el lett döntve; a lejáratról nem értesül (a `GET /api/approvals/<id>`-t olvassa).
+- A döntést kizárólag felhasználónévvel és jelszóval bejelentkezett ember hozhatja meg a dashboardon, globális adminként (role `admin`, tenant nélkül). Minden token (a fő agenté, az operátoré, a megosztott, a böngésző-token, egy fleet agenté), minden eszközkulcs és minden más session `403`-at kap `human_only_category` kóddal, bármilyen `status`-szal próbálja. Bejelentkezés után a `GET /api/auth/status` a döntésre képes loginnál `"method":"session"`, `"role":"admin"`, `"tenant_id":null` értéket mutat.
+- Engedélyezett dashboard-felhasználó mellett a felhasználók és hitelesítők létrehozása (`POST /api/auth/users`, `/api/admin/users`, `/api/admin/tokens`, `/api/admin/browser-enroll-codes`, `/api/auth/device-keys`, a bearer break-glass jelszó-reset és a Bridge-párosítás) is csak bejelentkezett globális adminnak szól (mindenki másnak `403` `human_session_required`), így az ágens nem tud olyan sessiont gyártani, amilyen a döntéshez kellene. A pontos lista a CHANGELOG-ban.
+
+**Vészfék.** Töröld a kapcsolót vagy állítsd `0`-ra, és indítsd újra a dashboardot: a régi működés tér vissza. Az advisory mód nem ugyanaz a biztonság: a relé újra nyitott.
+
+**Ha ki vagy jelentkezve** (elfelejtett jelszó, lejárt session, törölt cookie): a human-only kérések megválaszolatlanul lejárnak, amíg nem jelentkezel be. Futtasd a gépen: `npm run dashboard-user -- reset-password <user>` (interaktív; az ágens sosem látja a jelszót). Az `npm run dashboard-url` linkje tokent ad a böngészőnek, amivel minden elérhető, kivéve a human-only jóváhagyás eldöntését.
+
+A fő agent `approval-request-handling` skillje és minden ágens CLAUDE.md-jében a generált autonómia-blokk ugyanezeket a szabályokat adja az ágenseknek.
+
 ## Modell-profil térkép
 
 A `model_profile_map` DB-tábla lehetővé teszi, hogy az ágensek névleges profilokat (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) használjanak konkrét modell-nevek helyett. Az induláskori migráció (0054) a négy profilt a fleet ma is futó modelljeivel tölti fel -- ez a Phase 1 szándéka: absztrakció, nem újra-tierezés.

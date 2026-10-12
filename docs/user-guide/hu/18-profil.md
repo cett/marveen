@@ -63,6 +63,12 @@ A futó szerver legfeljebb 60 másodpercen belül érvényesíti a resetet; rest
 
 A dashboard-token birtokosa a `POST /api/auth/password` végponton `current_password` nélkül, `username` megadásával állíthat át jelszót. Csak `token` hitelesítéssel érhető el -- session, eszközkulcs vagy föderált principal 403-at kap.
 
+Ha a csak-ember jóváhagyások kényszerítve vannak (`APPROVAL_HUMAN_ONLY_ENFORCE=1`, lásd a fork-guide F02-t), és legalább egy dashboard-felhasználó engedélyezett, ez az útvonal minden tokennek is zárva van (`403`, `human_session_required`): más felhasználó jelszavának átállítása ilyenkor csak bejelentkezett globális adminnak szól. A visszaút a fenti CLI, a gépen futtatva.
+
+### Csak-ember jóváhagyások és a bejelentkezésed
+
+Egyes jóváhagyásokat (például az email küldést) kizárólag felhasználónévvel és jelszóval bejelentkezett ember dönthet el, token, ágens vagy csevegő-válasz nem. Ha ilyen vár rád, csatornaüzenetet kapsz a Jóváhagyások oldal címével; az csak azon a gépen nyílik meg, ahol a dashboard fut. Jelentkezz be ott a jelszavaddal (a belépő linkkel megnyitott böngésző tokent kap, amivel minden más megy, ez nem), nyisd meg a **Jóváhagyások** oldalt, és dönts. Hogy melyik login dönthet, a bejelentkezés után a `/api/auth/status` mutatja: `"method":"session"`, `"role":"admin"`, `"tenant_id":null`. Ha nem tudsz bejelentkezni, a kérés egyszerűen lejár; állítsd vissza a jelszót a fenti CLI-vel, és kérd újra.
+
 ### Audit
 
 Minden visszaállítási művelet a `config_change_log` táblába ír (`security.*` kulcsokkal, kizárólag metaadat: felhasználónév és darabszámok, soha hitelesítő anyag). Az események az Audit napló nézetben a `config` forrás alatt kereshetők.
