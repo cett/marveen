@@ -107,6 +107,90 @@ class TestDocKey(unittest.TestCase):
             self.assertEqual(cm.exception.code, 2)
 
 
+class TestSeriesDocKey(unittest.TestCase):
+    def test_accepts_series_keys(self):
+        for key in (
+            "series-foo/bar",
+            "series-foo/part1-v2",
+            "series-foo/a/b",
+            "series-foo/a/b/c",  # 4 segments is the maximum
+            "series-a_b-1/part.1",
+            "series-0/x",
+            "series-" + "a" * 50 + "/x",
+        ):
+            self.assertEqual(wp.validate_doc_key(key), key)
+
+    def test_refuses_malformed_series_keys(self):
+        bad = (
+            "series-foo",  # no second segment
+            "series-foo/",  # empty second segment
+            "series-",
+            "series-/x",  # empty slug
+            "series-//x",
+            "series-FOO/x",  # uppercase slug
+            "series-Foo/x",
+            "Series-foo/x",  # uppercase prefix
+            "series-a b/x",
+            "series-a\tb/x",
+            "series-foo/../x",  # traversal in a later segment
+            "series-foo/./x",
+            "series-../x",  # traversal as the slug
+            "series-./x",
+            "series-.x/x",  # a dot cannot start or sit in the slug
+            "series-a.b/x",
+            "series--x/x",  # the slug starts with a letter or digit
+            "series-_x/x",
+            "series-a/b/c/d/e",  # 5 segments
+            "series-foo/" + "y" * 250,  # over the length cap
+            "/series-foo/x",
+            "series-foo//x",
+            "series-foo/x/",
+            "series-foo/.hidden",
+            "series-é/x",  # non-ASCII slug
+            "series-foo/é",
+            "series-a\\b/x",
+            "series-a;b/x",
+            "series-a%2fb/x",
+            "series-foo/x\x00y",  # control characters
+            "series-foo/x\x1b[0m",
+            "series-foo\n/x",  # a newline hides behind "$" in a naive regex
+            "series-foo/x\n",
+            "series-foo/x\r",
+            "series-foo\n",
+            "seriesfoo/x",  # not the series prefix
+            "series_foo/x",
+            "series/x",
+            "xseries-foo/x",
+        )
+        for key in bad:
+            with self.assertRaises(wp.Fail, msg=repr(key)) as cm:
+                wp.validate_doc_key(key)
+            self.assertEqual(cm.exception.code, 2, repr(key))
+
+    def test_a_trailing_newline_is_refused_for_every_prefix(self):
+        # The same \Z guard covers the original prefixes: "$" alone let "plan/x\n" through.
+        for key in ("plan/x\n", "brief/x\n", "report/x\n", "notes/a/x\n", "draft/s/p\n", "plan/a\n/b"):
+            with self.assertRaises(wp.Fail, msg=repr(key)) as cm:
+                wp.validate_doc_key(key)
+            self.assertEqual(cm.exception.code, 2, repr(key))
+
+    def test_the_prefix_error_names_the_series_form(self):
+        with self.assertRaises(wp.Fail) as cm:
+            wp.validate_doc_key("other/x")
+        self.assertIn("series-<slug>", str(cm.exception))
+        for prefix in ("plan", "brief", "report", "notes", "draft"):
+            self.assertIn(prefix, str(cm.exception))
+        with self.assertRaises(wp.Fail) as cm:
+            wp.validate_doc_key("series-FOO/x")
+        self.assertIn("lowercase", str(cm.exception))
+
+    def test_usage_text_lists_the_series_prefix(self):
+        helptext = wp.build_parser().format_help()
+        self.assertIn("series-<slug>/<part>", helptext)
+        self.assertIn("draft/<series>/<part>-vN", helptext)  # the existing forms stay listed
+        self.assertIn("series-<slug>", wp.__doc__)
+
+
 class TestUpload(Base):
     def test_uploads_verifies_and_keeps_the_source_by_default(self):
         src = self.doc()
@@ -136,6 +220,68 @@ class TestUpload(Base):
         code, _, err = self.run_main(["--file", src, "--doc-key", "plan/c1", "--type", "report"])
         self.assertEqual(code, 2)
         self.assertIn("does not match", err)
+
+    def posted_type(self):
+        with open(os.path.join(self.state, "posted.json")) as f:
+            return json.load(f)["type"]
+
+    def test_existing_prefixes_keep_their_implied_type_and_mismatch_refusal(self):
+        src = self.doc()
+        implied = {"plan": "plan", "brief": "brief", "report": "report", "notes": "notes", "draft": "notes"}
+        for prefix, expected in implied.items():
+            key = prefix + "/a/x"
+            self.assertEqual(self.run_main(["--file", src, "--doc-key", key])[0], 0, key)
+            self.assertEqual(self.posted_type(), expected, key)
+            # naming the implied type explicitly is fine
+            self.assertEqual(self.run_main(["--file", src, "--doc-key", key, "--type", expected])[0], 0, key)
+            # any other type is refused before a single API call
+            for other in wp.TYPES:
+                if other == expected:
+                    continue
+                before = len(self.calls())
+                code, _, err = self.run_main(["--file", src, "--doc-key", key, "--type", other])
+                self.assertEqual(code, 2, "%s %s" % (key, other))
+                self.assertIn("does not match", err)
+                self.assertEqual(len(self.calls()), before, "%s %s made an API call" % (key, other))
+
+    def test_series_key_defaults_to_notes(self):
+        src = self.doc()
+        code, out, err = self.run_main(["--file", src, "--doc-key", "series-foo/part1-v1"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("ok doc_key=series-foo/part1-v1 id=doc123", out)
+        self.assertEqual(self.posted_type(), "notes")
+        with open(os.path.join(self.state, "posted.json")) as f:
+            posted = json.load(f)
+        self.assertEqual(posted["doc_key"], "series-foo/part1-v1")
+        self.assertEqual(posted["agent_id"], "a")
+        self.assertEqual(posted["title"], "Plan title")
+
+    def test_series_key_takes_any_valid_type(self):
+        src = self.doc()
+        for doc_type in wp.TYPES:
+            code, _, err = self.run_main(["--file", src, "--doc-key", "series-foo/x", "--type", doc_type])
+            self.assertEqual(code, 0, err)
+            self.assertEqual(self.posted_type(), doc_type)
+        # an unknown type is still refused by the argument parser
+        before = len(self.calls())
+        self.assertEqual(self.run_main(["--file", src, "--doc-key", "series-foo/x", "--type", "memo"])[0], 2)
+        self.assertEqual(len(self.calls()), before)
+
+    def test_malformed_series_keys_make_no_api_call_and_keep_the_source(self):
+        src = self.doc()
+        for key in ("series-foo", "series-/x", "series-FOO/x", "series-a b/x", "series-foo/../x", "series-foo/x\n"):
+            code, _, err = self.run_main(["--file", src, "--doc-key", key, "--delete-source"])
+            self.assertEqual(code, 2, repr(key))
+            self.assertTrue(err.startswith("workspace-put: doc_key"), err)
+            self.assertTrue(os.path.exists(src), repr(key))
+        self.assertEqual(self.calls(), [])
+
+    def test_series_key_with_delete_source_uploads_then_deletes(self):
+        src = self.doc()
+        code, out, err = self.run_main(["--file", src, "--doc-key", "series-foo/p1", "--delete-source", "--scratchpad-root", self.scratch])
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.exists(src))
+        self.assertIn("deleted source", out)
 
     def test_title_falls_back_to_the_doc_key_and_can_be_set(self):
         src = self.doc(text="no heading here\n")
