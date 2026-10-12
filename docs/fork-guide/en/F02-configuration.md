@@ -208,6 +208,24 @@ A category's fields (as returned in the `categories` array of `GET /api/autonomy
 
 Agents (per the CLAUDE.md instruction) query a category's current level via `GET /api/autonomy` rather than reading a file — if the dashboard is unreachable, the safe default is level 1 (notify only).
 
+## Human-only approvals
+
+Some approval requests must never be decided by an agent or by a token, only by a person. These are the categories `email_send` and `email_standing_recipient` (built into the code: no API call lowers them), plus any category an admin marks with `POST /api/autonomy` and `"human_only": true` (`GET /api/autonomy` shows it as `humanOnly`; only an admin session can turn it off again, and never for a built-in one).
+
+**The switch.** `APPROVAL_HUMAN_ONLY_ENFORCE=1` in the dashboard's `.env`, read once at start (restart to change it; the API cannot set it). Off, the default, keeps the old behaviour: the main agent relays the request to the owner and resolves it with its own token, nothing below happens, and the approval journal only records what would have been refused.
+
+**With the switch on:**
+- `POST /api/approvals` for a human-only category sends the owner one channel message: the requester, the category, the expiry in Europe/Budapest time, the first 300 characters of the action, and the address of the Approvals page, `http://<WEB_HOST, else 127.0.0.1>:<WEB_PORT>/#approvals`. The link opens only on the machine the dashboard runs on (not from a phone) and carries no token or code. The message cannot decide anything: there is no word to type back and no button.
+- The main agent receives `[APPROVAL_REQUEST][HUMAN_ONLY]` (do not relay it, do not PATCH it) and, when the channel message did not go out, `[OWNER_UNREACHED]` (it tells the owner on its own channel; the request is created either way and an `owner_unreached` row is written to `approval_events`). The requester receives `[APPROVAL_RESOLVED] id=<id> status=<status> via=<via>` once the request is decided; an expired request is not announced to it (it reads `GET /api/approvals/<id>`).
+- The decision is made only by a person signed in to the dashboard with username and password, as a global admin (role `admin`, no tenant). Every token (the main agent's, the operator's, the shared token, a browser token, a fleet agent's), a device key and every other session gets `403` with `code` `human_only_category`, whatever `status` it asks for. After signing in, `GET /api/auth/status` shows `"method":"session"`, `"role":"admin"` and `"tenant_id":null` for the login that can decide.
+- With an enabled dashboard user, creating users or credentials (`POST /api/auth/users`, `/api/admin/users`, `/api/admin/tokens`, `/api/admin/browser-enroll-codes`, `/api/auth/device-keys`, the bearer break-glass password reset and the Bridge pairing) is for a signed-in global admin as well (`403` `human_session_required` to anyone else), so an agent cannot mint the session it would need. See the CHANGELOG for the exact list.
+
+**Emergency brake.** Remove the switch or set it to `0` and restart the dashboard: the old behaviour is back. Advisory mode is not the same safety: the relay is open again.
+
+**If you are signed out** (forgotten password, expired session, cleared cookies): human-only requests expire unanswered until you sign in. Run `npm run dashboard-user -- reset-password <user>` on the machine (interactive; the agent never sees the password). A link from `npm run dashboard-url` hands the browser a token, which can do everything except decide a human-only approval.
+
+The main agent's `approval-request-handling` skill and the generated autonomy block in every agent's CLAUDE.md carry the same rules for the agents.
+
 ## Model profile map
 
 The `model_profile_map` DB table lets agents use named profiles (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) instead of concrete model names. The startup migration (0054) seeds all four profiles with the models the fleet already runs — Phase 1 intent is abstraction, not re-tiering.

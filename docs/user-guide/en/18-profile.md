@@ -63,6 +63,12 @@ The running server enforces the reset within 60 seconds; no restart is needed.
 
 The holder of the dashboard-token can change a password via `POST /api/auth/password` without `current_password` by supplying a `username`. Only accessible with `token` authentication -- session, device key, or federation principal receives a 403.
 
+When human-only approvals are enforced (`APPROVAL_HUMAN_ONLY_ENFORCE=1`, see the fork guide F02) and at least one dashboard user is enabled, this route is closed to every token too (`403`, `human_session_required`): resetting another user's password is then for a signed-in global admin only. The way back in is the CLI above, run on the machine.
+
+### Human-only approvals and your login
+
+Some approvals (sending email, for one) are decided only by a person signed in with username and password, never by a token, an agent or a chat reply. When one is waiting you get a channel message with the address of the Approvals page; it opens only on the machine the dashboard runs on. Sign in there with your password (a browser opened with an enrollment link holds a token, which can do everything else but not this), open **Approvals** and decide. To check which login can decide, open `/api/auth/status` after signing in: it shows `"method":"session"`, `"role":"admin"` and `"tenant_id":null`. If you cannot sign in, the request simply expires; reset the password with the CLI above and ask for it again.
+
 ### Audit trail
 
 All recovery operations write to the `config_change_log` table (with `security.*` keys, metadata only: username and counts, never credentials). Events are searchable in the Audit Log view under the `config` source.

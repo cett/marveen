@@ -2232,6 +2232,8 @@ paths:
       tags: [approvals]
       operationId: createApproval
       summary: Create an approval request
+      description: |
+        With `APPROVAL_HUMAN_ONLY_ENFORCE=1`, a request in a human-only category (`email_send`, `email_standing_recipient`, or any category an admin marked `human_only`) is announced differently: the server sends the owner one channel message (requester, category, expiry, the first 300 characters of the action, and a link to the dashboard's Approvals page, which opens only on the machine the dashboard runs on; the message cannot decide anything and carries no token or code), the main agent receives `[APPROVAL_REQUEST][HUMAN_ONLY]` (and `[OWNER_UNREACHED]` when the channel message did not go out; the request is created either way), and the requester receives `[APPROVAL_RESOLVED]` once the request is decided by a person in a dashboard session. The category is stored in its canonical form and a spelling that imitates a human-only category is refused with `400` `invalid_value`. Without the flag (the default) the request is announced to the main agent only, as before.
       requestBody:
         required: true
         content:
