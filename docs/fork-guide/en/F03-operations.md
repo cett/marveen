@@ -53,6 +53,8 @@ journalctl --user -u marveen-channels -f
 
 If the dashboard is running, a restart can also be triggered at the `/api/updates/apply` endpoint (call it through `bash scripts/agent-api.sh --token operator POST /api/updates/apply`; the wrapper reads the token, you never put it on a command line).
 
+At startup the dashboard takes `WEB_PORT` over from its own previous instance: it terminates the node process holding the port. This only applies to a process of this install (its command line or working directory is under the install tree). If the dashboard of another install or another checkout holds the same port (for example an identical `WEB_PORT` in a copy prepared for a trial), the dashboard leaves it alone: the log carries the line `Port holder belongs to a different install, leaving alone`, and the start stops with `EADDRINUSE`. Give the other install its own `WEB_PORT` in that case.
+
 ## Updating
 
 ```bash
