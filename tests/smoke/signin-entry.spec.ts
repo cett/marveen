@@ -26,18 +26,19 @@ test.describe('Sign in entry', () => {
   test.skip(!USER || !PASSWORD, 'DASHBOARD_TEST_USER / DASHBOARD_TEST_PASSWORD not set')
 
   test('shows on a token, goes after login, and an enroll link keeps the session', async ({ page, request }) => {
-    // The first-run wizard of a fresh instance would cover the sidebar; it is not under test.
-    await page.addInitScript(() => {
-      new MutationObserver(() => document.getElementById('onboardingOverlay')?.classList.remove('active'))
-        .observe(document.documentElement, { subtree: true, attributes: true, childList: true })
-    })
+    // The first-run wizard of a fresh instance covers the sidebar and blocks clicks; it is not under test.
+    // Removed after each load, like the other smoke specs (the wizard sets `hidden` as well as `active`,
+    // so toggling a class is not enough).
+    const dismissWizard = () => page.evaluate(() => document.getElementById('onboardingOverlay')?.remove())
 
     // 1. An enrollment link makes the browser a token holder, and the entry offers the login.
     await page.goto(`/?enroll=${await issueCode(request)}`)
+    await dismissWizard()
     await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), KEY)).toBeTruthy()
     await expect(page.locator('#navSignIn')).toBeVisible()
 
     // 2. The entry opens the login; after it the token is gone and the session answers.
+    await dismissWizard()
     await page.click('#navSignIn')
     await page.fill('#mv-login-user', USER)
     await page.fill('#mv-login-pass', PASSWORD)
@@ -51,6 +52,7 @@ test.describe('Sign in entry', () => {
     let exchanges = 0
     await page.route('**/api/auth/enroll-browser', (route) => { exchanges++; route.continue() })
     await page.goto(`/?enroll=${await issueCode(request)}`)
+    await dismissWizard()
     await expect(page.locator('.sb-link[data-page]').first()).toBeVisible()
     await page.waitForTimeout(1000)
     expect(exchanges).toBe(0)
