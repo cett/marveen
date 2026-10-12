@@ -24,7 +24,7 @@ const INVISIBLE_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0xfeff, 0xfeff],
 ]
 
-function stripInvisible(s: string): string {
+export function stripInvisible(s: string): string {
   let out = ''
   for (const ch of s) {
     const cp = ch.codePointAt(0) ?? 0

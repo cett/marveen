@@ -14,6 +14,13 @@ vi.mock('../config.js', async (importOriginal) => ({
   get APPROVAL_HUMAN_ONLY_ENFORCE() { return flags.enforce },
 }))
 
+// The owner message is not what these tests are about (approval-owner-notice.test.ts covers it); a send
+// that reaches the channel keeps the owner_unreached journal rows out of the exact event lists below.
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  deliverToChannel: vi.fn().mockResolvedValue(true),
+}))
+
 import { initDatabase, createDashboardUser, getApproval, listApprovalEvents, getAutonomyCategory } from '../db.js'
 import { db } from '../db/connection.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'

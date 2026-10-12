@@ -32,7 +32,7 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
   }
 })
 
-import { notifyChannel, notifySecurityEvent } from '../notify.js'
+import { notifyChannel, notifySecurityEvent, deliverToChannel } from '../notify.js'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -66,6 +66,49 @@ describe('notifyChannel', () => {
     mockSendMessage.mockRejectedValue(new Error('all sends failed'))
     await expect(notifyChannel('totally broken')).resolves.toBeUndefined()
     expect(mockSendMessage).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('deliverToChannel', () => {
+  it('is true when every part was sent', async () => {
+    mockSplitMessage.mockReturnValue(['chunk1', 'chunk2'])
+    await expect(deliverToChannel('long text')).resolves.toBe(true)
+    expect(mockSendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('is true when the formatted send failed but the plain-text retry went through', async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error('formatted send failed')).mockResolvedValue({ ok: true })
+    await expect(deliverToChannel('fallback test')).resolves.toBe(true)
+  })
+
+  it('is false when both the formatted send and the retry fail, and does not throw', async () => {
+    mockSendMessage.mockRejectedValue(new Error('all sends failed'))
+    await expect(deliverToChannel('totally broken')).resolves.toBe(false)
+  })
+
+  it('is false when only one of several parts is lost', async () => {
+    mockSplitMessage.mockReturnValue(['chunk1', 'chunk2'])
+    // chunk1 ok; chunk2 and its retry fail
+    mockSendMessage
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new Error('chunk2 failed'))
+      .mockRejectedValueOnce(new Error('chunk2 retry failed'))
+    await expect(deliverToChannel('two parts')).resolves.toBe(false)
+  })
+})
+
+describe('deliverToChannel without a channel', () => {
+  it('is false and sends nothing when token or chat id is missing', async () => {
+    vi.resetModules()
+    vi.doMock('../config.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../config.js')>()
+      return { ...actual, CHANNEL_TOKEN: '', CHANNEL_CHAT_ID: '', CHANNEL_PROVIDER: 'telegram' }
+    })
+    const fresh = await import('../notify.js')
+    await expect(fresh.deliverToChannel('nobody to tell')).resolves.toBe(false)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    vi.doUnmock('../config.js')
+    vi.resetModules()
   })
 })
 
