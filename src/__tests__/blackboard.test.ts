@@ -336,6 +336,46 @@ describe('POST /api/blackboard -- cross-tenant write guard', () => {
     expect(mockUpsertBlackboard).not.toHaveBeenCalled()
   })
 
+  it('a shared agent on its own fleet-agent token can post its own row', async () => {
+    // The shared agent resolves to '_multi_', its token's tenant is the one it serves right now.
+    mockResolveAgentTenant.mockReturnValue('_multi_')
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
+    const { ctx, out } = makeCtx(
+      'POST', '/api/blackboard',
+      { agent_id: 'shared-agent', summary: 'ok' },
+      { role: 'fleet_agent', tokenAgentId: 'shared-agent', tenantId: 'tenant-a' },
+    )
+    await tryHandleBlackboard(ctx)
+    mockResolveAgentTenant.mockReturnValue('default')
+    expect(out.status).toBe(200)
+    expect(mockUpsertBlackboard).toHaveBeenCalledOnce()
+  })
+
+  it('a fleet-agent token still cannot post the row of a shared agent that is not its own', async () => {
+    mockResolveAgentTenant.mockReturnValue('_multi_')
+    const { ctx, out } = makeCtx(
+      'POST', '/api/blackboard',
+      { agent_id: 'shared-agent', summary: 'ok' },
+      { role: 'fleet_agent', tokenAgentId: 'agent-a', tenantId: 'tenant-a' },
+    )
+    await tryHandleBlackboard(ctx)
+    mockResolveAgentTenant.mockReturnValue('default')
+    expect(out.status).toBe(403)
+    expect(mockUpsertBlackboard).not.toHaveBeenCalled()
+  })
+
+  it('a fleet-agent token without an agent is not "own row" of anybody', async () => {
+    mockResolveAgentTenant.mockReturnValue('_multi_')
+    const { ctx, out } = makeCtx(
+      'POST', '/api/blackboard',
+      { agent_id: 'shared-agent', summary: 'ok' },
+      { role: 'fleet_agent', tenantId: 'tenant-a' },
+    )
+    await tryHandleBlackboard(ctx)
+    mockResolveAgentTenant.mockReturnValue('default')
+    expect(out.status).toBe(403)
+  })
+
   it('admin caller bypasses the tenant check even for a mismatched tenant', async () => {
     mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
     const { ctx, out } = makeCtx(

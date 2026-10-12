@@ -378,7 +378,7 @@ describe('unscoped_read', () => {
 describe('tenant context', () => {
   it('a fleet token refused for a shared agent with no tenant context is counted by the web gate', () => {
     recordTenantContextRefusal(fakeReq({ 'user-agent': 'node' }), { kind: 'token', role: 'fleet_agent', tokenName: 'fleet_agent:agent-shared', agentId: 'agent-shared', tenantContextMissing: true }, 'GET', '/api/memories')
-    expect(rows('missing_tenant_context').map((r) => [r.route, r.caller, r.caller_source, r.client, r.count])).toEqual([['/api/memories', 'agent-shared', 'token', 'node', 1]])
+    expect(rows('missing_tenant_context').map((r) => [r.route, r.caller, r.caller_source, r.client, r.target, r.count])).toEqual([['/api/memories', 'agent-shared', 'token', 'node', 'no_row', 1]])
   })
   it('the refusal counter ignores a credential that is not a token naming an agent', () => {
     recordTenantContextRefusal(fakeReq(), sharedAuth, 'GET', '/api/memories')
