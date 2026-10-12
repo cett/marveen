@@ -704,6 +704,11 @@ window._i18n.en = {
   'approvals.countdown.expired': 'expired',
   'approvals.banner.notice':  '{n} approval(s) awaiting decision. Oldest arrived {age} min ago ({agent} / {category}).',
   'approvals.banner.timeout': 'Timeout: {n} min.',
+  'approvals.humanonly.badge':       'Human only',
+  'approvals.humanonly.badge_title': 'Only a person signed in with a password can decide this request',
+  'approvals.humanonly.banner':      'Human-only requests can only be decided from a password login (global admin), not with a token.',
+  'approvals.humanonly.signin':      'Sign in',
+  'approvals.humanonly.locked':      'Can only be decided from a password login',
   'autonomy.level.2':            '2 Propose, awaits approval',
   'autonomy.level.3':            '3 Autonomous, reports after',
 

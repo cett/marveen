@@ -59,6 +59,21 @@
 }
 .approvals-pending-banner[hidden] { display: none; }
 
+/* Human-only approvals: the banner (a pending banner with a Sign in button) and the row badge. */
+.approvals-humanonly-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.approvals-humanonly-banner[hidden] { display: none; }
+.approvals-humanonly-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  color: var(--warning);
+}
+
 /* Wizard step 3: the agent was created but its personality is a placeholder.
    Warning tone, not danger: nothing failed for the operator to undo, the agent
    works. Same token set as .approvals-pending-banner so the two read as one

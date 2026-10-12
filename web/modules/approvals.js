@@ -4,6 +4,7 @@ import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { renderPaginator } from './paginator.js'
+import { isHumanOnlyRow, isLockedForViewer, shouldShowHumanOnlyBanner } from './approval-human-only.js'
 
 
 
@@ -17,6 +18,9 @@ let _approvalsCountdownInterval = null
 const _approvalsState = { status: '', agent: '', category: '', offset: 0 }
 let _approvalsPage = []
 let _approvalsTenantGetter = null
+// Who the viewer is, from /api/auth/status (null when the probe failed). Decides which human-only
+// rows would be a dead approve/reject button; the server still refuses any non-session caller.
+let _viewerStatus = null
 
 // .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
 // only becomes visible via the .active class -- [hidden] alone toggles
@@ -105,9 +109,10 @@ async function _loadApprovalsPageInternal() {
     params.set('limit', String(APPROVALS_PAGE_LIMIT))
     params.set('offset', String(offset))
 
-    const res = await fetch(`/api/approvals?${params}`)
+    const [res, viewer] = await Promise.all([fetch(`/api/approvals?${params}`), _fetchViewerStatus()])
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
+    _viewerStatus = viewer
     _approvalsPage = data.items ?? []
     _renderApprovalsStats(data.counts ?? { pending: 0, approved: 0, rejected: 0, timeout: 0 }, data.oldest_pending ?? null)
     _renderApprovalsTable(data.total ?? _approvalsPage.length)
@@ -115,6 +120,20 @@ async function _loadApprovalsPageInternal() {
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--danger);padding:24px;text-align:center">${t('approvals.error')}</td></tr>`
   }
+}
+
+// The probe goes out with the same credential as the decision does, so it describes the caller the
+// server will see. A failure is "unknown viewer": human-only rows then show as locked, never as open.
+async function _fetchViewerStatus() {
+  try {
+    const r = await fetch('/api/auth/status')
+    return r.ok ? await r.json() : null
+  } catch { return null }
+}
+
+function _renderHumanOnlyBanner() {
+  const banner = document.getElementById('approvalsHumanOnlyBanner')
+  if (banner) banner.hidden = !shouldShowHumanOnlyBanner(_approvalsPage, _viewerStatus)
 }
 
 function _renderApprovalsStats(counts, oldestPending) {
@@ -151,6 +170,7 @@ function _renderApprovalsStats(counts, oldestPending) {
 function _renderApprovalsTable(total) {
   const page = _approvalsPage
   const tbody = document.getElementById('approvalsTbody')
+  _renderHumanOnlyBanner()
 
   if (!page.length) {
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-muted);padding:24px;text-align:center">${t('approvals.empty')}</td></tr>`
@@ -164,10 +184,17 @@ function _renderApprovalsTable(total) {
     const time = a.requested_at ? new Date(a.requested_at * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' }) : '-'
     const badge = _approvalBadge(a.status)
     const countdown = isPending && a.timeout_at ? `<span class="approvals-countdown" data-timeout="${a.timeout_at}" id="cd-${a.id}"></span>` : (a.timeout_at ? '-' : '')
+    // A human-only request this viewer cannot decide keeps its buttons visible but disabled, with the
+    // reason as a tooltip (the banner above explains how to sign in).
+    const locked = isLockedForViewer(a, _viewerStatus)
+    const lockAttrs = locked ? ` disabled title="${escapeAttr(t('approvals.humanonly.locked'))}"` : ''
+    const humanOnlyBadge = isHumanOnlyRow(a)
+      ? ` <span class="approvals-humanonly-badge" title="${escapeAttr(t('approvals.humanonly.badge_title'))}">${escapeHtml(t('approvals.humanonly.badge'))}</span>`
+      : ''
     const actions = isPending
       ? `<div style="display:flex;gap:4px">
-           <button class="btn approvals-decide" data-variant="primary" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px">${t('approvals.btn.approve')}</button>
-           <button class="btn approvals-decide" data-variant="danger" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px">${t('approvals.btn.reject')}</button>
+           <button class="btn approvals-decide" data-variant="primary" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px"${lockAttrs}>${t('approvals.btn.approve')}</button>
+           <button class="btn approvals-decide" data-variant="danger" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px"${lockAttrs}>${t('approvals.btn.reject')}</button>
          </div>`
       : (() => {
           const resolvedBy = escapeHtml(a.resolved_by || '')
@@ -181,7 +208,7 @@ function _renderApprovalsTable(total) {
     return `<tr class="approvals-row-clickable" data-approval-id="${escapeAttr(a.id)}" title="Kattints a részletekért" style="${rowStyle}">
       <td style="white-space:nowrap;font-size:12px">${escapeHtml(time)}</td>
       <td><code style="font-size:12px">${escapeHtml(a.agent_id)}</code></td>
-      <td style="font-size:12px">${escapeHtml(a.category)}</td>
+      <td style="font-size:12px">${escapeHtml(a.category)}${humanOnlyBadge}</td>
       <td style="max-width:280px;font-size:12px" title="${escapeAttr(a.action_description)}">${escapeHtml(a.action_description.length > 80 ? a.action_description.slice(0, 80) + '...' : a.action_description)}</td>
       <td>${badge}</td>
       <td style="font-size:12px;white-space:nowrap">${countdown}</td>
@@ -261,6 +288,7 @@ function _debouncedFilterReload() {
 
 export async function initApprovals() {
   document.getElementById('refreshApprovalsBtn').addEventListener('click', loadApprovalsPage)
+  document.getElementById('approvalsSignInBtn')?.addEventListener('click', () => window.showLoginOverlay?.())
   document.getElementById('approvalsFilterStatus').addEventListener('change', (e) => {
     _approvalsState.status = e.target.value
     loadApprovalsPage()
