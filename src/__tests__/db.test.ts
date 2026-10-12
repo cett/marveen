@@ -140,14 +140,15 @@ describe('approvals', () => {
     expect(found[0].tenant_id).toBe('tenant-create-test')
   })
 
-  it('createApproval with no tenant_id stores null', () => {
+  it('createApproval with no tenant_id stores the default tenant (the column is NOT NULL)', () => {
     const appr = createApproval({
       id: 'appr-t-null',
       agent_id: 'agent-y',
       category: 'test',
       action_description: 'fleet action without tenant',
     })
-    expect(appr.tenant_id).toBeNull()
+    expect(appr.tenant_id).toBe('default')
+    expect(listApprovals({ tenantId: 'default' }).map((a) => a.id)).toContain('appr-t-null')
   })
 })
 
