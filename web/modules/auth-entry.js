@@ -36,6 +36,21 @@ export async function enrollUnlessSession({ code, probeStatus, exchange }) {
 }
 
 /**
+ * Adopt the token of a legacy `/?token=<token>` link, unless the browser already holds a session.
+ *
+ * Same reasoning as the enrollment link: an adopted token beats the session cookie at the auth gate and
+ * would push the person's session aside. `probeStatus` must ask WITHOUT the bearer header. Resolves to
+ * the token to adopt, or '' when none should be (no token in the link, or a session already held). A
+ * probe that fails counts as "no session" (the old behaviour: adopt the link's token).
+ */
+export async function adoptUrlTokenUnlessSession({ token, probeStatus }) {
+  if (!token) return ''
+  let status = null
+  try { status = await probeStatus() } catch { status = null }
+  return holdsSession(status) ? '' : token
+}
+
+/**
  * Show or hide the sidebar Sign in entry for a status answer. The click opens the login overlay; the
  * token is only dropped after a successful login (app.js), so a cancelled attempt locks nobody out.
  */
