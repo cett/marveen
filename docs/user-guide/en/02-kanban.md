@@ -65,7 +65,17 @@ Clicking a card opens the detail panel:
 
 **Group by** - split the board into swimlanes by assignee or priority. Swimlane headers can be clicked to collapse them.
 
+**Sort** - the cards in each column can be ordered: manual order (the default, set by dragging), by number ascending or descending, by created or by updated (newest first). A card with no number or time always goes last. The choice is remembered after a reload. Outside the manual order cards cannot be dragged (a hand-placed position means nothing in a sorted column), and the whole board is loaded instead of page by page. Search stays the existing server-side search.
+
 **Clear filters** - resets all active filters.
+
+---
+
+## Ongoing band
+
+Open cards (not in Done) that carry the **Ongoing** (or **Folyamatos**) label do not appear in their status column: they sit in a band above the board, one button each. It is for standing, always-in-flight duties that would otherwise sit in one column forever. The card keeps its status (still editable in its details), the band is not a drop target, and a click opens the card. A card moved to Done returns to the Done column. The band follows the active filters and is hidden while empty. If such a card has subtasks, they stay in their own columns and do not disappear with it.
+
+The label has to be created once on the board (an admin works with labels; the name is not case-sensitive, and labels are separate per tenant). While the board has a label with that name it is loaded in full instead of page by page, so the band is complete.
 
 ---
 

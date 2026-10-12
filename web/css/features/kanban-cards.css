@@ -387,3 +387,40 @@
   color: var(--text-muted);
   white-space: nowrap;
 }
+
+/* Ongoing band above the board: chips for open cards labelled Ongoing. Not a
+   drop target; it wraps onto more rows instead of scrolling. */
+.kanban-ongoing-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+.kanban-ongoing-band[hidden] { display: none; }
+.kanban-ongoing-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.kanban-ongoing-chip {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.kanban-ongoing-chip:hover { border-color: var(--accent); }
+.kanban-ongoing-chip[data-priority="urgent"] { border-color: var(--danger); }
