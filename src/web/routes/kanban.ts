@@ -192,6 +192,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const tenantParam = isAdmin ? (ctx.url.searchParams.get('tenant') ?? null) : null
   const effectiveTenantId: string | null = tenantParam ?? (isAdmin ? null : (ctx.tenantId ?? 'default'))
 
+  // One gate for every route that reaches a card by its id in the path. A non-admin caller touches only a
+  // card of its own tenant (archived ones included); a foreign id answers like a missing one (404), so ids
+  // cannot be probed across tenants and nothing is moved, archived, commented or read. This checks the
+  // card named in the PATH only; an id carried in a request body (the new parent_id of a reparent, a
+  // column list) is a reference to another row and is checked where the body is read. PUT/DELETE /:id
+  // keep their own lookups. `labels` is no card id: /api/kanban/labels/:id is the label registry.
+  const cardIdRoute = path.match(/^\/api\/kanban\/([^/]+)\/(?:move|archive|unarchive|comments|events|labels|labels\/[^/]+|breakdown|breakdown\/accept|children|subtree|parent)$/)
+  if (cardIdRoute && cardIdRoute[1] !== 'labels' && !isAdmin && effectiveTenantId !== null) {
+    if (!scopeToTenant(effectiveTenantId).kanban.get(decodeURIComponent(cardIdRoute[1]))) {
+      json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
+      return true
+    }
+  }
+
   if (path === '/api/kanban' && method === 'GET') {
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
@@ -381,6 +395,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (due === undefined) { json(res, { error: 'invalid_value', field: 'due_date', hint: 'due_date must be an integer epoch in seconds, a YYYY-MM-DD date or null' }, 400); return true }
       data.due_date = due
     }
+    // A parent_id in the body is a reference to another row: a non-admin caller may only hang a new card
+    // under a card of its own tenant (a foreign parent answers like a missing one, as in PUT /:id).
+    if (!isAdmin && effectiveTenantId !== null && typeof data.parent_id === 'string' && data.parent_id) {
+      if (!scopeToTenant(effectiveTenantId).kanban.get(data.parent_id)) {
+        json(res, { error: 'not_found', field: 'parent_id', hint: 'Szülő kártya nem található' }, 404)
+        return true
+      }
+    }
     const id = randomUUID().slice(0, 8)
     try {
       createKanbanCard({ id, ...data, tenant_id: effectiveTenantId ?? 'default' })
@@ -450,7 +472,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor, orderedIds } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor, Array.isArray(orderedIds) ? orderedIds : undefined)) {
+    // orderedIds is the whole target column, and every entry has its sort_order rewritten: a non-admin
+    // caller's list is cut down to cards of its own tenant (a foreign or missing id is dropped, so
+    // there is no oracle and no cross-tenant write).
+    let ordered: string[] | undefined = Array.isArray(orderedIds) ? orderedIds : undefined
+    if (ordered && !isAdmin && effectiveTenantId !== null) {
+      const own = scopeToTenant(effectiveTenantId).kanban
+      ordered = ordered.filter((cardId) => typeof cardId === 'string' && own.get(cardId))
+    }
+    if (moveKanbanCard(id, status, sort_order ?? 0, actor, ordered)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       if (status === 'in_progress') fireKanbanDispatch(id, actor)
