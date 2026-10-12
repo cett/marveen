@@ -16,6 +16,21 @@ vi.mock('../config.js', async (importOriginal) => ({
   get APPROVAL_HUMAN_ONLY_ENFORCE() { return flags.enforce },
 }))
 
+// Pairing a Bridge writes SSH access lines and sends a notification: stub both, the guard in front of
+// them is what these tests are about.
+vi.mock('../web/bridge-enroll.js', () => ({
+  bridgeEnroll: async () => ({
+    bundle: 'bundle', action: 'added', deviceKeyId: 1, replacedDeviceKey: null, installId: 'install-1',
+    host: '127.0.0.1', hostKeySource: 'none', warnings: [],
+  }),
+  sshDirOverride: () => null,
+  RemoteEnrollError: class RemoteEnrollError extends Error {},
+}))
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  notifySecurityEvent: async () => undefined,
+}))
+
 import { initDatabase, createDashboardUser, createTenant, insertApiToken } from '../db.js'
 import { db } from '../db/connection.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
@@ -25,11 +40,12 @@ import { tryHandleAuth } from '../web/routes/auth.js'
 import { tryHandleAdminB2b } from '../web/routes/admin-b2b.js'
 import { tryHandleAdminTokens } from '../web/routes/tokens.js'
 import { tryHandleBrowserEnroll } from '../web/routes/browser-enroll.js'
+import { tryHandleSecurity } from '../web/routes/security.js'
 import { _resetEnrollCodesForTest } from '../web/browser-enroll-codes.js'
 
 const PASSWORD = 'correct-horse-battery-1'
 const NEW_PASSWORD = 'another-long-password-2'
-const HANDLERS = [tryHandleAuth, tryHandleAdminB2b, tryHandleAdminTokens, tryHandleBrowserEnroll]
+const HANDLERS = [tryHandleAuth, tryHandleAdminB2b, tryHandleAdminTokens, tryHandleBrowserEnroll, tryHandleSecurity]
 
 let realHash: string
 let cookies: Record<string, string>
@@ -124,6 +140,7 @@ const ISSUE_ROUTES: RouteCase[] = [
   { name: 'POST /api/admin/tokens/:id/rotate', method: 'POST', path: () => `/api/admin/tokens/${seededTokenId}/rotate`, body: () => ({}) },
   { name: 'POST /api/admin/browser-enroll-codes', method: 'POST', path: () => '/api/admin/browser-enroll-codes', body: () => ({}) },
   { name: 'POST /api/auth/device-keys', method: 'POST', path: () => '/api/auth/device-keys', body: () => ({ name: 'laptop' }) },
+  { name: 'POST /api/security/bridge-enroll', method: 'POST', path: () => '/api/security/bridge-enroll', body: () => ({ key_line: 'ssh-ed25519 AAAA marveen-remote:00000000-0000-4000-8000-000000000000', name: 'laptop' }) },
 ]
 
 const run = (r: RouteCase, caller: Caller) => call(r.method, r.path(), caller, r.body?.())

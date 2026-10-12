@@ -16,6 +16,7 @@ import { logger } from '../../logger.js'
 import { logConfigChange } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
 import { bridgeEnroll, sshDirOverride, RemoteEnrollError } from '../bridge-enroll.js'
+import { denyAgentCredentialIssue } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 8 * 1024
@@ -35,6 +36,10 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     json(res, { error: 'forbidden', hint: 'Forbidden for this credential type' }, 403)
     return true
   }
+  // Enrollment mints a device key and an SSH access line: an agent's credential must not be able to
+  // hand itself (or anyone) a way in, so with enforcement on it needs a person's session like the
+  // other credential issuers.
+  if (denyAgentCredentialIssue(ctx, 'security.bridge_enroll')) return true
 
   let body: Record<string, unknown>
   try {
