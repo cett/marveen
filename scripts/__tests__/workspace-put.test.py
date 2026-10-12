@@ -252,6 +252,15 @@ class TestDeleteSource(Base):
         self.assertTrue(os.path.exists(elsewhere))
         self.assertEqual(self.calls(), [])
 
+    def test_refuses_a_sibling_directory_that_shares_the_scratchpad_name_as_a_prefix(self):
+        # <tmp>/scratchpad is the root; <tmp>/scratchpad-evil starts with the same characters but is not inside it
+        sibling = self.doc("x.md", where=self.scratch + "-evil")
+        code, _, err = self.run_main(["--file", sibling, "--doc-key", "plan/c1", "--delete-source", "--scratchpad-root", self.scratch])
+        self.assertEqual(code, 2)
+        self.assertIn("not inside the session scratchpad", err)
+        self.assertTrue(os.path.exists(sibling))
+        self.assertEqual(self.calls(), [])
+
     def test_refuses_without_any_scratchpad_signal(self):
         src = self.doc()  # directory is named scratchpad but does not follow the convention
         code, _, err = self.run_main(["--file", src, "--doc-key", "plan/c1", "--delete-source"])
