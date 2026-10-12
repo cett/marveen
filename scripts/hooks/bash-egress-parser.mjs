@@ -40,6 +40,11 @@
 //      a default `read` splits a line, exactly like a `for` word list. PowerShell (powershell / pwsh,
 //      `-Command` in any case or prefix) counts its network cmdlets and aliases as primitives, for
 //      PowerShell bodies only.
+//      SPAWN: an interpreter body that SPAWNS a process (`os.system`, `subprocess`, `execSync`, a backtick ...)
+//      has its embedded curl / wget argv or command line read exactly like a one-liner's (2.): the same
+//      external, unresolved-destination and local / private / vendor rules. See heredocSpawnCheck for the
+//      Python relaxation (a body with no PY_DYNAMIC construct cannot spawn, so a curl in a comment or in a
+//      string it writes passes) and for the line-by-line second reading that an apostrophe cannot defeat.
 //      FALSE-POSITIVE POLICY: a body that uses a network primitive is denied for ANY external URL in it,
 //      even when the call goes to localhost and the URL is only payload or a comment (the one-liner rule,
 //      applied to heredoc bodies). ONE relaxation (upstream maintainers' decision on #1669, 2026-10-06): a
@@ -177,7 +182,7 @@ const PY_PLAIN_MODULES = new Set(['os', 'sys', 'json', 're', 'pathlib', 'datetim
   'random', 'statistics', 'zipfile', 'tarfile', 'difflib', 'pprint', 'typing', 'dataclasses', 'functools', 'operator', 'enum', 'fnmatch'])
 // The program with its string literals and comments blanked (newlines kept), or null when the scan cannot
 // vouch for where a string ends. An f-string is NOT blanked: it runs its braces, so its text counts as code.
-export function pythonCodeOnly(text) {
+export function pythonCodeOnly(text, keepStrings = false) {
   const out = []
   const n = text.length
   let i = 0
@@ -212,7 +217,7 @@ export function pythonCodeOnly(text) {
       if (open !== close) return null
       out.push(delim + body + delim)
     } else {
-      out.push(delim + body.replace(/[^\n]/g, ' ') + delim)
+      out.push(delim + (keepStrings ? body : body.replace(/[^\n]/g, ' ')) + delim)
     }
     i = j + delim.length
   }
@@ -233,13 +238,18 @@ function pythonImportsPlain(code) {
 }
 // Does this Python body USE the network, as opposed to MENTION it? Only a primitive in CODE counts, and
 // only when nothing in the body can run a string or load code (see the header).
-function pythonUsesNetwork(text) {
+function pythonView(text) {
   // Python reads identifiers as NFKC, so a fullwidth `ｅｘｅｃ(...)` is `exec(...)`: normalize first, or
   // the fence below does not see it. The fallback rule reads the normalized text too, which is stricter.
   text = text.normalize('NFKC')
   const code = pythonCodeOnly(text)
-  if (code === null || PY_DYNAMIC.test(code) || !pythonImportsPlain(code)) return NET_PRIMITIVE.test(text)
-  return NET_PRIMITIVE.test(code)
+  // `plain`: the relaxation applies, the body is text that a script writes and cannot run a string,
+  // load code or start a process (PY_DYNAMIC names subprocess, os.system, popen, exec*, spawn* ...).
+  return { text, code, plain: code !== null && !PY_DYNAMIC.test(code) && pythonImportsPlain(code) }
+}
+function pythonUsesNetwork(text) {
+  const v = pythonView(text)
+  return NET_PRIMITIVE.test(v.plain ? v.code : v.text)
 }
 // Shell keywords that can stand before the real command word of a sub-command. They are here
 // because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
@@ -1073,10 +1083,14 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         if (r.deny) return { ...r, reason: `heredoc-${r.reason}` }
         continue
       }
-      if (!(PYTHON.test(cmd.toLowerCase()) ? pythonUsesNetwork(text) : usesNetwork(cmd, text))) continue
-      const found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
-      const hosts = externalHosts(found)
-      if (hosts.length) return { deny: true, reason: 'heredoc-external', hosts }
+      if (PYTHON.test(cmd.toLowerCase()) ? pythonUsesNetwork(text) : usesNetwork(cmd, text)) {
+        const found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+        const hosts = externalHosts(found)
+        if (hosts.length) return { deny: true, reason: 'heredoc-external', hosts }
+      }
+      // A body that spawns curl / wget (os.system, subprocess, child_process ...): the one-liner rule.
+      const r = heredocSpawnCheck(cmd, text, depth, vendorHosts, vendorDomains)
+      if (r) return { ...r, reason: `heredoc-${r.reason}` }
     }
     if (variants === null) return { deny: true, reason: 'heredoc-loop-unbounded', hosts: [] }
   }
@@ -1190,6 +1204,38 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     }
   }
   return { deny: false, reason: null, hosts: [] }
+}
+
+// A heredoc / here-string that is an interpreter's program and SPAWNS a process is read the way a
+// one-liner is: the curl / wget argv or command line inside `os.system(...)`, `subprocess.run([...])`,
+// `execSync(...)`, a backtick, is judged (embeddedCheck), not only the language's own network API. The
+// body of a heredoc is a whole program, so it is read more carefully than a one-liner can be:
+//  - Python: the relaxation of 4c holds. A body whose code (comments and string literals blanked) has no
+//    PY_DYNAMIC construct cannot start a process, so a `curl` or `os.system("curl ...")` that is only
+//    TEXT (a comment, a string that is written to a file) passes, as before. Any other body is read on
+//    the text with its comments blanked AND on the raw text (the raw text can only add a deny).
+//  - node, perl, ruby, php, deno, bun, PowerShell: no relaxation, as for their network API.
+//  - the string literals are paired by a plain quote scan, which an apostrophe in a comment or prose throws
+//    off for the rest of the body. So the body is also read LINE BY LINE (only lines that name a tool): a
+//    desynchronised pairing can then hide nothing on a one-line call. An argv list split over several
+//    lines is read on the whole body only. Pinned as open in the tests.
+const TOOL_LINE = new RegExp(TOOL_ALT)
+function heredocSpawnCheck(cmd, text, depth, vendorHosts, vendorDomains) {
+  let views = [text]
+  if (PYTHON.test(cmd.toLowerCase())) {
+    const v = pythonView(text)
+    if (v.plain) return null
+    views = [v.text]
+    const noComments = pythonCodeOnly(v.text, true)
+    if (noComments !== null && noComments !== v.text) views.push(noComments)
+  }
+  for (const view of views) {
+    if (!SPAWN_PRIMITIVE.test(view)) continue
+    const lines = view.split('\n')
+    const chunks = lines.length > 1 ? [view, ...lines.filter((l) => TOOL_LINE.test(l))] : [view]
+    for (const chunk of chunks) { const r = embeddedCheck(chunk, depth, vendorHosts, vendorDomains); if (r) return r }
+  }
+  return null
 }
 
 const GATE_MSG =
