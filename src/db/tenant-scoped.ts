@@ -10,6 +10,7 @@
 
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
+import { KANBAN_SEQ_COLUMN } from './kanban.js'
 import { db } from './connection.js'
 import { syncVecMemoryDelete } from './vector.js'
 
@@ -113,7 +114,9 @@ export function deleteTenantMemory(tenantId: string, id: number): boolean {
 
 /**
  * List the tenant's kanban cards, excluding archived ones -- matches the
- * unscoped listKanbanCards() so tenant-scoped and fleet-wide counts agree.
+ * unscoped listKanbanCards() so tenant-scoped and fleet-wide counts agree, and
+ * so does the shape: every card carries `seq` (the number shown as
+ * #N) and the order is the board's manual order (`sort_order`, then newest).
  * `limit` is only applied when explicitly passed; the default (unbounded) call
  * mirrors the unscoped path instead of silently truncating at a fixed page
  * size. `offset` is only meaningful together with `limit` (kanban board
@@ -130,9 +133,9 @@ export function listTenantKanbanCards(tenantId: string, status?: string, limit?:
     if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
     return db
       .prepare(
-        `SELECT * FROM kanban_cards
+        `SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards
          WHERE tenant_id = ? AND status = ? AND archived_at IS NULL
-         ORDER BY created_at DESC${limitClause}`,
+         ORDER BY sort_order ASC, created_at DESC${limitClause}`,
       )
       .all(...params) as ScopedKanbanCard[]
   }
@@ -140,9 +143,9 @@ export function listTenantKanbanCards(tenantId: string, status?: string, limit?:
   if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
   return db
     .prepare(
-      `SELECT * FROM kanban_cards
+      `SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards
        WHERE tenant_id = ? AND archived_at IS NULL
-       ORDER BY created_at DESC${limitClause}`,
+       ORDER BY sort_order ASC, created_at DESC${limitClause}`,
     )
     .all(...params) as ScopedKanbanCard[]
 }
@@ -161,7 +164,7 @@ export function countTenantKanbanCards(tenantId: string, status?: string): numbe
 
 export function getTenantKanbanCard(tenantId: string, id: string): ScopedKanbanCard | null {
   return (
-    (db.prepare('SELECT * FROM kanban_cards WHERE tenant_id = ? AND id = ?').get(tenantId, id) as ScopedKanbanCard | undefined) ?? null
+    (db.prepare(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE tenant_id = ? AND id = ?`).get(tenantId, id) as ScopedKanbanCard | undefined) ?? null
   )
 }
 

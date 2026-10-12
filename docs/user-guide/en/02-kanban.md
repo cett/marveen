@@ -69,6 +69,7 @@ Clicking a card opens the detail panel:
 - Click and hold a card, then drag it to the target column.
 - The column name highlights to indicate the drop target.
 - Touch drag works on mobile.
+- The order inside a column is the same manual order for everyone, and every card shows its number (#N), also when you are not signed in as an administrator.
 
 ---
 

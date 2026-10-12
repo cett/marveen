@@ -24,6 +24,27 @@ beforeEach(() => {
   }
 })
 
+describe('kanban cards: the shape and order the board gets from a tenant list', () => {
+  it('carries the card number (seq) on every card, in the list and on a single card', () => {
+    insertTenantKanbanCard('t-a', 'a-0', 'A 0')
+    insertTenantKanbanCard('t-a', 'a-1', 'A 1')
+    const cards = listTenantKanbanCards('t-a')
+    expect(cards.map(c => typeof c.seq)).toEqual(['number', 'number'])
+    expect(new Set(cards.map(c => c.seq)).size).toBe(2)
+    expect(getTenantKanbanCard('t-a', 'a-1')?.seq).toBe(cards.find(c => c.id === 'a-1')?.seq)
+  })
+
+  it('orders by the manual sort_order first, newest first within the same order (the admin board order)', () => {
+    for (const [id, order, created] of [['x', 3, 100], ['y', 1, 100], ['z', 1, 200], ['w', 2, 50]] as const) {
+      insertTenantKanbanCard('t-a', id, id)
+      getDb().prepare('UPDATE kanban_cards SET sort_order = ?, created_at = ? WHERE id = ?').run(order, created, id)
+    }
+    expect(listTenantKanbanCards('t-a').map(c => c.id)).toEqual(['z', 'y', 'w', 'x'])
+    expect(listTenantKanbanCards('t-a', 'planned').map(c => c.id)).toEqual(['z', 'y', 'w', 'x'])
+    expect(listTenantKanbanCards('t-a', 'planned', 2, 1).map(c => c.id)).toEqual(['y', 'w'])
+  })
+})
+
 describe('kanban cards', () => {
   it('lists, counts and paginates only the given tenant', () => {
     for (let i = 0; i < 5; i++) insertTenantKanbanCard('t-a', `a-${i}`, `A ${i}`)

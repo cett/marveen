@@ -69,6 +69,7 @@ Egy kártyára kattintva megnyílik a részlet-panel:
 - Kattints és tartsd lenyomva a kártyát, majd húzd a céloszlopba.
 - Az oszlop neve kiemelődik, jelezve, hogy ott ejtsd le.
 - Mobilon érintéses húzás is működik.
+- Az oszlopon belüli sorrend mindenkinél ugyanaz a kézi sorrend, és minden kártyán látszik a sorszáma (#N), akkor is, ha nem rendszergazdaként jelentkeztél be.
 
 ---
 
