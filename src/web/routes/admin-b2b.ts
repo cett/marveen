@@ -47,6 +47,7 @@ import { getHighRiskMcpServersForAgent } from '../mcp-risk-policy.js'
 import { regenTenantSkillFilesForAgentChange } from '../skill-regen.js'
 import { createStarterPack, describeStarterPack, reconcileStarterPack } from '../tenant-starter-pack.js'
 import { logger } from '../../logger.js'
+import { denyUnlessHumanSession } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -198,6 +199,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   // ── Users ──────────────────────────────────────────────────────────────────
 
   if (path === '/api/admin/users' && method === 'POST') {
+    if (denyUnlessHumanSession(ctx, 'admin.user.create')) return true
     const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
     const username = typeof body.username === 'string' ? body.username.trim() : ''
     const password = typeof body.password === 'string' ? body.password : ''
@@ -256,6 +258,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
   const userPatchMatch = path.match(/^\/api\/admin\/users\/(\d+)$/)
   if (userPatchMatch && method === 'PATCH') {
+    if (denyUnlessHumanSession(ctx, 'admin.user.update')) return true
     const userId = parseInt(userPatchMatch[1], 10)
     const existing = getDashboardUserById(userId)
     if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
@@ -336,6 +339,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   }
 
   if (userPatchMatch && method === 'DELETE') {
+    if (denyUnlessHumanSession(ctx, 'admin.user.delete')) return true
     const userId = parseInt(userPatchMatch[1], 10)
     const existing = getDashboardUserById(userId)
     if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }

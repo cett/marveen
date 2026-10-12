@@ -57,6 +57,7 @@ import {
   logConfigChange,
 } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
+import { denyUnlessHumanSession, denyAgentCredentialIssue } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -259,6 +260,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         return true
       }
     } else if (auth?.kind === 'token') {
+      // With enforcement on and a dashboard user present, the bearer may not reset anyone's password.
+      if (denyUnlessHumanSession(ctx, 'auth.password.reset')) return true
       // Bearer break-glass: may omit current_password but must name the target.
       // EXPLICITLY token-only -- a reset without the current password is the
       // strongest action here and must never leak to weaker credential kinds.
@@ -308,6 +311,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/users' && method === 'POST') {
+    if (denyUnlessHumanSession(ctx, 'auth.user.create')) return true
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
@@ -356,6 +360,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    if (denyAgentCredentialIssue(ctx, 'auth.device_key.create')) return true
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -427,6 +432,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   const delMatch = /^\/api\/auth\/users\/([^/]+)$/.exec(path)
   if (delMatch && method === 'DELETE') {
+    if (denyUnlessHumanSession(ctx, 'auth.user.delete')) return true
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
       return true

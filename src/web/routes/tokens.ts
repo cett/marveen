@@ -27,6 +27,7 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { isKnownAgent } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
+import { denyAgentCredentialIssue } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 // ── Schema types ─────────────────────────────────────────────────────────────
@@ -80,6 +81,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
   // POST /api/admin/tokens -- create
   if (method === 'POST' && path === '/api/admin/tokens') {
+    if (denyAgentCredentialIssue(ctx, 'admin.token.create')) return true
     let parsed: { name?: unknown; role?: unknown; tenant_id?: unknown; expires_in_days?: unknown; agent_id?: unknown }
     try {
       const buf = await readBody(ctx.req)
@@ -144,6 +146,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
   // POST /api/admin/tokens/:id/rotate
   const rotateMatch = /^\/api\/admin\/tokens\/(\d+)\/rotate$/.exec(path)
   if (method === 'POST' && rotateMatch) {
+    if (denyAgentCredentialIssue(ctx, 'admin.token.rotate')) return true
     const id = Number(rotateMatch[1])
 
     let parsed: { expires_in_days?: unknown } = {}
