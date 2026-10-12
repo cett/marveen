@@ -27,24 +27,26 @@ describe('mintDeviceToken', () => {
       'GET /api/admin/tokens': ok([]),
       'POST /api/admin/tokens': ok({ token: 'rawtoken', id: 7 }, 201),
     })
-    await expect(mintDeviceToken(api, INSTALL, 'Office phone [3f2504e0]')).resolves.toBe('rawtoken')
+    await expect(mintDeviceToken(api, INSTALL, 'Office phone [3f2504e0-4f89-41d3-9a0c-0305e82c3301]')).resolves.toBe('rawtoken')
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/admin/tokens', 'POST /api/admin/tokens'])
-    expect(calls[1].body).toEqual({ name: 'Office phone [3f2504e0]', role: 'admin' })
+    expect(calls[1].body).toEqual({ name: 'Office phone [3f2504e0-4f89-41d3-9a0c-0305e82c3301]', role: 'admin' })
   })
 
   it('revokes the live earlier token of the SAME install id before minting, and nothing else', async () => {
     const { api, calls } = fakeApi({
       'GET /api/admin/tokens': ok([
-        row(3, 'Old phone [3f2504e0]'),
+        row(3, 'Old phone [3f2504e0-4f89-41d3-9a0c-0305e82c3301]'),
         row(4, `Other phone [${installTag(OTHER)}]`),
         row(5, 'operator'),
-        row(6, 'Tablet [3f2504e0]', { revoked_at: 1700000000 }),
-        row(8, 'Agent thing [3f2504e0]', { role: 'fleet_agent' }),
+        row(9, 'Lookalike [3f2504e0-ffff-4fff-8fff-ffffffffffff]'),
+        row(10, 'No tag 3f2504e0-4f89-41d3-9a0c-0305e82c3301'),
+        row(6, 'Tablet [3f2504e0-4f89-41d3-9a0c-0305e82c3301]', { revoked_at: 1700000000 }),
+        row(8, 'Agent thing [3f2504e0-4f89-41d3-9a0c-0305e82c3301]', { role: 'fleet_agent' }),
       ]),
       'DELETE /api/admin/tokens/3/revoke': ok({ ok: true }),
       'POST /api/admin/tokens': ok({ token: 'fresh' }, 201),
     })
-    await mintDeviceToken(api, INSTALL, 'n [3f2504e0]')
+    await mintDeviceToken(api, INSTALL, 'n [3f2504e0-4f89-41d3-9a0c-0305e82c3301]')
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
       'GET /api/admin/tokens',
       'DELETE /api/admin/tokens/3/revoke',
@@ -54,7 +56,7 @@ describe('mintDeviceToken', () => {
 
   it('does not mint when a previous token cannot be revoked', async () => {
     const { api, calls } = fakeApi({
-      'GET /api/admin/tokens': ok([row(3, 'Old [3f2504e0]')]),
+      'GET /api/admin/tokens': ok([row(3, 'Old [3f2504e0-4f89-41d3-9a0c-0305e82c3301]')]),
       'DELETE /api/admin/tokens/3/revoke': { ok: false, status: 500, body: null },
     })
     await expect(mintDeviceToken(api, INSTALL, 'n')).rejects.toThrow(/revoking the previous device token 3 answered HTTP 500/)
@@ -85,8 +87,8 @@ describe('mintDeviceToken', () => {
 
 describe('deviceTokenName', () => {
   it('is the label plus the install tag, with a default label', () => {
-    expect(deviceTokenName('Office phone', INSTALL)).toBe('Office phone [3f2504e0]')
-    expect(deviceTokenName('  ', INSTALL)).toBe('device [3f2504e0]')
-    expect(deviceTokenName(undefined, INSTALL)).toBe('device [3f2504e0]')
+    expect(deviceTokenName('Office phone', INSTALL)).toBe('Office phone [3f2504e0-4f89-41d3-9a0c-0305e82c3301]')
+    expect(deviceTokenName('  ', INSTALL)).toBe('device [3f2504e0-4f89-41d3-9a0c-0305e82c3301]')
+    expect(deviceTokenName(undefined, INSTALL)).toBe('device [3f2504e0-4f89-41d3-9a0c-0305e82c3301]')
   })
 })

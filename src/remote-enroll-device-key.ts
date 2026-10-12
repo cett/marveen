@@ -16,12 +16,12 @@ export interface DeviceTokenApiResult {
 }
 export type DeviceTokenApi = (method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown) => Promise<DeviceTokenApiResult>
 
-/** Short, stable tag of an install id; the token name ends with it so a re-enrollment finds its predecessor. */
+/** The tag a token name ends with: the FULL install id, so a re-enrollment finds exactly its own predecessor (a prefix could collide). */
 export function installTag(installId: string): string {
-  return installId.slice(0, 8)
+  return installId
 }
 
-/** Token name: a label for people plus the install tag, e.g. `Office phone [3f2504e0]`. */
+/** Token name: a label for people plus the install id, e.g. `Office phone [3f2504e0-4f89-41d3-9a0c-0305e82c3301]`. */
 export function deviceTokenName(label: string | undefined, installId: string): string {
   const base = (label ?? '').trim() || 'device'
   return `${base} [${installTag(installId)}]`
