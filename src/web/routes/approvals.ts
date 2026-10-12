@@ -212,15 +212,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    // Session-auth callers (B2B dashboard users) get their identity from the
-    // authenticated session; body-supplied resolved_by is ignored. Fleet agents
-    // using a bearer token must supply resolved_by in the body.
-    const effectiveResolvedBy: string | undefined =
-      ctx.auth?.kind === 'session' && ctx.auth.user
-        ? ctx.auth.user
-        : typeof resolved_by === 'string' && resolved_by.trim()
-          ? resolved_by.trim()
-          : undefined
+    // Who resolved it comes from the authenticated principal, never from the body: a session user, a
+    // federation peer, an enrolled device, the agent a token names, the name of a registered token, or
+    // 'shared-token' for the legacy file token (which cannot say who held it). The body's resolved_by
+    // is only a self-declared label (the channel the decision came by, e.g. telegram_text): it goes
+    // into the audit detail as `declared_resolved_by`, never into the stored resolver or the guard.
+    const principal: string | undefined =
+      ctx.auth?.user ?? ctx.auth?.peer ?? ctx.auth?.device ?? ctx.tokenAgentId ?? ctx.auth?.tokenName ??
+      (ctx.auth?.kind === 'token' ? 'shared-token' : undefined)
+    const declared: string | undefined = typeof resolved_by === 'string' && resolved_by.trim() ? resolved_by.trim() : undefined
+    const effectiveResolvedBy: string | undefined = principal ?? declared
 
     if (!effectiveResolvedBy) {
       json(res, { error: 'required', field: 'resolved_by', hint: 'resolved_by is required' }, 400)
@@ -228,11 +229,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
 
-    // Self-approval guard: the requesting agent cannot approve its own request.
-    // This is a best-effort check on the self-declared resolved_by value (all fleet
-    // agents share the same bearer token, so server-side identity is not enforceable).
-    // It catches naive/accidental self-approvals; the real control lives on the
-    // main-agent side (approval-request-handling skill).
+    // Self-approval guard: the requesting agent cannot approve its own request. It runs on the
+    // authenticated principal above, so a body naming someone else no longer slips past it. It does not
+    // close self-approval by itself (the main agent relays a human's decision under its own token); the
+    // real control lives on the main-agent side (approval-request-handling skill).
     const target = getApproval(idMatch[1])
     if (target && effectiveResolvedBy === target.agent_id) {
       json(res, { error: 'forbidden', hint: 'The requesting agent cannot approve its own request' }, 403)
@@ -271,7 +271,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     const approval = getApproval(idMatch[1])
     try {
-      writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null } })
+      writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null, ...(declared && declared !== effectiveResolvedBy ? { declared_resolved_by: declared } : {}) } })
     } catch { /* audit failure must not abort the write */ }
     logger.info({ id: idMatch[1], status, resolved_by: effectiveResolvedBy }, 'Approval resolved')
     json(res, approval)

@@ -2,8 +2,8 @@
 //
 // When a session-authenticated B2B user resolves an approval via the dashboard,
 // resolved_by must be set to ctx.auth.user (the session username), not the
-// body-supplied value. Token-auth callers (fleet agents) continue to use the
-// body-supplied resolved_by unchanged.
+// body-supplied value. Token-auth callers get the identity of their token (the agent it
+// names, else the token's registered name, else 'shared-token'), also not the body value.
 //
 // Mutation proof: removing the `ctx.auth?.kind === 'session' && ctx.auth.user`
 // condition causes the session-auth test to pass the body value ('dashboard')
@@ -46,6 +46,7 @@ function makeCtx(
   path: string,
   body: object | undefined,
   auth?: RouteContext['auth'],
+  extra: Partial<RouteContext> = {},
 ): { ctx: RouteContext; out: { status: number; body: any } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
   const req = new EventEmitter() as any
@@ -60,7 +61,7 @@ function makeCtx(
   const url = new URL(`http://localhost:3420${path}`)
   // session-auth callers in attribution tests are admin-level (no tenant scope restriction).
   const role: RouteContext['role'] = auth?.kind === 'session' ? 'admin' : undefined
-  return { ctx: { req, res, path: url.pathname, method, url, auth, role } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, auth, role, ...extra } as RouteContext, out }
 }
 
 const PENDING_APPROVAL = {
@@ -112,32 +113,44 @@ describe('PATCH /api/approvals/:id -- session-auth attribution', () => {
   })
 })
 
-describe('PATCH /api/approvals/:id -- token-auth attribution unchanged', () => {
-  it('uses body resolved_by when token-auth (fleet agent)', async () => {
-    mockGetApproval
-      .mockReturnValueOnce(PENDING_APPROVAL)
-      .mockReturnValueOnce({ ...RESOLVED_APPROVAL, resolved_by: 'jane.doe' })
+describe('PATCH /api/approvals/:id -- token-auth attribution comes from the token', () => {
+  const patch = (body: object, auth: RouteContext['auth'], extra: Partial<RouteContext> = {}) =>
+    makeCtx('PATCH', '/api/approvals/appr-001', body, auth, { role: 'admin', ...extra })
 
-    const { ctx, out } = makeCtx(
-      'PATCH', '/api/approvals/appr-001',
-      { status: 'approved', resolved_by: 'jane.doe' },
-      { kind: 'token' },
-    )
+  it('stores the name of the registered token, not the resolved_by the body claims', async () => {
+    const { ctx, out } = patch({ status: 'approved', resolved_by: 'someone-else' }, { kind: 'token', tokenName: 'ops-token' })
     await tryHandleApprovals(ctx)
-
     expect(out.status).toBe(200)
-    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'jane.doe', null)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'ops-token', null)
   })
 
-  it('returns 400 when resolved_by missing and not session-auth', async () => {
-    const { ctx, out } = makeCtx(
-      'PATCH', '/api/approvals/appr-001',
-      { status: 'approved' },
-      { kind: 'token' },
-    )
+  it('prefers the agent the token names over the token name', async () => {
+    const { ctx } = patch({ status: 'approved', resolved_by: 'someone-else' }, { kind: 'token', tokenName: 'ops-token' }, { tokenAgentId: 'main-agent' })
     await tryHandleApprovals(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.field).toBe('resolved_by')
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'main-agent', null)
+  })
+
+  it('records the legacy shared token as shared-token, and needs no resolved_by from it', async () => {
+    const { ctx, out } = patch({ status: 'approved' }, { kind: 'token' })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(200)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'shared-token', null)
+  })
+
+  it('runs the self-approval guard on the authenticated identity, so a body naming someone else does not slip past', async () => {
+    // the requester of PENDING_APPROVAL is agent-d; a token that names agent-d cannot resolve it
+    const { ctx, out } = patch({ status: 'approved', resolved_by: 'somebody-else' }, { kind: 'token', tokenName: 'x' }, { tokenAgentId: 'agent-d' })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(403)
+    expect(mockResolveApproval).not.toHaveBeenCalled()
+  })
+
+  it('does not let the body claim the requester\'s identity to be refused or to hide behind', async () => {
+    // a body saying resolved_by = the requester no longer decides anything for a token caller
+    const { ctx, out } = patch({ status: 'approved', resolved_by: 'agent-d' }, { kind: 'token', tokenName: 'ops-token' })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(200)
+    expect(mockResolveApproval).toHaveBeenCalledWith('appr-001', 'approved', 'ops-token', null)
   })
 })
 

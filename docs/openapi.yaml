@@ -2296,20 +2296,24 @@ paths:
       tags: [approvals]
       operationId: resolveApproval
       summary: Resolve an approval (approve / reject / timeout)
-      description: Self-approval guard — the requesting agent cannot approve its own request. A request past its `timeout_at` cannot be approved or rejected any more.
+      description: |
+        Self-approval guard — the requesting agent cannot approve its own request. A request past its `timeout_at` cannot be approved or rejected any more.
+
+        Who resolved it is the authenticated caller, never the body: a session user, a federation peer, an enrolled device, the agent a token names, the name of a registered token, or `shared-token` for the legacy file token. The self-approval guard runs on that identity. `resolved_by` in the body is only a self-declared label (for example the channel the decision came by); when it differs from the caller it is kept in the audit detail as `declared_resolved_by`.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [status, resolved_by]
+              required: [status]
               properties:
                 status:
                   type: string
                   enum: [approved, rejected, timeout]
                 resolved_by:
                   type: string
+                  description: Self-declared label; ignored as the resolver (see the operation description).
                 telegram_message_id:
                   type: integer
             example:

@@ -46,8 +46,9 @@ Az `id` rövid előtagja is elég a válaszhoz, ha egyértelmű -- de a PATCH-he
 bash scripts/agent-api.sh PATCH /api/approvals/<id> '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
 ```
 - `status`: `approved` | `rejected` | `timeout` -- más érték 400.
-- `resolved_by`: **kötelező, nem lehet üres string** (400). Írj bele beszédes forrást
-  (pl. `telegram_text`), mert ez kerül az audit logba.
+- `resolved_by`: **csak címke**, a szerver a lezárót a hitelesített hívóból (a token ágense / neve)
+  veszi, a body értékét nem. Írj bele beszédes forrást (pl. `telegram_text`): ha eltér a hívótól,
+  az audit logban `declared_resolved_by` néven marad meg. Hitelesített hívó nélkül továbbra is kötelező.
 - `telegram_message_id`: szám vagy elhagyható. Nem szám -> `null` lesz.
 
 ### 4. Jelezd vissza a tulajdonosnak, hogy megtörtént
@@ -78,7 +79,7 @@ Egy rövid visszaigazolás. Ha nem szólsz, nem tudja, hogy a döntése célba �
 
 - [ ] A választ a párosított tulajdonostól kaptam (senderId ellenőrizve)
 - [ ] `GET /api/approvals/<id>` szerint `pending` volt, mielőtt PATCH-eltem
-- [ ] A `resolved_by` nem üres, és beszédes
+- [ ] A `resolved_by` címke beszédes (a lezáró identitását a szerver a tokenből veszi)
 - [ ] 409-et nem hibaként kezeltem, hanem elmagyaráztam a tulajdonosnak
 - [ ] Visszaigazoltam a tulajdonosnak, hogy a döntése végrehajtódott
 - [ ] Több párhuzamos kérésnél nem tippeltem, hanem visszakérdeztem
