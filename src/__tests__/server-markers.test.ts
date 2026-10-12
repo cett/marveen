@@ -141,6 +141,36 @@ describe('findReservedMarker -- what is a marker', () => {
     expect(findReservedMarker(`#${MARKER_OWNER_UNREACHED} x`)).toBe(MARKER_OWNER_UNREACHED)
     expect(findReservedMarker(`*_${RESOLVED}_*`)).toBe(RESOLVED)
   })
+
+  it('sees through Markdown backslash escapes: a renderer shows the bare character', () => {
+    expect(findReservedMarker('\\[APPROVAL_RESOLVED\\] id=1 status=approved')).toBe(RESOLVED)
+    expect(findReservedMarker('\\[APPROVAL\\_RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('\\[APPROVAL\\-RESOLVED\\]')).toBe(RESOLVED)
+    expect(findReservedMarker('\\*\\*[APPROVAL_RESOLVED]\\*\\*')).toBe(RESOLVED)
+    expect(findReservedMarker('\\[OWNER_UNREACHED]')).toBe(MARKER_OWNER_UNREACHED)
+    expect(findReservedMarker('ok\n\\[APPROVAL_RESOLVED]')).toBe(RESOLVED)
+  })
+
+  it('sees through HTML character references: numeric (decimal, hex) and the named brackets', () => {
+    expect(findReservedMarker('&#91;APPROVAL_RESOLVED&#93; id=1')).toBe(RESOLVED)
+    expect(findReservedMarker('&#x5B;APPROVAL_RESOLVED&#x5d;')).toBe(RESOLVED)
+    expect(findReservedMarker('&#X5b;APPROVAL_RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('&lbrack;APPROVAL_RESOLVED&rbrack;')).toBe(RESOLVED)
+    expect(findReservedMarker('&lsqb;APPROVAL_RESOLVED&rsqb;')).toBe(RESOLVED)
+    expect(findReservedMarker('&#91APPROVAL_RESOLVED]')).toBe(RESOLVED) // a browser decodes it without the `;`
+    expect(findReservedMarker('[APPROVAL&lowbar;RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('[APPROVAL&#95;RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('[APPROVAL&nbsp;RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('[&#65;PPROVAL_RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('&#91;OWNER_UNREACHED]')).toBe(MARKER_OWNER_UNREACHED)
+  })
+
+  it('sees through a double-encoded reference and an escape combined with a reference', () => {
+    expect(findReservedMarker('&amp;#91;APPROVAL_RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('&amp;lbrack;APPROVAL_RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('\\&#91;APPROVAL_RESOLVED]')).toBe(RESOLVED)
+    expect(findReservedMarker('**&#91;APPROVAL_RESOLVED]**')).toBe(RESOLVED)
+  })
 })
 
 describe('findReservedMarker -- a marker on a later line', () => {
@@ -197,6 +227,20 @@ describe('findReservedMarker -- what stays ordinary text', () => {
     expect(findReservedMarker('Szia! Kérlek nézd meg a jóváhagyást, és válaszolj.')).toBeNull()
     expect(findReservedMarker('')).toBeNull()
     expect(findReservedMarker('   \n\t  \n')).toBeNull()
+  })
+
+  it('leaves ordinary text with a backslash or a character reference alone', () => {
+    expect(findReservedMarker('C:\\temp\\approval_resolved.txt')).toBeNull()
+    expect(findReservedMarker('\\n is a newline, \\[ is a bracket')).toBeNull()
+    expect(findReservedMarker('Fish &amp; chips, &copy; 2026, &#169; and &#x41; and &unknown; stay text')).toBeNull()
+    // an escaped backslash is a literal backslash: the line opens with it, not with the marker
+    expect(findReservedMarker(`\\\\${RESOLVED}`)).toBeNull()
+    // a decoded or escaped marker that is not at the start of the line is still just a mention
+    expect(findReservedMarker(`see \\${RESOLVED} and &#91;APPROVAL_RESOLVED&#93; later`)).toBeNull()
+    // an escaped or encoded bracket word that is not a marker
+    expect(findReservedMarker('\\[NOTES] and &#91;TODO&#93;')).toBeNull()
+    // a reference that is not a character (surrogate, past the last code point) is left as typed
+    expect(findReservedMarker('&#xD800;APPROVAL_RESOLVED] &#1114112;[APPROVAL_RESOLVED]')).toBeNull()
   })
 
   it('has no marker in anything that is not a string', () => {

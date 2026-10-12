@@ -74,21 +74,57 @@ const LINE_BREAKS = codePointClass([0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x
 // mark, a backtick), which stays meaningful: a marker shown that way is being discussed, not claimed.
 const LEADING_MARKDOWN_DECORATION = /^[*_#~]+/
 
+// A Markdown backslash escape (`\[`, `\_`, `\*`) renders as the bare punctuation mark: a receiver's renderer
+// (or a model reading the text) drops the backslash and is left with the marker. Only a backslash in front
+// of ASCII punctuation is an escape; `\\` is an escaped backslash (a literal one, which hides the marker).
+const MARKDOWN_ESCAPE = /\\([!-/:-@[-`{-~])/g
+
+// HTML character references that spell a character of a marker: numeric (decimal or hex, the closing `;`
+// optional as in a browser) and the few named ones for its brackets, underscore, hyphen and blank. A
+// renderer that decodes them shows the marker. Decoded to a fixed point (bounded), so a double-encoded
+// `&amp;#91;` does not survive one pass.
+const NAMED_ENTITIES: Readonly<Record<string, string>> = {
+  lbrack: '[', lsqb: '[', rbrack: ']', rsqb: ']', lowbar: '_', underbar: '_', hyphen: '-', nbsp: ' ', amp: '&',
+}
+const HTML_ENTITY = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z]{2,8}));?/g
+const MAX_ENTITY_PASSES = 3
+
+function decodeEntityPass(text: string): string {
+  return text.replace(HTML_ENTITY, (whole, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
+    if (name !== undefined) return NAMED_ENTITIES[name.toLowerCase()] ?? whole
+    const point = dec !== undefined ? Number.parseInt(dec, 10) : Number.parseInt(hex ?? '', 16)
+    if (!Number.isInteger(point) || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) return whole
+    return String.fromCodePoint(point)
+  })
+}
+
+function decodeEntities(text: string): string {
+  let current = text
+  for (let pass = 0; pass < MAX_ENTITY_PASSES; pass++) {
+    const next = decodeEntityPass(current)
+    if (next === current) break
+    current = next
+  }
+  return current
+}
+
 /**
  * A line reduced to the shape it is compared in: compatibility-decomposed (NFKD: full-width and
  * mathematical forms fold to plain letters, an accented letter splits from its accent), invisible and
  * format characters and combining marks gone, lower case, look-alike letters and brackets mapped to
- * ASCII, whitespace dropped, a leading run of Markdown emphasis/heading markers gone. A line that does
+ * ASCII, whitespace dropped, HTML character references decoded and Markdown backslash escapes resolved
+ * (`\[`, `&#91;`, `&lbrack;` all read as `[`), a leading run of Markdown emphasis/heading markers gone. A line that does
  * not open with a bracket after that is no candidate (empty shape). Underscores and hyphens are dropped
  * only then, so `[APPROVAL-RESOLVED]` and `[ approval resolved ]` read as the marker they imitate while
  * `- [APPROVAL_RESOLVED]` stays a list item.
  */
 function skeleton(line: string): string {
-  const folded = stripInvisible(line.normalize('NFKD')).replace(/[\p{Cf}\p{M}]/gu, '').toLowerCase()
+  const folded = stripInvisible(decodeEntities(line).normalize('NFKD')).replace(/[\p{Cf}\p{M}]/gu, '').toLowerCase()
   const shape = Array.from(folded, (ch) => CONFUSABLES.get(ch) ?? ch).join('')
     .replace(OPEN_BRACKETS, '[')
     .replace(CLOSE_BRACKETS, ']')
     .replace(/[\s\p{Z}]/gu, '')
+    .replace(MARKDOWN_ESCAPE, '$1')
     .replace(LEADING_MARKDOWN_DECORATION, '')
   return shape.startsWith('[') ? shape.replace(/[_-]/g, '') : ''
 }
