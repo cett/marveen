@@ -131,6 +131,7 @@ The database is the SQLite file at `store/claudeclaw.db`. The schema is built fr
 | `kanban_cards` | Task cards (planned/in_progress/waiting/done) |
 | `kanban_comments` | Card comments |
 | `kanban_card_events` | Status-change log |
+| `approval_events` | Journal of what was done to or refused for an approval (consume, refused consume, denied decision) |
 | `kanban_card_labels` | Card-label join table |
 | `labels` | Labels |
 | `idea_box` | Idea inbox |

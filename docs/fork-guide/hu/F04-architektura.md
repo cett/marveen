@@ -131,6 +131,7 @@ Az adatbázis SQLite fájl: `store/claudeclaw.db`. A séma az `src/migrations/` 
 | `kanban_cards` | Feladatkártyák (planned/in_progress/waiting/done) |
 | `kanban_comments` | Kártya-kommentek |
 | `kanban_card_events` | Állapotváltozás naplója |
+| `approval_events` | Egy jóváhagyással történtek (felhasználás, elutasított felhasználás, megtagadott döntés) naplója |
 | `kanban_card_labels` | Kártya-cimke kapcsolótábla |
 | `labels` | Cimkék |
 | `idea_box` | Ötlet tárca |
