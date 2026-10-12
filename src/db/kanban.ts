@@ -6,6 +6,9 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { writeAgentAuditLog } from './audit.js'
 import { db } from './connection.js'
 
+/** The card's running number (#N): the insertion-order id of the row. One definition, shared with the tenant-scoped list. */
+export const KANBAN_SEQ_COLUMN = 'rowid AS seq'
+
 export interface KanbanCard {
   id: string
   // Stable running number derived from the SQLite rowid (insertion order, never
@@ -72,7 +75,7 @@ export function listKanbanCards(opts?: { status?: KanbanCard['status']; limit?: 
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
 
   const params: unknown[] = []
-  let sql = 'SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL'
+  let sql = `SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE archived_at IS NULL`
   if (opts?.status) { sql += ' AND status = ?'; params.push(opts.status) }
   sql += ' ORDER BY sort_order ASC, created_at DESC'
   if (opts?.limit !== undefined) {
@@ -96,7 +99,7 @@ export function listKanbanCardsSummary(): { status: string; title: string; assig
 }
 
 export function getKanbanCard(id: string): KanbanCard | undefined {
-  return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
+  return db.prepare(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE id = ?`).get(id) as KanbanCard | undefined
 }
 
 export function createKanbanCard(card: {
@@ -249,7 +252,7 @@ export function getSubtree(cardId: string): KanbanCard[] {
       UNION ALL
       SELECT c.id FROM kanban_cards c JOIN subtree s ON c.parent_id = s.id
     )
-    SELECT rowid AS seq, kc.* FROM kanban_cards kc
+    SELECT ${KANBAN_SEQ_COLUMN}, kc.* FROM kanban_cards kc
     WHERE kc.id IN (SELECT id FROM subtree) AND kc.archived_at IS NULL
     ORDER BY kc.depth ASC, kc.sort_order ASC
   `).all(cardId) as KanbanCard[]
