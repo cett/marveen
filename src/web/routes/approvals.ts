@@ -10,6 +10,9 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { denyForeignAgent } from '../fleet-agent-identity.js'
 import { checkCategory, humanSessionOf, isHumanOnly } from '../approval-human-only.js'
+import {
+  notifyOwnerOfHumanOnlyRequest, humanOnlyRequestLine, ownerUnreachedLine, approvalResolvedLine,
+} from '../approval-owner-notice.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 import { resolveApprovalTimeoutSeconds } from '../approval-timeout.js'
@@ -55,6 +58,46 @@ const HUMAN_ONLY_REFUSAL = {
   code: 'human_only_category',
   hint: 'This approval is human-only: it is decided by a person logged in to the dashboard, not by a token',
 } as const
+
+/**
+ * Tell the fleet about a new request. With enforcement on, a human-only one is handled differently: the
+ * server messages the owner itself (a dashboard link, no way to decide in the chat), the main agent is
+ * told not to relay or decide it, and a failed owner message is reported back as OWNER_UNREACHED. The
+ * requester hears the outcome from notifyRequester. Never throws: the approval exists either way.
+ */
+function notifyAboutNewRequest(approval: Approval): void {
+  if (!APPROVAL_HUMAN_ONLY_ENFORCE || !isHumanOnlyApproval(approval)) {
+    notifyMainAgent(approval)
+    return
+  }
+  // The main agent asking for itself does not need to be told about its own request.
+  if (approval.agent_id !== MAIN_AGENT_ID) sendSystemMessage(MAIN_AGENT_ID, humanOnlyRequestLine(approval), approval)
+  void notifyOwnerOfHumanOnlyRequest(approval).then((delivered) => {
+    if (delivered) return
+    logger.warn({ approvalId: approval.id }, 'The owner could not be told about a human-only approval request')
+    try {
+      recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'owner_unreached', actor: 'system' })
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, 'Could not journal an unreached owner')
+    }
+    sendSystemMessage(MAIN_AGENT_ID, ownerUnreachedLine(approval), approval)
+  })
+}
+
+/** Tell the requester how its human-only request was decided (enforcement on). Best effort. */
+function notifyRequester(approval: Approval | undefined): void {
+  if (!approval || !isHumanOnlyApproval(approval) || !APPROVAL_HUMAN_ONLY_ENFORCE) return
+  sendSystemMessage(approval.agent_id, approvalResolvedLine(approval), approval)
+}
+
+function sendSystemMessage(to: string, content: string, approval: Approval): void {
+  try {
+    createAgentMessage('system', to, content)
+  } catch (err) {
+    // Non-fatal: the approval stands regardless; these notices are best-effort
+    logger.warn({ err, approvalId: approval.id, to }, 'Failed to send an approval notice')
+  }
+}
 
 function notifyMainAgent(approval: Approval): void {
   try {
@@ -161,7 +204,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       tenant_id: requestTenant,
     })
 
-    notifyMainAgent(approval)
+    notifyAboutNewRequest(approval)
     try {
       writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
     } catch { /* audit failure must not abort the write */ }
@@ -336,6 +379,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const approval = getApproval(idMatch[1])
+    notifyRequester(approval)
     try {
       writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null, ...(declared && declared !== effectiveResolvedBy ? { declared_resolved_by: declared } : {}) } })
     } catch { /* audit failure must not abort the write */ }

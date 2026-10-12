@@ -2,16 +2,23 @@ import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID } from './config.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
 
-export async function notifyChannel(text: string): Promise<void> {
+/**
+ * Send one message to the configured channel and say whether every part of it arrived. A missing channel
+ * config and a failed plain-text retry both count as "not delivered"; nothing throws. A caller that only
+ * wants a best-effort notice uses notifyChannel; one that must react to a message that did not reach the
+ * owner (a human-only approval request) uses this.
+ */
+export async function deliverToChannel(text: string): Promise<boolean> {
   if (!CHANNEL_TOKEN || !CHANNEL_CHAT_ID) {
     logger.warn('Channel ertesites kihagyva: token vagy chat ID hianyzik')
-    return
+    return false
   }
 
   const provider = getProvider(CHANNEL_PROVIDER)
   const formatted = provider.formatMessage(text)
   const chunks = provider.splitMessage(formatted)
 
+  let allDelivered = true
   for (const chunk of chunks) {
     try {
       const parseMode = CHANNEL_PROVIDER === 'telegram' ? 'HTML' : undefined
@@ -19,9 +26,17 @@ export async function notifyChannel(text: string): Promise<void> {
     } catch {
       try {
         await provider.sendMessage(CHANNEL_TOKEN, CHANNEL_CHAT_ID, text.slice(0, 4096))
-      } catch { /* last resort, give up */ }
+      } catch {
+        /* last resort, give up */
+        allDelivered = false
+      }
     }
   }
+  return allDelivered
+}
+
+export async function notifyChannel(text: string): Promise<void> {
+  await deliverToChannel(text)
 }
 
 // Backward-compatible alias

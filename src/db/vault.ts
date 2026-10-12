@@ -213,7 +213,7 @@ export type ApprovalResolvedVia = 'dashboard_session' | 'bearer'
  * The kinds of approval_events rows. The table has no CHECK on `event` (widening one needs a table
  * rebuild, see migration 0081), so this union is what keeps the writers honest.
  */
-export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied'
+export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied' | 'owner_unreached'
 
 /**
  * Append one row to the approval journal. The journal is for diagnosis: nothing branches on it, and a
