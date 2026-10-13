@@ -327,3 +327,54 @@ describe('the content_hash filter of the list', () => {
     expect(listApprovals({ content_hash: HASH, tenantId: 'tenant-b' })).toHaveLength(1)
   })
 })
+
+describe('a malformed content hash never matches, creates or uses up a row', () => {
+  const UPPER = 'A'.repeat(64)
+  const BAD: [string, unknown][] = [
+    ['uppercase hex', UPPER],
+    ['short', 'a'.repeat(63)],
+    ['long', 'a'.repeat(65)],
+    ['empty', ''],
+    ['64 non-hex characters', 'g'.repeat(64)],
+    ['a number', 123],
+    ['null', null],
+    ['undefined', undefined],
+    ['an array that prints as a valid hash', ['a'.repeat(64)]],
+  ]
+
+  // A row stored with an uppercase hash and decided by a person: only the validation keeps it unusable.
+  function uppercaseRow(): string {
+    return decided({ hash: UPPER, resolvedAt: NOW - 10 })
+  }
+
+  it.each(BAD)('consumeApproval refuses %s as hash_mismatch and leaves the row alone', (_name, hash) => {
+    const id = uppercaseRow()
+    const own = decided({ resolvedAt: NOW - 10 })
+    expect(consumeApproval({ ...base, id, content_hash: hash as string })).toMatchObject({ ok: false, reason: 'hash_mismatch' })
+    expect(consumeApproval({ ...base, id: own, content_hash: hash as string })).toMatchObject({ ok: false, reason: 'hash_mismatch' })
+    expect(getApproval(id)?.consumed_at).toBeNull()
+    expect(getApproval(own)?.consumed_at).toBeNull()
+  })
+
+  it('consumeApproval still answers not_found, agent_mismatch and wrong_category first for a malformed hash', () => {
+    const other = decided({ tenant: 'tenant-b', resolvedAt: NOW - 10 })
+    const foreign = decided({ agent: 'worker', resolvedAt: NOW - 10 })
+    const file = decided({ category: 'file_delete', resolvedAt: NOW - 10 })
+    expect(consumeApproval({ ...base, id: other, content_hash: UPPER })).toEqual({ ok: false, reason: 'not_found' })
+    expect(consumeApproval({ ...base, id: foreign, content_hash: UPPER })).toMatchObject({ ok: false, reason: 'agent_mismatch' })
+    expect(consumeApproval({ ...base, id: file, content_hash: UPPER })).toMatchObject({ ok: false, reason: 'wrong_category' })
+  })
+
+  it.each(BAD)('claimApproval refuses %s as hash_mismatch and touches nothing', (_name, hash) => {
+    const id = uppercaseRow()
+    expect(claimApproval({ ...base, category: 'email_send', content_hash: hash as string, ref: 'r' })).toEqual({ ok: false, reason: 'hash_mismatch' })
+    expect(getApproval(id)?.consumed_at).toBeNull()
+    expect(listApprovalEvents(id)).toEqual([])
+  })
+
+  it.each(BAD)('createApprovalOnce refuses %s as hash_mismatch and writes no row', (_name, hash) => {
+    const r = createApprovalOnce({ id: 'new', agent_id: 'main', category: 'email_send', action_description: 'x', content_hash: hash as string, max_pending: 10 })
+    expect(r).toEqual({ ok: false, reason: 'hash_mismatch' })
+    expect(getApproval('new')).toBeUndefined()
+  })
+})

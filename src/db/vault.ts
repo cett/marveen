@@ -281,7 +281,7 @@ export type ConsumeRefusal =
   | 'not_human_decided'
 
 /** Why a claim by hash found nothing to use. `pending` and `none` mean there is nothing decided yet. */
-export type ClaimRefusal = 'wrong_category' | 'pending' | 'none' | 'rejected' | 'expired' | 'already_consumed' | 'not_human_decided'
+export type ClaimRefusal = 'wrong_category' | 'hash_mismatch' | 'pending' | 'none' | 'rejected' | 'expired' | 'already_consumed' | 'not_human_decided'
 
 export type ConsumeOutcome =
   | { ok: true; replayed: boolean; approval: Approval }
@@ -308,6 +308,14 @@ interface ConsumeParams {
 }
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000)
+
+/**
+ * A content hash is 64 lowercase hex characters, nothing else. The functions below check it before
+ * they touch a row, so a malformed or differently-cased value can never match, create or use one up.
+ */
+export function isContentHash(hash: unknown): hash is string {
+  return typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)
+}
 
 /** The journal label of a consume: the consumer name, bounded. */
 function consumerLabel(consumer: string | null | undefined): string | null {
@@ -359,8 +367,10 @@ function isReplay(row: Approval, p: ConsumeParams, now: number): boolean {
 export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutcome {
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
+  const hashOk = isContentHash(p.content_hash)
   const outcome = db.transaction((): ConsumeOutcome => {
-    if (useUpApproval(p.id, p, now, ref)) {
+    // A malformed hash skips the guarded write; it is then refused below as a mismatch.
+    if (hashOk && useUpApproval(p.id, p, now, ref)) {
       const approval = getApproval(p.id) as Approval
       recordApprovalEvent({ approval_id: p.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
       return { ok: true, replayed: false, approval }
@@ -370,6 +380,7 @@ export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutco
     if (!row || row.tenant_id !== p.tenant_id) return { ok: false, reason: 'not_found' }
     if (row.agent_id !== p.principal) return { ok: false, reason: 'agent_mismatch', approval: row }
     if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(row.category)) return { ok: false, reason: 'wrong_category', approval: row }
+    if (!hashOk) return { ok: false, reason: 'hash_mismatch', approval: row }
     if (row.consumed_at != null) {
       if (isReplay(row, p, now)) return { ok: true, replayed: true, approval: row }
       return { ok: false, reason: 'already_consumed', approval: row }
@@ -395,6 +406,7 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
   if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(p.category)) return { ok: false, reason: 'wrong_category' }
+  if (!isContentHash(p.content_hash)) return { ok: false, reason: 'hash_mismatch' }
   const outcome = db.transaction((): ClaimOutcome => {
     const scope = [p.principal, p.tenant_id, p.category, p.content_hash]
     if (typeof p.ref === 'string' && p.ref !== '') {
@@ -448,7 +460,7 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
 /** What createApprovalOnce did: the row, and whether it was an open request already or a new one. */
 export type OpenOnceOutcome =
   | { ok: true; approval: Approval; deduplicated: boolean }
-  | { ok: false; reason: 'too_many_pending' }
+  | { ok: false; reason: 'too_many_pending' | 'hash_mismatch' }
 
 /**
  * Open a hash-bound request unless the same agent already has the same one open in this tenant (then
@@ -459,6 +471,7 @@ export type OpenOnceOutcome =
  */
 export function createApprovalOnce(params: Parameters<typeof createApproval>[0] & { content_hash: string; max_pending: number }): OpenOnceOutcome {
   const tenant = params.tenant_id ?? 'default'
+  if (!isContentHash(params.content_hash)) return { ok: false, reason: 'hash_mismatch' }
   const outcome = db.transaction((): OpenOnceOutcome => {
     const now = nowSeconds()
     const same = db.prepare(`
