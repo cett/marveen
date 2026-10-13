@@ -1746,6 +1746,24 @@ def _from_bash(command: str, cwd: str) -> Dict[str, Any]:
 # Entry points
 # ======================================================================================================
 
+_MAIL_PROGRAM_HINT = re.compile(r'send\.py|gmail-send\.py|graph-mail|sendmail|msmtp|swaks|ssmtp')
+
+
+def command_sends_mail(command: Any) -> bool:
+    """True when a Bash command runs one of the mail programs this reader knows (not curl: whether a
+    curl call is a mail is the send classifier's question, it needs the URL). A command the shell
+    reading cannot parse is judged by whether it names a mail program at all, so a substitution
+    around a send is a refusal to read, not a pass."""
+    if not isinstance(command, str):
+        return False
+    try:
+        return any(not s.kind == 'curl' for s in _find_sends(command, 0))
+    except Unreadable:
+        return _MAIL_PROGRAM_HINT.search(command) is not None
+    except Exception:  # noqa: BLE001 -- a reader bug must not turn into a pass
+        return _MAIL_PROGRAM_HINT.search(command) is not None
+
+
 def collect_email_envelope(tool: str, tool_input: Any, cwd: Optional[str] = None) -> Dict[str, Any]:
     """The fields of the ONE mail this call sends, as the plain envelope build_envelope() takes.
 

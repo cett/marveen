@@ -220,6 +220,9 @@ describe('pruneStaleHookEntries', () => {
     // channel-inbox-drain.py is app-registered (templates/settings.json.template),
     // so a missing-file entry must be prunable-as-ours, not treated as foreign.
     expect(KNOWN_HOOK_SCRIPTS).toContain('channel-inbox-drain.py')
+    // The mail gates are registered by the owner in the root settings; a missing-file entry is ours.
+    expect(KNOWN_HOOK_SCRIPTS).toContain('email-approval-gate.py')
+    expect(KNOWN_HOOK_SCRIPTS).toContain('outgoing-copy-gate.py')
   })
 })
 

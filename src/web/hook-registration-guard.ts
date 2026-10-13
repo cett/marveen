@@ -42,6 +42,8 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'auth-admin-gate.py',
   'tenant-context.py',
   'tenant-skill-gate.py',
+  'email-approval-gate.py',
+  'outgoing-copy-gate.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

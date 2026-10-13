@@ -612,5 +612,23 @@ class MailAndSendmailReading(unittest.TestCase):
         self.assertEqual(r["envelope"]["bcc"], [])
 
 
+class CommandSendsMail(unittest.TestCase):
+    """command_sends_mail(): the question the send gate asks of a Bash call beside the send classifier."""
+
+    def test_a_mail_program_is_a_send_even_when_the_shell_reading_gives_up(self):
+        self.assertTrue(E.command_sends_mail("python3 gmail-send.py --to a@example.test"))
+        self.assertTrue(E.command_sends_mail("x=$(cat f); msmtp a@example.test"))
+        self.assertTrue(E.command_sends_mail('echo "$(date)" ; send.py --to a@example.test'))
+        self.assertTrue(E.command_sends_mail('bash -c "send.py --to a@example.test"'))
+
+    def test_other_commands_are_not(self):
+        self.assertFalse(E.command_sends_mail('echo "$(date)"'))
+        self.assertFalse(E.command_sends_mail("git diff scripts/gmail-send.py"))
+        self.assertFalse(E.command_sends_mail("curl -s localhost:3420/api/x"))   # a curl is the send classifier's question
+        self.assertFalse(E.command_sends_mail("ls -la"))
+        self.assertFalse(E.command_sends_mail(None))
+        self.assertFalse(E.command_sends_mail(["send.py"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
