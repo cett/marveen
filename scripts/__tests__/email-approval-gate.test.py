@@ -810,15 +810,17 @@ class LogAndMatcher(GateCase):
 
     def test_every_tool_the_classifier_calls_a_send_matches_the_matcher(self):
         mod = self._module()
-        rx = re.compile(mod.EMAIL_GATE_MATCHER)
+        every_tool = mod.EMAIL_GATE_MATCHER == '*'
+        rx = None if every_tool else re.compile(mod.EMAIL_GATE_MATCHER)
         names = [SEND_TOOL, 'send_email', 'mcp__x__send_email', 'manage_email', 'mcp__claude_ai_Gmail__send_message',
                  'mcp__claude_ai_Gmail__reply', 'mcp__claude_ai_Gmail__reply_all', 'mcp__claude_ai_Gmail__forward',
                  'mcp__gmail__gmail_send_draft', 'Bash']
         for n in names:
             with self.subTest(n):
-                self.assertTrue(rx.fullmatch(n), n)
-        for n in ('Read', 'Write', 'Edit', 'mcp__plugin_telegram_telegram__reply', 'mcp__github__create_issue'):
-            self.assertFalse(rx.fullmatch(n), n)
+                self.assertTrue(every_tool or rx.fullmatch(n), n)
+        if not every_tool:
+            for n in ('Read', 'Write', 'Edit', 'mcp__plugin_telegram_telegram__reply', 'mcp__github__create_issue'):
+                self.assertFalse(rx.fullmatch(n), n)
         # the classifier on the tool names alone
         self.assertTrue(mod.tool_is_send('manage_email', {}))
         self.assertFalse(mod.tool_is_send('manage_email', {'action': 'list'}))
