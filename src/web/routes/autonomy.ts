@@ -5,6 +5,7 @@ import {
   setAutonomyCategoryHumanOnly,
   type AutonomyCategoryRow,
 } from '../../db.js'
+import { APPROVAL_HUMAN_ONLY_ENFORCE } from '../../config.js'
 import { MAX_CATEGORY_TIMEOUT_MINUTES } from '../approval-timeout.js'
 import { humanSessionOf, isHumanOnlyFloorKey } from '../approval-human-only.js'
 import type { RouteContext } from './types.js'
@@ -33,7 +34,10 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
     try {
       const rows = listAutonomyCategories()
       const updated_at = rows.reduce((max, r) => Math.max(max, r.updated_at), 0)
-      json(res, { updated_at, categories: rows.map(toWireCategory) })
+      // approvalHumanOnlyEnforce: whether a human-only approval is decided only by a person's dashboard
+      // session on this server. A caller that relies on such an approval (the email send gate) reads it
+      // here: with it off, any token can still decide the request and the approval proves nothing.
+      json(res, { updated_at, categories: rows.map(toWireCategory), approvalHumanOnlyEnforce: APPROVAL_HUMAN_ONLY_ENFORCE })
     } catch (err) {
       logger.error({ err }, 'Failed to load autonomy categories')
       json(res, { error: 'internal_error', hint: 'Could not read autonomy categories' }, 503)

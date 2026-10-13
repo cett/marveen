@@ -213,7 +213,7 @@ export type ApprovalResolvedVia = 'dashboard_session' | 'bearer'
  * The kinds of approval_events rows. The table has no CHECK on `event` (widening one needs a table
  * rebuild, see migration 0081), so this union is what keeps the writers honest.
  */
-export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied' | 'owner_unreached' | 'created_deduplicated'
+export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied' | 'owner_unreached' | 'created_deduplicated' | 'notify_suppressed'
 
 /**
  * Append one row to the approval journal. The journal is for diagnosis: nothing branches on it, and a
@@ -455,6 +455,18 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
     journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
   }
   return outcome
+}
+
+/**
+ * How many requests of one agent and category (in one tenant) were made since `since`, the one named by
+ * `exceptId` left out. Read from the rows, not from memory, so a restart does not reset a rate limit.
+ */
+export function countApprovalsRequestedSince(params: { agent_id: string; category: string; tenant_id: string; since: number; exceptId?: string }): number {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS n FROM approvals
+    WHERE agent_id = ? AND category = ? AND tenant_id = ? AND requested_at >= ? AND id != ?
+  `).get(params.agent_id, params.category, params.tenant_id, params.since, params.exceptId ?? '') as { n: number }
+  return row.n
 }
 
 /** What createApprovalOnce did: the row, and whether it was an open request already or a new one. */

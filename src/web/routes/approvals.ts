@@ -4,12 +4,14 @@ import {
   createApproval, getApproval, resolveApproval, listApprovals, countApprovals,
   getApprovalStatusCounts, getOldestPendingApproval, expireTimedOutApprovals,
   createAgentMessage, writeAgentAuditLog, getAutonomyCategory, recordApprovalEvent,
+  createApprovalOnce, countApprovalsRequestedSince, isContentHash,
   type Approval, type ApprovalResolvedVia,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { denyForeignAgent } from '../fleet-agent-identity.js'
-import { checkCategory, humanSessionOf, isHumanOnly } from '../approval-human-only.js'
+import { checkCategory, humanSessionOf, isHumanOnly, isEmailSendCategory, EMAIL_SEND_CATEGORY } from '../approval-human-only.js'
+import { parseEmailEnvelope, describeEmail, MAX_PAYLOAD_BYTES } from '../email-envelope.js'
 import {
   notifyOwnerOfHumanOnlyRequest, approvalRequestLine, humanOnlyRequestLine, ownerUnreachedLine, approvalResolvedLine,
 } from '../approval-owner-notice.js'
@@ -27,6 +29,28 @@ function getTimeoutAt(category: string, requestedSeconds: unknown): number {
     logger.warn({ err, category }, 'Autonomy category lookup failed, using the default approval timeout')
   }
   return Math.floor(Date.now() / 1000) + resolveApprovalTimeoutSeconds(categoryMinutes, requestedSeconds)
+}
+
+// An agent may have this many email requests open at once, and the owner is told of this many new ones
+// per agent and hour; the rest wait on the Approvals page. A runaway loop of requests fills a table
+// the owner can read, not their phone.
+const MAX_PENDING_EMAIL_REQUESTS = 10
+const MAX_EMAIL_OWNER_NOTICES_PER_HOUR = 5
+const HOUR_S = 3600
+
+/** True when this new email request is within the agent's hourly allowance of owner notices. */
+function withinOwnerNoticeAllowance(approval: Approval): boolean {
+  try {
+    const earlier = countApprovalsRequestedSince({
+      agent_id: approval.agent_id, category: approval.category, tenant_id: approval.tenant_id,
+      since: Math.floor(Date.now() / 1000) - HOUR_S, exceptId: approval.id,
+    })
+    return earlier < MAX_EMAIL_OWNER_NOTICES_PER_HOUR
+  } catch (err) {
+    // A count that cannot be read must not silence the owner: tell them.
+    logger.warn({ err, approvalId: approval.id }, 'Could not count recent email requests, notifying anyway')
+    return true
+  }
 }
 
 /** A request is human-only when its row says so (a snapshot, so a later widening of the set also reaches it) or its category is. */
@@ -66,6 +90,15 @@ const HUMAN_ONLY_REFUSAL = {
  * requester hears the outcome from notifyRequester. Never throws: the approval exists either way.
  */
 function notifyAboutNewRequest(approval: Approval): void {
+  if (approval.category === EMAIL_SEND_CATEGORY && !withinOwnerNoticeAllowance(approval)) {
+    logger.warn({ approvalId: approval.id, agent: approval.agent_id }, 'Email approval request not announced: the hourly notice allowance is used up')
+    try {
+      recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'notify_suppressed', reason: 'rate_limited', actor: 'system' })
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, 'Could not journal a suppressed owner notice')
+    }
+    return
+  }
   if (!APPROVAL_HUMAN_ONLY_ENFORCE || !isHumanOnlyApproval(approval)) {
     notifyMainAgent(approval)
     return
@@ -135,7 +168,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; tenant_id?: unknown; timeout_seconds?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; content_hash?: unknown; tenant_id?: unknown; timeout_seconds?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -143,7 +176,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, tenant_id, timeout_seconds } = body
+    const { agent_id, category, action_description, action_payload, content_hash, tenant_id, timeout_seconds } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'required', field: 'agent_id', hint: 'agent_id is required' }, 400)
       return true
@@ -152,12 +185,19 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'required', field: 'category', hint: 'category is required' }, 400)
       return true
     }
-    if (typeof action_description !== 'string' || !action_description.trim()) {
+    // An email request is described by the server, from the envelope it hashes; the requester's own
+    // description is not asked for and not used.
+    const emailSend = isEmailSendCategory(category)
+    if (!emailSend && (typeof action_description !== 'string' || !action_description.trim())) {
       json(res, { error: 'required', field: 'action_description', hint: 'action_description is required' }, 400)
       return true
     }
     if (action_payload !== undefined && typeof action_payload !== 'string') {
       json(res, { error: 'invalid_value', field: 'action_payload', hint: 'action_payload must be a string (JSON) if provided' }, 400)
+      return true
+    }
+    if (content_hash !== undefined && !isContentHash(content_hash)) {
+      json(res, { error: 'invalid_value', field: 'content_hash', hint: 'content_hash must be 64 lowercase hex characters (a sha256)' }, 400)
       return true
     }
     if (tenant_id !== undefined && typeof tenant_id !== 'string') {
@@ -173,6 +213,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // With enforcement on, the category is stored in its canonical form and a spelling that reads as a
     // human-only category without being it is refused (an unguarded twin of the gated name). Without it
     // the name is stored as sent, as before; the human-only snapshot below is taken either way.
+    const requester = agent_id.trim()
     let storedCategory = category.trim()
     if (APPROVAL_HUMAN_ONLY_ENFORCE) {
       const checked = checkCategory(category)
@@ -183,24 +224,96 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       storedCategory = checked.category
     }
 
-    const id = randomUUID()
-    const timeout_at = getTimeoutAt(storedCategory, timeout_seconds)
-    const approval = createApproval({
-      id,
-      agent_id: agent_id.trim(),
-      category: storedCategory,
-      human_only: isHumanOnly(storedCategory),
-      action_description: action_description.trim(),
-      action_payload: typeof action_payload === 'string' ? action_payload : null,
-      timeout_at,
-      tenant_id: requestTenant,
-    })
+    if (!emailSend) {
+      const id = randomUUID()
+      const approval = createApproval({
+        id,
+        agent_id: requester,
+        category: storedCategory,
+        human_only: isHumanOnly(storedCategory),
+        action_description: (action_description as string).trim(),
+        action_payload: typeof action_payload === 'string' ? action_payload : null,
+        content_hash: typeof content_hash === 'string' ? content_hash : null,
+        timeout_at: getTimeoutAt(storedCategory, timeout_seconds),
+        tenant_id: requestTenant,
+      })
+      notifyAboutNewRequest(approval)
+      try {
+        writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
+      } catch { /* audit failure must not abort the write */ }
+      logger.info({ id, agent_id, category }, 'Approval request created')
+      json(res, approval, 201)
+      return true
+    }
 
+    // An email request: only the main agent sends mail, so only it asks to (a sub-agent's mail goes
+    // through the main agent). The body is the envelope of the exact mail; the server rebuilds the
+    // hash and the description from it and keeps what it hashed as the payload.
+    if (requester !== MAIN_AGENT_ID) {
+      json(res, { error: 'forbidden', hint: 'An email_send approval is requested by the main agent that sends the mail; a sub-agent gets 403' }, 403)
+      return true
+    }
+    if (typeof action_payload !== 'string') {
+      json(res, { error: 'required', field: 'action_payload', hint: 'action_payload is required for email_send: the JSON envelope of the mail' }, 400)
+      return true
+    }
+    if (Buffer.byteLength(action_payload, 'utf8') > MAX_PAYLOAD_BYTES) {
+      json(res, { error: 'invalid_value', field: 'action_payload', hint: `action_payload is larger than ${MAX_PAYLOAD_BYTES} bytes` }, 400)
+      return true
+    }
+    let envelopeInput: unknown
+    try {
+      envelopeInput = JSON.parse(action_payload)
+    } catch {
+      json(res, { error: 'invalid_value', field: 'action_payload', hint: 'action_payload must be a JSON object (the email envelope)' }, 400)
+      return true
+    }
+    const parsed = parseEmailEnvelope(envelopeInput, requester)
+    if (!parsed.ok) {
+      json(res, { error: 'invalid_value', field: 'action_payload', code: 'invalid_envelope', envelope_field: parsed.field, hint: parsed.hint }, 400)
+      return true
+    }
+    if (typeof content_hash === 'string' && content_hash !== parsed.hash) {
+      // The payload is not the mail the requester thinks it hashed: a parity fault, or a tampered request.
+      try {
+        writeAgentAuditLog({ agent_id: requester, entity: 'approval', action: 'envelope_hash_mismatch', detail: { client_hash_prefix: content_hash.slice(0, 12), server_hash_prefix: parsed.hash.slice(0, 12) } })
+      } catch { /* audit failure must not change the refusal */ }
+      json(res, { error: 'invalid_value', field: 'content_hash', code: 'hash_mismatch', hint: 'content_hash does not match the hash the server computes from action_payload' }, 400)
+      return true
+    }
+
+    const opened = createApprovalOnce({
+      id: randomUUID(),
+      agent_id: requester,
+      category: EMAIL_SEND_CATEGORY,
+      human_only: true,
+      action_description: describeEmail(parsed.envelope, parsed.hash),
+      action_payload: parsed.canon,
+      content_hash: parsed.hash,
+      timeout_at: getTimeoutAt(EMAIL_SEND_CATEGORY, timeout_seconds),
+      tenant_id: requestTenant,
+      max_pending: MAX_PENDING_EMAIL_REQUESTS,
+    })
+    if (!opened.ok) {
+      if (opened.reason === 'hash_mismatch') {
+        json(res, { error: 'invalid_value', field: 'content_hash', code: 'hash_mismatch', hint: 'content_hash is not a valid hash' }, 400)
+      } else {
+        json(res, { error: 'conflict', reason: 'too_many_pending', hint: `There are already ${MAX_PENDING_EMAIL_REQUESTS} email requests waiting for a decision` }, 409)
+      }
+      return true
+    }
+    // The same mail asked for again while its request is open gets that request back: nothing new is
+    // announced to the owner.
+    if (opened.deduplicated) {
+      json(res, { ...opened.approval, deduplicated: true }, 200)
+      return true
+    }
+    const approval = opened.approval
     notifyAboutNewRequest(approval)
     try {
       writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
     } catch { /* audit failure must not abort the write */ }
-    logger.info({ id, agent_id, category }, 'Approval request created')
+    logger.info({ id: approval.id, agent_id: requester, category: approval.category }, 'Approval request created')
     json(res, approval, 201)
     return true
   }
@@ -210,6 +323,11 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const agent_id = url.searchParams.get('agent') ?? undefined
     const category = url.searchParams.get('category') ?? undefined
     const status = url.searchParams.get('status') ?? undefined
+    const content_hash = url.searchParams.get('content_hash') ?? undefined
+    if (content_hash !== undefined && !isContentHash(content_hash)) {
+      json(res, { error: 'invalid_value', field: 'content_hash', hint: 'content_hash must be 64 lowercase hex characters (a sha256)' }, 400)
+      return true
+    }
 
     const page = parsePagination(url.searchParams, res, { defaultLimit: 25, maxLimit: 500 })
     if (!page) return true
@@ -219,7 +337,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // aggregates (the oldest-pending row would be another agent's request).
     if (ctx.role === 'fleet_agent') {
       if (agent_id !== undefined && denyForeignAgent(ctx, agent_id)) return true
-      const own = { agent_id: ctx.tokenAgentId, category, status }
+      const own = { agent_id: ctx.tokenAgentId, category, status, content_hash }
       json(res, { items: listApprovals({ ...own, limit, offset }), total: countApprovals(own), offset, limit, counts: {}, oldest_pending: null })
       return true
     }
@@ -242,7 +360,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       tenantId = ctx.tenantId
     }
 
-    const filter = { agent_id, category, status, tenantId }
+    const filter = { agent_id, category, status, content_hash, tenantId }
     const items = listApprovals({ ...filter, limit, offset })
     const total = countApprovals(filter)
     const counts = getApprovalStatusCounts(tenantId)

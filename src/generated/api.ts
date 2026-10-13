@@ -233,6 +233,8 @@ export interface Approval {
   resolved_via?: 'dashboard_session' | 'bearer' | 'null' | null;
   /** 1 when the category was human-only at the time of the request (a snapshot). Such a request is decided only by a global admin dashboard session when `APPROVAL_HUMAN_ONLY_ENFORCE=1`. */
   human_only?: number;
+  /** The sha256 (64 lowercase hex) of the exact action the request covers. Null when none was given. */
+  content_hash?: string | null;
   timeout_at?: number | null;
   created_at: number;
   resolved_at?: number | null;

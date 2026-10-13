@@ -74,6 +74,18 @@ export function isHumanOnly(category: string): boolean {
   return humanOnlyKeysNow().some((k) => k === canonical || skeleton(k) === skeleton(canonical))
 }
 
+/** The category an outgoing email is approved under; its requests carry an envelope and a content hash. */
+export const EMAIL_SEND_CATEGORY = 'email_send'
+
+/**
+ * True when the name is `email_send` or a spelling that reads as it (another case, a stray space, a
+ * zero-width character, a missing or doubled underscore). A twin gets the email rules too: it must not
+ * be a way to ask for an email approval without them.
+ */
+export function isEmailSendCategory(raw: string): boolean {
+  return skeleton(normalize(raw)) === skeleton(EMAIL_SEND_CATEGORY)
+}
+
 /** True for a key an API call may not take out of the human-only set. */
 export function isHumanOnlyFloorKey(key: string): boolean {
   return HUMAN_ONLY_FLOOR.includes(key)

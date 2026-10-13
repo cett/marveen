@@ -35,8 +35,17 @@ async function call(method: string, path: string, body?: object): Promise<{ stat
   return out
 }
 
+// An email request is made by the main agent and carries the envelope of a mail (each one a different
+// subject, so none is taken for a repeat of an open request).
+let mailSeq = 0
 const create = (category: string, extra: object = {}) =>
-  call('POST', '/api/approvals', { agent_id: 'agent-a', category, action_description: 'do it', ...extra })
+  category.trim() === 'email_send'
+    ? call('POST', '/api/approvals', {
+      agent_id: 'main-agent', category,
+      action_payload: JSON.stringify({ to: ['owner@example.com'], subject: `Mail ${++mailSeq}`, body: 'Hello' }),
+      ...extra,
+    })
+    : call('POST', '/api/approvals', { agent_id: 'agent-a', category, action_description: 'do it', ...extra })
 
 describe('POST /api/approvals deadline', () => {
   beforeEach(() => {

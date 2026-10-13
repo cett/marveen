@@ -54,7 +54,7 @@ describe('approvals notification target', () => {
   it('sends the inter-agent notification to MAIN_AGENT_ID, not a hardcoded agent id', async () => {
     const { ctx, out } = fakePost('/api/approvals', {
       agent_id: 'agent-b',
-      category: 'email_send',
+      category: 'file_write',
       action_description: 'Send weekly digest',
     })
 
@@ -84,7 +84,7 @@ describe('approvals self-approval guard', () => {
     // Create an approval for agent-b
     const { ctx: postCtx, out: postOut } = fakePost('/api/approvals', {
       agent_id: 'agent-b',
-      category: 'email_send',
+      category: 'file_write',
       action_description: 'Send report',
     })
     await tryHandleApprovals(postCtx)
@@ -106,7 +106,7 @@ describe('approvals self-approval guard', () => {
   it('allows approval when resolved_by differs from the requesting agent_id', async () => {
     const { ctx: postCtx, out: postOut } = fakePost('/api/approvals', {
       agent_id: 'agent-b',
-      category: 'email_send',
+      category: 'file_write',
       action_description: 'Send report',
     })
     await tryHandleApprovals(postCtx)
