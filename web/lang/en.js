@@ -219,6 +219,8 @@ window._i18n.en = {
   'kanban.card.comments':        '{n} comments',
   'kanban.card.children':        '{n} subtasks',
   'kanban.load_more':            '+ {n} more cards [Show more]',
+  'kanban.totals':               '{open} open / {all} on the board',
+  'kanban.totals_shown':         '({n} shown)',
   'kanban.priority.low':         'Low',
   'kanban.priority.normal':      'Normal',
   'kanban.priority.high':        'High',

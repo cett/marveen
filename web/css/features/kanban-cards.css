@@ -332,10 +332,28 @@
   position: relative;
   overflow: hidden;
 }
-.kanban-card[data-priority="urgent"] { border-left: 3px solid var(--danger); }
-.kanban-card[data-priority="high"] { border-left: 3px solid var(--accent); }
-.kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
-.kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
+/* Priority tone: the whole card carries it (fill + edge), not a 3px stripe, so
+   it reads at a glance and the stripe stays free for card aging below. The
+   tint is mixed from the theme's own tokens, so dark mode follows; it only
+   needs a stronger share to stay visible on the dark card colour. Normal and
+   low priority keep the plain card. Swimlane "priority" grouping renders the
+   same .kanban-card element. */
+.kanban-card[data-priority="urgent"] {
+  background: color-mix(in oklch, var(--danger) 10%, var(--bg-card));
+  border-color: color-mix(in oklch, var(--danger) 45%, var(--border));
+}
+.kanban-card[data-priority="high"] {
+  background: color-mix(in oklch, var(--accent) 8%, var(--bg-card));
+  border-color: color-mix(in oklch, var(--accent) 40%, var(--border));
+}
+[data-theme="dark"] .kanban-card[data-priority="urgent"] {
+  background: color-mix(in oklch, var(--danger) 18%, var(--bg-card));
+}
+[data-theme="dark"] .kanban-card[data-priority="high"] {
+  background: color-mix(in oklch, var(--accent) 14%, var(--bg-card));
+}
+.kanban-card[data-priority="urgent"]:hover,
+.kanban-card[data-priority="high"]:hover { border-color: var(--accent); }
 
 /* Card aging: left stripe overrides priority border when card is stale.
    Colour is set as --card-aging-color via inline style by JS. */
@@ -361,3 +379,11 @@
   animation: aging-pulse 2.2s ease-in-out infinite;
 }
 
+
+/* Board totals beside the view switcher; wraps with the row on narrow screens. */
+.kanban-board-totals {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}

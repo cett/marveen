@@ -36,6 +36,10 @@ New cards default to "Planned" status.
 | **High** | Takes precedence over normal |
 | **Urgent** | Requires immediate attention |
 
+A card's priority shows on the whole card: an **Urgent** card is tinted red, a **High** card gets a tint in the accent colour (stronger in the dark theme), **Normal** and **Low** stay plain. A card that has stood still for a long time keeps its aging stripe on the left edge.
+
+The board totals sit beside the view switcher: "X open / Y on the board" (open = everything not in the Done column). While a project, assignee or label filter is on it adds "(Z shown)". The totals and the number in each column header count the whole board, even when only the first 20 cards of a column are loaded.
+
 ---
 
 ## Card detail
