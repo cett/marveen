@@ -219,6 +219,62 @@ class FileTools(GateCase):
                 self.assert_allowed(self.run_gate(tool, ti), '%s %s' % (tool, ti))
 
 
+class AnyTool(GateCase):
+    """The tool name decides nothing: the MCP file tools and tools that do not exist yet are judged by their strings."""
+
+    def p(self, *parts):
+        return os.path.join(self.root, *parts)
+
+    def test_mcp_file_tools_on_the_key_are_blocked(self):
+        key, via_link, hard = self.p('store', NAME), self.p('work', 'keylink'), self.p('work', 'innocent-name.txt')
+        cases = []
+        for path in (key, 'store/' + NAME, via_link, hard, self.p('work', 'storelink', NAME), 'file://' + key, 'file://' + hard, 'file://' + via_link):
+            cases += [('mcp__filesystem__read_text_file', {'path': path}), ('mcp__filesystem__read_file', {'path': path, 'head': 3}),
+                      ('mcp__filesystem__read_media_file', {'path': path}), ('mcp__filesystem__write_file', {'path': path, 'content': 'x'}),
+                      ('mcp__filesystem__edit_file', {'path': path, 'edits': [{'oldText': 'a', 'newText': 'b'}]}),
+                      ('mcp__filesystem__get_file_info', {'path': path}),
+                      ('mcp__filesystem__move_file', {'source': path, 'destination': self.p('work', 'moved.txt')}),
+                      ('mcp__filesystem__move_file', {'source': self.p('work', 'a.txt'), 'destination': path}),
+                      ('mcp__filesystem__read_multiple_files', {'paths': [self.p('src', 'a.ts'), path]}),
+                      ('mcp__google-drive__uploadFile', {'localPath': path}),
+                      ('mcp__plugin_telegram_telegram__reply', {'chat_id': '1', 'text': 'hi', 'files': [path]})]
+        for tool, ti in cases:
+            with self.subTest(tool=tool, ti=ti):
+                self.assert_denied(self.run_gate(tool, ti), tool)
+
+    def test_a_tool_that_does_not_exist_yet_is_judged_by_its_strings(self):
+        key = self.p('store', NAME)
+        for ti in ({'path': key}, {'file': key}, {'target_file': key}, {'paths': [key]}, {'items': [{'location': key}]}, {'a': {'b': {'c': [key]}}},
+                   {'x': 'store/' + NAME}, {'whatever': key}, {'filename': 'store/.claim*'}, {'dir': 'store', 'files': ['.claim-signing-key']},
+                   {key: 'content'}, {'uri': 'file://' + key}, {'sources': ['a', {'path': key}]}):
+            with self.subTest(ti=ti):
+                self.assert_denied(self.run_gate('mcp__x__y', ti), str(ti))
+
+    def test_the_cwd_is_used_for_relative_paths_of_any_tool(self):
+        self.assert_denied(self.run_gate('mcp__x__y', {'path': NAME}, cwd=self.p('store')), 'from store/')
+        self.assert_denied(self.run_gate('mcp__x__y', {'p': '../store/' + NAME}, cwd=self.p('work')), 'odd field name, short string')
+
+    def test_calls_that_are_not_about_the_key_pass(self):
+        for tool, ti in [('mcp__filesystem__read_text_file', {'path': self.p('store', 'rules.json')}),
+                         ('mcp__filesystem__write_file', {'path': self.p('work', 'notes.txt'), 'content': 'the key is ' + NAME + ' and stays in store/'}),
+                         ('mcp__filesystem__edit_file', {'path': self.p('src', 'a.ts'), 'edits': [{'oldText': NAME, 'newText': 'x'}]}),
+                         ('mcp__filesystem__move_file', {'source': self.p('work', 'a.txt'), 'destination': self.p('work', 'b.txt')}),
+                         ('mcp__filesystem__read_multiple_files', {'paths': [self.p('src', 'a.ts'), self.p('scripts', 'gmail-send.py')]}),
+                         ('mcp__filesystem__list_directory', {'path': self.p('src')}), ('mcp__x__y', {'query': 'claim', 'limit': 5, 'flag': True, 'n': None}),
+                         ('mcp__plugin_telegram_telegram__reply', {'chat_id': '1', 'text': 'see ' + NAME + '\nline two'}),
+                         ('mcp__x__y', {'text': ('a long text about ' + NAME + ' ') * 200}), ('mcp__x__y', {})]:
+            with self.subTest(tool=tool, ti=ti):
+                self.assert_allowed(self.run_gate(tool, ti), tool)
+
+    def test_a_pathological_argument_is_a_block_not_a_hang(self):
+        deep = cur = {}
+        for _ in range(40):
+            cur['n'] = {}
+            cur = cur['n']
+        self.assert_denied(self.run_gate('mcp__x__y', deep), 'too deep')
+        self.assert_denied(self.run_gate('mcp__x__y', {'items': ['a'] * 6000}), 'too many strings')
+
+
 class FailClosed(GateCase):
     def test_bad_input_is_a_block(self):
         for raw in ['', 'not json', '[]', '"x"', '{}', '{"tool_name": "Bash"}', '{"tool_name": "Bash", "tool_input": []}', '{"tool_name": 5, "tool_input": {}}',

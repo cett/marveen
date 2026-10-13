@@ -7,9 +7,14 @@ signature of a mirror server, so this hook refuses every tool call that would re
 
 What it refuses (exit 2, the reason on stderr):
 
-  * Read / Edit / Write / MultiEdit / NotebookEdit on a path that IS the key file: the path is resolved with
-    os.path.realpath (symlinks and `..` segments followed, relative paths taken from the call's cwd), compared
-    with the key's real path and with its device/inode (a hard link), and refused when its text names the key.
+  * ANY tool other than Bash (Read, Edit, Write, NotebookEdit, the MCP file tools such as
+    mcp__filesystem__read_text_file / write_file / edit_file / move_file / read_multiple_files, a tool that does not
+    exist yet): every string in tool_input, in lists and nested objects too, is judged whatever the tool is called.
+    A value under a path-like field name (path, paths, file_path, source, destination, files, url, ...) that IS the
+    key file is refused: the path is resolved with os.path.realpath (symlinks and `..` segments followed, relative
+    paths taken from the call's cwd, a file:// URL unwrapped, a glob expanded with dotfiles), compared with the key's
+    real path and with its device/inode (a hard link), and refused when its text names the key. Any other short
+    string is refused only when it resolves to the key (the text of a file being written may mention the name).
   * Grep / Glob whose path is, or is inside, the store directory, or whose glob / pattern would select the key
     below the searched directory (`.claim*`, `**/.*`, `store/.[c]*` ...).
   * Bash whose command text names the key: the file name, a glob that can match it (`store/.claim*`,
@@ -31,7 +36,8 @@ It stops the careless or lazily prompted read, not a determined bypass.
 FAIL CLOSED, no switch. Any internal error, bad input or part that does not load is exit 2 (never 1, which a
 PreToolUse hook reads as "not blocking"). There is no shadow mode and no environment flag that relaxes it.
 Contract: PreToolUse; stdin = the hook payload (tool_name, tool_input, cwd); exit 0 = allow, exit 2 = block.
-Registered by the owner in the root hook configuration (matcher: Read|Grep|Glob|Edit|Write|NotebookEdit|Bash).
+Registered by the owner in the root hook configuration with a matcher that covers EVERY tool (`*`): the hook
+leaves at once when no string of the call can name a path.
 Standard library only.
 """
 from __future__ import annotations
@@ -46,6 +52,7 @@ try:
     import os
     import re
     import shlex
+    from urllib.parse import unquote
 except BaseException as _exc:  # noqa: BLE001 -- a broken import must be a block, not exit 1
     sys.stderr.write('SECRET READ GATE: BLOCKED -- the gate cannot load (%s).\n' % type(_exc).__name__)
     sys.exit(2)
@@ -57,6 +64,10 @@ KEY_NAME = '.claim-signing-key'
 KEY_PATH = os.path.join(STORE, KEY_NAME)
 
 FILE_PATH_KEYS = ('file_path', 'notebook_path', 'path', 'filePath', 'notebookPath')
+PATHISH_KEY = re.compile(r'path|file|source|dest|src|target|dir|folder|uri|url|glob|pattern|location|root|name|^from$|^to$')
+MAX_STRINGS = 5000
+MAX_DEPTH = 12
+MAX_LENIENT = 1024
 SEARCH_TOOLS = ('Grep', 'Glob')
 ARCHIVERS = frozenset(('tar', 'gtar', 'bsdtar', 'zip', '7z', '7za', 'pax', 'cpio', 'ditto', 'rclone'))
 COPIERS = frozenset(('cp', 'rsync', 'scp'))
@@ -91,13 +102,16 @@ def _absolute(path: str, cwd: str) -> str:
     return p if os.path.isabs(p) else os.path.join(cwd, p)
 
 
-def _is_key_file(path: str, cwd: str) -> bool:
-    """True when `path` is, resolves to, or is another name (a hard link) for the key file."""
-    if KEY_NAME in path.lower().replace('\\', ''):
+def _is_key_file(path: str, cwd: str, by_text: bool = True) -> bool:
+    """True when `path` is, resolves to, or is another name (a hard link) for the key file; by_text: also when its
+    text merely names the key."""
+    if path.startswith('file://'):
+        path = unquote(path[7:])
+    if by_text and KEY_NAME in path.lower().replace('\\', ''):
         return True
     abs_path = _absolute(path, cwd)
     real = _real(abs_path)
-    if real == KEY_REAL or os.path.basename(real) == KEY_NAME:
+    if real == KEY_REAL or (by_text and os.path.basename(real) == KEY_NAME):
         return True
     try:
         a, b = os.stat(abs_path), os.stat(KEY_PATH)
@@ -196,7 +210,41 @@ def _glob_matches_key(glob: str, rel_dir: str, any_depth: bool) -> bool:
 # File tools
 # ---------------------------------------------------------------------------------------------------
 
+def _collect_strings(value, key: str, depth: int, out: list) -> None:
+    """Every string of a tool argument with the name of the field it sits under (lists keep the field name; the
+    keys of an object are strings too)."""
+    if depth > MAX_DEPTH:
+        deny('a tool argument is nested too deeply to be checked')
+    if isinstance(value, str):
+        out.append((key, value))
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            out.append((key, str(k)))
+            _collect_strings(v, str(k), depth + 1, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _collect_strings(v, key, depth + 1, out)
+    if len(out) > MAX_STRINGS:
+        deny('a tool argument holds too many strings to be checked')
+
+
+def check_any_tool(tool: str, ti: dict, cwd: str) -> None:
+    """The key may not be reached through any tool, whatever its name or field names are."""
+    strings: list = []
+    _collect_strings(ti, '', 0, strings)
+    for field, text in strings:
+        if tool in SEARCH_TOOLS and field == 'pattern':
+            continue         # Grep: a regular expression is content; Glob: a name filter. The search rules below judge both
+        if PATHISH_KEY.search(field.lower()):
+            if _is_key_file(text, cwd) or _word_reaches_key(text, cwd):
+                deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]))
+        elif text and len(text) <= MAX_LENIENT and '\n' not in text and '\x00' not in text:
+            if _word_reaches_key(text, cwd, by_text=False):
+                deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]))
+
+
 def check_file_tool(tool: str, ti: dict, cwd: str) -> None:
+    check_any_tool(tool, ti, cwd)
     for key in FILE_PATH_KEYS:
         v = ti.get(key)
         if v is None:
@@ -307,10 +355,10 @@ def _expand_word(word: str, cwd: str) -> list:
     return [w]
 
 
-def _word_reaches_key(word: str, cwd: str) -> bool:
+def _word_reaches_key(word: str, cwd: str, by_text: bool = True) -> bool:
     if not word or (word.startswith('-') and '/' not in word):
         return False
-    return any(_is_key_file(c, cwd) for c in _expand_word(word, cwd))
+    return any(_is_key_file(c, cwd, by_text) for c in _expand_word(word, cwd))
 
 
 def _has_flag(toks: list, short: str, longs: tuple) -> bool:
