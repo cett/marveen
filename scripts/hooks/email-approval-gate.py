@@ -22,7 +22,10 @@ FAIL CLOSED, no switch. Every failure is exit 2 with the reason: bad input, a pa
 (named by file), an unreadable mail, a service that does not answer or answers nonsense. There is no
 shadow mode and no environment flag that relaxes this. The base URL is NOT taken from the agent's
 environment (an agent that can set DASHBOARD_BASE_URL must not be able to point its gate at a server
-that says yes): it is WEB_PORT from <install>/.env, else 3420, always on localhost, no proxy, no redirect.
+that says yes): it is WEB_PORT from <install>/.env, else 3420, on the IP address the dashboard listens on (WEB_HOST from
+.env when that is an IP address, else 127.0.0.1; never the name localhost, which can resolve to ::1 where a
+listener of the agent's could answer), no proxy, no redirect. The claim answer must name this mail's hash, this
+category, this agent and this use (the reference the gate made up): a listener that is not the dashboard cannot.
 
 Honest limit: this fires on the calls it recognises (Bash mail commands, the mail tools). A mail sent
 by a script the agent writes itself is not seen; the official sender (K8) and its sender-side claim
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import re
@@ -71,6 +75,7 @@ TOTAL_BUDGET_S = 7.0   # the registration wraps the script in `timeout -k 1 8`; 
 CALL_TIMEOUT_S = 2.0
 MAX_RESPONSE_BYTES = 1024 * 1024
 DEFAULT_PORT = '3420'
+DEFAULT_HOST = '127.0.0.1'
 
 # Claim answers (HTTP 409 `reason`) after which a new request is opened for the owner.
 OPEN_REQUEST_REASONS = frozenset(('none', 'expired', 'already_consumed', 'rejected', 'not_human_decided'))
@@ -132,23 +137,40 @@ def _clean(text: Any, limit: int) -> str:
     return s if len(s) <= limit else s[:limit] + '...'
 
 
-def _port() -> str:
-    # WEB_PORT from the install's .env only. Not os.environ: that is the agent's to set.
+def _env_file_value(key: str) -> Optional[str]:
+    # The install's .env only. Not os.environ: that is the agent's to set.
     try:
         with open(os.path.join(INSTALL, '.env'), encoding='utf-8') as fh:
             for line in fh:
-                if line.startswith('WEB_PORT='):
-                    v = line.split('=', 1)[1].strip().strip('"').strip("'")
-                    if v.isdigit() and 0 < int(v) < 65536:
-                        return v
-                    break
+                if line.startswith(key + '='):
+                    return line.split('=', 1)[1].strip().strip('"').strip("'")
     except OSError:
         pass
-    return DEFAULT_PORT
+    return None
+
+
+def _port() -> str:
+    v = _env_file_value('WEB_PORT')
+    return v if v and v.isdigit() and 0 < int(v) < 65536 else DEFAULT_PORT
+
+
+def _host() -> str:
+    """The address the dashboard listens on: WEB_HOST from .env when it is an IP address, else 127.0.0.1.
+    Never the name 'localhost': a name can resolve to ::1 as well, where a listener the agent started could
+    answer in the dashboard's place."""
+    v = _env_file_value('WEB_HOST')
+    if v:
+        try:
+            ip = ipaddress.ip_address(v)
+        except ValueError:
+            return DEFAULT_HOST
+        if not ip.is_unspecified:
+            return '[%s]' % ip if ip.version == 6 else str(ip)
+    return DEFAULT_HOST
 
 
 def base_url() -> str:
-    return 'http://localhost:' + _port()
+    return 'http://%s:%s' % (_host(), _port())
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -401,6 +423,14 @@ def decide(raw: str, log: Dict[str, Any]) -> str:
     if status == 200:
         approval = got.get('approval') if isinstance(got, dict) else None
         if isinstance(got, dict) and got.get('ok') is True and isinstance(approval, dict):
+            # The answer must be about THIS mail, this agent and this use: a listener that is not the dashboard
+            # can say 200, it cannot know the hash and the reference the gate just made up.
+            expect = {'content_hash': content_hash, 'category': CATEGORY, 'agent_id': resolved.agent_id, 'status': 'approved',
+                      'consumed_by': resolved.agent_id, 'consumed_ref': claim_body['ref']}
+            wrong = [k for k, v in expect.items() if approval.get(k) != v]
+            if wrong:
+                log['reason'] = 'mismatch ' + ','.join(wrong)
+                raise Deny('claim_mismatch', _deny_text('a jovahagyas-szolgaltatas valasza nem erre a levelre / erre az ugynokre / erre a felhasznalasra szol (%s); fail-closed.' % ', '.join(wrong), env, h12))
             log['approval'] = _clean(approval.get('id'), 40)
             messages.append('Email-jovahagyas elfogyasztva (id %s, hash %s): ez a level egyszer kuldheto el.' % (_clean(approval.get('id'), 40), h12))
             return _emit(messages)

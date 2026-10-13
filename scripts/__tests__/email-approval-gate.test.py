@@ -49,8 +49,15 @@ def _autonomy(level=2, cap=2, enforce=True):
     ], 'approvalHumanOnlyEnforce': enforce}
 
 
-def _claim_ok(aid='appr-1'):
-    return 200, {'ok': True, 'replayed': False, 'window_s': 1800, 'approval': {'id': aid, 'status': 'approved'}}
+def _claim_ok(aid='appr-1', **override):
+    """What the real route answers: the approval row, naming the hash, the category, the agent and the use
+    (the reference) of the request it answers. A function of the request, so a wrong field is a deliberate one."""
+    def answer(request):
+        row = {'id': aid, 'agent_id': MAIN, 'category': request['category'], 'content_hash': request['content_hash'],
+               'status': 'approved', 'consumed_by': MAIN, 'consumed_ref': request['ref'], 'action_payload': '{}'}
+        row.update(override)
+        return 200, {'ok': True, 'replayed': False, 'window_s': 1800, 'approval': {k: v for k, v in row.items() if v is not None}}
+    return answer
 
 
 def _conflict(reason, **extra):
@@ -60,7 +67,7 @@ def _conflict(reason, **extra):
 class Dash:
     """A stub dashboard: scripted answers, a record of every request."""
 
-    def __init__(self):
+    def __init__(self, bind='127.0.0.1', port=0):
         self.autonomy = _autonomy()
         self.claim = _claim_ok()
         self.create = (201, {'id': 'req-1', 'status': 'pending'})
@@ -91,7 +98,7 @@ class Dash:
                     return
                 answer = {('GET', '/api/autonomy'): dash.autonomy, ('POST', '/api/approvals/claim'): dash.claim,
                           ('POST', '/api/approvals'): dash.create}.get((self.command, self.path), (404, {'error': 'not_found'}))
-                status, obj = answer
+                status, obj = answer(parsed) if callable(answer) else answer
                 data = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
@@ -101,7 +108,14 @@ class Dash:
 
             do_GET = do_POST = _do
 
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), H)
+        if ':' in bind:
+            import socket
+
+            class V6Server(ThreadingHTTPServer):
+                address_family = socket.AF_INET6
+            self.server = V6Server((bind, port), H)
+        else:
+            self.server = ThreadingHTTPServer((bind, port), H)
         self.server.daemon_threads = True
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -307,6 +321,19 @@ class DecisionTable(GateCase):
         self.assertEqual(rc, 0, err)
         claim = [r for r in self.dash.requests if r[1] == '/api/approvals/claim'][0][2]
         self.assertEqual(claim['content_hash'], built['hash'])
+
+    def test_a_claim_answer_about_another_mail_agent_or_use_is_refused(self):
+        # a listener that is not the dashboard can say 200 ok; it cannot know the hash and the reference
+        for field, wrong in [('content_hash', 'f' * 64), ('category', 'other'), ('agent_id', 'someone-else'), ('status', 'pending'),
+                             ('consumed_by', 'someone-else'), ('consumed_ref', 'gate-0'), ('consumed_ref', None), ('content_hash', None),
+                             ('agent_id', None), ('category', None)]:
+            with self.subTest(field=field, wrong=wrong):
+                self.dash.requests.clear()
+                self.dash.claim = _claim_ok(**{field: wrong})
+                self.expect_deny(self.send(), 'claim_mismatch', field)
+                self.assertNotIn(('POST', '/api/approvals'), self.dash.paths())
+        self.dash.claim = (200, {'ok': True, 'approval': {'id': 'x'}})   # a bare yes
+        self.expect_deny(self.send(), 'claim_mismatch')
 
     def test_pending_names_the_request_and_opens_no_second_one(self):
         self.dash.claim = _conflict('pending', approval_id='req-9')
@@ -523,6 +550,34 @@ class AgentEnvironmentCannotMoveTheGate(GateCase):
             self.assertEqual(self.dash.paths(), [('GET', '/api/autonomy')])
         finally:
             yes.stop()
+
+    def test_the_address_is_an_ip_not_the_name_localhost(self):
+        # a listener on ::1 at the same port must never be asked (localhost can resolve there)
+        import socket
+        if not socket.has_ipv6:
+            self.skipTest('no IPv6')
+        yes = Dash(bind='::1', port=self.dash.port)
+        try:
+            self.assertEqual(self.send()[0], 0)
+            self.assertEqual(yes.requests, [])
+        except OSError:
+            self.skipTest('::1 is not available')
+        finally:
+            yes.stop()
+        mod = self._gate_module()
+        for env_text, want in [('', '127.0.0.1'), ('WEB_HOST=localhost\n', '127.0.0.1'), ('WEB_HOST=0.0.0.0\n', '127.0.0.1'),
+                               ('WEB_HOST=192.0.2.7\n', '192.0.2.7'), ('WEB_HOST=::1\n', '[::1]'), ('WEB_HOST=evil.example\n', '127.0.0.1')]:
+            with self.subTest(env_text):
+                self.write('.env', 'WEB_PORT=%d\n%s' % (self.dash.port, env_text))
+                mod.INSTALL = self.root
+                self.assertEqual(mod.base_url(), 'http://%s:%d' % (want, self.dash.port))
+
+    def _gate_module(self):
+        loader = importlib.machinery.SourceFileLoader('email_gate_for_host', os.path.join(self.root, 'scripts/hooks/email-approval-gate.py'))
+        spec = importlib.util.spec_from_loader('email_gate_for_host', loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
 
     def test_no_switch_relaxes_it(self):
         self.dash.autonomy = _autonomy(level=1)
