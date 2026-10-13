@@ -2012,15 +2012,19 @@ paths:
       tags: [kanban]
       operationId: getKanbanCard
       summary: Get a single kanban card
+      description: >-
+        The card with its text and its labels (`labels`). This is how an agent reads the card a kanban dispatch
+        message names: the message carries only the id, the assignee, the priority and this read command, not
+        the title or the description. A non-admin caller reads only a card of its own tenant.
       responses:
         "200":
-          description: Card object
+          description: Card object, with its labels
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/KanbanCard"
         "404":
-          description: Card not found
+          description: Card not found, or a card of another tenant for a non-admin caller (the same answer, so ids cannot be probed)
           content:
             application/json:
               schema:
