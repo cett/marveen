@@ -1781,7 +1781,10 @@ def _inert_cmd(ws: List[_Word], k: int) -> bool:
         return True
     texts = [w.text for w in ws[k + 1:]]
     if head == 'git':
-        # -c / --config-env / --exec-path / an alias with ! run what the argument names
+        # -c / --config-env / --exec-path / an alias with ! run what the argument names; so does a config
+        # value (core.pager=..., diff.external=...) however it is set
+        if 'config' in texts or any('=' in t and _MAIL_NAME.search(t.split('=', 1)[1]) for t in texts):
+            return False
         return not any(t in ('-c', '--exec-path') or t.startswith(('-c', '--config-env', '--exec-path=')) or '!' in t for t in texts)
     if head in ('rg', 'ag'):
         return not any(t.startswith('--pre') for t in texts)
@@ -1808,13 +1811,22 @@ def command_sends_mail(command: Any) -> bool:
             k = 0
             while k < len(ws) and not ws[k].quoted and (_ASSIGN_RE.match(ws[k].text) or ws[k].text in _RESERVED):
                 k += 1
+            # a name in an assignment before the command (GIT_PAGER=send.py git log) runs under the command
+            if any(_MAIL_NAME.search(w.text.split('=', 1)[-1]) for w in ws[:k]):
+                return True
             if k >= len(ws) or _inert_cmd(ws, k):
                 continue
             if any(_MAIL_NAME.search(w.text) for w in ws[k:]):
                 return True
         return False
-    except Exception:  # noqa: BLE001 -- unreadable, or a reader bug: never a pass
-        # Judge the text itself, with the quoting and escaping that could hide a name taken out.
+    except Exception as exc:  # noqa: BLE001 -- unreadable, or a reader bug: never a pass
+        # A command whose name, or whose shell -c code, is not literal runs something nobody can name: refused
+        # as a possible send. (A script name or an option that is not literal is not: python3 "$X/job.py" is
+        # everyday, and the name search below still catches a mail program named in the text.)
+        if isinstance(exc, Unreadable) and ('name of a command is not literal' in str(exc) or 'code of a shell -c is not literal' in str(exc)):
+            return True
+        # Judge the text itself, with the quoting and escaping that could hide a name taken out. A name built at
+        # run time out of pieces ($(echo send).py) is the documented limit of a reader that never runs anything.
         return _MAIL_NAME.search(re.sub(r'[\\\'"]', '', command)) is not None
 
 

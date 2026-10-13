@@ -677,6 +677,20 @@ class CommandSendsMail(unittest.TestCase):
         self.assertFalse(E.command_sends_mail("git diff scripts/gmail-send.py"))
         self.assertFalse(E.command_sends_mail("rg sendmail src"))
 
+    def test_a_name_in_an_assignment_or_a_config_value_runs_under_an_inert_head(self):
+        for cmd in ("GIT_PAGER=send.py git log", "GIT_EXTERNAL_DIFF=sendmail git diff", "git config core.pager send.py",
+                    "git -c core.pager=sendmail log", "git log --pretty=format:x --pager=msmtp"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+        self.assertFalse(E.command_sends_mail("FOO=1 ls scripts"))
+        self.assertFalse(E.command_sends_mail("git log -S sendmail"))
+
+    def test_a_command_nobody_can_name_is_a_possible_send_but_an_everyday_variable_is_not(self):
+        self.assertTrue(E.command_sends_mail("$CMD --to a@example.test"))
+        self.assertTrue(E.command_sends_mail('bash -c "$X"'))
+        self.assertFalse(E.command_sends_mail('python3 "$X/job.py" --a b'))
+        self.assertFalse(E.command_sends_mail("echo $(date)"))
+
     def test_an_unparsable_command_is_judged_by_its_text_through_quoting_and_escapes(self):
         for cmd in ("echo $(date) `sendmail -t`", "echo $(date); {sendmail,-t}", "echo $(date); send\\.py x", "echo $(date); 's'end.py",
                     "echo $(date) <send.py", "echo $(date) !sendmail"):
