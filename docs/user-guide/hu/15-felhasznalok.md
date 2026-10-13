@@ -100,7 +100,7 @@ Egy tenant egy önálló adatszigetet jelent. Minden adat (memóriák, kanban, �
 
 ### Tenant-izoláció és az RBAC-mód
 
-Az RBAC-kapu **enforce módban fut** (`RBAC_MODE=enforce`): amit a hívó szerepköre nem engedélyez, azt a rendszer elutasítja (403), és a lekérdezések a hívó tenant-hatóköre szerint szűrnek. A korábbi shadow mód csak naplózott, és minden kérést átengedett; ma már csak visszaállítási állapot (lásd lent).
+Az RBAC-kapu **enforce módban fut** (`RBAC_MODE=enforce`, ez a beállítás hiányában az alapértelmezés is): amit a hívó szerepköre nem engedélyez, azt a rendszer elutasítja (403), és a lekérdezések a hívó tenant-hatóköre szerint szűrnek. A korábbi shadow mód csak naplózott, és minden kérést átengedett; ma már csak visszaállítási állapot, amelyet névvel kell kérni (lásd lent).
 
 **Mit lát a nem admin hívó:**
 - Az ágensek listáját és a szervezeti ábrát (org chart) a rendszer a saját tenantjára engedélyezett ágensekre szűri. Nincs benne főágens-csomópont, más tenant azonosítója vagy neve, és olyan kapcsolat sem, amely rejtett ágensre mutat.
@@ -121,7 +121,7 @@ A 30 napnál régebbi sorokat a rendszer törli, a tenant törlése pedig a tena
 
 A `rbac-shadow-monitor` ütemezett parancs-feladat (naponta 07:30, LLM nélkül) az elmúlt 24 órát összesíti, és riaszt, ha van `would-deny` vagy `denied` sor, illetve ha az összesítés nem olvasható. Enforce módban egy `denied` sor a kapu normális működése is lehet (például egy `viewer` írási kísérlete), ezért a riasztás átnézésre hív: jogos elutasítás volt, vagy hamis pozitív. Az üres ablak azt jelenti, hogy nem érkezett nem admin forgalom, nem azt, hogy minden rendben van.
 
-**Visszaállítás.** Ha az enforce hibás elutasítást okoz, állítsd a szerver környezetében (`.env`) `RBAC_MODE=shadow` értékre, és indítsd újra a dashboardot (a mód induláskor olvasódik). A módtól független útvonal-szabályok (ütemezés, alapcsomag, ágens-export admin-ellenőrzése) shadow módban is érvényben maradnak.
+**Visszaállítás.** Az alapértelmezés az enforce, a shadow módot csak név szerint lehet kérni; minden más érték, az elírás és az üres is enforce. Ha az enforce hibás elutasítást okoz, állítsd a szerver környezetében (`.env`) `RBAC_MODE=shadow` értékre, és indítsd újra a dashboardot (a mód induláskor olvasódik). A módtól független útvonal-szabályok (ütemezés, alapcsomag, ágens-export admin-ellenőrzése) shadow módban is érvényben maradnak.
 
 **Elfogadott kockázatok:**
 - A flotta bearer tokenje (`store/.dashboard-token`) admin szerepkörű, ezért egy ágens, ami erre esik vissza, nem tenant-korlátos. A tenant-határt a tenant-felhasználók saját tokenje és belépése kapja.

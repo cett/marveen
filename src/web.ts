@@ -288,11 +288,9 @@ export function startWebServer(port = 3420): http.Server {
       res.end(JSON.stringify({ error: 'forbidden', hint: 'No fresh tenant context for this shared agent' }))
       return
     }
-    // RBAC gate: role + permission enforcement, shadow or hard, controlled by
-    // RBAC_MODE env ('shadow' default). In shadow mode the gate only records
-    // would-deny entries so Fázis 1 observation can surface unexpected denials
-    // without blocking any real traffic. Switch to 'enforce' via env override
-    // after observing the shadow logs confirm no false positives.
+    // RBAC gate: role + permission enforcement, hard or shadow, controlled by
+    // RBAC_MODE env ('enforce' default). In shadow mode (RBAC_MODE=shadow, asked for by name)
+    // the gate only records would-deny entries and blocks nothing.
     // runRbacGate also persists the decisions worth observing to rbac_shadow_log
     // (in BOTH modes), so the observation window is measurable from the database.
     // Runs only for gated, authenticated requests (kind !== 'none').

@@ -115,7 +115,7 @@ Tenant rule for this endpoint: a non-admin caller can only update messages of it
 
 Marveen supports multi-user operation: each tenant's data (memories, kanban, agents) is stored in isolation from other tenants.
 
-> **Note:** tenant enforcement is **live** (`RBAC_MODE=enforce`): the gate refuses what a role does not allow, and shadow mode is only a rollback state. Observation, rollback and the rules for touching the gate: "RBAC mode, shadow log and rollback" below.
+> **Note:** tenant enforcement is **live** (`RBAC_MODE=enforce`): the gate refuses what a role does not allow, enforce is also the default when nothing is set, and shadow mode is only a rollback state chosen by name. Observation, rollback and the rules for touching the gate: "RBAC mode, shadow log and rollback" below.
 
 ### Roles
 
@@ -157,7 +157,7 @@ An external partner (B2B tenant) receives an `agent`-role token scoped to their 
 
 ### RBAC mode, shadow log and rollback
 
-**The mode.** `RBAC_MODE` (`src/config.ts`) is read at startup from the process environment or the `.env` file; `enforce` is the live value, anything else (and empty) is `shadow`. A mode change needs a dashboard restart. Rollback: `RBAC_MODE=shadow` and a restart. The gate (`applyRbacGate`, `src/web/authz.ts`) consults the permission table (`ENDPOINT_PERMISSION_TABLE`, `src/web/rbac.ts`); a route that is not in the table is `admin:all`. In enforce mode it refuses, in shadow mode it lets the request through and writes a `would-deny` row.
+**The mode.** `RBAC_MODE` (`src/config.ts`) is read at startup from the process environment or the `.env` file; the default is `enforce`, and `shadow` has to be chosen by name with `RBAC_MODE=shadow`; anything else (a typo, an empty value) is `enforce`. A mode change needs a dashboard restart. Rollback: `RBAC_MODE=shadow` and a restart. The gate (`applyRbacGate`, `src/web/authz.ts`) consults the permission table (`ENDPOINT_PERMISSION_TABLE`, `src/web/rbac.ts`); a route that is not in the table is `admin:all`. In enforce mode it refuses, in shadow mode it lets the request through and writes a `would-deny` row.
 
 **The log.** Migration 0068's `rbac_shadow_log` table durably records the gate's decisions in both modes (time, tenant, caller kind and label, role, method, route, the permission required, decision, reason). The decision is `would-deny` (shadow let it through, enforce would refuse), `denied` (enforce refused it) or `permitted` (a non-admin request that passed; admin traffic is not recorded). The writer prunes rows older than 30 days at most once an hour, and a tenant delete purges the tenant's rows; a failed insert is logged and never changes the gate's decision or fails the request. To read it: `GET /api/v1/rbac/shadow-log` (admin-only: the route checks the role itself, and the `/api/rbac/` row is an explicit `admin:all`), filters `decision`, `tenant`, `principal`, `role`, `permission`, `route` (substring), `from`/`to`/`since_hours`, `limit`, `offset`; `summary=1` returns the counts per decision and the most frequent refusal shapes.
 
