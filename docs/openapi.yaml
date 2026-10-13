@@ -596,6 +596,35 @@ components:
         timeout_at: 1787490000
         created_at: 1787486000
 
+    ApprovalList:
+      type: object
+      required: [items, total, offset, limit, counts, oldest_pending, window_s]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Approval"
+        total:
+          type: integer
+          description: The number of requests that match the filters, over all pages.
+        offset:
+          type: integer
+        limit:
+          type: integer
+        counts:
+          type: object
+          description: The number of requests per status (`pending`, `approved`, `rejected`, `timeout`). Empty for a fleet agent token, which gets no fleet-wide aggregates.
+          additionalProperties:
+            type: integer
+        oldest_pending:
+          description: The request that has waited longest for a decision, null when none is pending (always null for a fleet agent token).
+          anyOf:
+            - $ref: "#/components/schemas/Approval"
+            - type: "null"
+        window_s:
+          type: integer
+          description: The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision. An approved request that is still unused after this long can no longer be used up; the dashboard marks it as lapsed.
+
     ApprovalUsed:
       type: object
       required: [ok, replayed, window_s, approval]
@@ -2326,13 +2355,11 @@ paths:
             maximum: 500
       responses:
         "200":
-          description: Approval list
+          description: One page of approval requests, with the status counts and the length of the use window
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Approval"
+                $ref: "#/components/schemas/ApprovalList"
 
     post:
       tags: [approvals]

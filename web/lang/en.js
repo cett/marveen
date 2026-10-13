@@ -748,6 +748,8 @@ window._i18n.en = {
   'approvals.state.consumed': 'Used up ({time}, {by})',
   'approvals.state.unused': 'Approved, not used yet',
   'approvals.state.expired': 'Expired',
+  'approvals.state.lapsed': 'Expired (window)',
+  'approvals.state.lapsed_title': 'Approved, but not used within {n} minutes, so it can no longer be used',
   'approvals.state.human': 'Human decision',
   'approvals.state.token': 'Token decision (advisory)',
   'approvals.state.token_title': 'Decided with a token, not from a dashboard login',

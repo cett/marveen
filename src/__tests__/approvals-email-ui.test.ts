@@ -110,7 +110,7 @@ describe('truncateDescription / shortHash / parseEmailPayload', () => {
 })
 
 describe('approvalStateBadges', () => {
-  const kinds = (a: object, opts?: { compact?: boolean }, v?: any) => v.approvalStateBadges(a, opts).map((b: any) => b.kind)
+  const kinds = (a: object, opts?: { compact?: boolean; windowS?: number | null; nowS?: number }, v?: any) => v.approvalStateBadges(a, opts).map((b: any) => b.kind)
 
   it('a used-up mail says when and by whom, in both languages', async () => {
     const en = await loadView('en')
@@ -136,6 +136,57 @@ describe('approvalStateBadges', () => {
   it('an approved request with no hash can never be used up, so it is not marked unused', async () => {
     const v = await loadView()
     expect(kinds({ status: 'approved', content_hash: null, resolved_via: 'bearer' }, undefined, v)).toEqual(['token'])
+  })
+
+  describe('the use window', () => {
+    // resolved_at 1_000_100, window 1800: the last second it can still be used up is 1_001_900.
+    const unusedRow = { ...EMAIL_ROW, consumed_at: null, consumed_by: null }
+    // the use markers only; the decision marker (human/token) is a separate concern
+    const states = (a: object, opts: { compact?: boolean; windowS?: number | null; nowS?: number } | undefined, v: any) =>
+      kinds(a, opts, v).filter((k: string) => ['consumed', 'unused', 'lapsed'].includes(k))
+    const at = (nowS: number, windowS: number | null = 1800) => ({ windowS, nowS })
+
+    it('an approved, unused request decided longer ago than the window is lapsed, in both languages', async () => {
+      const en = await loadView('en')
+      const [b] = en.approvalStateBadges(unusedRow, at(1_001_901))
+      expect(b.kind).toBe('lapsed')
+      expect(b.label).toBe('Expired (window)')
+      expect(b.title).toBe('Approved, but not used within 30 minutes, so it can no longer be used')
+      const hu = await loadView('hu')
+      const [h] = hu.approvalStateBadges(unusedRow, at(1_001_901))
+      expect(h.label).toBe('Lejárt (ablak)')
+      expect(h.title).toContain('30 percen belül')
+    })
+
+    it('the cut is the server one: exactly at the window it is still unused, one second later it is lapsed', async () => {
+      const v = await loadView()
+      expect(states(unusedRow, at(1_001_900), v)).toEqual(['unused'])
+      expect(states(unusedRow, at(1_001_901), v)).toEqual(['lapsed'])
+    })
+
+    it('inside the window, and without a known window, it stays unused', async () => {
+      const v = await loadView()
+      expect(states(unusedRow, at(1_000_200), v)).toEqual(['unused'])
+      expect(states(unusedRow, at(9_999_999, null), v)).toEqual(['unused'])
+      expect(states(unusedRow, { nowS: 9_999_999 }, v)).toEqual(['unused'])
+      expect(states(unusedRow, at(9_999_999, 0), v)).toEqual(['unused'])
+      expect(states(unusedRow, at(9_999_999, Number.NaN), v)).toEqual(['unused'])
+    })
+
+    it('a used-up request is never lapsed, however old; nor is one with no hash or no decision time', async () => {
+      const v = await loadView()
+      expect(states(EMAIL_ROW, at(9_999_999), v)).toEqual(['consumed'])
+      expect(states({ ...unusedRow, content_hash: null }, at(9_999_999), v)).not.toContain('lapsed')
+      expect(states({ ...unusedRow, resolved_at: null }, at(9_999_999), v)).toEqual(['unused'])
+      expect(states({ ...unusedRow, status: 'rejected' }, at(9_999_999), v)).not.toContain('lapsed')
+      expect(states({ ...unusedRow, status: 'timeout', resolved_at: null }, at(9_999_999), v)).not.toContain('lapsed')
+    })
+
+    it('the compact (list) form carries it too, and replaces the unused marker rather than joining it', async () => {
+      const v = await loadView()
+      expect(states(unusedRow, { compact: true, ...at(1_001_901) }, v)).toEqual(['lapsed'])
+      expect(states(unusedRow, { compact: true, ...at(1_000_300) }, v)).toEqual(['unused'])
+    })
   })
 
   it('a pending or rejected hash-bound request is neither used nor unused', async () => {
@@ -306,7 +357,7 @@ function fakeEl(): FakeEl {
 
 type EventsAnswer = { status: number; body?: unknown } | 'throw' | Promise<{ status: number; body?: unknown }>
 
-async function mount(rows: object[], eventsFor: (id: string) => EventsAnswer, lang: 'hu' | 'en' = 'en') {
+async function mount(rows: object[], eventsFor: (id: string) => EventsAnswer, lang: 'hu' | 'en' = 'en', windowS?: number) {
   const els: Record<string, FakeEl> = {}
   const get = (id: string) => (els[id] ||= fakeEl())
   const { win } = i18nFor(lang)
@@ -330,7 +381,7 @@ async function mount(rows: object[], eventsFor: (id: string) => EventsAnswer, la
       return { ok: a.status >= 200 && a.status < 300, status: a.status, json: async () => a.body }
     }
     if (url.startsWith('/api/approvals')) {
-      return { ok: true, status: 200, json: async () => ({ items: rows, total: rows.length, counts: { pending: 1, approved: 1, rejected: 0, timeout: 0 }, oldest_pending: null }) }
+      return { ok: true, status: 200, json: async () => ({ items: rows, total: rows.length, counts: { pending: 1, approved: 1, rejected: 0, timeout: 0 }, oldest_pending: null, ...(windowS === undefined ? {} : { window_s: windowS }) }) }
     }
     if (url === '/api/auth/status') return { ok: true, status: 200, json: async () => ({ authenticated: true, method: 'session', role: 'admin', tenant_id: null, human_only_enforced: true }) }
     return { ok: false, status: 404, json: async () => ({}) }
@@ -368,6 +419,43 @@ describe('approvals.js: the list', () => {
     expect(tbody).toContain(`title="${EMAIL_ROW.action_description.replace(/"/g, '&quot;')}"`)
     expect(tbody).toContain('approvals-state-consumed')
     expect(tbody).not.toContain('approvals-state-human') // the list stays compact
+  })
+})
+
+describe('approvals.js: the use window', () => {
+  const OLD_UNUSED = { ...EMAIL_ROW, id: 'u1', consumed_at: null, consumed_by: null, resolved_at: Math.floor(Date.now() / 1000) - 3600 }
+  const FRESH_UNUSED = { ...OLD_UNUSED, id: 'u2', resolved_at: Math.floor(Date.now() / 1000) - 60 }
+
+  it('the list marks an unused approval older than the window the server reported as lapsed, a fresh one as unused', async () => {
+    const { get } = await mount([OLD_UNUSED, FRESH_UNUSED], () => ({ status: 200, body: { items: [] } }), 'en', 1800)
+    const rows = get('approvalsTbody').innerHTML.split('</tr>')
+    expect(rows[0]).toContain('approvals-state-lapsed')
+    expect(rows[0]).not.toContain('approvals-state-unused')
+    expect(rows[1]).toContain('approvals-state-unused')
+    expect(rows[1]).not.toContain('approvals-state-lapsed')
+  })
+
+  it('the window comes from the server: a longer window keeps the same hour-old approval unused', async () => {
+    const { get } = await mount([OLD_UNUSED], () => ({ status: 200, body: { items: [] } }), 'en', 86400)
+    const html = get('approvalsTbody').innerHTML
+    expect(html).toContain('approvals-state-unused')
+    expect(html).not.toContain('approvals-state-lapsed')
+  })
+
+  it('a server that sends no window_s leaves the old marker alone', async () => {
+    const { get } = await mount([OLD_UNUSED], () => ({ status: 200, body: { items: [] } }), 'en')
+    const html = get('approvalsTbody').innerHTML
+    expect(html).toContain('approvals-state-unused')
+    expect(html).not.toContain('approvals-state-lapsed')
+  })
+
+  it('the detail of a lapsed request carries the marker too', async () => {
+    const { click, flush, shown } = await mount([OLD_UNUSED], () => ({ status: 200, body: { items: [] } }), 'hu', 1800)
+    click('u1')
+    await flush()
+    const html = shown()
+    expect(html).toContain('approvals-state-lapsed')
+    expect(html).toContain('Lejárt (ablak)')
   })
 })
 
@@ -524,7 +612,7 @@ describe('wiring', () => {
   })
 
   it('the CSS has the classes the detail uses', () => {
-    for (const cls of ['.approvals-email-body', '.approvals-state-badge', '.approvals-state-consumed', '.approvals-state-expired', '.approvals-events', '.approvals-event', '.approvals-detail-section', '.approvals-hash']) {
+    for (const cls of ['.approvals-email-body', '.approvals-state-badge', '.approvals-state-consumed', '.approvals-state-expired', '.approvals-state-lapsed', '.approvals-events', '.approvals-event', '.approvals-detail-section', '.approvals-hash']) {
       expect(CSS, cls).toContain(cls)
     }
     expect(CSS).toMatch(/\.approvals-email-body\s*\{[^}]*overflow:\s*auto/)

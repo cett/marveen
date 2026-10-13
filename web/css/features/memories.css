@@ -182,7 +182,7 @@ tr.audit-log-row-clickable:hover, tr.approvals-row-clickable:hover {
 }
 .approvals-state-consumed, .approvals-state-human { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
 .approvals-state-unused, .approvals-state-token { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
-.approvals-state-expired { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.approvals-state-expired, .approvals-state-lapsed { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
 .approvals-events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .approvals-event { font-size: 12px; padding-left: 8px; border-left: 3px solid var(--text-muted); }
 .approvals-event-ok { border-left-color: var(--success); }

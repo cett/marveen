@@ -24,6 +24,9 @@ let _approvalsTenantGetter = null
 // while the rule is enforced; with it off (or unknown) nothing is locked. The server still refuses any
 // non-session caller when it enforces.
 let _viewerStatus = null
+// The use window in seconds, as the server reports it with the list (null until a list arrived, or
+// when the server is older than the field): an approved, unused request older than this is lapsed.
+let _consumeWindowS = null
 
 // .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
 // only becomes visible via the .active class -- [hidden] alone toggles
@@ -65,7 +68,7 @@ function openApprovalDetail(id) {
     ? ` <span class="approvals-humanonly-badge" title="${escapeAttr(t('approvals.humanonly.badge_title'))}">${escapeHtml(t('approvals.humanonly.badge'))}</span>`
     : ''
   const fingerprint = shortHash(a.content_hash)
-  const badges = renderBadges(approvalStateBadges(a))
+  const badges = renderBadges(approvalStateBadges(a, { windowS: _consumeWindowS }))
   const isEmail = a.category === 'email_send'
   const parts = [
     row(t('approvals.detail.id'), a.id),
@@ -160,6 +163,7 @@ async function _loadApprovalsPageInternal() {
     const data = await res.json()
     _viewerStatus = viewer
     _approvalsPage = data.items ?? []
+    _consumeWindowS = typeof data.window_s === 'number' ? data.window_s : null
     _renderApprovalsStats(data.counts ?? { pending: 0, approved: 0, rejected: 0, timeout: 0 }, data.oldest_pending ?? null)
     _renderApprovalsTable(data.total ?? _approvalsPage.length)
     _approvalsCountdownInterval = setInterval(_updateCountdowns, 1000)
@@ -239,7 +243,7 @@ function _renderApprovalsTable(total) {
     const humanOnlyBadge = isHumanOnlyRow(a)
       ? ` <span class="approvals-humanonly-badge" title="${escapeAttr(t('approvals.humanonly.badge_title'))}">${escapeHtml(t('approvals.humanonly.badge'))}</span>`
       : ''
-    const stateBadges = renderBadges(approvalStateBadges(a, { compact: true }))
+    const stateBadges = renderBadges(approvalStateBadges(a, { compact: true, windowS: _consumeWindowS }))
     const actions = isPending
       ? `<div style="display:flex;gap:4px">
            <button class="btn approvals-decide" data-variant="primary" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px"${lockAttrs}>${t('approvals.btn.approve')}</button>

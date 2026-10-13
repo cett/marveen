@@ -1043,6 +1043,8 @@ window._i18n.hu = {
   'approvals.state.consumed': 'Elfogyasztva ({time}, {by})',
   'approvals.state.unused': 'Jóváhagyva, még nem használták fel',
   'approvals.state.expired': 'Lejárt',
+  'approvals.state.lapsed': 'Lejárt (ablak)',
+  'approvals.state.lapsed_title': 'Jóváhagyva, de {n} percen belül nem használták fel, ezért már nem használható fel',
   'approvals.state.human': 'Emberi döntés',
   'approvals.state.token': 'Token-döntés (advisory)',
   'approvals.state.token_title': 'Tokennel döntötték el, nem dashboard-bejelentkezésből',

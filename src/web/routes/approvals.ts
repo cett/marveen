@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { PROJECT_ROOT, MAIN_AGENT_ID, APPROVAL_HUMAN_ONLY_ENFORCE } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, APPROVAL_HUMAN_ONLY_ENFORCE, APPROVAL_CONSUME_WINDOW_S } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, countApprovals,
   getApprovalStatusCounts, getOldestPendingApproval, expireTimedOutApprovals,
@@ -342,7 +342,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (ctx.role === 'fleet_agent') {
       if (agent_id !== undefined && denyForeignAgent(ctx, agent_id)) return true
       const own = { agent_id: ctx.tokenAgentId, category, status, content_hash }
-      json(res, { items: listApprovals({ ...own, limit, offset }), total: countApprovals(own), offset, limit, counts: {}, oldest_pending: null })
+      json(res, { items: listApprovals({ ...own, limit, offset }), total: countApprovals(own), offset, limit, counts: {}, oldest_pending: null, window_s: APPROVAL_CONSUME_WINDOW_S })
       return true
     }
 
@@ -369,7 +369,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const total = countApprovals(filter)
     const counts = getApprovalStatusCounts(tenantId)
     const oldestPending = getOldestPendingApproval(tenantId) ?? null
-    json(res, { items, total, offset, limit, counts, oldest_pending: oldestPending })
+    json(res, { items, total, offset, limit, counts, oldest_pending: oldestPending, window_s: APPROVAL_CONSUME_WINDOW_S })
     return true
   }
 

@@ -61,9 +61,12 @@ export function parseEmailPayload(raw) {
 /**
  * The state markers of a row: plain labels, no markup. `consumed` and `unused` only exist for a
  * hash-bound request; `expired` is a request nobody decided in time; the decision markers say whether a
- * logged-in person or a bearer token made the call. The list shows `compact` ones only (consumed, unused).
+ * logged-in person or a bearer token made the call. The list shows `compact` ones only (consumed, unused,
+ * lapsed). An approved, unused request decided longer ago than `windowS` seconds is `lapsed`: the server
+ * no longer lets it be used up (same cut as the server: strictly more than the window since the decision).
+ * Without a `windowS` (an older server) the request stays `unused`. `nowS` is for tests.
  */
-export function approvalStateBadges(a, { compact = false } = {}) {
+export function approvalStateBadges(a, { compact = false, windowS = null, nowS = Math.floor(Date.now() / 1000) } = {}) {
   if (!a) return []
   const out = []
   const bound = typeof a.content_hash === 'string' && a.content_hash !== ''
@@ -73,7 +76,11 @@ export function approvalStateBadges(a, { compact = false } = {}) {
       label: t('approvals.state.consumed', { time: formatTime(a.consumed_at), by: a.consumed_by || '-' }),
     })
   } else if (bound && a.status === 'approved') {
-    out.push({ kind: 'unused', label: t('approvals.state.unused') })
+    const lapsed = typeof windowS === 'number' && Number.isFinite(windowS) && windowS > 0
+      && typeof a.resolved_at === 'number' && nowS - a.resolved_at > windowS
+    out.push(lapsed
+      ? { kind: 'lapsed', label: t('approvals.state.lapsed'), title: t('approvals.state.lapsed_title', { n: Math.round(windowS / 60) }) }
+      : { kind: 'unused', label: t('approvals.state.unused') })
   }
   if (compact) return out
   if (a.status === 'timeout') out.push({ kind: 'expired', label: t('approvals.state.expired') })

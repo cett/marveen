@@ -30,7 +30,7 @@ export function truncateDescription(text: unknown, max?: number): string
 export function shortHash(hash: unknown): string
 export function formatTime(sec: number, withSeconds?: boolean): string
 export function parseEmailPayload(raw: unknown): EmailPayloadView | null
-export function approvalStateBadges(a: Record<string, unknown> | null | undefined, opts?: { compact?: boolean }): StateBadge[]
+export function approvalStateBadges(a: Record<string, unknown> | null | undefined, opts?: { compact?: boolean; windowS?: number | null; nowS?: number }): StateBadge[]
 export function renderBadges(badges: StateBadge[]): string
 export function renderEmailPayload(payload: EmailPayloadView | null): string
 export function sortEvents(items: unknown): ApprovalEventRow[]

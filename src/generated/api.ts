@@ -246,6 +246,20 @@ export interface Approval {
   resolved_at?: number | null;
 }
 
+export interface ApprovalList {
+  items: Approval[];
+  /** The number of requests that match the filters, over all pages. */
+  total: number;
+  offset: number;
+  limit: number;
+  /** The number of requests per status (`pending`, `approved`, `rejected`, `timeout`). Empty for a fleet agent token, which gets no fleet-wide aggregates. */
+  counts: Record<string, number>;
+  /** The request that has waited longest for a decision, null when none is pending (always null for a fleet agent token). */
+  oldest_pending: Approval | null;
+  /** The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision. An approved request that is still unused after this long can no longer be used up; the dashboard marks it as lapsed. */
+  window_s: number;
+}
+
 export interface ApprovalUsed {
   ok: boolean;
   /** True when this call repeated an earlier use by the same agent with the same `ref` (a retry of a lost answer); nothing was used up a second time. */
@@ -504,7 +518,7 @@ export type ListKanbanAssigneesResponse = string[]
 
 export type ListArchivedKanbanCardsResponse = KanbanCard[]
 
-export type ListApprovalsResponse = Approval[]
+export type ListApprovalsResponse = ApprovalList
 
 export type CreateApprovalResponse = Approval & {
   deduplicated: boolean;
