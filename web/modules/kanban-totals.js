@@ -6,6 +6,33 @@
 // itself) is the source of truth for what is not loaded yet.
 
 /**
+ * The cards each column renders as standalone cards: visible, not embedded
+ * under a parent, and not lifted into the Ongoing band. A column counter and a
+ * WIP badge built on this never count a banded card.
+ *
+ * Paged mode stays exact for the same reason: a loaded banded card is in the
+ * column's `offset` (loaded) but not in `rendered`, and `total - offset` only
+ * covers cards that are not loaded yet. The one error left is a card the page
+ * has not loaded that will turn out to be ongoing: the header counts it until
+ * it loads, then it leaves for the band.
+ *
+ * @param {Array<{id:string,status:string}>} cards  loaded cards
+ * @param {{visible:Set<string>, embedded:Set<string>, ongoing:Set<string>}} sets
+ * @param {string[]} statuses  the board's columns
+ */
+export function kanbanColumnGroups(cards, { visible, embedded, ongoing }, statuses) {
+  const grouped = {}
+  for (const s of statuses) grouped[s] = []
+  for (const card of cards) {
+    if (embedded.has(card.id)) continue
+    if (!visible.has(card.id)) continue
+    if (ongoing.has(card.id)) continue
+    if (grouped[card.status]) grouped[card.status].push(card)
+  }
+  return grouped
+}
+
+/**
  * Number a column header shows: the top-level cards rendered in the column plus
  * the ones the server still holds for that status but the page has not loaded.
  *

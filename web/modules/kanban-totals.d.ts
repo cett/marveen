@@ -9,6 +9,12 @@ export function kanbanColumnCount(
   pagedMode: boolean,
 ): number
 
+export function kanbanColumnGroups<T extends { id: string; status: string }>(
+  cards: T[],
+  sets: { visible: Set<string>; embedded: Set<string>; ongoing: Set<string> },
+  statuses: string[],
+): Record<string, T[]>
+
 export function kanbanBoardTotals(p: {
   cards: Array<{ status: string }>
   pagedMode: boolean

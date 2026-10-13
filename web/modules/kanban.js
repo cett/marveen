@@ -21,7 +21,7 @@ import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { can } from './rbac-client.js'
 import { sumInProgressSeconds, formatActiveTime } from './kanban-active-time.js'
-import { kanbanColumnCount, kanbanBoardTotals } from './kanban-totals.js'
+import { kanbanColumnCount, kanbanColumnGroups, kanbanBoardTotals } from './kanban-totals.js'
 import { kanbanCardSorter, normalizeKanbanSort, isManualSort } from './kanban-sort.js'
 import { isOngoingCard, isOngoingLabelName } from './kanban-ongoing.js'
 
@@ -597,13 +597,11 @@ function renderKanban() {
     if (embeddedSubtaskIds.has(card.parent_id)) embeddedSubtaskIds.add(card.id)
   }
 
-  const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
-  for (const card of kanbanCards) {
-    if (embeddedSubtaskIds.has(card.id)) continue
-    if (!visibleCardIds.has(card.id)) continue
-    if (ongoingIds.has(card.id)) continue
-    if (grouped[card.status]) grouped[card.status].push(card)
-  }
+  const grouped = kanbanColumnGroups(
+    kanbanCards,
+    { visible: visibleCardIds, embedded: embeddedSubtaskIds, ongoing: ongoingIds },
+    ['planned', 'in_progress', 'waiting', 'testing', 'done'],
+  )
 
   // Update counts (embedded subtasks don't count as separate cards). In paged
   // mode the cards the server still holds for a column count too, so a

@@ -75,7 +75,7 @@ Clicking a card opens the detail panel:
 
 Open cards (not in Done) that carry the **Ongoing** (or **Folyamatos**) label do not appear in their status column: they sit in a band above the board, one button each. It is for standing, always-in-flight duties that would otherwise sit in one column forever. The card keeps its status (still editable in its details), the band is not a drop target, and a click opens the card. A card moved to Done returns to the Done column. The band follows the active filters and is hidden while empty. If such a card has subtasks, they stay in their own columns and do not disappear with it.
 
-The label has to be created once on the board (an admin works with labels; the name is not case-sensitive, and labels are separate per tenant). While the board has a label with that name it is loaded in full instead of page by page, so the band is complete.
+The label has to be created once on the board (an admin works with labels; the name is not case-sensitive, and labels are separate per tenant). While the board has a label with that name it is loaded in full instead of page by page, so the band is complete. A card in the band is not counted in the number on a column header or in the WIP badge (it is in no column), but it is counted in the board total beside the view switcher, because it is on the board.
 
 ---
 

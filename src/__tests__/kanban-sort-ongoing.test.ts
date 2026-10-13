@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { kanbanCardSorter, normalizeKanbanSort, isManualSort, KANBAN_SORT_MODES } from '../../web/modules/kanban-sort.js'
 import { isOngoingCard, isOngoingLabelName, KANBAN_ONGOING_LABEL_NAMES } from '../../web/modules/kanban-ongoing.js'
+import { kanbanColumnGroups, kanbanColumnCount, kanbanBoardTotals } from '../../web/modules/kanban-totals.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8')
@@ -134,7 +135,7 @@ describe('board wiring', () => {
   })
 
   it('an ongoing card leaves the columns, is never embedded, and its subtasks are not embedded in it', () => {
-    expect(kanbanJs).toContain('if (ongoingIds.has(card.id)) continue')
+    expect(read('web/modules/kanban-totals.js')).toContain('if (ongoing.has(card.id)) continue')
     expect(kanbanJs).toContain('if (!card.parent_id || ongoingIds.has(card.id)) continue')
     expect(kanbanJs).toContain('ongoingIds.has(parent.id)) continue')
   })
@@ -155,5 +156,73 @@ describe('board wiring', () => {
         expect(src).toContain(`'${key}'`)
       }
     }
+  })
+})
+
+// Column counters and WIP badges next to the band: a card lifted into the band
+// is on the board (the board total keeps it) but in no column (the column count
+// and the WIP badge do not).
+describe('column counts with the ongoing band', () => {
+  const STATUSES = ['planned', 'in_progress', 'waiting', 'testing', 'done']
+  const ongoingLabel = [{ name: 'Folyamatos' }]
+  const card = (id: string, status: string, labels: Array<{ name: string }> = []) => ({ id, status, labels })
+
+  const groupAndCount = (cards: ReturnType<typeof card>[], paging: Record<string, { offset: number; total: number }>, pagedMode: boolean) => {
+    const ongoing = new Set(cards.filter((c) => isOngoingCard(c)).map((c) => c.id))
+    const grouped = kanbanColumnGroups(cards, { visible: new Set(cards.map((c) => c.id)), embedded: new Set(), ongoing }, STATUSES)
+    const counts: Record<string, number> = {}
+    for (const s of STATUSES) counts[s] = kanbanColumnCount(grouped[s].length, paging[s], pagedMode)
+    return { grouped, counts, ongoing }
+  }
+
+  it('full mode: banded cards are in no column, so the header and the WIP badge do not count them', () => {
+    const cards = [
+      card('a', 'in_progress'), card('b', 'in_progress', ongoingLabel), card('c', 'in_progress', ongoingLabel),
+      card('d', 'planned'), card('e', 'done', ongoingLabel),
+    ]
+    const { grouped, counts } = groupAndCount(cards, {}, false)
+    expect(ids(grouped.in_progress)).toEqual(['a'])
+    expect(counts.in_progress).toBe(1)
+    expect(counts.planned).toBe(1)
+    // a done card is never ongoing: it stays in Done
+    expect(counts.done).toBe(1)
+  })
+
+  it('the board total keeps the banded cards (they are on the board)', () => {
+    const cards = [card('a', 'in_progress'), card('b', 'in_progress', ongoingLabel), card('c', 'done')]
+    const totals = kanbanBoardTotals({ cards, pagedMode: false, paging: {}, filtered: false, visibleCount: 3 })
+    expect(totals).toEqual({ open: 2, all: 3, shown: null })
+  })
+
+  it('paged mode: a loaded banded card is in the loaded offset, not in the rendered cards, so total - offset is exact', () => {
+    // 25 in_progress on the server, 20 loaded, 2 of the loaded are banded: 18 rendered + 5 unloaded
+    const loaded = [
+      ...Array.from({ length: 18 }, (_, i) => card(`p${i}`, 'in_progress')),
+      card('b1', 'in_progress', ongoingLabel), card('b2', 'in_progress', ongoingLabel),
+    ]
+    const { counts } = groupAndCount(loaded, { in_progress: { offset: 20, total: 25 } }, true)
+    expect(counts.in_progress).toBe(23)
+  })
+
+  it('paged mode: the board total is still the server total', () => {
+    const t = kanbanBoardTotals({
+      cards: [card('b1', 'in_progress', ongoingLabel)], pagedMode: true,
+      paging: { in_progress: { offset: 20, total: 25 }, done: { offset: 0, total: 5 } }, filtered: false, visibleCount: 1,
+    })
+    expect(t).toEqual({ open: 25, all: 30, shown: null })
+  })
+
+  it('the board loads whole whenever the tenant has an ongoing label, so paged mode never holds an unloaded banded card', () => {
+    const kanbanJs = read('web/modules/kanban.js')
+    expect(kanbanJs).toContain('!isManualSort(kanbanSort) || ongoingLabelExists')
+    expect(kanbanJs).toContain('if (filtersActive) {\n      _kanbanPagedMode = false')
+  })
+
+  it('the board builds its columns with kanbanColumnGroups, and the counters read those columns', () => {
+    const kanbanJs = read('web/modules/kanban.js')
+    expect(kanbanJs).toContain('const grouped = kanbanColumnGroups(')
+    expect(kanbanJs).toContain('ongoing: ongoingIds')
+    expect(kanbanJs).toContain('kanbanColumnCount(cards.length, _kanbanColumnPaging[status], _kanbanPagedMode)')
+    expect(kanbanJs).toContain('renderKanbanBoardTotals(visibleCardIds.size)')
   })
 })
