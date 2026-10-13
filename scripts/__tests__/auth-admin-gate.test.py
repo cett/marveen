@@ -626,6 +626,7 @@ BLOCKED = [
     ('qualified schema table with spaces around the dot', 'sqlite3 {L} "update main . sqlite_master set sql=1"'),
     ('schema alias with a doubled double quote', 'sqlite3 {L} "update \"a\"\"b\".dashboard_users set role=1"'),
     ('schema alias with a doubled single quote', 'sqlite3 {L} "delete from \'a\'\'b\'.api_tokens"'),
+    ('astral-plane schema alias', 'sqlite3 {L} "update \U0001F600.dashboard_users set role=1"'),
     ('single-quoted table name', 'sqlite3 {L} "UPDATE \'dashboard_users\' SET role=1"'),
     ('single-quoted schema and table', 'sqlite3 {L} "delete from \'main\'.\'api_tokens\'"'),
     ('comment around the qualifier dot', 'sqlite3 {L} "update main /* x */ . sqlite_master set sql=1"'),

@@ -921,7 +921,7 @@ _T = '(?:' + '|'.join(sorted(AUTH_TABLES, key=len, reverse=True)) + ')'
 # between a verb and the table name is whitespace or a `--` line comment: no lazy `.*?` scan.
 _SQL_SEP = r'(?:\s|--[^\n]*\n)+'
 # SQLite also takes a 'single-quoted' string as an identifier, and allows comments around the dot.
-_TBL = (r'(?:(?:"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'|`(?:[^`]|``)*`|\[[^\]]*\]|[\w$\u0080-\uffff]+)(?:\s|--[^\n]*\n)*\.(?:\s|--[^\n]*\n)*)?'
+_TBL = (r'(?:(?:"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'|`(?:[^`]|``)*`|\[[^\]]*\]|[\w$\u0080-\U0010ffff]+)(?:\s|--[^\n]*\n)*\.(?:\s|--[^\n]*\n)*)?'
         r'["\'`\[]?' + _T + r'["\'`\]]?(?![\w$])')
 SQL_WRITE = re.compile(
     r'(?<![\w$])(?:insert' + _SQL_SEP + r'(?:or' + _SQL_SEP + r'\w+' + _SQL_SEP + r')?into'
