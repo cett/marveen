@@ -64,16 +64,25 @@ export function readBody(
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
+    let overflowed = false
     req.on('data', (c: Buffer) => {
+      // Once over the cap, stop counting and keep dropping chunks (no unbounded memory) but let
+      // the request keep flowing to its own 'end' instead of destroy()ing the socket: destroying it
+      // closes the connection before a 413 can be written back, so the caller sees a bare connection
+      // reset instead of the error it asked about. No code reads the body again after this rejection
+      // (the identity gate, the one caller ahead of a route, answers its own 413 on this same error
+      // instead of calling the route's readBody), so there is nothing to cache for a retry here.
+      if (overflowed) return
       total += c.length
       if (total > maxBytes) {
-        req.destroy()
+        overflowed = true
         reject(new RequestBodyTooLargeError(maxBytes))
         return
       }
       chunks.push(c)
     })
     req.on('end', () => {
+      if (overflowed) return
       const body = Buffer.concat(chunks)
       readBodies.set(req, body)
       if (requestBodyObserver) {
