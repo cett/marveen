@@ -70,7 +70,7 @@ vi.mock('../logger.js', () => ({
 
 import { tryHandleMemories } from '../web/routes/memories.js'
 
-function makeCtx(method: string, path: string, body?: object, params?: Record<string, string>): {
+function makeCtx(method: string, path: string, body?: object, params?: Record<string, string>, opts: { role?: string; tokenAgentId?: string } = {}): {
   ctx: RouteContext; out: { status: number; body: any }
 } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
@@ -86,7 +86,7 @@ function makeCtx(method: string, path: string, body?: object, params?: Record<st
   } as any
   const url = new URL(`http://localhost:3420${path}`)
   if (params) { for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v) }
-  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, role: opts.role, tokenAgentId: opts.tokenAgentId } as RouteContext, out }
 }
 
 describe('tryHandleMemories - extended paths', () => {
@@ -312,6 +312,46 @@ describe('tryHandleMemories - extended paths', () => {
       } finally {
         global.fetch = origFetch
       }
+    })
+
+    it('a fleet_agent token omitting agent_id imports as itself, not the fleet main agent', async () => {
+      const origFetch = global.fetch
+      global.fetch = vi.fn().mockRejectedValue(new Error('connection refused')) as any
+      try {
+        const { ctx, out } = makeCtx('POST', '/api/memories/import', { chunks: ['a chunk'] },
+          undefined, { role: 'fleet_agent', tokenAgentId: 'zack' })
+        await tryHandleMemories(ctx)
+        expect(out.status).toBe(200)
+        expect(mockSaveAgentMemory).toHaveBeenCalledWith('zack', 'a chunk', 'warm', '', true)
+      } finally {
+        global.fetch = origFetch
+      }
+    })
+  })
+
+  describe('POST /api/memories: the agent_id default when omitted', () => {
+    it('a fleet_agent token saves under its own token identity, not the fleet main agent', async () => {
+      const { ctx, out } = makeCtx('POST', '/api/memories', { content: 'note' },
+        undefined, { role: 'fleet_agent', tokenAgentId: 'zack' })
+      await tryHandleMemories(ctx)
+      expect(out.status).toBe(200)
+      expect(mockSaveAgentMemory).toHaveBeenCalledWith('zack', 'note', 'warm', undefined, true, 'default')
+    })
+
+    it('a fleet_agent token naming an agent_id still wins over the token identity', async () => {
+      const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'boo', content: 'note' },
+        undefined, { role: 'fleet_agent', tokenAgentId: 'zack' })
+      await tryHandleMemories(ctx)
+      expect(out.status).toBe(200)
+      expect(mockSaveAgentMemory).toHaveBeenCalledWith('boo', 'note', 'warm', undefined, true, 'default')
+    })
+
+    it('a non-fleet_agent caller omitting agent_id still falls back to the fleet main agent', async () => {
+      const { ctx, out } = makeCtx('POST', '/api/memories', { content: 'note' },
+        undefined, { role: 'admin', tokenAgentId: 'zack' })
+      await tryHandleMemories(ctx)
+      expect(out.status).toBe(200)
+      expect(mockSaveAgentMemory).toHaveBeenCalledWith('marveen', 'note', 'warm', undefined, true, 'default')
     })
   })
 })

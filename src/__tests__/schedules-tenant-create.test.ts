@@ -33,7 +33,7 @@ let dbMod: typeof import('../db.js')
 let io: typeof import('../web/scheduled-tasks-io.js')
 let route: typeof import('../web/routes/schedules.js')
 
-type Caller = 'human' | 'agent-token' | { tenant: string }
+type Caller = 'human' | 'agent-token' | { tenant: string } | { fleetAgent: string; tenantId?: string | null }
 
 beforeEach(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'sched-tenant-create-'))
@@ -79,7 +79,9 @@ async function call(method: string, path: string, body?: object, caller: Caller 
   const url = new URL(`http://localhost:3420${path}`)
   const principal = typeof caller === 'string'
     ? { role: 'admin', tenantId: null, auth: { kind: caller === 'human' ? 'session' : 'token' } }
-    : { role: 'agent', tenantId: caller.tenant, auth: { kind: 'token' } }
+    : 'fleetAgent' in caller
+      ? { role: 'fleet_agent', tenantId: caller.tenantId ?? null, tokenAgentId: caller.fleetAgent, auth: { kind: 'token' } }
+      : { role: 'agent', tenantId: caller.tenant, auth: { kind: 'token' } }
   const ctx = { req, res, path: url.pathname, method, url, ...principal } as unknown as RouteContext
   await route.tryHandleSchedules(ctx)
   return out as { status: number; body: Record<string, unknown> }
@@ -264,6 +266,38 @@ describe('POST: the (tenant, agent) pair', () => {
       expect((await call('POST', '/api/schedules', create(name, extra), 'human')).status).toBe(200)
     }
     expect(dbMod.getScheduleFromDb('ok4')).toMatchObject({ agent: 'main-agent', tenant_id: 'default' })
+  })
+
+  describe('a fleet_agent token that names no agent acts as itself, not the fleet main agent', () => {
+    it('is still refused on the default tenant (only an admin may write it, regardless of agent)', async () => {
+      const out = await call('POST', '/api/schedules', create('fa1'), { fleetAgent: 'shared-agent' })
+      expect(out.status).toBe(403)
+      expect(dbMod.getScheduleFromDb('fa1')).toBeUndefined()
+    })
+
+    it('on a non-default tenant it serves (previously 400 required, since the route fell back to "")', async () => {
+      const out = await call('POST', '/api/schedules', create('fa2'), { fleetAgent: 'tenant-agent', tenantId: 'tenant-b' })
+      expect(out.status).toBe(200)
+      expect(dbMod.getScheduleFromDb('fa2')).toMatchObject({ agent: 'tenant-agent', tenant_id: 'tenant-b' })
+    })
+
+    it('an explicit agent still wins over the token identity', async () => {
+      const out = await call('POST', '/api/schedules', create('fa3', { agent: 'shared-agent' }), { fleetAgent: 'shared-agent', tenantId: 'tenant-b' })
+      expect(out.status).toBe(200)
+      expect(dbMod.getScheduleFromDb('fa3')).toMatchObject({ agent: 'shared-agent', tenant_id: 'tenant-b' })
+    })
+
+    it('a fleet agent defaulting to itself is still rejected on a tenant it does not serve', async () => {
+      dbMod.createTenant('tenant-c', 'Tenant C')
+      dbMod.setTenantAgentAvailability('tenant-c', 'shared-agent', true)
+      // tenant-agent serves only tenant-b; bound here to tenant-c, where it defaults to itself
+      // but scheduleAgentServesTenant still rejects it -- the fix only changes the DEFAULT, not
+      // the agent/tenant pairing check that runs after it.
+      const out = await call('POST', '/api/schedules', create('fa4'), { fleetAgent: 'tenant-agent', tenantId: 'tenant-c' })
+      expect(out.status).toBe(400)
+      expect(out.body).toMatchObject({ field: 'agent' })
+      expect(dbMod.getScheduleFromDb('fa4')).toBeUndefined()
+    })
   })
 })
 
