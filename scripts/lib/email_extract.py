@@ -1824,8 +1824,18 @@ def command_sends_mail(command: Any) -> bool:
         for cmd in _Lexer(command).run():
             ws = cmd.words
             k = 0
-            while k < len(ws) and not ws[k].quoted and (_ASSIGN_RE.match(ws[k].text) or ws[k].text in _RESERVED):
-                k += 1
+            wrapped = False
+            while k < len(ws) and not ws[k].quoted:
+                w = ws[k]
+                if _ASSIGN_RE.match(w.text) or w.text in _RESERVED:
+                    k += 1
+                elif _basename(w.text) in _PASS_THROUGH:   # env, command, exec, nohup: the command is what follows
+                    wrapped = True
+                    k += 1
+                elif wrapped and w.text.startswith('-'):
+                    k += 1
+                else:
+                    break
             # a name in an assignment before the command (GIT_PAGER=send.py git log) runs under the command
             if any(_MAIL_NAME.search(w.text.split('=', 1)[-1]) for w in ws[:k]):
                 return True

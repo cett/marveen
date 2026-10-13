@@ -707,7 +707,7 @@ class CommandSendsMail(unittest.TestCase):
                 self.assertFalse(E.command_sends_mail(cmd))
 
     def test_a_wrapper_or_interpreter_with_a_variable_to_run_is_a_possible_send(self):
-        for cmd in ("timeout 5 $X", "xargs $X", "eval $X", "sudo $X", "find . -exec $X ;", 'python3 -c "$X"', "node -e $X",
+        for cmd in ("env $X", "env -i FOO=1 timeout 5 $X", "nohup xargs $X", "command eval $X", "timeout 5 $X", "xargs $X", "eval $X", "sudo $X", "find . -exec $X ;", 'python3 -c "$X"', "node -e $X",
                     "ssh host $X", "nice -n5 $X"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(E.command_sends_mail(cmd))
