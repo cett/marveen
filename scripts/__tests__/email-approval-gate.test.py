@@ -194,7 +194,7 @@ class Classification(GateCase):
     def test_not_a_send_passes_and_calls_nothing(self):
         cases = [
             ('Bash', {'command': 'ls -la'}),
-            ('Bash', {'command': 'git diff scripts/gmail-send.py'}),
+            ('Bash', {'command': 'git diff scripts/lib/email_extract.py'}),
             ('Bash', {'command': 'curl -s http://localhost:3420/api/blackboard'}),
             ('mcp__gmail__gmail_draft', dict(MAIL)),
             ('mcp__gmail__gmail_search_emails', {'query': 'from:ann'}),

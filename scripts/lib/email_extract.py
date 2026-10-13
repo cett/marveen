@@ -1269,7 +1269,7 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
             code = None
             while j < len(ws):
                 a = ws[j]
-                if a.text == '-c' and j + 1 < len(ws):
+                if re.fullmatch(r'-[A-Za-z]*c[A-Za-z]*', a.text) and j + 1 < len(ws):   # -c, -lc, -ec, -xc ...
                     if ws[j + 1].dynamic:
                         raise UnreadableDynamicExec('the code of a shell -c is not literal')
                     code = ws[j + 1].text
@@ -1774,11 +1774,12 @@ def _from_bash(command: str, cwd: str) -> Dict[str, Any]:
 # Entry points
 # ======================================================================================================
 
-_MAIL_NAMES = r'send\.py|gmail-send\.py|graph-mail(?:\.(?:ts|js|mjs))?|sendmail|msmtp|swaks|ssmtp|mailx?|s-nail|mutt|neomutt'
-_MAIL_NAME = re.compile(r'(?<![\w.-])(?:' + _MAIL_NAMES + r')(?![\w.-])')
+_MAIL_NAMES = r'send\.py|gmail-send\.py|graph-mail(?:\.(?:ts|js|mjs))?|sendmail|msmtp|swaks|ssmtp|s-nail|neomutt|mutt'
+# A name glued to an option (git grep -Osend.py) counts, so these have no left boundary; the short, common words
+# (mail, mailx) need one so that gmail and email do not.
+_MAIL_NAME = re.compile(r'(?:' + _MAIL_NAMES + r'|(?<![\w.-])mailx?)(?![\w.-])')
 # Commands that only look at, copy or list a file and cannot be made to run another program by an
-# argument: a mail program's NAME among their arguments is not a send. git and rg/ag can (an alias,
-# a config value, --pre) and are inert only without those arguments (_inert_cmd).
+# argument: a mail program's NAME among their arguments is not a send.
 _PURE_HEADS = frozenset((
     'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'ls', 'wc', 'diff', 'cmp', 'file', 'stat', 'echo', 'printf', 'test', '[',
     'cp', 'mv', 'rm', 'ln', 'chmod', 'chown', 'touch', 'mkdir', 'rmdir', 'basename', 'dirname', 'realpath', 'readlink',
@@ -1786,10 +1787,6 @@ _PURE_HEADS = frozenset((
 ))
 
 
-_GIT_READ_ONLY = frozenset((
-    'log', 'diff', 'show', 'status', 'grep', 'add', 'blame', 'ls-files', 'rev-parse', 'commit', 'mv', 'rm', 'restore',
-    'checkout', 'reset', 'branch', 'tag', 'shortlog', 'diff-tree', 'cat-file',
-))
 # Commands that run another program named in their arguments; with a word the shell decides at run time among
 # those arguments, what runs cannot be ruled out to be a mail program.
 _EXEC_WRAPPERS = frozenset(('eval', 'source', '.', 'xargs', 'timeout', 'nice', 'sudo', 'doas', 'find', 'watch', 'stdbuf', 'ssh', 'nohup', 'exec'))
@@ -1802,25 +1799,11 @@ def _runs_dynamic_code(ws: List[_Word], k: int) -> bool:
 
 
 def _inert_cmd(ws: List[_Word], k: int) -> bool:
-    head = _basename(ws[k].text)
-    if head in _PURE_HEADS:
-        return True
-    texts = [w.text for w in ws[k + 1:]]
-    if head == 'git':
-        # Only the subcommands that look at or record files; rebase --exec, difftool, bisect run, submodule
-        # foreach, filter-branch, config ... run what an argument names. -c / --config-env / --exec-path, an alias
-        # with !, a value after = and grep -O<pager> do too.
-        sub = next((t for t in texts if not t.startswith('-')), '')
-        if sub not in _GIT_READ_ONLY:
-            return not any(_MAIL_NAME.search(t) for t in texts)
-        if any(t in ('-c', '--exec-path') or t.startswith(('-c', '--config-env', '--exec-path=')) or '!' in t for t in texts):
-            return False
-        if any('=' in t and _MAIL_NAME.search(t.split('=', 1)[1]) for t in texts):
-            return False
-        return not (sub == 'grep' and any(t.startswith('-O') or t == '--open-files-in-pager' or t.startswith('--open-files-in-pager=') for t in texts))
-    if head in ('rg', 'ag'):
-        return not any(t.startswith('--pre') for t in texts)
-    return False
+    """Only a program that cannot be made to run another one by an argument. Not git (-c, an alias, a
+    subcommand that runs a program, a pager option) and not rg/ag (--pre): a mail program name among their
+    arguments is judged a send, a false alarm the owner can live with; a parser of their options is a list
+    that keeps growing."""
+    return _basename(ws[k].text) in _PURE_HEADS
 
 
 def command_sends_mail(command: Any) -> bool:

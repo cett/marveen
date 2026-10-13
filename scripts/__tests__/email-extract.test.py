@@ -674,8 +674,9 @@ class CommandSendsMail(unittest.TestCase):
                     "tee send.py"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(E.command_sends_mail(cmd))
-        self.assertFalse(E.command_sends_mail("git diff scripts/gmail-send.py"))
-        self.assertFalse(E.command_sends_mail("rg sendmail src"))
+        # git and rg are not trusted with a mail program's name among their arguments (see test below)
+        self.assertTrue(E.command_sends_mail("git diff scripts/gmail-send.py"))
+        self.assertTrue(E.command_sends_mail("rg sendmail src"))
 
     def test_a_name_in_an_assignment_or_a_config_value_runs_under_an_inert_head(self):
         for cmd in ("GIT_PAGER=send.py git log", "GIT_EXTERNAL_DIFF=sendmail git diff", "git config core.pager send.py",
@@ -683,15 +684,25 @@ class CommandSendsMail(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertTrue(E.command_sends_mail(cmd))
         self.assertFalse(E.command_sends_mail("FOO=1 ls scripts"))
-        self.assertFalse(E.command_sends_mail("git log -S sendmail"))
 
-    def test_only_read_only_git_subcommands_are_inert_when_they_name_a_program(self):
+    def test_a_shell_c_in_a_cluster_of_short_options_is_read_as_c(self):
+        for flags in ("-c", "-lc", "-ec", "-xc"):
+            with self.subTest(flags):
+                self.assertTrue(E.command_sends_mail("bash %s \"$X\"" % flags))
+                self.assertTrue(E.command_sends_mail("bash %s 'send.py --to a@example.test --subject S --body b'" % flags))
+                self.assertFalse(E.command_sends_mail("bash %s 'ls'" % flags))
+
+    def test_git_is_not_trusted_with_a_mail_program_name(self):
+        # No parsing of git's options (global options with values, abbreviated long options, clusters, subcommands
+        # that run a program): a name anywhere in a git command makes it a possible send, the owner can live with
+        # the false alarm. A git command without such a name is an ordinary command.
         for cmd in ("git rebase --exec send.py main", "git difftool -x sendmail", "git bisect run send.py",
-                    "git submodule foreach send.py", "git filter-branch --tree-filter msmtp", "git grep -O send.py x"):
+                    "git submodule foreach send.py", "git filter-branch --tree-filter msmtp", "git grep -O send.py x",
+                    "git -C /tmp -c core.pager=sendmail log", "git grep -Osend.py x", "git grep --open send.py x",
+                    "git diff scripts/gmail-send.py", "git add scripts/gmail-send.py && git commit -m x", "git log -S sendmail"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(E.command_sends_mail(cmd))
-        for cmd in ("git diff scripts/gmail-send.py", "git add scripts/gmail-send.py && git commit -m x", "git log -S sendmail",
-                    "git grep sendmail", "git status", "git rebase main"):
+        for cmd in ("git status", "git rebase main", "git log --oneline -5", "git diff scripts/lib/email_extract.py", "git commit -m 'fix a bug'"):
             with self.subTest(cmd=cmd):
                 self.assertFalse(E.command_sends_mail(cmd))
 
@@ -718,7 +729,7 @@ class CommandSendsMail(unittest.TestCase):
         self.assertFalse(E.command_sends_mail("echo $(date) gmail-sendx.py my-send.py.bak"))
 
     def test_a_command_that_only_looks_at_files_is_not_a_send(self):
-        for cmd in ("cat scripts/support-mail/send.py", "grep -rn sendmail src", "git add scripts/gmail-send.py && git commit -m x",
+        for cmd in ("cat scripts/support-mail/send.py", "grep -rn sendmail src",
                     "cat mail.txt", "echo mail", "ls scripts/ | head", "npx vitest run --silent",
                     "python3 -m pytest scripts/__tests__/email-extract.test.py"):
             with self.subTest(cmd=cmd):
@@ -726,7 +737,6 @@ class CommandSendsMail(unittest.TestCase):
 
     def test_other_commands_are_not(self):
         self.assertFalse(E.command_sends_mail('echo "$(date)"'))
-        self.assertFalse(E.command_sends_mail("git diff scripts/gmail-send.py"))
         self.assertFalse(E.command_sends_mail("curl -s localhost:3420/api/x"))   # a curl is the send classifier's question
         self.assertFalse(E.command_sends_mail("ls -la"))
         self.assertFalse(E.command_sends_mail(None))
