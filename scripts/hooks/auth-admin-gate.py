@@ -80,6 +80,8 @@ MAX_BRACE_ALTS = 64
 MAX_GLOB_HITS = 50
 MAX_STORE_SCAN = 1024         # directory entries looked at when hunting for the live DB files
 MAX_LIVE_INODES = 64          # live-store inodes kept
+MAX_TRIGGER_HEADS = 64        # `CREATE TRIGGER` headers looked at per text; more is "unknown"
+TRIGGER_WINDOW = 4000         # characters after `CREATE TRIGGER` searched for `ON <auth table>`
 MAX_LINK_DESTS = 16           # `ln` link names followed exactly; more is "unknown"
 MAX_CD_TARGETS = 16           # absolute `cd` targets followed exactly; more is "unknown"
 MAX_GENERIC_MARKERS = 8      # marker hits followed per argument text in the generic fallback
@@ -757,6 +759,7 @@ class State(object):
         self.link_made = False      # an `ln` in the inspected text: a link may not exist yet when we look
         self.link_global = False    # an `ln` whose link name the gate cannot tell: any path may be that link
         self.link_dests = []        # the link names (or link dirs) of the `ln` commands in the text
+        self.funcs = set()          # names of shell functions defined in the inspected texts
         self.store_dirs = None      # cache of _store_dirs
         self.live_inodes = None     # cache of _live_inodes
 
@@ -922,14 +925,13 @@ SQL_WRITE = re.compile(
     r'|alter' + _SQL_SEP + r'table'
     r'|truncate(?:' + _SQL_SEP + r'table)?'
     r'|rename' + _SQL_SEP + r'to'
-    r'|create' + _SQL_SEP + r'trigger[^;]{0,200}?\bon'
     r')' + _SQL_SEP + _TBL,
     re.I | re.S)
-SQL_DOT_WRITE = re.compile(r'(?m)^\s*\.(?:import|restore)\b.*$', re.I)
-SQL_DOT_SHELL = re.compile(r'(?m)^\s*\.(?:shell|system)\b', re.I)
+SQL_DOT_WRITE = re.compile(r'(?m)^\s*\.(?:im(?:p(?:o(?:r(?:t)?)?)?)?|res(?:t(?:o(?:r(?:e)?)?)?)?)\b.*$', re.I)
+SQL_DOT_SHELL = re.compile(r'(?m)^\s*\.(?:sh(?:e(?:l(?:l)?)?)?|sy(?:s(?:t(?:e(?:m)?)?)?)?)\b', re.I)
 SQL_ATTACH = re.compile(r"attach(?:\s+database)?\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))", re.I)
-SQL_DOT_OPEN = re.compile(r'(?m)^\s*\.open\s+(?:--\w+\s+)*(\S+)', re.I)
-SQL_DOT_READ = re.compile(r'(?m)^\s*\.read\s+(\S+)', re.I)
+SQL_DOT_OPEN = re.compile(r'(?m)^\s*\.op(?:e(?:n)?)?\s+(?:--\w+\s+)*(\S+)', re.I)
+SQL_DOT_READ = re.compile(r'(?m)^\s*\.rea(?:d)?\s+(\S+)', re.I)
 
 APP_MUTATORS = re.compile(
     r'\b(?:createDashboardUser|updateDashboardUserPassword|updateDashboardUser|deleteDashboardUser'
@@ -971,15 +973,52 @@ def _strip_block_comments(text):
     return ''.join(out)
 
 
+# `CREATE TRIGGER name ... ON <table>`: the header is searched in a bounded window after the verb, on
+# its own (a `;` can sit in a quoted trigger name, so the window does not stop there).
+TRIGGER_HEAD = re.compile(r'(?<![\w$])create' + _SQL_SEP + r'(?:(?:temp|temporary)' + _SQL_SEP + r')?trigger(?![\w$])', re.I)
+TRIGGER_ON = re.compile(r'(?<![\w$])on' + _SQL_SEP + _TBL, re.I)
+TRIGGER_ANY_ON = re.compile(r'(?<![\w$])on(?![\w$])', re.I)
+
+
+def _trigger_write(text):
+    n = 0
+    for m in TRIGGER_HEAD.finditer(text):
+        n += 1
+        if n > MAX_TRIGGER_HEADS:
+            raise InspectionLimit('more than %d CREATE TRIGGER in one text' % MAX_TRIGGER_HEADS)
+        window = text[m.end():m.end() + TRIGGER_WINDOW]
+        mo = TRIGGER_ON.search(window)
+        if mo:
+            return 'create trigger ... ' + re.sub(r'\s+', ' ', mo.group())[:40]
+        # No ON within the window although the text goes on: a header too long to read is not let through.
+        if len(text) - m.end() > TRIGGER_WINDOW and not TRIGGER_ANY_ON.search(window):
+            return 'create trigger (a fejlec nem er veget a vizsgalt tartomanyon belul)'
+    return None
+
+
+def _sql_write_summary(text):
+    """What in `text` writes an auth table (a short description), or None. The text is looked at as it
+    stands AND with its `/* */` comments cut out: a `/*` inside a string literal can make the cutting
+    swallow a real write, and a comment between the verb and the table name hides it from the raw view."""
+    stripped = _strip_block_comments(text)
+    views = (text,) if stripped is text else (text, stripped)
+    for t in views:
+        m = SQL_WRITE.search(t)
+        if m:
+            return re.sub(r'\s+', ' ', m.group())[:60]
+        r = _trigger_write(t)
+        if r:
+            return r
+    return None
+
+
 def inspect_sql(text, live):
     if SQL_DOT_SHELL.search(text):
         raise Deny('sqlite3 .shell / .system: tetszoleges parancs a kapu mogott, nem engedett.')
-    stripped = _strip_block_comments(text)
-    if live and (SQL_WRITE.search(stripped) or SQL_DOT_WRITE.search(text)):
-        m = SQL_WRITE.search(stripped)
+    hit = _sql_write_summary(text) if live else None
+    if live and (hit or SQL_DOT_WRITE.search(text)):
         raise Deny('iras a hitelesito tablakra (%s) az elo store DB-n. A bejelentkezes, session, token '
-                   'es jovahagyas allapotat csak a dashboard allitja.'
-                   % (re.sub(r'\s+', ' ', m.group())[:60] if m else '.import / .restore'))
+                   'es jovahagyas allapotat csak a dashboard allitja.' % (hit or '.import / .restore'))
 
 
 def inspect_code(text, state, python=False):
@@ -987,10 +1026,9 @@ def inspect_code(text, state, python=False):
     database is not visible here, so a write to an auth table is blocked wherever it points.
     The app's own mutators are TypeScript names: python cannot call them, so in python code they
     are only text (a source edit with s.replace(...)) and are not looked for."""
-    m = SQL_WRITE.search(_strip_block_comments(text))
-    if m:
-        raise Deny('iras a hitelesito tablakra interpreter-kodbol (%s).'
-                   % re.sub(r'\s+', ' ', m.group())[:60])
+    hit = _sql_write_summary(text)
+    if hit:
+        raise Deny('iras a hitelesito tablakra interpreter-kodbol (%s).' % hit)
     m = None if python else APP_MUTATORS.search(text)
     if m:
         raise Deny('az alkalmazas hitelesitest modosito fuggvenye interpreter-kodbol (%s).'
@@ -1586,14 +1624,22 @@ def _note_dir_changes(segs, state):
     (a relative or dynamic cd, pushd, popd, chdir, chroot, a command word the gate cannot read, a
     -C / --chdir / --cwd / --prefix / --directory / -D / -w flag on ANY command: env -C, sudo -D,
     git -C, make -C, npm --prefix ...) sets state.dir_changed: every relative path is then unknown.
-    An `ln` sets state.link_made: a link created in the same command line is not there to resolve."""
+    An `ln` sets state.link_made: a link created in the same command line is not there to resolve.
+    The names of shell functions defined here (`f() {`, `function f {`) go to state.funcs."""
+    for k, seg in enumerate(segs):
+        ws = seg.words
+        if len(ws) > 1 and ws[0].text == 'function':
+            state.funcs.add(ws[1].text)
+        elif (len(ws) == 1 and k + 1 < len(segs) and segs[k + 1].words
+              and segs[k + 1].words[0].text == '{' and not ws[0].dyn):
+            state.funcs.add(ws[0].text)
     for seg in segs:
         if not seg.words:
             continue
         name, cmdword, args, _via = resolve_call(seg.words)
         if name is None:
             continue
-        if name == 'ln':
+        if name in ('ln', 'link'):
             state.link_made = True
             _note_link(args, state)
         if name == 'cd':
@@ -1621,7 +1667,7 @@ def _note_dir_changes(segs, state):
 
 # ---- writing the live database file as a file --------------------------------------------
 
-_FILE_WRITERS = ('cp', 'mv', 'ln', 'install', 'rsync', 'scp', 'ditto', 'dd', 'tee', 'sponge')
+_FILE_WRITERS = ('cp', 'mv', 'ln', 'link', 'install', 'rsync', 'scp', 'ditto', 'dd', 'tee', 'sponge')
 _FW_VALUE_FLAGS = {
     'cp': ('-t', '--target-directory', '-S', '--suffix'),
     'mv': ('-t', '--target-directory', '-S', '--suffix'),
@@ -1717,7 +1763,7 @@ def _handle_filewrite(name, args, state):
         for s in sources:
             if _live_path(s, state, True):
                 _deny_live_write('mv av az elo adatbazist: ' + s.text)
-    elif name == 'ln':
+    elif name in ('ln', 'link'):
         symbolic = any('s' in f[1:] for f in flags) or any(a.text == '--symbolic' for a in args)
         if not symbolic:
             for s in sources:
@@ -1739,46 +1785,576 @@ def _handle_filewrite(name, args, state):
                 _deny_live_write('rsync --link-dest az elo store-ra: ' + val.text)
 
 
-SQL_DOT_COPYOUT = re.compile(r'(?m)^\s*\.(?:backup|save|clone)\b(.*)$', re.I)
-SQL_VACUUM_INTO = re.compile(r"vacuum(?:\s+\w+)?\s+into\s+(?:'((?:[^']|'')*)'|\"([^\"]*)\"|([^\s;]+))", re.I)
+_TARGET_WRITERS = frozenset(('rm', 'rmdir', 'unlink', 'shred', 'truncate', 'chmod', 'chown', 'chgrp', 'touch',
+                            'sed', 'sort', 'tree', 'curl', 'wget', 'less', 'more'))
+_TW_VALUE_FLAGS = {
+    'truncate': ('-s', '--size', '-r', '--reference'), 'touch': ('-d', '-t', '-r', '--date', '--reference'),
+    'shred': ('-n', '-s', '--iterations', '--size'),
+}
+# options that name an OUTPUT file: (short letters, long names)
+_OUT_OPTS = {
+    'sort': ('o', ('--output',)), 'tree': ('o', ()), 'less': ('oO', ('--log-file', '--LOG-FILE')), 'more': ('', ()),
+    'curl': ('Dc', ('--output', '--dump-header', '--cookie-jar')) , 'wget': ('Hoa', ('--output-document', '--output-file', '--append-output')),
+}
+_SED_WRITE = re.compile(r'(?:^|[\s;{}/])[wW]\s*([^\s;}]+)')
+
+
+def _out_values(name, args):
+    """The words that name an output file in the arguments of sort -o, curl -o, wget -O, ..."""
+    shorts, longs = _OUT_OPTS[name]
+    out = []
+    if name == 'curl':
+        shorts += 'o'
+    if name == 'wget':
+        shorts += 'O'
+    for k, a in enumerate(args):
+        t = a.text
+        if t == '--':
+            break
+        if t.startswith('--'):
+            nm = t.split('=', 1)[0]
+            if any(_long_abbrev(nm, f) for f in longs):
+                if '=' in t:
+                    out.append(Word(t.split('=', 1)[1], a.dyn))
+                elif k + 1 < len(args):
+                    out.append(args[k + 1])
+        elif t.startswith('-') and len(t) > 1:
+            for idx, ch in enumerate(t[1:], 1):
+                if ch in shorts:
+                    rest = t[idx + 1:]
+                    if rest:
+                        out.append(Word(rest, a.dyn))
+                    elif k + 1 < len(args):
+                        out.append(args[k + 1])
+                    break
+    return out
+
+
+def _handle_target_writers(name, args, state):
+    """rm / truncate / chmod / chown / touch, sed -i and `w FILE`, sort -o, curl -o, wget -O ...: the file
+    they change must not be the live database (or, for rm / chmod / chown, its store directory)."""
+    if name in ('rm', 'rmdir', 'unlink', 'shred', 'touch', 'chmod', 'chown', 'chgrp', 'truncate'):
+        for w in _positional(args, _TW_VALUE_FLAGS.get(name, ())):
+            if _live_path(w, state, name not in ('touch', 'truncate')):
+                _deny_live_write('%s %s' % (name, w.text))
+        return
+    if name == 'sed':
+        inplace = any((t.startswith('-') and not t.startswith('--') and 'i' in t[1:]) or
+                      (t.startswith('--') and len(t) >= 4 and '--in-place'.startswith(t.split('=', 1)[0]))
+                      for t in (a.text for a in args))
+        if inplace:
+            for w in _positional(args, ('-e', '-f', '-l', '--expression', '--file', '--line-length')):
+                if _live_path(w, state):
+                    _deny_live_write('sed -i ' + w.text)
+        for a in args:
+            for m in _SED_WRITE.finditer(a.text):
+                if _live_path(Word(m.group(1)), state):
+                    _deny_live_write('sed w ' + m.group(1))
+        return
+    for w in _out_values(name, args):
+        if _live_path(w, state):
+            _deny_live_write('%s -> %s' % (name, w.text))
+
+
+SQL_DOT_ANY = re.compile(r'(?m)^[ \t]*\.([A-Za-z]+)([^\n]*)$')
+# sqlite3 dot-commands that write a FILE; the shell takes any unambiguous prefix (`.outp`, `.bac`)
+_SQL_DOT_FILE_OUT = ('backup', 'save', 'clone', 'output', 'once', 'excel', 'log', 'trace')
+_SQL_DOT_TOKEN = re.compile(r"""'(?:[^']|'')*'|"[^"]*"|\S+""")
+_SQL_WORD_VACUUM = re.compile(r'(?<![\w$])vacuum(?![\w$])', re.I)
+_SQL_WORD_INTO = re.compile(r'into(?![\w$])', re.I)
+_SQL_WORD_WRITEFILE = re.compile(r'(?<![\w$])["`\[\']?writefile["`\]\']?(?![\w$])', re.I)
+_SQL_WORD_EDIT = re.compile(r'(?<![\w$])edit\s*\(', re.I)
+MAX_SQL_FILE_FUNCS = 64
+
+
+def _sql_skip(text, i):
+    """Index of the first character at or after `i` that is neither blank nor inside a comment."""
+    n = len(text)
+    while i < n:
+        if text[i].isspace():
+            i += 1
+        elif text.startswith('--', i):
+            j = text.find('\n', i)
+            i = n if j == -1 else j + 1
+        elif text.startswith('/*', i):
+            j = text.find('*/', i + 2)
+            i = n if j == -1 else j + 2
+        else:
+            break
+    return i
+
+
+def _sql_ident_end(text, i):
+    """End of the one SQL name at `i` (bare, "x", [x], `x` or 'x'), -1 when there is none."""
+    if i >= len(text):
+        return -1
+    c = text[i]
+    if c in '"`\'' or c == '[':
+        j = text.find(']' if c == '[' else c, i + 1)
+        return -1 if j == -1 else j + 1
+    m = re.compile(r'[A-Za-z_][\w$]*').match(text, i)
+    return m.end() if m else -1
+
+
+def _sql_single_literal(text, i, closers):
+    """The value of ONE string literal at `i` that is followed (after blanks and comments) by one of
+    `closers` ('' = end of the text), else None: an expression, a `||` join, a parameter, a function
+    call, ... is not a path the gate can read."""
+    if i >= len(text) or text[i] not in '\'"':
+        return None
+    q = text[i]
+    j = i + 1
+    parts = []
+    while True:
+        k = text.find(q, j)
+        if k == -1:
+            return None
+        parts.append(text[j:k])
+        if text.startswith(q, k + 1):          # '' inside the literal
+            parts.append(q)
+            j = k + 2
+            continue
+        break
+    e = _sql_skip(text, k + 1)
+    nxt = text[e:e + 1]
+    if nxt not in closers:
+        return None
+    return ''.join(parts)
+
+
+_SQL_DOT_LINE = re.compile(r'[ \t]*\.[A-Za-z]')
+
+
+def _sql_inert_spans(text):
+    """(start, end) of every string literal, quoted name and comment in the SQL part of `text` (dot-command
+    lines are not SQL and are skipped): a keyword inside one is not a statement. The scan follows the SQLite
+    lexer; it is only used to let a NON-literal VACUUM INTO / writefile() / edit() pass when it sits in a
+    string, never to hide a literal path."""
+    spans = []
+    i, n, line_start = 0, len(text), True
+    while i < n:
+        c = text[i]
+        if c == '\n':
+            line_start = True
+            i += 1
+            continue
+        if c in ' \t\r':
+            i += 1
+            continue
+        if line_start and _SQL_DOT_LINE.match(text, i):
+            j = text.find('\n', i)
+            i = n if j == -1 else j
+            continue
+        line_start = False
+        if text.startswith('--', i):
+            j = text.find('\n', i)
+            j = n if j == -1 else j
+            spans.append((i, j))
+            i = j
+        elif text.startswith('/*', i):
+            j = text.find('*/', i + 2)
+            j = n if j == -1 else j + 2
+            spans.append((i, j))
+            i = j
+        elif c in '\'"`' or c == '[':
+            q = ']' if c == '[' else c
+            j = i + 1
+            while True:
+                k = text.find(q, j)
+                if k == -1:
+                    j = n
+                    break
+                if q != ']' and text.startswith(q, k + 1):
+                    j = k + 2
+                    continue
+                j = k + 1
+                break
+            spans.append((i, j))
+            i = j
+        else:
+            i += 1
+    return spans
+
+
+def _sql_inert(spans, pos):
+    for s, e in spans:
+        if s <= pos < e:
+            return True
+    return False
+
+
+def _sql_file_target(what, target, state, inert=False):
+    if target is None:
+        if inert:
+            return
+        raise Deny('sqlite3 %s: a cel nem egyetlen szoveg-literal (kifejezes, osszefuzes, parameter, fuggveny), ezert a '
+                   'kapu nem tudja, hova ir: nem engedett.' % what)
+    if _live_path(Word(target, '$' in target or '`' in target), state):
+        _deny_live_write('sqlite3 %s -> %s' % (what, target))
+
+
+def _sql_dot_unquote(tok):
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in '\'"':
+        return tok[1:-1].replace(tok[0] * 2, tok[0]) if tok[0] == "'" else tok[1:-1]
+    return tok
 
 
 def _inspect_sql_targets(text, state):
-    """sqlite3 `.backup` / `.save` / `.clone` / `VACUUM INTO` write a database FILE: not into the live store."""
-    for m in SQL_DOT_COPYOUT.finditer(text):
-        toks = [t.strip('\'"') for t in m.group(1).split() if not t.startswith('--')]
-        if toks and _live_path(Word(toks[-1]), state):
-            _deny_live_write('sqlite3 .backup/.clone -> ' + toks[-1])
-    stripped = _strip_block_comments(text)
-    if re.search(r'vacuum', stripped, re.I):
-        for m in SQL_VACUUM_INTO.finditer(stripped):
-            target = m.group(1) or m.group(2) or m.group(3) or ''
-            if target and _live_path(Word(target), state):
-                _deny_live_write('VACUUM INTO ' + target)
+    """sqlite3 writes a FILE through `.backup` / `.save` / `.clone`, `.output` / `.once` / `.excel` / `.log` /
+    `.trace`, `VACUUM INTO` and the writefile() SQL function: never into the live store, never to a target
+    the gate cannot read, and `.output |cmd` / `edit()` run a program."""
+    n = 0
+    for m in SQL_DOT_ANY.finditer(text):
+        nm = m.group(1).lower()
+        full = next((f for f in _SQL_DOT_FILE_OUT if f.startswith(nm)), None)
+        if full is None:
+            continue
+        n += 1
+        if n > MAX_SQL_FILE_FUNCS:
+            raise InspectionLimit('more than %d sqlite3 file dot-commands in one text' % MAX_SQL_FILE_FUNCS)
+        toks = _SQL_DOT_TOKEN.findall(m.group(2))
+        opts = [t for t in toks if t.startswith('-')]
+        names = [_sql_dot_unquote(t) for t in toks if not t.startswith('-')]
+        if full in ('backup', 'save', 'clone'):
+            targets = names[-1:]                    # .backup ?DB? FILE
+        else:
+            if any(t.startswith('|') for t in names) or '-e' in opts:
+                raise Deny('sqlite3 .%s |parancs / -e: a kimenetet egy program kapja, nem engedett.' % full)
+            targets = names[:1]
+        for t in targets:
+            if _live_path(Word(t, '$' in t or '`' in t), state):
+                _deny_live_write('sqlite3 .%s -> %s' % (full, t))
+    spans = None
+    for m in _SQL_WORD_EDIT.finditer(text):
+        spans = _sql_inert_spans(text) if spans is None else spans
+        if not _sql_inert(spans, m.start()):
+            raise Deny('sqlite3 edit(): egy szerkeszto programot futtat, nem engedett.')
+    n = 0
+    for m in _SQL_WORD_VACUUM.finditer(text):
+        n += 1
+        if n > MAX_SQL_FILE_FUNCS:
+            raise InspectionLimit('more than %d VACUUM in one text' % MAX_SQL_FILE_FUNCS)
+        i = _sql_skip(text, m.end())
+        w = _SQL_WORD_INTO.match(text, i)
+        if w is None:                               # VACUUM <schema> INTO ...
+            e = _sql_ident_end(text, i)
+            if e < 0:
+                continue
+            w = _SQL_WORD_INTO.match(text, _sql_skip(text, e))
+            if w is None:
+                continue
+        lit = _sql_single_literal(text, _sql_skip(text, w.end()), (';', ''))
+        if lit is None:
+            spans = _sql_inert_spans(text) if spans is None else spans
+        _sql_file_target('VACUUM INTO', lit, state, lit is None and _sql_inert(spans, m.start()))
+    n = 0
+    for m in _SQL_WORD_WRITEFILE.finditer(text):
+        i = _sql_skip(text, m.end())
+        if text[i:i + 1] != '(':
+            continue
+        n += 1
+        if n > MAX_SQL_FILE_FUNCS:
+            raise InspectionLimit('more than %d writefile() in one text' % MAX_SQL_FILE_FUNCS)
+        lit = _sql_single_literal(text, _sql_skip(text, i + 1), (',',))
+        if lit is None:
+            spans = _sql_inert_spans(text) if spans is None else spans
+        _sql_file_target('writefile()', lit, state, lit is None and _sql_inert(spans, m.start()))
+
+
+# ---- any argument that names the live database file ----
+
+# Commands that only READ their file arguments (or print them as text). Everything else that is handed the
+# live database file as an argument is refused: that one rule covers tar -x, unzip, gzip, zip -m, xz, open, ...
+_LIVE_READONLY = frozenset((
+    'cat', 'head', 'tail', 'wc', 'stat', 'ls', 'file', 'du', 'df', 'strings', 'xxd', 'hexdump', 'od', 'nl',
+    'cut', 'tr', 'uniq', 'column', 'fold', 'rev', 'jq', 'yq',
+    'sha256sum', 'sha1sum', 'sha512sum', 'shasum', 'md5', 'md5sum', 'b2sum', 'cksum', 'sum',
+    'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'diff', 'cmp',
+    'echo', 'printf', 'test', '[', '[[', 'readlink', 'realpath', 'basename', 'dirname', 'type', 'which', 'whereis',
+    'lsof', 'fuser', 'ps', 'pgrep', 'pkill', 'kill', 'mdls', 'bat', 'cd', 'pushd',
+))
+# handled by their own rules: the file writers, the target writers, git
+_LIVE_ARG_SKIP = frozenset(_FILE_WRITERS) | _TARGET_WRITERS | frozenset(('git',))
+
+
+_DYN_LIVE_FILE_HINT = re.compile(r'(?:^|/)store/(?:claudeclaw[^/]*|[^/]*\.db(?:-wal|-shm|-journal)?)$', re.I)
+
+
+def _arg_candidates(word):
+    """The path texts one argument word can carry: the word, the value of `--opt=VALUE` / `of=VALUE`, the
+    text glued to a short option (`-oPATH`)."""
+    t = word.text
+    if not t or t == '-' or len(t) > 4096:
+        return []
+    out = []
+    if t.startswith('-'):
+        if '=' in t:
+            out.append(t.split('=', 1)[1])
+        elif not t.startswith('--') and len(t) > 2:
+            out.append(t[2:])
+    else:
+        out.append(t)
+        if '=' in t:
+            out.append(t.split('=', 1)[1])
+    return out
+
+
+def _arg_is_live(cand, dyn, state):
+    if not cand:
+        return False
+    if dyn or _has_placeholder(cand):
+        return bool(_DYN_LIVE_FILE_HINT.search(cand))   # only a path that ENDS in store/<db file>; a dir is no file
+    if _candidate_paths(cand, state, False) is None:
+        # the directory is not knowable: only the unmistakable live file NAME counts
+        return os.path.basename(cand.rstrip('/')) in _LIVE_DB_NAMES
+    return _live_path(Word(cand), state)
+
+
+def _join_word(base, member):
+    """`member` (an archive member name) as extracted under the directory word `base` (None = the cwd)."""
+    if base is None:
+        return member
+    if base.dyn or _has_placeholder(base.text):
+        return None
+    return Word(os.path.join(base.text, member.text), member.dyn)
+
+
+_TAR_MODES = (('--create', 'c'), ('--extract', 'x'), ('--get', 'x'), ('--list', 't'), ('--append', 'r'),
+              ('--update', 'u'), ('--diff', 'd'), ('--compare', 'd'))
+
+
+def _live_tar(args, state):
+    """tar: the archive it WRITES (-c / -r / -u), the directory it extracts into (-C) and the members it
+    extracts by name must not be the live database. -t / --list and reading files into an archive are fine."""
+    modes, files, dirs, members, skip = set(), [], [], [], set()
+    n = len(args)
+    for idx, a in enumerate(args):
+        if idx in skip:
+            continue
+        t = a.text
+        if t == '--':
+            members.extend(args[idx + 1:])
+            break
+        if t.startswith('--'):
+            nm, eq, val = t.partition('=')
+            for full, md in _TAR_MODES:
+                if len(nm) >= 4 and full.startswith(nm):
+                    modes.add(md)
+            for full, bag in (('--file', files), ('--directory', dirs)):
+                if len(nm) >= 4 and full.startswith(nm):
+                    if eq:
+                        bag.append(Word(val, a.dyn))
+                    elif idx + 1 < n:
+                        bag.append(args[idx + 1])
+                        skip.add(idx + 1)
+            continue
+        old = idx == 0 and re.fullmatch(r'[A-Za-z]+', t) is not None
+        if (t.startswith('-') and len(t) > 1) or old:
+            pending = []
+            bundle = t.lstrip('-')
+            for j, ch in enumerate(bundle):
+                if ch in 'cxtruAd':
+                    modes.add(ch)
+                if ch in 'fC':
+                    bag = files if ch == 'f' else dirs
+                    rest = bundle[j + 1:]
+                    if rest and t.startswith('-'):      # -fFILE / -CDIR
+                        bag.append(Word(rest, a.dyn))
+                        break
+                    pending.append(bag)
+            for k, bag in enumerate(pending):
+                if idx + 1 + k < n:
+                    bag.append(args[idx + 1 + k])
+                    skip.add(idx + 1 + k)
+            continue
+        members.append(a)
+    if modes & set('cru'):
+        for f in files:
+            if _live_path(f, state):
+                _deny_live_write('tar archive -> ' + f.text)
+    if 'x' in modes:
+        for d in dirs:
+            if _live_path(d, state, True):
+                _deny_live_write('tar -x -C ' + d.text)
+        for m in members:
+            w = _join_word(dirs[-1] if dirs else None, m)
+            if w is not None and _live_path(w, state):
+                _deny_live_write('tar -x ' + m.text)
+
+
+def _live_unzip(args, state):
+    """unzip: the -d directory and the members named on the command line must not be the live database."""
+    dirs, listing, skip = [], False, set()
+    for idx, a in enumerate(args):
+        t = a.text
+        if idx in skip or t == '--' or not t.startswith('-') or t.startswith('--') or len(t) < 2:
+            continue
+        for j, ch in enumerate(t[1:], 1):
+            if ch == 'd':
+                rest = t[j + 1:]
+                if rest:
+                    dirs.append(Word(rest, a.dyn))
+                elif idx + 1 < len(args):
+                    dirs.append(args[idx + 1])
+                    skip.add(idx + 1)
+                break
+            if ch in 'xPn':
+                break
+            if ch in 'ltvzZpc':
+                listing = True
+    if listing:
+        return
+    for d in dirs:
+        if _live_path(d, state, True):
+            _deny_live_write('unzip -d ' + d.text)
+    pos = _positional(args, ('-d', '-x', '-P', '-n'))
+    for m in pos[1:]:
+        w = _join_word(dirs[-1] if dirs else None, m)
+        if w is not None and _live_path(w, state):
+            _deny_live_write('unzip ' + m.text)
+
+
+def _live_cpio_pax(name, args, seg, state):
+    """cpio -p / pax -rw copy files (with -l: as HARD LINKS) and cpio -o / pax -w write an archive: the
+    destination, the archive file and the linked sources must not be the live database."""
+    values = 'FIOHRCED' if name == 'cpio' else 'fsxbopTUGE'
+    letters, filevals, skip = set(), [], set()
+    n = len(args)
+    for idx, a in enumerate(args):
+        if idx in skip:
+            continue
+        t = a.text
+        if t.startswith('--'):
+            nm, eq, val = t.partition('=')
+            if nm == '--link':
+                letters.add('l')
+            elif nm == '--file' and eq:
+                filevals.append(Word(val, a.dyn))
+            continue
+        if t.startswith('-') and len(t) > 1:
+            for j, ch in enumerate(t[1:], 1):
+                if ch in values:
+                    v = t[j + 1:]
+                    if not v and idx + 1 < n:
+                        v = args[idx + 1].text
+                        skip.add(idx + 1)
+                    if ch in 'fFOI' and v:
+                        filevals.append(Word(v, a.dyn))
+                    break
+                letters.add(ch)
+    pos = _positional(args, tuple('-' + c for c in values))
+    link = 'l' in letters
+    if name == 'pax':
+        copy = 'r' in letters and 'w' in letters
+        if 'w' in letters and 'r' not in letters:
+            for f in filevals:
+                if _live_path(f, state):
+                    _deny_live_write('pax -w -f ' + f.text)
+        if copy and pos:
+            if _live_path(pos[-1], state, True):
+                _deny_live_write('pax -rw -> ' + pos[-1].text)
+            if link:
+                for s in pos[:-1]:
+                    if _live_path(s, state, True, True, source=True):
+                        _deny_live_write('pax -rw -l (hardlink) az elo store fajljara: ' + s.text)
+        return
+    if 'o' in letters:
+        for f in filevals:
+            if _live_path(f, state):
+                _deny_live_write('cpio -o -> ' + f.text)
+    if 'p' in letters:
+        if pos and _live_path(pos[-1], state, True):
+            _deny_live_write('cpio -p -> ' + pos[-1].text)
+        if link:
+            prev = seg.prev if seg is not None else None
+            pn, _c, pa, _v = resolve_call(prev.words) if prev is not None and prev.words else (None, None, [], set())
+            if pn not in ('echo', 'printf', 'ls', 'find'):
+                raise Deny('cpio -p -l (hardlink): a linkelt fajlok listajat a kapu nem latja, ezert nem engedett.')
+            for s in pa:
+                if _live_path(s, state, True, True, source=True):
+                    _deny_live_write('cpio -p -l (hardlink) az elo store fajljara: ' + s.text)
+
+
+def _handle_live_args(name, args, seg, state):
+    """One rule for every command not handled above: an argument word that names a live database file
+    (claudeclaw.db, -wal, -shm, -journal, or the same inode under another name) is refused unless the
+    command only reads it (_LIVE_READONLY). The store DIRECTORY alone is not a file and passes."""
+    if name in _LIVE_ARG_SKIP or name in _LIVE_READONLY or name in state.funcs:
+        return                  # (a function of the script itself: its body is in the text and was looked at)
+    if name in ('tar', 'bsdtar', 'gtar', 'gnutar'):
+        _live_tar(args, state)
+        return
+    if name == 'unzip':
+        _live_unzip(args, state)
+        return
+    if name in ('cpio', 'pax'):
+        _live_cpio_pax(name, args, seg, state)
+        return
+    for w in args:
+        for cand in _arg_candidates(w):
+            _charge(state, len(cand))
+            if _arg_is_live(cand, w.dyn, state):
+                _deny_live_write('%s %s' % (name[:20], w.text))
 
 
 # ---- generic fallback: a command the gate has no handler for may still carry the payload ----
 
 _GENERIC_EXEMPT = frozenset((
     # print / search / compare text; they never run their arguments
-    'echo', 'printf', 'cat', 'head', 'tail', 'less', 'more', 'wc', 'sort', 'uniq', 'cut', 'tr', 'sed',
-    'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'diff', 'cmp', 'jq', 'yq', 'column', 'fold', 'nl', 'rev',
+    'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'uniq', 'cut', 'tr',
+    'grep', 'egrep', 'fgrep', 'diff', 'cmp', 'jq', 'yq', 'column', 'fold', 'nl', 'rev',
     'test', '[', '[[', 'true', 'false', ':', 'ls', 'tree', 'stat', 'file', 'du', 'df', 'basename', 'dirname',
     'realpath', 'readlink', 'date', 'pwd', 'which', 'type', 'whereis', 'sleep', 'hostname', 'uname',
     'whoami', 'id', 'printenv', 'wait', 'exit', 'return', 'read', 'set', 'unset', 'export', 'declare',
-    'readonly', 'local', 'typeset', 'cd', 'pushd', 'popd', 'alias', 'history', 'man', 'help',
+    'readonly', 'local', 'typeset', 'cd', 'pushd', 'popd', 'alias', 'history', 'help',
     # shell constructs whose word list is data for the loop / case, not a command
     'for', 'case', 'select', 'in', 'function',
-    # file writers that never execute their arguments (the live-store rule already looked at them)
-    'cp', 'mv', 'ln', 'install', 'dd', 'tee', 'ditto', 'scp', 'sponge', 'mkdir', 'touch', 'rm', 'rmdir',
+    # file writers that never execute their arguments (their targets were already looked at:
+    # _handle_filewrite for cp / mv / ln / ..., _handle_target_writers for rm / truncate / chmod / ...)
+    'cp', 'mv', 'ln', 'link', 'install', 'dd', 'tee', 'ditto', 'scp', 'sponge', 'mkdir', 'touch', 'rm', 'rmdir',
     'chmod', 'chown', 'truncate',
     # their DATA payload is prose or JSON, not a command
-    'curl', 'wget', 'http', 'https', 'gh', 'glab',
+    'curl', 'http', 'https',
     # test / lint / format runners (reached through npx too)
-    'vitest', 'jest', 'tsc', 'eslint', 'prettier', 'shellcheck', 'mocha', 'playwright', 'c8',
-    'pbcopy', 'pbpaste', 'open', 'say', 'shasum', 'sha256sum', 'md5', 'md5sum',
+    'vitest', 'jest', 'tsc', 'eslint', 'prettier', 'shellcheck', 'mocha', 'playwright',
+    'pbcopy', 'pbpaste', 'say', 'shasum', 'sha256sum', 'md5', 'md5sum',
     'kill', 'pkill', 'pgrep', 'ps', 'lsof',
 ))
+# Tools that can run a command through one of their options (a pager, a pre-processor, a compressor,
+# an alias, an extension) and so are exempt from the generic scan ONLY when no such option is there.
+# sed (the `e` command, `s///e`) and open are not exempt at all.
+_GH_DATA_SUBS = frozenset(('pr', 'issue', 'release', 'run', 'search', 'label', 'repo', 'workflow', 'status',
+                           'mr', 'ci', 'pipeline'))
+
+
+def _cond_exempt(name, args):
+    texts = [a.text for a in args]
+    if name == 'rg':
+        return not any(re.match(r'--(?:pre|hostname-bin)', t) for t in texts)
+    if name in ('ag', 'ack'):
+        return not any(t.startswith('--pag') for t in texts)
+    if name == 'sort':
+        return not any(t.startswith('--co') for t in texts)
+    if name in ('less', 'more'):
+        for t in texts:
+            if t[:1] in ('+', '!'):
+                return False
+            if t.startswith('-') and not re.fullmatch(r'-[NRSiIFXrnqsEMmw0-9]+', t):
+                return False
+        return True
+    if name == 'man':
+        for t in texts:
+            if t.startswith('-') and not re.fullmatch(r'-(?:[akfwWhV]+|-(?:all|apropos|whatis|where|help|version))', t):
+                return False
+        return True
+    if name in ('gh', 'glab'):
+        sub = next((t for t in texts if not t.startswith('-')), '')
+        return sub in _GH_DATA_SUBS
+    if name == 'wget':
+        return not any(re.match(r'-[A-Za-z]*e|--ex|--use-a', t) for t in texts)
+    return False
+
+
 # git sub-commands whose arguments are messages, refs and paths. The options BEFORE the sub-command
 # (`git -c alias.x=!cmd`, `-c core.pager=cmd`, `-c core.sshCommand=cmd`) are always looked at.
 _GIT_SAFE_SUBS = frozenset((
@@ -1812,6 +2388,49 @@ def _git_args_to_scan(args):
     return list(args)
 
 
+_GIT_EXEC_LONG = ('--open-files-in-pager', '--ext-diff', '--exec')
+
+
+def _long_abbrev(name, full):
+    """git takes an unambiguous prefix of a long option: `--ext`, `--open-files`, `--out=...`."""
+    return len(name) >= 4 and full.startswith(name)
+
+
+def _git_post_sub_checks(args, state):
+    """The arguments after a message/ref/path sub-command are not text-scanned, but a few options of
+    those sub-commands run a program (a pager, an external diff) or write a file (--output)."""
+    i = 0
+    while i < len(args):
+        t = args[i].text
+        if t == '--':
+            return
+        if t.startswith('-'):
+            i += 2 if t in _GIT_GLOBAL_VALUE_FLAGS else 1
+            continue
+        break
+    else:
+        return
+    sub = args[i].text
+    if sub not in _GIT_SAFE_SUBS:
+        return
+    rest = args[i + 1:]
+    for k, a in enumerate(rest):
+        t = a.text
+        if t == '--':
+            break
+        if t.startswith('--'):
+            name = t.split('=', 1)[0]
+            if any(_long_abbrev(name, f) for f in _GIT_EXEC_LONG):
+                raise Deny('git %s %s: az opcio kulso parancsot (pager, kulso diff, exec) futtat, ezert nem engedett.'
+                           % (sub[:20], name[:30]))
+            if _long_abbrev(name, '--output'):
+                val = Word(t.split('=', 1)[1], a.dyn) if '=' in t else (rest[k + 1] if k + 1 < len(rest) else None)
+                if val is not None and _live_path(val, state):
+                    _deny_live_write('git --output ' + val.text)
+        elif sub == 'grep' and t.startswith('-O'):
+            raise Deny('git grep -O: a talalatokat egy megadott paranccsal nyitja meg, ezert nem engedett.')
+
+
 def _charge(state, n):
     state.budget.chars += n
     if state.budget.chars > MAX_WORK_CHARS:
@@ -1830,10 +2449,11 @@ def _follow_markers(text, markers, state, depth):
 
 
 def _generic_fallback(name, args, seg, state, depth):
-    if name in _GENERIC_EXEMPT:
+    if name in _GENERIC_EXEMPT or _cond_exempt(name, args):
         return
     scan = list(args)
     if name == 'git':
+        _git_post_sub_checks(args, state)
         scan = _git_args_to_scan(args)
     for w in scan:
         for alt in w.alts:
@@ -1849,11 +2469,10 @@ def _generic_fallback(name, args, seg, state, depth):
         if '--password-stdin' in t and name not in _LOGIN_OK and not state.isolated_cli:
             raise Deny('--password-stdin egy olyan parancs argumentumaban, amit a kapu nem ismer: jelszot csak a '
                        'tulajdonos ad meg, agens nem.')
-        m = SQL_WRITE.search(_strip_block_comments(t))
-        if m:
+        hit = _sql_write_summary(t)
+        if hit:
             raise Deny('iras a hitelesito tablakra (%s) egy olyan parancs argumentumaban vagy bemenetebol, amit a '
-                       'kapu nem ismer (%s). Ha csak szoveg, echo/cat/grep-pel jelenitsd meg.'
-                       % (re.sub(r'\s+', ' ', m.group())[:60], name[:30]))
+                       'kapu nem ismer (%s). Ha csak szoveg, echo/cat/grep-pel jelenitsd meg.' % (hit, name[:30]))
         _follow_markers(t, (GENERIC_RUNNER_MARKER,), state, depth)
 
 
@@ -1936,6 +2555,9 @@ def check_words(words, seg, state, depth):
         return
     if name in _FILE_WRITERS:
         _handle_filewrite(name, args, state)
+    if name in _TARGET_WRITERS:
+        _handle_target_writers(name, args, state)
+    _handle_live_args(name, args, seg, state)
     # a direct execution of the CLI or of a shell script by path: ./scripts/dashboard-user.ts, x.sh
     for alt in cmdword.alts:
         if _is_cli_name(_script_stem(alt)):
