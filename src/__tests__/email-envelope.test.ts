@@ -11,6 +11,11 @@ const VECTORS = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.u
   version: number
   valid: { name: string; agent: string; envelope: Record<string, unknown>; canon: string; hash: string }[]
   invalid: { name: string; agent: string; envelope: Record<string, unknown>; field: string }[]
+  extract: {
+    contract: string
+    valid: { name: string; tool: string; tool_input: Record<string, unknown>; fixtures: Record<string, unknown>; agent: string; envelope: Record<string, unknown>; canon: string; hash: string }[]
+    unreadable: { name: string; tool: string; tool_input: Record<string, unknown>; fixtures: Record<string, unknown>; agent: string; reason: string }[]
+  }
 }
 
 const mail = (extra: Record<string, unknown> = {}) => ({ to: ['owner@example.com'], subject: 'Hello', body: 'Hi there', ...extra })
@@ -45,6 +50,38 @@ describe('the golden vectors', () => {
     const r = parseEmailEnvelope(v.envelope, v.agent)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.field).toBe(v.field)
+  })
+})
+
+describe('the gate-side extraction vectors', () => {
+  // The send gate reads the mail out of a tool call (scripts/lib/email_extract.py, tested in
+  // scripts/__tests__/email-extract.test.py). What it must read is stored here with the hash THIS side
+  // computes for that mail, so a mail the gate reads is a mail the server hashes the same way.
+  it('hold enough cases of every kind', () => {
+    expect(VECTORS.extract.valid.length).toBeGreaterThanOrEqual(30)
+    expect(VECTORS.extract.unreadable.length).toBeGreaterThanOrEqual(50)
+    const tools = new Set(VECTORS.extract.valid.map((c) => c.tool))
+    expect(tools.has('Bash')).toBe(true)
+    expect(tools.size).toBeGreaterThan(2)
+    for (const c of [...VECTORS.extract.valid, ...VECTORS.extract.unreadable]) expect(c.name.length).toBeGreaterThan(0)
+    expect(new Set(VECTORS.extract.valid.map((c) => c.name)).size).toBe(VECTORS.extract.valid.length)
+    expect(new Set(VECTORS.extract.unreadable.map((c) => c.name)).size).toBe(VECTORS.extract.unreadable.length)
+  })
+
+  it.each(VECTORS.extract.valid.map((c) => [c.name, c] as const))('the mail read from %s has the stored canon and hash', (_name, c) => {
+    const r = parseEmailEnvelope(c.envelope, c.agent)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.canon).toBe(c.canon)
+    expect(r.hash).toBe(c.hash)
+  })
+
+  it('the first case is the same mail as the "minimal" vector', () => {
+    expect(VECTORS.extract.valid[0].hash).toBe(VECTORS.valid.find((v) => v.name === 'minimal')!.hash)
+  })
+
+  it('every unreadable case names the text its reason must contain', () => {
+    for (const c of VECTORS.extract.unreadable) expect(c.reason.length, c.name).toBeGreaterThan(2)
   })
 })
 

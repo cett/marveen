@@ -1965,5 +1965,1726 @@
    },
    "field": "in_reply_to"
   }
- ]
+ ],
+ "extract": {
+  "contract": "the fields of ONE outgoing mail read out of a tool call (tool + tool_input; fixtures are files created in the call's working directory, {DIR} in a string is that directory). valid: the plain envelope expected, with its canon and hash computed by the server side; unreadable: the call must be refused as unreadable and the reason must contain the given text.",
+  "valid": [
+   {
+    "name": "send.py literal arguments (same mail as the \"minimal\" vector)",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject \"Hello\" --body \"Hi there\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "Hi there"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hi there\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "3c142b05c94d7deb97ba4101fcd1de3203f27291cb857df4101de0b2445dfa6e"
+   },
+   {
+    "name": "send.py direct path, = forms, escaped space",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "./scripts/support-mail/send.py --to=owner@example.com --subject=Hello --body=Hi\\ there"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "Hi there"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hi there\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "3c142b05c94d7deb97ba4101fcd1de3203f27291cb857df4101de0b2445dfa6e"
+   },
+   {
+    "name": "send.py abbreviated options, as argparse reads them",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --t owner@example.com --su Hello --b \"Hi there\" --c bob@example.test"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "Hi there",
+     "cc": [
+      "bob@example.test"
+     ]
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hi there\",\"cc\":[\"bob@example.test\"],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "b96999ddda368136a7b93a5edbc25ab7fc019428d0c738c186172dce2f9f7fd3"
+   },
+   {
+    "name": "send.py env prefix, shell -c wrapper and python flags",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "FOO=1 bash -c 'python3 -u scripts/support-mail/send.py --to owner@example.com --subject Hello --body \"Hi there\"'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "Hi there"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hi there\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "3c142b05c94d7deb97ba4101fcd1de3203f27291cb857df4101de0b2445dfa6e"
+   },
+   {
+    "name": "send.py body from a quoted heredoc keeps its final newline",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello <<'EOF'\nHi there\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "Hi there\n"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hi there\\n\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "4f6b4bd87a0c11fdfb29c5222c1f3214dadd1782b7abc0c289658751d32831ce"
+   },
+   {
+    "name": "send.py body from a here-string",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello <<< 'Hi there'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "Hi there\n"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hi there\\n\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "4f6b4bd87a0c11fdfb29c5222c1f3214dadd1782b7abc0c289658751d32831ce"
+   },
+   {
+    "name": "send.py body from a file on stdin",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello < body.txt"
+    },
+    "fixtures": {
+     "body.txt": {
+      "text": "\u00dcdv\u00f6zl\u00f6m! K\u00e9rem, k\u00fcldje el a sz\u00e1ml\u00e1t.\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "\u00dcdv\u00f6zl\u00f6m! K\u00e9rem, k\u00fcldje el a sz\u00e1ml\u00e1t.\n"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"\u00dcdv\u00f6zl\u00f6m! K\u00e9rem, k\u00fcldje el a sz\u00e1ml\u00e1t.\\n\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "08fcce8d45666982bede0049b8e866d265fcedcf2728f83cd94c64434e9c0142"
+   },
+   {
+    "name": "send.py unquoted heredoc without expansions, backslash rules applied",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello <<EOF\nprice: \\$5 and a back\\\\slash\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "price: $5 and a back\\slash\n"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"price: $5 and a back\\\\slash\\n\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "69049f7e9e78f0bd4375d9b84794d026f63fd73902448cd84f24fb3d8d2609d0"
+   },
+   {
+    "name": "send.py --html sends the body as html: source as body, its fingerprint as html_sha256",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body \"<p>Hi</p>\" --html"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "<p>Hi</p>",
+     "html_sha256": "9c655e84ab91015eed7670dfbb369ffdc31f6efe04ef8bad2615cab6b9e63ca6"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"<p>Hi</p>\",\"cc\":[],\"html_sha256\":\"9c655e84ab91015eed7670dfbb369ffdc31f6efe04ef8bad2615cab6b9e63ca6\",\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "96babf1679dc27f645520d000dedfb477e19f3cf66f5c50862f814613dc02023"
+   },
+   {
+    "name": "send.py display names, duplicates, domain case and order do not matter",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to '\"Bob B.\" <Bob@Example.COM>, owner@Example.com, owner@example.com' --subject Hello --body x --cc \"z@example.test\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "Bob@example.com",
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "x",
+     "cc": [
+      "z@example.test"
+     ]
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"x\",\"cc\":[\"z@example.test\"],\"subject\":\"Hello\",\"to\":[\"Bob@example.com\",\"owner@example.com\"],\"v\":1}",
+    "hash": "80425c027650bbca7db2ba9866d4b70270007913f87c1f5aadf9044f1f13299f"
+   },
+   {
+    "name": "send.py: the last --to wins, as in argparse",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to first@example.test --to owner@example.com --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "x"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"x\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "8f9a8295e71ebaffce2f7c35dfc167eb1872a6d312041698d89206f391c93dd5"
+   },
+   {
+    "name": "send.py accents and an astral emoji, kept as they are",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject \"\u00c1rv\u00edzt\u0171r\u0151\" --body \"Szia \ud83c\udf89\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "\u00c1rv\u00edzt\u0171r\u0151",
+     "body": "Szia \ud83c\udf89"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Szia \ud83c\udf89\",\"cc\":[],\"subject\":\"\u00c1rv\u00edzt\u0171r\u0151\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "5e397f67ca9c34c4a866efed528bc3ee81a39162ae39254bb0a975496a46cc61"
+   },
+   {
+    "name": "send.py after an unrelated command and a comment",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "echo start # not a mail\npython3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "x"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"x\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "8f9a8295e71ebaffce2f7c35dfc167eb1872a6d312041698d89206f391c93dd5"
+   },
+   {
+    "name": "graph-mail send with a comma list and cc",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "npx tsx scripts/graph-mail.ts send --to owner@example.com,bob@example.test --subject Hello --body x --cc c@example.test"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com",
+      "bob@example.test"
+     ],
+     "subject": "Hello",
+     "body": "x",
+     "cc": [
+      "c@example.test"
+     ]
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"x\",\"cc\":[\"c@example.test\"],\"subject\":\"Hello\",\"to\":[\"bob@example.test\",\"owner@example.com\"],\"v\":1}",
+    "hash": "801996552691ed2a45e2f0c512209a89088e50020348ed30e78e4ce18fb0e196"
+   },
+   {
+    "name": "graph-mail send --html",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "npx tsx scripts/graph-mail.ts send --to owner@example.com --subject Hello --body \"<b>x</b>\" --html"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "<b>x</b>",
+     "html_sha256": "e31e3a8eedaa655937bfed7e66be6af1ec5b31b3850ac669dedda6c3de453c79"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"<b>x</b>\",\"cc\":[],\"html_sha256\":\"e31e3a8eedaa655937bfed7e66be6af1ec5b31b3850ac669dedda6c3de453c79\",\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "61cca5b210d77dcf40652be36cf6f621db13015b48d6cbf1dd69d51205b1d2b5"
+   },
+   {
+    "name": "graph-mail reads the FIRST occurrence of a flag, as its argv lookup does",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "node scripts/graph-mail.js send --to owner@example.com --subject Hello --body x --to other@example.test"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "x"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"x\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "8f9a8295e71ebaffce2f7c35dfc167eb1872a6d312041698d89206f391c93dd5"
+   },
+   {
+    "name": "gmail-send.py with every field, a body file, an html file and attachments",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/gmail-send.py --to owner@example.com --to bob@example.test --cc c@example.test --bcc audit@example.test --subject \"Report\" --body-file body.txt --html page.html --attach files/r.pdf --attach files/a.csv --from main@example.test --reply-to reply@example.test --in-reply-to \"<t1@example.test>\""
+    },
+    "fixtures": {
+     "body.txt": {
+      "text": "Body text\n"
+     },
+     "page.html": {
+      "text": "<p>page</p>"
+     },
+     "files/r.pdf": {
+      "text": "hello"
+     },
+     "files/a.csv": {
+      "text": "a,b\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com",
+      "bob@example.test"
+     ],
+     "subject": "Report",
+     "body": "Body text\n",
+     "cc": [
+      "c@example.test"
+     ],
+     "bcc": [
+      "audit@example.test"
+     ],
+     "html_sha256": "93883e119ff6a20c7097184d72bc4d1cc76da0c3b45ed02ae718ce9f1b9aad9c",
+     "attachments": [
+      {
+       "name": "r.pdf",
+       "size": 5,
+       "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      },
+      {
+       "name": "a.csv",
+       "size": 4,
+       "sha256": "5be08c9684a1d25efcee09318204824278b08bbfb4aef973ffefd0b9d7478313"
+      }
+     ],
+     "from": "main@example.test",
+     "reply_to": "reply@example.test",
+     "in_reply_to": "<t1@example.test>"
+    },
+    "canon": "{\"agent\":\"main\",\"attachments\":[{\"name\":\"a.csv\",\"sha256\":\"5be08c9684a1d25efcee09318204824278b08bbfb4aef973ffefd0b9d7478313\",\"size\":4},{\"name\":\"r.pdf\",\"sha256\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"size\":5}],\"bcc\":[\"audit@example.test\"],\"body\":\"Body text\\n\",\"cc\":[\"c@example.test\"],\"from\":\"main@example.test\",\"html_sha256\":\"93883e119ff6a20c7097184d72bc4d1cc76da0c3b45ed02ae718ce9f1b9aad9c\",\"in_reply_to\":\"<t1@example.test>\",\"reply_to\":\"reply@example.test\",\"subject\":\"Report\",\"to\":[\"bob@example.test\",\"owner@example.com\"],\"v\":1}",
+    "hash": "440e91fec93c5817c9ce572736cc2bedc17226109958e5656a9c00ce6fb69c53"
+   },
+   {
+    "name": "sendmail -t with a raw message in a heredoc: folded To, encoded subject",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t -i <<'EOF'\nFrom: Me <me@example.test>\nTo: Bob <bob@example.test>,\n  Carol <carol@example.test>\nCc: copy@example.test\nBcc: audit@example.test\nSubject: =?utf-8?b?w4FydsOtenTFsXLFkQ==?=\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n\nDear all,\nbye\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test",
+      "carol@example.test"
+     ],
+     "subject": "\u00c1rv\u00edzt\u0171r\u0151",
+     "body": "Dear all,\nbye\n",
+     "cc": [
+      "copy@example.test"
+     ],
+     "bcc": [
+      "audit@example.test"
+     ],
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[\"audit@example.test\"],\"body\":\"Dear all,\\nbye\\n\",\"cc\":[\"copy@example.test\"],\"from\":\"me@example.test\",\"subject\":\"\u00c1rv\u00edzt\u0171r\u0151\",\"to\":[\"bob@example.test\",\"carol@example.test\"],\"v\":1}",
+    "hash": "66fff2832dba5a3af07f4ff1adf7e841639c52e100b7d541110247135e561e1b"
+   },
+   {
+    "name": "msmtp --read-recipients with the message in a file",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "msmtp --read-recipients < msg.eml"
+    },
+    "fixtures": {
+     "msg.eml": {
+      "text": "From: Me <me@example.test>\nTo: Bob <bob@example.test>,\n  Carol <carol@example.test>\nCc: copy@example.test\nBcc: audit@example.test\nSubject: =?utf-8?b?w4FydsOtenTFsXLFkQ==?=\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n\nDear all,\nbye\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test",
+      "carol@example.test"
+     ],
+     "subject": "\u00c1rv\u00edzt\u0171r\u0151",
+     "body": "Dear all,\nbye\n",
+     "cc": [
+      "copy@example.test"
+     ],
+     "bcc": [
+      "audit@example.test"
+     ],
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[\"audit@example.test\"],\"body\":\"Dear all,\\nbye\\n\",\"cc\":[\"copy@example.test\"],\"from\":\"me@example.test\",\"subject\":\"\u00c1rv\u00edzt\u0171r\u0151\",\"to\":[\"bob@example.test\",\"carol@example.test\"],\"v\":1}",
+    "hash": "66fff2832dba5a3af07f4ff1adf7e841639c52e100b7d541110247135e561e1b"
+   },
+   {
+    "name": "sendmail with a recipient on the command line that the headers do not list joins bcc",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -oi extra@example.test <<'EOF'\nTo: bob@example.test\nSubject: S\n\nx\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "S",
+     "body": "x\n",
+     "bcc": [
+      "extra@example.test"
+     ]
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[\"extra@example.test\"],\"body\":\"x\\n\",\"cc\":[],\"subject\":\"S\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "f4d617d918e610381e4934f9eb053e9bb88e72081b31253bbd6221a15ecb1aa3"
+   },
+   {
+    "name": "msmtp -t with a multipart/mixed message: plain body, html fingerprint, attachment fingerprint",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "msmtp -t < mp.eml"
+    },
+    "fixtures": {
+     "mp.eml": {
+      "text": "From: me@example.test\nTo: bob@example.test\nSubject: Report\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"BND\"\n\n--BND\nContent-Type: multipart/alternative; boundary=\"ALT\"\n\n--ALT\nContent-Type: text/plain; charset=utf-8\n\nPlain part\n--ALT\nContent-Type: text/html; charset=utf-8\n\n<p>Html part</p>\n--ALT--\n\n--BND\nContent-Type: application/pdf; name=\"r.pdf\"\nContent-Disposition: attachment; filename=\"r.pdf\"\nContent-Transfer-Encoding: base64\n\naGVsbG8=\n--BND--\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "Report",
+     "body": "Plain part",
+     "html_sha256": "e12e8d04a41b3b8eed6377c9664b75a00108d6a4226d65512f973d6055bb9b19",
+     "attachments": [
+      {
+       "name": "r.pdf",
+       "size": 5,
+       "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      }
+     ],
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"attachments\":[{\"name\":\"r.pdf\",\"sha256\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"size\":5}],\"bcc\":[],\"body\":\"Plain part\",\"cc\":[],\"from\":\"me@example.test\",\"html_sha256\":\"e12e8d04a41b3b8eed6377c9664b75a00108d6a4226d65512f973d6055bb9b19\",\"subject\":\"Report\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "3b2eae2f04c7b4461da829c334f4c397140998027a52d075ae90ae237eb03710"
+   },
+   {
+    "name": "sendmail -t, quoted-printable body in iso-8859-2 is decoded",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < qp.eml"
+    },
+    "fixtures": {
+     "qp.eml": {
+      "text": "To: bob@example.test\nSubject: S\nMIME-Version: 1.0\nContent-Type: text/plain; charset=iso-8859-2\nContent-Transfer-Encoding: quoted-printable\n\nSz=E9p =F5sz, =FAj =E9v!\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "S",
+     "body": "Sz\u00e9p \u0151sz, \u00faj \u00e9v!\n"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Sz\u00e9p \u0151sz, \u00faj \u00e9v!\\n\",\"cc\":[],\"subject\":\"S\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "74c784819cbc214600f455a49fd3b981f94f857a5a94fb67f8ac031b845af314"
+   },
+   {
+    "name": "sendmail -t, a base64 body with CRLF line breaks is folded to LF",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < b64.eml"
+    },
+    "fixtures": {
+     "b64.eml": {
+      "text": "To: bob@example.test\nSubject: S\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: base64\n\nbGluZTENCmxpbmUyDQo=\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "S",
+     "body": "line1\nline2\n"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"line1\\nline2\\n\",\"cc\":[],\"subject\":\"S\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "138dd9b99924593985b3ac6ef2f903ef40be1e50fe3a420a87cec97cf83065d0"
+   },
+   {
+    "name": "sendmail -t, a To header given twice: the recipients are united",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < dup.eml"
+    },
+    "fixtures": {
+     "dup.eml": {
+      "text": "To: a@example.test\nTo: b@example.test\nCc: a@example.test\nSubject: S\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "a@example.test",
+      "b@example.test"
+     ],
+     "subject": "S",
+     "body": "x\n",
+     "cc": [
+      "a@example.test"
+     ]
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"x\\n\",\"cc\":[\"a@example.test\"],\"subject\":\"S\",\"to\":[\"a@example.test\",\"b@example.test\"],\"v\":1}",
+    "hash": "178f2271ff230518e030fac53fcf37e3a27a77110b61d223ca029d38d8a71dcc"
+   },
+   {
+    "name": "mail -s -c -b with a heredoc body",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "mail -s 'Quarterly' -c c@example.test -b audit@example.test bob@example.test <<'EOF'\nNumbers attached.\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "Quarterly",
+     "body": "Numbers attached.\n",
+     "cc": [
+      "c@example.test"
+     ],
+     "bcc": [
+      "audit@example.test"
+     ]
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[\"audit@example.test\"],\"body\":\"Numbers attached.\\n\",\"cc\":[\"c@example.test\"],\"subject\":\"Quarterly\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "b594c5690d13df5b002d3387339b9ee8059010ed1d9b5111b1be8953dd2e9479"
+   },
+   {
+    "name": "curl to the Gmail send route, JSON raw message inline, token variable in a header",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' -d '{\"raw\": \"RnJvbTogbWVAZXhhbXBsZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\"}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "Hello",
+     "body": "Hello\nWorld\n",
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hello\\nWorld\\n\",\"cc\":[],\"from\":\"me@example.test\",\"subject\":\"Hello\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "fc2416272b00d5aabe0592ab83357e9b7a61bf647258f08a40774609d701ad5f"
+   },
+   {
+    "name": "curl to the Gmail send route, JSON body from a file with -d @file",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -H \"Authorization: Bearer $TOKEN\" -d @req.json"
+    },
+    "fixtures": {
+     "req.json": {
+      "text": "{\n  \"raw\": \"RnJvbTogbWVAZXhhbXBsZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\"\n}"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "Hello",
+     "body": "Hello\nWorld\n",
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hello\\nWorld\\n\",\"cc\":[],\"from\":\"me@example.test\",\"subject\":\"Hello\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "fc2416272b00d5aabe0592ab83357e9b7a61bf647258f08a40774609d701ad5f"
+   },
+   {
+    "name": "curl to the Gmail send route, JSON body from a heredoc on stdin",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send --data-binary @- <<'EOF'\n{\"raw\": \"RnJvbTogbWVAZXhhbXBsZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\", \"threadId\": \"abc\"}\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "Hello",
+     "body": "Hello\nWorld\n",
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hello\\nWorld\\n\",\"cc\":[],\"from\":\"me@example.test\",\"subject\":\"Hello\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "fc2416272b00d5aabe0592ab83357e9b7a61bf647258f08a40774609d701ad5f"
+   },
+   {
+    "name": "curl -d @file joins the lines of the file, as curl does: a raw message wrapped over two lines",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @wrapped.json"
+    },
+    "fixtures": {
+     "wrapped.json": {
+      "text": "{\"raw\": \"RnJvbTogbWVAZXhhbXBs\nZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\"}"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "Hello",
+     "body": "Hello\nWorld\n",
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hello\\nWorld\\n\",\"cc\":[],\"from\":\"me@example.test\",\"subject\":\"Hello\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "fc2416272b00d5aabe0592ab83357e9b7a61bf647258f08a40774609d701ad5f"
+   },
+   {
+    "name": "curl to the Gmail upload route with a raw MIME file",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s -X POST 'https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media' -H 'Content-Type: message/rfc822' --data-binary @raw.eml"
+    },
+    "fixtures": {
+     "raw.eml": {
+      "text": "From: me@example.test\r\nTo: Bob <bob@example.test>\r\nSubject: Hello\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello\r\nWorld\r\n"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test"
+     ],
+     "subject": "Hello",
+     "body": "Hello\nWorld\n",
+     "from": "me@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hello\\nWorld\\n\",\"cc\":[],\"from\":\"me@example.test\",\"subject\":\"Hello\",\"to\":[\"bob@example.test\"],\"v\":1}",
+    "hash": "fc2416272b00d5aabe0592ab83357e9b7a61bf647258f08a40774609d701ad5f"
+   },
+   {
+    "name": "curl to the Resend API: recipients, text and html, reply-to, thread header, base64 attachment",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s -X POST https://api.resend.com/emails -H 'Authorization: Bearer '\"$KEY\" -H 'Content-Type: application/json' -d '{\"from\": \"Acme <noreply@example.test>\", \"to\": [\"bob@example.test\", \"Carol@Example.test\"], \"cc\": \"c@example.test\", \"bcc\": [\"audit@example.test\"], \"subject\": \"Invoice\", \"text\": \"See attached.\", \"html\": \"<p>See attached.</p>\", \"reply_to\": [\"support@example.test\"], \"headers\": {\"In-Reply-To\": \"<t9@example.test>\", \"X-Entity-Ref-ID\": \"1\"}, \"attachments\": [{\"filename\": \"inv.txt\", \"content\": \"aGVsbG8=\"}], \"tags\": [{\"name\": \"a\", \"value\": \"b\"}]}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "bob@example.test",
+      "Carol@example.test"
+     ],
+     "subject": "Invoice",
+     "body": "See attached.",
+     "cc": [
+      "c@example.test"
+     ],
+     "bcc": [
+      "audit@example.test"
+     ],
+     "html_sha256": "f6dfa5024a9c7264138e1d0d57f0aa374c3d3ae9cd9f20b8c6f0890902eabc0a",
+     "attachments": [
+      {
+       "name": "inv.txt",
+       "size": 5,
+       "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      }
+     ],
+     "from": "noreply@example.test",
+     "reply_to": "support@example.test",
+     "in_reply_to": "<t9@example.test>"
+    },
+    "canon": "{\"agent\":\"main\",\"attachments\":[{\"name\":\"inv.txt\",\"sha256\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"size\":5}],\"bcc\":[\"audit@example.test\"],\"body\":\"See attached.\",\"cc\":[\"c@example.test\"],\"from\":\"noreply@example.test\",\"html_sha256\":\"f6dfa5024a9c7264138e1d0d57f0aa374c3d3ae9cd9f20b8c6f0890902eabc0a\",\"in_reply_to\":\"<t9@example.test>\",\"reply_to\":\"support@example.test\",\"subject\":\"Invoice\",\"to\":[\"Carol@example.test\",\"bob@example.test\"],\"v\":1}",
+    "hash": "1a5a15b79a6ca145303e1b372f00341fc7d06ab416f395c337825180d06744da"
+   },
+   {
+    "name": "Gmail tool: to, cc, bcc, text, html, replyTo, a base64 attachment",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "bob@example.test",
+      "owner@example.com"
+     ],
+     "cc": [
+      "c@example.test"
+     ],
+     "bcc": [
+      "audit@example.test"
+     ],
+     "subject": "Report",
+     "text": "Body",
+     "html": "<p>Body</p>",
+     "replyTo": "r@example.test",
+     "attachments": [
+      {
+       "filename": "a.txt",
+       "content": "aGk="
+      }
+     ]
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com",
+      "bob@example.test"
+     ],
+     "subject": "Report",
+     "body": "Body",
+     "cc": [
+      "c@example.test"
+     ],
+     "bcc": [
+      "audit@example.test"
+     ],
+     "html_sha256": "0d8c591f83d87f2ef8438d024e65603b20294db555fc6e8c119bca4d263ad061",
+     "attachments": [
+      {
+       "name": "a.txt",
+       "size": 2,
+       "sha256": "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4"
+      }
+     ],
+     "reply_to": "r@example.test"
+    },
+    "canon": "{\"agent\":\"main\",\"attachments\":[{\"name\":\"a.txt\",\"sha256\":\"8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4\",\"size\":2}],\"bcc\":[\"audit@example.test\"],\"body\":\"Body\",\"cc\":[\"c@example.test\"],\"html_sha256\":\"0d8c591f83d87f2ef8438d024e65603b20294db555fc6e8c119bca4d263ad061\",\"reply_to\":\"r@example.test\",\"subject\":\"Report\",\"to\":[\"bob@example.test\",\"owner@example.com\"],\"v\":1}",
+    "hash": "dd62a94f1821c49f5ecf8fecc9f774393b79570cacf0a5036b2b072fc6b848ad"
+   },
+   {
+    "name": "Gmail tool: order, case of the domain and repeats of the recipients do not change the mail",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "BOB@EXAMPLE.TEST",
+      "owner@example.com",
+      "owner@example.com"
+     ],
+     "subject": "Report",
+     "text": "Body",
+     "userId": "me"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com",
+      "BOB@example.test"
+     ],
+     "subject": "Report",
+     "body": "Body"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Body\",\"cc\":[],\"subject\":\"Report\",\"to\":[\"BOB@example.test\",\"owner@example.com\"],\"v\":1}",
+    "hash": "08bf8b71aef056e53c60980c20c37321fc6aa2b49f3f46612d8c78305de47a39"
+   },
+   {
+    "name": "Gmail tool: an attachment given by absolute path is read from disk",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S",
+     "text": "x",
+     "attachments": [
+      {
+       "filename": "report.pdf",
+       "content": "{DIR}/report.pdf"
+      }
+     ]
+    },
+    "fixtures": {
+     "report.pdf": {
+      "text": "hello"
+     }
+    },
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S",
+     "body": "x",
+     "attachments": [
+      {
+       "name": "report.pdf",
+       "size": 5,
+       "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      }
+     ]
+    },
+    "canon": "{\"agent\":\"main\",\"attachments\":[{\"name\":\"report.pdf\",\"sha256\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"size\":5}],\"bcc\":[],\"body\":\"x\",\"cc\":[],\"subject\":\"S\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "7d314036a0eabac93b0c7e21db26dd737c7ba6fdb7e090b40b0641b8161ccd05"
+   },
+   {
+    "name": "generic send_email tool: comma string to, \"message\" as the body, a plain string subject",
+    "tool": "send_email",
+    "tool_input": {
+     "to": "bob@example.test, owner@example.com",
+     "subject": "Hello",
+     "message": "Hi there"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com",
+      "bob@example.test"
+     ],
+     "subject": "Hello",
+     "body": "Hi there"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"Hi there\",\"cc\":[],\"subject\":\"Hello\",\"to\":[\"bob@example.test\",\"owner@example.com\"],\"v\":1}",
+    "hash": "856deb6b4ad6fd2c5b870a4b2f1e0b747b24b49e516697bb2f671069766af256"
+   },
+   {
+    "name": "connector send_message: html only, no plain body",
+    "tool": "mcp__claude_ai_Gmail__send_message",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "htmlBody": "<p>x</p>"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "Hello",
+     "body": "",
+     "html_sha256": "31d8e07ec305ac4e2515d1f0b1c8c603b3858044eb7d97807d6d0970838cb0be"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"\",\"cc\":[],\"html_sha256\":\"31d8e07ec305ac4e2515d1f0b1c8c603b3858044eb7d97807d6d0970838cb0be\",\"subject\":\"Hello\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "3e733ba8970fbd1ffa814d63f0f4c06b4ce75756f9363990142b5b43fba97c2a"
+   },
+   {
+    "name": "Hungarian accents and an astral emoji travel unchanged",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "\u00dcdv\u00f6zlet",
+     "text": "\u00c1rv\u00edzt\u0171r\u0151 t\u00fck\u00f6rf\u00far\u00f3g\u00e9p \ud83c\udf89 \u0151"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "envelope": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "\u00dcdv\u00f6zlet",
+     "body": "\u00c1rv\u00edzt\u0171r\u0151 t\u00fck\u00f6rf\u00far\u00f3g\u00e9p \ud83c\udf89 \u0151"
+    },
+    "canon": "{\"agent\":\"main\",\"bcc\":[],\"body\":\"\u00c1rv\u00edzt\u0171r\u0151 t\u00fck\u00f6rf\u00far\u00f3g\u00e9p \ud83c\udf89 \u0151\",\"cc\":[],\"subject\":\"\u00dcdv\u00f6zlet\",\"to\":[\"owner@example.com\"],\"v\":1}",
+    "hash": "f1b654308b413f2807f65ae1aeac0d69a248c7cdbd5a0e46c73da223ba5325a8"
+   }
+  ],
+  "unreadable": [
+   {
+    "name": "a command substitution in the body",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body \"$(cat letter.txt)\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "command substitution"
+   },
+   {
+    "name": "a backtick substitution anywhere in the call",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "echo `date`; python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "command substitution"
+   },
+   {
+    "name": "a variable in the body",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body \"$BODY\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "expand"
+   },
+   {
+    "name": "a variable that is the recipient",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to $ADDR --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "expand"
+   },
+   {
+    "name": "a brace-expanded recipient list",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to {a,b}@example.test --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "expand"
+   },
+   {
+    "name": "a glob in an argument",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body *"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "expand"
+   },
+   {
+    "name": "an ANSI-C quoted subject",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject $'a\\nBcc: evil@example.test' --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "expand"
+   },
+   {
+    "name": "the body comes from a pipe",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "echo hi | python3 scripts/support-mail/send.py --to owner@example.com --subject Hello"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "pipe"
+   },
+   {
+    "name": "two mails in one call (;)",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject A --body x; python3 scripts/support-mail/send.py --to bob@example.test --subject B --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "more than one mail command"
+   },
+   {
+    "name": "two mails in one call (&&)",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject A --body x && python3 scripts/support-mail/send.py --to bob@example.test --subject B --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "more than one mail command"
+   },
+   {
+    "name": "two mails, one of them in a shell -c",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject A --body x\nbash -c \"python3 scripts/support-mail/send.py --to bob@example.test --subject B --body x\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "more than one mail command"
+   },
+   {
+    "name": "a command that is not a mail command",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "echo hello"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "no mail command"
+   },
+   {
+    "name": "mail code written inline",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 -c \"import smtplib\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "not one the reader understands"
+   },
+   {
+    "name": "swaks is not read",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "swaks --to a@example.test --server smtp.example.test"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "not a form"
+   },
+   {
+    "name": "send.py: an option it does not have",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body x --bcc spy@example.test"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "unknown or ambiguous"
+   },
+   {
+    "name": "send.py: --h is ambiguous (help or html)",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body x --h"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "unknown or ambiguous"
+   },
+   {
+    "name": "send.py: a positional argument",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body x extra@example.test"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "positional"
+   },
+   {
+    "name": "send.py: a body that starts with a dash would be read as an option",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello --body -x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "starts with"
+   },
+   {
+    "name": "send.py: an option without its value",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "no value"
+   },
+   {
+    "name": "send.py: a line break in the subject (header injection)",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject \"Hello\nBcc: spy@example.test\" --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "line break"
+   },
+   {
+    "name": "a quoted display name that hides a second address",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to '\"a@example.test,b@example.test\" <c@example.test>' --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "\"@\""
+   },
+   {
+    "name": "group syntax",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to 'Team: a@example.test, b@example.test;' --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "group"
+   },
+   {
+    "name": "an address with two @",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to a@b@example.test --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "no address"
+   },
+   {
+    "name": "a recipient with no @",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to bob --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "\"@\""
+   },
+   {
+    "name": "a non-ASCII domain",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to a@p\u00e9lda.hu --subject Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "plain local@domain"
+   },
+   {
+    "name": "a relative body file after a cd",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "cd /somewhere && python3 scripts/support-mail/send.py --to owner@example.com --subject Hello < body.txt"
+    },
+    "fixtures": {
+     "body.txt": {
+      "text": "x"
+     }
+    },
+    "agent": "main",
+    "reason": "after a cd"
+   },
+   {
+    "name": "a body file that does not exist",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello < missing.txt"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "cannot be read"
+   },
+   {
+    "name": "an unquoted heredoc with a $ expansion",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello <<EOF\nvalue $HOME\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "heredoc body"
+   },
+   {
+    "name": "a heredoc that is never closed",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject Hello <<'EOF'\ntext"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "never closed"
+   },
+   {
+    "name": "an unterminated quote",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "python3 scripts/support-mail/send.py --to owner@example.com --subject \"Hello --body x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "unterminated"
+   },
+   {
+    "name": "graph-mail: not the send subcommand",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "npx tsx scripts/graph-mail.ts list --folder inbox"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "not \"send\""
+   },
+   {
+    "name": "graph-mail: a cc entry with a space after the comma",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "npx tsx scripts/graph-mail.ts send --to owner@example.com --subject S --body x --cc \"a@example.test, b@example.test\""
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "plain local@domain"
+   },
+   {
+    "name": "sendmail: no message on stdin",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "no message"
+   },
+   {
+    "name": "sendmail: no recipients at all",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail <<'EOF'\nSubject: S\n\nx\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "no recipients"
+   },
+   {
+    "name": "sendmail: an option the reader does not know",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t -C other.cf <<'EOF'\nTo: a@example.test\n\nx\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "not one the reader understands"
+   },
+   {
+    "name": "sendmail: -o without its glued value",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t -o <<'EOF'\nTo: a@example.test\n\nx\nEOF"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "glued"
+   },
+   {
+    "name": "a message with two Subject headers",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nSubject: One\nSubject: Two\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "reason": "more than one \"subject\""
+   },
+   {
+    "name": "a message with two From headers",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nFrom: a@example.test\nFrom: b@example.test\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "reason": "more than one \"from\""
+   },
+   {
+    "name": "a message with Resent-To",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nResent-To: spy@example.test\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "reason": "Resent"
+   },
+   {
+    "name": "a message with a non-ASCII To header",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: Zolt\u00e1n <a@p\u00e9lda.hu>\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "reason": "non-ASCII"
+   },
+   {
+    "name": "a message with a quoted display name that hides an address",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: \"a@example.test, b@example.test\" <c@example.test>\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "reason": "\"@\""
+   },
+   {
+    "name": "a message with two reply-to addresses",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nReply-To: b@example.test, c@example.test\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "reason": "exactly one"
+   },
+   {
+    "name": "a message with two inline plain parts",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"B\"\n\n--B\nContent-Type: text/plain\n\none\n--B\nContent-Type: text/plain\n\ntwo\n--B--\n"
+     }
+    },
+    "agent": "main",
+    "reason": "more than one inline text/plain"
+   },
+   {
+    "name": "a message that carries another message",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"B\"\n\n--B\nContent-Type: text/plain\n\none\n--B\nContent-Type: message/rfc822\n\nSubject: inner\n\ninner\n--B--\n"
+     }
+    },
+    "agent": "main",
+    "reason": "another message"
+   },
+   {
+    "name": "a multipart message whose boundary never shows up",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"B\"\n\none\n"
+     }
+    },
+    "agent": "main",
+    "reason": "malformed"
+   },
+   {
+    "name": "a body in a charset nobody knows",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nContent-Type: text/plain; charset=nope-9\n\nx\n"
+     }
+    },
+    "agent": "main",
+    "reason": "charset"
+   },
+   {
+    "name": "curl to a host that is not a mail API",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s -X POST https://example.test/send -d '{}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "not a mail API"
+   },
+   {
+    "name": "curl to the Gmail draft send route",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/drafts/send -d '{\"id\":\"r1\"}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "send route"
+   },
+   {
+    "name": "curl --data-binary keeps the line break, so the same wrapped file is not JSON",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send --data-binary @wrapped.json"
+    },
+    "fixtures": {
+     "wrapped.json": {
+      "text": "{\"raw\": \"RnJvbTogbWVAZXhhbXBs\nZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\"}"
+     }
+    },
+    "agent": "main",
+    "reason": "not valid JSON"
+   },
+   {
+    "name": "sendmail: the message comes from a pipe",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "echo 'To: a@example.test' | sendmail -t"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "pipe"
+   },
+   {
+    "name": "a message with no blank line between headers and body",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nSubject: S\nthis line is not a header\nmore\n"
+     }
+    },
+    "agent": "main",
+    "reason": "malformed"
+   },
+   {
+    "name": "a nested multipart that is never closed",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "text": "To: a@example.test\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"B\"\n\n--B\nContent-Type: multipart/alternative; boundary=\"C\"\n\n--C\nContent-Type: text/plain\n\nx\n--B--\n"
+     }
+    },
+    "agent": "main",
+    "reason": "malformed"
+   },
+   {
+    "name": "a utf-8 body that is not valid utf-8",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "sendmail -t < m.eml"
+    },
+    "fixtures": {
+     "m.eml": {
+      "base64": "VG86IGFAZXhhbXBsZS50ZXN0CkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD11dGYtOAoKYmFkIP8gYnl0ZQo="
+     }
+    },
+    "agent": "main",
+    "reason": "declared charset"
+   },
+   {
+    "name": "curl with two -d options",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d '{\"raw\":\"AAAA\"}' -d '{\"raw\":\"BBBB\"}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "exactly one request body"
+   },
+   {
+    "name": "curl with a form upload",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -F raw=@m.eml"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "not one the reader understands"
+   },
+   {
+    "name": "curl with the URL in a variable",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s $URL -d '{\"raw\":\"AAAA\"}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "expand"
+   },
+   {
+    "name": "Gmail REST body with a field the reader does not know",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d '{\"raw\": \"RnJvbTogbWVAZXhhbXBsZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\", \"labelIds\": [\"SENT\"]}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "does not know"
+   },
+   {
+    "name": "Gmail REST body that names raw twice",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d '{\"raw\":\"RnJvbTogbWVAZXhhbXBsZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\",\"raw\":\"RnJvbTogbWVAZXhhbXBsZS50ZXN0DQpUbzogQm9iIDxib2JAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogSGVsbG8NCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8NCldvcmxkDQo\"}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "twice"
+   },
+   {
+    "name": "Gmail REST body whose raw is not base64url",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d '{\"raw\":\"not base64 !!\"}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "base64"
+   },
+   {
+    "name": "Resend with an attachment fetched from a URL",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://api.resend.com/emails -d '{\"from\": \"a@example.test\", \"to\": [\"owner@example.com\"], \"subject\": \"S\", \"text\": \"x\", \"attachments\": [{\"path\": \"https://example.test/a.pdf\", \"filename\": \"a.pdf\"}]}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "URL"
+   },
+   {
+    "name": "Resend batch",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://api.resend.com/emails/batch -d '[]'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "POST /emails"
+   },
+   {
+    "name": "Resend with a field the reader does not know",
+    "tool": "Bash",
+    "tool_input": {
+     "command": "curl -s https://api.resend.com/emails -d '{\"to\": [\"owner@example.com\"], \"subject\": \"S\", \"text\": \"x\", \"template\": \"t1\"}'"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "does not know"
+   },
+   {
+    "name": "tool input: a field that may name recipients",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "recipients": [
+      "spy@example.test"
+     ],
+     "subject": "S",
+     "text": "x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "may name recipients"
+   },
+   {
+    "name": "tool input: a field the reader does not know",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S",
+     "text": "x",
+     "routing": "fast"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "does not know"
+   },
+   {
+    "name": "tool input: the body given twice, differently",
+    "tool": "send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S",
+     "body": "one",
+     "text": "two"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "body twice"
+   },
+   {
+    "name": "tool input: a custom header that could add a recipient",
+    "tool": "send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S",
+     "body": "x",
+     "headers": {
+      "Bcc": "spy@example.test"
+     }
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "custom header"
+   },
+   {
+    "name": "tool input: a display name that hides an address",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "\"a@example.test,b@example.test\" <c@example.test>"
+     ],
+     "subject": "S",
+     "text": "x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "\"@\""
+   },
+   {
+    "name": "tool input: an attachment path that is relative",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S",
+     "text": "x",
+     "attachments": [
+      {
+       "filename": "a.pdf",
+       "path": "a.pdf"
+      }
+     ]
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "absolute"
+   },
+   {
+    "name": "tool input: attachment content that is neither base64 nor a readable file",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S",
+     "text": "x",
+     "attachments": [
+      {
+       "filename": "a.pdf",
+       "content": "/no/such/file.pdf"
+      }
+     ]
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "cannot be read"
+   },
+   {
+    "name": "tool input: to is an object",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": {
+      "a": 1
+     },
+     "subject": "S",
+     "text": "x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "list of texts"
+   },
+   {
+    "name": "tool input: subject with a line break",
+    "tool": "mcp__gmail__gmail_send_email",
+    "tool_input": {
+     "to": [
+      "owner@example.com"
+     ],
+     "subject": "S\r\nBcc: spy@example.test",
+     "text": "x"
+    },
+    "fixtures": {},
+    "agent": "main",
+    "reason": "line break"
+   }
+  ]
+ }
 }
