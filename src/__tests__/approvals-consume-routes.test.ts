@@ -321,11 +321,11 @@ describe('the permission', () => {
     expect(resolveRequiredPermission('GET', '/api/approvals/abc/events')).toBe('approvals:read')
   })
 
-  it('is held by admin and fleet_agent only: read_only and viewer, who may approve, may not use one up', () => {
+  it('is held by admin and fleet_agent only: read_only and viewer, who may only look at approvals, may not use one up', () => {
     expect(hasPermission('admin', 'approvals:consume')).toBe(true)
     expect(hasPermission('fleet_agent', 'approvals:consume')).toBe(true)
     for (const role of ALL_ROLES.filter((r) => r !== 'admin')) expect(hasPermission(role, 'approvals:consume'), role).toBe(false)
-    expect(hasPermission('viewer', 'approvals:write')).toBe(true)
+    expect(hasPermission('viewer', 'approvals:write')).toBe(false)
   })
 })
 

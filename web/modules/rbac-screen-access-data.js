@@ -25,7 +25,7 @@ export const SCREEN_ACCESS_ROLES = ['admin', 'agent', 'read_only', 'viewer']
 export const SCREEN_ACCESS_ROWS = [
   { key: 'overview', backend: 'memories:read (fleet fields filtered out); the Rendszer/status block is admin:all and hidden for the rest', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
   { key: 'kanban', backend: 'kanban:read/write', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
-  { key: 'approvals', backend: 'approvals:read/write (agent has no write)', roles: { admin: 'full', agent: 'ro', read_only: 'full', viewer: 'full' } },
+  { key: 'approvals', backend: 'approvals:read/write (only admin writes)', roles: { admin: 'full', agent: 'ro', read_only: 'ro', viewer: 'ro' } },
   { key: 'workspaceDocs', backend: 'memories:read/write', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },
   { key: 'agents', backend: 'GET: agents:read; write: admin:all', roles: { admin: 'full', agent: 'ro', read_only: 'ro', viewer: 'ro' } },
   { key: 'memories', backend: 'memories:read/write', roles: { admin: 'full', agent: 'full', read_only: 'ro', viewer: 'ro' } },

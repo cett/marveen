@@ -154,6 +154,9 @@ describe('approvals tenant scoping -- POST forbidden for session non-admin', () 
 })
 
 describe('approvals IDOR guard -- PATCH resolve', () => {
+  // The handler's own guard, called without the permission gate. In front of it the gate refuses a viewer or
+  // read_only session (approvals:write is admin only, approvals-write-admin-only.test.ts); this stays as the
+  // second layer for a mode where the gate does not refuse (RBAC_MODE=shadow).
   it('non-admin session gets 404 for cross-tenant approval (anti-enumeration)', async () => {
     // Approval belongs to tenant-y, caller is in tenant-x -> 404, not 403
     vi.mocked(db.getApproval).mockReturnValue({

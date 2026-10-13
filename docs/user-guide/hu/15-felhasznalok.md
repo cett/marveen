@@ -42,7 +42,7 @@ A rendszer négy hozzáférési szintet különböztet meg.
 | Ágensek listázása | X | X | X | X |
 | Üzenet küldése ágensnek | X | X | | |
 | Jóváhagyások olvasása | X | X | X | X |
-| Jóváhagyások írása | X | | X | X |
+| Jóváhagyások írása | X | | | |
 | Blackboard olvasása | X | X | X | X |
 | Blackboard írása | X | X | | |
 | Ütemezett feladatok olvasása | X | X | X | X |
