@@ -62,6 +62,7 @@ import json
 import os
 import re
 import signal
+import stat
 import sys
 
 HARD_TIMEOUT_S = 8
@@ -77,6 +78,11 @@ MAX_SUBS = 128
 MAX_SCRIPT_BYTES = 262144
 MAX_BRACE_ALTS = 64
 MAX_GLOB_HITS = 50
+MAX_STORE_SCAN = 1024         # directory entries looked at when hunting for the live DB files
+MAX_LIVE_INODES = 64          # live-store inodes kept
+MAX_LINK_DESTS = 16           # `ln` link names followed exactly; more is "unknown"
+MAX_CD_TARGETS = 16           # absolute `cd` targets followed exactly; more is "unknown"
+MAX_GENERIC_MARKERS = 8      # marker hits followed per argument text in the generic fallback
 
 CLI_NAMES = ('dashboard-user',)
 CLI_PREFIXES = ('security-reset',)
@@ -127,10 +133,11 @@ def _audit(agent_id, reason_hash):
         auth = agent_token.resolve(agent_id=agent_id, store_dir=os.path.join(root, 'store'))
         if not auth.token:
             return
-        port = os.environ.get('WEB_PORT') or '3420'
+        import dashboard_api  # noqa: E402  the shared resolver: DASHBOARD_BASE_URL, WEB_PORT, the install's .env
+        base = dashboard_api.base_url()
         urllib.request.urlopen(
             urllib.request.Request(
-                'http://localhost:%s/api/hook-audit' % port,
+                base + '/api/hook-audit',
                 data=json.dumps({'agent_id': agent_id, 'hook_type': 'PreToolUse', 'verdict': 'deny',
                                  'tool_name': 'Bash', 'reason': reason_hash}).encode(),
                 headers=auth.headers({'Content-Type': 'application/json'}),
@@ -178,7 +185,7 @@ class Word(object):
 
 
 class Seg(object):
-    __slots__ = ('words', 'assigns', 'heredocs', 'herestr', 'stdin_files', 'prev', 'subs')
+    __slots__ = ('words', 'assigns', 'heredocs', 'herestr', 'stdin_files', 'prev', 'subs', 'out_files')
 
     def __init__(self):
         self.words = []
@@ -186,6 +193,7 @@ class Seg(object):
         self.heredocs = []     # (body, quoted_delimiter)
         self.herestr = []
         self.stdin_files = []
+        self.out_files = []    # Word objects: the targets of > >> >| &> redirections
         self.prev = None       # previous segment of the same pipeline
         self.subs = []         # $(...) / `...` / <(...) bodies seen in this segment
 
@@ -411,6 +419,8 @@ def lex(cmd, state):
                 cur.stdin_files.append(word.text)
             elif r == 'here':
                 cur.herestr.append(word.text)
+            elif r == 'out':
+                cur.out_files.append(word)
             elif isinstance(r, tuple) and r[0] == 'heredoc':
                 openers[0] += 1
                 if openers[0] > MAX_HEREDOC_OPENERS:
@@ -426,7 +436,8 @@ def lex(cmd, state):
     def end_seg(pipe_next=False):
         nonlocal cur
         end_word()
-        if cur.words or cur.assigns or cur.heredocs or cur.herestr or cur.stdin_files or cur.subs:
+        if (cur.words or cur.assigns or cur.heredocs or cur.herestr or cur.stdin_files or cur.subs
+                or cur.out_files):
             _apply_assigns(cur, state)
             segs.append(cur)
             prev = cur
@@ -649,7 +660,7 @@ def lex(cmd, state):
                         i = j
                         redir = None
                         continue
-                redir = 'skip'
+                redir = 'out'
             continue
         if ch == '&':
             if cmd.startswith('&>', i):
@@ -657,7 +668,7 @@ def lex(cmd, state):
                 i += 2
                 if i < n and cmd[i] == '>':
                     i += 1
-                redir = 'skip'
+                redir = 'out'
                 continue
             end_seg()
             i += 2 if cmd.startswith('&&', i) else 1
@@ -741,6 +752,13 @@ class State(object):
         self.cwd = cwd or os.getcwd()
         self.seen_files = set()
         self.isolated_cli = False
+        self.dir_changed = False    # a directory change the gate cannot follow (relative / dynamic cd, pushd, env -C ...)
+        self.cd_targets = []        # real paths of the ABSOLUTE `cd /x` targets in the inspected text
+        self.link_made = False      # an `ln` in the inspected text: a link may not exist yet when we look
+        self.link_global = False    # an `ln` whose link name the gate cannot tell: any path may be that link
+        self.link_dests = []        # the link names (or link dirs) of the `ln` commands in the text
+        self.store_dirs = None      # cache of _store_dirs
+        self.live_inodes = None     # cache of _live_inodes
 
 
 _SHELLS = ('sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'fish')
@@ -891,7 +909,9 @@ def _cli_decision(rest, state):
 # ---- SQL / code ---------------------------------------------------------------------
 
 _T = '(?:' + '|'.join(sorted(AUTH_TABLES, key=len, reverse=True)) + ')'
-_SQL_SEP = r'(?:\s|/\*.*?\*/|--[^\n]*\n)+'
+# Block comments are cut out first by _strip_block_comments (one linear pass), so the separator
+# between a verb and the table name is whitespace or a `--` line comment: no lazy `.*?` scan.
+_SQL_SEP = r'(?:\s|--[^\n]*\n)+'
 _TBL = r'(?:["`\[]?\w+["`\]]?\.)?["`\[]?' + _T + r'["`\]]?(?![\w$])'
 SQL_WRITE = re.compile(
     r'(?<![\w$])(?:insert' + _SQL_SEP + r'(?:or' + _SQL_SEP + r'\w+' + _SQL_SEP + r')?into'
@@ -902,7 +922,7 @@ SQL_WRITE = re.compile(
     r'|alter' + _SQL_SEP + r'table'
     r'|truncate(?:' + _SQL_SEP + r'table)?'
     r'|rename' + _SQL_SEP + r'to'
-    r'|create' + _SQL_SEP + r'trigger[^;]*?\bon'
+    r'|create' + _SQL_SEP + r'trigger[^;]{0,200}?\bon'
     r')' + _SQL_SEP + _TBL,
     re.I | re.S)
 SQL_DOT_WRITE = re.compile(r'(?m)^\s*\.(?:import|restore)\b.*$', re.I)
@@ -929,11 +949,34 @@ CLI_MARKER = re.compile(
     r'|security[-_:]reset|sessions:clear|--password-stdin')
 
 
+def _strip_block_comments(text):
+    """`/* ... */` replaced by one space, in ONE linear pass (an unclosed `/*` is left alone: once
+    a `*/` is missing, none after it can close either, so the search is not repeated)."""
+    if '/*' not in text:
+        return text
+    out = []
+    i = 0
+    while True:
+        j = text.find('/*', i)
+        if j == -1:
+            out.append(text[i:])
+            break
+        k = text.find('*/', j + 2)
+        if k == -1:
+            out.append(text[i:])
+            break
+        out.append(text[i:j])
+        out.append(' ')
+        i = k + 2
+    return ''.join(out)
+
+
 def inspect_sql(text, live):
     if SQL_DOT_SHELL.search(text):
         raise Deny('sqlite3 .shell / .system: tetszoleges parancs a kapu mogott, nem engedett.')
-    if live and (SQL_WRITE.search(text) or SQL_DOT_WRITE.search(text)):
-        m = SQL_WRITE.search(text)
+    stripped = _strip_block_comments(text)
+    if live and (SQL_WRITE.search(stripped) or SQL_DOT_WRITE.search(text)):
+        m = SQL_WRITE.search(stripped)
         raise Deny('iras a hitelesito tablakra (%s) az elo store DB-n. A bejelentkezes, session, token '
                    'es jovahagyas allapotat csak a dashboard allitja.'
                    % (re.sub(r'\s+', ' ', m.group())[:60] if m else '.import / .restore'))
@@ -944,7 +987,7 @@ def inspect_code(text, state, python=False):
     database is not visible here, so a write to an auth table is blocked wherever it points.
     The app's own mutators are TypeScript names: python cannot call them, so in python code they
     are only text (a source edit with s.replace(...)) and are not looked for."""
-    m = SQL_WRITE.search(text)
+    m = SQL_WRITE.search(_strip_block_comments(text))
     if m:
         raise Deny('iras a hitelesito tablakra interpreter-kodbol (%s).'
                    % re.sub(r'\s+', ' ', m.group())[:60])
@@ -968,16 +1011,150 @@ def _db_is_live(path_word, state):
         return False
     if p.startswith('file:'):
         p = p[5:].split('?', 1)[0]
-    if not os.path.isabs(p):
-        p = os.path.join(state.cwd, p)
+    if _has_placeholder(p):
+        return True          # part of the path comes out of a $(...) / `...`: not knowable
+    reals = _candidate_paths(p, state)
+    if reals is None:
+        return True          # a cd / pushd / env -C ... or an ln in the command: the directory is unknown
+    for real in reals:
+        if _in_store_dir(real, state) or _is_live_inode(real, state, True):
+            return True
+    return False
+
+
+def _has_placeholder(text):
+    """The lexer leaves '$(...)' / '`...`' / '<(...)' in a word whose text came out of a substitution."""
+    return '$(...)' in text or '`...`' in text or '<(...)' in text or '$((...))' in text
+
+
+def _candidate_paths(p, state, links=True):
+    """The real paths the path text `p` can name when the command line runs. A relative path is
+    resolved against the event cwd and against every ABSOLUTE `cd` target in the command line (the
+    union over-approximates: it can only block more). None = cannot be told: another kind of
+    directory change (cd to a relative / dynamic target, pushd, env -C, ...), or an `ln` in the same
+    command line whose link name is, or lies above, the path (a link made there does not exist yet when
+    the gate looks; an `ln` elsewhere does not matter)."""
+    if links and state.link_global:
+        return None
     try:
-        real = os.path.realpath(p)
+        if os.path.isabs(p):
+            reals = [os.path.realpath(p)]
+        elif state.dir_changed:
+            return None
+        else:
+            reals = [os.path.realpath(os.path.join(c, p)) for c in [state.cwd] + state.cd_targets]
     except Exception:
+        return None
+    if links and state.link_dests and any(_link_hits(r, state) for r in reals):
+        return None
+    return reals
+
+
+def _link_hits(real, state, below=False):
+    """True when the (resolved) path `real` is, or lies under, a link name an `ln` of this command line
+    creates: the link is not there yet, so realpath cannot follow it. With `below` a link name that lies
+    INSIDE the directory `real` counts too (a link dropped into a store dir)."""
+    if state.link_global:
         return True
-    return _in_store_dir(real, state)
+    for d in state.link_dests:
+        if os.path.isabs(d):
+            bases = [d]
+        elif state.dir_changed:
+            return True
+        else:
+            bases = [os.path.join(c, d) for c in [state.cwd] + state.cd_targets]
+        for b in bases:
+            b = b.rstrip('/') or '/'
+            try:
+                named = os.path.join(os.path.realpath(os.path.dirname(b)), os.path.basename(b))
+                there = os.path.realpath(b)
+            except Exception:
+                return True
+            for x in (named, there):
+                if real == x or real.startswith(x.rstrip('/') + os.sep):
+                    return True
+                if below and x.startswith(real.rstrip('/') + os.sep):
+                    return True
+    return False
+
+
+# The file names of a SQLite database and its sidecars; the live store dir holds them.
+_DB_FILE_RE = re.compile(r'(?:\.db|\.sqlite3?)(?:-wal|-shm|-journal)?$|^claudeclaw', re.I)
+
+
+def _looks_db(text):
+    return bool(_DB_FILE_RE.search(os.path.basename(text.rstrip('/'))))
+
+
+def _live_inodes(state):
+    """(st_dev, st_ino) of claudeclaw.db, its -wal / -shm and every *.db / *.db-wal / *.db-shm
+    directly inside a live store dir (bounded: MAX_STORE_SCAN entries scanned, MAX_LIVE_INODES kept).
+    A hard link elsewhere is the SAME file under another name; realpath cannot see that."""
+    if state.live_inodes is not None:
+        return state.live_inodes
+    out = set()
+    for d in _store_dirs(state):
+        for nm in ('claudeclaw.db', 'claudeclaw.db-wal', 'claudeclaw.db-shm'):
+            try:
+                st = os.stat(os.path.join(d, nm))
+                out.add((st.st_dev, st.st_ino))
+            except OSError:
+                pass
+        try:
+            with os.scandir(d) as it:
+                seen = 0
+                for e in it:
+                    seen += 1
+                    if seen > MAX_STORE_SCAN or len(out) >= MAX_LIVE_INODES:
+                        break
+                    if _DB_FILE_RE.search(e.name):
+                        try:
+                            st = e.stat()
+                            out.add((st.st_dev, st.st_ino))
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+    state.live_inodes = out
+    return out
+
+
+def _is_live_inode(real, state, nlink_rule):
+    """True when the existing regular file at `real` (already resolved) is one of the live store's
+    database files under another name (same device + inode), or - nlink_rule - has more than one
+    hard link at all: a database file with a second name somewhere is treated as live."""
+    try:
+        st = os.stat(real)
+    except (OSError, ValueError):
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    if (st.st_dev, st.st_ino) in _live_inodes(state):
+        return True
+    return bool(nlink_rule and st.st_nlink > 1)
+
+
+def _dir_shares_live_files(real, state):
+    """A throw-away store dir that holds a database file which is really the live one (a hard link, or
+    a symlink to it) or any database file with more than one name is NOT a throw-away store. A dir too
+    big to list within MAX_STORE_SCAN entries cannot be vouched for either."""
+    try:
+        with os.scandir(real) as it:
+            seen = 0
+            for e in it:
+                seen += 1
+                if seen > MAX_STORE_SCAN:
+                    return True
+                if _DB_FILE_RE.search(e.name) and _is_live_inode(os.path.realpath(e.path), state, True):
+                    return True
+    except OSError:
+        return False        # the dir does not exist (yet): the app creates a fresh store there
+    return False
 
 
 def _store_dirs(state):
+    if state.store_dirs is not None:
+        return state.store_dirs
     dirs = set()
     for root in (_install_root(), os.environ.get('CLAUDE_PROJECT_DIR'), os.path.dirname(os.path.dirname(_hooks_dir()))):
         if root:
@@ -994,6 +1171,7 @@ def _store_dirs(state):
         if parent == cur:
             break
         cur = parent
+    state.store_dirs = dirs
     return dirs
 
 
@@ -1172,6 +1350,11 @@ def _handle_node(name, args, seg, state, depth):
     rest = _runner_script_hit(args, state)
     if rest is not None:
         _cli_decision(_after_cli(rest), state)
+    if name == 'deno':          # deno eval "code": the code is the positional after the sub-command
+        pos = _positional(args, ('--ext', '-c', '--config', '--import-map', '--tsconfig', '--location',
+                                 '--seed', '--v8-flags', '--cert', '--env-file'))
+        if len(pos) > 1 and pos[0].text == 'eval':
+            inspect_code(pos[1].text, state, False)
     _handle_interp(name, args, seg, state, depth, 'node')
 
 
@@ -1278,11 +1461,18 @@ def _handle_sql_client(name, args, seg, state, depth):
                 eff = True
     for t in texts:
         inspect_sql(t, eff)
+        if name in ('sqlite3', 'sqlite', 'litecli', 'sqlite-utils'):
+            _inspect_sql_targets(t, state)
 
 
 def _handle_find(args, seg, state, depth):
     k = 0
     while k < len(args):
+        if args[k].text in ('-execdir', '-okdir'):
+            state.dir_changed = True       # find runs the command inside the directory of each hit
+        if args[k].text in ('-fprint', '-fprint0', '-fprintf', '-fls') and k + 1 < len(args):
+            if _live_path(args[k + 1], state):
+                _deny_live_write('find %s %s' % (args[k].text, args[k + 1].text))
         if args[k].text in ('-exec', '-execdir', '-ok', '-okdir'):
             j = k + 1
             while j < len(args) and args[j].text not in (';', '+', '\\;'):
@@ -1303,6 +1493,7 @@ def _handle_tmux(args, state, depth):
         return
     rest = [w.text for w in pos[1:]]
     if rest:
+        state.dir_changed = True           # the pane / window has its own working directory
         check_command(' '.join(rest), state, depth + 1)
         for r in rest:
             check_command(r, state, depth + 1)
@@ -1312,8 +1503,10 @@ def _handle_ssh(args, seg, state, depth):
     pos = _positional(args, ('-p', '-i', '-l', '-o', '-F', '-J', '-L', '-R', '-D', '-b', '-c', '-e', '-E',
                              '-I', '-m', '-O', '-Q', '-S', '-W', '-w'))
     if len(pos) >= 2:
+        state.dir_changed = True           # the remote shell starts in its own home directory
         check_command(' '.join(w.text for w in pos[1:]), state, depth + 1)
     elif seg is not None:                      # ssh host <<EOF ... EOF : the body is the remote shell
+        state.dir_changed = True
         for t in _stdin_texts(seg, state):
             check_command(t, state, depth + 1)
 
@@ -1337,16 +1530,331 @@ def _isolated_store(seg, words, cmdword, state):
         val = state.vars.get('MARVEEN_STORE_DIR')
     if not val or '$' in val or '`' in val:
         return False
+    if state.link_global:
+        return False           # a link made in this very command, and we cannot tell where
     if not os.path.isabs(val):
+        if state.dir_changed or state.cd_targets:
+            return False       # relative, and a cd / env -C ... is in the command: not isolated (fail closed)
         val = os.path.join(state.cwd, val)
     try:
         real = os.path.realpath(val)
     except Exception:
         return False
+    if state.link_dests and _link_hits(real, state, True):
+        return False           # the dir is, lies under, or receives a link made in this very command
     for d in _store_dirs(state):
         if real == d or real.startswith(d + os.sep) or d.startswith(real + os.sep):
             return False       # the live store, inside it, or a parent that contains it
+    if _dir_shares_live_files(real, state):
+        return False           # a database file in there is the live one under another name
     return True
+
+
+# ---- directory changes: a relative path is only meaningful while the cwd is the event cwd ----
+
+def _note_link(args, state):
+    """Remember where an `ln` makes its link (the last word, the -t directory, or - with one word - that
+    name in the cwd). A link name the gate cannot tell makes every path suspect (link_global)."""
+    pos = _positional(args, _FW_VALUE_FLAGS['ln'])
+    dest = None
+    for k, a in enumerate(args):
+        if a.text in ('-t', '--target-directory') and k + 1 < len(args):
+            dest = args[k + 1]
+        elif a.text.startswith('--target-directory='):
+            dest = Word(a.text.split('=', 1)[1])
+    if dest is None:
+        if len(pos) >= 2:
+            dest = pos[-1]
+        elif len(pos) == 1:
+            dest = Word(os.path.basename(pos[0].text.rstrip('/')), pos[0].dyn)
+    if (dest is None or dest.dyn or not dest.text or _has_placeholder(dest.text)
+            or len(state.link_dests) >= MAX_LINK_DESTS):
+        state.link_global = True
+        return
+    state.link_dests.append(dest.text)
+
+
+_CD_COMMANDS = ('cd', 'pushd', 'popd', 'chdir', 'chroot')
+_DIR_FLAGS = ('-C', '--chdir', '--cwd', '--prefix', '--dir', '--directory', '-D', '-w', '--workspace',
+              '--workspaces', '-F', '--filter')
+
+
+def _note_dir_changes(segs, state):
+    """Look at every command of this text BEFORE any is judged (a cd in a later segment, a subshell, a
+    loop or a function body still changes what a relative path means). `cd /absolute/target` is
+    recorded and followed exactly (state.cd_targets). Everything else that may change the directory
+    (a relative or dynamic cd, pushd, popd, chdir, chroot, a command word the gate cannot read, a
+    -C / --chdir / --cwd / --prefix / --directory / -D / -w flag on ANY command: env -C, sudo -D,
+    git -C, make -C, npm --prefix ...) sets state.dir_changed: every relative path is then unknown.
+    An `ln` sets state.link_made: a link created in the same command line is not there to resolve."""
+    for seg in segs:
+        if not seg.words:
+            continue
+        name, cmdword, args, _via = resolve_call(seg.words)
+        if name is None:
+            continue
+        if name == 'ln':
+            state.link_made = True
+            _note_link(args, state)
+        if name == 'cd':
+            pos = [a for a in args if a.text not in ('-P', '-L', '-e', '-@', '--')]
+            tgt = pos[0] if len(pos) == 1 else None
+            if (tgt is not None and not tgt.dyn and not _has_placeholder(tgt.text) and os.path.isabs(tgt.text)
+                    and len(state.cd_targets) < MAX_CD_TARGETS):
+                try:
+                    state.cd_targets.append(os.path.realpath(tgt.text))
+                except Exception:
+                    state.dir_changed = True
+            else:
+                state.dir_changed = True
+            continue
+        if name in _CD_COMMANDS or (cmdword is not None and cmdword.dyn):
+            state.dir_changed = True
+            continue
+        for w in seg.words:
+            t = w.text
+            if (t in _DIR_FLAGS or (t.startswith('--') and t.split('=', 1)[0] in _DIR_FLAGS)
+                    or (len(t) > 2 and t[:2] in ('-C', '-D'))):      # -Cdir / -D/dir attached
+                state.dir_changed = True
+                break
+
+
+# ---- writing the live database file as a file --------------------------------------------
+
+_FILE_WRITERS = ('cp', 'mv', 'ln', 'install', 'rsync', 'scp', 'ditto', 'dd', 'tee', 'sponge')
+_FW_VALUE_FLAGS = {
+    'cp': ('-t', '--target-directory', '-S', '--suffix'),
+    'mv': ('-t', '--target-directory', '-S', '--suffix'),
+    'ln': ('-t', '--target-directory', '-S', '--suffix'),
+    'install': ('-t', '--target-directory', '-S', '--suffix', '-m', '--mode', '-o', '--owner', '-g', '--group'),
+    'rsync': ('-e', '--rsh', '--exclude', '--include', '-f', '--filter', '--exclude-from', '--include-from',
+              '--files-from', '--link-dest', '--copy-dest', '--compare-dest', '--backup-dir', '--partial-dir',
+              '--log-file', '--bwlimit', '-B', '--port', '--rsync-path', '--chmod', '--chown', '--temp-dir',
+              '-T', '--timeout', '--suffix', '-M'),
+    'scp': ('-P', '-i', '-o', '-F', '-J', '-S', '-c', '-l'),
+}
+# The files of the live database by NAME: the app reads them whether or not they exist yet.
+_LIVE_DB_NAMES = ('claudeclaw.db', 'claudeclaw.db-wal', 'claudeclaw.db-shm', 'claudeclaw.db-journal')
+# A dynamic (unresolved) target only counts when the text that IS known says "the store": the app and
+# the scheduled tasks keep state files in the same directory, and a QA script's `$S/claudeclaw.db` is
+# its own copy, so a bare variable in front is not enough.
+_DYN_LIVE_HINT = re.compile(
+    r'(?:^|/)store(?:/(?:claudeclaw[^/]*|[^/]*\.db(?:-wal|-shm|-journal)?)?)?/?$', re.I)
+
+
+def _live_path(word, state, hint=False, rel_live=False, source=False):
+    """True when writing `word` as a file would write the live database: one of the live DB files by
+    name (claudeclaw.db, -wal, -shm, -journal directly in a live store dir), by inode (a hard link, a
+    symlink, any other *.db there), or the store dir itself when `hint` says the operation involves a
+    database file (cp into it, mv of it). Other files in the store dir (state json, logs) are the
+    app's and the scheduled tasks' own business. When the path cannot be resolved (see
+    _candidate_paths) it counts as live when it looks like a database file, when `hint` says the
+    operation involves one and the path names a directory, or always with `rel_live`."""
+    p = word.text
+    if not p:
+        return False
+    if word.dyn or _has_placeholder(p):
+        return bool(_DYN_LIVE_HINT.search(p))
+    reals = _candidate_paths(p, state, False)
+    if reals is None:
+        dirish = os.path.basename(p.rstrip('/')) in ('', '.', '..', 'store')
+        return rel_live or (hint and dirish) or _looks_db(p)
+    dirs = _store_dirs(state)
+    for real in reals:
+        if _is_live_inode(real, state, _looks_db(real)):
+            return True
+        if real in dirs and hint:
+            return True
+        if source and os.path.isfile(real):
+            continue           # an existing file that is not a live inode is a copy, whatever its name
+        if os.path.basename(real) in _LIVE_DB_NAMES and (os.path.dirname(real) in dirs or _link_hits(real, state)):
+            return True        # with an `ln` in the command a link may lead into the store: go by the name
+    return False
+
+
+def _deny_live_write(what):
+    raise Deny('iras az elo store-ba (%s). Egy agens nem irhatja, nem cserelheti es nem linkelheti fajlkent '
+               'az elo adatbazist (claudeclaw.db, -wal, -shm) vagy a store konyvtarat. Masolni INNEN valahova '
+               '(QA masolat) szabad.' % what[-70:])
+
+
+def _handle_filewrite(name, args, state):
+    """cp / mv / ln / install / rsync / scp / ditto / dd / tee: the TARGET must not be the live store. A
+    source in the live store is fine (a QA instance starts from a copy), except for mv (it moves the
+    live file away under a running app) and for the hard-link makers (ln, cp -l, rsync --link-dest)."""
+    if name == 'dd':
+        for a in args:
+            if a.text.startswith('of='):
+                if _live_path(Word(a.text[3:], a.dyn), state):
+                    _deny_live_write('dd of=' + a.text[3:])
+        return
+    pos = _positional(args, _FW_VALUE_FLAGS.get(name, ()))
+    if name in ('tee', 'sponge'):
+        for w in pos:
+            if _live_path(w, state):
+                _deny_live_write(name + ' ' + w.text)
+        return
+    targets, sources = [], pos
+    explicit = None
+    if name not in ('rsync', 'scp'):
+        for k, a in enumerate(args):
+            if a.text in ('-t', '--target-directory') and k + 1 < len(args):
+                explicit = args[k + 1]
+            elif a.text.startswith('--target-directory='):
+                explicit = Word(a.text.split('=', 1)[1])
+    if explicit is not None:
+        targets = [explicit]
+    elif len(pos) >= 2:
+        targets, sources = [pos[-1]], pos[:-1]
+    # a source that is (or may expand to) a database file, or a whole directory merged into the target
+    src_hint = any(_looks_db(w.text) or w.text.endswith('/') or any(c in w.text for c in '*?[')
+                   for w in sources)
+    for t in targets:
+        if _live_path(t, state, src_hint):
+            _deny_live_write('%s -> %s' % (name, t.text))
+    flags = [a.text for a in args if a.text.startswith('-') and not a.text.startswith('--')]
+    if name == 'mv':
+        for s in sources:
+            if _live_path(s, state, True):
+                _deny_live_write('mv av az elo adatbazist: ' + s.text)
+    elif name == 'ln':
+        symbolic = any('s' in f[1:] for f in flags) or any(a.text == '--symbolic' for a in args)
+        if not symbolic:
+            for s in sources:
+                if _live_path(s, state, True, True, source=True):
+                    _deny_live_write('hardlink az elo store fajljara: ' + s.text)
+    elif name == 'cp':
+        if any('l' in f[1:] for f in flags) or any(a.text == '--link' for a in args):
+            for s in sources:
+                if _live_path(s, state, True, True, source=True):
+                    _deny_live_write('cp -l (hardlink) az elo store fajljara: ' + s.text)
+    elif name == 'rsync':
+        for k, a in enumerate(args):
+            val = None
+            if a.text == '--link-dest' and k + 1 < len(args):
+                val = args[k + 1]
+            elif a.text.startswith('--link-dest='):
+                val = Word(a.text.split('=', 1)[1])
+            if val is not None and _live_path(val, state, True, True, source=True):
+                _deny_live_write('rsync --link-dest az elo store-ra: ' + val.text)
+
+
+SQL_DOT_COPYOUT = re.compile(r'(?m)^\s*\.(?:backup|save|clone)\b(.*)$', re.I)
+SQL_VACUUM_INTO = re.compile(r"vacuum(?:\s+\w+)?\s+into\s+(?:'((?:[^']|'')*)'|\"([^\"]*)\"|([^\s;]+))", re.I)
+
+
+def _inspect_sql_targets(text, state):
+    """sqlite3 `.backup` / `.save` / `.clone` / `VACUUM INTO` write a database FILE: not into the live store."""
+    for m in SQL_DOT_COPYOUT.finditer(text):
+        toks = [t.strip('\'"') for t in m.group(1).split() if not t.startswith('--')]
+        if toks and _live_path(Word(toks[-1]), state):
+            _deny_live_write('sqlite3 .backup/.clone -> ' + toks[-1])
+    stripped = _strip_block_comments(text)
+    if re.search(r'vacuum', stripped, re.I):
+        for m in SQL_VACUUM_INTO.finditer(stripped):
+            target = m.group(1) or m.group(2) or m.group(3) or ''
+            if target and _live_path(Word(target), state):
+                _deny_live_write('VACUUM INTO ' + target)
+
+
+# ---- generic fallback: a command the gate has no handler for may still carry the payload ----
+
+_GENERIC_EXEMPT = frozenset((
+    # print / search / compare text; they never run their arguments
+    'echo', 'printf', 'cat', 'head', 'tail', 'less', 'more', 'wc', 'sort', 'uniq', 'cut', 'tr', 'sed',
+    'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'diff', 'cmp', 'jq', 'yq', 'column', 'fold', 'nl', 'rev',
+    'test', '[', '[[', 'true', 'false', ':', 'ls', 'tree', 'stat', 'file', 'du', 'df', 'basename', 'dirname',
+    'realpath', 'readlink', 'date', 'pwd', 'which', 'type', 'whereis', 'sleep', 'hostname', 'uname',
+    'whoami', 'id', 'printenv', 'wait', 'exit', 'return', 'read', 'set', 'unset', 'export', 'declare',
+    'readonly', 'local', 'typeset', 'cd', 'pushd', 'popd', 'alias', 'history', 'man', 'help',
+    # shell constructs whose word list is data for the loop / case, not a command
+    'for', 'case', 'select', 'in', 'function',
+    # file writers that never execute their arguments (the live-store rule already looked at them)
+    'cp', 'mv', 'ln', 'install', 'dd', 'tee', 'ditto', 'scp', 'sponge', 'mkdir', 'touch', 'rm', 'rmdir',
+    'chmod', 'chown', 'truncate',
+    # their DATA payload is prose or JSON, not a command
+    'curl', 'wget', 'http', 'https', 'gh', 'glab',
+    # test / lint / format runners (reached through npx too)
+    'vitest', 'jest', 'tsc', 'eslint', 'prettier', 'shellcheck', 'mocha', 'playwright', 'c8',
+    'pbcopy', 'pbpaste', 'open', 'say', 'shasum', 'sha256sum', 'md5', 'md5sum',
+    'kill', 'pkill', 'pgrep', 'ps', 'lsof',
+))
+# git sub-commands whose arguments are messages, refs and paths. The options BEFORE the sub-command
+# (`git -c alias.x=!cmd`, `-c core.pager=cmd`, `-c core.sshCommand=cmd`) are always looked at.
+_GIT_SAFE_SUBS = frozenset((
+    'log', 'grep', 'show', 'diff', 'blame', 'commit', 'add', 'status', 'stash', 'tag', 'branch', 'merge',
+    'revert', 'cherry-pick', 'notes', 'rev-parse', 'rev-list', 'ls-files', 'ls-tree', 'cat-file',
+    'show-ref', 'describe', 'shortlog', 'reflog', 'checkout', 'switch', 'restore', 'reset', 'apply',
+    'diff-tree', 'diff-index', 'name-rev', 'for-each-ref', 'check-ignore', 'clean', 'rm', 'mv',
+))
+_GIT_GLOBAL_VALUE_FLAGS = ('-c', '-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
+                           '--config-env', '--exec-path')
+
+_RUNNERS = r'(?:npm|pnpm|yarn|npx|pnpx|tsx|ts-node|node|nodejs|bun|bunx|deno|vite-node|corepack)'
+# The CLI named the way it is RUN, inside an argument that is itself a command string.
+GENERIC_RUNNER_MARKER = re.compile(_RUNNERS + r'\b[^\n]{0,80}?(?:dashboard[-_]user|security[-_]reset)(?![\w-])')
+GENERIC_PATH_MARKER = re.compile(r'(?<![\w./-])(?:\./|/)[\w./-]*(?:dashboard-user|security-reset)(?![\w-])')
+
+
+def _git_args_to_scan(args):
+    """git: all arguments, except the ones after a message/ref/path sub-command."""
+    i = 0
+    while i < len(args):
+        t = args[i].text
+        if t == '--':
+            return list(args)
+        if t.startswith('-'):
+            i += 2 if t in _GIT_GLOBAL_VALUE_FLAGS else 1
+            continue
+        if t in _GIT_SAFE_SUBS:
+            return list(args[:i])
+        return list(args)
+    return list(args)
+
+
+def _charge(state, n):
+    state.budget.chars += n
+    if state.budget.chars > MAX_WORK_CHARS:
+        raise InspectionLimit('the total text to inspect is above %d characters' % MAX_WORK_CHARS)
+
+
+def _follow_markers(text, markers, state, depth):
+    """Run the part of `text` that starts at a CLI invocation shape as a command of its own."""
+    n = 0
+    for rx in markers:
+        for m in rx.finditer(text):
+            n += 1
+            if n > MAX_GENERIC_MARKERS:
+                raise InspectionLimit('more than %d command shapes in one argument' % MAX_GENERIC_MARKERS)
+            check_command(text[m.start():], state, depth + 1)
+
+
+def _generic_fallback(name, args, seg, state, depth):
+    if name in _GENERIC_EXEMPT:
+        return
+    scan = list(args)
+    if name == 'git':
+        scan = _git_args_to_scan(args)
+    for w in scan:
+        for alt in w.alts:
+            if re.search(r'\s', alt):       # a command string handed over as one argument
+                _charge(state, len(alt))
+                _follow_markers(alt, (GENERIC_RUNNER_MARKER, GENERIC_PATH_MARKER), state, depth)
+    texts = [' '.join(w.text for w in scan)]
+    if seg is not None:
+        texts.extend(b for b, _q in seg.heredocs)
+        texts.extend(seg.herestr)
+    for t in texts:
+        _charge(state, len(t))
+        if '--password-stdin' in t and name not in _LOGIN_OK and not state.isolated_cli:
+            raise Deny('--password-stdin egy olyan parancs argumentumaban, amit a kapu nem ismer: jelszot csak a '
+                       'tulajdonos ad meg, agens nem.')
+        m = SQL_WRITE.search(_strip_block_comments(t))
+        if m:
+            raise Deny('iras a hitelesito tablakra (%s) egy olyan parancs argumentumaban vagy bemenetebol, amit a '
+                       'kapu nem ismer (%s). Ha csak szoveg, echo/cat/grep-pel jelenitsd meg.'
+                       % (re.sub(r'\s+', ' ', m.group())[:60], name[:30]))
+        _follow_markers(t, (GENERIC_RUNNER_MARKER,), state, depth)
 
 
 def check_words(words, seg, state, depth):
@@ -1426,6 +1934,8 @@ def check_words(words, seg, state, depth):
     if name in ('ssh', 'mosh'):
         _handle_ssh(args, seg, state, depth)
         return
+    if name in _FILE_WRITERS:
+        _handle_filewrite(name, args, state)
     # a direct execution of the CLI or of a shell script by path: ./scripts/dashboard-user.ts, x.sh
     for alt in cmdword.alts:
         if _is_cli_name(_script_stem(alt)):
@@ -1436,6 +1946,7 @@ def check_words(words, seg, state, depth):
             if txt is not None:
                 check_shell_script(txt, state, depth)
             return
+    _generic_fallback(name, args, seg, state, depth)
 
 
 def check_command(cmd, state, depth=0):
@@ -1447,7 +1958,11 @@ def check_command(cmd, state, depth=0):
     if len(cmd) > MAX_CMD_CHARS:
         raise InspectionLimit('the text is %d characters, the limit is %d' % (len(cmd), MAX_CMD_CHARS))
     segs = lex(cmd, state)
+    _note_dir_changes(segs, state)       # a directory change ANYWHERE in the text matters for every path
     for seg in segs:
+        for w in seg.out_files:
+            if _live_path(w, state):
+                _deny_live_write('atiranyitas: ' + w.text)
         for body in seg.subs:
             check_command(body, state, depth + 1)
         for body, quoted in seg.heredocs:

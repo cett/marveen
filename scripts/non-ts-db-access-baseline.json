@@ -41,8 +41,8 @@
     "scripts/hooks/auth-admin-gate.py": {
       "dialect": {},
       "direct": {
-        "claudeclaw.db": 1,
-        "sqlite3 CLI": 3
+        "claudeclaw.db": 11,
+        "sqlite3 CLI": 4
       }
     },
     "scripts/hooks/context-watchdog.py": {

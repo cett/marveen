@@ -56,14 +56,33 @@ class Fixture(object):
         self.root = os.path.realpath(os.path.join(self.tmp, 'install'))
         self.store = os.path.join(self.root, 'store')
         self.other = os.path.realpath(os.path.join(self.tmp, 'copy'))
-        for d in (self.store, os.path.join(self.root, 'scripts'), self.other):
+        self.links = os.path.realpath(os.path.join(self.tmp, 'links'))   # symlinks to the live store
+        self.hard = os.path.realpath(os.path.join(self.tmp, 'hard'))     # hard links of the live files
+        self.twin = os.path.realpath(os.path.join(self.tmp, 'twin'))     # two names of one NON-live file
+        for d in (self.store, os.path.join(self.root, 'scripts'), self.other, self.links, self.hard, self.twin):
             os.makedirs(d)
         self.live = os.path.join(self.store, 'claudeclaw.db')
+        self.live_wal = self.live + '-wal'
+        self.live_shm = self.live + '-shm'
         self.copy_db = os.path.join(self.other, 'claudeclaw.db')
-        for p in (self.live, self.copy_db):
+        for p in (self.live, self.live_wal, self.live_shm, self.copy_db):
             open(p, 'w').close()
-        os.symlink(self.live, os.path.join(self.other, 'link.db'))
-        os.symlink(self.store, os.path.join(self.other, 'storelink'))   # a directory link to the live store
+        os.symlink(self.live, os.path.join(self.links, 'link.db'))
+        os.symlink(self.store, os.path.join(self.links, 'storelink'))   # a directory link to the live store
+        os.symlink(os.path.join(self.store, 'fresh.db'), os.path.join(self.links, 'fresh.db'))   # dangling: the file does not exist yet
+        os.link(self.live, os.path.join(self.hard, 'hard.db'))
+        os.link(self.live_wal, os.path.join(self.hard, 'hard.db-wal'))
+        os.link(self.live_shm, os.path.join(self.hard, 'hard.db-shm'))
+        open(os.path.join(self.twin, 'twin1.db'), 'w').close()
+        os.link(os.path.join(self.twin, 'twin1.db'), os.path.join(self.twin, 'twin2.db'))
+        os.link(self.live, os.path.join(self.hard, 'blob.bin'))      # a live file under a name that does not look like a DB
+        self.other_db = os.path.join(self.store, 'other.db')         # a second database in the live store
+        open(self.other_db, 'w').close()
+        os.link(self.other_db, os.path.join(self.hard, 'other.bin'))
+        open(os.path.join(self.root, 'cdscript.sh'), 'w').write('cd store\n')
+        os.makedirs(os.path.join(self.tmp, 'hardstore'))
+        os.link(self.live, os.path.join(self.tmp, 'hardstore', 'claudeclaw.db'))   # a "throw-away" store that IS the live DB
+        self.hardstore = os.path.realpath(os.path.join(self.tmp, 'hardstore'))
         for name in ('dashboard-user.ts', 'dashboard-use1.ts', 'security-reset.sh'):
             open(os.path.join(self.root, 'scripts', name), 'w').write('// fixture\n')
         open(os.path.join(self.root, 'bad.sh'), 'w').write('#!/bin/bash\nnpm run dashboard-user -- add bob\n')
@@ -75,7 +94,9 @@ class Fixture(object):
 
     def sub(self, cmd):
         return (cmd.replace('{S}', self.store).replace('{R}', self.root)
-                .replace('{O}', self.other).replace('{L}', self.live))
+                .replace('{O}', self.other).replace('{L}', self.live)
+                .replace('{K}', self.links).replace('{H}', self.hard).replace('{T}', self.twin)
+                .replace('{HS}', self.hardstore))
 
 
 FX = Fixture()
@@ -246,6 +267,11 @@ BLOCKED = [
     ('sqlite3 live bracket name', 'sqlite3 {L} "UPDATE [api_tokens] SET revoked_at=1"'),
     ('sqlite3 live backtick name', "sqlite3 {L} 'UPDATE `api_tokens` SET revoked_at=1'"),
     ('sqlite3 live comment between', 'sqlite3 {L} "UPDATE /* x */ dashboard_users SET role=1"'),
+    ('sqlite3 live long comment between', 'sqlite3 {L} "UPDATE /* ' + 'x' * 900 + ' */ dashboard_users SET role=1"'),
+    ('sqlite3 live two comments between', 'sqlite3 {L} "UPDATE/**//**/dashboard_users SET role=1"'),
+    ('sqlite3 live line comment between', 'sqlite3 {L} "UPDATE -- x\ndashboard_users SET role=1"'),
+    ('sqlite3 live trigger on a protected table', 'sqlite3 {L} "CREATE TRIGGER t AFTER INSERT ON dashboard_users BEGIN SELECT 1; END"'),
+    ('python decrement hides nothing', 'python3 -c "i--; c.execute(\'DELETE FROM api_tokens\')"'),
     ('sqlite3 live newline between', 'sqlite3 {L} "UPDATE\ndashboard_users SET role=1"'),
     ('sqlite3 live upper/lower mix', 'sqlite3 {L} "uPdAtE Dashboard_Users SET role=1"'),
     ('sqlite3 live update or ignore', 'sqlite3 {L} "UPDATE OR IGNORE api_tokens SET x=1"'),
@@ -254,7 +280,9 @@ BLOCKED = [
     ('sqlite3 live flags first', 'sqlite3 -bail -batch {L} "DELETE FROM api_tokens"'),
     ('sqlite3 live relative path', 'cd {R} && sqlite3 store/claudeclaw.db "DELETE FROM api_tokens"'),
     ('sqlite3 live dot-dot path', 'sqlite3 {R}/scripts/../store/claudeclaw.db "DELETE FROM api_tokens"'),
-    ('sqlite3 symlink to live', 'sqlite3 {O}/link.db "DELETE FROM api_tokens"'),
+    ('sqlite3 symlink to live', 'sqlite3 {K}/link.db "DELETE FROM api_tokens"'),
+    ('sqlite3 a db that does not exist yet in the live store dir', 'sqlite3 {S}/fresh.db "DELETE FROM api_tokens"'),
+    ('sqlite3 dangling symlink into the live store dir', 'sqlite3 {K}/fresh.db "DELETE FROM api_tokens"'),
     ('sqlite3 live var path', 'DB={L}; sqlite3 $DB "DELETE FROM api_tokens"'),
     ('sqlite3 unresolved var path', 'sqlite3 "$UNSET_DB" "DELETE FROM api_tokens"'),
     ('sqlite3 substitution path', 'sqlite3 "$(echo x)" "DELETE FROM api_tokens"'),
@@ -317,7 +345,7 @@ BLOCKED = [
     ('store dir = the live store', 'MARVEEN_STORE_DIR={S} npx tsx scripts/dashboard-user.ts add bob'),
     ('store dir = a parent of the live store', 'MARVEEN_STORE_DIR={R} npx tsx scripts/dashboard-user.ts add bob'),
     ('store dir with ..', 'MARVEEN_STORE_DIR={O}/../install/store npx tsx scripts/dashboard-user.ts add bob'),
-    ('store dir via a directory symlink', 'MARVEEN_STORE_DIR={O}/storelink npx tsx scripts/dashboard-user.ts add bob'),
+    ('store dir via a directory symlink', 'MARVEEN_STORE_DIR={K}/storelink npx tsx scripts/dashboard-user.ts add bob'),
     ('store dir unresolved', 'MARVEEN_STORE_DIR=$UNSET_DIR npx tsx scripts/dashboard-user.ts add bob'),
     ('store dir from a substitution', 'MARVEEN_STORE_DIR=$(echo {O}) npx tsx scripts/dashboard-user.ts add bob'),
     ('store dir empty', 'MARVEEN_STORE_DIR= npx tsx scripts/dashboard-user.ts add bob'),
@@ -326,6 +354,159 @@ BLOCKED = [
     ('store dir on the producer only', 'MARVEEN_STORE_DIR={O} echo pw | npx tsx scripts/dashboard-user.ts add bob --password-stdin'),
     ('store dir in a different variable', 'STORE_DIR={O} npx tsx scripts/dashboard-user.ts add bob'),
     ('isolated store with the live DB path as target', 'MARVEEN_STORE_DIR={O} sqlite3 {L} "DELETE FROM api_tokens"'),
+    # ---- a directory change anywhere makes every relative path unknown (fail closed) ----
+    ('cd then relative live db', 'cd store && sqlite3 claudeclaw.db "insert into api_tokens(id) values (1)"'),
+    ('cd to the store then ./db', 'cd {S} && sqlite3 ./claudeclaw.db "insert into api_tokens(id) values (1)"'),
+    ('pushd then relative db', 'pushd store; sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('popd then relative db', 'popd; sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('subshell cd then relative db', '(cd store; sqlite3 claudeclaw.db "delete from api_tokens")'),
+    ('env -C then relative db', 'env -C store sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('env --chdir then relative db', 'env --chdir=store sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('sudo -D then relative db', 'sudo -D store sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('cd to an absolute dir, ../ back into the store', 'cd {O} && sqlite3 ../install/store/claudeclaw.db "delete from api_tokens"'),
+    ('cd to a copy, then a relative cd into the store', 'cd {O} && cd ../install/store && sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('cd to the live store from the other branch of an ||', 'cd {O} || cd {S}; sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('cd home (no operand)', 'cd; sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('cd -', 'cd {O}; cd -; sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('db path built from a substitution in a variable', 'D=$(pwd); sqlite3 $D/store/claudeclaw.db "delete from api_tokens"'),
+    ('db path with a substitution inline', 'sqlite3 "$(pwd)/store/claudeclaw.db" "delete from api_tokens"'),
+    ('db path with backticks in a variable', 'D=`pwd`; sqlite3 $D/claudeclaw.db "delete from api_tokens"'),
+    ('symlink to the live store made in the same command', 'ln -s {S} {O}/newlink && sqlite3 {O}/newlink/claudeclaw.db "delete from api_tokens"'),
+    ('symlink over a copy made in the same command', 'ln -sf {L} {O}/claudeclaw.db && sqlite3 {O}/claudeclaw.db "delete from api_tokens"'),
+    ('symlink made, then the CLI on a store dir behind it', 'ln -s {S} {O}/newstore && MARVEEN_STORE_DIR={O}/newstore npx tsx scripts/dashboard-user.ts add x'),
+    ('password on a throw-away store that receives a link to the live DB', 'ln -s {L} {O}/side.db; echo pw | MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add x --password-stdin'),
+    ('password on a store dir that is a link made in the same command', 'ln -s {S} {O}/ns2 && echo pw | MARVEEN_STORE_DIR={O}/ns2 npx tsx scripts/dashboard-user.ts add x --password-stdin'),
+    ('cp through a store-dir symlink made in the same command', 'ln -s {S} {O}/newlink2 && cp {O}/claudeclaw.db {O}/newlink2/claudeclaw.db'),
+    ('cp through a store-dir symlink named by a variable', 'L={O}/newlink3; ln -s {S} $L; cp {O}/claudeclaw.db $L/claudeclaw.db'),
+    ('unknown cd then cp of a db to a db name', 'cd store && cp {O}/claudeclaw.db claudeclaw.db'),
+    ('unknown cd then cp of a db to dot', 'cd store && cp {O}/claudeclaw.db .'),
+    ('unknown cd then cp -al of the store', 'pushd {R}; cp -al store {O}/clone'),
+    ('unknown cd then ln of a store file', 'pushd {R}; ln store/claudeclaw.db {O}/x.db'),
+    ('unknown cd then mv of the store dir', 'pushd {R}; mv store gone'),
+    ('unknown cd then redirect to a db name', 'pushd store; cat {O}/claudeclaw.db > claudeclaw.db'),
+    ('unknown cd then .backup to a db name', 'pushd store; sqlite3 {O}/claudeclaw.db ".backup claudeclaw.db"'),
+    ('unknown cd then tee a db name', 'pushd store; echo x | tee claudeclaw.db-wal'),
+    ('unknown cd then dd of= a db name', 'pushd store; dd if={O}/claudeclaw.db of=claudeclaw.db'),
+    ('unknown cd then rsync --link-dest', 'pushd {R}; rsync -a --link-dest=store store/ {O}/x/'),
+    ('cd in bash -c then a relative db', 'bash -c "cd store && sqlite3 claudeclaw.db \\"delete from api_tokens\\""'),
+    ('cd in a substitution before the client', 'sqlite3 claudeclaw.db "delete from api_tokens" $(cd store; pwd)'),
+    ('cd with a dynamic target', 'cd "$UNSET_DIR" && sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('dynamic command word then a relative db', '"$UNSET_CD" store; sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('cd in a sourced script then a relative db', '. ./cdscript.sh; sqlite3 claudeclaw.db "delete from api_tokens"'),
+    ('cd then relative .open', 'cd store && sqlite3 :memory: ".open claudeclaw.db" "delete from api_tokens"'),
+    ('cd then relative ATTACH', 'cd store && sqlite3 :memory: "ATTACH \'claudeclaw.db\' AS l; delete from l.api_tokens"'),
+    ('cd then file: uri', 'cd store && sqlite3 file:claudeclaw.db?mode=rw "delete from api_tokens"'),
+    ('find -execdir then relative db', 'find {S} -maxdepth 0 -execdir sqlite3 claudeclaw.db "delete from api_tokens" \\;'),
+    ('ssh then relative db', 'ssh localhost "sqlite3 claudeclaw.db \\"delete from api_tokens\\""'),
+    ('ssh heredoc then relative db', 'ssh localhost <<EOF\nsqlite3 claudeclaw.db "delete from api_tokens"\nEOF'),
+    ('tmux then relative db', 'tmux send-keys -t main "sqlite3 claudeclaw.db \\"delete from api_tokens\\"" Enter'),
+    ('cd then relative store dir for the CLI', 'cd / && MARVEEN_STORE_DIR=rel/dir npx tsx scripts/dashboard-user.ts add x'),
+    ('cd then store dir pointing at the live store', 'cd {R} && MARVEEN_STORE_DIR=store npx tsx scripts/dashboard-user.ts add x'),
+    ('cd then exported relative store dir', 'cd {R} && export MARVEEN_STORE_DIR=../copy; npx tsx scripts/dashboard-user.ts add x'),
+    ('env -C then relative store dir', 'env -C {R} MARVEEN_STORE_DIR=../copy npx tsx scripts/dashboard-user.ts add x'),
+    ('git -C then relative store dir', 'git -C {R} status; MARVEEN_STORE_DIR=../copy npx tsx scripts/dashboard-user.ts add x'),
+    # ---- hard links and the WAL / SHM sidecars: same file, other name ----
+    ('hard link of the live DB', 'sqlite3 {H}/hard.db "delete from api_tokens"'),
+    ('hard link of the live WAL', 'sqlite3 {H}/hard.db-wal "delete from api_tokens"'),
+    ('hard link of the live SHM', 'sqlite3 {H}/hard.db-shm "delete from api_tokens"'),
+    ('the live WAL path itself', 'sqlite3 {L}-wal "delete from api_tokens"'),
+    ('a DB with two names anywhere', 'sqlite3 {T}/twin1.db "delete from api_tokens"'),
+    ('attach a hard link of the live DB', 'sqlite3 {O}/claudeclaw.db "ATTACH \'{H}/hard.db\' AS x; DELETE FROM x.api_tokens"'),
+    ('.open a hard link of the live DB', 'sqlite3 {O}/claudeclaw.db ".open {H}/hard.db" "DELETE FROM api_tokens"'),
+    ('store dir that holds a hard link of the live DB', 'MARVEEN_STORE_DIR={HS} npx tsx scripts/dashboard-user.ts add x'),
+    ('store dir that holds a symlink to the live DB', 'MARVEEN_STORE_DIR={K} npx tsx scripts/dashboard-user.ts add x'),
+    ('tee into a hard link with an innocent name', 'echo x | tee {H}/blob.bin'),
+    ('tee into a hard link of a second live DB', 'echo x | tee {H}/other.bin'),
+    # ---- writing the live database file as a file ----
+    ('cp over the live DB', 'cp {O}/claudeclaw.db {L}'),
+    ('cp over the live DB, relative', 'cp ../copy/claudeclaw.db store/claudeclaw.db'),
+    ('cp into the store dir', 'cp {O}/claudeclaw.db {S}/'),
+    ('cp into the store dir with -t', 'cp -t {S} {O}/claudeclaw.db'),
+    ('cp --target-directory=', 'cp --target-directory={S} {O}/claudeclaw.db'),
+    ('cp over the live WAL', 'cp {O}/claudeclaw.db {L}-wal'),
+    ('cp over the live SHM', 'cp {O}/claudeclaw.db {S}/claudeclaw.db-shm'),
+    ('cp over a hard link of the live DB', 'cp {O}/claudeclaw.db {H}/hard.db'),
+    ('cp over a symlink to the live DB', 'cp {O}/claudeclaw.db {K}/link.db'),
+    ('cp into a symlinked store dir', 'cp {O}/claudeclaw.db {K}/storelink/claudeclaw.db'),
+    ('cp after cd, relative target', 'cd {S} && cp {O}/claudeclaw.db claudeclaw.db'),
+    ('cp after cd, target dot', 'cd {S} && cp {O}/claudeclaw.db .'),
+    ('cp after cd, db-looking target', 'cd {R} && cp {O}/claudeclaw.db store/claudeclaw.db'),
+    ('cp -l hard-link copy of the store', 'cp -al {S} {O}/clone'),
+    ('cp -l hard-link copy of the live DB', 'cp -l {L} {O}/h.db'),
+    ('cp --link of the live DB', 'cp --link {L} {O}/h.db'),
+    ('cp -al after cd, relative store', 'cd {R} && cp -al store {O}/clone'),
+    ('mv over the live DB', 'mv {O}/claudeclaw.db {L}'),
+    ('mv the live DB away', 'mv {L} {O}/gone.db'),
+    ('mv the live WAL away', 'mv {L}-wal {O}/gone.wal'),
+    ('mv the store dir away', 'mv {S} {O}/gone'),
+    ('mv into the store dir', 'mv {O}/claudeclaw.db {S}'),
+    ('ln hard link of the live DB', 'ln {L} {O}/x.db'),
+    ('ln -f hard link over the live DB', 'ln -f {O}/claudeclaw.db {L}'),
+    ('ln -s symlink replaces the live DB', 'ln -sf {O}/claudeclaw.db {L}'),
+    ('ln hard link after cd, relative source', 'cd {R} && ln store/claudeclaw.db {O}/x.db'),
+    ('ln hard link of the WAL', 'ln {L}-wal {O}/x.wal'),
+    ('install over the live DB', 'install -m 644 {O}/claudeclaw.db {L}'),
+    ('install -t into the store', 'install -m 644 -t {S} {O}/claudeclaw.db'),
+    ('rsync into the store dir', 'rsync -a {O}/ {S}/'),
+    ('rsync over the live DB', 'rsync -av {O}/claudeclaw.db {L}'),
+    ('rsync --link-dest the store', 'rsync -a --link-dest={S} {S}/ {O}/x/'),
+    ('rsync --link-dest the store, separate word', 'rsync -a --link-dest {S} {S}/ {O}/x/'),
+    ('scp over the live DB', 'scp {O}/claudeclaw.db {L}'),
+    ('ditto over the live DB', 'ditto {O}/claudeclaw.db {L}'),
+    ('dd of= the live DB', 'dd if={O}/claudeclaw.db of={L}'),
+    ('dd of= the live WAL', 'dd if=/dev/zero of={L}-wal bs=1 count=1'),
+    ('tee the live DB', 'cat {O}/claudeclaw.db | tee {L}'),
+    ('tee -a the live WAL', 'echo x | tee -a {L}-wal'),
+    ('redirect over the live DB', 'cat {O}/claudeclaw.db > {L}'),
+    ('redirect append to the live WAL', 'echo x >> {L}-wal'),
+    ('redirect truncate the live DB', ': > {L}'),
+    ('redirect &> the live DB', 'cat {O}/claudeclaw.db &> {L}'),
+    ('redirect after cd, relative db', 'cd {S} && cat {O}/claudeclaw.db > claudeclaw.db'),
+    ('redirect with fd prefix', 'cat {O}/claudeclaw.db 1>{L}'),
+    ('sqlite3 .backup into the live DB', 'sqlite3 {O}/claudeclaw.db ".backup {L}"'),
+    ('sqlite3 .backup main into the store', 'sqlite3 {O}/claudeclaw.db ".backup main {S}/claudeclaw.db"'),
+    ('sqlite3 .backup quoted target', 'sqlite3 {O}/claudeclaw.db ".backup \'{L}\'"'),
+    ('sqlite3 .save into the live DB', 'sqlite3 {O}/claudeclaw.db ".save {L}"'),
+    ('sqlite3 .clone into the live shm', 'sqlite3 {O}/claudeclaw.db ".clone {S}/claudeclaw.db-shm"'),
+    ('sqlite3 .backup over a second live db', 'sqlite3 {O}/claudeclaw.db ".backup {S}/other.db"'),
+    ('sqlite3 VACUUM INTO the live DB', 'sqlite3 {O}/claudeclaw.db "VACUUM INTO \'{L}\'"'),
+    ('sqlite3 VACUUM main INTO the live journal', 'sqlite3 {O}/claudeclaw.db "vacuum main into \'{S}/claudeclaw.db-journal\'"'),
+    ('sqlite3 VACUUM INTO after a comment', 'sqlite3 {O}/claudeclaw.db "VACUUM /* x */ INTO \'{L}\'"'),
+    ('sqlite3 .backup in a heredoc', 'sqlite3 {O}/claudeclaw.db <<EOF\n.backup {L}\nEOF'),
+    ('sqlite3 .backup after cd, relative', 'cd {S} && sqlite3 {O}/claudeclaw.db ".backup claudeclaw.db"'),
+    ('find -fprint over the live DB', 'find . -maxdepth 0 -fprint {L}'),
+    ('find -fprintf over the live WAL', 'find . -maxdepth 0 -fprintf {L}-wal x'),
+    # ---- commands the gate has no handler for: the payload rides in an argument ----
+    ('git alias runs the CLI', "git -c alias.x='!npm run dashboard-user add x' x"),
+    ('git alias with a sh -c', "git -c alias.y='!sh -c \"npm run dashboard-user add x\"' y"),
+    ('git pager runs the CLI before a safe sub-command', "git -c core.pager='npm run dashboard-user add x' log"),
+    ('git rebase --exec', "git rebase --exec 'npm run dashboard-user add x' HEAD~1"),
+    ('git config writes an alias', "git config alias.x '!npm run dashboard-user add x'"),
+    ('awk system()', "awk 'BEGIN{system(\"npm run dashboard-user add x\")}'"),
+    ('gawk pipe to getline', "gawk 'BEGIN { \"npm run dashboard-user add x\" | getline }'"),
+    ('awk path in system()', "awk 'BEGIN{system(\"./scripts/dashboard-user.ts add x\")}'"),
+    ('make variable carries the CLI', 'make run CMD="npm run dashboard-user add x"'),
+    ('make -C with a variable', 'make -C . x ARGS="tsx scripts/dashboard-user.ts add x"'),
+    ('vim -c', "vim -c '!npm run dashboard-user add x'"),
+    ('ex -c', "ex -c '!npm run dashboard-user add x' notes.txt"),
+    ('vim -c with a path', "vim -c '!./scripts/dashboard-user.ts add x'"),
+    ('expect -c', "expect -c 'spawn npm run dashboard-user add x'"),
+    ('expect heredoc', 'expect <<EOF\nspawn npm run dashboard-user add x\nEOF'),
+    ('emacs --eval', "emacs --batch --eval '(shell-command \"npm run dashboard-user add x\")'"),
+    ('rsync -e runs a command', "rsync -e 'npm run dashboard-user add x' a b"),
+    ('docker exec runs the CLI', 'docker exec app npm run dashboard-user add x'),
+    ('kubectl exec runs the CLI', 'kubectl exec pod -- npm run dashboard-user add x'),
+    ('unknown client writes an auth table', 'mongo-sql-tool DELETE FROM api_tokens'),
+    ('unknown tool with an SQL argument', 'unknown-tool --exec "INSERT INTO dashboard_users(username) VALUES (\'x\')"'),
+    ('unknown tool with SQL in a heredoc', 'unknown-tool <<EOF\nUPDATE dashboard_users SET role=\'admin\';\nEOF'),
+    ('unknown tool with a comment-split SQL', 'unknown-tool "UPDATE /* x */ api_tokens SET revoked_at=1"'),
+    ('unknown tool with --password-stdin in a string', "vim -c '!some-tool add x --password-stdin'"),
+    ('deno eval auth write', 'deno eval "db.exec(\'DELETE FROM api_tokens\')"'),
+    ('deno eval insert', 'deno eval "db.prepare(\'INSERT INTO dashboard_users(username) VALUES (1)\').run()"'),
+    ('deno eval app mutator', 'deno eval "createDashboardUser(\'x\', \'h\')"'),
+    ('deno eval execs the CLI', 'deno eval "new Deno.Command(\'npm\', {args: [\'run\', \'dashboard-user\', \'add\', \'x\']}).outputSync()"'),
+    ('deno run -e', 'deno run --eval "db.exec(\'DELETE FROM api_tokens\')"'),
+    ('nine command shapes in one argument', "vim -c '" + '; '.join(['npm run dashboard-user list'] * 9) + "'"),
 ]
 
 ALLOWED = [
@@ -417,7 +598,24 @@ ALLOWED = [
     ('sqlite3 copy update users', 'sqlite3 {O}/claudeclaw.db "UPDATE dashboard_users SET role=\'admin\'"'),
     ('sqlite3 copy delete tokens', 'sqlite3 {O}/claudeclaw.db "DELETE FROM api_tokens"'),
     ('sqlite3 copy heredoc', 'sqlite3 {O}/claudeclaw.db <<EOF\nINSERT INTO api_tokens(id) VALUES (1);\nEOF'),
-    ('sqlite3 copy relative', 'cd {O} && sqlite3 claudeclaw.db "DELETE FROM approvals"'),
+    ('sqlite3 copy relative, no cd (the cwd is the event cwd)', 'sqlite3 ../copy/claudeclaw.db "DELETE FROM approvals"'),
+    ('sqlite3 copy relative ./ no cd', 'sqlite3 ./../copy/claudeclaw.db "DELETE FROM approvals"'),
+    ('sqlite3 copy relative after a cd into the copy (the cd target is followed)', 'cd {O} && sqlite3 claudeclaw.db "DELETE FROM approvals"'),
+    ('sqlite3 copy relative after a cd to an absolute dir, with ./', 'cd {O}; sqlite3 ./claudeclaw.db "DELETE FROM approvals"'),
+    ('sqlite3 copy absolute after a cd', 'cd {O} && sqlite3 {O}/claudeclaw.db "DELETE FROM approvals"'),
+    ('cd then cp of unrelated names, unknown cd', 'cd .. && cp {O}/x.json {O}/y.json'),
+    ('unknown cd then mv of unrelated names', 'pushd {R}; mv ok.sh {O}/ok2.sh'),
+    ('unknown cd then cp -r of a code dir', 'pushd {R}; cp -r scripts {O}/scripts-copy'),
+    ('unknown cd then redirect to a plain name', 'pushd store; echo x > note.txt'),
+    ('unknown cd then select on a relative live db', 'pushd store; sqlite3 claudeclaw.db "SELECT count(*) FROM api_tokens"'),
+    ('sqlite3 copy absolute after pushd', 'pushd {O}; sqlite3 {O}/claudeclaw.db "DELETE FROM approvals"; popd'),
+    ('sqlite3 copy absolute after env -C', 'env -C {O} sqlite3 {O}/claudeclaw.db "DELETE FROM approvals"'),
+    ('sqlite3 memory db after a cd', 'cd {O} && sqlite3 :memory: "CREATE TABLE api_tokens(id); INSERT INTO api_tokens VALUES (1)"'),
+    ('sqlite3 relative live select after a cd', 'cd store && sqlite3 claudeclaw.db "SELECT count(*) FROM api_tokens"'),
+    ('cd then ls', 'cd {R} && ls'),
+    ('cd then a build', 'cd {R} && npm run build'),
+    ('git -C status', 'git -C {R} status'),
+    ('two names of a non-live file, only reading', 'sqlite3 {T}/twin1.db "SELECT * FROM api_tokens"'),
     ('sqlite3 memory db', 'sqlite3 :memory: "CREATE TABLE api_tokens(id); INSERT INTO api_tokens VALUES (1)"'),
     ('sqlite3 no db, stdin', 'sqlite3 <<EOF\nCREATE TABLE api_tokens(id);\nINSERT INTO api_tokens VALUES (1);\nEOF'),
     ('sqlite3 copy .import', 'sqlite3 {O}/claudeclaw.db ".import rows.csv dashboard_users"'),
@@ -444,6 +642,88 @@ ALLOWED = [
     ('python status message naming the CLI + a subprocess', 'python3 << \'PYEOF\'\nimport json, subprocess\ncontent = """status: dashboard-user list works, 3 tests green"""\nsubprocess.run(["curl", "-s", "http://localhost:3420/api/messages", "-d", json.dumps({"content": content})])\nPYEOF'),
     ('python source edit naming a mutator', 'python3 - <<EOF\np = "src/agent-tokens.ts"\ns = open(p).read()\ns = s.replace("import { getDb, insertApiToken } from", "import { getDb, insertApiToken, revokeApiToken } from")\nopen(p, "w").write(s)\nEOF'),
     ('python source edit with a template literal', 'python3 - <<EOF\nnew = "return tenantId ? `tenant=${tenantId}` : \'tenant=global\'"\nimport subprocess\nsubprocess.run(["git", "add", "-A"])\nEOF'),
+    # ---- relative isolated store without a cd; the symlinks / hard links dirs are not the copy dir ----
+    ('isolated store, relative, no cd', 'MARVEEN_STORE_DIR=../copy npx tsx scripts/dashboard-user.ts add bob'),
+    ('isolated store, relative export, no cd', 'export MARVEEN_STORE_DIR=../copy; npx tsx scripts/dashboard-user.ts add bob'),
+    ('isolated store, absolute after a cd', 'cd {R} && MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add bob'),
+    ('isolated store, a dir that does not exist yet', 'MARVEEN_STORE_DIR={O}/fresh npx tsx scripts/dashboard-user.ts add bob'),
+    # ---- copying FROM the live store is how QA instances start; unrelated copies / writes ----
+    ('cp the live DB out', 'cp {L} {O}/claudeclaw-qa.db'),
+    ('cp the live DB out, relative', 'cp store/claudeclaw.db ../copy/claudeclaw-qa.db'),
+    ('cp the live DB with its sidecars out', 'cp {L} {L}-wal {L}-shm {O}/'),
+    ('cp -a the store out', 'cp -a {S} {O}/store-copy'),
+    ('cp a copy onto a copy', 'cp {O}/claudeclaw.db {O}/other.db'),
+    ('cp after cd, unrelated names', 'cd {R} && cp scripts/dashboard-use1.ts {O}/x.ts'),
+    ('cp -r after cd, no db names', 'cd {R} && cp -r scripts {O}/scripts-copy'),
+    ('mv unrelated', 'mv {O}/other.db {O}/other2.db'),
+    ('mv unrelated after cd', 'cd {R} && mv ok.sh {O}/ok2.sh'),
+    ('ln -s a symlink to the live DB', 'ln -s {L} {O}/s.db'),
+    ('ln hard link of a copy', 'ln {O}/claudeclaw.db {O}/h2.db-copy'),
+    ('throw-away store CLI with an unrelated ln in the command', 'ln -sf {O}/claudeclaw.db {T}/unrelated-link2; echo pw | MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add x --password-stdin'),
+    ('cp a copy named like the live db, with an unrelated ln in the command', 'cp {L} {O}/fresh-copy/claudeclaw.db; ln -sf {O}/claudeclaw.db {O}/unrelated-link'),
+    ('install unrelated', 'install -m 644 {R}/ok.sh {O}/ok.sh'),
+    ('install from the live DB', 'install -m 644 {L} {O}/x.db'),
+    ('rsync the store out', 'rsync -a {S}/ {O}/x/'),
+    ('rsync unrelated', 'rsync -a {R}/scripts/ {O}/scripts/'),
+    ('dd from the live DB', 'dd if={L} of={O}/x.db'),
+    ('tee into a copy', 'echo x | tee {O}/log.txt'),
+    ('tee -a into a copy', 'echo x | tee -a {O}/log.txt'),
+    ('redirect into a copy', 'echo hi > {O}/x.txt'),
+    ('redirect a dump out', 'sqlite3 {L} .dump > {O}/dump.sql'),
+    ('redirect a dump out, append', 'sqlite3 {L} .dump >> {O}/dump.sql'),
+    ('state file in the store dir (redirect)', 'echo x > {S}/note.txt'),
+    ('state file in the store dir (tee)', 'echo x | tee {S}/note.json'),
+    ('state file in the store dir (cp)', 'cp {O}/claudeclaw.db.txt {S}/note.txt'),
+    ('a new backup db next to the live one', 'sqlite3 {L} ".backup {S}/pre-x-backup.db"'),
+    ('cp a plain file into a store subdir', 'cp {O}/x.json {S}/backups/x.json'),
+    ('QA script truncates its own copy through a variable', ': > $S/claudeclaw.db'),
+    ('for loop whose list holds SQL text', "for c in 'sqlite3 x \"DELETE FROM api_tokens\"'; do echo $c; done"),
+    ('redirect to /dev/null and stderr', 'ls {S} > /dev/null 2>&1; ls 2>/dev/null'),
+    ('redirect fd dup', 'ls {S} 2>&1 >&2'),
+    ('sqlite3 .backup out of the live DB', 'sqlite3 {L} ".backup {O}/b2.db"'),
+    ('sqlite3 .clone out of the live DB', 'sqlite3 {L} ".clone {O}/c.db"'),
+    ('sqlite3 VACUUM INTO a copy', 'sqlite3 {L} "VACUUM INTO \'{O}/v.db\'"'),
+    ('sqlite3 .backup of a copy to a copy', 'sqlite3 {O}/claudeclaw.db ".backup {O}/b3.db"'),
+    ('sqlite3 select vacuum word', 'sqlite3 {O}/claudeclaw.db "SELECT \'vacuum into the void\'"'),
+    ('find -fprint into a copy', 'find . -maxdepth 0 -fprint {O}/found.txt'),
+    # ---- the generic argument fallback must not turn prose into a block ----
+    ('echo CLI shape', 'echo "npm run dashboard-user add x"'),
+    ('echo SQL', 'echo "INSERT INTO api_tokens VALUES (1)"'),
+    ('git commit -m naming the CLI', 'git commit -m "docs: npm run dashboard-user"'),
+    ('git commit -m naming an auth-table write', 'git commit -m "fix: update api_tokens handling"'),
+    ('git commit -am', 'git commit -am "chore: tsx scripts/dashboard-user.ts is documented"'),
+    ('git -c user.name commit', 'git -c user.name=x commit -m "npm run dashboard-user add"'),
+    ('git log --grep', 'git log --grep "npm run dashboard-user add" --oneline'),
+    ('git tag -m', 'git tag -a v1 -m "note: npm run dashboard-user"'),
+    ('git stash push -m', 'git stash push -m "wip: DELETE FROM api_tokens docs"'),
+    ('git status', 'git status'),
+    ('git diff the script', 'git diff --stat -- scripts/dashboard-user.ts'),
+    ('git -C commit', 'git -C {R} commit -m "docs: npm run dashboard-user"'),
+    ('grep the CLI shape', 'grep -rn "npm run dashboard-user" docs'),
+    ('rg the CLI shape', 'rg "tsx scripts/dashboard-user.ts" docs'),
+    ('gh pr body naming the CLI', 'gh pr create --title t --body "run npm run dashboard-user -- add bob on the box"'),
+    ('curl data naming the CLI', 'curl -s -d \'{"content":"npm run dashboard-user add x is blocked"}\' http://localhost:3420/api/messages'),
+    ('curl data naming SQL', 'curl -s -d \'{"content":"DELETE FROM api_tokens is blocked"}\' http://localhost:3420/api/messages'),
+    ('make plain', 'make -C . x'),
+    ('make test', 'make test'),
+    ('awk plain', "awk '{print $1}' notes.txt"),
+    ('awk with a pipe field separator', "awk -F'|' '{print $2}' notes.txt"),
+    ('awk naming the CLI as data', "awk '/dashboard-user/ {print}' notes.txt"),
+    ('vim plain', 'vim notes.txt'),
+    ('vim -c plain', "vim -c 'set number' notes.txt"),
+    ('expect -f', 'expect -f script.exp'),
+    ('docker exec list', 'docker exec app npm run dashboard-user -- list'),
+    ('kubectl exec unrelated', 'kubectl exec pod -- npm test'),
+    ('unknown tool, unrelated SQL read', 'unknown-tool "SELECT * FROM api_tokens"'),
+    ('unknown tool, unrelated write', 'unknown-tool "UPDATE kanban_cards SET status=1"'),
+    ('unknown tool with a heredoc, unrelated', 'unknown-tool <<EOF\nhello\nEOF'),
+    ('deno eval plain', 'deno eval "console.log(1)"'),
+    ('deno eval select', 'deno eval "db.prepare(\'SELECT * FROM api_tokens\').all()"'),
+    ('deno run file', 'deno run -A scripts/x.ts'),
+    ('jq plain', "jq '.a' x.json"),
+    ('sed plain', "sed 's/a/b/' x.txt"),
+    ('cat heredoc naming the CLI', 'cat <<EOF\nnpm run dashboard-user add x\nEOF'),
+    ('tee heredoc naming the CLI', 'tee docs/x.md <<EOF\nrun npm run dashboard-user -- add bob\nEOF'),
 ]
 
 
@@ -668,6 +948,16 @@ class TestBounds(unittest.TestCase):
             'sqlite3 ' + FX.live + ' "UPDATE ' + ' ' * 100000 + '"',
             'sqlite3 ' + FX.live + ' "-- ' + 'x' * 100000 + '\n"',
             'python3 -c "' + 'create trigger a ' * 6000 + '"',
+            # the shapes that were quadratic or could be: a lazy scan per opener, to the end of the text
+            'python3 -c "' + 'create trigger a ' * 7000 + '"',
+            'python3 -c "' + 'create   trigger   ' * 7000 + '"',
+            'python3 -c "' + 'update /* ' * 12000 + '"',
+            'python3 -c "' + '/*' * 60000 + '"',
+            'python3 -c "' + 'update /* x */ ' * 8000 + '"',
+            'python3 -c "' + 'update -- x\\n' * 12000 + '"',
+            'python3 -c "' + 'insert or ' * 12000 + '"',
+            'python3 -c "' + 'drop table if ' * 8000 + '"',
+            'python3 -c "' + 'delete from ' * 10000 + '"',
         ]
         for s in shapes:
             self.deny_or_pass_fast(s, limit_s=4.0)
@@ -740,12 +1030,14 @@ MUTANTS = [
     ('CLI decision never blocks', 'def _cli_decision(rest, state):\n    if len(rest) == 1', 'def _cli_decision(rest, state):\n    return\n    if len(rest) == 1'),
     ('list exemption widened to anything', "if len(rest) == 1 and rest[0] == 'list':", "if rest and rest[0] == 'list':"),
     ('list exemption removed', "if len(rest) == 1 and rest[0] == 'list':\n        return", "if False:\n        return"),
-    ('SQL write check disabled on the live store', 'if live and (SQL_WRITE.search(text) or SQL_DOT_WRITE.search(text)):', 'if False:'),
-    ('SQL write check ignores the live flag', 'if live and (SQL_WRITE.search(text) or SQL_DOT_WRITE.search(text)):', 'if (SQL_WRITE.search(text) or SQL_DOT_WRITE.search(text)):'),
+    ('SQL write check disabled on the live store', 'if live and (SQL_WRITE.search(stripped) or SQL_DOT_WRITE.search(text)):', 'if False:'),
+    ('SQL write check ignores the live flag', 'if live and (SQL_WRITE.search(stripped) or SQL_DOT_WRITE.search(text)):', 'if (SQL_WRITE.search(stripped) or SQL_DOT_WRITE.search(text)):'),
+    ('block comments not stripped (comment hides the table)', "    if '/*' not in text:\n        return text\n    out = []", "    if True:\n        return text\n    out = []"),
+    ('trigger span unbounded again', "r'trigger[^;]{0,200}?\\bon'", "r'trigger[^;]*?\\bon'"),
     ('everything is a copy', 'def _in_store_dir(real, state):\n    for d in', 'def _in_store_dir(real, state):\n    return False\n    for d in'),
     ('a dynamic db path counts as a copy', 'if path_word is None or path_word.dyn:\n        return True', 'if path_word is None or path_word.dyn:\n        return False'),
-    ('realpath dropped (symlink to live)', 'real = os.path.realpath(p)\n    except Exception:\n        return True', 'real = os.path.abspath(p)\n    except Exception:\n        return True'),
-    ('interpreter code is not inspected for SQL', "    m = SQL_WRITE.search(text)\n    if m:\n        raise Deny('iras a hitelesito tablakra interpreter-kodbol", "    m = None\n    if m:\n        raise Deny('iras a hitelesito tablakra interpreter-kodbol"),
+    ('realpath dropped (symlink to live)', '            reals = [os.path.realpath(p)]', '            reals = [os.path.abspath(p)]'),
+    ('interpreter code is not inspected for SQL', "    m = SQL_WRITE.search(_strip_block_comments(text))\n    if m:\n        raise Deny('iras a hitelesito tablakra interpreter-kodbol", "    m = None\n    if m:\n        raise Deny('iras a hitelesito tablakra interpreter-kodbol"),
     ('app mutators not inspected', 'm = None if python else APP_MUTATORS.search(text)', 'm = None'),
     ('interpreter exec of the CLI not inspected', 'if CLI_MARKER.search(text) and EXEC_API.search(text):', 'if False:'),
     ('substitution bodies not checked', '        for body in seg.subs:\n            check_command(body, state, depth + 1)', '        for body in []:\n            check_command(body, state, depth + 1)'),
@@ -790,7 +1082,9 @@ MUTANTS = [
     ('opener cap removed', "                if openers[0] > MAX_HEREDOC_OPENERS:", "                if False:"),
     ('nesting limit removed', "    if depth > MAX_NEST:\n        raise InspectionLimit", "    if False:\n        raise InspectionLimit"),
     ('substitution cap removed', "        if state.budget.subs > MAX_SUBS:", "        if False:"),
-    ('work budget removed', "    if state.budget.chars > MAX_WORK_CHARS:", "    if False:"),
+    ('every path counts as a made link', "    if state.link_global:\n        return True\n    for d in state.link_dests:", "    return True\n    for d in state.link_dests:"),
+    ('link into a throw-away store dir ignored', "if below and x.startswith(real.rstrip('/') + os.sep):", "if False and x.startswith(real.rstrip('/') + os.sep):"),
+    ('work budget removed', "    state.budget.chars += len(cmd)\n    if state.budget.chars > MAX_WORK_CHARS:", "    state.budget.chars += len(cmd)\n    if False:"),
     ('internal error allowed', "        sys.stderr.write('AUTH-ADMIN-KAPU: a kapu maga hibara futott (%s: %s), ezert BLOKKOL. Ez a '\n                         'kapu hibaja, nem a tied.\\n' % (type(exc).__name__, exc))\n        sys.exit(2)", "        sys.exit(0)"),
     ('bad json allowed', "        sys.stderr.write('AUTH-ADMIN-KAPU: a bemenet nem olvashato, ezert BLOKKOL.\\n')\n        sys.exit(2)\n    tool", "        sys.exit(0)\n    tool"),
     ('inspection limit allowed', "    except InspectionLimit as exc:\n        block(", "    except InspectionLimit as exc:\n        sys.exit(0)\n        block("),
@@ -818,6 +1112,13 @@ class TestMutation(unittest.TestCase):
         """Mutants the table cannot see (limits, main() fail-closed paths): the dedicated checks."""
         mod = load_gate(src, name='mutant2')
         try:
+            if name == 'trigger span unbounded again':
+                t0 = time.time()
+                try:
+                    mod.inspect('python3 -c "' + 'create trigger a ' * 6000 + '"', FX.root)
+                except (mod.Deny, mod.InspectionLimit, mod.Opaque):
+                    pass
+                return time.time() - t0 > 2.0     # the bounded pattern needs well under a second
             if name == 'size limit removed':
                 t0 = time.time()
                 try:
