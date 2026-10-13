@@ -404,6 +404,14 @@
           <option value="assignee" data-i18n="kanban.filter.group_assignee">Felelős szerint</option>
           <option value="priority" data-i18n="kanban.filter.group_priority">Prioritás szerint</option>
         </select>
+        <label for="kanbanSort" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.sort.label">Rendezés:</label>
+        <select id="kanbanSort" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
+          <option value="manual" data-i18n="kanban.sort.manual">Kézi sorrend</option>
+          <option value="number_asc" data-i18n="kanban.sort.number_asc">Szám szerint, növekvő</option>
+          <option value="number_desc" data-i18n="kanban.sort.number_desc">Szám szerint, csökkenő</option>
+          <option value="created" data-i18n="kanban.sort.created">Létrehozás szerint, újabb elöl</option>
+          <option value="updated" data-i18n="kanban.sort.updated">Frissítés szerint, újabb elöl</option>
+        </select>
         <span id="kanbanColumnChipsLabel" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.filter.columns_label">Oszlopok:</span>
         <div id="kanbanColumnChips" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;"></div>
         <div class="kanban-quick-filters" id="kanbanQuickFilters" style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; align-items:center;"></div>
@@ -419,6 +427,9 @@
           <span data-i18n="kanban.gantt.filter.overdue_only">Csak lejárt/közelgő</span>
         </label>
       </div>
+
+      <!-- Ongoing band: open cards labelled Folyamatos / Ongoing (hidden while empty) -->
+      <div class="kanban-ongoing-band" id="kanbanOngoingBand" hidden></div>
 
       <div class="kanban-board" id="kanbanBoard">
         <div class="kanban-col" data-status="planned">

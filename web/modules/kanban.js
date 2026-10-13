@@ -21,7 +21,9 @@ import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { can } from './rbac-client.js'
 import { sumInProgressSeconds, formatActiveTime } from './kanban-active-time.js'
-import { kanbanColumnCount, kanbanBoardTotals } from './kanban-totals.js'
+import { kanbanColumnCount, kanbanColumnGroups, kanbanBoardTotals } from './kanban-totals.js'
+import { kanbanCardSorter, normalizeKanbanSort, isManualSort } from './kanban-sort.js'
+import { isOngoingCard, isOngoingLabelName } from './kanban-ongoing.js'
 
 // ── Injected dependencies ────────────────────────────────────────────────────
 let _openModal = null, _closeModal = null, _wireColumn = null, _wireCardTouch = null, _loadIdeasPage = null
@@ -55,6 +57,11 @@ let kanbanAssigneeFilter = ''
 // Swimlane grouping: 'none' (flat board, default) | 'assignee' | 'priority'.
 let kanbanGroupBy = 'none'
 let kanbanGroupByInitialized = false
+// Column order: 'manual' (the board's drag order) | 'number_asc' | 'number_desc'
+// | 'created' | 'updated'. Anything but manual needs the whole board loaded
+// (a partial page would sort only what happens to be on it) and turns card
+// dragging off, because a hand-placed position means nothing in a sorted column.
+let kanbanSort = 'manual'
 // Which swimlane keys are collapsed; not persisted across reloads.
 const kanbanCollapsedLanes = new Set()
 // Set of status column keys that are hidden from the board view.
@@ -193,6 +200,9 @@ export async function loadKanban() {
         const sel = document.getElementById('kanbanGroupBy')
         if (sel) sel.value = initialGroup
       }
+      kanbanSort = normalizeKanbanSort(localStorage.getItem('marveen.kanbanSort'))
+      const sortSel = document.getElementById('kanbanSort')
+      if (sortSel) sortSel.value = kanbanSort
       // Active label-filter selection, restored the same way as the groupBy
       // choice -- a fresh page load should not lose the filters set up.
       try {
@@ -217,7 +227,12 @@ export async function loadKanban() {
     // Paged mode only applies to the flat, unfiltered board -- see the
     // _kanbanColumnPaging comment above for why filters/grouping force a
     // full fetch instead.
+    // A sorted (non-manual) column and the ongoing band need the whole board
+    // too: a card past the first page would sort wrongly, or be missing from
+    // the band. The band only matters when the tenant has an ongoing label.
+    const ongoingLabelExists = kanbanAllLabels.some((l) => isOngoingLabelName(l?.name))
     const filtersActive = kanbanGroupBy !== 'none' || !!kanbanProjectFilter || !!kanbanAssigneeFilter || kanbanLabelFilter.size > 0
+      || !isManualSort(kanbanSort) || ongoingLabelExists
     if (filtersActive) {
       _kanbanPagedMode = false
       const kanbanUrl = kanbanTenant ? `/api/kanban?tenant=${encodeURIComponent(kanbanTenant)}` : '/api/kanban'
@@ -296,6 +311,12 @@ document.getElementById('kanbanGroupBy').addEventListener('change', (e) => {
   _kanbanFilterChanged()
 })
 
+document.getElementById('kanbanSort').addEventListener('change', (e) => {
+  kanbanSort = normalizeKanbanSort(e.target.value)
+  localStorage.setItem('marveen.kanbanSort', kanbanSort)
+  _kanbanFilterChanged()
+})
+
 function populateProjectFilter() {
   const sel = document.getElementById('kanbanProjectFilter')
   const prev = sel.value
@@ -308,6 +329,32 @@ function populateProjectFilter() {
     sel.appendChild(opt)
   }
   if (prev && !kanbanProjects.includes(prev)) kanbanProjectFilter = ''
+}
+
+// The ongoing band above the board: one chip per ongoing card, in the chosen
+// sort order. It is not a drop target and its cards keep their status; a click
+// opens the card like any other. Hidden while empty.
+function renderKanbanOngoingBand(cards) {
+  const band = document.getElementById('kanbanOngoingBand')
+  if (!band) return
+  band.innerHTML = ''
+  band.hidden = cards.length === 0
+  if (cards.length === 0) return
+  const title = document.createElement('span')
+  title.className = 'kanban-ongoing-title'
+  title.textContent = t('kanban.ongoing.title')
+  band.appendChild(title)
+  for (const card of [...cards].sort(kanbanCardSorter(kanbanSort))) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'kanban-ongoing-chip'
+    chip.dataset.id = card.id
+    chip.dataset.priority = card.priority
+    chip.textContent = (card.seq != null ? `#${card.seq} ` : '') + card.title
+    chip.title = card.title
+    chip.addEventListener('click', () => showCardDetail(card))
+    band.appendChild(chip)
+  }
 }
 
 function renderKanbanColumnChips() {
@@ -528,26 +575,33 @@ function renderKanban() {
   // Depth-2 cards are always embedded under their embedded depth-1 parent
   // (regardless of status match) so grandchildren never float as standalone
   // column cards.
+  //
+  // An ongoing card leaves its column for the band above the board, and it is
+  // never embedded in a parent either. Its own subtasks are not embedded in it
+  // (they would vanish with it): they stay ordinary cards in their columns.
+  const ongoingIds = new Set()
+  for (const card of kanbanCards) {
+    if (visibleCardIds.has(card.id) && isOngoingCard(card)) ongoingIds.add(card.id)
+  }
   const embeddedSubtaskIds = new Set()
   // Pass 1: depth-1 (direct subtasks)
   for (const card of kanbanCards) {
-    if (!card.parent_id) continue
+    if (!card.parent_id || ongoingIds.has(card.id)) continue
     const parent = cardById.get(card.parent_id)
-    if (!parent || !visibleCardIds.has(parent.id)) continue
+    if (!parent || !visibleCardIds.has(parent.id) || ongoingIds.has(parent.id)) continue
     if (parent.status === card.status) embeddedSubtaskIds.add(card.id)
   }
   // Pass 2: depth-2 (grandchildren) -- always embedded under an embedded depth-1
   for (const card of kanbanCards) {
-    if (!card.parent_id) continue
+    if (!card.parent_id || ongoingIds.has(card.id)) continue
     if (embeddedSubtaskIds.has(card.parent_id)) embeddedSubtaskIds.add(card.id)
   }
 
-  const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
-  for (const card of kanbanCards) {
-    if (embeddedSubtaskIds.has(card.id)) continue
-    if (!visibleCardIds.has(card.id)) continue
-    if (grouped[card.status]) grouped[card.status].push(card)
-  }
+  const grouped = kanbanColumnGroups(
+    kanbanCards,
+    { visible: visibleCardIds, embedded: embeddedSubtaskIds, ongoing: ongoingIds },
+    ['planned', 'in_progress', 'waiting', 'testing', 'done'],
+  )
 
   // Update counts (embedded subtasks don't count as separate cards). In paged
   // mode the cards the server still holds for a column count too, so a
@@ -560,6 +614,8 @@ function renderKanban() {
   }
   renderKanbanBoardTotals(visibleCardIds.size)
 
+  renderKanbanOngoingBand(kanbanCards.filter((c) => ongoingIds.has(c.id)))
+
   const flatBoard = document.getElementById('kanbanBoard')
   const swimlaneBoard = document.getElementById('kanbanSwimlaneBoard')
 
@@ -569,7 +625,7 @@ function renderKanban() {
     for (const [status, cards] of Object.entries(grouped)) {
       const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${status}"]`)
       col.innerHTML = ''
-      cards.sort((a, b) => a.sort_order - b.sort_order)
+      cards.sort(kanbanCardSorter(kanbanSort))
 
       for (const card of cards) {
         col.appendChild(createCardEl(card, buildEmbeddedSubtrees(card.id, embeddedSubtaskIds)))
@@ -720,7 +776,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds, columnCounts) {
       colBody.className = 'kanban-col-body kanban-swimlane-col-body'
       colBody.dataset.status = def.status
 
-      const cards = laneCardsByStatus[def.status].sort((a, b) => a.sort_order - b.sort_order)
+      const cards = laneCardsByStatus[def.status].sort(kanbanCardSorter(kanbanSort))
       for (const card of cards) {
         colBody.appendChild(createCardEl(card, buildEmbeddedSubtrees(card.id, embeddedSubtaskIds)))
       }
@@ -844,7 +900,7 @@ function createCardEl(card, embeddedTrees = []) {
   el.className = 'kanban-card'
   el.dataset.id = card.id
   el.dataset.priority = card.priority
-  el.draggable = _canWriteKanban
+  el.draggable = _canWriteKanban && isManualSort(kanbanSort)
 
   // Assignee chip. Match the card's assignee against the known list
   // case-insensitively (a card stored as "gorcsevivan" must still match the
@@ -1067,7 +1123,7 @@ function createCardEl(card, embeddedTrees = []) {
   // ends a drag. Touch drag ignores el.draggable entirely (it's a manual
   // touchstart/move/end handler, not the HTML5 DnD API), so it needs its own
   // gate -- skip wiring it at all when the role cannot move cards.
-  if (_canWriteKanban) _wireCardTouch?.(el, card)
+  if (_canWriteKanban && isManualSort(kanbanSort)) _wireCardTouch?.(el, card)
 
   // Click -> detail
   el.addEventListener('click', () => showCardDetail(card))

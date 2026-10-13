@@ -65,7 +65,17 @@ Egy kártyára kattintva megnyílik a részlet-panel:
 
 **Csoportosítás** - a tábla felbontható felelős vagy prioritás szerint úszósávokba. Az úszósávok fejlécre kattintva összecsukhatók.
 
+**Rendezés** - az oszlopok kártyái sorba rendezhetők: kézi sorrend (alapértelmezett, a húzással beállított), szám szerint növekvő vagy csökkenő, létrehozás szerint vagy frissítés szerint (újabb elöl). A szám vagy időpont nélküli kártya mindig a végére kerül. A választás megmarad az oldal újratöltése után is. Kézi sorrenden kívül a kártyák nem húzhatók (a húzással beállított hely egy rendezett oszlopban nem jelentene semmit), és a tábla teljes egészében betöltődik, nem oldalanként. A keresés változatlanul a meglévő, szerveroldali keresés.
+
 **Szűrők törlése** - visszaállítja az összes szűrőt.
+
+---
+
+## Folyamatos sáv
+
+A **Folyamatos** (vagy **Ongoing**) címkével ellátott, nem Kész státuszú kártyák nem a státusz-oszlopban jelennek meg, hanem a tábla fölötti sávban, egy-egy gombként. Olyan tartós, mindig "folyamatban lévő" teendőknek való, amelyek különben örökre egy oszlopban ülnének. A kártya státusza megmarad (a részletein továbbra is állítható), a sáv nem húzás-célpont, a gombra kattintva a kártya részletei nyílnak. A Kész státuszba tett kártya visszakerül a Kész oszlopba. A sáv az aktív szűrőket követi, és üresen nem látszik. Ha egy ilyen kártyának vannak alfeladatai, azok a saját oszlopukban maradnak, nem tűnnek el vele.
+
+A címkét egyszer létre kell hozni a táblán (a címkékkel egy admin dolgozik; a címke neve kis- és nagybetűre nem érzékeny, és tenantonként külön van). Ha a táblán van ilyen nevű címke, a tábla teljes egészében betöltődik, nem oldalanként, hogy a sáv hiánytalan legyen. A sávba emelt kártyát az oszlopfejléc száma és a WIP-jelvény nem számolja (nincs oszlopban), a nézetváltó melletti tábla-összeg viszont igen, mert a kártya a táblán van.
 
 ---
 
