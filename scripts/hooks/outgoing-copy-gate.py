@@ -934,11 +934,25 @@ def _at_sentence_start(text: str, idx: int) -> bool:
     return False
 
 
+# Case endings and suffixes that follow a number after a hyphen in Hungarian prose (2027-es, 3-as, 5-os, 10-ig,
+# 1-re, 8-szor ...). Every one of them is a correct accentless spelling.
+NUMBER_ENDINGS = frozenset((
+    "es", "as", "os", "ik", "ig", "ra", "re", "ban", "ben", "nak", "nek", "tol", "tel", "val", "vel", "en", "on", "an",
+    "hoz", "hez", "bol", "rol", "szor", "szer", "szeres", "edik", "adik", "odik", "i", "ei", "ai",
+))
+
+
 def accent_check_tokens(prose: str):
     """(lowercase alak, kezdo-pozicio) parok az ekezet-vizsgalathoz."""
     out = []
     for m in HYPHEN_WORD.finditer(prose):
         tok = m.group(0)
+        # A case ending hung on a number ("2027-es", "10-es", "3-as", "5-os", "1-jen"): the word regex starts
+        # the token after the hyphen, and a bare "es" would be read as the accentless "es" for the word "es"
+        # (and). Only the endings that are spelled this way are let through; "5-ot" (5-ot should be 5-ot with
+        # an umlaut) and any other word after "7-" are still judged.
+        if tok.lower() in NUMBER_ENDINGS and m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit():
+            continue
         if "-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start()):
             continue
         out.append((tok.lower(), m.start()))
