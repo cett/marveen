@@ -228,7 +228,8 @@ class AnyTool(GateCase):
     def test_mcp_file_tools_on_the_key_are_blocked(self):
         key, via_link, hard = self.p('store', NAME), self.p('work', 'keylink'), self.p('work', 'innocent-name.txt')
         cases = []
-        for path in (key, 'store/' + NAME, via_link, hard, self.p('work', 'storelink', NAME), 'file://' + key, 'file://' + hard, 'file://' + via_link):
+        for path in (key, 'store/' + NAME, via_link, hard, self.p('work', 'storelink', NAME), 'file://' + key, 'file://' + hard, 'file://' + via_link, 'FILE://' + hard,
+                     'file://localhost' + hard, 'File://' + via_link):
             cases += [('mcp__filesystem__read_text_file', {'path': path}), ('mcp__filesystem__read_file', {'path': path, 'head': 3}),
                       ('mcp__filesystem__read_media_file', {'path': path}), ('mcp__filesystem__write_file', {'path': path, 'content': 'x'}),
                       ('mcp__filesystem__edit_file', {'path': path, 'edits': [{'oldText': 'a', 'newText': 'b'}]}),
@@ -265,6 +266,23 @@ class AnyTool(GateCase):
                          ('mcp__x__y', {'text': ('a long text about ' + NAME + ' ') * 200}), ('mcp__x__y', {})]:
             with self.subTest(tool=tool, ti=ti):
                 self.assert_allowed(self.run_gate(tool, ti), tool)
+
+    def test_a_glob_with_more_than_500_matches_still_finds_the_key(self):
+        big = self.p('work', 'big')
+        os.makedirs(big)
+        for i in range(600):
+            self.write('work/big/f%03d' % i, 'x')
+        try:
+            self.assert_allowed(self.run_gate('mcp__x__y', {'q': big + '/*'}), 'no key among 600 files')
+            os.link(self.p('store', NAME), os.path.join(big, 'zzz'))
+            self.assert_denied(self.run_gate('mcp__x__y', {'q': big + '/*'}), 'lenient field')
+            self.assert_denied(self.bash('cat ' + big + '/*'), 'bash')
+        finally:
+            shutil.rmtree(big, ignore_errors=True)
+
+    def test_a_long_path_in_an_odd_field_is_still_judged(self):
+        long_path = self.p('work', 'storelink') + '/' + NAME      # resolves to the key, but the text is plain
+        self.assert_denied(self.run_gate('mcp__x__y', {'q': '/' * 2000 + long_path}), 'padded with slashes')
 
     def test_a_pathological_argument_is_a_block_not_a_hang(self):
         deep = cur = {}

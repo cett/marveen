@@ -48,6 +48,7 @@ try:
     import base64
     import fnmatch
     import glob as globlib
+    import itertools
     import json
     import os
     import re
@@ -67,7 +68,8 @@ FILE_PATH_KEYS = ('file_path', 'notebook_path', 'path', 'filePath', 'notebookPat
 PATHISH_KEY = re.compile(r'path|file|source|dest|src|target|dir|folder|uri|url|glob|pattern|location|root|name|^from$|^to$')
 MAX_STRINGS = 5000
 MAX_DEPTH = 12
-MAX_LENIENT = 1024
+MAX_LENIENT = 4096     # PATH_MAX
+MAX_GLOB = 50000
 SEARCH_TOOLS = ('Grep', 'Glob')
 ARCHIVERS = frozenset(('tar', 'gtar', 'bsdtar', 'zip', '7z', '7za', 'pax', 'cpio', 'ditto', 'rclone'))
 COPIERS = frozenset(('cp', 'rsync', 'scp'))
@@ -105,8 +107,10 @@ def _absolute(path: str, cwd: str) -> str:
 def _is_key_file(path: str, cwd: str, by_text: bool = True) -> bool:
     """True when `path` is, resolves to, or is another name (a hard link) for the key file; by_text: also when its
     text merely names the key."""
-    if path.startswith('file://'):
+    if path[:7].lower() == 'file://':
         path = unquote(path[7:])
+        if not path.startswith('/'):
+            path = '/' + path.split('/', 1)[1] if '/' in path else path      # file://localhost/x or file://host/x: the host is dropped
     if by_text and KEY_NAME in path.lower().replace('\\', ''):
         return True
     abs_path = _absolute(path, cwd)
@@ -349,7 +353,8 @@ def _expand_word(word: str, cwd: str) -> list:
         try:
             if '[:' in w and _inside(_real(_absolute(os.path.dirname(w) or '.', cwd)), STORE_REAL):
                 return [KEY_PATH]      # a POSIX class over the store directory: judged as selecting the key
-            return globlib.glob(_shell_glob(_absolute(w, cwd)), include_hidden=True)[:500]
+            found = list(itertools.islice(globlib.iglob(_shell_glob(_absolute(w, cwd)), include_hidden=True), MAX_GLOB + 1))
+            return [KEY_PATH] if len(found) > MAX_GLOB else found      # too many matches to look through: judged as selecting the key
         except (OSError, ValueError):
             return [w]
     return [w]
