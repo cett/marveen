@@ -225,3 +225,41 @@ describe('the JS and python copies carry the same limits', () => {
     expect(num(name)).toBe(jsValue)
   })
 })
+
+describe('a command blocked only by the wrapper depth bound says so', () => {
+  const wrapped = (n: number, cmd: string) => 'nohup '.repeat(n) + cmd
+
+  it('nine wrappers + a harmless command: a deny marked as the wrapper depth', () => {
+    expect(gateDecision('Bash', { command: wrapped(9, 'git status') })).toEqual({ deny: true, wrapperDepth: true })
+  })
+
+  it('eight wrappers + a harmless command: allowed', () => {
+    expect(gateDecision('Bash', { command: wrapped(8, 'git status') })).toEqual({ deny: false })
+  })
+
+  it('a visible send: a plain deny, not the wrapper depth', () => {
+    expect(gateDecision('Bash', { command: 'sendmail x' })).toEqual({ deny: true })
+  })
+
+  it('a visible send next to a too-deep segment: a plain deny, not the wrapper depth', () => {
+    expect(gateDecision('Bash', { command: 'sendmail x; ' + 'sudo '.repeat(9) + 'true' })).toEqual({ deny: true })
+  })
+
+  it('a send inside a heredoc behind too-deep wrappers: a plain deny, not the wrapper depth', () => {
+    const d = gateDecision('Bash', { command: wrapped(9, "python3 - <<'PY'\nimport smtplib\nPY\n") })
+    expect(d.deny).toBe(true)
+    expect(d.wrapperDepth).toBeUndefined()
+  })
+
+  it('the hook entrypoint names the wrapper depth in the deny reason', () => {
+    const out = execFileSync('node', [GATE_JS], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: wrapped(9, 'git status') } }),
+      encoding: 'utf-8',
+      timeout: 8000,
+    })
+    const decision = JSON.parse(out).hookSpecificOutput
+    expect(decision.permissionDecision).toBe('deny')
+    expect(decision.permissionDecisionReason).toMatch(/burkolo-korlat/)
+    expect(decision.permissionDecisionReason).not.toMatch(/Email-kuldes sub-agentkent tiltott/)
+  })
+})
