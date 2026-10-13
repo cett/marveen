@@ -627,7 +627,7 @@ components:
 
     ApprovalUsed:
       type: object
-      required: [ok, replayed, window_s, approval]
+      required: [ok, replayed, window_s, approval, sig]
       properties:
         ok:
           type: boolean
@@ -640,6 +640,11 @@ components:
           description: The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision.
         approval:
           $ref: "#/components/schemas/Approval"
+        sig:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            HMAC-SHA256, lowercase hex, of the text `v1|content_hash|category|agent_id|ref|consumed_at` built from the `approval` row (`ref` is its `consumed_ref`, empty when there is none; `consumed_at` is the integer seconds). The key is the 32 random bytes held as 64 hex characters in `store/.claim-signing-key`, which the server creates (mode 0600) and no route returns. The send gate and the official sender recompute it and refuse an answer without a matching `sig`, so a listener that only mirrors the request cannot pass for the dashboard. A replay of the same use carries the same `sig`.
 
     ApprovalRefusal:
       type: object
@@ -2595,6 +2600,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApprovalRefusal"
+        "503":
+          description: "`internal_error` with `reason` `claim_signing_unavailable`: the server cannot load `store/.claim-signing-key`, so it cannot sign its answer and uses nothing up (it never answers an unsigned `200`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /approvals/{id}/consume:
     parameters:
@@ -2660,6 +2671,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApprovalRefusal"
+        "503":
+          description: "`internal_error` with `reason` `claim_signing_unavailable`: the server cannot load `store/.claim-signing-key`, so it cannot sign its answer and uses nothing up (it never answers an unsigned `200`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /approvals/{id}/events:
     parameters:

@@ -5,14 +5,20 @@
 // they are told, and what is left behind.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
+import { createHmac } from 'node:crypto'
+import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
 
-const flags = vi.hoisted(() => ({ enforce: true }))
+const flags = vi.hoisted(() => ({ enforce: true, storeDir: '' }))
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   MAIN_AGENT_ID: 'main-agent',
   get APPROVAL_HUMAN_ONLY_ENFORCE() { return flags.enforce },
+  // The claim signing key lives in the store directory: a throw-away one per test.
+  get STORE_DIR() { return flags.storeDir },
 }))
 
 const deliverToChannel = vi.hoisted(() => vi.fn())
@@ -76,6 +82,7 @@ const auditRows = () => getDb().prepare("SELECT agent_id, entity_id, detail FROM
 
 beforeEach(() => {
   flags.enforce = true
+  flags.storeDir = mkdtempSync(join(tmpdir(), 'claim-key-'))
   seq = 0
   initDatabase(':memory:')
   deliverToChannel.mockReset()
@@ -331,5 +338,107 @@ describe('the window setting', () => {
       ['999999999', 86400], ['9999999999', 1800],
     ]
     for (const [raw, want] of table) expect(parseConsumeWindowSeconds(raw), String(raw)).toBe(want)
+  })
+})
+
+// The signature on a 200 answer: an HMAC the send gate checks with store/.claim-signing-key. The expected value is
+// recomputed here with node:crypto from the documented text, not with the helper under test.
+describe('the signature on a used-up answer', () => {
+  const keyPath = () => join(flags.storeDir, '.claim-signing-key')
+  const keyBytes = () => Buffer.from(readFileSync(keyPath(), 'utf-8').trim(), 'hex')
+  const hmac = (text: string) => createHmac('sha256', keyBytes()).update(text).digest('hex')
+  const signedText = (a: Record<string, any>) => ['v1', a.content_hash, a.category, a.agent_id, a.consumed_ref ?? '', String(a.consumed_at)].join('|')
+
+  async function approvedClaim(ref = 'gate-1') {
+    const { id, hash } = await ask()
+    approveByPerson(id)
+    return { id, hash, out: await claim(hash, MAIN, { ref, consumer: 'email-approval-gate' }) }
+  }
+
+  it('is on the claim answer and is the HMAC-SHA256 of v1|hash|category|agent|ref|consumed_at', async () => {
+    const { hash, out } = await approvedClaim('gate-abc')
+    expect(out.status).toBe(200)
+    expect(out.body.sig).toMatch(/^[0-9a-f]{64}$/)
+    expect(out.body.approval).toMatchObject({ content_hash: hash, category: 'email_send', agent_id: 'main-agent', consumed_ref: 'gate-abc' })
+    expect(signedText(out.body.approval)).toBe(`v1|${hash}|email_send|main-agent|gate-abc|${out.body.approval.consumed_at}`)
+    expect(out.body.sig).toBe(hmac(signedText(out.body.approval)))
+  })
+
+  it('is on the consume answer, and a replay of the same use carries the same signature', async () => {
+    const { id, hash } = await ask()
+    approveByPerson(id)
+    const first = await consume(id, hash, MAIN, { ref: 'r1' })
+    expect(first.status).toBe(200)
+    expect(first.body.sig).toBe(hmac(signedText(first.body.approval)))
+    const replay = await consume(id, hash, MAIN, { ref: 'r1' })
+    expect(replay.body).toMatchObject({ ok: true, replayed: true })
+    expect(replay.body.sig).toBe(first.body.sig)
+    const claimReplay = await claim(hash, MAIN, { ref: 'r1' })
+    expect(claimReplay.body).toMatchObject({ ok: true, replayed: true, sig: first.body.sig })
+  })
+
+  it('changes with every signed field', async () => {
+    const { out } = await approvedClaim('gate-1')
+    const a = out.body.approval
+    const base = { content_hash: a.content_hash, category: a.category, agent_id: a.agent_id, consumed_ref: a.consumed_ref, consumed_at: a.consumed_at }
+    expect(out.body.sig).toBe(hmac(signedText(base)))
+    const variants: Record<string, any>[] = [
+      { ...base, content_hash: 'f'.repeat(64) }, { ...base, category: 'other' }, { ...base, agent_id: 'worker' },
+      { ...base, consumed_ref: 'gate-2' }, { ...base, consumed_ref: null }, { ...base, consumed_at: base.consumed_at + 1 },
+    ]
+    const sigs = new Set([out.body.sig, ...variants.map((v) => hmac(signedText(v)))])
+    expect(sigs.size).toBe(variants.length + 1)
+    // and another key signs differently
+    expect(createHmac('sha256', Buffer.alloc(32, 7)).update(signedText(base)).digest('hex')).not.toBe(out.body.sig)
+  })
+
+  it('creates the key file with mode 0600, keeps it, and never returns the key', async () => {
+    expect(existsSync(keyPath())).toBe(false)
+    const first = await approvedClaim('gate-1')
+    expect(statSync(keyPath()).mode & 0o777).toBe(0o600)
+    expect(readFileSync(keyPath(), 'utf-8').trim()).toMatch(/^[0-9a-f]{64}$/)
+    const keyHex = readFileSync(keyPath(), 'utf-8').trim()
+    const second = await approvedClaim('gate-2')
+    expect(readFileSync(keyPath(), 'utf-8').trim()).toBe(keyHex)
+    for (const out of [first.out, second.out]) expect(JSON.stringify(out.body)).not.toContain(keyHex)
+    // no temp file is left beside it
+    expect(existsSync(`${keyPath()}.${process.pid}`)).toBe(false)
+  })
+
+  it('answers 503 and uses nothing up when the key cannot be read, and works again once it can', async () => {
+    const { id, hash } = await ask()
+    approveByPerson(id)
+    mkdirSync(keyPath())   // a directory where the key file should be: not readable as a key
+    for (const out of [await claim(hash, MAIN, { ref: 'r1' }), await consume(id, hash, MAIN, { ref: 'r1' })]) {
+      expect(out.status).toBe(503)
+      expect(out.body).toMatchObject({ error: 'internal_error', reason: 'claim_signing_unavailable' })
+      expect(out.body.sig).toBeUndefined()
+      expect(out.body.approval).toBeUndefined()
+    }
+    expect(getApproval(id)).toMatchObject({ consumed_at: null, consumed_by: null })
+    rmSync(keyPath(), { recursive: true })
+    const ok = await claim(hash, MAIN, { ref: 'r1' })
+    expect(ok.status).toBe(200)
+    expect(ok.body.sig).toBe(hmac(signedText(ok.body.approval)))
+  })
+
+  it('answers 503 for a key file that is not a key (short, not hex), without replacing it', async () => {
+    const { id, hash } = await ask()
+    approveByPerson(id)
+    for (const junk of ['', 'abc', 'zz'.repeat(32), 'ab'.repeat(16), 'AB'.repeat(32)]) {
+      writeFileSync(keyPath(), junk)
+      const out = await claim(hash, MAIN, { ref: 'r1' })
+      expect(out.status, JSON.stringify(junk)).toBe(503)
+      expect(readFileSync(keyPath(), 'utf-8')).toBe(junk)
+    }
+    expect(getApproval(id)?.consumed_at).toBeNull()
+  })
+
+  it('does not hide the other refusals behind the key: a 409 or 403 has no signature and the usual status', async () => {
+    const { hash } = await ask()
+    const pending = await claim(hash, MAIN, { ref: 'r1' })
+    expect(pending.status).toBe(409)
+    expect(pending.body.sig).toBeUndefined()
+    expect((await claim(hash, SHARED)).status).toBe(403)
   })
 })

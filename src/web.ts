@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE, STORE_DIR, TOKEN_IDENTITY_MODE } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
+import { loadOrCreateClaimSigningKey } from './web/claim-signature.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -200,6 +201,9 @@ export function startWebServer(port = 3420): http.Server {
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
   bootstrapDashboardToken(DASHBOARD_TOKEN)
+  // The key the approval claim answers are signed with: made here when missing so the first claim does not
+  // have to. A failure is not fatal for the dashboard; the claim routes answer 503 until it is fixed.
+  try { loadOrCreateClaimSigningKey() } catch { logger.error('claim signing key: cannot be loaded or created, approval claims will answer 503') }
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
