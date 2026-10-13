@@ -125,6 +125,18 @@ def _brace_expand(pat: str, depth: int = 0) -> list:
     return out[:200]
 
 
+def _shell_glob(pat: str) -> str:
+    """A shell word's glob in the spelling Python's fnmatch / glob understand: bash negates a bracket with `^` as
+    well as `!`, fnmatch only with `!`."""
+    return re.sub(r'\[\^', '[!', pat)
+
+
+def _may_match_key(pat: str) -> bool:
+    """Could the shell glob `pat` select the key's file name? A POSIX class ([[:lower:]]) is not translated: it is
+    judged as a match."""
+    return '[:' in pat or fnmatch.fnmatchcase(KEY_NAME, _shell_glob(pat))
+
+
 def _glob_regex(pat: str):
     """A path glob as a regex: `**` spans directories, `*` and `?` stay inside one segment and DO match a
     leading dot (the conservative reading: a tool that skips dotfiles is not relied on)."""
@@ -242,7 +254,7 @@ def _names_key_in_text(text: str) -> bool:
             return True
         for m in _STORE_SEGMENT.finditer(form):
             for alt in _brace_expand(m.group(1)):
-                if alt and (alt == KEY_NAME or (re.search(r'[*?\[]', alt) and fnmatch.fnmatchcase(KEY_NAME, alt))):
+                if alt and (alt == KEY_NAME or (re.search(r'[*?\[]', alt) and _may_match_key(alt))):
                     return True
     raw = text[:MAX_TEXT].encode('utf-8', 'ignore')
     for pad in (0, 1, 2):
@@ -287,7 +299,9 @@ def _expand_word(word: str, cwd: str) -> list:
     w = os.path.expanduser(word)
     if re.search(r'[*?\[]', w):
         try:
-            return globlib.glob(_absolute(w, cwd), include_hidden=True)[:500]
+            if '[:' in w and _inside(_real(_absolute(os.path.dirname(w) or '.', cwd)), STORE_REAL):
+                return [KEY_PATH]      # a POSIX class over the store directory: judged as selecting the key
+            return globlib.glob(_shell_glob(_absolute(w, cwd)), include_hidden=True)[:500]
         except (OSError, ValueError):
             return [w]
     return [w]

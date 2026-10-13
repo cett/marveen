@@ -95,6 +95,14 @@ class BashReads(GateCase):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    def test_bash_only_bracket_spellings_that_can_match_the_file_are_blocked(self):
+        # bash negates a bracket with ^ as well as !, and knows POSIX classes; fnmatch knows neither
+        for cmd in ['cat store/.[^x]*', 'cat store/.[^a-b]l*', 'cat store/.[!x]*', 'cat store/.[[:lower:]]*', 'cat store/[[:punct:]][[:lower:]]*',
+                    'cat ../store/.[^x]*', 'cat -- store/.[^x]*', 'cat store/.cl[^x]im-signing-key']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        self.assert_allowed(self.bash('cat store/rules.[^x]son'))      # cannot select the key
+
     def test_quoted_escaped_and_concatenated_name_fragments_are_blocked(self):
         for cmd in ["cat store/.claim-sig''ning-key", 'cat store/.claim-sig""ning-key', 'cat "store/.claim-sign"\'ing-key\'',
                     'cat store/.claim\\-signing-key', 'cat store/.cl""aim-signing-key', 'cat store/$\'.claim-signing-key\'',
