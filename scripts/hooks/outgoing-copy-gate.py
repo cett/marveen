@@ -1360,6 +1360,27 @@ def inter_agent_homoglyph_gate(cmd: str) -> None:
     sys.exit(0)
 
 
+def wrapper_depth_message() -> str:
+    """The deny text for a command blocked ONLY by the wrapper-depth bound."""
+    return (
+        "KIMENO-SZOVEG KAPU: TILTVA, a parancs tul melyen beagyazott wrapperben fut "
+        f"(tobb mint {_HEAD_DEPTH} egymasba agyazott burkolo: sudo, nohup, env, timeout...), "
+        "a valodi parancs nem lathato, ezert tiltom.\n"
+        f"Futtasd kevesebb wrapperrel ({_HEAD_DEPTH} vagy kevesebb), aztan kuldd ujra. "
+        "Ez nem a level szovegerol szol.\n"
+    )
+
+
+def _depth_limit_is_sole_reason(cmd: str) -> bool:
+    """True when the wrapper-depth bound is the only thing that makes this Bash command
+    count as a send. A visible send segment is already excluded by wrapper_depth_hit; a
+    send inside a heredoc body is excluded here. Any doubt keeps the generic text."""
+    try:
+        return wrapper_depth_hit(cmd) and not _heredoc_program_sends(cmd)
+    except Exception:  # noqa: BLE001 -- wording only; the verdict is decided before this
+        return False
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -1395,6 +1416,11 @@ def main():
         sys.exit(0)
 
     if unreadable or not text.strip():
+        if tool == "Bash" and not unreadable and _depth_limit_is_sole_reason(cmd):
+            # Same verdict (exit 2), a truthful reason: the wrapper-depth bound, not an
+            # unreadable letter, is what blocks this command.
+            sys.stderr.write(wrapper_depth_message())
+            sys.exit(2)
         reason = unreadable or "a hook nem talalt vizsgalhato szoveget a hivasban"
         sys.stderr.write(
             "KIMENO-SZOVEG KAPU: TILTVA, mert a levelet nem tudtam megvizsgalni.\n"

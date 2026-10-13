@@ -592,7 +592,13 @@ export function gateDecision(toolName, toolInput) {
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
     try {
-      if (isSendInvocation(cmd)) return { deny: true }
+      if (isSendInvocation(cmd)) {
+        // Same verdict, a truthful reason: when the wrapper-depth bound is the ONLY thing
+        // that makes this a send (no visible send, none in a heredoc), say so.
+        return wrapperDepthHit(cmd) && !heredocProgramSends(cmd)
+          ? { deny: true, wrapperDepth: true }
+          : { deny: true }
+      }
     } catch (e) {
       // Fail-closed: a command too large to inspect inside the hook timeout is refused,
       // not waved through (a timed-out hook is non-blocking in the host).
@@ -691,6 +697,7 @@ if (isInvokedDirectly()) {
   }
   if (decision.deny) {
     if (decision.tooLarge) deny(buildTooLargeMsg(decision.tooLarge))
+    if (decision.wrapperDepth) deny(buildWrapperDepthMsg())
     const { botName, ownerName } = readBrandEnv()
     deny(buildGateMsg(botName, ownerName))
   }
