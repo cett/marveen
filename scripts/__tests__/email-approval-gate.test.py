@@ -218,6 +218,7 @@ class Classification(GateCase):
             "python3 scripts/support-mail/send.py --to ann@example.test --subject Hi --body 'Hello there'",
             'echo $(date) && python3 scripts/gmail-send.py --to ann@example.test',   # a substitution around a send
             'sendmail -t < %s/store/mail.txt' % self.root,
+            'stdbuf -o0 python3 scripts/support-mail/send.py --to ann@example.test --subject Hi --body Hello',   # a wrapper neither classifier follows
         ]:
             with self.subTest(cmd=cmd):
                 self.expect_deny(self.run_gate('Bash', {'command': cmd}), 'level1')
