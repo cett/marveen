@@ -28,6 +28,12 @@ export const DEFAULT_READ_BODY_MAX_BYTES = 20 * 1024 * 1024
 // cap, so it refuses an oversized one exactly as the route does.
 export const SCHEDULE_BODY_MAX_BYTES = 256 * 1024
 
+// How long readBody lets a client that is over its cap keep sending before it closes the socket
+// itself (see the 'data' handler below). Short enough that an unresponsive client cannot hold a
+// connection anywhere near Node's default 5 minute requestTimeout; long enough that a client still
+// actively finishing its write is not cut off mid-stream.
+export const OVERFLOW_DRAIN_GRACE_MS = 3_000
+
 export class RequestBodyTooLargeError extends Error {
   readonly limit: number
   constructor(limit: number) {
@@ -64,16 +70,37 @@ export function readBody(
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
+    let overflowed = false
+    let drainTimer: NodeJS.Timeout | null = null
+    const clearDrainTimer = () => { if (drainTimer) { clearTimeout(drainTimer); drainTimer = null } }
     req.on('data', (c: Buffer) => {
+      // Once over the cap, stop counting and keep dropping chunks (no unbounded memory) but let
+      // the request keep flowing to its own 'end' instead of destroy()ing the socket right away:
+      // destroying it here closes the connection before a 413 can be written back, so the caller
+      // sees a bare connection reset instead of the error it asked about. No code reads the body
+      // again after this rejection (the identity gate, the one caller ahead of a route, answers its
+      // own 413 on this same error instead of calling the route's readBody), so there is nothing to
+      // cache for a retry here.
+      if (overflowed) return
       total += c.length
       if (total > maxBytes) {
-        req.destroy()
+        overflowed = true
         reject(new RequestBodyTooLargeError(maxBytes))
+        // A client that announced more than it ever sends (a large Content-Length, then silence
+        // once it is over the cap) never reaches its own 'end': Node's http parser keeps waiting
+        // for the declared length, so without a bound of our own the socket would sit open for the
+        // server's full default requestTimeout (5 minutes) -- a Slowloris-shaped hold. Give the
+        // client a short grace window to finish sending (so the body drains and the connection can
+        // be reused normally); past it, close the socket ourselves. The 413 the route/gate writes on
+        // this rejection goes out over the socket whether or not the grace timer later closes it.
+        drainTimer = setTimeout(() => req.destroy(), OVERFLOW_DRAIN_GRACE_MS)
         return
       }
       chunks.push(c)
     })
     req.on('end', () => {
+      clearDrainTimer()
+      if (overflowed) return
       const body = Buffer.concat(chunks)
       readBodies.set(req, body)
       if (requestBodyObserver) {
@@ -81,6 +108,7 @@ export function readBody(
       }
       resolve(body)
     })
+    req.on('close', clearDrainTimer)
     req.on('error', reject)
   })
 }
