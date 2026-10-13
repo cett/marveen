@@ -3,6 +3,7 @@
     "install-macos.sh": "C",
     "scripts/backup.sh": "C",
     "scripts/ensure-native-modules.sh": "C",
+    "scripts/hooks/auth-admin-gate.py": "A",
     "scripts/hooks/context-watchdog.py": "A",
     "scripts/hooks/hook_db_path.py": "A",
     "scripts/hooks/tenant-skill-gate.py": "A",
@@ -35,6 +36,13 @@
       "dialect": {},
       "direct": {
         "better-sqlite3": 3
+      }
+    },
+    "scripts/hooks/auth-admin-gate.py": {
+      "dialect": {},
+      "direct": {
+        "claudeclaw.db": 1,
+        "sqlite3 CLI": 3
       }
     },
     "scripts/hooks/context-watchdog.py": {

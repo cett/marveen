@@ -454,7 +454,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // through the quarantine-reader sub-agent. (d) destructive-command gate --
   // genuinely irreversible Bash commands (rm/mv/shred/sudo/mkfs/dd) and
   // credential-path access are hard-blocked regardless of permission mode.
-  // The MAIN_AGENT_ID is exempt from (a) and (b) but NOT from (c) or (d) --
+  // (e) auth-admin gate -- no dashboard-user/security-reset CLI (except `list`),
+  // no --password-stdin, no write to the live store's auth tables.
+  // The MAIN_AGENT_ID is exempt from (a) and (b) but NOT from (c), (d) or (e) --
   // every agent can be hijacked via an injected WebFetch call or a destructive
   // command, including the main one. Merge/deploy is NOT gated: the operator
   // authorizes those autonomously (so test/deploy runs are never blocked); the
@@ -465,6 +467,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   injectDestructiveGate(existing)
+  injectAuthAdminGate(existing)
   if (name !== MAIN_AGENT_ID) injectTenantHooks(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -713,6 +716,67 @@ export function ensureDestructiveGate(name: string): boolean {
   if (ptuJson.includes('destructive-gate.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectDestructiveGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Fail-closed python3 preamble for the auth-admin gate. Same form and the
+// same PATH-lookup rationale as destructiveGateCommand(); only the DENY label
+// differs, so a missing interpreter names the gate that blocked. Exported for
+// unit tests.
+export function authAdminGateCommand(scriptPath: string): string {
+  const miss = 'auth-admin-gate: python3 not found -- DENY'
+  return `command -v python3 >/dev/null 2>&1 || { echo '${miss}' >&2; exit 2; }; python3 "${scriptPath}"`
+}
+
+// Idempotently wire the auth-admin-gate PreToolUse hook (an agent's Bash may
+// not run the dashboard-user / security-reset CLI except the read-only
+// `list`, may not pass --password-stdin, and may not write the auth tables of
+// the live store). Applied to ALL agents including MAIN_AGENT_ID, same
+// rationale as the destructive gate: any agent can be steered into minting
+// itself a login or approving its own request. Same dedupe shape as the
+// other gate injectors.
+export function injectAuthAdminGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = authAdminGateCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'auth-admin-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('auth-admin-gate.py')),
+    entry,
+  ]
+}
+
+// Idempotent migration: ensure every sub-agent's settings.json carries the
+// auth-admin-gate hook. Called at server startup next to
+// ensureDestructiveGate, so existing agents get it without a respawn. Returns
+// true if the file was updated. The main agent is exempt here for the same
+// reason as ensureDestructiveGate: its copy ships in the tracked project
+// .claude/settings.json.
+export function ensureAuthAdminGate(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureAuthAdminGate')) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = authAdminGateCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'auth-admin-gate.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('auth-admin-gate.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectAuthAdminGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

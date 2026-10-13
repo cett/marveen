@@ -16,7 +16,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -652,6 +652,7 @@ export function startWebServer(port = 3420): http.Server {
       const egressPatched: string[] = []
       const bashParserPatched: string[] = []
       const destructivePatched: string[] = []
+      const authAdminPatched: string[] = []
       const tenantPatched: string[] = []
       const govPatched: string[] = []
       const skillUsagePatched: string[] = []
@@ -669,6 +670,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureBashEgressParser(agentName)) bashParserPatched.push(agentName)
         if (ensureDestructiveGate(agentName)) destructivePatched.push(agentName)
+        if (ensureAuthAdminGate(agentName)) authAdminPatched.push(agentName)
         if (ensureTenantHooks(agentName)) tenantPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         if (ensureSkillUsageMatcher(agentName)) skillUsagePatched.push(agentName)
@@ -688,6 +690,7 @@ export function startWebServer(port = 3420): http.Server {
       if (bashParserPatched.length) logger.info({ patched: bashParserPatched }, 'bash-egress-parser Bash hook backfilled into agent settings.json')
       if (tenantPatched.length) logger.info({ patched: tenantPatched }, 'tenant-context + tenant-skill-gate hooks backfilled into agent settings.json')
       if (destructivePatched.length) logger.info({ patched: destructivePatched }, 'destructive-gate Bash hook backfilled into agent settings.json')
+      if (authAdminPatched.length) logger.info({ patched: authAdminPatched }, 'auth-admin-gate Bash hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
       if (skillUsagePatched.length) logger.info({ patched: skillUsagePatched }, 'skill-usage-capture PostToolUse matcher widened to Skill|Read|Bash in agent settings.json')
       if (watchdogPatched.length) logger.info({ patched: watchdogPatched }, 'context-watchdog PostToolUse hook backfilled into sub-agent settings.json')

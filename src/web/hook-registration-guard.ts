@@ -39,6 +39,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'ledger-capture.py',
   'context-watchdog.py',
   'destructive-gate.py',
+  'auth-admin-gate.py',
   'tenant-context.py',
   'tenant-skill-gate.py',
 ]

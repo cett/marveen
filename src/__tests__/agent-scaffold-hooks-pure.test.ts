@@ -25,12 +25,14 @@ import {
   ownerAllowedDomains,
   renderQuarantineReader,
   destructiveGateCommand,
+  authAdminGateCommand,
   agentGetsEmailGate,
   agentGetsGovernanceGates,
   injectEmailSendGate,
   injectSelfPaceGate,
   injectEgressGate,
   injectDestructiveGate,
+  injectAuthAdminGate,
 } from '../web/agent-scaffold-hooks.js'
 
 describe('hookCommand', () => {
@@ -47,6 +49,15 @@ describe('destructiveGateCommand', () => {
     const cmd = destructiveGateCommand('/some/script.py')
     expect(cmd).toBe(
       "command -v python3 >/dev/null 2>&1 || { echo 'destructive-gate: python3 not found -- DENY' >&2; exit 2; }; python3 \"/some/script.py\"",
+    )
+  })
+})
+
+describe('authAdminGateCommand', () => {
+  it('builds the same fail-closed python3 preamble, labelled with the auth-admin gate', () => {
+    const cmd = authAdminGateCommand('/some/script.py')
+    expect(cmd).toBe(
+      "command -v python3 >/dev/null 2>&1 || { echo 'auth-admin-gate: python3 not found -- DENY' >&2; exit 2; }; python3 \"/some/script.py\"",
     )
   })
 })
@@ -327,6 +338,27 @@ describe('inject*Gate helpers (idempotent PreToolUse wiring)', () => {
     const matches = ptu.filter((e) => JSON.stringify(e).includes('destructive-gate.py'))
     expect(matches.length).toBe(1)
     expect((matches[0] as any).matcher).toBe('Bash')
+  })
+
+  it('injectAuthAdminGate adds exactly one entry and de-dupes on a second call', () => {
+    const existing: Record<string, unknown> = {}
+    injectAuthAdminGate(existing)
+    injectAuthAdminGate(existing)
+    const ptu = (existing.hooks as any).PreToolUse as unknown[]
+    const matches = ptu.filter((e) => JSON.stringify(e).includes('auth-admin-gate.py'))
+    expect(matches.length).toBe(1)
+    expect((matches[0] as any).matcher).toBe('Bash')
+    expect((matches[0] as any).hooks[0].timeout).toBe(10)
+  })
+
+  it('the destructive and the auth-admin gates are two separate Bash entries, neither drops the other', () => {
+    const existing: Record<string, unknown> = {}
+    injectDestructiveGate(existing)
+    injectAuthAdminGate(existing)
+    injectDestructiveGate(existing)
+    const ptu = (existing.hooks as any).PreToolUse as unknown[]
+    expect(ptu.filter((e) => JSON.stringify(e).includes('destructive-gate.py')).length).toBe(1)
+    expect(ptu.filter((e) => JSON.stringify(e).includes('auth-admin-gate.py')).length).toBe(1)
   })
 
   it('injectors preserve unrelated pre-existing PreToolUse entries', () => {
