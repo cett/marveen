@@ -1514,6 +1514,16 @@ def _from_gmailsend(send: _Send, cwd: str) -> Dict[str, Any]:
     return _finish_fields(f)
 
 
+def gmail_send_fields(args: List[str], cwd: str, stdin_text: Optional[str] = None) -> Dict[str, Any]:
+    """The fields scripts/gmail-send.py sends for its command-line arguments: the SAME reading the send gate
+    makes of that command line, so the hash the sender claims an approval for is the hash the gate computes.
+    stdin_text is the body when neither --body nor --body-file is given. Raises Unreadable."""
+    cmd = _Cmd()
+    if stdin_text is not None:
+        cmd.stdin = ('text', stdin_text)
+    return _from_gmailsend(_Send('gmailsend', [_Word(a, False, True) for a in args], cmd, False), cwd)
+
+
 def _short_options(args: List[str], flags: str, valued: str, longs: Dict[str, str], prog: str, glued: str = '') -> Tuple[List[Tuple[str, str]], List[str]]:
     """getopt-like: clustered short flags, glued or separate values, a few long options, then positionals."""
     opts: List[Tuple[str, str]] = []

@@ -743,5 +743,53 @@ class CommandSendsMail(unittest.TestCase):
         self.assertFalse(E.command_sends_mail(["send.py"]))
 
 
+class GmailSendFields(unittest.TestCase):
+    """gmail_send_fields(): what scripts/gmail-send.py sends is what the gate reads from the same command line."""
+
+    ARGS = ["--to", "b@example.test", "--to", "A@Example.TEST", "--cc", "c@example.test", "--subject", "S", "--attach", "f.bin",
+            "--from", "me@example.test", "--in-reply-to", "<m@example.test>"]
+
+    def _both(self, args, stdin_text=None, command=None, **files):
+        with tempfile.TemporaryDirectory() as d:
+            for rel, data in files.items():
+                with open(os.path.join(d, rel.replace("_", ".")), "wb") as fh:
+                    fh.write(data)
+            fields = E.gmail_send_fields(args, d, stdin_text)
+            via_gate = E.envelope_of_call("Bash", {"command": command}, "main", d) if command else None
+            return fields, E.build_envelope(fields, "main"), via_gate
+
+    def test_the_hash_is_the_one_the_gate_computes_for_the_command_line(self):
+        import shlex
+        body = ["--body", "Hello"]
+        cmd = "python3 scripts/gmail-send.py " + " ".join(shlex.quote(a) for a in self.ARGS + body)
+        fields, built, via_gate = self._both(self.ARGS + body, command=cmd, f_bin=b"\x00\x01")
+        self.assertTrue(built["ok"], built)
+        self.assertEqual(built["hash"], via_gate["hash"])
+        self.assertEqual(fields["attachments"], [{"name": "f.bin", "size": 2, "sha256": hashlib.sha256(b"\x00\x01").hexdigest()}])
+        self.assertEqual((fields["from"], fields["in_reply_to"]), ("me@example.test", "<m@example.test>"))
+
+    def test_stdin_text_is_the_body_when_no_body_option_is_given(self):
+        args = ["--to", "a@example.test", "--subject", "S"]
+        fields, built, via_gate = self._both(args, "From stdin.\n", command="python3 scripts/gmail-send.py --to a@example.test --subject S <<'EOF'\nFrom stdin.\nEOF")
+        self.assertEqual(fields["body"], "From stdin.\n")
+        self.assertEqual(built["hash"], via_gate["hash"])
+
+    def test_an_option_body_wins_over_stdin_and_no_stdin_is_an_empty_body(self):
+        fields, _, _ = self._both(["--to", "a@example.test", "--subject", "S", "--body", "Option"], "ignored")
+        self.assertEqual(fields["body"], "Option")
+        fields, built, _ = self._both(["--to", "a@example.test", "--subject", "S"])
+        self.assertEqual(fields["body"], "")
+        self.assertFalse(built["ok"])
+
+    def test_unreadable_command_lines_raise_unreadable(self):
+        for args in (["--to", "a@example.test", "--body", "B"],                                   # no subject
+                     ["--to", "a@example.test", "--subject", "S", "--body", "B", "--bogus", "x"],  # unknown option
+                     ["--to", "a@example.test", "--subject", "S", "--body", "B", "extra"],         # positional
+                     ["--help"]):
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(E.Unreadable):
+                    E.gmail_send_fields(args, d)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
