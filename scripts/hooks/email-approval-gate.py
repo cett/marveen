@@ -24,7 +24,7 @@ shadow mode and no environment flag that relaxes this. The base URL is NOT taken
 environment (an agent that can set DASHBOARD_BASE_URL must not be able to point its gate at a server
 that says yes): it is WEB_PORT from <install>/.env, else 3420, on the IP address the dashboard listens on (WEB_HOST from
 .env when that is an IP address, else 127.0.0.1; never the name localhost, which can resolve to ::1 where a
-listener of the agent's could answer), no proxy, no redirect. The claim answer must name this mail's hash, this
+listener of the agent's could answer; a WEB_HOST that is a name makes every call fail closed), no proxy, no redirect. The claim answer must name this mail's hash, this
 category, this agent and this use (the reference the gate made up): a listener that is not the dashboard cannot.
 
 Honest limit: this fires on the calls it recognises (Bash mail commands, the mail tools). A mail sent
@@ -159,11 +159,12 @@ def _host() -> str:
     Never the name 'localhost': a name can resolve to ::1 as well, where a listener the agent started could
     answer in the dashboard's place."""
     v = _env_file_value('WEB_HOST')
-    if v:
+    if v is not None and v != '':
         try:
             ip = ipaddress.ip_address(v)
         except ValueError:
-            return DEFAULT_HOST
+            # A name may resolve differently for the dashboard (which binds it) and for the gate: no guessing.
+            raise Unavailable('WEB_HOST is not an IP address')
         if not ip.is_unspecified:
             return '[%s]' % ip if ip.version == 6 else str(ip)
     return DEFAULT_HOST

@@ -565,12 +565,21 @@ class AgentEnvironmentCannotMoveTheGate(GateCase):
         finally:
             yes.stop()
         mod = self._gate_module()
-        for env_text, want in [('', '127.0.0.1'), ('WEB_HOST=localhost\n', '127.0.0.1'), ('WEB_HOST=0.0.0.0\n', '127.0.0.1'),
-                               ('WEB_HOST=192.0.2.7\n', '192.0.2.7'), ('WEB_HOST=::1\n', '[::1]'), ('WEB_HOST=evil.example\n', '127.0.0.1')]:
+        for env_text, want in [('', '127.0.0.1'), ('WEB_HOST=0.0.0.0\n', '127.0.0.1'), ('WEB_HOST=127.0.0.1\n', '127.0.0.1'),
+                               ('WEB_HOST=192.0.2.7\n', '192.0.2.7'), ('WEB_HOST=::1\n', '[::1]')]:
             with self.subTest(env_text):
                 self.write('.env', 'WEB_PORT=%d\n%s' % (self.dash.port, env_text))
                 mod.INSTALL = self.root
                 self.assertEqual(mod.base_url(), 'http://%s:%d' % (want, self.dash.port))
+
+    def test_a_dashboard_host_that_is_a_name_fails_closed(self):
+        # the dashboard binds a name its own way; the gate does not guess which address that is
+        for name in ('localhost', 'evil.example', '127.0.0.1.evil'):
+            with self.subTest(name):
+                self.write('.env', 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\nWEB_HOST=%s\n' % (self.dash.port, MAIN, name))
+                self.dash.requests.clear()
+                self.expect_deny(self.send(), 'autonomy_unavailable', 'WEB_HOST')
+                self.assertEqual(self.dash.requests, [])
 
     def _gate_module(self):
         loader = importlib.machinery.SourceFileLoader('email_gate_for_host', os.path.join(self.root, 'scripts/hooks/email-approval-gate.py'))
