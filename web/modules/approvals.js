@@ -4,6 +4,7 @@ import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { renderPaginator } from './paginator.js'
+import { can } from './rbac-client.js'
 import { isHumanOnlyRow, isHumanOnlyEnforced, isLockedForViewer, shouldShowHumanOnlyBanner } from './approval-human-only.js'
 import { truncateDescription, shortHash, parseEmailPayload, approvalStateBadges, renderBadges, renderEmailPayload, renderTimeline } from './approval-email-view.js'
 
@@ -24,6 +25,9 @@ let _approvalsTenantGetter = null
 // while the rule is enforced; with it off (or unknown) nothing is locked. The server still refuses any
 // non-session caller when it enforces.
 let _viewerStatus = null
+// Whether this role may decide a request (approvals:write). read_only and viewer only look at approvals, so
+// they get no approve/reject buttons; the server refuses their PATCH with a 403 either way.
+let _canDecide = true
 // The use window in seconds, as the server reports it with the list (null until a list arrived, or
 // when the server is older than the field): an approved, unused request older than this is lapsed.
 let _consumeWindowS = null
@@ -158,10 +162,11 @@ async function _loadApprovalsPageInternal() {
     params.set('limit', String(APPROVALS_PAGE_LIMIT))
     params.set('offset', String(offset))
 
-    const [res, viewer] = await Promise.all([fetch(`/api/approvals?${params}`), _fetchViewerStatus()])
+    const [res, viewer, canDecide] = await Promise.all([fetch(`/api/approvals?${params}`), _fetchViewerStatus(), can('approvals:write')])
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
     _viewerStatus = viewer
+    _canDecide = canDecide
     _approvalsPage = data.items ?? []
     _consumeWindowS = typeof data.window_s === 'number' ? data.window_s : null
     _renderApprovalsStats(data.counts ?? { pending: 0, approved: 0, rejected: 0, timeout: 0 }, data.oldest_pending ?? null)
@@ -244,7 +249,9 @@ function _renderApprovalsTable(total) {
       ? ` <span class="approvals-humanonly-badge" title="${escapeAttr(t('approvals.humanonly.badge_title'))}">${escapeHtml(t('approvals.humanonly.badge'))}</span>`
       : ''
     const stateBadges = renderBadges(approvalStateBadges(a, { compact: true, windowS: _consumeWindowS }))
-    const actions = isPending
+    const actions = isPending && !_canDecide
+      ? ''
+      : isPending
       ? `<div style="display:flex;gap:4px">
            <button class="btn approvals-decide" data-variant="primary" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px"${lockAttrs}>${t('approvals.btn.approve')}</button>
            <button class="btn approvals-decide" data-variant="danger" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px"${lockAttrs}>${t('approvals.btn.reject')}</button>

@@ -47,7 +47,7 @@ export const PERMISSION_MATRIX_CATEGORIES = [
     key: 'approvals',
     permissions: [
       { key: 'approvals:read', roles: { admin: true, agent: true, read_only: true, viewer: true } },
-      { key: 'approvals:write', roles: { admin: true, agent: false, read_only: true, viewer: true } },
+      { key: 'approvals:write', roles: { admin: true, agent: false, read_only: false, viewer: false } },
     ],
   },
   {

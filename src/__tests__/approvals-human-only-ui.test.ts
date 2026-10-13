@@ -239,7 +239,6 @@ describe('approvals.js rendering', () => {
     ['a token', ADVISORY(TOKEN)],
     ['a device key', ADVISORY(DEVICE)],
     ['a tenant-scoped admin session', ADVISORY(TENANT_SESSION)],
-    ['a non-admin session', ADVISORY(MEMBER_SESSION)],
     ['a global admin session', ADVISORY(ADMIN_SESSION)],
   ])('with the rule off, %s keeps active buttons, the badge and no banner', async (_name, viewer) => {
     const { tbody, banner } = await renderFor(viewer)
@@ -252,6 +251,18 @@ describe('approvals.js rendering', () => {
       expect(b).not.toContain('Can only be decided from a password login')
     }
     expect(banner.hidden).toBe(true)
+  })
+
+  // read_only and viewer only look at approvals (approvals:write is admin only): no approve/reject button at
+  // all, human-only or not, with the rule on or off. The server answers their PATCH with a 403 anyway.
+  it.each([
+    ['a viewer session', { authenticated: true, method: 'session', user: 'user-v', role: 'viewer', tenant_id: 'tenant-a', human_only_enforced: true }],
+    ['a read_only session', { authenticated: true, method: 'session', user: 'user-r', role: 'read_only', tenant_id: 'tenant-a', human_only_enforced: true }],
+    ['a viewer session, rule off', { authenticated: true, method: 'session', user: 'user-v', role: 'viewer', tenant_id: 'tenant-a', human_only_enforced: false }],
+  ])('%s gets no approve or reject button on a pending row', async (_name, viewer) => {
+    const { tbody } = await renderFor(viewer)
+    expect(decideButtons(rowHtml(tbody, 'h1'))).toHaveLength(0)
+    expect(decideButtons(rowHtml(tbody, 'p1'))).toHaveLength(0)
   })
 
   // An older server does not send the field; a failed probe sends nothing at all. Both read as advisory.

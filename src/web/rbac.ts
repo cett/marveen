@@ -78,11 +78,8 @@ export type Permission = typeof ALL_PERMISSIONS[number] | typeof FLEET_AGENT_PER
 // ── Permission sets per role ────────────────────────────────────────────────
 
 // Only the admin role carries admin:all; all others are strictly scoped.
-// read_only and viewer are intentionally narrow -- no write permissions, with one exception:
-// approvals:write. A tenant user decides the approvals of their own tenant (PATCH), so these two
-// roles hold it and the agent role does not. The route keeps that narrow: a session that is not an
-// admin cannot create a request (403), resolves only its own tenant's approvals (404 otherwise), and a
-// human-only category (email_send) is decided by a global admin session alone.
+// read_only and viewer are intentionally narrow -- no write permissions. They see approvals
+// (approvals:read) and never decide one: approvals:write is admin (and fleet_agent, for a request) only.
 // viewer includes blackboard:read so B2B users can see the fleet health bar.
 const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
   admin: new Set<Permission>([
@@ -159,7 +156,6 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'blackboard:read',
     'schedules:read',
     'approvals:read',
-    'approvals:write',
   ]),
   viewer: new Set<Permission>([
     'memories:read',
@@ -168,7 +164,6 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'blackboard:read',
     'schedules:read',
     'approvals:read',
-    'approvals:write',
   ]),
 }
 

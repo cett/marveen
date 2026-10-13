@@ -42,7 +42,7 @@ The system defines four access levels.
 | List agents | X | X | X | X |
 | Send messages to agents | X | X | | |
 | Read approvals | X | X | X | X |
-| Write approvals | X | | X | X |
+| Write approvals | X | | | |
 | Read blackboard | X | X | X | X |
 | Write blackboard | X | X | | |
 | Read scheduled tasks | X | X | X | X |

@@ -30,11 +30,11 @@ export const ROLE_PERMISSIONS = {
   ]),
   read_only: new Set([
     'memories:read', 'kanban:read', 'agents:read', 'blackboard:read', 'schedules:read',
-    'approvals:read', 'approvals:write',
+    'approvals:read',
   ]),
   viewer: new Set([
     'memories:read', 'kanban:read', 'agents:read', 'blackboard:read', 'schedules:read',
-    'approvals:read', 'approvals:write',
+    'approvals:read',
   ]),
 }
 
