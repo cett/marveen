@@ -21,6 +21,7 @@ import {
 import { REVIEWED_FIELDS, reviewTriggerFields, reviewValueSha256, scheduleContentHash } from '../schedule-review.js'
 import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor } from '../schedule-review-effects.js'
 import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
+import { actingAgentId } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 // Review-gate: every fleet agent authenticates with
@@ -318,7 +319,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       return true
     }
     // A tenant other than the default has no default agent: the fleet main agent may not serve it.
-    const agent = data.agent || (tenantId === DEFAULT_SCHEDULE_TENANT ? MAIN_AGENT_ID : '')
+    // A fleet_agent token that names no agent acts as itself (actingAgentId), never as this
+    // fallback -- so a fleet agent creating its own tenant's task needs no `agent` field.
+    const agent = actingAgentId(ctx, data.agent, tenantId === DEFAULT_SCHEDULE_TENANT ? MAIN_AGENT_ID : '')
     if (!agent) { json(res, { error: 'required', field: 'agent', hint: 'A task of a non-default tenant needs an agent that serves it' }, 400); return true }
     if (!scheduleAgentServesTenant(agent, tenantId)) {
       json(res, { error: 'invalid_value', field: 'agent', hint: `Agent '${agent}' does not serve tenant '${tenantId}'` }, 400)

@@ -19,6 +19,7 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { actingAgentId } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -77,7 +78,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'category', hint: `Invalid category "${category}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
       return true
     }
-    const claimedAgentId = data.agent_id || MAIN_AGENT_ID
+    const claimedAgentId = actingAgentId(ctx, data.agent_id, MAIN_AGENT_ID)
     const result = saveAgentMemory(
       claimedAgentId,
       data.content.trim(),
@@ -265,7 +266,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const agentId = agent_id || MAIN_AGENT_ID
+    const agentId = actingAgentId(ctx, agent_id, MAIN_AGENT_ID)
     const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
     let imported = 0
 
