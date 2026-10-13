@@ -175,6 +175,14 @@ class Google(_Stub):
         return [r for r in self.requests if r[1] == '/gmail/v1/users/me/messages/send']
 
 
+def load_sender_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('gmail_send_under_test', SENDER_SRC)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class Result:
     def __init__(self, rc, out, err):
         self.rc, self.out, self.err = rc, out, err
@@ -195,7 +203,7 @@ class SenderCase(unittest.TestCase):
         shutil.copy(SENDER_SRC, os.path.join(self.root, 'scripts/gmail-send.py'))
         shutil.copy(os.path.join(SCRIPTS, 'lib/email_extract.py'), os.path.join(self.root, 'scripts/lib/'))
         shutil.copy(os.path.join(SCRIPTS, 'hooks/agent_token.py'), os.path.join(self.root, 'scripts/hooks/'))
-        self.write('.env', 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\n' % (self.dash.port, MAIN))
+        self.write_env()
         self.write('.agent-token', TOKEN)
         self.write('store/.claim-signing-key', CLAIM_KEY)
         self.write('cred/token.json', json.dumps({'refresh_token': 'refresh-fixture'}))
@@ -212,13 +220,19 @@ class SenderCase(unittest.TestCase):
         with open(os.path.join(self.root, rel), 'w', encoding='utf-8') as fh:
             fh.write(text)
 
+    def write_env(self, extra='', gmail=True):
+        # The Gmail stand-ins are named in the install's .env: the sender does not read them from the environment.
+        lines = 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\n' % (self.dash.port, MAIN)
+        if gmail:
+            lines += 'GMAIL_CRED_DIR=%s\nGMAIL_SEND_API_BASE=http://127.0.0.1:%d\n' % (os.path.join(self.root, 'cred'), self.google.port)
+        self.write('.env', lines + extra)
+
     def write_bytes(self, rel, data):
         with open(os.path.join(self.root, rel), 'wb') as fh:
             fh.write(data)
 
     def run_sender(self, args, stdin=None, extra_env=None, cwd=None):
-        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': self.root, 'GMAIL_CRED_DIR': os.path.join(self.root, 'cred'),
-               'GMAIL_SEND_API_BASE': 'http://127.0.0.1:%d' % self.google.port}
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': self.root}
         env.update(extra_env or {})
         p = subprocess.run([sys.executable, self.script] + list(args), input=stdin.encode('utf-8') if stdin is not None else None,
                            stdin=None if stdin is not None else subprocess.DEVNULL, capture_output=True, env=env,
@@ -624,25 +638,96 @@ class GmailSide(SenderCase):
         self.assertIn('Sent folder', res.err)
 
     def test_gmail_api_base_must_be_http(self):
-        res = self.run_sender(MAIL_ARGS, extra_env={'GMAIL_SEND_API_BASE': 'file:///etc'})
-        self.assertEqual(res.rc, 1)
-        self.assertEqual(self.dash.requests, [], 'checked before an approval is spent')
+        for base in ('file:///etc', 'ftp://127.0.0.1/x', 'http://'):
+            with self.subTest(base=base):
+                self.write_env('GMAIL_SEND_API_BASE=%s\n' % base, gmail=False)
+                res = self.run_sender(MAIL_ARGS)
+                self.assertEqual(res.rc, 1)
+                self.assertIn('gmail_base', res.err)
+                self.assertEqual(self.dash.requests, [], 'checked before an approval is spent')
+
+
+class GoogleEndpoints(SenderCase):
+    def test_the_gmail_settings_come_from_the_env_file_not_the_environment(self):
+        decoy = Google(self.events)
+        empty = tempfile.mkdtemp(prefix='gmail-send-cred-')
+        try:
+            res = self.run_sender(MAIL_ARGS, extra_env={
+                'GMAIL_SEND_API_BASE': 'http://127.0.0.1:%d' % decoy.port, 'GMAIL_CRED_DIR': empty})
+            self.assertEqual(res.rc, 0, res.text)
+            self.assertEqual(decoy.requests, [])
+            self.assertEqual(len(self.google.sent_calls()), 1)
+        finally:
+            decoy.stop()
+            shutil.rmtree(empty, ignore_errors=True)
+
+    def test_the_default_credential_directory_is_not_taken_from_home(self):
+        # .env names no directory: the account's own ~/.gmail-mcp from the password database, whatever $HOME says.
+        # (Only the path is computed; nothing here reads or refreshes a real login.)
+        import pwd
+        code = ("import importlib.util,sys;"
+                "s=importlib.util.spec_from_file_location('g',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                "print(m._cred_dir())")
+        self.write_env(gmail=False)
+        out = subprocess.run([sys.executable, '-c', code, self.script], capture_output=True, text=True,
+                             env={'PATH': os.environ.get('PATH', ''), 'HOME': self.root, 'GMAIL_CRED_DIR': self.root}, cwd=self.root).stdout.strip()
+        self.assertEqual(out, os.path.join(pwd.getpwuid(os.getuid()).pw_dir, '.gmail-mcp'))
+
+    def test_a_token_endpoint_that_is_not_google_is_refused_before_anything_is_spent(self):
+        stand_in = self.google.port
+        for uri in ('http://oauth2.googleapis.com/token', 'https://evil.example/token', 'https://oauth2.googleapis.com.evil.example/token',
+                    'https://user:pw@oauth2.googleapis.com/token', 'https://oauth2.googleapis.com:8443/token', 'file:///etc/passwd',
+                    'http://127.0.0.1:%d/token' % (stand_in + 1), 'https://127.0.0.1:%d/token' % stand_in, 'http://localhost:%d/token' % stand_in, ''):
+            with self.subTest(uri=uri):
+                self.write('cred/credentials.json', json.dumps({'installed': {'client_id': 'cid', 'client_secret': 'csecret', 'token_uri': uri}}))
+                self.google.requests.clear()
+                res = self.run_sender(MAIL_ARGS)
+                self.assertEqual(res.rc, 1, res.text)
+                self.assertIn('REFUSED token_uri', res.err)
+                self.assertEqual((self.dash.requests, self.google.requests), ([], []), 'nothing is sent anywhere')
+
+    def test_a_stand_in_token_endpoint_needs_the_stand_in_base_in_the_env_file(self):
+        # same origin as GMAIL_SEND_API_BASE from .env passes (the whole suite relies on it); with no such line it does not
+        self.write_env('GMAIL_CRED_DIR=%s\n' % os.path.join(self.root, 'cred'), gmail=False)
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual(res.rc, 1, res.text)
+        self.assertIn('REFUSED token_uri', res.err)
+        self.assertEqual((self.dash.requests, self.google.requests), ([], []))
+
+    def test_the_default_google_endpoint_is_https_and_allowed(self):
+        mod = load_sender_module()
+        for uri in ('https://oauth2.googleapis.com/token', 'https://accounts.google.com/o/oauth2/token', 'https://OAUTH2.googleapis.com:443/token'):
+            self.assertTrue(mod._token_uri_allowed(uri), uri)
+        self.assertEqual(mod.DEFAULT_GMAIL_BASE, 'https://gmail.googleapis.com')
+
+    def test_the_certificate_check_ignores_the_ca_variables_of_the_environment(self):
+        code = ("import importlib.util,os,ssl,sys;"
+                "s=importlib.util.spec_from_file_location('g',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                "c=m._google_ssl_context();print(c.verify_mode==ssl.CERT_REQUIRED,c.check_hostname,len(c.get_ca_certs()))")
+        bogus = os.path.join(self.root, 'bogus-ca.pem')
+        self.write('bogus-ca.pem', 'not a certificate\n')
+        base = subprocess.run([sys.executable, '-c', code, self.script], capture_output=True, text=True,
+                              env={'PATH': os.environ.get('PATH', '')}, cwd=self.root).stdout.split()
+        moved = subprocess.run([sys.executable, '-c', code, self.script], capture_output=True, text=True,
+                               env={'PATH': os.environ.get('PATH', ''), 'SSL_CERT_FILE': bogus, 'SSL_CERT_DIR': self.root}, cwd=self.root).stdout.split()
+        self.assertEqual(base[:2], ['True', 'True'])
+        self.assertEqual(base, moved, 'SSL_CERT_FILE / SSL_CERT_DIR change nothing')
 
 
 class AgentEnvironment(SenderCase):
     def test_a_dashboard_host_that_is_a_name_is_refused_before_any_call(self):
         for host in ('localhost', 'dash.example.test', '127.0.0.1.example.test'):
             with self.subTest(host=host):
-                self.write('.env', 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\nWEB_HOST=%s\n' % (self.dash.port, MAIN, host))
+                self.write_env('WEB_HOST=%s\n' % host)
                 res = self.run_sender(MAIL_ARGS)
                 self.assert_nothing_sent(res, 3)
                 self.assertIn('dashboard_address', res.err)
                 self.assertEqual((self.dash.requests, self.events), ([], []))
 
     def test_a_dashboard_host_that_is_an_ip_works(self):
-        self.write('.env', 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\nWEB_HOST=127.0.0.1\n' % (self.dash.port, MAIN))
+        self.write_env('WEB_HOST=127.0.0.1\n')
         self.assertEqual(self.run_sender(MAIL_ARGS).rc, 0)
-        self.write('.env', 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\nWEB_HOST=0.0.0.0\n' % (self.dash.port, MAIN))   # unspecified = loopback
+        self.write_env('WEB_HOST=0.0.0.0\n')   # unspecified = loopback
         self.assertEqual(self.run_sender(MAIL_ARGS).rc, 0)
 
     def test_without_the_agents_own_token_nothing_is_sent_or_asked(self):
@@ -673,12 +758,11 @@ class AgentEnvironment(SenderCase):
         decoy = Dash(self.events)
         proxy = 'http://127.0.0.1:%d' % decoy.port
         try:
-            # the Gmail stub is exempted from the proxy (a real Google call may legitimately use one); the dashboard may not be
+            # neither the dashboard nor Google is reached through a proxy named in the environment
             res = self.run_sender(MAIL_ARGS, extra_env={
-                'http_proxy': proxy, 'HTTP_PROXY': proxy, 'all_proxy': proxy, 'ALL_PROXY': proxy,
-                'no_proxy': '127.0.0.1:%d' % self.google.port, 'NO_PROXY': '127.0.0.1:%d' % self.google.port})
+                'http_proxy': proxy, 'HTTP_PROXY': proxy, 'https_proxy': proxy, 'HTTPS_PROXY': proxy, 'all_proxy': proxy, 'ALL_PROXY': proxy})
             self.assertEqual(res.rc, 0, res.text)
-            self.assertEqual(decoy.requests, [], 'a proxy is never used for the approval service')
+            self.assertEqual(decoy.requests, [], 'a proxy is never used, for the approval service or for Google')
             self.assertEqual(len(self.claims()), 1)
         finally:
             decoy.stop()

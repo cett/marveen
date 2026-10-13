@@ -33,9 +33,15 @@ No flag and no environment variable skips the claim. Exit codes: 0 sent (or a dr
 not sendable by this tool, 3 refused: no usable approval or the approval service cannot be trusted.
 Messages carry fixed texts and ids only: never a token and never any part of the mail.
 
-Environment (all optional; the first two are TEST SEAMS, not security switches):
-  GMAIL_CRED_DIR        directory with token.json and credentials.json   (default ~/.gmail-mcp)
+Settings (all optional; read from the install's .env ONLY, never from the environment, which is the agent's;
+the first two are for stand-ins in tests, not security switches):
+  GMAIL_CRED_DIR        directory with token.json and credentials.json   (default ~/.gmail-mcp of the account)
   GMAIL_SEND_API_BASE   base URL of the Gmail API                        (default https://gmail.googleapis.com)
+The token endpoint of credentials.json must be https on a Google host (oauth2.googleapis.com, accounts.google.com,
+www.googleapis.com), or, only when GMAIL_SEND_API_BASE is set, the same origin as that base; the Google calls use
+their own opener: no proxy, no redirect, certificate check against the CA paths compiled into Python (not
+SSL_CERT_FILE / SSL_CERT_DIR).
+Environment:
   GMAIL_SEND_DRY_RUN=1  build the envelope and print `DRY-OK hash=<12 hex>`; NO network call, nothing is
                         sent, no approval is touched. (Not a command-line option: the gate's reader would
                         call that an unknown option.)
@@ -53,7 +59,9 @@ import ipaddress
 import json
 import mimetypes
 import os
+import pwd
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -85,6 +93,8 @@ SEND_TIMEOUT_S = 60.0
 DEFAULT_PORT = '3420'
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_GMAIL_BASE = 'https://gmail.googleapis.com'
+DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token'
+GOOGLE_TOKEN_HOSTS = frozenset(('oauth2.googleapis.com', 'accounts.google.com', 'www.googleapis.com'))
 # users.messages.send takes a base64url RFC 822 message in a JSON body; stay well inside what it accepts, and
 # say so BEFORE an approval is spent.
 MAX_ATTACHMENT_TOTAL = 18 * 1024 * 1024
@@ -214,14 +224,62 @@ def _dash(method: str, path: str, body: Dict[str, Any], headers: Dict[str, str],
 # ---------------------------------------------------------------------------------------------------
 
 def _cred_dir() -> str:
-    return os.environ.get('GMAIL_CRED_DIR') or os.path.expanduser('~/.gmail-mcp')
+    # GMAIL_CRED_DIR from the install's .env only (the environment is the agent's); the default is under the
+    # account's home from the password database, not from $HOME.
+    configured = _env_file_value('GMAIL_CRED_DIR')
+    if configured:
+        return configured
+    try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        raise Stop(EXIT_FAIL, 'MISSING_CREDS: the home directory of this account is unknown. Nothing was sent, no approval was used.')
+    return os.path.join(home, '.gmail-mcp')
 
 
 def _api_base() -> str:
-    base = (os.environ.get('GMAIL_SEND_API_BASE') or DEFAULT_GMAIL_BASE).rstrip('/')
-    if urllib.parse.urlsplit(base).scheme not in ('http', 'https'):
-        raise Stop(EXIT_FAIL, 'REFUSED gmail_base: GMAIL_SEND_API_BASE is not an http(s) URL. Nothing was sent.')
+    base = (_env_file_value('GMAIL_SEND_API_BASE') or DEFAULT_GMAIL_BASE).rstrip('/')
+    parts = urllib.parse.urlsplit(base)
+    if parts.scheme not in ('http', 'https') or not parts.hostname:
+        raise Stop(EXIT_FAIL, 'REFUSED gmail_base: GMAIL_SEND_API_BASE in .env is not an http(s) URL. Nothing was sent.')
     return base
+
+
+def _token_uri_allowed(token_uri: Any) -> bool:
+    """https on a Google token host (no credentials in the URL, default port), or - only when .env points the
+    Gmail API at a stand-in - the same origin as that stand-in."""
+    if not isinstance(token_uri, str):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(token_uri)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.username is not None or parts.password is not None or not parts.hostname:
+        return False
+    if parts.scheme == 'https' and port in (None, 443) and parts.hostname.lower() in GOOGLE_TOKEN_HOSTS:
+        return True
+    if _env_file_value('GMAIL_SEND_API_BASE'):
+        stand_in = urllib.parse.urlsplit(_api_base())
+        return (parts.scheme, parts.netloc.lower()) == (stand_in.scheme, stand_in.netloc.lower())
+    return False
+
+
+def _google_ssl_context() -> ssl.SSLContext:
+    """Certificate checking against the CA locations compiled into this Python, not SSL_CERT_FILE / SSL_CERT_DIR
+    from the environment (a CA file the agent controls would let a stand-in pass for Google)."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = True
+    paths = ssl.get_default_verify_paths()
+    cafile = paths.openssl_cafile if paths.openssl_cafile and os.path.isfile(paths.openssl_cafile) else None
+    capath = paths.openssl_capath if paths.openssl_capath and os.path.isdir(paths.openssl_capath) else None
+    if cafile or capath:
+        ctx.load_verify_locations(cafile=cafile, capath=capath)
+    return ctx     # with no CA loaded every https call fails the certificate check: closed
+
+
+_GOOGLE_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _NoRedirect, urllib.request.HTTPSHandler(context=_google_ssl_context()))
 
 
 def refresh_access_token() -> str:
@@ -240,15 +298,17 @@ def refresh_access_token() -> str:
             'client_id': inst['client_id'], 'client_secret': inst['client_secret'],
             'refresh_token': token_data['refresh_token'], 'grant_type': 'refresh_token',
         }).encode()
-        token_uri = inst.get('token_uri', 'https://oauth2.googleapis.com/token')
-        if urllib.parse.urlsplit(token_uri).scheme not in ('http', 'https'):
-            raise ValueError('token_uri')
+        token_uri = inst.get('token_uri', DEFAULT_TOKEN_URI)
+        if not _token_uri_allowed(token_uri):
+            raise Stop(EXIT_FAIL, 'REFUSED token_uri: the token endpoint of the Gmail login is not an https Google host. Nothing was sent, no approval was used.')
         req = urllib.request.Request(token_uri, data=body, method='POST')
-        with urllib.request.urlopen(req, timeout=GOOGLE_TIMEOUT_S) as resp:
+        with _GOOGLE_OPENER.open(req, timeout=GOOGLE_TIMEOUT_S) as resp:
             access = json.loads(resp.read(MAX_RESPONSE_BYTES).decode('utf-8'))['access_token']
         if not isinstance(access, str) or not access:
             raise ValueError('access_token')
         return access
+    except Stop:
+        raise
     except Exception:  # noqa: BLE001
         raise Stop(EXIT_FAIL, 'TOKEN_REFRESH_FAIL: the Gmail login could not be refreshed. Nothing was sent, no approval was used.')
 
@@ -295,7 +355,7 @@ def send_via_gmail(access_token: str, raw_message: bytes) -> Any:
     req = urllib.request.Request(
         _api_base() + '/gmail/v1/users/me/messages/send', data=json.dumps({'raw': raw}).encode(), method='POST',
         headers={'Authorization': 'Bearer ' + access_token, 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=SEND_TIMEOUT_S) as resp:
+    with _GOOGLE_OPENER.open(req, timeout=SEND_TIMEOUT_S) as resp:
         data = resp.read(MAX_RESPONSE_BYTES)
     try:
         return json.loads(data.decode('utf-8'))
