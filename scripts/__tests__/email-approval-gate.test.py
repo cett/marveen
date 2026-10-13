@@ -238,6 +238,62 @@ class Classification(GateCase):
                 self.expect_deny(self.run_gate('Bash', {'command': cmd}), 'level1')
 
 
+class GmailRestCurl(GateCase):
+    """A curl to the Gmail or Resend send route is a send: it goes through the same approval as any mail tool."""
+    GM = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'
+    UP = 'https://www.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media'
+
+    def setUp(self):
+        super().setUp()
+        import base64
+        raw = base64.urlsafe_b64encode(b'To: ann@example.test\r\nSubject: Weekly notes\r\n\r\nHere are the notes from this week.\r\n').decode()
+        self.write('store/r.json', json.dumps({'raw': raw}))
+        self.write('store/m.eml', 'To: ann@example.test\r\nSubject: Weekly notes\r\n\r\nHere are the notes from this week.\r\n')
+        self.cmds = [
+            'curl -s -X POST %s -H "Authorization: Bearer $T" -d @store/r.json' % self.GM,
+            'curl -s --url %s -d @store/r.json' % self.GM,
+            "curl -s '%s' --data-binary @store/m.eml" % self.UP,
+        ]
+
+    def test_a_gmail_curl_without_an_approval_is_refused_and_a_request_is_opened(self):
+        self.dash.claim = _conflict('none')
+        for cmd in self.cmds:
+            with self.subTest(cmd=cmd):
+                self.dash.requests.clear()
+                self.expect_deny(self.run_gate('Bash', {'command': cmd}), 'requested', 'req-1')
+                self.assertIn(('POST', '/api/approvals'), self.dash.paths())
+
+    def test_level_1_refuses_a_gmail_curl(self):
+        self.dash.autonomy = _autonomy(level=1)
+        for cmd in self.cmds:
+            with self.subTest(cmd=cmd):
+                self.expect_deny(self.run_gate('Bash', {'command': cmd}), 'level1')
+
+    def test_a_gmail_curl_with_an_approval_and_a_readable_body_is_allowed(self):
+        for cmd in self.cmds:
+            with self.subTest(cmd=cmd):
+                self.dash.requests.clear()
+                built = E.envelope_of_call('Bash', {'command': cmd}, MAIN, self.root)
+                self.assertTrue(built['ok'], built)
+                rc, out, err = self.run_gate('Bash', {'command': cmd})
+                self.assertEqual(rc, 0, err)
+                claim = [r for r in self.dash.requests if r[1] == '/api/approvals/claim']
+                self.assertEqual([c[2]['content_hash'] for c in claim], [built['hash']])
+
+    def test_a_gmail_curl_whose_url_or_body_cannot_be_read_is_refused_and_spends_nothing(self):
+        for cmd in ('curl -s "https://gmail.googleapis.com/$P" -d @store/r.json', 'curl -s %s -d "$BODY"' % self.GM,
+                    'U=%s; curl -s $U -d @store/r.json' % self.GM, 'env -u cat timeout 5 curl -s %s -d @store/r.json' % self.GM):
+            with self.subTest(cmd=cmd):
+                self.dash.requests.clear()
+                self.expect_deny(self.run_gate('Bash', {'command': cmd}), 'unreadable')
+                self.assertNotIn(('POST', '/api/approvals/claim'), self.dash.paths())
+
+    def test_a_curl_to_a_host_that_is_not_a_mail_api_is_not_gated(self):
+        rc, out, err = self.run_gate('Bash', {'command': 'curl -s http://127.0.0.1:%d/api/blackboard' % self.dash.port})
+        self.assertEqual((rc, out), (0, ''), err)
+        self.assertEqual(self.log_lines(), [])
+
+
 class DecisionTable(GateCase):
     def test_level_1_is_a_hard_refusal(self):
         self.dash.autonomy = _autonomy(level=1)

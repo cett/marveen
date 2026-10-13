@@ -1788,6 +1788,9 @@ _MAIL_NAMES = r'send\.py|gmail-send\.py|graph-mail(?:\.(?:ts|js|mjs))?|sendmail|
 # A name glued to an option (git grep -Osend.py) counts, so these have no left boundary; the short, common words
 # (mail, mailx) need one so that gmail and email do not.
 _MAIL_NAME = re.compile(r'(?:' + _MAIL_NAMES + r'|(?<![\w.-])mailx?)(?![\w.-])')
+# The hosts curl reaches a mail API on (the reader's _from_curl knows the same three), and curl as a word of its own.
+_MAIL_API_HOST = re.compile(r'(?:gmail\.googleapis\.com|www\.googleapis\.com|api\.resend\.com)', re.I)
+_CURL_WORD = re.compile(r'(?<![\w.-])curl(?![\w.-])')
 # Commands that only look at, copy or list a file and cannot be made to run another program by an
 # argument: a mail program's NAME among their arguments is not a send.
 _PURE_HEADS = frozenset((
@@ -1817,10 +1820,15 @@ def _inert_cmd(ws: List[_Word], k: int) -> bool:
 
 
 def command_sends_mail(command: Any) -> bool:
-    """True when a Bash command may run a mail program (curl is not decided here: whether a curl call
-    is a mail needs its URL, which the send classifier reads).
+    """True when a Bash command may run a mail program, or a curl call that may reach a mail API.
 
-    Two nets. The reader finds a mail program the way the shell would run it (also behind env, nohup,
+    A curl call is judged by text, fail closed: when the command runs curl and any of its words names a mail
+    API host (the Gmail and Resend hosts, also inside a quoted or dynamic URL, --url X, an assignment such as
+    U=https://... or a shell -c code) it is a send; whether it really is one, and what mail it is, is the
+    reader's question afterwards (a URL it cannot read is refused there). A curl to a host that is not a mail
+    API is not a send.
+
+    Two further nets. The reader finds a mail program the way the shell would run it (also behind env, nohup,
     an interpreter, sh -c). A mail program it does not find that way, but that the command NAMES in a
     word of a command that is not just looking at files (timeout, nice, sudo, xargs, stdbuf, eval,
     find -exec, watch, ssh, bash -lc ...), is judged a send as well: the call is then refused as
@@ -1831,6 +1839,7 @@ def command_sends_mail(command: Any) -> bool:
     try:
         if any(not s.kind == 'curl' for s in _find_sends(command, 0)):
             return True
+        curl_seen = host_seen = False
         for cmd in _Lexer(command).run():
             ws = cmd.words
             k = 0
@@ -1851,11 +1860,15 @@ def command_sends_mail(command: Any) -> bool:
                 return True
             if k < len(ws) and _runs_dynamic_code(ws, k):
                 return True
-            if k >= len(ws) or _inert_cmd(ws, k):
+            host_seen = host_seen or any(_MAIL_API_HOST.search(w.text) for w in ws)
+            # behind a pass-through wrapper the head can be handed any program (env -u cat timeout 5 send.py): the
+            # "only looks at files" shortcut is not applied there, every word is searched
+            if k >= len(ws) or (not wrapped and _inert_cmd(ws, k)):
                 continue
             if any(_MAIL_NAME.search(w.text) for w in ws[k:]):
                 return True
-        return False
+            curl_seen = curl_seen or any(_CURL_WORD.search(w.text) for w in ws[k:])
+        return curl_seen and host_seen
     except Exception as exc:  # noqa: BLE001 -- unreadable, or a reader bug: never a pass
         # A command whose name, or whose shell -c code, is not literal runs something nobody can name: refused
         # as a possible send. (A script name or an option that is not literal is not: python3 "$X/job.py" is
@@ -1864,7 +1877,8 @@ def command_sends_mail(command: Any) -> bool:
             return True
         # Judge the text itself, with the quoting and escaping that could hide a name taken out. A name built at
         # run time out of pieces ($(echo send).py) is the documented limit of a reader that never runs anything.
-        return _MAIL_NAME.search(re.sub(r'[\\\'"]', '', command)) is not None
+        plain = re.sub(r'[\\\'"]', '', command)
+        return _MAIL_NAME.search(plain) is not None or (_CURL_WORD.search(plain) is not None and _MAIL_API_HOST.search(plain) is not None)
 
 
 def collect_email_envelope(tool: str, tool_input: Any, cwd: Optional[str] = None) -> Dict[str, Any]:

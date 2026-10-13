@@ -735,9 +735,36 @@ class CommandSendsMail(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertFalse(E.command_sends_mail(cmd))
 
+    def test_a_curl_that_names_a_mail_api_host_is_a_send(self):
+        gm = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+        up = "https://www.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media"
+        for cmd in (f"curl -s {gm} -d @r.json", f"curl -s {up} --data-binary @m.eml", f"curl --url {gm} -d @r.json", f"curl --url={gm} -d x",
+                    "curl -s -X POST https://api.resend.com/emails -d @r.json", f"curl -s '{gm}' -d x", 'curl -s "https://gmail.googleapis.com/$P" -d x',
+                    f"curl -s https://GMAIL.googleapis.com/x -d x", f"/usr/bin/curl -s {gm} -d x", f"env FOO=1 curl -s {gm} -d x",
+                    f"timeout 5 curl -s {gm} -d x", f"U={gm}; curl -s $U -d @r.json", f"bash -c 'curl -s {gm} -d @r.json'",
+                    f"echo $(date); curl -s {gm} -d x", f"curl -s -H 'X: $(id)' {gm} -d x"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+        for cmd in ("curl -s localhost:3420/api/x", "curl -s https://example.test/api -d @r.json", "curl -s 'https://api.example.test/gmail' -d x",
+                    "echo https://api.resend.com/emails", "grep -rn gmail.googleapis.com src", "cat notes-about-www.googleapis.com.txt",
+                    "curl -s http://localhost:3420/api/x; echo done"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_sends_mail(cmd))
+
+    def test_a_pass_through_wrapper_hides_the_head_from_the_files_only_shortcut(self):
+        # env -u takes cat as the value of -u: the program that runs is timeout, and it runs send.py
+        for cmd in ("env -u cat timeout 5 send.py --to a@example.test", "env -u ls timeout 5 sendmail -t", "nohup -- cat send.py",
+                    "command -p cat send.py", "env -i FOO=1 cat send.py"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+        # without a wrapper the files-only shortcut stays
+        for cmd in ("cat scripts/support-mail/send.py", "env FOO=1 ls scripts"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_sends_mail(cmd))
+
     def test_other_commands_are_not(self):
         self.assertFalse(E.command_sends_mail('echo "$(date)"'))
-        self.assertFalse(E.command_sends_mail("curl -s localhost:3420/api/x"))   # a curl is the send classifier's question
+        self.assertFalse(E.command_sends_mail("curl -s localhost:3420/api/x"))   # a curl that names no mail API host
         self.assertFalse(E.command_sends_mail("ls -la"))
         self.assertFalse(E.command_sends_mail(None))
         self.assertFalse(E.command_sends_mail(["send.py"]))
