@@ -277,6 +277,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'action_payload', code: 'invalid_envelope', envelope_field: parsed.field, hint: parsed.hint }, 400)
       return true
     }
+    // A mail with an HTML part cannot be approved: the person deciding is shown the text part and the
+    // fingerprint of the HTML, but the recipient would read the HTML, so harmless text could be approved and
+    // a different page sent. Refused until the dashboard shows the HTML part as text.
+    if (parsed.envelope.html_sha256 !== undefined) {
+      json(res, {
+        error: 'invalid_value', field: 'action_payload', code: 'html_not_supported', envelope_field: 'html_sha256',
+        hint: 'A mail with an HTML part cannot be approved: the approval shows the text, the recipient would read the HTML. Send the mail as plain text.',
+      }, 400)
+      return true
+    }
     if (typeof content_hash === 'string' && content_hash !== parsed.hash) {
       // The payload is not the mail the requester thinks it hashed: a parity fault, or a tampered request.
       try {

@@ -181,6 +181,16 @@ describe('what the envelope must be', () => {
     expect(rows()).toHaveLength(0)
   })
 
+  it('refuses a mail with an HTML part: the owner would approve the text and the recipient read the HTML', async () => {
+    const out = await ask(MAIN_TOKEN, envelope({ html_sha256: 'a'.repeat(64) }))
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'action_payload', code: 'html_not_supported', envelope_field: 'html_sha256' })
+    expect(rows()).toHaveLength(0)
+    expect(deliverToChannel).not.toHaveBeenCalled()
+    // the same mail without the HTML part is asked for as before
+    expect((await ask(MAIN_TOKEN, envelope())).status).toBe(201)
+  })
+
   it('refuses a content_hash that is not 64 lowercase hex', async () => {
     for (const bad of ['A'.repeat(64), 'a'.repeat(63), '', 5]) {
       const out = await ask(MAIN_TOKEN, envelope(), { content_hash: bad })
