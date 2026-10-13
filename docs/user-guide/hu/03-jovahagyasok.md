@@ -76,7 +76,7 @@ Az email küldése csak-ember kategória (`email_send`): kizárólag te hagyhato
 
 Ha ugyanarra a levélre újra kérnek, miközben a kérés még nyitott, nem keletkezik második sor, és második értesítést sem kapsz. Egy ágensnek legfeljebb 10 nyitott email-kérése lehet; ágensenként és óránként legfeljebb 5 új értesítést kapsz, a többi ezen az oldalon vár.
 
-Amit ez még nem tud: az a kapu, amely a főágens levélküldő eszközeit addig megállítja, amíg nincs jóváhagyás (a küldési kapu), tervezett, és nincs telepítve. Addig a jóváhagyás, az ujjlenyomat-kötés és az egyszeri felhasználás az API-ban megvan, de a levélküldés olyan módját, amely nem kér jóváhagyást, semmi nem állítja meg. A határokat a `SECURITY.md` biztonsági jegyzetei mondják ki.
+Amit ez nem tud: a küldési kapu a főágens levélküldő eszközeit addig megállítja, amíg nincs jóváhagyás, és be van kötve. A lefedetlen utakat (például Gmail REST-hívás, az ágens saját scriptje, ssh-n indított küldő) nem állítja meg. A határokat a `SECURITY.md` biztonsági jegyzetei mondják ki.
 
 ---
 

@@ -76,7 +76,7 @@ Sending an email is a human-only category (`email_send`): only you, signed in to
 
 Asking again for a mail whose request is still open does not create a second row and does not send you a second notice. An agent can have 10 open email requests; you get at most 5 new notices per agent and hour, the rest wait on this page.
 
-What this does not do yet: the check that stops the main agent's mail-sending tools until an approval exists (the send gate) is planned and not installed. Until it is, the approval, the fingerprint binding and the single use exist in the API, and a way of sending mail that does not ask for them is not stopped. The security notes in `SECURITY.md` state the limits.
+What this does not do: the send gate stops the main agent's mail-sending tools until an approval exists, and it is registered. It does not stop the uncovered paths (for example a Gmail REST call, a script the agent writes itself, a sender started over ssh). The security notes in `SECURITY.md` state the limits.
 
 ---
 

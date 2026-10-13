@@ -174,6 +174,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Documentation
 
+- `SECURITY.md`, the fork guide F02 (hu and en), the README and the approvals chapter of the user guide (hu and en) no longer say that the email send gate and the read guard for the claim signing key are not registered and that this is "not yet a real gate". Both hooks are registered in the main agent's hook configuration. The list of uncovered paths (Gmail REST call, a script the agent writes, a sender started over ssh, a command built by an interpreter) and the sentence that the gate catches the accidental send, not a determined bypass, stay.
 - Fork guide F03 gains "After a restore: API tokens" (hu and en): the order of the token steps (re-issue, check, then start the dashboard and the agents), the statuses of `agent-tokens check` with their fixes, and the shared-token resurrection from an archive that predates a rotation; "Archive contents" now says what is and is not in the archive, and `backup.sh` no longer points to a removed runbook file. F07 refers to it.
 - Fork guide F07 gains "Agent API tokens and the API wrapper" (how to issue, rotate and revoke the per-agent tokens, the `--token` kinds, the fallback and the admin-only calls); F03, F04 and the users guide describe the new token files, and every API recipe in the guides goes through the wrapper.
 - log fast-uri/ip-address npm audit high-sev fix
