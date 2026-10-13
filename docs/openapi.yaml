@@ -569,6 +569,18 @@ components:
           type: integer
           enum: [0, 1]
           description: 1 when the category was human-only at the time of the request (a snapshot). Such a request is decided only by a global admin dashboard session when `APPROVAL_HUMAN_ONLY_ENFORCE=1`.
+        content_hash:
+          type: [string, "null"]
+          description: The sha256 (64 lowercase hex) of the exact action the request covers. Null when none was given.
+        consumed_at:
+          type: [integer, "null"]
+          description: When the approval was used up (unix seconds), null while unused. A hash-bound approval is used up at most once.
+        consumed_by:
+          type: [string, "null"]
+          description: The agent whose token used the approval up.
+        consumed_ref:
+          type: [string, "null"]
+          description: The caller's own label for the use (for example the id of the send); the same label repeated by the same agent shortly after is a retry, not a second use.
         timeout_at:
           type: [integer, "null"]
         created_at:
@@ -583,6 +595,123 @@ components:
         status: "pending"
         timeout_at: 1787490000
         created_at: 1787486000
+
+    ApprovalList:
+      type: object
+      required: [items, total, offset, limit, counts, oldest_pending, window_s]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Approval"
+        total:
+          type: integer
+          description: The number of requests that match the filters, over all pages.
+        offset:
+          type: integer
+        limit:
+          type: integer
+        counts:
+          type: object
+          description: The number of requests per status (`pending`, `approved`, `rejected`, `timeout`). Empty for a fleet agent token, which gets no fleet-wide aggregates.
+          additionalProperties:
+            type: integer
+        oldest_pending:
+          description: The request that has waited longest for a decision, null when none is pending (always null for a fleet agent token).
+          anyOf:
+            - $ref: "#/components/schemas/Approval"
+            - type: "null"
+        window_s:
+          type: integer
+          description: The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision. An approved request that is still unused after this long can no longer be used up; the dashboard marks it as lapsed.
+
+    ApprovalUsed:
+      type: object
+      required: [ok, replayed, window_s, approval]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        replayed:
+          type: boolean
+          description: True when this call repeated an earlier use by the same agent with the same `ref` (a retry of a lost answer); nothing was used up a second time.
+        window_s:
+          type: integer
+          description: The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision.
+        approval:
+          $ref: "#/components/schemas/Approval"
+
+    ApprovalRefusal:
+      type: object
+      required: [error, reason, window_s]
+      description: A `409` answer to using an approval up. The row is described by its state only, never by its content.
+      properties:
+        error:
+          type: string
+          enum: [conflict]
+        reason:
+          type: string
+          description: |
+            Why nothing was used up. `already_consumed`, `not_approved`, `hash_mismatch`, `expired` (decided longer ago than `window_s`),
+            `not_human_decided` (approved, but not by a person in a dashboard session) and `wrong_category` (the category has no hash binding)
+            apply to both calls. The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash).
+          enum: [already_consumed, not_approved, hash_mismatch, expired, not_human_decided, wrong_category, pending, rejected, none]
+        window_s:
+          type: integer
+        approval_id:
+          type: string
+          description: "With `reason` `pending` (claim only): the open request, so the caller does not open a second one."
+        approval:
+          type: object
+          description: The state of the approval the answer is about. Absent when there is none (`none`, and `wrong_category` on a claim).
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+              enum: [pending, approved, rejected, timeout]
+            consumed_at:
+              type: [integer, "null"]
+            consumed_by:
+              type: [string, "null"]
+            consumed_ref:
+              type: [string, "null"]
+
+    ApprovalForbidden:
+      type: object
+      required: [error, reason]
+      properties:
+        error:
+          type: string
+          enum: [forbidden]
+        reason:
+          type: string
+          enum: [agent_identity_required, agent_mismatch]
+          description: "`agent_identity_required`: the token names no agent (the shared token, a session, a device). `agent_mismatch`: the approval was requested by another agent."
+        hint:
+          type: string
+
+    ApprovalEvent:
+      type: object
+      required: [id, approval_id, tenant_id, event, created_at]
+      properties:
+        id:
+          type: integer
+        approval_id:
+          type: string
+        tenant_id:
+          type: string
+        event:
+          type: string
+          description: What happened, for example `consumed`, `consume_refused`, `bearer_denied`, `owner_unreached`, `created_deduplicated` or `notify_suppressed`.
+        reason:
+          type: [string, "null"]
+        actor:
+          type: [string, "null"]
+        ref:
+          type: [string, "null"]
+        created_at:
+          type: integer
 
     BlackboardRow:
       type: object
@@ -2212,6 +2341,12 @@ paths:
           schema:
             type: string
             enum: [pending, approved, rejected, timeout]
+        - name: content_hash
+          in: query
+          description: Exact match on the request's content hash (64 lowercase hex, otherwise `400`). A fleet agent token still lists only its own requests.
+          schema:
+            type: string
+            pattern: "^[0-9a-f]{64}$"
         - name: limit
           in: query
           schema:
@@ -2220,13 +2355,11 @@ paths:
             maximum: 500
       responses:
         "200":
-          description: Approval list
+          description: One page of approval requests, with the status counts and the length of the use window
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Approval"
+                $ref: "#/components/schemas/ApprovalList"
 
     post:
       tags: [approvals]
@@ -2234,13 +2367,18 @@ paths:
       summary: Create an approval request
       description: |
         With `APPROVAL_HUMAN_ONLY_ENFORCE=1`, a request in a human-only category (`email_send`, `email_standing_recipient`, or any category an admin marked `human_only`) is announced differently: the server sends the owner one channel message (requester, category, expiry, the first 300 characters of the action, and a link to the dashboard's Approvals page, which opens only on the machine the dashboard runs on; the message cannot decide anything and carries no token or code), the main agent receives `[APPROVAL_REQUEST][HUMAN_ONLY]` (and `[OWNER_UNREACHED]` when the channel message did not go out; the request is created either way), and the requester receives `[APPROVAL_RESOLVED]` once the request is decided by a person in a dashboard session. The category is stored in its canonical form and a spelling that imitates a human-only category is refused with `400` `invalid_value`. Without the flag (the default) the request is announced to the main agent only, as before.
+
+        `email_send` is bound to one exact mail. Only the main agent can open such a request; a sub-agent gets `403`. `action_payload` is required and is the JSON envelope of the mail: `to` (non-empty), `cc`, `bcc` (arrays of bare `local@domain` ASCII addresses, at most 100 each), `subject`, `body`, and optionally `html_sha256`, `attachments` (at most 20 of `{name, size, sha256}`), `from`, `reply_to`, `in_reply_to`. An unknown field, a display-name address, a malformed field or a payload over 256 KB is `400` with `code` `invalid_envelope` and the offending `envelope_field`. The server builds the canonical form (sorted keys, sorted and de-duplicated recipients, lower-cased domains), takes the sha256 of its UTF-8 bytes as `content_hash`, stores that canonical form as `action_payload`, and writes `action_description` itself from the envelope: the requester's own description is ignored, so the person deciding reads text whose hash is provably the stored one. A `content_hash` the client sends must equal the server's (`400` `hash_mismatch` otherwise). The envelope names the requester from the server's knowledge of the caller, never from the payload.
+
+        Asking again for the same mail while its request is open returns that request (`200`, `deduplicated: true`) and announces nothing. An agent can have 10 open `email_send` requests (`409`, `reason: too_many_pending`), and the owner is told of at most 5 new ones per agent and hour; the rest wait on the Approvals page. For every other category `content_hash` is optional and is stored as given.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [agent_id, category, action_description]
+              required: [agent_id, category]
+              description: '`action_description` is required for every category except `email_send`, where the server writes it.'
               properties:
                 agent_id:
                   type: string
@@ -2250,7 +2388,11 @@ paths:
                   type: string
                 action_payload:
                   type: string
-                  description: Optional JSON payload for the action
+                  description: Optional JSON payload for the action. Required for `email_send`, where it is the JSON envelope of the mail (see the operation description).
+                content_hash:
+                  type: string
+                  pattern: "^[0-9a-f]{64}$"
+                  description: The sha256 of the action the approval covers. Optional; for `email_send` it must equal the hash the server computes.
                 timeout_seconds:
                   type: integer
                   description: |
@@ -2264,6 +2406,19 @@ paths:
               action_description: "Push feat/openapi-spec branch to origin"
               timeout_seconds: 3600
       responses:
+        "200":
+          description: An `email_send` request for the same mail is already open; it is returned with `deduplicated` true.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Approval"
+                  - type: object
+                    required: [deduplicated]
+                    properties:
+                      deduplicated:
+                        type: boolean
+                        enum: [true]
         "201":
           description: Approval request created
           content:
@@ -2271,7 +2426,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/Approval"
         "400":
-          description: Missing required fields
+          description: Missing or invalid fields (`invalid_envelope` or `hash_mismatch` for `email_send`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: A sub-agent asked for an `email_send` approval, or a fleet agent token named another agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The agent already has 10 open `email_send` requests (`reason` `too_many_pending`).
           content:
             application/json:
               schema:
@@ -2359,6 +2526,178 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Already resolved, or past its deadline (`Approval has expired`; the sweeper then records it as `timeout` with `resolved_by` `system:timeout`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /approvals/claim:
+    post:
+      tags: [approvals]
+      operationId: claimApproval
+      summary: Use up the approval for one exact mail, found by its hash
+      description: |
+        The send gate knows the mail it is about to send, not which request covers it. This call looks at the calling agent's requests of this tenant and category with this `content_hash`, takes the newest one that is approved, unused, decided by a person in a dashboard session no longer ago than the window (`APPROVAL_CONSUME_WINDOW_S`, default 1800 seconds) and marks it used, in one step: of two callers racing for it, exactly one wins. The caller sends the mail only after a `200`.
+
+        The caller is the agent its token names; a shared token, a session or a device is `403` `agent_identity_required`. The approval must have been requested by that same agent. Only `email_send` is bound to a hash; any other category is `409` `wrong_category`.
+
+        A repeat with the same `ref` from the same agent a moment after a successful use answers `200` with `replayed: true` and uses nothing else up, so a lost answer cannot burn a second approval. Every call, refused ones included, is journaled in `approval_events` and the audit log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, content_hash]
+              properties:
+                category:
+                  type: string
+                  description: The approval category; `email_send` is the one bound to a hash.
+                content_hash:
+                  type: string
+                  pattern: "^[0-9a-f]{64}$"
+                  description: The sha256 of the mail about to be sent (the same hash the server computed when the request was opened).
+                consumer:
+                  type: string
+                  maxLength: 64
+                  description: Short label of the sender, printable ASCII; goes to the journal.
+                ref:
+                  type: string
+                  maxLength: 200
+                  description: The caller's label for this use, printable ASCII; goes to the journal and to `consumed_ref`.
+            example:
+              category: "email_send"
+              content_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+              consumer: "mail-sender"
+              ref: "send-1"
+      responses:
+        "200":
+          description: The approval is used up (or this is the replay of the same use).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalUsed"
+        "400":
+          description: "`invalid_value` (a malformed `content_hash`, `ref` or `consumer`), `required` (no `category`) or `parse_error`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The token names no agent (`agent_identity_required`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalForbidden"
+        "409":
+          description: Nothing was used up; `reason` says why.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalRefusal"
+
+  /approvals/{id}/consume:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: UUID
+    post:
+      tags: [approvals]
+      operationId: consumeApproval
+      summary: Use up one named approval
+      description: |
+        Like `POST /approvals/claim`, for a caller that knows which approval it waits for. It succeeds only for an approved, unused row of this tenant and of the calling agent, bound to exactly this `content_hash`, decided by a person in a dashboard session no longer ago than the window. The check and the write are one statement.
+
+        An approval of another tenant answers like a missing one (`404`). `403` `agent_mismatch` means the approval was requested by another agent; `409` carries the other reasons (see `ApprovalRefusal`; `pending`, `rejected` and `none` belong to the claim call only).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content_hash]
+              properties:
+                content_hash:
+                  type: string
+                  pattern: "^[0-9a-f]{64}$"
+                consumer:
+                  type: string
+                  maxLength: 64
+                ref:
+                  type: string
+                  maxLength: 200
+      responses:
+        "200":
+          description: The approval is used up (or this is the replay of the same use).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalUsed"
+        "400":
+          description: "`invalid_value` or `parse_error`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "`agent_identity_required` or `agent_mismatch`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalForbidden"
+        "404":
+          description: No such approval (another tenant's id answers the same).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Nothing was used up; `reason` says why.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalRefusal"
+
+  /approvals/{id}/events:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: UUID
+    get:
+      tags: [approvals]
+      operationId: listApprovalEvents
+      summary: The journal of one approval
+      description: |
+        What happened to the approval, oldest first: uses, refusals, a decision attempted without a human session, a duplicate request, a suppressed owner notice. For diagnosis and the Approvals page. The journal names the agents that touched the approval, so it is read by the owner (an admin token or a session), not by a fleet agent token (`403`).
+      responses:
+        "200":
+          description: The journal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval_id, items]
+                properties:
+                  approval_id:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApprovalEvent"
+        "403":
+          description: A fleet agent token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such approval.
           content:
             application/json:
               schema:
@@ -4301,6 +4640,10 @@ paths:
         Each category carries `level`, `locked`, `maxLevel`, `humanOnly` (a category an agent may never
         decide for itself: the built-in floor plus what an admin marked) and `timeoutMinutes` (null
         means the 24-hour ceiling applies).
+
+        `approvalHumanOnlyEnforce` says whether the human-only approval rule binds on this server
+        (`APPROVAL_HUMAN_ONLY_ENFORCE=1`): only then does an approved human-only request prove that a
+        person decided it. A caller that relies on such an approval (the email send gate) reads it here.
       responses:
         "200":
           description: Autonomy config
@@ -4308,6 +4651,15 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  updated_at:
+                    type: integer
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                  approvalHumanOnlyEnforce:
+                    type: boolean
     post:
       tags: [autonomy]
       operationId: updateAutonomyLevel

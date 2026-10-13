@@ -371,6 +371,24 @@ export const RBAC_MODE: 'shadow' | 'enforce' =
 export const APPROVAL_HUMAN_ONLY_ENFORCE: boolean =
   (process.env['APPROVAL_HUMAN_ONLY_ENFORCE'] ?? env['APPROVAL_HUMAN_ONLY_ENFORCE'] ?? '').trim() === '1'
 
+// How long after a person approved an email_send request the mail may still be sent with it, in
+// seconds (the consume window of POST /api/approvals/:id/consume and /claim). An approval older than
+// this is `expired` and the mail needs a new one. Default 30 minutes. Not a whole number, or empty:
+// the default; below 60 or above 86400: pulled to the nearest bound, so a typo can neither switch the
+// limit off nor leave an old approval usable for days. Read once at start.
+export const CONSUME_WINDOW_DEFAULT_S = 1800
+export const CONSUME_WINDOW_MIN_S = 60
+export const CONSUME_WINDOW_MAX_S = 86400
+
+export function parseConsumeWindowSeconds(raw: string | undefined): number {
+  const text = (raw ?? '').trim()
+  if (!/^\d{1,9}$/.test(text)) return CONSUME_WINDOW_DEFAULT_S
+  return Math.min(CONSUME_WINDOW_MAX_S, Math.max(CONSUME_WINDOW_MIN_S, Number(text)))
+}
+
+export const APPROVAL_CONSUME_WINDOW_S: number =
+  parseConsumeWindowSeconds(process.env['APPROVAL_CONSUME_WINDOW_S'] ?? env['APPROVAL_CONSUME_WINDOW_S'])
+
 // Token identity mode (Phase T4-7). The token shadow counter (src/web/token-shadow.ts) already
 // classifies a request by whether it names an agent other than its caller: in 'shadow' (the default)
 // that is counted and nothing else. In 'enforce' the same classification refuses the request with a

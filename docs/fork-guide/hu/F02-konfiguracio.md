@@ -226,6 +226,18 @@ Egyes jóváhagyási kérést nem dönthet el sem ágens, sem token, csak ember.
 
 A fő agent `approval-request-handling` skillje és minden ágens CLAUDE.md-jében a generált autonómia-blokk ugyanezeket a szabályokat adja az ágenseknek.
 
+### Email-jóváhagyás: egy levél, egy jóváhagyás
+
+email_send jóváhagyási kérést csak a főágens nyithat, sub-ágens 403. A kérés a pontos levelet hordozza JSON borítékként (`action_payload`); a szerver lehasheli (a kanonikus alak sha256-ja), maga írja a leírást, amit a tulajdonos olvas, az ágens által írtat figyelmen kívül hagyja. Az ember jóváhagyása így csak arra a levélre szól, egyszer használható fel, és csak a döntés utáni ablakon belül. Az ágens a saját tokenjével használja fel: `POST /api/approvals/claim` (a levél hash-e alapján) vagy `POST /api/approvals/<id>/consume`; a parancssoros alakja a `scripts/approval-consume.py` (0-s kilépési kód csak akkor, ha a szerver 200-at válaszolt, 3 az elutasítás, 4 az ismeretlen id, 2 minden más).
+
+- `APPROVAL_CONSUME_WINDOW_S` a dashboard `.env` fájljában: a döntés után mennyi ideig használható fel a jóváhagyás, másodpercben. Alapértelmezetten `1800` (30 perc). A 60 alatti érték 60-ra, a 86400 feletti 86400-ra húzódik; az üres vagy nem egész szám az alapérték. Indításkor egyszer olvasódik (módosításhoz újraindítás kell). A claim és a consume válasza, valamint a jóváhagyások listája `window_s` néven visszaadja; a dashboard a nála régebbi, jóváhagyott, de fel nem használt kérést `Lejárt (ablak)` jelvénnyel jelöli.
+- A jóváhagyás csak akkor használható fel, ha ember döntött róla dashboard-sessionben, az `APPROVAL_HUMAN_ONLY_ENFORCE` értékétől függetlenül: a token döntése `not_human_decided`, és nem használható fel. A `GET /api/autonomy` az `approvalHumanOnlyEnforce` mezővel megmutatja, hogy az emberi döntés szabálya köt-e ezen a szerveren.
+- Az `email_send` a 2-es autonómia-szinten marad (jóváhagyás szükséges). A tervezett küldési kapuval az 1-es szint kemény tiltás lesz, nem csak jelzés.
+
+**Mi van meg és mi nincs.** A fenti API (kérés, hash-kötés, claim és consume, a napló a `GET /api/approvals/<id>/events` címen) megvan. A küldési kapu (az a hook, amely a főágens levélküldő eszközeit megállítja, amíg nincs jóváhagyás) és a hivatalos küldő (amely küldés pillanatában használja fel a jóváhagyást) tervezett, és nincs telepítve. Addig semmi nem állítja meg azt a küldési utat, amely nem kér jóváhagyást (közvetlen Gmail REST-hívás, script-fájl, ssh-n indított küldő), tehát ez még nem valódi kapu. A határokat a `SECURITY.md` sorolja fel.
+
+**Vészfék.** Az API önmagában nem blokkol levelet, ezért ma nincs mit kioldani. Ha a küldési kapu be lesz kötve (tervezett), fail-closed lesz: ha a dashboard, a token vagy az API nem elérhető, a főágens nem tud levelet küldeni, ez szándékos. A kioldáshoz a telepítés `.claude/settings.json` fájljának PreToolUse blokkjából el kell távolítani a bejegyzését, és újra kell indítani a főágens session-jét (a futó session nem olvassa újra a fájlt), vagy vissza kell vonni a bekötő commitot; a pontos lépések ebbe a szakaszba kerülnek, amikor a kapu elkészül.
+
 ## Modell-profil térkép
 
 A `model_profile_map` DB-tábla lehetővé teszi, hogy az ágensek névleges profilokat (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) használjanak konkrét modell-nevek helyett. Az induláskori migráció (0054) a négy profilt a fleet ma is futó modelljeivel tölti fel -- ez a Phase 1 szándéka: absztrakció, nem újra-tierezés.

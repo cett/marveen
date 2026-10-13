@@ -1,10 +1,11 @@
 import { escapeHtml, escapeAttr } from './util.js'
-import { t } from './i18n.js'
+import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 import { renderPaginator } from './paginator.js'
 import { isHumanOnlyRow, isHumanOnlyEnforced, isLockedForViewer, shouldShowHumanOnlyBanner } from './approval-human-only.js'
+import { truncateDescription, shortHash, parseEmailPayload, approvalStateBadges, renderBadges, renderEmailPayload, renderTimeline } from './approval-email-view.js'
 
 
 
@@ -23,6 +24,9 @@ let _approvalsTenantGetter = null
 // while the rule is enforced; with it off (or unknown) nothing is locked. The server still refuses any
 // non-session caller when it enforces.
 let _viewerStatus = null
+// The use window in seconds, as the server reports it with the list (null until a list arrived, or
+// when the server is older than the field): an approved, unused request older than this is lapsed.
+let _consumeWindowS = null
 
 // .modal-overlay is opacity:0/visibility:hidden by default (modal.css) and
 // only becomes visible via the .active class -- [hidden] alone toggles
@@ -44,28 +48,71 @@ document.addEventListener('click', (e) => {
   if (row) openApprovalDetail(row.dataset.approvalId)
 })
 
+// Bumped on every open, so a journal answer that arrives after the modal moved on to another request
+// (or was closed and reopened) is dropped instead of painted over the wrong one.
+let _approvalsDetailSeq = 0
+
 function openApprovalDetail(id) {
   const a = _approvalsPage.find(x => x.id === id)
   if (!a) return
   const bodyEl = document.getElementById('approvalsDetailBody')
   if (!bodyEl) return
-  const row = (label, value) => `
+  const row = (label, value) => rawRow(label, escapeHtml(value ?? ''))
+  const rawRow = (label, html) => `
     <div class="approvals-detail-row">
       <span class="approvals-detail-label">${escapeHtml(label)}</span>
-      <span class="approvals-detail-value">${escapeHtml(value ?? '')}</span>
+      <span class="approvals-detail-value">${html}</span>
     </div>`
-  bodyEl.innerHTML = [
-    row('ID', a.id),
-    row('Ágens', a.agent_id),
-    row('Kategória', a.category),
-    row('Állapot', t('approvals.status.' + a.status) || a.status),
-    row('Kérés ideje', a.requested_at ? new Date(a.requested_at * 1000).toLocaleString('hu-HU') : ''),
-    row('Timeout', a.timeout_at ? new Date(a.timeout_at * 1000).toLocaleString('hu-HU') : ''),
-    row('Elbírálva', a.resolved_by || ''),
-    row('Elbírálás ideje', a.resolved_at ? new Date(a.resolved_at * 1000).toLocaleString('hu-HU') : ''),
-    row('Teljes leírás', a.action_description),
-  ].join('')
+  const fmt = (sec) => (sec ? new Date(sec * 1000).toLocaleString(getLang() === 'en' ? 'en-GB' : 'hu-HU') : '')
+  const humanOnlyBadge = isHumanOnlyRow(a)
+    ? ` <span class="approvals-humanonly-badge" title="${escapeAttr(t('approvals.humanonly.badge_title'))}">${escapeHtml(t('approvals.humanonly.badge'))}</span>`
+    : ''
+  const fingerprint = shortHash(a.content_hash)
+  const badges = renderBadges(approvalStateBadges(a, { windowS: _consumeWindowS }))
+  const isEmail = a.category === 'email_send'
+  const parts = [
+    row(t('approvals.detail.id'), a.id),
+    row(t('approvals.detail.agent'), a.agent_id),
+    rawRow(t('approvals.detail.category'), `${escapeHtml(a.category)}${humanOnlyBadge}`),
+    row(t('approvals.detail.status'), t('approvals.status.' + a.status) || a.status),
+  ]
+  if (badges) parts.push(rawRow(t('approvals.detail.markers'), badges))
+  if (fingerprint) parts.push(rawRow(t('approvals.detail.hash'), `<code class="approvals-hash" title="${escapeAttr(a.content_hash)}">${escapeHtml(fingerprint)}</code>`))
+  parts.push(
+    row(t('approvals.detail.requested'), fmt(a.requested_at)),
+    row(t('approvals.detail.timeout'), fmt(a.timeout_at)),
+    row(t('approvals.detail.resolved_by'), a.resolved_by || ''),
+    row(t('approvals.detail.resolved_at'), fmt(a.resolved_at)),
+    row(t('approvals.detail.description'), a.action_description),
+  )
+  if (isEmail) parts.push(renderEmailPayload(parseEmailPayload(a.action_payload)))
+  parts.push(
+    `<div class="approvals-detail-section">${escapeHtml(t('approvals.event.title'))}</div>`,
+    `<div id="approvalsEventsBody" class="approvals-detail-row"><span class="approvals-detail-value approvals-email-none">${escapeHtml(t('approvals.event.loading'))}</span></div>`,
+  )
+  bodyEl.innerHTML = parts.join('')
   openModal('approvalsDetailModal')
+  _loadApprovalEvents(a.id, ++_approvalsDetailSeq)
+}
+
+// The journal of one request (consumed, refused, deduplicated, ...). The route answers 403 to an agent
+// token and 404 to a login that may not see the row; both read as "not available to this login".
+async function _loadApprovalEvents(id, seq) {
+  const paint = (html) => {
+    if (seq !== _approvalsDetailSeq) return
+    const el = document.getElementById('approvalsEventsBody')
+    if (el) el.innerHTML = html
+  }
+  const note = (key) => `<span class="approvals-detail-value approvals-email-none">${escapeHtml(t(key))}</span>`
+  try {
+    const res = await fetch(`/api/approvals/${encodeURIComponent(id)}/events`)
+    if (res.status === 403 || res.status === 404) return paint(note('approvals.event.forbidden'))
+    if (!res.ok) return paint(note('approvals.event.error'))
+    const data = await res.json()
+    paint(renderTimeline(data?.items))
+  } catch {
+    paint(note('approvals.event.error'))
+  }
 }
 
 // ============================================================
@@ -116,6 +163,7 @@ async function _loadApprovalsPageInternal() {
     const data = await res.json()
     _viewerStatus = viewer
     _approvalsPage = data.items ?? []
+    _consumeWindowS = typeof data.window_s === 'number' ? data.window_s : null
     _renderApprovalsStats(data.counts ?? { pending: 0, approved: 0, rejected: 0, timeout: 0 }, data.oldest_pending ?? null)
     _renderApprovalsTable(data.total ?? _approvalsPage.length)
     _approvalsCountdownInterval = setInterval(_updateCountdowns, 1000)
@@ -195,6 +243,7 @@ function _renderApprovalsTable(total) {
     const humanOnlyBadge = isHumanOnlyRow(a)
       ? ` <span class="approvals-humanonly-badge" title="${escapeAttr(t('approvals.humanonly.badge_title'))}">${escapeHtml(t('approvals.humanonly.badge'))}</span>`
       : ''
+    const stateBadges = renderBadges(approvalStateBadges(a, { compact: true, windowS: _consumeWindowS }))
     const actions = isPending
       ? `<div style="display:flex;gap:4px">
            <button class="btn approvals-decide" data-variant="primary" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px"${lockAttrs}>${t('approvals.btn.approve')}</button>
@@ -209,12 +258,12 @@ function _renderApprovalsTable(total) {
           const resolvedStr = resolvedDate.toLocaleString('hu-HU', sameDay ? { timeStyle: 'short' } : { dateStyle: 'short', timeStyle: 'short' })
           return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}<br><span style="font-size:11px;opacity:0.7">${escapeHtml(resolvedStr)}</span></span>`
         })()
-    return `<tr class="approvals-row-clickable" data-approval-id="${escapeAttr(a.id)}" title="Kattints a részletekért" style="${rowStyle}">
+    return `<tr class="approvals-row-clickable" data-approval-id="${escapeAttr(a.id)}" title="${escapeAttr(t('approvals.row.hint'))}" style="${rowStyle}">
       <td style="white-space:nowrap;font-size:12px">${escapeHtml(time)}</td>
       <td><code style="font-size:12px">${escapeHtml(a.agent_id)}</code></td>
       <td style="font-size:12px">${escapeHtml(a.category)}${humanOnlyBadge}</td>
-      <td style="max-width:280px;font-size:12px" title="${escapeAttr(a.action_description)}">${escapeHtml(a.action_description.length > 80 ? a.action_description.slice(0, 80) + '...' : a.action_description)}</td>
-      <td>${badge}</td>
+      <td style="max-width:280px;font-size:12px" title="${escapeAttr(a.action_description)}">${escapeHtml(truncateDescription(a.action_description, 80))}</td>
+      <td>${badge}${stateBadges ? ` ${stateBadges}` : ''}</td>
       <td style="font-size:12px;white-space:nowrap">${countdown}</td>
       <td>${actions}</td>
     </tr>`

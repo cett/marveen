@@ -233,9 +233,80 @@ export interface Approval {
   resolved_via?: 'dashboard_session' | 'bearer' | 'null' | null;
   /** 1 when the category was human-only at the time of the request (a snapshot). Such a request is decided only by a global admin dashboard session when `APPROVAL_HUMAN_ONLY_ENFORCE=1`. */
   human_only?: number;
+  /** The sha256 (64 lowercase hex) of the exact action the request covers. Null when none was given. */
+  content_hash?: string | null;
+  /** When the approval was used up (unix seconds), null while unused. A hash-bound approval is used up at most once. */
+  consumed_at?: number | null;
+  /** The agent whose token used the approval up. */
+  consumed_by?: string | null;
+  /** The caller's own label for the use (for example the id of the send); the same label repeated by the same agent shortly after is a retry, not a second use. */
+  consumed_ref?: string | null;
   timeout_at?: number | null;
   created_at: number;
   resolved_at?: number | null;
+}
+
+export interface ApprovalList {
+  items: Approval[];
+  /** The number of requests that match the filters, over all pages. */
+  total: number;
+  offset: number;
+  limit: number;
+  /** The number of requests per status (`pending`, `approved`, `rejected`, `timeout`). Empty for a fleet agent token, which gets no fleet-wide aggregates. */
+  counts: Record<string, number>;
+  /** The request that has waited longest for a decision, null when none is pending (always null for a fleet agent token). */
+  oldest_pending: Approval | null;
+  /** The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision. An approved request that is still unused after this long can no longer be used up; the dashboard marks it as lapsed. */
+  window_s: number;
+}
+
+export interface ApprovalUsed {
+  ok: boolean;
+  /** True when this call repeated an earlier use by the same agent with the same `ref` (a retry of a lost answer); nothing was used up a second time. */
+  replayed: boolean;
+  /** The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision. */
+  window_s: number;
+  approval: Approval;
+}
+
+/** A `409` answer to using an approval up. The row is described by its state only, never by its content. */
+export interface ApprovalRefusal {
+  error: 'conflict';
+  /** Why nothing was used up. `already_consumed`, `not_approved`, `hash_mismatch`, `expired` (decided longer ago than `window_s`),
+`not_human_decided` (approved, but not by a person in a dashboard session) and `wrong_category` (the category has no hash binding)
+apply to both calls. The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash).
+ */
+  reason: 'already_consumed' | 'not_approved' | 'hash_mismatch' | 'expired' | 'not_human_decided' | 'wrong_category' | 'pending' | 'rejected' | 'none';
+  window_s: number;
+  /** With `reason` `pending` (claim only): the open request, so the caller does not open a second one. */
+  approval_id?: string;
+  /** The state of the approval the answer is about. Absent when there is none (`none`, and `wrong_category` on a claim). */
+  approval?: {
+    id?: string;
+    status?: 'pending' | 'approved' | 'rejected' | 'timeout';
+    consumed_at?: number | null;
+    consumed_by?: string | null;
+    consumed_ref?: string | null;
+  };
+}
+
+export interface ApprovalForbidden {
+  error: 'forbidden';
+  /** `agent_identity_required`: the token names no agent (the shared token, a session, a device). `agent_mismatch`: the approval was requested by another agent. */
+  reason: 'agent_identity_required' | 'agent_mismatch';
+  hint?: string;
+}
+
+export interface ApprovalEvent {
+  id: number;
+  approval_id: string;
+  tenant_id: string;
+  /** What happened, for example `consumed`, `consume_refused`, `bearer_denied`, `owner_unreached`, `created_deduplicated` or `notify_suppressed`. */
+  event: string;
+  reason?: string | null;
+  actor?: string | null;
+  ref?: string | null;
+  created_at: number;
 }
 
 export interface BlackboardRow {
@@ -447,13 +518,19 @@ export type ListKanbanAssigneesResponse = string[]
 
 export type ListArchivedKanbanCardsResponse = KanbanCard[]
 
-export type ListApprovalsResponse = Approval[]
+export type ListApprovalsResponse = ApprovalList
 
-export type CreateApprovalResponse = Approval
+export type CreateApprovalResponse = Approval & {
+  deduplicated: boolean;
+}
 
 export type GetApprovalResponse = Approval
 
 export type ResolveApprovalResponse = Approval
+
+export type ClaimApprovalResponse = ApprovalUsed
+
+export type ConsumeApprovalResponse = ApprovalUsed
 
 export type ListBlackboardResponse = BlackboardRowWithSignal[]
 

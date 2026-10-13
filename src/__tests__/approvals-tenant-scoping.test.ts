@@ -25,6 +25,7 @@ vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
   STORE_DIR,
   MAIN_AGENT_ID: 'marveen',
+  APPROVAL_CONSUME_WINDOW_S: 1800,
 }))
 
 vi.mock('../db.js', () => ({

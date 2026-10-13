@@ -213,7 +213,7 @@ export type ApprovalResolvedVia = 'dashboard_session' | 'bearer'
  * The kinds of approval_events rows. The table has no CHECK on `event` (widening one needs a table
  * rebuild, see migration 0081), so this union is what keeps the writers honest.
  */
-export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied' | 'owner_unreached'
+export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied' | 'owner_unreached' | 'created_deduplicated' | 'notify_suppressed'
 
 /**
  * Append one row to the approval journal. The journal is for diagnosis: nothing branches on it, and a
@@ -260,6 +260,259 @@ export function listApprovalEvents(approvalId: string): ApprovalEvent[] {
     .all(approvalId) as ApprovalEvent[]
 }
 
+/**
+ * Categories whose approval is bound to the hash of one exact action and can be used up once. Anything
+ * else (a plain yes/no approval, an `email_standing_recipient` request) has no hash to consume.
+ */
+export const CONSUMABLE_APPROVAL_CATEGORIES: readonly string[] = ['email_send']
+
+/** A consume that arrives again with the same ref inside this many seconds is a retry, not a second use. */
+export const CONSUME_REPLAY_WINDOW_S = 60
+
+/** Why a consume by id was refused. Checked on the row after the guarded write found nothing to update. */
+export type ConsumeRefusal =
+  | 'not_found'
+  | 'agent_mismatch'
+  | 'wrong_category'
+  | 'already_consumed'
+  | 'not_approved'
+  | 'hash_mismatch'
+  | 'expired'
+  | 'not_human_decided'
+
+/** Why a claim by hash found nothing to use. `pending` and `none` mean there is nothing decided yet. */
+export type ClaimRefusal = 'wrong_category' | 'hash_mismatch' | 'pending' | 'none' | 'rejected' | 'expired' | 'already_consumed' | 'not_human_decided'
+
+export type ConsumeOutcome =
+  | { ok: true; replayed: boolean; approval: Approval }
+  | { ok: false; reason: ConsumeRefusal; approval?: Approval }
+
+export type ClaimOutcome =
+  | { ok: true; replayed: boolean; approval: Approval }
+  | { ok: false; reason: ClaimRefusal; approval?: Approval }
+
+interface ConsumeParams {
+  /** The hash the caller computed for the action it is about to take. */
+  content_hash: string
+  /** The authenticated agent asking: only the agent that requested an approval can use it up. */
+  principal: string
+  tenant_id: string
+  /** How long after the decision the approval may still be used, in seconds. */
+  window_s: number
+  /** An opaque reference of the consuming action; the same ref again within the replay window is a retry. */
+  ref?: string | null
+  /** A label for the journal (which gate or script asked); it decides nothing. */
+  consumer?: string | null
+  /** Epoch seconds. The server clock decides; the parameter exists for tests. */
+  now?: number
+}
+
+const nowSeconds = (): number => Math.floor(Date.now() / 1000)
+
+/**
+ * A content hash is 64 lowercase hex characters, nothing else. The functions below check it before
+ * they touch a row, so a malformed or differently-cased value can never match, create or use one up.
+ */
+export function isContentHash(hash: unknown): hash is string {
+  return typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)
+}
+
+/** The journal label of a consume: the consumer name, bounded. */
+function consumerLabel(consumer: string | null | undefined): string | null {
+  const label = typeof consumer === 'string' ? consumer.trim().slice(0, 64) : ''
+  return label || null
+}
+
+/** Journal a refused consume. Never throws: a journal fault must not turn a refusal into a success. */
+function journalConsumeRefusal(approval: Approval, reason: string, principal: string, ref: string | null): void {
+  try {
+    recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'consume_refused', reason, actor: principal, ref })
+  } catch { /* the refusal stands without its journal row */ }
+}
+
+// The one write that uses an approval up. Every condition is in the WHERE, so the check and the write are
+// a single statement: of two callers racing for the same row exactly one changes it. The category list is
+// spliced in as bound parameters. A consumable approval is always decided by a person's dashboard
+// session, whatever the human_only snapshot of the row says.
+function consumeStatement(): string {
+  const marks = CONSUMABLE_APPROVAL_CATEGORIES.map(() => '?').join(', ')
+  return `
+    UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+    WHERE id = ? AND category IN (${marks}) AND status = 'approved' AND consumed_at IS NULL
+      AND content_hash = ? AND tenant_id = ? AND agent_id = ?
+      AND resolved_at >= ? AND resolved_via = 'dashboard_session'
+  `
+}
+
+/** Run the guarded write for one row. True when this call is the one that used the approval up. */
+function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null): boolean {
+  return db.prepare(consumeStatement()).run(
+    now, p.principal, ref, id, ...CONSUMABLE_APPROVAL_CATEGORIES, p.content_hash, p.tenant_id, p.principal, now - p.window_s,
+  ).changes > 0
+}
+
+/** The same principal consuming the same hash with the same ref a moment ago: a retry of a lost answer. */
+function isReplay(row: Approval, p: ConsumeParams, now: number): boolean {
+  return typeof p.ref === 'string' && p.ref !== '' &&
+    row.consumed_at != null && row.consumed_by === p.principal && row.consumed_ref === p.ref &&
+    row.content_hash === p.content_hash && now - row.consumed_at <= CONSUME_REPLAY_WINDOW_S
+}
+
+/**
+ * Use up one approval by id. Succeeds only for an approved, unconsumed row of this tenant and this agent,
+ * of a consumable category, bound to exactly this hash, decided by a human session no longer ago than
+ * the window. The success and its journal row are one transaction; a refusal is classified from the row
+ * afterwards (the write itself never says why it matched nothing) and journalled best-effort.
+ */
+export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutcome {
+  const now = p.now ?? nowSeconds()
+  const ref = p.ref ?? null
+  const hashOk = isContentHash(p.content_hash)
+  const outcome = db.transaction((): ConsumeOutcome => {
+    // A malformed hash skips the guarded write; it is then refused below as a mismatch.
+    if (hashOk && useUpApproval(p.id, p, now, ref)) {
+      const approval = getApproval(p.id) as Approval
+      recordApprovalEvent({ approval_id: p.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
+      return { ok: true, replayed: false, approval }
+    }
+    const row = getApproval(p.id)
+    // Another tenant's row answers exactly like a missing one.
+    if (!row || row.tenant_id !== p.tenant_id) return { ok: false, reason: 'not_found' }
+    if (row.agent_id !== p.principal) return { ok: false, reason: 'agent_mismatch', approval: row }
+    if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(row.category)) return { ok: false, reason: 'wrong_category', approval: row }
+    if (!hashOk) return { ok: false, reason: 'hash_mismatch', approval: row }
+    if (row.consumed_at != null) {
+      if (isReplay(row, p, now)) return { ok: true, replayed: true, approval: row }
+      return { ok: false, reason: 'already_consumed', approval: row }
+    }
+    if (row.status !== 'approved') return { ok: false, reason: 'not_approved', approval: row }
+    if (row.content_hash !== p.content_hash) return { ok: false, reason: 'hash_mismatch', approval: row }
+    if (row.resolved_at == null || row.resolved_at < now - p.window_s) return { ok: false, reason: 'expired', approval: row }
+    return { ok: false, reason: 'not_human_decided', approval: row }
+  })()
+  if (!outcome.ok && outcome.approval) journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
+  return outcome
+}
+
+/**
+ * Use up the approval for one exact action, found by its hash instead of its id: the caller (the send
+ * gate) knows what it is about to do, not which request covers it. Looks at this agent's rows of this
+ * tenant and category with this hash, tries the newest usable one with the same guarded write as
+ * consumeApproval, and when none is usable says why, best reason first: a pending request, then what
+ * became of the latest decision. A retry with the ref that already used a row answers as a replay
+ * before anything else, so a lost answer cannot burn a second approval.
+ *
+ * Every lookup here orders by its time column and then by id. Two rows sharing a second is a tie that
+ * carries no meaning (any usable row is as good as another, one open request as good as another, and
+ * the latest-decision lookup only names the reason once nothing is usable), so the id only has to make
+ * the pick deterministic; it does not need to be the insertion order.
+ */
+export function claimApproval(p: ConsumeParams & { category: string }): ClaimOutcome {
+  const now = p.now ?? nowSeconds()
+  const ref = p.ref ?? null
+  if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(p.category)) return { ok: false, reason: 'wrong_category' }
+  if (!isContentHash(p.content_hash)) return { ok: false, reason: 'hash_mismatch' }
+  const outcome = db.transaction((): ClaimOutcome => {
+    const scope = [p.principal, p.tenant_id, p.category, p.content_hash]
+    if (typeof p.ref === 'string' && p.ref !== '') {
+      const again = db.prepare(`
+        SELECT * FROM approvals
+        WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+          AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
+        ORDER BY consumed_at DESC, id DESC LIMIT 1
+      `).get(...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S) as Approval | undefined
+      if (again) return { ok: true, replayed: true, approval: again }
+    }
+    const usable = db.prepare(`
+      SELECT id FROM approvals
+      WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+        AND status = 'approved' AND consumed_at IS NULL AND resolved_at >= ? AND resolved_via = 'dashboard_session'
+      ORDER BY resolved_at DESC, id DESC LIMIT 1
+    `).get(...scope, now - p.window_s) as { id: string } | undefined
+    if (usable && useUpApproval(usable.id, p, now, ref)) {
+      const approval = getApproval(usable.id) as Approval
+      recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
+      return { ok: true, replayed: false, approval }
+    }
+    // A request still open (its deadline not passed, even if the sweeper has not marked it yet) beats any old decision.
+    const open = db.prepare(`
+      SELECT * FROM approvals
+      WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+        AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
+      ORDER BY requested_at DESC, id DESC LIMIT 1
+    `).get(...scope, now) as Approval | undefined
+    if (open) return { ok: false, reason: 'pending', approval: open }
+    const last = db.prepare(`
+      SELECT * FROM approvals
+      WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+        AND status != 'pending' AND resolved_at IS NOT NULL
+      ORDER BY resolved_at DESC, id DESC LIMIT 1
+    `).get(...scope) as Approval | undefined
+    if (!last) return { ok: false, reason: 'none' }
+    if (last.status === 'rejected') return { ok: false, reason: 'rejected', approval: last }
+    // A request that timed out unanswered leaves nothing to use: the caller starts over.
+    if (last.status !== 'approved') return { ok: false, reason: 'none', approval: last }
+    if (last.consumed_at != null) return { ok: false, reason: 'already_consumed', approval: last }
+    if (last.resolved_at != null && last.resolved_at < now - p.window_s) return { ok: false, reason: 'expired', approval: last }
+    return { ok: false, reason: 'not_human_decided', approval: last }
+  })()
+  if (!outcome.ok && outcome.approval && outcome.reason !== 'pending' && outcome.reason !== 'none') {
+    journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
+  }
+  return outcome
+}
+
+/**
+ * How many requests of one agent and category (in one tenant) were made since `since`, the one named by
+ * `exceptId` left out. Read from the rows, not from memory, so a restart does not reset a rate limit.
+ */
+export function countApprovalsRequestedSince(params: { agent_id: string; category: string; tenant_id: string; since: number; exceptId?: string }): number {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS n FROM approvals
+    WHERE agent_id = ? AND category = ? AND tenant_id = ? AND requested_at >= ? AND id != ?
+  `).get(params.agent_id, params.category, params.tenant_id, params.since, params.exceptId ?? '') as { n: number }
+  return row.n
+}
+
+/** What createApprovalOnce did: the row, and whether it was an open request already or a new one. */
+export type OpenOnceOutcome =
+  | { ok: true; approval: Approval; deduplicated: boolean }
+  | { ok: false; reason: 'too_many_pending' | 'hash_mismatch' }
+
+/**
+ * Open a hash-bound request unless the same agent already has the same one open in this tenant (then
+ * that row is returned, nothing is written) or already has `max_pending` open requests of this category.
+ * The look and the write are one transaction, so a burst of identical requests leaves one row. "Open"
+ * means pending with its deadline not passed: an expired row the sweeper has not marked yet neither
+ * answers a new request nor counts against the cap.
+ */
+export function createApprovalOnce(params: Parameters<typeof createApproval>[0] & { content_hash: string; max_pending: number }): OpenOnceOutcome {
+  const tenant = params.tenant_id ?? 'default'
+  if (!isContentHash(params.content_hash)) return { ok: false, reason: 'hash_mismatch' }
+  const outcome = db.transaction((): OpenOnceOutcome => {
+    const now = nowSeconds()
+    const same = db.prepare(`
+      SELECT * FROM approvals
+      WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+        AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
+      ORDER BY requested_at DESC, id DESC LIMIT 1
+    `).get(params.agent_id, tenant, params.category, params.content_hash, now) as Approval | undefined
+    if (same) return { ok: true, approval: same, deduplicated: true }
+    const open = db.prepare(`
+      SELECT COUNT(*) AS n FROM approvals
+      WHERE agent_id = ? AND tenant_id = ? AND category = ? AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
+    `).get(params.agent_id, tenant, params.category, now) as { n: number }
+    if (open.n >= params.max_pending) return { ok: false, reason: 'too_many_pending' }
+    return { ok: true, approval: createApproval(params), deduplicated: false }
+  }).immediate()
+  if (outcome.ok && outcome.deduplicated) {
+    try {
+      recordApprovalEvent({ approval_id: outcome.approval.id, tenant_id: tenant, event: 'created_deduplicated', actor: params.agent_id })
+    } catch { /* the request stands without its journal row */ }
+  }
+  return outcome
+}
+
 // agent_id/category use LIKE substring matching, not exact equality -- this
 // mirrors the dashboard's approvals.js filter inputs, which have always done
 // client-side substring matching. Keeping the DB-level filter as exact match
@@ -271,6 +524,7 @@ function approvalsWhere(opts: {
   agent_id?: string
   category?: string
   status?: string
+  content_hash?: string
   tenantId?: string
 }): { where: string; params: unknown[] } {
   const conditions: string[] = []
@@ -278,6 +532,8 @@ function approvalsWhere(opts: {
   if (opts.agent_id) { conditions.push('agent_id LIKE ?'); params.push(`%${opts.agent_id}%`) }
   if (opts.category) { conditions.push('category LIKE ?'); params.push(`%${opts.category}%`) }
   if (opts.status) { conditions.push('status = ?'); params.push(opts.status) }
+  // Exact match, unlike agent_id/category: a hash is looked up whole, never searched by substring.
+  if (opts.content_hash) { conditions.push('content_hash = ?'); params.push(opts.content_hash) }
   // SQL-level tenant filter must come before LIMIT (per 626/704 pagination lesson).
   if (opts.tenantId !== undefined) { conditions.push('tenant_id = ?'); params.push(opts.tenantId) }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -288,6 +544,7 @@ export function listApprovals(opts: {
   agent_id?: string
   category?: string
   status?: string
+  content_hash?: string
   limit?: number
   offset?: number
   tenantId?: string
@@ -302,6 +559,7 @@ export function countApprovals(opts: {
   agent_id?: string
   category?: string
   status?: string
+  content_hash?: string
   tenantId?: string
 }): number {
   const { where, params } = approvalsWhere(opts)

@@ -37,7 +37,10 @@ describe('the fleet_agent role', () => {
 
   it('every permission a table row names is a known permission, and every plumbing permission has a row', () => {
     const known = new Set<string>([...ALL_PERMISSIONS, ...FLEET_AGENT_PERMISSIONS])
-    const used = new Set(ENDPOINT_PERMISSION_TABLE.map(e => e.permission))
+    const used = new Set<string>(ENDPOINT_PERMISSION_TABLE.map(e => e.permission))
+    // approvals:consume lives in the regex table (it must sit ahead of the approvals:write prefix rows).
+    const viaRegex = resolveRequiredPermission('POST', '/api/approvals/claim')
+    if (viaRegex) used.add(viaRegex)
     for (const p of used) expect(known.has(p), p).toBe(true)
     for (const p of FLEET_AGENT_PERMISSIONS) expect(used.has(p), `no endpoint row for ${p}`).toBe(true)
   })

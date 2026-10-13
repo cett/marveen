@@ -70,6 +70,7 @@ export const FLEET_AGENT_PERMISSIONS = [
   'skills:read',
   'skills:write',
   'fleet-config:read',
+  'approvals:consume',
 ] as const
 
 export type Permission = typeof ALL_PERMISSIONS[number] | typeof FLEET_AGENT_PERMISSIONS[number]
@@ -382,6 +383,11 @@ const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
   // 'agent' role reach the route; agents-process.ts itself still enforces
   // own-tenant-vs-cross-tenant (403) for both GET and PUT.
   { method: 'PUT', regex: /^\/api\/agents\/[^/]+\/(context-guard|auto-restart)$/, permission: 'agents:write' },
+  // Using up an approved email_send request (by id, or by the hash of the mail): the agent that asked,
+  // from its own token. Listed ahead of the POST /api/approvals prefix rows, which are approvals:write
+  // and which read_only and viewer hold; approvals:consume is held by admin and fleet_agent only. The
+  // route needs an identified agent token on top (a shared token or a session is a 403).
+  { method: 'POST', regex: /^\/api\/(v1\/)?approvals\/(claim|[^/]+\/consume)$/, permission: 'approvals:consume' },
   // Activating a draft / held schedule is the approval step itself: admin only, even though the
   // POST prefix row for /api/schedules is schedules:write. (The route additionally requires a
   // signed-in admin, not just the admin role, because the shared token also carries it.)

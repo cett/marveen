@@ -19,6 +19,7 @@ vi.mock('../config.js', () => ({
   STORE_DIR,
   MAIN_AGENT_ID: 'marveen',
   APPROVAL_HUMAN_ONLY_ENFORCE: false,
+  APPROVAL_CONSUME_WINDOW_S: 1800,
 }))
 
 vi.mock('../db.js', () => ({
@@ -136,6 +137,7 @@ describe('tryHandleApprovals', () => {
     expect(out.body.items[0].id).toBe('appr-uuid-1')
     expect(out.body.total).toBe(1)
     expect(out.body.counts).toEqual({ pending: 1, approved: 0, rejected: 0, timeout: 0 })
+    expect(out.body.window_s).toBe(1800)
   })
 
   it('GET /api/approvals/:id returns approval', async () => {
