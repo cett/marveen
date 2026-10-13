@@ -622,6 +622,9 @@ BLOCKED = [
     ('DELETE FROM sqlite_master on the live DB', 'sqlite3 {L} "PRAGMA writable_schema=1; DELETE FROM sqlite_master WHERE name=\'api_tokens\'"'),
     ('writable_schema alone on the live DB', 'sqlite3 {L} "pragma main.writable_schema = true"'),
     ('UPDATE sqlite_schema on the live DB', 'sqlite3 {L} "update sqlite_schema set sql=1"'),
+    ('sqlite_dbpage write on the live DB', 'sqlite3 {L} "insert into sqlite_dbpage values(1, zeroblob(4096))"'),
+    ('qualified schema table with spaces around the dot', 'sqlite3 {L} "update main . sqlite_master set sql=1"'),
+    ('python setconfig writable schema', 'python3 -c "import sqlite3; c=sqlite3.connect(\'{L}\'); c.setconfig(1011, True)"'),
     ('python writes sqlite_master', 'python3 -c "import sqlite3; c=sqlite3.connect(\'{L}\'); c.execute(\'PRAGMA writable_schema=ON\')"'),
     ('VACUUM INTO after a dot-command line with an apostrophe', 'sqlite3 {O}/a.db ".print it\'s\nvacuum into lower(\'X\')"'),
 ]

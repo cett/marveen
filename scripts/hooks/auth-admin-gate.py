@@ -95,6 +95,8 @@ AUTH_TABLES = (
     # the schema table: rewriting a row of it (PRAGMA writable_schema) edits or drops an auth table's
     # definition and can leave the whole database unreadable
     'sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'sqlite_temp_schema',
+    # raw page access: a write here edits the database file directly
+    'sqlite_dbpage',
 )
 
 
@@ -918,7 +920,7 @@ _T = '(?:' + '|'.join(sorted(AUTH_TABLES, key=len, reverse=True)) + ')'
 # Block comments are cut out first by _strip_block_comments (one linear pass), so the separator
 # between a verb and the table name is whitespace or a `--` line comment: no lazy `.*?` scan.
 _SQL_SEP = r'(?:\s|--[^\n]*\n)+'
-_TBL = r'(?:["`\[]?\w+["`\]]?\.)?["`\[]?' + _T + r'["`\]]?(?![\w$])'
+_TBL = r'(?:["`\[]?\w+["`\]]?\s*\.\s*)?["`\[]?' + _T + r'["`\]]?(?![\w$])'
 SQL_WRITE = re.compile(
     r'(?<![\w$])(?:insert' + _SQL_SEP + r'(?:or' + _SQL_SEP + r'\w+' + _SQL_SEP + r')?into'
     r'|replace' + _SQL_SEP + r'into'
@@ -931,7 +933,9 @@ SQL_WRITE = re.compile(
     r')' + _SQL_SEP + _TBL,
     re.I | re.S)
 # PRAGMA writable_schema turns the schema table into ordinary rows: refused on the live DB in any form.
-SQL_SCHEMA_TAMPER = re.compile(r'(?<![\w$])writable_schema(?![\w$])', re.I)
+# The schema can also be made writable from code (DBCONFIG_WRITABLE_SCHEMA through setconfig, opcode 1011),
+# any mention of these on the live DB is refused (sqlite_dbpage is a protected table: reads pass, writes do not).
+SQL_SCHEMA_TAMPER = re.compile(r'writable_schema|\bsetconfig\s*\(|\bset_config\s*\(', re.I)
 SQL_DOT_WRITE = re.compile(r'(?m)^\s*\.(?:im(?:p(?:o(?:r(?:t)?)?)?)?|res(?:t(?:o(?:r(?:e)?)?)?)?)\b.*$', re.I)
 SQL_DOT_SHELL = re.compile(r'(?m)^\s*\.(?:sh(?:e(?:l(?:l)?)?)?|sy(?:s(?:t(?:e(?:m)?)?)?)?)\b', re.I)
 SQL_ATTACH = re.compile(r"attach(?:\s+database)?\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))", re.I)
@@ -1012,7 +1016,7 @@ def _sql_write_summary(text):
         if m:
             return re.sub(r'\s+', ' ', m.group())[:60]
         if SQL_SCHEMA_TAMPER.search(t):
-            return 'PRAGMA writable_schema'
+            return 'writable schema (writable_schema / setconfig)'
         r = _trigger_write(t)
         if r:
             return r
