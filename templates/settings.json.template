@@ -115,6 +115,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo 'auth-admin-gate: python3 not found -- DENY' >&2; exit 2; }; python3 \"{{SCRIPTS_DIR}}/scripts/hooks/auth-admin-gate.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [

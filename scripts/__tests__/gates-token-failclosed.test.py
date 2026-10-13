@@ -5,8 +5,8 @@ pins that: the same payloads give the same exit codes with the agent's own token
 shared token, with no token at all, and with the dashboard unreachable. A mutation (a gate that
 exits 0 when it has no token, i.e. fails open) must be CAUGHT by the same check.
 
-Scope: three gates decide (deny/allow) and so must fail closed: destructive-gate, post-tool-injection-gate
-and egress-gate.mjs. The other three token users only notify or write best-effort (browser-content-notice,
+Scope: four gates decide (deny/allow) and so must fail closed: destructive-gate, auth-admin-gate,
+post-tool-injection-gate and egress-gate.mjs. The other three token users only notify or write best-effort (browser-content-notice,
 artifact-store-sync, auto-skillify); their exit code is not a verdict, so they are not in this matrix.
 A NEW gate that can deny must be added here, with its deny and allow payloads, so that the same four
 token states are proven to leave its verdict unchanged.
@@ -28,6 +28,10 @@ _HOOKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 GATES = {
     "destructive-gate.py": (
         {"tool_name": "Bash", "tool_input": {"command": "rm -rf /some/where"}},
+        {"tool_name": "Bash", "tool_input": {"command": "echo hello"}},
+    ),
+    "auth-admin-gate.py": (
+        {"tool_name": "Bash", "tool_input": {"command": "npm run dashboard-user -- create someone"}},
         {"tool_name": "Bash", "tool_input": {"command": "echo hello"}},
     ),
     "post-tool-injection-gate.py": (
@@ -102,7 +106,8 @@ def fail_open_without_token(root):
         src, n = re.subn(r"^def main\(\)(?: -> None)?:\n",
                          lambda m: m.group(0) +
                          "    import agent_token as _at\n"
-                         "    if not _at.resolve(cwd=os.getcwd(), store_dir=os.path.join(_project_root(), 'store')).token:\n"
+                         "    _root = (_project_root if '_project_root' in globals() else _install_root)()\n"
+                         "    if not _at.resolve(cwd=os.getcwd(), store_dir=os.path.join(_root, 'store')).token:\n"
                          "        sys.exit(0)\n",
                          src, count=1, flags=re.M)
         assert n == 1, script

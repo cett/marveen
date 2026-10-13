@@ -17,6 +17,7 @@ import {
   destructiveGateCommand,
   injectDestructiveGate,
   ensureDestructiveGate,
+  ensureAuthAdminGate,
   ensureQuarantineReader,
   agentSettingsPath,
 } from '../web/agent-scaffold.js'
@@ -141,6 +142,42 @@ describe('ensureDestructiveGate', () => {
   it('returns false when the existing settings.json is malformed', () => {
     writeFileSync(probeSettingsPath(), '{ not valid json')
     expect(ensureDestructiveGate(PROBE)).toBe(false)
+  })
+})
+
+describe('ensureAuthAdminGate', () => {
+  it('refuses the main agent and leaves its settings file untouched', () => {
+    expect(ensureAuthAdminGate(MAIN_AGENT_ID)).toBe(false)
+    expect(readFileSync(mainSettings, 'utf-8')).toBe(MARKER)
+  })
+
+  it('wires the gate into a sub-agent once, next to the destructive gate, and is a no-op after', () => {
+    expect(ensureDestructiveGate(PROBE)).toBe(true)
+    expect(ensureAuthAdminGate(PROBE)).toBe(true)
+    expect(ensureAuthAdminGate(PROBE)).toBe(false)
+    const ptu = probePreToolUse() as Array<{ matcher: string; hooks: Array<{ command: string; timeout: number }> }>
+    const gate = ptu.filter((e) => e.hooks[0].command.includes('auth-admin-gate.py'))
+    expect(gate).toHaveLength(1)
+    expect(gate[0].matcher).toBe('Bash')
+    expect(gate[0].hooks[0].timeout).toBe(10)
+    expect(gate[0].hooks[0].command).toContain('command -v python3')
+    expect(ptu.some((e) => e.hooks[0].command.includes('destructive-gate.py'))).toBe(true)
+  })
+
+  it('replaces a stale auth-admin-gate entry that does not match the current command form', () => {
+    writeFileSync(probeSettingsPath(), JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'python3 /old/path/auth-admin-gate.py' }] }] },
+    }))
+    expect(ensureAuthAdminGate(PROBE)).toBe(true)
+    const ptu = probePreToolUse() as Array<{ matcher: string; hooks: Array<{ command: string }> }>
+    const gate = ptu.filter((e) => e.hooks[0].command.includes('auth-admin-gate.py'))
+    expect(gate).toHaveLength(1)
+    expect(gate[0].hooks[0].command).not.toContain('/old/path/')
+  })
+
+  it('returns false when the existing settings.json is malformed', () => {
+    writeFileSync(probeSettingsPath(), '{ not valid json')
+    expect(ensureAuthAdminGate(PROBE)).toBe(false)
   })
 })
 
