@@ -584,6 +584,17 @@ class CurlReading(unittest.TestCase):
                         self.assertFalse(r["ok"], (url, flags, quoted))
                         self.assertIn("expand", r["hint"])
 
+    def test_a_glob_in_an_upload_file_is_not_read(self):
+        # -T "{a,b}" uploads (sends) every file it names
+        good = json.dumps({"raw": base64.urlsafe_b64encode(b"To: a@example.test\nSubject: S\n\nx\n").decode()})
+        files = {"a.json": good, "b.json": good}
+        for opt in ("-T '{a.json,b.json}'", "--upload-file '[ab].json'", "-T'{a.json,b.json}'"):
+            with self.subTest(opt):
+                r = _call(f"curl -s {opt} {self.GM}", **files)
+                self.assertFalse(r["ok"], r)
+                self.assertIn("expand", r["hint"])
+        self.assertTrue(_call(f"curl -s -T a.json {self.GM}", **files)["ok"])
+
     def test_brackets_are_plain_characters_with_globoff_and_a_quoted_url(self):
         raw = base64.urlsafe_b64encode(b"To: a@example.test\nSubject: S\n\nx\n").decode()
         body = json.dumps({"raw": raw})
@@ -656,6 +667,22 @@ class CommandSendsMail(unittest.TestCase):
                     "python3 -m py_compile scripts/support-mail/send.py"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(E.command_sends_mail(cmd))
+
+    def test_a_head_that_can_run_what_an_argument_names_is_not_inert(self):
+        for cmd in ("git -c alias.x='!send.py --to a@example.test' x", "git -c core.pager=sendmail log", "git --exec-path=/x diff send.py",
+                    "rg --pre send.py foo", "sort --compress-program=sendmail f", "vim -c '!send.py' f", "less send.py",
+                    "tee send.py"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+        self.assertFalse(E.command_sends_mail("git diff scripts/gmail-send.py"))
+        self.assertFalse(E.command_sends_mail("rg sendmail src"))
+
+    def test_an_unparsable_command_is_judged_by_its_text_through_quoting_and_escapes(self):
+        for cmd in ("echo $(date) `sendmail -t`", "echo $(date); {sendmail,-t}", "echo $(date); send\\.py x", "echo $(date); 's'end.py",
+                    "echo $(date) <send.py", "echo $(date) !sendmail"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+        self.assertFalse(E.command_sends_mail("echo $(date) gmail-sendx.py my-send.py.bak"))
 
     def test_a_command_that_only_looks_at_files_is_not_a_send(self):
         for cmd in ("cat scripts/support-mail/send.py", "grep -rn sendmail src", "git add scripts/gmail-send.py && git commit -m x",

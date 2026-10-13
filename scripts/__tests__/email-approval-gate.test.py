@@ -465,10 +465,14 @@ class FailClosed(GateCase):
         rc, out, err = self.send()
         self.assertEqual(rc, 2)
         self.assertIn('scripts/lib/email_extract.py', err)
-        # ... but a call that is surely not a mail still goes through without it
-        self.assertEqual(self.run_gate('Bash', {'command': 'ls'})[0], 0)
-        # ... and a mail program named in a Bash call does not
-        self.assertEqual(self.run_gate('Bash', {'command': 'echo $(date); sendmail -t'})[0], 2)
+        # A Bash call cannot be told from a send without the reader, and no second list of mail programs
+        # lives in the gate: it is refused too, naming the file.
+        for cmd in ('ls', 'git status'):
+            rc, out, err = self.run_gate('Bash', {'command': cmd})
+            self.assertEqual(rc, 2, cmd)
+            self.assertIn('scripts/lib/email_extract.py', err)
+        # ... while a tool that is no mail tool does not need it
+        self.assertEqual(self.run_gate('mcp__gmail__gmail_draft', dict(MAIL))[0], 0)
 
     def test_no_own_token_is_a_refusal_and_the_shared_token_does_not_stand_in(self):
         os.remove(os.path.join(self.root, '.agent-token'))

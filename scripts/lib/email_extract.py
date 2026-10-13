@@ -1617,6 +1617,7 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
     url_at: List[int] = []   # index of the word each URL came from
     data: List[Tuple[str, str]] = []  # (option, value)
     upload: Optional[str] = None
+    upload_at = -1
     globoff = False
     content_opts = _CURL_DATA | {'url', 'upload-file'}
 
@@ -1651,6 +1652,7 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
                 data.append((name, val))
             elif name == 'upload-file':
                 upload = val
+                upload_at = vi
             i += 1
             continue
         if a.startswith('-') and len(a) > 1:
@@ -1677,6 +1679,7 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
                         data.append(('data', val))
                     elif c == 'T':
                         upload = val
+                        upload_at = vi
                     break
                 raise Unreadable(f'curl: the option "-{c}" is not one the reader understands')
             i += 1
@@ -1690,7 +1693,10 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
     if len(data) + (1 if upload else 0) != 1:
         raise Unreadable('curl: exactly one request body is expected (several -d options are joined by curl; the reader does not guess)')
     url = urls[0]
-    if re.search(r'[{}\[\]]', url) and not (globoff and words[url_at[0]].quoted):
+    # -T takes a glob as well: -T "{a,b}" uploads (sends) every file it names
+    globbed = [(u, i) for u, i in [(url, url_at[0])] + ([(upload, upload_at)] if upload is not None else [])
+               if re.search(r'[{}\[\]]', u) and not (globoff and words[i].quoted)]
+    if globbed:
         # curl expands {a,b} and [1-3] in a URL into several requests (one command, several identical POSTs:
         # one approval, several mails); an unquoted word is expanded by the shell first, whatever curl does.
         # Only --globoff / -g together with a quoted URL makes the brackets plain characters.
@@ -1758,14 +1764,28 @@ def _from_bash(command: str, cwd: str) -> Dict[str, Any]:
 # ======================================================================================================
 
 _MAIL_NAMES = r'send\.py|gmail-send\.py|graph-mail(?:\.(?:ts|js|mjs))?|sendmail|msmtp|swaks|ssmtp|mailx?|s-nail|mutt|neomutt'
-_MAIL_NAME = re.compile(r'(?:^|[\s/"\'=;&|(])(?:' + _MAIL_NAMES + r')(?![\w.-])')
-# Commands that only look at, copy or list a file: a mail program's NAME among their arguments is not a send.
-_INERT_HEADS = frozenset((
-    'git', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ls', 'wc', 'diff', 'cmp', 'file',
-    'stat', 'echo', 'printf', 'test', '[', 'vim', 'vi', 'view', 'nano', 'code', 'cp', 'mv', 'rm', 'ln', 'chmod', 'chown',
-    'touch', 'mkdir', 'rmdir', 'basename', 'dirname', 'realpath', 'readlink', 'which', 'type', 'sha256sum', 'shasum',
-    'md5', 'md5sum', 'sort', 'uniq', 'cut', 'tr', 'tee', 'pwd', 'true', 'false', 'sleep', 'date',
+_MAIL_NAME = re.compile(r'(?<![\w.-])(?:' + _MAIL_NAMES + r')(?![\w.-])')
+# Commands that only look at, copy or list a file and cannot be made to run another program by an
+# argument: a mail program's NAME among their arguments is not a send. git and rg/ag can (an alias,
+# a config value, --pre) and are inert only without those arguments (_inert_cmd).
+_PURE_HEADS = frozenset((
+    'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'ls', 'wc', 'diff', 'cmp', 'file', 'stat', 'echo', 'printf', 'test', '[',
+    'cp', 'mv', 'rm', 'ln', 'chmod', 'chown', 'touch', 'mkdir', 'rmdir', 'basename', 'dirname', 'realpath', 'readlink',
+    'which', 'type', 'sha256sum', 'shasum', 'md5', 'md5sum', 'uniq', 'cut', 'tr', 'pwd', 'true', 'false', 'sleep', 'date',
 ))
+
+
+def _inert_cmd(ws: List[_Word], k: int) -> bool:
+    head = _basename(ws[k].text)
+    if head in _PURE_HEADS:
+        return True
+    texts = [w.text for w in ws[k + 1:]]
+    if head == 'git':
+        # -c / --config-env / --exec-path / an alias with ! run what the argument names
+        return not any(t in ('-c', '--exec-path') or t.startswith(('-c', '--config-env', '--exec-path=')) or '!' in t for t in texts)
+    if head in ('rg', 'ag'):
+        return not any(t.startswith('--pre') for t in texts)
+    return False
 
 
 def command_sends_mail(command: Any) -> bool:
@@ -1788,13 +1808,14 @@ def command_sends_mail(command: Any) -> bool:
             k = 0
             while k < len(ws) and not ws[k].quoted and (_ASSIGN_RE.match(ws[k].text) or ws[k].text in _RESERVED):
                 k += 1
-            if k >= len(ws) or _basename(ws[k].text) in _INERT_HEADS:
+            if k >= len(ws) or _inert_cmd(ws, k):
                 continue
             if any(_MAIL_NAME.search(w.text) for w in ws[k:]):
                 return True
         return False
     except Exception:  # noqa: BLE001 -- unreadable, or a reader bug: never a pass
-        return _MAIL_NAME.search(command) is not None
+        # Judge the text itself, with the quoting and escaping that could hide a name taken out.
+        return _MAIL_NAME.search(re.sub(r'[\\\'"]', '', command)) is not None
 
 
 def collect_email_envelope(tool: str, tool_input: Any, cwd: Optional[str] = None) -> Dict[str, Any]:

@@ -83,7 +83,6 @@ NON_SEND_ACTIONS = frozenset((
     'update_draft', 'list_labels', 'get_thread', 'get_message',
 ))
 
-_MAIL_NAME_HINT = re.compile(r'send\.py|gmail-send\.py|graph-mail|sendmail|msmtp|swaks|ssmtp')
 _CONTROL = re.compile(r'[\x00-\x1f\x7f  ]+')
 
 
@@ -211,16 +210,18 @@ def tool_is_send(tool: str, tool_input: Dict[str, Any]) -> bool:
     return False
 
 
-def call_is_send(tool: str, tool_input: Dict[str, Any], copy_gate: Any, extract: Any) -> bool:
+def call_is_send(tool: str, tool_input: Dict[str, Any], copy_gate: Any, extract: Any, extract_err: Optional[str] = None) -> bool:
     if tool == 'Bash':
         cmd = tool_input.get('command')
         if not isinstance(cmd, str):
             raise Deny('bad_input', 'a Bash hivas parancsa nem szoveg, igy nem ertelmezheto.')
         if copy_gate.is_send_invocation(cmd):
             return True
-        if extract is not None:
-            return bool(extract.command_sends_mail(cmd))
-        return _MAIL_NAME_HINT.search(cmd) is not None
+        if extract is None:
+            # No second list of mail program names lives here (it would go stale): without the reader a
+            # Bash call cannot be told from a send, so it is refused, naming the file.
+            raise Deny('load_error', _deny_text('a kapu egyik resze nem toltheto be: %s (Bash hivas nem osztalyozhato nelkule).' % extract_err))
+        return bool(extract.command_sends_mail(cmd))
     return tool_is_send(tool, tool_input)
 
 
@@ -336,7 +337,7 @@ def decide(raw: str, log: Dict[str, Any]) -> str:
     extract, extract_err = _try_load('email_extract_in_email_gate', REL_EXTRACT)
 
     # 1. not a send: nothing more to do, the dashboard is not called
-    if not call_is_send(tool, tool_input, copy_gate, extract):
+    if not call_is_send(tool, tool_input, copy_gate, extract, extract_err):
         return _emit(messages)
     log['send'] = True
     if extract is None:
