@@ -85,7 +85,16 @@ _MAX_SAFE_INT = 2 ** 53 - 1
 
 
 class Unreadable(Exception):
-    """The call cannot be turned into an exact envelope; the message says why and how to fix it."""
+    """The call cannot be turned into an exact envelope; the message says why and how to fix it.
+
+    dynamic_exec: what the call runs is decided at run time (a command name or a shell -c code that is a
+    variable), so it cannot be ruled out that it is a mail program."""
+
+    dynamic_exec = False
+
+
+class UnreadableDynamicExec(Unreadable):
+    dynamic_exec = True
 
 
 # ======================================================================================================
@@ -1224,7 +1233,7 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
             continue
         head = ws[k]
         if head.dynamic:
-            raise Unreadable('the name of a command is not literal')
+            raise UnreadableDynamicExec('the name of a command is not literal')
         name = _basename(head.text)
         if name in ('cd', 'pushd', 'popd'):
             cd_seen = True
@@ -1240,6 +1249,8 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
                     continue
                 if a.text.startswith('-'):
                     if a.text not in _SAFE_INTERP_FLAGS:
+                        if a.text in ('-c', '-e', '-p', '--eval', '--command', '--print') and any(w.dynamic for w in ws[j + 1:]):
+                            raise UnreadableDynamicExec('an interpreter runs code that is a variable')
                         raise Unreadable(f'the interpreter option "{a.text[:20]}" is not one the reader understands')
                     j += 1
                     continue
@@ -1260,7 +1271,7 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
                 a = ws[j]
                 if a.text == '-c' and j + 1 < len(ws):
                     if ws[j + 1].dynamic:
-                        raise Unreadable('the code of a shell -c is not literal')
+                        raise UnreadableDynamicExec('the code of a shell -c is not literal')
                     code = ws[j + 1].text
                     break
                 if a.text.startswith('-') and not a.dynamic:
@@ -1775,17 +1786,38 @@ _PURE_HEADS = frozenset((
 ))
 
 
+_GIT_READ_ONLY = frozenset((
+    'log', 'diff', 'show', 'status', 'grep', 'add', 'blame', 'ls-files', 'rev-parse', 'commit', 'mv', 'rm', 'restore',
+    'checkout', 'reset', 'branch', 'tag', 'shortlog', 'diff-tree', 'cat-file',
+))
+# Commands that run another program named in their arguments; with a word the shell decides at run time among
+# those arguments, what runs cannot be ruled out to be a mail program.
+_EXEC_WRAPPERS = frozenset(('eval', 'source', '.', 'xargs', 'timeout', 'nice', 'sudo', 'doas', 'find', 'watch', 'stdbuf', 'ssh', 'nohup', 'exec'))
+
+
+def _runs_dynamic_code(ws: List[_Word], k: int) -> bool:
+    """A wrapper whose arguments hold a word the shell decides at run time. (An interpreter with -c / -e and a
+    variable never gets here: the shell reading above refuses it as dynamic code.)"""
+    return _basename(ws[k].text) in _EXEC_WRAPPERS and any(w.dynamic for w in ws[k + 1:])
+
+
 def _inert_cmd(ws: List[_Word], k: int) -> bool:
     head = _basename(ws[k].text)
     if head in _PURE_HEADS:
         return True
     texts = [w.text for w in ws[k + 1:]]
     if head == 'git':
-        # -c / --config-env / --exec-path / an alias with ! run what the argument names; so does a config
-        # value (core.pager=..., diff.external=...) however it is set
-        if 'config' in texts or any('=' in t and _MAIL_NAME.search(t.split('=', 1)[1]) for t in texts):
+        # Only the subcommands that look at or record files; rebase --exec, difftool, bisect run, submodule
+        # foreach, filter-branch, config ... run what an argument names. -c / --config-env / --exec-path, an alias
+        # with !, a value after = and grep -O<pager> do too.
+        sub = next((t for t in texts if not t.startswith('-')), '')
+        if sub not in _GIT_READ_ONLY:
+            return not any(_MAIL_NAME.search(t) for t in texts)
+        if any(t in ('-c', '--exec-path') or t.startswith(('-c', '--config-env', '--exec-path=')) or '!' in t for t in texts):
             return False
-        return not any(t in ('-c', '--exec-path') or t.startswith(('-c', '--config-env', '--exec-path=')) or '!' in t for t in texts)
+        if any('=' in t and _MAIL_NAME.search(t.split('=', 1)[1]) for t in texts):
+            return False
+        return not (sub == 'grep' and any(t.startswith('-O') or t == '--open-files-in-pager' or t.startswith('--open-files-in-pager=') for t in texts))
     if head in ('rg', 'ag'):
         return not any(t.startswith('--pre') for t in texts)
     return False
@@ -1814,6 +1846,8 @@ def command_sends_mail(command: Any) -> bool:
             # a name in an assignment before the command (GIT_PAGER=send.py git log) runs under the command
             if any(_MAIL_NAME.search(w.text.split('=', 1)[-1]) for w in ws[:k]):
                 return True
+            if k < len(ws) and _runs_dynamic_code(ws, k):
+                return True
             if k >= len(ws) or _inert_cmd(ws, k):
                 continue
             if any(_MAIL_NAME.search(w.text) for w in ws[k:]):
@@ -1823,7 +1857,7 @@ def command_sends_mail(command: Any) -> bool:
         # A command whose name, or whose shell -c code, is not literal runs something nobody can name: refused
         # as a possible send. (A script name or an option that is not literal is not: python3 "$X/job.py" is
         # everyday, and the name search below still catches a mail program named in the text.)
-        if isinstance(exc, Unreadable) and ('name of a command is not literal' in str(exc) or 'code of a shell -c is not literal' in str(exc)):
+        if isinstance(exc, Unreadable) and exc.dynamic_exec:
             return True
         # Judge the text itself, with the quoting and escaping that could hide a name taken out. A name built at
         # run time out of pieces ($(echo send).py) is the documented limit of a reader that never runs anything.

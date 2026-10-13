@@ -685,6 +685,25 @@ class CommandSendsMail(unittest.TestCase):
         self.assertFalse(E.command_sends_mail("FOO=1 ls scripts"))
         self.assertFalse(E.command_sends_mail("git log -S sendmail"))
 
+    def test_only_read_only_git_subcommands_are_inert_when_they_name_a_program(self):
+        for cmd in ("git rebase --exec send.py main", "git difftool -x sendmail", "git bisect run send.py",
+                    "git submodule foreach send.py", "git filter-branch --tree-filter msmtp", "git grep -O send.py x"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+        for cmd in ("git diff scripts/gmail-send.py", "git add scripts/gmail-send.py && git commit -m x", "git log -S sendmail",
+                    "git grep sendmail", "git status", "git rebase main"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_sends_mail(cmd))
+
+    def test_a_wrapper_or_interpreter_with_a_variable_to_run_is_a_possible_send(self):
+        for cmd in ("timeout 5 $X", "xargs $X", "eval $X", "sudo $X", "find . -exec $X ;", 'python3 -c "$X"', "node -e $X",
+                    "ssh host $X", "nice -n5 $X"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+        for cmd in ("timeout 5 ls", "python3 -c 'print(1)'", "find . -name '*.py'", "xargs ls", 'python3 "$X/job.py" --a b'):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_sends_mail(cmd))
+
     def test_a_command_nobody_can_name_is_a_possible_send_but_an_everyday_variable_is_not(self):
         self.assertTrue(E.command_sends_mail("$CMD --to a@example.test"))
         self.assertTrue(E.command_sends_mail('bash -c "$X"'))
