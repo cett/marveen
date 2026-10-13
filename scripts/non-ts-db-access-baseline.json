@@ -39,7 +39,9 @@
       }
     },
     "scripts/hooks/auth-admin-gate.py": {
-      "dialect": {},
+      "dialect": {
+        "PRAGMA": 1
+      },
       "direct": {
         "claudeclaw.db": 12,
         "sqlite3 CLI": 5

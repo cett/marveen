@@ -618,12 +618,19 @@ BLOCKED = [
     ('VACUUM INTO a parenthesised literal', 'sqlite3 {O}/a.db "vacuum into (\'{O}/x.db\')"'),
     ('VACUUM INTO a function call', 'sqlite3 {O}/a.db "vacuum into lower(\'{O}/X.db\')"'),
     ('VACUUM INTO a parameter', 'sqlite3 {O}/a.db "vacuum into :p"'),
+    ('writable_schema + UPDATE sqlite_master on the live DB', 'sqlite3 {L} "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=\'x\' WHERE name=\'dashboard_users\'"'),
+    ('DELETE FROM sqlite_master on the live DB', 'sqlite3 {L} "PRAGMA writable_schema=1; DELETE FROM sqlite_master WHERE name=\'api_tokens\'"'),
+    ('writable_schema alone on the live DB', 'sqlite3 {L} "pragma main.writable_schema = true"'),
+    ('UPDATE sqlite_schema on the live DB', 'sqlite3 {L} "update sqlite_schema set sql=1"'),
+    ('python writes sqlite_master', 'python3 -c "import sqlite3; c=sqlite3.connect(\'{L}\'); c.execute(\'PRAGMA writable_schema=ON\')"'),
     ('VACUUM INTO after a dot-command line with an apostrophe', 'sqlite3 {O}/a.db ".print it\'s\nvacuum into lower(\'X\')"'),
 ]
 
 ALLOWED = [
     # ---- the read-only CLI form ----
     ('npm run list', 'npm run dashboard-user -- list'),
+    ('writable_schema on a copy elsewhere', 'sqlite3 {O}/a.db "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=1"'),
+    ('reading sqlite_master on the live DB', 'sqlite3 {L} "select name from sqlite_master"'),
     ('npm run list no --', 'npm run dashboard-user list'),
     ('tsx list', 'tsx scripts/dashboard-user.ts list'),
     ('npx tsx list', 'npx tsx scripts/dashboard-user.ts list'),

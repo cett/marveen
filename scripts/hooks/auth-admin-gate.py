@@ -92,6 +92,9 @@ AUTH_TABLES = (
     'dashboard_users', 'auth_sessions', 'api_tokens', 'device_keys',
     'api_tokens_old', 'api_tokens_seq', 'device_keys_old', 'device_keys_seq',
     'approvals', 'approvals_old', 'approval_events',
+    # the schema table: rewriting a row of it (PRAGMA writable_schema) edits or drops an auth table's
+    # definition and can leave the whole database unreadable
+    'sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'sqlite_temp_schema',
 )
 
 
@@ -927,6 +930,8 @@ SQL_WRITE = re.compile(
     r'|rename' + _SQL_SEP + r'to'
     r')' + _SQL_SEP + _TBL,
     re.I | re.S)
+# PRAGMA writable_schema turns the schema table into ordinary rows: refused on the live DB in any form.
+SQL_SCHEMA_TAMPER = re.compile(r'(?<![\w$])writable_schema(?![\w$])', re.I)
 SQL_DOT_WRITE = re.compile(r'(?m)^\s*\.(?:im(?:p(?:o(?:r(?:t)?)?)?)?|res(?:t(?:o(?:r(?:e)?)?)?)?)\b.*$', re.I)
 SQL_DOT_SHELL = re.compile(r'(?m)^\s*\.(?:sh(?:e(?:l(?:l)?)?)?|sy(?:s(?:t(?:e(?:m)?)?)?)?)\b', re.I)
 SQL_ATTACH = re.compile(r"attach(?:\s+database)?\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))", re.I)
@@ -1006,6 +1011,8 @@ def _sql_write_summary(text):
         m = SQL_WRITE.search(t)
         if m:
             return re.sub(r'\s+', ' ', m.group())[:60]
+        if SQL_SCHEMA_TAMPER.search(t):
+            return 'PRAGMA writable_schema'
         r = _trigger_write(t)
         if r:
             return r
