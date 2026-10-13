@@ -18,6 +18,7 @@ import {
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 import { resolveApprovalTimeoutSeconds } from '../approval-timeout.js'
+import { tryHandleApprovalUse } from './approvals-consume.js'
 
 // Every approval gets a deadline: the category's timeout_minutes, or the 24 h ceiling for an unknown
 // category / NULL value / unreadable DB. The caller's timeout_seconds can only shorten it.
@@ -157,6 +158,9 @@ export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
 
 export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
+
+  // Using up an approved request, and its journal (approvals-consume.ts).
+  if (await tryHandleApprovalUse(ctx)) return true
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
