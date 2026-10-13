@@ -621,6 +621,22 @@ class CommandSendsMail(unittest.TestCase):
         self.assertTrue(E.command_sends_mail('echo "$(date)" ; send.py --to a@example.test'))
         self.assertTrue(E.command_sends_mail('bash -c "send.py --to a@example.test"'))
 
+    def test_a_mail_program_behind_a_wrapper_the_reader_does_not_follow_is_a_send(self):
+        base = "send.py --to a@example.test --subject Hi --body Hello"
+        for cmd in ("timeout 30 " + base, "nice -n5 " + base, "sudo " + base, "echo a | xargs " + base, "stdbuf -o0 " + base,
+                    "eval '" + base + "'", "find . -exec " + base + " \\;", "watch " + base, 'bash -lc "' + base + '"',
+                    "ssh host '" + base + "'", "mail -s Hi a@example.test", "mutt -s Hi a@example.test",
+                    "python3 -m py_compile scripts/support-mail/send.py"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_sends_mail(cmd))
+
+    def test_a_command_that_only_looks_at_files_is_not_a_send(self):
+        for cmd in ("cat scripts/support-mail/send.py", "grep -rn sendmail src", "git add scripts/gmail-send.py && git commit -m x",
+                    "cat mail.txt", "echo mail", "ls scripts/ | head", "npx vitest run --silent",
+                    "python3 -m pytest scripts/__tests__/email-extract.test.py"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_sends_mail(cmd))
+
     def test_other_commands_are_not(self):
         self.assertFalse(E.command_sends_mail('echo "$(date)"'))
         self.assertFalse(E.command_sends_mail("git diff scripts/gmail-send.py"))

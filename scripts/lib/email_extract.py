@@ -1746,22 +1746,44 @@ def _from_bash(command: str, cwd: str) -> Dict[str, Any]:
 # Entry points
 # ======================================================================================================
 
-_MAIL_PROGRAM_HINT = re.compile(r'send\.py|gmail-send\.py|graph-mail|sendmail|msmtp|swaks|ssmtp')
+_MAIL_NAMES = r'send\.py|gmail-send\.py|graph-mail(?:\.(?:ts|js|mjs))?|sendmail|msmtp|swaks|ssmtp|mailx?|s-nail|mutt|neomutt'
+_MAIL_NAME = re.compile(r'(?:^|[\s/"\'=;&|(])(?:' + _MAIL_NAMES + r')(?![\w.-])')
+# Commands that only look at, copy or list a file: a mail program's NAME among their arguments is not a send.
+_INERT_HEADS = frozenset((
+    'git', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ls', 'wc', 'diff', 'cmp', 'file',
+    'stat', 'echo', 'printf', 'test', '[', 'vim', 'vi', 'view', 'nano', 'code', 'cp', 'mv', 'rm', 'ln', 'chmod', 'chown',
+    'touch', 'mkdir', 'rmdir', 'basename', 'dirname', 'realpath', 'readlink', 'which', 'type', 'sha256sum', 'shasum',
+    'md5', 'md5sum', 'sort', 'uniq', 'cut', 'tr', 'tee', 'pwd', 'true', 'false', 'sleep', 'date',
+))
 
 
 def command_sends_mail(command: Any) -> bool:
-    """True when a Bash command runs one of the mail programs this reader knows (not curl: whether a
-    curl call is a mail is the send classifier's question, it needs the URL). A command the shell
-    reading cannot parse is judged by whether it names a mail program at all, so a substitution
-    around a send is a refusal to read, not a pass."""
+    """True when a Bash command may run a mail program (curl is not decided here: whether a curl call
+    is a mail needs its URL, which the send classifier reads).
+
+    Two nets. The reader finds a mail program the way the shell would run it (also behind env, nohup,
+    an interpreter, sh -c). A mail program it does not find that way, but that the command NAMES in a
+    word of a command that is not just looking at files (timeout, nice, sudo, xargs, stdbuf, eval,
+    find -exec, watch, ssh, bash -lc ...), is judged a send as well: the call is then refused as
+    unreadable, which is the safe side. A command the shell reading cannot parse is judged by whether
+    it names a mail program anywhere."""
     if not isinstance(command, str):
         return False
     try:
-        return any(not s.kind == 'curl' for s in _find_sends(command, 0))
-    except Unreadable:
-        return _MAIL_PROGRAM_HINT.search(command) is not None
-    except Exception:  # noqa: BLE001 -- a reader bug must not turn into a pass
-        return _MAIL_PROGRAM_HINT.search(command) is not None
+        if any(not s.kind == 'curl' for s in _find_sends(command, 0)):
+            return True
+        for cmd in _Lexer(command).run():
+            ws = cmd.words
+            k = 0
+            while k < len(ws) and not ws[k].quoted and (_ASSIGN_RE.match(ws[k].text) or ws[k].text in _RESERVED):
+                k += 1
+            if k >= len(ws) or _basename(ws[k].text) in _INERT_HEADS:
+                continue
+            if any(_MAIL_NAME.search(w.text) for w in ws[k:]):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 -- unreadable, or a reader bug: never a pass
+        return _MAIL_NAME.search(command) is not None
 
 
 def collect_email_envelope(tool: str, tool_input: Any, cwd: Optional[str] = None) -> Dict[str, Any]:
