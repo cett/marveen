@@ -1,8 +1,8 @@
 // Client-side mirror of src/web/rbac.ts's role -> permission map, for hiding
 // or disabling write affordances a session's role cannot use. This is a UX
 // layer only -- actual enforcement is server-side (src/web/rbac.ts +
-// src/web/authz.ts); RBAC_MODE controls whether the server blocks (currently
-// 'shadow' = log-only, see src/config.ts). Keep ROLE_PERMISSIONS in sync with
+// src/web/authz.ts); RBAC_MODE controls whether the server blocks (default
+// 'enforce'; 'shadow' = log-only, chosen by name, see src/config.ts). Keep ROLE_PERMISSIONS in sync with
 // rbac.ts by hand -- a mismatch here only affects which controls are shown,
 // never what the server actually allows.
 //

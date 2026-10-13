@@ -355,14 +355,13 @@ export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 
 // RBAC enforcement mode. Controls whether the top-level RBAC gate in web.ts
 // blocks denied requests (enforce) or only logs a would-deny (shadow).
-// Default: shadow -- safe for rollout; no existing request is blocked while
-// the permission table is being validated in production traffic.
-// Switch to 'enforce' via env override once Fázis 1 observation confirms
-// no unexpected would-deny entries in the logs.
+// Default: enforce. Shadow is a loss-of-protection mode and has to be asked for by name:
+// RBAC_MODE=shadow (process environment or .env). Any other value, an empty one or a
+// misspelling included, is enforce -- a typo must never switch the gate off.
 export const RBAC_MODE: 'shadow' | 'enforce' =
-  (process.env['RBAC_MODE'] ?? env['RBAC_MODE'] ?? 'shadow').trim().toLowerCase() === 'enforce'
-    ? 'enforce'
-    : 'shadow'
+  (process.env['RBAC_MODE'] ?? env['RBAC_MODE'] ?? 'enforce').trim().toLowerCase() === 'shadow'
+    ? 'shadow'
+    : 'enforce'
 
 // Human-only approval categories. Off by default: the rules (a category an agent may never decide for
 // itself, the dashboard-session-only decision on such a request, the category name checks on
