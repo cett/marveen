@@ -115,7 +115,7 @@ Tenant-szabály erre a végpontra: nem-admin hívó csak a saját tenantjának �
 
 A Marveen többfelhasználós működésre is alkalmas: az egyes tenantok adatai (memóriák, kanban, ágensek) egymástól elkülönítve tárolódnak.
 
-> **Megjegyzés:** a tenant-enforcement **él** (`RBAC_MODE=enforce`): a kapu elutasítja, amit a szerepkör nem engedélyez, a shadow mód csak visszaállítási állapot. A megfigyelés, a visszaállítás és a kapuhoz nyúlás szabályai: "RBAC-mód, shadow-napló és visszaállítás" lent.
+> **Megjegyzés:** a tenant-enforcement **él** (`RBAC_MODE=enforce`): a kapu elutasítja, amit a szerepkör nem engedélyez, az `enforce` beállítás nélkül is az alapértelmezés, a shadow mód csak név szerint választott visszaállítási állapot. A megfigyelés, a visszaállítás és a kapuhoz nyúlás szabályai: "RBAC-mód, shadow-napló és visszaállítás" lent.
 
 ### Szerepkörök
 
@@ -157,7 +157,7 @@ Egy külső partner (B2B tenant) alapvetően az `agent` szerepkörrel kap tokent
 
 ### RBAC-mód, shadow-napló és visszaállítás
 
-**A mód.** Az `RBAC_MODE` (`src/config.ts`) induláskor olvasódik be a folyamat környezetéből vagy az `.env`-ből; `enforce` az éles érték, minden más (és az üres) `shadow`. Módváltás után a dashboard újraindítása kell. Rollback: `RBAC_MODE=shadow` és újraindítás. A kapu (`applyRbacGate`, `src/web/authz.ts`) a jogosultsági táblát (`ENDPOINT_PERMISSION_TABLE`, `src/web/rbac.ts`) kérdezi le; a táblában nem szereplő útvonal `admin:all`. Enforce módban elutasít, shadow módban átenged és `would-deny` sort ír.
+**A mód.** Az `RBAC_MODE` (`src/config.ts`) induláskor olvasódik be a folyamat környezetéből vagy az `.env`-ből; az alapértelmezett az `enforce`, a `shadow`-t névvel kell kérni: `RBAC_MODE=shadow`; minden más (elírás, üres érték) `enforce`. Módváltás után a dashboard újraindítása kell. Rollback: `RBAC_MODE=shadow` és újraindítás. A kapu (`applyRbacGate`, `src/web/authz.ts`) a jogosultsági táblát (`ENDPOINT_PERMISSION_TABLE`, `src/web/rbac.ts`) kérdezi le; a táblában nem szereplő útvonal `admin:all`. Enforce módban elutasít, shadow módban átenged és `would-deny` sort ír.
 
 **A napló.** A 0068-as migráció `rbac_shadow_log` táblája tartósan rögzíti a kapu döntéseit mindkét módban (idő, tenant, hívó fajtája és címkéje, szerepkör, metódus, útvonal, a megkövetelt jog, döntés, indok). A döntés `would-deny` (shadow átengedte, enforce elutasítaná), `denied` (enforce elutasította) vagy `permitted` (nem admin kérés átment; az admin forgalmat nem rögzíti). Az író legfeljebb óránként törli a 30 napnál régebbi sorokat, a tenant törlése a tenant sorait; a sikertelen beszúrás naplózódik, és soha nem változtatja meg a kapu döntését, nem bukik el miatta a kérés. Olvasás: `GET /api/v1/rbac/shadow-log` (admin-only, az útvonal is ellenőrzi a szerepkört, és az `/api/rbac/` sor is explicit `admin:all`), szűrők: `decision`, `tenant`, `principal`, `role`, `permission`, `route` (részlet), `from`/`to`/`since_hours`, `limit`, `offset`; `summary=1` döntésenkénti számokat és a leggyakoribb elutasítási alakokat ad.
 

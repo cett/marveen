@@ -100,7 +100,7 @@ A tenant is an isolated data island. All data (memories, kanban, messages, impor
 
 ### Tenant isolation and the RBAC mode
 
-The RBAC gate **runs in enforce mode** (`RBAC_MODE=enforce`): what the caller's role does not allow is refused (403), and queries are filtered by the caller's tenant scope. The earlier shadow mode only logged and let every request through; it is now just a fallback state (see below).
+The RBAC gate **runs in enforce mode** (`RBAC_MODE=enforce`, which is also the default when the setting is absent): what the caller's role does not allow is refused (403), and queries are filtered by the caller's tenant scope. The earlier shadow mode only logged and let every request through; it is now just a fallback state that you have to choose by name (see below).
 
 **What a non-admin caller sees:**
 - The agent list and the org chart are narrowed to the agents enabled for the caller's own tenant. There is no main-agent node, no other tenant's id or name, and no link that points at a hidden agent.
@@ -121,7 +121,7 @@ Rows older than 30 days are pruned, and a tenant delete purges the tenant's rows
 
 The `rbac-shadow-monitor` scheduled command task (daily at 07:30, no LLM) summarises the last 24 hours and alerts when there is any `would-deny` or `denied` row, or when the summary cannot be read. In enforce mode a `denied` row can also be the gate working as intended (for example a `viewer` trying to write), so the alert is a call to review: was it a legitimate refusal or a false positive. An empty window means no non-admin traffic arrived, not that everything is fine.
 
-**Rollback.** If enforce causes a wrong refusal, set `RBAC_MODE=shadow` in the server environment (`.env`) and restart the dashboard (the mode is read at startup). The route rules that do not depend on the mode (schedules, starter pack, the agent export's admin check) stay in force in shadow mode as well.
+**Rollback.** The default is enforce, and shadow mode is only used when you ask for it by name; any other value, a typo or an empty one included, is enforce. If enforce causes a wrong refusal, set `RBAC_MODE=shadow` in the server environment (`.env`) and restart the dashboard (the mode is read at startup). The route rules that do not depend on the mode (schedules, starter pack, the agent export's admin check) stay in force in shadow mode as well.
 
 **Accepted risks:**
 - The fleet bearer token (`store/.dashboard-token`) has the admin role, so an agent that falls back to it is not tenant-limited. The tenant boundary applies to tenant users' own tokens and logins.
