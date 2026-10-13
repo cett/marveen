@@ -226,6 +226,18 @@ Some approval requests must never be decided by an agent or by a token, only by 
 
 The main agent's `approval-request-handling` skill and the generated autonomy block in every agent's CLAUDE.md carry the same rules for the agents.
 
+### Email approvals: one mail, one approval
+
+An `email_send` approval request can only be opened by the main agent; a sub-agent gets 403. The request carries the exact mail as a JSON envelope (`action_payload`); the server hashes it (sha256 of a canonical form), writes the description the owner reads and ignores the one the agent wrote. A person's approval then covers that mail only, can be used up once, and only within a window after the decision. The agent uses it up with `POST /api/approvals/claim` (by the hash of the mail) or `POST /api/approvals/<id>/consume`, with its own token; `scripts/approval-consume.py` is the command-line form (exit 0 only when the server said 200, 3 for a refusal, 4 for an unknown id, 2 for anything else).
+
+- `APPROVAL_CONSUME_WINDOW_S` in the dashboard's `.env`: how long after the decision the approval can still be used up, in seconds. Default `1800` (30 minutes). A value below 60 is pulled to 60, above 86400 to 86400; empty or not a whole number is the default. Read once at start (restart to change it). The claim and consume answers carry the value as `window_s`.
+- The approval is usable only when a person decided it in a dashboard session, whatever `APPROVAL_HUMAN_ONLY_ENFORCE` says: a token's decision is `not_human_decided` and cannot be used up. `GET /api/autonomy` shows `approvalHumanOnlyEnforce`, so a caller can tell whether the human-only rule binds on this server.
+- `email_send` stays at autonomy level 2 (approval required). With the planned send gate, level 1 will be a hard refusal rather than a notice.
+
+**What exists and what does not.** The API above (request, hash binding, claim and consume, the journal at `GET /api/approvals/<id>/events`) is in place. The send gate, the hook that would stop the main agent's mail-sending tools until an approval exists, and an official sender that uses the approval up at the moment of sending, are planned and not installed. Until they are, nothing stops a send path that does not ask for an approval (a direct Gmail REST call, a script file, a mailer started over ssh), so this is not yet a real gate. The limits are listed in `SECURITY.md`.
+
+**Emergency brake.** The API on its own blocks no mail, so there is nothing to release today. Once the send gate is wired in (planned), it fails closed: if the dashboard, the token or the API is unreachable, the main agent cannot send mail, by design. To release it, remove its entry from the install's `.claude/settings.json` PreToolUse block and restart the main agent's session (running sessions do not re-read that file), or revert the commit that wired it in; this section will then carry the exact steps.
+
 ## Model profile map
 
 The `model_profile_map` DB table lets agents use named profiles (`premium_reasoning`, `build_strong`, `analysis_efficient`, `routine_lowcost`) instead of concrete model names. The startup migration (0054) seeds all four profiles with the models the fleet already runs — Phase 1 intent is abstraction, not re-tiering.
