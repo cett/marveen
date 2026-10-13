@@ -624,6 +624,8 @@ BLOCKED = [
     ('UPDATE sqlite_schema on the live DB', 'sqlite3 {L} "update sqlite_schema set sql=1"'),
     ('sqlite_dbpage write on the live DB', 'sqlite3 {L} "insert into sqlite_dbpage values(1, zeroblob(4096))"'),
     ('qualified schema table with spaces around the dot', 'sqlite3 {L} "update main . sqlite_master set sql=1"'),
+    ('schema alias with a doubled double quote', 'sqlite3 {L} "update \"a\"\"b\".dashboard_users set role=1"'),
+    ('schema alias with a doubled single quote', 'sqlite3 {L} "delete from \'a\'\'b\'.api_tokens"'),
     ('single-quoted table name', 'sqlite3 {L} "UPDATE \'dashboard_users\' SET role=1"'),
     ('single-quoted schema and table', 'sqlite3 {L} "delete from \'main\'.\'api_tokens\'"'),
     ('comment around the qualifier dot', 'sqlite3 {L} "update main /* x */ . sqlite_master set sql=1"'),
@@ -1146,6 +1148,8 @@ class TestBounds(unittest.TestCase):
     def test_quadratic_shapes_are_linear(self):
         shapes = [
             '<<' * 30000,
+            'sqlite3 store/claudeclaw.db "update ' + '-' * 100000 + '"',
+            'sqlite3 store/claudeclaw.db "update ' + 'a-' * 50000 + '"',
             '<<A\n' * 25 + 'x' * 100000,
             "'" * 100000,
             '"$(' * 20000,
