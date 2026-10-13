@@ -16,9 +16,9 @@ let seq = 0
 /** An email_send request by `agent` for `hash`, decided `status` by a person's session at `resolvedAt`. */
 function decided(opts: {
   agent?: string; hash?: string | null; tenant?: string; category?: string
-  status?: 'approved' | 'rejected' | 'timeout'; via?: 'dashboard_session' | 'bearer' | null; resolvedAt?: number
+  status?: 'approved' | 'rejected' | 'timeout'; via?: 'dashboard_session' | 'bearer' | null; resolvedAt?: number; id?: string
 }): string {
-  const id = `ap-${++seq}`
+  const id = opts.id ?? `ap-${++seq}`
   createApproval({
     id, agent_id: opts.agent ?? 'main', category: opts.category ?? 'email_send', action_description: 'x',
     tenant_id: opts.tenant ?? 'default', human_only: true, content_hash: opts.hash === undefined ? HASH : opts.hash,
@@ -264,6 +264,57 @@ describe('claimApproval', () => {
     decided({ resolvedAt: NOW - WINDOW })
     expect(claimApproval(claim).ok).toBe(true)
   })
+})
+
+// Two rows that share a second carry no order of their own. The lookups break the tie by id, so the pick
+// does not depend on which row was inserted first: the same pair, inserted either way round, gives one answer.
+describe('claimApproval ties inside one second', () => {
+  const claimArgs = { ...base, category: 'email_send' }
+  const orders: Array<[string, string]> = [['ap-a', 'ap-b'], ['ap-b', 'ap-a']]
+
+  it.each(orders)('picks the same usable row whatever the insertion order (%s then %s)', (x, y) => {
+    decided({ id: x, resolvedAt: NOW - 10 })
+    decided({ id: y, resolvedAt: NOW - 10 })
+    expect(claimApproval({ ...claimArgs, ref: 'r1' })).toMatchObject({ ok: true, approval: { id: 'ap-b' } })
+    expect(claimApproval({ ...claimArgs, ref: 'r2' })).toMatchObject({ ok: true, approval: { id: 'ap-a' } })
+  })
+
+  it.each(orders)('names the same open request whatever the insertion order (%s then %s)', (x, y) => {
+    for (const id of [x, y]) {
+      createApproval({ id, agent_id: 'main', category: 'email_send', action_description: 'x', content_hash: HASH, human_only: true, timeout_at: NOW + 600 })
+      getDb().prepare('UPDATE approvals SET requested_at = ? WHERE id = ?').run(NOW - 5, id)
+    }
+    expect(claimApproval(claimArgs)).toMatchObject({ ok: false, reason: 'pending', approval: { id: 'ap-b' } })
+  })
+
+  it.each(orders)('reads the same latest decision whatever the insertion order (%s then %s)', (x, y) => {
+    const via = (id: string) => (id === 'ap-a' ? { status: 'rejected' as const } : { via: 'bearer' as const })
+    decided({ id: x, resolvedAt: NOW - 10, ...via(x) })
+    decided({ id: y, resolvedAt: NOW - 10, ...via(y) })
+    expect(claimApproval(claimArgs)).toMatchObject({ ok: false, reason: 'not_human_decided', approval: { id: 'ap-b' } })
+  })
+
+  it.each(orders)('answers a retry with the same row whatever the insertion order (%s then %s)', (x, y) => {
+    decided({ id: x, resolvedAt: NOW - 10 })
+    decided({ id: y, resolvedAt: NOW - 10 })
+    expect(consumeApproval({ ...base, id: x, ref: 'send-1' }).ok).toBe(true)
+    expect(consumeApproval({ ...base, id: y, ref: 'send-1' }).ok).toBe(true)
+    expect(claimApproval({ ...claimArgs, ref: 'send-1', now: NOW + 1 })).toMatchObject({ ok: true, replayed: true, approval: { id: 'ap-b' } })
+  })
+})
+
+describe('createApprovalOnce ties', () => {
+  it.each([['ap-a', 'ap-b'], ['ap-b', 'ap-a']] as Array<[string, string]>)(
+    'returns the same open row whatever the insertion order (%s then %s)', (x, y) => {
+      for (const id of [x, y]) {
+        createApproval({ id, agent_id: 'main', category: 'email_send', action_description: 'x', content_hash: HASH, human_only: true, timeout_at: NOW + 600 })
+        getDb().prepare('UPDATE approvals SET requested_at = ? WHERE id = ?').run(NOW - 5, id)
+      }
+      // createApprovalOnce reads the clock itself, so the deadline is set far ahead of any real "now".
+      getDb().prepare('UPDATE approvals SET timeout_at = ?').run(4_000_000_000)
+      const r = createApprovalOnce({ agent_id: 'main', category: 'email_send', action_description: 'x', content_hash: HASH, human_only: true, max_pending: 10, id: 'ap-new' })
+      expect(r).toMatchObject({ ok: true, deduplicated: true, approval: { id: 'ap-b' } })
+    })
 })
 
 describe('createApprovalOnce', () => {

@@ -14,7 +14,7 @@
     "json_extract/json_each": 0,
     "lastInsertRowid": 0,
     "randomblob()/hex()": 0,
-    "rowid": 29,
+    "rowid": 24,
     "strftime()": 8,
     "unixepoch()": 44,
     "vec0/sqlite-vec": 8

@@ -401,6 +401,11 @@ export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutco
  * consumeApproval, and when none is usable says why, best reason first: a pending request, then what
  * became of the latest decision. A retry with the ref that already used a row answers as a replay
  * before anything else, so a lost answer cannot burn a second approval.
+ *
+ * Every lookup here orders by its time column and then by id. Two rows sharing a second is a tie that
+ * carries no meaning (any usable row is as good as another, one open request as good as another, and
+ * the latest-decision lookup only names the reason once nothing is usable), so the id only has to make
+ * the pick deterministic; it does not need to be the insertion order.
  */
 export function claimApproval(p: ConsumeParams & { category: string }): ClaimOutcome {
   const now = p.now ?? nowSeconds()
@@ -414,7 +419,7 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
         SELECT * FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
-        ORDER BY consumed_at DESC, rowid DESC LIMIT 1
+        ORDER BY consumed_at DESC, id DESC LIMIT 1
       `).get(...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S) as Approval | undefined
       if (again) return { ok: true, replayed: true, approval: again }
     }
@@ -422,7 +427,7 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
       SELECT id FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'approved' AND consumed_at IS NULL AND resolved_at >= ? AND resolved_via = 'dashboard_session'
-      ORDER BY resolved_at DESC, rowid DESC LIMIT 1
+      ORDER BY resolved_at DESC, id DESC LIMIT 1
     `).get(...scope, now - p.window_s) as { id: string } | undefined
     if (usable && useUpApproval(usable.id, p, now, ref)) {
       const approval = getApproval(usable.id) as Approval
@@ -434,14 +439,14 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
-      ORDER BY requested_at DESC, rowid DESC LIMIT 1
+      ORDER BY requested_at DESC, id DESC LIMIT 1
     `).get(...scope, now) as Approval | undefined
     if (open) return { ok: false, reason: 'pending', approval: open }
     const last = db.prepare(`
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status != 'pending' AND resolved_at IS NOT NULL
-      ORDER BY resolved_at DESC, rowid DESC LIMIT 1
+      ORDER BY resolved_at DESC, id DESC LIMIT 1
     `).get(...scope) as Approval | undefined
     if (!last) return { ok: false, reason: 'none' }
     if (last.status === 'rejected') return { ok: false, reason: 'rejected', approval: last }
@@ -490,7 +495,7 @@ export function createApprovalOnce(params: Parameters<typeof createApproval>[0] 
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
-      ORDER BY requested_at DESC, rowid DESC LIMIT 1
+      ORDER BY requested_at DESC, id DESC LIMIT 1
     `).get(params.agent_id, tenant, params.category, params.content_hash, now) as Approval | undefined
     if (same) return { ok: true, approval: same, deduplicated: true }
     const open = db.prepare(`
