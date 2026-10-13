@@ -311,6 +311,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- **[API]** The kanban dispatch message no longer carries the card's text. It used to put the title and the description of the card into the message that wakes the assignee when a card moves to in_progress; the message goes out in the main agent's name, so the receiver read what a card's author wrote with the trust of a peer. It now names the card (id, assignee, priority), says that its text is the card author's and to be treated as data, and gives the command that reads it: `GET /api/kanban/<id>` through the agent's own token. That route is new in the code (the OpenAPI spec already listed it): it returns the card with its labels, a non-admin caller reads only a card of its own tenant, and a foreign id answers 404 like a missing one. A card id that is not a plain token (letters, digits, dot, underscore, hyphen, at most 80) sends nothing. Port of the idea of upstream PR 1789; the read goes through the API, not through the database, so the tenant line holds.
 - Rotating the shared dashboard token revokes the earlier `dashboard` rows of `api_tokens`: on every boot the other active `dashboard` rows are revoked in the same transaction as the enrollment, so a rotated-away token no longer stays a second valid admin credential (it is refused as registered-but-invalid, it does not fall back to the file token). The row being enrolled is never un-revoked.
 - `?token=<shared>` links still work for a browser that already has one; nothing prints one any more.
 
