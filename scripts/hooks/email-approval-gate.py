@@ -71,15 +71,16 @@ REL_COPY_GATE = 'scripts/hooks/outgoing-copy-gate.py'
 REL_EXTRACT = 'scripts/lib/email_extract.py'
 REL_TOKEN = 'scripts/hooks/agent_token.py'
 
-# The tool names the gate is registered for (settings.json matcher). A drift test keeps the registered
-# matcher and this constant equal, and checks that every tool the classifier calls a send matches it.
-EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
+# The tool names the gate is registered for (settings.json matcher). '*' = every tool call: a narrower
+# list could miss a mail tool the classifier below calls a send, so the gate itself decides (a non-mail
+# call exits 0 quickly). A drift test keeps the registered matcher and this constant equal.
+EMAIL_GATE_MATCHER = '*'
 
 CATEGORY = 'email_send'
 CONSUMER = 'email-approval-gate'
 CLAIM_KEY_PATH = os.path.join(STORE, '.claim-signing-key')
 _KEY_HEX = re.compile(r'[0-9a-f]{64}')
-TOTAL_BUDGET_S = 7.0   # the registration wraps the script in `timeout -k 1 8`; three calls fit in this
+TOTAL_BUDGET_S = 7.0   # the registration wraps the script in an 8 s perl alarm; three calls fit in this
 CALL_TIMEOUT_S = 2.0
 MAX_RESPONSE_BYTES = 1024 * 1024
 DEFAULT_PORT = '3420'
