@@ -567,6 +567,33 @@ class CurlReading(unittest.TestCase):
         self.assertTrue(_call(f"curl -s {self.GM} -d @r.json", **{"r.json": pretty})["ok"])
         self.assertTrue(_call(f"curl -s {self.GM} --data-binary @r.json", **{"r.json": pretty})["ok"])
 
+    def test_a_glob_in_the_url_is_not_read(self):
+        # curl turns {a,b} and [1-3] into several requests with the same body: one command, several mails.
+        raw = base64.urlsafe_b64encode(b"To: a@example.test\nSubject: S\n\nx\n").decode()
+        body = json.dumps({"raw": raw})
+        for url in (self.GM + "?x={1,2}", self.GM + "?x=[1-3]", "https://gmail.googleapis.com/gmail/v1/users/{me,you}/messages/send",
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send?a=}"):
+            for flags in ("", "-g ", "--globoff "):
+                with self.subTest(url=url, flags=flags):
+                    # unquoted: the shell expands braces whatever curl does; quoted without --globoff: curl does
+                    for quoted in (False, True):
+                        u = "'%s'" % url if quoted else url
+                        r = _call(f"curl -s {flags}{u} -d '{body}'")
+                        if quoted and flags:
+                            continue   # the one readable shape, below
+                        self.assertFalse(r["ok"], (url, flags, quoted))
+                        self.assertIn("expand", r["hint"])
+
+    def test_brackets_are_plain_characters_with_globoff_and_a_quoted_url(self):
+        raw = base64.urlsafe_b64encode(b"To: a@example.test\nSubject: S\n\nx\n").decode()
+        body = json.dumps({"raw": raw})
+        for flags in ("-g", "--globoff", "-sg"):
+            with self.subTest(flags):
+                r = _call(f"curl {flags} '{self.GM}?x={{1,2}}' -d '{body}'")
+                self.assertTrue(r["ok"], r)
+        r = _call(f"curl -s {self.GM} -d '{body}'")   # no brackets: unchanged
+        self.assertTrue(r["ok"], r)
+
     def test_the_url_and_the_body_must_be_literal(self):
         self.assertIn("expand", _reason(f"curl -s {self.GM} -d \"$BODY\""))
         self.assertIn("expand", _reason("curl -s \"$URL\" -d '{}'"))

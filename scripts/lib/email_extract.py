@@ -1614,8 +1614,10 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
     # token, an output file); it is refused where it decides the request or its content.
     dyn = [w.dynamic for w in words]
     urls: List[str] = []
+    url_at: List[int] = []   # index of the word each URL came from
     data: List[Tuple[str, str]] = []  # (option, value)
     upload: Optional[str] = None
+    globoff = False
     content_opts = _CURL_DATA | {'url', 'upload-file'}
 
     def need_literal(idx: int, what: str) -> None:
@@ -1628,6 +1630,7 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
         if a.startswith('--'):
             name, eq, val = a[2:].partition('=')
             if name in _CURL_LONG_NOVAL:
+                globoff = globoff or name == 'globoff'
                 i += 1
                 continue
             if name not in _CURL_LONG_VAL:
@@ -1643,6 +1646,7 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
                 need_literal(vi, '--' + name)
             if name == 'url':
                 urls.append(val)
+                url_at.append(vi)
             elif name in _CURL_DATA:
                 data.append((name, val))
             elif name == 'upload-file':
@@ -1654,6 +1658,7 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
             while j < len(a):
                 c = a[j]
                 if c in _CURL_FLAGS_NOVAL:
+                    globoff = globoff or c == 'g'
                     j += 1
                     continue
                 if c in _CURL_FLAGS_VAL:
@@ -1678,12 +1683,18 @@ def _from_curl(send: _Send, cwd: str) -> Dict[str, Any]:
             continue
         need_literal(i, 'the URL')
         urls.append(a)
+        url_at.append(i)
         i += 1
     if len(urls) != 1:
         raise Unreadable('curl: exactly one URL is expected')
     if len(data) + (1 if upload else 0) != 1:
         raise Unreadable('curl: exactly one request body is expected (several -d options are joined by curl; the reader does not guess)')
     url = urls[0]
+    if re.search(r'[{}\[\]]', url) and not (globoff and words[url_at[0]].quoted):
+        # curl expands {a,b} and [1-3] in a URL into several requests (one command, several identical POSTs:
+        # one approval, several mails); an unquoted word is expanded by the shell first, whatever curl does.
+        # Only --globoff / -g together with a quoted URL makes the brackets plain characters.
+        raise Unreadable('curl: the URL has {}, [] or a glob that curl or the shell would expand into several requests; remove them, or quote the URL and add --globoff')
     m = re.fullmatch(r'(?:https://)?([A-Za-z0-9.-]+)(/[^?#]*)?(?:\?([^#]*))?', url)
     if not m:
         raise Unreadable('curl: the URL is not a plain https URL')
