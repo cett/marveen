@@ -17,7 +17,10 @@ What it does, in this order (the first failure ends the run, and nothing before 
      (a shared-token fallback is refused). The dashboard address is built exactly like the gate builds it:
      WEB_PORT / WEB_HOST from <install>/.env only (never the environment), WEB_HOST must be an IP address,
      never the name localhost, no proxy, no redirect, short timeouts, capped answers.
-  4. Only on a 200 whose approval names THIS hash, category, agent, status and use, it re-reads each
+  4. Only on a 200 whose approval names THIS hash, category, agent, status and use AND that is signed by the
+     dashboard (`sig` = HMAC-SHA256 of v1|hash|category|agent_id|ref|consumed_at under the key in
+     <install>/store/.claim-signing-key, read from this script's own install path; a missing or wrong sig, a
+     missing or unreadable key, a missing consumed_at: REFUSED claim_unsigned, nothing is sent), it re-reads each
      attachment, checks sha256 and size against the envelope (a file that changed after the hash is NOT
      sent: the approval is already spent) and sends exactly the approved fields and the verified bytes
      with users.messages.send. Prints `SENT id=<id>`.
@@ -44,6 +47,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import importlib.util
 import ipaddress
 import json
@@ -71,6 +75,8 @@ REL_TOKEN = 'scripts/hooks/agent_token.py'
 
 CATEGORY = 'email_send'
 CONSUMER = 'gmail-send'
+CLAIM_KEY_PATH = os.path.join(STORE, '.claim-signing-key')
+_KEY_HEX = re.compile(r'[0-9a-f]{64}')
 TOTAL_BUDGET_S = 7.0        # the dashboard calls (claim, and the request when there is none) fit in this
 CALL_TIMEOUT_S = 2.0
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -336,6 +342,36 @@ def read_mail(args: List[str], cwd: str, X: Any) -> Tuple[Dict[str, Any], List[s
     return fields, paths
 
 
+def _bad_signature(why: str) -> Stop:
+    return Stop(EXIT_REFUSED, 'REFUSED claim_unsigned: the approval answer is not signed by the dashboard (%s); fail-closed. Nothing was sent.' % why)
+
+
+def _check_claim_signature(got: Dict[str, Any], approval: Dict[str, Any], expect: Dict[str, Any], ref: str) -> None:
+    """Stop unless `got['sig']` is the dashboard's HMAC of this claim. The signed text is built from the values
+    this run EXPECTS (already compared with the answer) plus consumed_at, which only the answer can supply."""
+    try:
+        with open(CLAIM_KEY_PATH, encoding='ascii') as fh:
+            key_text = fh.read(256).strip()
+    except (OSError, UnicodeDecodeError):
+        raise _bad_signature('the signing key store/.claim-signing-key cannot be read')
+    if not _KEY_HEX.fullmatch(key_text):
+        raise _bad_signature('the signing key is not 64 hex characters')
+    consumed_at = approval.get('consumed_at')
+    if not isinstance(consumed_at, int) or isinstance(consumed_at, bool) or consumed_at <= 0:
+        raise _bad_signature('consumed_at is missing')
+    sig = got.get('sig')
+    if not isinstance(sig, str) or not sig:
+        raise _bad_signature('sig is missing')
+    text = 'v1|%s|%s|%s|%s|%d' % (expect['content_hash'], expect['category'], expect['agent_id'], ref, consumed_at)
+    want = hmac.new(bytes.fromhex(key_text), text.encode('utf-8'), 'sha256').hexdigest()
+    try:
+        same = hmac.compare_digest(sig.encode('ascii'), want.encode('ascii'))
+    except UnicodeEncodeError:
+        same = False
+    if not same:
+        raise _bad_signature('wrong sig')
+
+
 def _claim(content_hash: str, h12: str, resolved: Any, canon: str, base: str) -> str:
     """Spend the owner's approval for this mail. Returns the approval id; raises Stop for every other end."""
     headers = resolved.headers({'Content-Type': 'application/json'})
@@ -357,6 +393,7 @@ def _claim(content_hash: str, h12: str, resolved: Any, canon: str, base: str) ->
         wrong = [k for k, v in expect.items() if approval.get(k) != v]
         if wrong:
             raise Stop(EXIT_REFUSED, 'REFUSED claim_mismatch: the approval service answered for another mail, agent or use (%s); fail-closed.%s' % (', '.join(wrong), tail))
+        _check_claim_signature(got, approval, expect, claim_body['ref'])
         return _clean(approval.get('id'), 60)
     if status != 409 or not isinstance(got, dict) or not isinstance(got.get('reason'), str):
         raise Stop(EXIT_REFUSED, 'REFUSED claim_unavailable: the approval service answered HTTP %d; fail-closed, run it again later.%s' % (status, tail))

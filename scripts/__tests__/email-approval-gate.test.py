@@ -13,6 +13,8 @@ exit 2 AND for its reason; every allow for the claim the stub saw. Fixture data 
 
 Run: python3 <thisfile>   (EMAIL_GATE_PATH names a gate file that is not installed yet)
 """
+import hashlib
+import hmac
 import importlib.machinery
 import importlib.util
 import json
@@ -36,6 +38,15 @@ import email_extract as E  # noqa: E402
 
 TOKEN = 'tok-main-0123456789abcdef'
 MAIN = 'jarvis'
+CLAIM_KEY = 'a1' * 32          # the dashboard's claim signing key, as the file holds it (64 hex characters)
+OTHER_KEY = 'b2' * 32          # a key some other listener made up
+CONSUMED_AT = 1760000000
+
+
+def sign_claim(key_hex, content_hash, category, agent_id, ref, consumed_at):
+    """What the dashboard signs: HMAC-SHA256 of v1|hash|category|agent|ref|consumed_at, the key being the bytes of the hex."""
+    text = 'v1|%s|%s|%s|%s|%s' % (content_hash, category, agent_id, ref if ref is not None else '', consumed_at)
+    return hmac.new(bytes.fromhex(key_hex), text.encode('utf-8'), hashlib.sha256).hexdigest()
 
 # One neutral mail. The copy gate lets plain English through.
 MAIL = {'to': ['ann@example.test'], 'subject': 'Weekly notes', 'body': 'Here are the notes from this week.'}
@@ -49,14 +60,23 @@ def _autonomy(level=2, cap=2, enforce=True):
     ], 'approvalHumanOnlyEnforce': enforce}
 
 
-def _claim_ok(aid='appr-1', **override):
+def _claim_ok(aid='appr-1', sig_key=CLAIM_KEY, sig_fields=None, sig='auto', body_extra=None, **override):
     """What the real route answers: the approval row, naming the hash, the category, the agent and the use
-    (the reference) of the request it answers. A function of the request, so a wrong field is a deliberate one."""
+    (the reference) of the request it answers, and the signature the dashboard puts on it. A function of the
+    request, so a wrong field is a deliberate one. sig_key=None answers with no `sig` (a mirror that has no key),
+    sig_fields overrides what is signed (not what is shown), sig='...' sends that value as it is."""
     def answer(request):
         row = {'id': aid, 'agent_id': MAIN, 'category': request['category'], 'content_hash': request['content_hash'],
-               'status': 'approved', 'consumed_by': MAIN, 'consumed_ref': request['ref'], 'action_payload': '{}'}
+               'status': 'approved', 'consumed_by': MAIN, 'consumed_ref': request['ref'], 'consumed_at': CONSUMED_AT, 'action_payload': '{}'}
         row.update(override)
-        return 200, {'ok': True, 'replayed': False, 'window_s': 1800, 'approval': {k: v for k, v in row.items() if v is not None}}
+        body = {'ok': True, 'replayed': False, 'window_s': 1800, 'approval': {k: v for k, v in row.items() if v is not None}}
+        signed = dict(row, **(sig_fields or {}))
+        if sig != 'auto':
+            body['sig'] = sig
+        elif sig_key is not None:
+            body['sig'] = sign_claim(sig_key, signed['content_hash'], signed['category'], signed['agent_id'], signed['consumed_ref'], signed['consumed_at'])
+        body.update(body_extra or {})
+        return 200, body
     return answer
 
 
@@ -141,6 +161,7 @@ class GateCase(unittest.TestCase):
             shutil.copy(os.path.join(SCRIPTS, 'lib', name), os.path.join(self.root, 'scripts/lib/'))
         self.write('.env', 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\n' % (self.dash.port, MAIN))
         self.write('.agent-token', TOKEN)
+        self.write('store/.claim-signing-key', CLAIM_KEY)
         self.write('store/rules.json', json.dumps({'bad_name_patterns': ['ZZQQNAME'], 'correction': 'fix the name'}))
         self.log_path = os.path.join(self.root, 'store/email-approval-gate.log')
 
@@ -487,6 +508,106 @@ class DecisionTable(GateCase):
         self.assertNotIn('\u2028', err)
         for secret in (TOKEN, '.agent-token', 'dashboard-token', '/api/approvals/claim'):
             self.assertNotIn(secret, err, 'the text does not help a bypass')
+
+
+class ClaimSignature(GateCase):
+    """The claim answer must be signed with the key the dashboard keeps in store/.claim-signing-key."""
+
+    def _refused(self, claim=None, code='claim_unsigned'):
+        if claim is not None:
+            self.dash.claim = claim
+        self.dash.requests.clear()
+        self.expect_deny(self.send(), code)
+        # a refused answer is the end: no request is opened for the owner, nothing is retried
+        self.assertEqual(self.dash.paths().count(('POST', '/api/approvals/claim')), 1)
+        self.assertNotIn(('POST', '/api/approvals'), self.dash.paths())
+
+    def test_a_signed_answer_is_allowed(self):
+        rc, out, err = self.send()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.log_lines()[-1]['code'], 'consumed')
+
+    def test_a_mirror_without_the_key_is_refused(self):
+        # it reads the request and echoes hash, category, agent and reference back: every echo check passes
+        self._refused(_claim_ok(sig_key=None))
+        self._refused(_claim_ok(sig_key=OTHER_KEY))
+        for forged in ('', 'f' * 64, '0' * 64, 'x', None, 12, ['a'], {'a': 1}, True):
+            with self.subTest(sig=forged):
+                self._refused(_claim_ok(sig=forged))
+
+    def test_a_signature_over_another_value_is_refused(self):
+        # the signature is good for a claim, but not for THIS one: each signed field matters
+        for field, other in [('content_hash', 'f' * 64), ('category', 'other'), ('agent_id', 'someone-else'),
+                             ('consumed_ref', 'gate-0'), ('consumed_ref', None), ('consumed_at', CONSUMED_AT + 1)]:
+            with self.subTest(field=field):
+                self._refused(_claim_ok(sig_fields={field: other}))
+
+    def test_the_signature_must_be_exactly_the_lowercase_hex_digest(self):
+        self._refused(_claim_ok(sig_key=None, sig='AB' * 32))
+
+        def padded(request):
+            status, body = _claim_ok()(request)
+            body['sig'] += '\n'
+            return status, body
+        self._refused(padded)
+
+        def upper(request):
+            status, body = _claim_ok()(request)
+            body['sig'] = body['sig'].upper()
+            return status, body
+        self._refused(upper)
+
+    def test_a_missing_or_wrong_type_consumed_at_is_refused(self):
+        for bad in (None, '1760000000', 1760000000.0, True, 0, -5, [1], {}):
+            with self.subTest(consumed_at=bad):
+                # signed with the value the answer shows, so only the consumed_at check can refuse it
+                self._refused(_claim_ok(consumed_at=bad, sig_fields={'consumed_at': bad}))
+
+    def test_no_usable_key_file_is_a_refusal(self):
+        for label, content in [('missing', None), ('empty', ''), ('short', 'ab' * 16), ('not hex', 'zz' * 32), ('upper case', 'AB' * 32),
+                               ('trailing junk', CLAIM_KEY + 'ab'), ('binary', '\x00\x01')]:
+            with self.subTest(key=label):
+                path = os.path.join(self.root, 'store/.claim-signing-key')
+                if os.path.isdir(path):
+                    os.rmdir(path)
+                elif os.path.exists(path):
+                    os.remove(path)
+                if content is not None:
+                    self.write('store/.claim-signing-key', content)
+                self._refused(_claim_ok())
+        path = os.path.join(self.root, 'store/.claim-signing-key')
+        if os.path.exists(path):
+            os.remove(path)
+        os.mkdir(path)      # a directory where the key should be
+        self._refused(_claim_ok())
+
+    def test_a_stub_that_signs_with_a_key_the_gate_does_not_have_is_refused(self):
+        # the key file holds a different key than the answer was signed with
+        self.write('store/.claim-signing-key', OTHER_KEY)
+        self._refused(_claim_ok())
+
+    def test_the_key_comes_from_the_gates_own_install_not_from_the_environment(self):
+        other = tempfile.mkdtemp(prefix='email-gate-key-')
+        try:
+            with open(os.path.join(other, 'key'), 'w') as fh:
+                fh.write(OTHER_KEY)
+            self.write('store/.claim-signing-key', CLAIM_KEY)
+            self.dash.claim = _claim_ok(sig_key=OTHER_KEY)
+            for name in ('CLAIM_SIGNING_KEY', 'CLAIM_SIGNING_KEY_FILE', 'MARVEEN_STORE_DIR', 'STORE_DIR'):
+                self.dash.requests.clear()
+                rc, out, err = self.run_gate(SEND_TOOL, dict(MAIL), extra_env={name: OTHER_KEY if 'FILE' not in name and 'DIR' not in name else other})
+                self.assertEqual(rc, 2, name)
+                self.assertEqual(self.log_lines()[-1]['code'], 'claim_unsigned', name)
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_the_refusal_never_prints_the_key_or_the_signature(self):
+        self.dash.claim = _claim_ok(sig_key=OTHER_KEY)
+        rc, out, err = self.send()
+        self.assertEqual(rc, 2)
+        for secret in (CLAIM_KEY, OTHER_KEY, sign_claim(OTHER_KEY, 'x', 'y', 'z', 'r', CONSUMED_AT)):
+            self.assertNotIn(secret, err)
+        self.assertNotIn(CLAIM_KEY, json.dumps(self.log_lines()))
 
 
 class CopyGateFirst(GateCase):

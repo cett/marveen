@@ -26,6 +26,11 @@ that says yes): it is WEB_PORT from <install>/.env, else 3420, on the IP address
 .env when that is an IP address, else 127.0.0.1; never the name localhost, which can resolve to ::1 where a
 listener of the agent's could answer; a WEB_HOST that is a name makes every call fail closed), no proxy, no redirect. The claim answer must name this mail's hash, this
 category, this agent and this use (the reference the gate made up): a listener that is not the dashboard cannot.
+The answer must also be SIGNED: `sig` is HMAC-SHA256 of v1|hash|category|agent_id|ref|consumed_at under the key in
+<install>/store/.claim-signing-key (the dashboard writes it; read here from the gate's own install path, never
+from the environment). A mirror of the request that echoes every field still has no key: a missing or wrong `sig`,
+a missing, unreadable or short key, or a missing consumed_at refuses the call (code claim_unsigned). The key file is
+protected only as far as the hooks that guard the store's secrets protect it (see SECURITY.md).
 
 Honest limit: this fires on the calls it recognises (Bash mail commands, the mail tools). A mail sent
 by a script the agent writes itself is not seen; the official sender (K8) and its sender-side claim
@@ -41,6 +46,7 @@ Standard library only.
 """
 from __future__ import annotations
 
+import hmac
 import importlib.util
 import io
 import ipaddress
@@ -71,6 +77,8 @@ EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*dr
 
 CATEGORY = 'email_send'
 CONSUMER = 'email-approval-gate'
+CLAIM_KEY_PATH = os.path.join(STORE, '.claim-signing-key')
+_KEY_HEX = re.compile(r'[0-9a-f]{64}')
 TOTAL_BUDGET_S = 7.0   # the registration wraps the script in `timeout -k 1 8`; three calls fit in this
 CALL_TIMEOUT_S = 2.0
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -246,6 +254,41 @@ def call_is_send(tool: str, tool_input: Dict[str, Any], copy_gate: Any, extract:
             raise Deny('load_error', _deny_text('a kapu egyik resze nem toltheto be: %s (Bash hivas nem osztalyozhato nelkule).' % extract_err))
         return bool(extract.command_sends_mail(cmd))
     return tool_is_send(tool, tool_input)
+
+
+class BadSignature(Exception):
+    """The claim answer is not signed by the dashboard; the text says why (never the key)."""
+
+
+def check_claim_signature(got: Dict[str, Any], approval: Dict[str, Any], expect: Dict[str, Any], ref: str) -> None:
+    """Raise BadSignature unless `got['sig']` is the dashboard's signature of this claim.
+
+    The signed text is built from the values the gate EXPECTS (hash, category, agent, its own ref), which the
+    echo check has just compared with the answer, plus consumed_at, which only the answer can supply."""
+    def refuse(why: str) -> BadSignature:
+        return BadSignature(why)
+
+    try:
+        with open(CLAIM_KEY_PATH, encoding='ascii') as fh:
+            key_text = fh.read(256).strip()
+    except (OSError, UnicodeDecodeError):
+        raise refuse('az alairo kulcs (store/.claim-signing-key) nem olvashato')
+    if not _KEY_HEX.fullmatch(key_text):
+        raise refuse('az alairo kulcs nem 64 hex karakter')
+    consumed_at = approval.get('consumed_at')
+    if not isinstance(consumed_at, int) or isinstance(consumed_at, bool) or consumed_at <= 0:
+        raise refuse('hianyzik a consumed_at')
+    sig = got.get('sig')
+    if not isinstance(sig, str) or not sig:
+        raise refuse('hianyzik a sig')
+    text = 'v1|%s|%s|%s|%s|%d' % (expect['content_hash'], expect['category'], expect['agent_id'], ref, consumed_at)
+    want = hmac.new(bytes.fromhex(key_text), text.encode('utf-8'), 'sha256').hexdigest()
+    try:
+        same = hmac.compare_digest(sig.encode('ascii'), want.encode('ascii'))
+    except UnicodeEncodeError:
+        same = False
+    if not same:
+        raise refuse('rossz sig')
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -432,6 +475,11 @@ def decide(raw: str, log: Dict[str, Any]) -> str:
             if wrong:
                 log['reason'] = 'mismatch ' + ','.join(wrong)
                 raise Deny('claim_mismatch', _deny_text('a jovahagyas-szolgaltatas valasza nem erre a levelre / erre az ugynokre / erre a felhasznalasra szol (%s); fail-closed.' % ', '.join(wrong), env, h12))
+            try:
+                check_claim_signature(got, approval, expect, claim_body['ref'])
+            except BadSignature as bad:
+                log['reason'] = 'unsigned'
+                raise Deny('claim_unsigned', _deny_text('a jovahagyas-szolgaltatas valasza alairatlan vagy az alairas nem ervenyes (%s); fail-closed.' % bad, env, h12))
             log['approval'] = _clean(approval.get('id'), 40)
             messages.append('Email-jovahagyas elfogyasztva (id %s, hash %s): ez a level egyszer kuldheto el.' % (_clean(approval.get('id'), 40), h12))
             return _emit(messages)

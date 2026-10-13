@@ -16,6 +16,8 @@ Run: python3 <thisfile>   (GMAIL_SEND_PATH names a sender file other than script
 """
 import email
 import email.policy
+import hashlib
+import hmac
 import json
 import os
 import shlex
@@ -39,14 +41,31 @@ ACCESS = 'ya29.access-token-fixture'
 MAIN = 'jarvis'
 BODY = 'Here are the notes from this week.'
 MAIL_ARGS = ['--to', 'ann@example.test', '--subject', 'Weekly notes', '--body', BODY]
+CLAIM_KEY = 'a1' * 32          # the dashboard's claim signing key, as the file holds it (64 hex characters)
+OTHER_KEY = 'b2' * 32          # a key some other listener made up
+CONSUMED_AT = 1760000000
 
 
-def _claim_ok(aid='appr-1', **override):
+def sign_claim(key_hex, content_hash, category, agent_id, ref, consumed_at):
+    """What the dashboard signs: HMAC-SHA256 of v1|hash|category|agent|ref|consumed_at, the key being the bytes of the hex."""
+    text = 'v1|%s|%s|%s|%s|%s' % (content_hash, category, agent_id, ref if ref is not None else '', consumed_at)
+    return hmac.new(bytes.fromhex(key_hex), text.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def _claim_ok(aid='appr-1', sig_key=CLAIM_KEY, sig_fields=None, sig='auto', **override):
+    """The dashboard's 200: the approval row and its signature. sig_key=None answers with no `sig` (a mirror that
+    has no key), sig_fields overrides what is signed (not what is shown), sig='...' sends that value as it is."""
     def answer(request):
         row = {'id': aid, 'agent_id': MAIN, 'category': request['category'], 'content_hash': request['content_hash'],
-               'status': 'approved', 'consumed_by': MAIN, 'consumed_ref': request['ref'], 'action_payload': '{}'}
+               'status': 'approved', 'consumed_by': MAIN, 'consumed_ref': request['ref'], 'consumed_at': CONSUMED_AT, 'action_payload': '{}'}
         row.update(override)
-        return 200, {'ok': True, 'replayed': False, 'window_s': 1800, 'approval': {k: v for k, v in row.items() if v is not None}}
+        body = {'ok': True, 'replayed': False, 'window_s': 1800, 'approval': {k: v for k, v in row.items() if v is not None}}
+        signed = dict(row, **(sig_fields or {}))
+        if sig != 'auto':
+            body['sig'] = sig
+        elif sig_key is not None:
+            body['sig'] = sign_claim(sig_key, signed['content_hash'], signed['category'], signed['agent_id'], signed['consumed_ref'], signed['consumed_at'])
+        return 200, body
     return answer
 
 
@@ -178,6 +197,7 @@ class SenderCase(unittest.TestCase):
         shutil.copy(os.path.join(SCRIPTS, 'hooks/agent_token.py'), os.path.join(self.root, 'scripts/hooks/'))
         self.write('.env', 'WEB_PORT=%d\nMAIN_AGENT_ID=%s\n' % (self.dash.port, MAIN))
         self.write('.agent-token', TOKEN)
+        self.write('store/.claim-signing-key', CLAIM_KEY)
         self.write('cred/token.json', json.dumps({'refresh_token': 'refresh-fixture'}))
         self.write('cred/credentials.json', json.dumps({'installed': {
             'client_id': 'cid', 'client_secret': 'csecret', 'token_uri': 'http://127.0.0.1:%d/token' % self.google.port}}))
@@ -434,6 +454,100 @@ class Refusals(SenderCase):
                 res = self.run_sender(MAIL_ARGS)
                 self.assert_nothing_sent(res, 3)
                 self.assertIn('claim_bad_answer', res.err)
+
+
+class ClaimSignature(SenderCase):
+    """The claim answer must be signed with the key the dashboard keeps in store/.claim-signing-key."""
+
+    def _refused(self, claim=None):
+        if claim is not None:
+            self.dash.claim = claim
+        self.google.requests.clear()
+        self.google.raw_messages.clear()
+        self.dash.requests.clear()
+        res = self.run_sender(MAIL_ARGS)
+        self.assert_nothing_sent(res, 3)
+        self.assertIn('REFUSED claim_unsigned', res.err)
+        self.assertEqual(len(self.claims()), 1)
+        self.assertNotIn(('POST', '/api/approvals'), self.dash.paths())
+
+    def test_a_signed_answer_sends(self):
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual(res.rc, 0, res.text)
+        self.assertIn('SENT id=msg-1', res.out)
+
+    def test_a_mirror_without_the_key_is_refused(self):
+        # it echoes hash, category, agent and reference: every echo check passes, it still cannot sign
+        self._refused(_claim_ok(sig_key=None))
+        self._refused(_claim_ok(sig_key=OTHER_KEY))
+        for forged in ('', 'f' * 64, '0' * 64, 'x', None, 12, ['a'], {'a': 1}, True):
+            with self.subTest(sig=forged):
+                self._refused(_claim_ok(sig=forged))
+
+    def test_a_signature_over_another_value_is_refused(self):
+        for field, other in [('content_hash', 'f' * 64), ('category', 'other'), ('agent_id', 'someone-else'),
+                             ('consumed_ref', 'send-0'), ('consumed_ref', None), ('consumed_at', CONSUMED_AT + 1)]:
+            with self.subTest(field=field):
+                self._refused(_claim_ok(sig_fields={field: other}))
+
+    def test_the_signature_must_be_exactly_the_lowercase_hex_digest(self):
+        def padded(request):
+            status, body = _claim_ok()(request)
+            body['sig'] += '\n'
+            return status, body
+        self._refused(padded)
+
+        def upper(request):
+            status, body = _claim_ok()(request)
+            body['sig'] = body['sig'].upper()
+            return status, body
+        self._refused(upper)
+
+    def test_a_missing_or_wrong_type_consumed_at_is_refused(self):
+        for bad in (None, '1760000000', 1760000000.0, True, 0, -5, [1], {}):
+            with self.subTest(consumed_at=bad):
+                self._refused(_claim_ok(consumed_at=bad, sig_fields={'consumed_at': bad}))
+
+    def test_no_usable_key_file_is_a_refusal(self):
+        path = os.path.join(self.root, 'store/.claim-signing-key')
+        for label, content in [('missing', None), ('empty', ''), ('short', 'ab' * 16), ('not hex', 'zz' * 32), ('upper case', 'AB' * 32),
+                               ('trailing junk', CLAIM_KEY + 'ab'), ('binary', '\x00\x01')]:
+            with self.subTest(key=label):
+                if os.path.isdir(path):
+                    os.rmdir(path)
+                elif os.path.exists(path):
+                    os.remove(path)
+                if content is not None:
+                    self.write('store/.claim-signing-key', content)
+                self._refused(_claim_ok())
+        if os.path.exists(path):
+            os.remove(path)
+        os.mkdir(path)      # a directory where the key should be
+        self._refused(_claim_ok())
+
+    def test_a_key_that_is_not_the_one_the_answer_was_signed_with_is_refused(self):
+        self.write('store/.claim-signing-key', OTHER_KEY)
+        self._refused(_claim_ok())
+
+    def test_the_key_comes_from_the_senders_own_install_not_from_the_environment(self):
+        other = tempfile.mkdtemp(prefix='gmail-send-key-')
+        try:
+            self.dash.claim = _claim_ok(sig_key=OTHER_KEY)
+            for name in ('CLAIM_SIGNING_KEY', 'CLAIM_SIGNING_KEY_FILE', 'MARVEEN_STORE_DIR', 'STORE_DIR'):
+                self.dash.requests.clear()
+                res = self.run_sender(MAIL_ARGS, extra_env={name: OTHER_KEY if 'FILE' not in name and 'DIR' not in name else other})
+                self.assertEqual(res.rc, 3, name)
+                self.assertIn('claim_unsigned', res.err, name)
+                self.assertEqual(self.google.sent_calls(), [])
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_the_refusal_never_prints_the_key_or_the_signature(self):
+        self.dash.claim = _claim_ok(sig_key=OTHER_KEY)
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual(res.rc, 3)
+        for secret in (CLAIM_KEY, OTHER_KEY, sign_claim(OTHER_KEY, 'x', 'y', 'z', 'r', CONSUMED_AT)):
+            self.assertNotIn(secret, res.text)
 
 
 class TheApprovalIsAboutThisMail(SenderCase):
