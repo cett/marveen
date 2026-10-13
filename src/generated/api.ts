@@ -267,6 +267,9 @@ export interface ApprovalUsed {
   /** The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision. */
   window_s: number;
   approval: Approval;
+  /** HMAC-SHA256, lowercase hex, of the text `v1|content_hash|category|agent_id|ref|consumed_at` built from the `approval` row (`ref` is its `consumed_ref`, empty when there is none; `consumed_at` is the integer seconds). The key is the 32 random bytes held as 64 hex characters in `store/.claim-signing-key`, which the server creates (mode 0600) and no route returns. The send gate and the official sender recompute it and refuse an answer without a matching `sig`, so a listener that only mirrors the request cannot pass for the dashboard. A replay of the same use carries the same `sig`.
+ */
+  sig: string;
 }
 
 /** A `409` answer to using an approval up. The row is described by its state only, never by its content. */

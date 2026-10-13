@@ -627,7 +627,7 @@ components:
 
     ApprovalUsed:
       type: object
-      required: [ok, replayed, window_s, approval]
+      required: [ok, replayed, window_s, approval, sig]
       properties:
         ok:
           type: boolean
@@ -640,6 +640,11 @@ components:
           description: The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision.
         approval:
           $ref: "#/components/schemas/Approval"
+        sig:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            HMAC-SHA256, lowercase hex, of the text `v1|content_hash|category|agent_id|ref|consumed_at` built from the `approval` row (`ref` is its `consumed_ref`, empty when there is none; `consumed_at` is the integer seconds). The key is the 32 random bytes held as 64 hex characters in `store/.claim-signing-key`, which the server creates (mode 0600) and no route returns. The send gate and the official sender recompute it and refuse an answer without a matching `sig`, so a listener that only mirrors the request cannot pass for the dashboard. A replay of the same use carries the same `sig`.
 
     ApprovalRefusal:
       type: object
@@ -2368,7 +2373,7 @@ paths:
       description: |
         With `APPROVAL_HUMAN_ONLY_ENFORCE=1`, a request in a human-only category (`email_send`, `email_standing_recipient`, or any category an admin marked `human_only`) is announced differently: the server sends the owner one channel message (requester, category, expiry, the first 300 characters of the action, and a link to the dashboard's Approvals page, which opens only on the machine the dashboard runs on; the message cannot decide anything and carries no token or code), the main agent receives `[APPROVAL_REQUEST][HUMAN_ONLY]` (and `[OWNER_UNREACHED]` when the channel message did not go out; the request is created either way), and the requester receives `[APPROVAL_RESOLVED]` once the request is decided by a person in a dashboard session. The category is stored in its canonical form and a spelling that imitates a human-only category is refused with `400` `invalid_value`. Without the flag (the default) the request is announced to the main agent only, as before.
 
-        `email_send` is bound to one exact mail. Only the main agent can open such a request; a sub-agent gets `403`. `action_payload` is required and is the JSON envelope of the mail: `to` (non-empty), `cc`, `bcc` (arrays of bare `local@domain` ASCII addresses, at most 100 each), `subject`, `body`, and optionally `html_sha256`, `attachments` (at most 20 of `{name, size, sha256}`), `from`, `reply_to`, `in_reply_to`. An unknown field, a display-name address, a malformed field or a payload over 256 KB is `400` with `code` `invalid_envelope` and the offending `envelope_field`. The server builds the canonical form (sorted keys, sorted and de-duplicated recipients, lower-cased domains), takes the sha256 of its UTF-8 bytes as `content_hash`, stores that canonical form as `action_payload`, and writes `action_description` itself from the envelope: the requester's own description is ignored, so the person deciding reads text whose hash is provably the stored one. A `content_hash` the client sends must equal the server's (`400` `hash_mismatch` otherwise). The envelope names the requester from the server's knowledge of the caller, never from the payload.
+        `email_send` is bound to one exact mail. Only the main agent can open such a request; a sub-agent gets `403`. `action_payload` is required and is the JSON envelope of the mail: `to` (non-empty), `cc`, `bcc` (arrays of bare `local@domain` ASCII addresses, at most 100 each), `subject`, `body`, and optionally `attachments` (at most 20 of `{name, size, sha256}`), `from`, `reply_to`, `in_reply_to`. An unknown field, a display-name address, a malformed field or a payload over 256 KB is `400` with `code` `invalid_envelope` and the offending `envelope_field`. A mail with an HTML part (`html_sha256`) is `400` with `code` `html_not_supported`: the approval shows the text and the recipient would read the HTML, so it is refused until the dashboard can show the HTML part as text. The server builds the canonical form (sorted keys, sorted and de-duplicated recipients, lower-cased domains), takes the sha256 of its UTF-8 bytes as `content_hash`, stores that canonical form as `action_payload`, and writes `action_description` itself from the envelope: the requester's own description is ignored, so the person deciding reads text whose hash is provably the stored one. A `content_hash` the client sends must equal the server's (`400` `hash_mismatch` otherwise). The envelope names the requester from the server's knowledge of the caller, never from the payload.
 
         Asking again for the same mail while its request is open returns that request (`200`, `deduplicated: true`) and announces nothing. An agent can have 10 open `email_send` requests (`409`, `reason: too_many_pending`), and the owner is told of at most 5 new ones per agent and hour; the rest wait on the Approvals page. For every other category `content_hash` is optional and is stored as given.
       requestBody:
@@ -2426,7 +2431,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Approval"
         "400":
-          description: Missing or invalid fields (`invalid_envelope` or `hash_mismatch` for `email_send`)
+          description: Missing or invalid fields (`invalid_envelope`, `html_not_supported` or `hash_mismatch` for `email_send`)
           content:
             application/json:
               schema:
@@ -2595,6 +2600,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApprovalRefusal"
+        "503":
+          description: "`internal_error` with `reason` `claim_signing_unavailable`: the server cannot load `store/.claim-signing-key`, so it cannot sign its answer and uses nothing up (it never answers an unsigned `200`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /approvals/{id}/consume:
     parameters:
@@ -2660,6 +2671,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApprovalRefusal"
+        "503":
+          description: "`internal_error` with `reason` `claim_signing_unavailable`: the server cannot load `store/.claim-signing-key`, so it cannot sign its answer and uses nothing up (it never answers an unsigned `200`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /approvals/{id}/events:
     parameters:

@@ -5,12 +5,18 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { loadOrCreateClaimSigningKey, signClaim } from '../claim-signature.js'
 import type { RouteContext } from './types.js'
 
 // Using up an approved email request: POST /api/approvals/:id/consume (the approval is named) and
 // POST /api/approvals/claim (the mail is named, by its hash). Both are the send gate's calls, made with
 // the token of the agent that asked. The storage layer (db/vault.ts) holds the rules; this file holds
 // the identity, the body checks, the answer shapes and the audit row.
+//
+// A 200 carries `sig`, an HMAC the caller checks with the key in store/.claim-signing-key (claim-signature.ts),
+// so a listener that only mirrors the request cannot pass for the dashboard. When the key cannot be loaded the
+// answer is 503, and it is decided BEFORE anything is used up: an approval is never spent on an answer that
+// could not be signed.
 
 const MAX_REF_CHARS = 200
 const MAX_CONSUMER_CHARS = 64
@@ -91,6 +97,14 @@ function auditUse(principal: string, via: 'id' | 'claim', outcome: ConsumeOutcom
   } catch { /* audit failure must not change the answer */ }
 }
 
+function signingUnavailable(ctx: RouteContext): true {
+  json(ctx.res, {
+    error: 'internal_error', reason: 'claim_signing_unavailable',
+    hint: 'The approval service cannot sign its answer, so it uses nothing up. Check store/.claim-signing-key on the server.',
+  }, 503)
+  return true
+}
+
 async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
   const principal = principalOf(ctx)
   if (!principal) {
@@ -103,6 +117,15 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
   const body = await readUseBody(ctx, id === null)
   if (!body) return true
 
+  let signingKey: Buffer
+  try {
+    signingKey = loadOrCreateClaimSigningKey()
+  } catch {
+    // The message names no path and no key material.
+    logger.error({ agent: principal }, 'Approval not used: the claim signing key cannot be loaded')
+    return signingUnavailable(ctx)
+  }
+
   const common = { content_hash: body.content_hash, principal, tenant_id: tenantOf(ctx), window_s: APPROVAL_CONSUME_WINDOW_S, ref: body.ref, consumer: body.consumer }
   const outcome = id !== null
     ? consumeApproval({ ...common, id })
@@ -111,7 +134,13 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
 
   if (outcome.ok) {
     logger.info({ id: outcome.approval.id, agent: principal, replayed: outcome.replayed }, 'Approval used up')
-    json(ctx.res, { ok: true, replayed: outcome.replayed, window_s: APPROVAL_CONSUME_WINDOW_S, approval: outcome.approval })
+    const a = outcome.approval
+    // The signed values are the stored ones, so a replayed answer carries the same signature as the first.
+    if (typeof a.consumed_at !== 'number' || typeof a.content_hash !== 'string') return signingUnavailable(ctx)
+    const sig = signClaim({
+      content_hash: a.content_hash, category: a.category, agent_id: a.agent_id, ref: a.consumed_ref ?? null, consumed_at: a.consumed_at,
+    }, signingKey)
+    json(ctx.res, { ok: true, replayed: outcome.replayed, window_s: APPROVAL_CONSUME_WINDOW_S, approval: a, sig })
     return true
   }
   switch (outcome.reason) {
