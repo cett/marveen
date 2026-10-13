@@ -382,6 +382,13 @@ def decide(raw: str, log: Dict[str, Any]) -> str:
     h12 = content_hash[:12]
     log['hash'] = h12
     log['rcpt'] = sum(len(env.get(k) or []) for k in ('to', 'cc', 'bcc'))
+    if env.get('html_sha256'):
+        # The owner is shown the text part and the fingerprint of the HTML; the recipient reads the HTML.
+        # Harmless text could be approved and another page sent. Refused until the HTML can be shown as text.
+        log['unreadable'] = 'html part'
+        raise Deny('html_part', _deny_text(
+            'HTML resz nem ellenorizheto jovahagyaskor: a tulajdonos a szoveget latja, a cimzett a HTML-t kapja.', env, h12,
+            'Kuldd a levelet csak szovegkent (html / --html / HTML mime-resz nelkul).'))
     if not (env.get('to')) or (not str(env.get('body') or '').strip() and not env.get('html_sha256')):
         raise Deny('unreadable', _deny_text('a level cimzettje vagy torzse ures, egy ures level nem jovahagyhato.', env, h12))
 

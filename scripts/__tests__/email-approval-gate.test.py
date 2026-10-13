@@ -372,6 +372,22 @@ class DecisionTable(GateCase):
                 self.assertEqual([p for _, p in self.dash.paths()], ['/api/autonomy'])
                 self.assertTrue(self.log_lines()[-1]['unreadable'])
 
+    def test_a_mail_with_an_html_part_is_refused_and_spends_nothing(self):
+        # the owner reads the text and the fingerprint, the recipient reads the HTML
+        self.write('store/m.eml', 'To: ann@example.test\nSubject: Hi\nMIME-Version: 1.0\nContent-Type: multipart/alternative; boundary=B\n\n'
+                   '--B\nContent-Type: text/plain; charset=utf-8\n\nHarmless text.\n--B\nContent-Type: text/html; charset=utf-8\n\n<p>Another page</p>\n--B--\n')
+        cases = [
+            (SEND_TOOL, dict(MAIL, html='<p>Another page</p>')),
+            (SEND_TOOL, dict(MAIL, htmlBody='<p>Another page</p>')),
+            ('Bash', {'command': "python3 scripts/support-mail/send.py --to ann@example.test --subject Hi --body 'Another page' --html"}),
+            ('Bash', {'command': 'sendmail -t < %s/store/m.eml' % self.root}),
+        ]
+        for tool, ti in cases:
+            with self.subTest(tool=tool, ti=ti):
+                self.dash.requests.clear()
+                self.expect_deny(self.run_gate(tool, ti), 'html_part', 'HTML resz nem ellenorizheto')
+                self.assertEqual([p for _, p in self.dash.paths()], ['/api/autonomy'], 'no claim, no request')
+
     def test_empty_body_is_refused(self):
         rc, out, err = self.send(body='')
         self.assertEqual(rc, 2)
