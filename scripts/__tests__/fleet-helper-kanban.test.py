@@ -30,6 +30,59 @@ def card(cid, **kw):
     return base
 
 
+class FleetBaseUrl(unittest.TestCase):
+    """The dashboard address is not a literal: CLAW_BASE, else the install's port."""
+
+    KEYS = ("CLAW_BASE", "CLAW_DIR", "MARVEEN_WEB_PORT", "WEB_PORT")
+
+    def setUp(self):
+        import tempfile
+        self.fleet = load()
+        self.tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmp, "store"))
+        self.saved = {k: os.environ.pop(k, None) for k in self.KEYS}
+        os.environ["CLAW_DIR"] = self.tmp
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        import shutil
+        for k, v in self.saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, True)
+
+    def write_env(self, text):
+        with open(os.path.join(self.tmp, ".env"), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_default_is_3420(self):
+        self.assertEqual(self.fleet.base_url(), "http://localhost:3420")
+
+    def test_dotenv_port_is_used(self):
+        self.write_env("WEB_PORT='3521'\n")
+        self.assertEqual(self.fleet.base_url(), "http://localhost:3521")
+
+    def test_environment_port_beats_dotenv(self):
+        self.write_env("WEB_PORT=3521\n")
+        os.environ["WEB_PORT"] = "3622"
+        self.assertEqual(self.fleet.base_url(), "http://localhost:3622")
+        os.environ["MARVEEN_WEB_PORT"] = "3723"
+        self.assertEqual(self.fleet.base_url(), "http://localhost:3723")
+
+    def test_claw_base_wins_and_loses_its_trailing_slash(self):
+        self.write_env("WEB_PORT=3521\n")
+        os.environ["CLAW_BASE"] = "http://example.test:9/"
+        self.assertEqual(self.fleet.base_url(), "http://example.test:9")
+
+    def test_no_project_root_still_answers_with_the_default(self):
+        os.environ["CLAW_DIR"] = os.path.join(self.tmp, "missing")
+        cwd = os.getcwd()
+        os.chdir(os.path.dirname(self.tmp))
+        self.addCleanup(os.chdir, cwd)
+        self.assertEqual(self.fleet.base_url(), "http://localhost:3420")
+
+
 class FleetKanban(unittest.TestCase):
     def setUp(self):
         self.fleet = load()
