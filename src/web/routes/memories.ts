@@ -103,7 +103,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     let homoglyphWarning: string | undefined
     if (homoglyphs.length > 0) {
       homoglyphWarning = formatHomoglyphWarning(homoglyphs)
-      logger.warn({ agent: claimedAgentId, memoryId: result.id }, `memory saved with ${homoglyphWarning}`)
+      logger.warn({ agent: claimedAgentId, memoryId: result.id, warning: homoglyphWarning }, 'memory saved with homoglyph warning')
     }
     json(res, { ok: true, id: result.id, ...(mismatch ? { owner_mismatch: true } : {}), ...(homoglyphWarning ? { homoglyph_warning: homoglyphWarning } : {}) })
     return true

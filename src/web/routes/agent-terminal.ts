@@ -108,7 +108,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
         remote: ctx.req.socket?.remoteAddress ?? 'unknown',
         xff: ctx.req.headers['x-forwarded-for'] ?? '',
         ua: ctx.req.headers['user-agent'] ?? '',
-      }, `agent-terminal: TERMINAL-INPUT TOGGLE ${next ? 'ENABLED' : 'DISABLED'}`)
+      }, next ? 'agent-terminal: TERMINAL-INPUT TOGGLE ENABLED' : 'agent-terminal: TERMINAL-INPUT TOGGLE DISABLED')
       json(res, { enabled: next })
       return true
     }

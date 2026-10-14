@@ -128,7 +128,7 @@ function resolveConfig(): ExportConfig | null {
     const reason = 'OTEL_EXPORTER_OTLP_HEADERS is set in .env, so OTEL_EXPORTER_OTLP_ENDPOINT must be set in .env too (the credential is bound to the endpoint file); nothing is exported'
     if (reason !== lastConfigProblem) {
       lastConfigProblem = reason
-      logger.warn(`otel-push-exporter: ${reason}`)
+      logger.warn({ reason }, 'otel-push-exporter: configuration problem')
     }
     return null
   }
@@ -142,7 +142,7 @@ function resolveConfig(): ExportConfig | null {
       : ''
   if (problem !== lastConfigProblem) {
     lastConfigProblem = problem
-    if (problem) logger.warn({ rejected }, `otel-push-exporter: ${problem}`)
+    if (problem) logger.warn({ rejected, problem }, 'otel-push-exporter: configuration problem')
   }
   if (!check.ok) return null
   return { endpoint: check.base, headers, serviceNamespace }

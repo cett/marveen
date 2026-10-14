@@ -251,6 +251,11 @@ jobs:
         # may not grow past scripts/non-ts-db-access-baseline.json.
         run: python3 scripts/non-ts-db-access-ratchet.py
 
+      - name: Log message literal ratchet
+        # A warn/error/fatal log call may not build a value into its message
+        # (the application log export sends the message): scripts/log-message-literal-baseline.json.
+        run: python3 scripts/log-message-literal-ratchet.py
+
       - name: Shell tests
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
         # vault-file-materializer / channels-mcp-unlock / channels-auth-probe,

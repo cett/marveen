@@ -381,7 +381,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const homoglyphs = detectHomoglyphs(normalizedContent)
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
-      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, warning }, 'agent message created with homoglyph warning')
       json(res, { ...msg, homoglyph_warning: warning })
       return true
     }

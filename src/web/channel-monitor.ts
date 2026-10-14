@@ -533,7 +533,7 @@ async function triggerMarveenMemorySave(): Promise<void> {
     await sendPromptToSession(MAIN_CHANNELS_SESSION, prompt)
     logger.info(`${BOT_NAME} memory-save prompt dispatched before hard restart`)
   } catch (err) {
-    logger.warn({ err }, `Failed to dispatch ${BOT_NAME} memory-save prompt`)
+    logger.warn({ err, bot: BOT_NAME }, 'Failed to dispatch memory-save prompt')
   }
 }
 
@@ -1063,7 +1063,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string; hin
         execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
         execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
         execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-        logger.warn(`Hard restart: launchctl reload of ${label}`)
+        logger.warn({ label }, 'Hard restart: launchctl reload')
         marveenLastHardRestart = Date.now()
         writeRespawnStamp() // coordinate with the systemd-timer watchdog
         return { ok: true }
