@@ -176,3 +176,47 @@ describe('GET /api/settings: secret keys are listed masked (S6)', () => {
     expect(keys).toContain('CHANNEL_PROVIDER')
   })
 })
+
+describe('POST /api/settings: env-only keys (OTLP headers)', () => {
+  const post = (value: unknown, role = 'admin') =>
+    makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'OTEL_EXPORTER_OTLP_HEADERS', value }, role })
+
+  it('refuses an admin write with 400 not_supported and stores nothing', async () => {
+    const { ctx, status, body } = post('Authorization=Bearer%20abc')
+    expect(await routesMod.tryHandleSettings(ctx)).toBe(true)
+    expect(status()).toBe(400)
+    expect((body() as any).error).toBe('not_supported')
+    expect(dbMod.getSystemConfig('OTEL_EXPORTER_OTLP_HEADERS')).toBeUndefined()
+    expect(JSON.stringify(body())).not.toContain('Bearer')
+  })
+
+  it('keeps the plain 403 for a non-admin caller, nothing stored', async () => {
+    const { ctx, status } = post('Authorization=Bearer%20abc', 'viewer')
+    expect(await routesMod.tryHandleSettings(ctx)).toBe(true)
+    expect(status()).toBe(403)
+    expect(dbMod.getSystemConfig('OTEL_EXPORTER_OTLP_HEADERS')).toBeUndefined()
+  })
+
+  it('treats the re-submitted mask as the usual no-op, so a save-all form does not fail', async () => {
+    const { ctx, status } = post('***')
+    expect(await routesMod.tryHandleSettings(ctx)).toBe(true)
+    expect(status()).toBe(200)
+    expect(dbMod.getSystemConfig('OTEL_EXPORTER_OTLP_HEADERS')).toBeUndefined()
+  })
+
+  it('does not mark any other key env-only, and the endpoint stays writable', async () => {
+    const { SETTINGS_REGISTRY } = await import('../config-registry.js')
+    expect(SETTINGS_REGISTRY.filter((s) => s.envOnly).map((s) => s.key)).toEqual(['OTEL_EXPORTER_OTLP_HEADERS'])
+    const w = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'https://collector.example' } })
+    expect(await routesMod.tryHandleSettings(w.ctx)).toBe(true)
+    expect(w.status()).toBe(200)
+    expect(dbMod.getSystemConfig('OTEL_EXPORTER_OTLP_ENDPOINT')?.value).toBe('https://collector.example')
+  })
+
+  it('lists the key as masked and flagged envOnly', async () => {
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/settings' })
+    await routesMod.tryHandleSettings(ctx)
+    const row = (body() as any).settings.find((s: any) => s.key === 'OTEL_EXPORTER_OTLP_HEADERS')
+    expect(row).toMatchObject({ value: '***', secret: true, envOnly: true })
+  })
+})

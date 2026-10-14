@@ -174,8 +174,8 @@ Az `OTEL_*` kulcsok a telemetria-exportert konfigurálják. Az exportőr 30 más
 | Kulcs | Leírás |
 |-----|-------------|
 | `OTEL_EXPORT_ENABLED` | Bekapcsolja a push exportőrt (alapból ki) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | A collector bázis-URL-je, `http://` vagy `https://` (például `http://localhost:4318`), hitelesítő adat nélkül; a trace-ek a `/v1/traces`, a metrikák a `/v1/metrics` útvonalra mennek |
-| `OTEL_EXPORTER_OTLP_HEADERS` | További kérés-fejlécek, általában hitelesítés, az OpenTelemetry formátumában: `név1=érték1,név2=érték2`, az értékek százalék-kódolva (`Authorization=Bearer%20abc`). Csak a `.env` fájlban add meg: titok, a dashboard sem mutatja, sem nem írja. Amíg be van állítva, az `OTEL_EXPORTER_OTLP_ENDPOINT`-ot is a `.env`-ből olvassa (a dashboardon megadott érték nem számít), így a hitelesítő adat csak arra a hostra mehet, amit mellé írtál; ha a fejléc a `.env`-ben van, de ott nincs endpoint, nem exportál |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | A collector bázis-URL-je, `http://` vagy `https://` (például `http://localhost:4318`), hitelesítő adat nélkül; a trace-ek a `/v1/traces`, a metrikák a `/v1/metrics` útvonalra mennek. Amíg az `OTEL_EXPORTER_OTLP_HEADERS` az env fájlban be van állítva, az endpointot is onnan veszi, az itt mentett érték nem hat (a mentés ettől még bekerül a konfig-változásnaplóba) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | További kérés-fejlécek, általában hitelesítés, az OpenTelemetry formátumában: `név1=érték1,név2=érték2`, az értékek százalék-kódolva (`Authorization=Bearer%20abc`). Csak a `.env` fájlban add meg: titok, a dashboard sosem mutatja, és a `POST /api/settings` megtagadja az írását (adminnak is; a tárolt értéket az exportőr úgysem olvasná). Amíg be van állítva, az `OTEL_EXPORTER_OTLP_ENDPOINT`-ot is a `.env`-ből olvassa (a dashboardon megadott érték nem számít), így a hitelesítő adat csak arra a hostra mehet, amit mellé írtál; ha a fejléc a `.env`-ben van, de ott nincs endpoint, nem exportál |
 | `OTEL_SERVICE_NAME` | A `service.namespace` resource attribútum értéke |
 | `OTEL_EXPORT_INPUT_SUMMARY` | A tool-hívások rövid leírását (mit kapott a tool) is kiexportálja (alapból ki, lásd lent) |
 

@@ -32,6 +32,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       min: def.min,
       max: def.max,
       secret: def.secret,
+      envOnly: def.envOnly === true,
     }))
     json(res, { settings: isAdmin ? rows : rows.map((r) => pickFields(r, NON_ADMIN_SETTING_ROW_FIELDS)) })
     return true
@@ -68,6 +69,13 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
           json(res, { ok: true, key, value: SECRET_MASK, requiresRestart: def.requiresRestart })
           return true
         }
+      }
+
+      if (def.envOnly) {
+        // Checked after the admin gate so a non-admin still gets the plain 403, and before validation
+        // and the write so nothing reaches system_config (which this key is never read from).
+        json(res, { error: 'not_supported', hint: `${key} can only be set in the env file, not through the API` }, 400)
+        return true
       }
 
       // Validate before touching anything. setOverride re-validates
