@@ -39,6 +39,7 @@ vi.mock('../env.js', async (importOriginal) => {
   }
 })
 
+const { resetMetricValues } = await import('../otel-metrics.js')
 const { tick, getOtelExporterStatus, resetOtelExporterStatus } = await import('../web/otel-push-exporter.js')
 
 beforeAll(() => {
@@ -52,6 +53,7 @@ beforeEach(() => {
   settings.OTEL_SERVICE_NAME = 'marveen'
   for (const k of Object.keys(envFile)) delete envFile[k]
   resetOtelExporterStatus()
+  resetMetricValues()
   setOtelMetricsExportWatermark(0)
   getDb().exec("DELETE FROM otel_spans WHERE trace_id LIKE 'trace-tick-test-%'")
   getDb().exec("DELETE FROM token_usage WHERE agent LIKE 'agent-tick-test-%'")
@@ -330,28 +332,28 @@ describe('transport behaviour', () => {
       vi.useRealTimers()
     }
 
-    // (token-usage rows of earlier tests may also ride on /v1/metrics: pick the self-metrics post)
-    const selfCalls = () => callsTo(fetchSpy, '/v1/metrics')
+    // (token-usage rows of earlier tests may also ride on /v1/metrics: pick the registry post)
+    const registryCalls = () => callsTo(fetchSpy, '/v1/metrics')
       .filter((c: unknown[]) => String((c[1] as RequestInit).body).includes('marveen.otel.export.failures'))
-    const metricCalls = selfCalls()
-    expect(metricCalls).toHaveLength(1)
-    const body = JSON.parse(String((metricCalls[0][1] as RequestInit).body))
+    expect(registryCalls().length).toBeGreaterThanOrEqual(1)
+    const body = JSON.parse(String((registryCalls()[0][1] as RequestInit).body))
+    const resource = body.resourceMetrics[0].resource.attributes
+    expect(resource.find((a: any) => a.key === 'service.name').value.stringValue).toBe('marveen-dashboard')
     const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
-    expect(metrics.map((m: any) => m.name)).toEqual(['marveen.otel.export.failures', 'marveen.otel.export.rejected'])
-    const failures = metrics[0].sum
+    const failures = metrics.find((m: any) => m.name === 'marveen.otel.export.failures').sum
     expect(failures.aggregationTemporality).toBe(2) // cumulative
     expect(failures.isMonotonic).toBe(true)
     const traces = failures.dataPoints.find((d: any) => d.attributes[0].value.stringValue === 'traces')
     expect(traces.asInt).toBe('1')
 
-    // unchanged counters are not sent again
+    // a cumulative series is sent on every healthy cycle, so a backend never lets it go stale
+    const before = registryCalls().length
     vi.useFakeTimers({ now: Date.now() + 30 * 60_000, toFake: ['Date'] })
     try {
-      seedClosedSpan('trace-tick-test-s3', 'span-s3')
       await tick()
     } finally {
       vi.useRealTimers()
     }
-    expect(selfCalls()).toHaveLength(1)
+    expect(registryCalls().length).toBe(before + 1)
   })
 })

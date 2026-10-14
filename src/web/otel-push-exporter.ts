@@ -24,8 +24,9 @@ import {
   getOtelMetricsExportState, setOtelMetricsExportWatermark,
   sumTokenUsageWindow,
 } from '../db.js'
-import { spansToOtelJson, tokenUsageToOtelMetricsJson, exporterStatsToOtelMetricsJson } from '../otel-exporter.js'
-import type { ExporterStats } from '../otel-exporter.js'
+import { spansToOtelJson, tokenUsageToOtelMetricsJson, registryMetricsToOtelJson } from '../otel-exporter.js'
+import { collectRegistryMetrics } from '../otel-metrics.js'
+import { countExportFailure, countExportRejected } from '../otel-signals.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { readEnvFile } from '../env.js'
 import { readOtelExportOptions } from '../otel-export-options.js'
@@ -56,8 +57,6 @@ const state: Record<Signal, SignalState> = {
   traces: freshSignalState(),
   metrics: freshSignalState(),
 }
-// The totals last sent to the collector as self-metrics, to send again only on a change.
-let reportedTotals = { traces: { failures: 0, rejected: 0 }, metrics: { failures: 0, rejected: 0 } }
 // One warning per distinct configuration problem, not one per tick.
 let lastConfigProblem = ''
 
@@ -78,7 +77,6 @@ export function getOtelExporterStatus(): OtelExporterStatus {
 export function resetOtelExporterStatus(): void {
   state.traces = freshSignalState()
   state.metrics = freshSignalState()
-  reportedTotals = { traces: { failures: 0, rejected: 0 }, metrics: { failures: 0, rejected: 0 } }
   lastConfigProblem = ''
 }
 
@@ -179,6 +177,7 @@ function recordSuccess(signal: Signal, rejected: number, message: string, url: s
   s.lastSuccessMs = Date.now()
   if (rejected > 0) {
     s.rejected += rejected
+    countExportRejected(signal, rejected)
     logger.warn({ url, rejected, message }, 'otel-push-exporter: collector accepted the export but rejected part of it')
   }
 }
@@ -187,6 +186,7 @@ function recordFailure(signal: Signal, result: Extract<PostResult, { kind: 'retr
   const s = state[signal]
   s.consecutiveFailures += 1
   s.failures += 1
+  countExportFailure(signal)
   s.lastError = result.reason
   const delay = Math.max(backoffDelayMs(s.consecutiveFailures), result.retryAfterMs ?? 0)
   s.nextAttemptMs = Date.now() + delay
@@ -201,6 +201,8 @@ function recordPermanent(signal: Signal, status: number, items: number, url: str
   const s = state[signal]
   s.failures += 1
   s.rejected += items
+  countExportFailure(signal)
+  countExportRejected(signal, items)
   s.lastError = `collector rejected the payload (${status})`
   logger.warn({ url, status, items }, 'otel-push-exporter: collector rejected the payload for good, batch discarded')
 }
@@ -262,25 +264,15 @@ async function exportMetrics(cfg: ExportConfig): Promise<boolean> {
   return false
 }
 
-function currentTotals(): ExporterStats {
-  return {
-    traces: { failures: state.traces.failures, rejected: state.traces.rejected },
-    metrics: { failures: state.metrics.failures, rejected: state.metrics.rejected },
-  }
-}
-
-// The exporter's own counters, sent when the collector just answered and they changed since the last
-// time. A failed send is not counted again as a failure: the next tick tries once more.
-async function exportSelfMetrics(cfg: ExportConfig): Promise<void> {
-  const totals = currentTotals()
-  const changed = (['traces', 'metrics'] as const).some((k) =>
-    totals[k].failures !== reportedTotals[k].failures || totals[k].rejected !== reportedTotals[k].rejected)
-  if (!changed) return
-  const payload = exporterStatsToOtelMetricsJson(
-    totals, startedAtSec, Math.floor(Date.now() / 1000), cfg.serviceNamespace, readOtelExportOptions(),
-  )
-  const result = await postJson(`${cfg.endpoint}/v1/metrics`, cfg.headers, payload)
-  if (result.kind !== 'retry') reportedTotals = totals
+// The registry metrics (exporter health, scheduled runs, inter-agent messages, Telegram events) are sent
+// whenever the collector just answered. Cumulative series are sent every time, so a backend that expires a
+// silent series (Prometheus staleness) never sees them vanish. A failed send is not counted as another
+// failure: the next tick tries once more.
+async function exportRegistryMetrics(cfg: ExportConfig): Promise<void> {
+  const metrics = collectRegistryMetrics()
+  if (metrics.length === 0) return
+  const payload = registryMetricsToOtelJson(metrics, cfg.serviceNamespace, readOtelExportOptions())
+  await postJson(`${cfg.endpoint}/v1/metrics`, cfg.headers, payload)
 }
 
 // Exported for tests -- the interval callback itself is just plumbing around
@@ -289,22 +281,22 @@ async function exportSelfMetrics(cfg: ExportConfig): Promise<void> {
 export async function tick(): Promise<void> {
   const cfg = resolveConfig()
   if (!cfg) return
-  let collectorAnswered = false
   try {
-    collectorAnswered = (await exportTraces(cfg)) || collectorAnswered
+    await exportTraces(cfg)
   } catch (err) {
     logger.warn({ err }, 'otel-push-exporter: trace export failed')
   }
   try {
-    collectorAnswered = (await exportMetrics(cfg)) || collectorAnswered
+    await exportMetrics(cfg)
   } catch (err) {
     logger.warn({ err }, 'otel-push-exporter: metrics export failed')
   }
-  if (!collectorAnswered) return
+  // Not while the collector is failing (a second request into the same outage); right after it recovered, yes.
+  if (state.traces.consecutiveFailures > 0 || state.metrics.consecutiveFailures > 0 || !due('metrics')) return
   try {
-    await exportSelfMetrics(cfg)
+    await exportRegistryMetrics(cfg)
   } catch (err) {
-    logger.warn({ err }, 'otel-push-exporter: exporter self-metrics failed')
+    logger.warn({ err }, 'otel-push-exporter: registry metrics export failed')
   }
 }
 
