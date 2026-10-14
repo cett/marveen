@@ -1,5 +1,5 @@
-// OTel F1 (#800/#802): OTLP push exporter for traces (otel_spans) and
-// metrics (token_usage -> gen_ai.client.token.usage). Config-driven via the
+// OTel F1 (#800/#802): OTLP push exporter for traces (otel_spans), metrics (token_usage ->
+// gen_ai.client.token.usage and the registry) and, opt-in, logs (audit tables, src/otel-logs.ts). Config-driven via the
 // dashboard settings registry (OTEL_EXPORT_ENABLED / OTEL_EXPORTER_OTLP_ENDPOINT
 // / OTEL_EXPORTER_OTLP_HEADERS / OTEL_SERVICE_NAME), env-var fallback through
 // getEffectiveSettingValue -- see src/settings-store.ts. Re-reads its config
@@ -23,8 +23,10 @@ import {
   getUnexportedOtelSpans, markOtelSpansExported,
   getOtelMetricsExportState, setOtelMetricsExportWatermark,
   sumTokenUsageWindow, tokenUsageHistogramWindow,
+  getOtelLogBatch, setOtelLogCursor, getOtelLogHashSalt, OTEL_LOG_SOURCES,
 } from '../db.js'
-import { spansToOtelJson, tokenUsageToOtelMetricsJson, registryMetricsToOtelJson } from '../otel-exporter.js'
+import { spansToOtelJson, tokenUsageToOtelMetricsJson, registryMetricsToOtelJson, serviceInstanceId } from '../otel-exporter.js'
+import { mapLogBatch, logsToOtelJson } from '../otel-logs.js'
 import { collectRegistryMetrics } from '../otel-metrics.js'
 import { countExportFailure, countExportRejected } from '../otel-signals.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
@@ -39,9 +41,10 @@ import { logger } from '../logger.js'
 
 const PUSH_INTERVAL_MS = 30_000
 const SPAN_BATCH_LIMIT = 500
+const LOG_BATCH_LIMIT = 500 // per audit source
 const RESPONSE_BODY_MAX_CHARS = 4096
 
-type Signal = 'traces' | 'metrics'
+type Signal = 'traces' | 'metrics' | 'logs'
 
 export interface SignalState {
   consecutiveFailures: number
@@ -56,6 +59,7 @@ const startedAtSec = Math.floor(Date.now() / 1000)
 const state: Record<Signal, SignalState> = {
   traces: freshSignalState(),
   metrics: freshSignalState(),
+  logs: freshSignalState(),
 }
 // One warning per distinct configuration problem, not one per tick.
 let lastConfigProblem = ''
@@ -67,16 +71,18 @@ function freshSignalState(): SignalState {
 export interface OtelExporterStatus {
   traces: SignalState
   metrics: SignalState
+  logs: SignalState
 }
 
 // The exporter's own health, for diagnostics and tests.
 export function getOtelExporterStatus(): OtelExporterStatus {
-  return { traces: { ...state.traces }, metrics: { ...state.metrics } }
+  return { traces: { ...state.traces }, metrics: { ...state.metrics }, logs: { ...state.logs } }
 }
 
 export function resetOtelExporterStatus(): void {
   state.traces = freshSignalState()
   state.metrics = freshSignalState()
+  state.logs = freshSignalState()
   lastConfigProblem = ''
 }
 
@@ -265,6 +271,38 @@ async function exportMetrics(cfg: ExportConfig): Promise<boolean> {
   return false
 }
 
+// Audit-table rows as OTLP logs (src/otel-logs.ts), opt-in through OTEL_EXPORT_LOGS. Each source keeps its own
+// cursor; the cursors move only after the collector answered (accepted, or refused the payload for good), so
+// a failed send is retried from the same rows. Reading the rows or mapping them can throw; tick() catches
+// that, and nothing here ever writes to an audit table.
+async function exportLogs(cfg: ExportConfig): Promise<boolean> {
+  if (!due('logs')) return false
+  const batch = mapLogBatch(getOtelLogBatch(LOG_BATCH_LIMIT), getOtelLogHashSalt())
+  if (batch.records.length === 0) return false
+
+  const url = `${cfg.endpoint}/v1/logs`
+  const payload = logsToOtelJson(batch.records, cfg.serviceNamespace, serviceInstanceId())
+  const result = await postJson(url, cfg.headers, payload)
+  const advance = () => {
+    for (const source of OTEL_LOG_SOURCES) {
+      const id = batch.cursors[source]
+      if (id !== undefined) setOtelLogCursor(source, id)
+    }
+  }
+  if (result.kind === 'ok') {
+    recordSuccess('logs', result.rejected, result.message, url)
+    advance()
+    return true
+  }
+  if (result.kind === 'permanent') {
+    recordPermanent('logs', result.status, batch.records.length, url)
+    advance()
+    return true
+  }
+  recordFailure('logs', result, url)
+  return false
+}
+
 // The registry metrics (exporter health, scheduled runs, inter-agent messages, Telegram events) are sent
 // whenever the collector just answered. Cumulative series are sent every time, so a backend that expires a
 // silent series (Prometheus staleness) never sees them vanish. A failed send is not counted as another
@@ -292,8 +330,15 @@ export async function tick(): Promise<void> {
   } catch (err) {
     logger.warn({ err }, 'otel-push-exporter: metrics export failed')
   }
+  if (getEffectiveSettingValue('OTEL_EXPORT_LOGS') === '1') {
+    try {
+      await exportLogs(cfg)
+    } catch (err) {
+      logger.warn({ err }, 'otel-push-exporter: logs export failed')
+    }
+  }
   // Not while the collector is failing (a second request into the same outage); right after it recovered, yes.
-  if (state.traces.consecutiveFailures > 0 || state.metrics.consecutiveFailures > 0 || !due('metrics')) return
+  if (state.traces.consecutiveFailures > 0 || state.metrics.consecutiveFailures > 0 || state.logs.consecutiveFailures > 0 || !due('metrics')) return
   try {
     await exportRegistryMetrics(cfg)
   } catch (err) {

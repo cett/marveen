@@ -14,10 +14,10 @@ const SIGNAL_ATTR = 'marveen.otel.signal'
 defineCounter('marveen.otel.export.failures', '{request}', [SIGNAL_ATTR])
 defineCounter('marveen.otel.export.rejected', '{item}', [SIGNAL_ATTR])
 
-export function countExportFailure(signal: 'traces' | 'metrics'): void {
+export function countExportFailure(signal: 'traces' | 'metrics' | 'logs'): void {
   otelCount('marveen.otel.export.failures', { [SIGNAL_ATTR]: signal })
 }
-export function countExportRejected(signal: 'traces' | 'metrics', items: number): void {
+export function countExportRejected(signal: 'traces' | 'metrics' | 'logs', items: number): void {
   otelCount('marveen.otel.export.rejected', { [SIGNAL_ATTR]: signal }, items)
 }
 

@@ -757,6 +757,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'OTEL_EXPORT_LOGS',
+    type: 'boolean',
+    default: '0',
+    description: 'Az OTLP exportőr az audit-táblák sorait OTLP naplóként is elküldi a /v1/logs útvonalra (jóváhagyás-események, RBAC elutasítások és would-deny döntések, beállítás-módosítások, ágens-audit). Alapból KI, és az OTEL_EXPORT_ENABLED-del együtt kell (mindkettő be kell legyen). Csak azonosítók és számok mennek ki: az esemény neve, döntés, szerep, jog, beállításkulcs, entitás, művelet. Tartalom soha: a beállítások régi/új értéke, az audit-részletek, a kérés útvonala és a hivatkozások nem olvasódnak ki az adatbázisból. Minden szereplő (felhasználó, token, eszköz, ágens) helyett egy telepítésenkénti sóval képzett HMAC-ből vett álnév (marveen.actor.hash) megy. Bekapcsoláskor nem játssza vissza a múltat: az első futás a táblák aktuális vége után kezd. Az RBAC engedélyezett (permitted) sorai nem mennek ki.',
+    module: 'observability',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Claude plans module (PR2b/PR2c) ---
   // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
   // heartbeat script's decision to call it (scripts/claude-plan-rotate-check.ts)

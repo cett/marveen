@@ -109,14 +109,14 @@ export interface PartialSuccess {
 }
 
 // A 2xx may still say "I kept some of it": {"partialSuccess":{"rejectedSpans":"3","errorMessage":"..."}}
-// (traces) or rejectedDataPoints (metrics). The spec says not to retry those.
+// (traces) rejectedDataPoints (metrics) or rejectedLogRecords (logs). The spec says not to retry those.
 export function parsePartialSuccess(body: string): PartialSuccess | null {
   if (!body) return null
   try {
     const parsed = JSON.parse(body) as { partialSuccess?: Record<string, unknown> }
     const ps = parsed?.partialSuccess
     if (!ps || typeof ps !== 'object') return null
-    const rejected = Number(ps['rejectedSpans'] ?? ps['rejectedDataPoints'] ?? 0)
+    const rejected = Number(ps['rejectedSpans'] ?? ps['rejectedDataPoints'] ?? ps['rejectedLogRecords'] ?? 0)
     if (!Number.isFinite(rejected) || rejected <= 0) return null
     const message = typeof ps['errorMessage'] === 'string' ? ps['errorMessage'].slice(0, 200) : ''
     return { rejected: Math.round(rejected), message }
