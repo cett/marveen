@@ -8,7 +8,11 @@ value into the message, and the export's scrubbing (credentials, paths, mailboxe
 everything. So the rule for these calls is: a FIXED message, the data in the bound fields.
 
 This counts, per production TypeScript file, the warn/error/fatal calls of `logger` (and `log` / `*Logger`
-variables) whose message argument contains a template-literal substitution or a string concatenation. A count may
+variables) whose message argument is not a FIXED string: a template-literal substitution, a concatenation with
+anything that is not a plain literal, a VARIABLE or any other expression (`logger.warn({ prober }, text)`: the
+content of `text` is unknown here). A ternary of fixed strings is fixed, a lone error or object argument has no
+message. A forwarding helper whose callers pass literals (`(obj, msg) => logger.warn(obj, msg)`) is counted too and
+lives in the baseline. A count may
 not grow past the committed baseline (scripts/log-message-literal-baseline.json); a new file with such a call
 fails. Counts may only go down: lock a decrease in with --update.
 
@@ -130,17 +134,71 @@ def is_plain_literal(operand):
     return skip_string(operand, 0) == len(operand)
 
 
-def has_substitution(arg):
-    """A template literal with ${...}, or a string joined with + to anything that is not a plain literal."""
-    return not all(is_plain_literal(p) for p in split_plus(arg))
-
-
-def message_arg(args):
-    """pino: (obj, msg, ...) or (msg, ...). The message is the first argument that starts a string."""
-    for a in args[:2]:
-        if a[:1] in "'\"`":
-            return a
+def split_ternary(arg):
+    """(condition, then, else) of a top-level `c ? a : b`, or None."""
+    depth, i, q = 0, 0, None
+    while i < len(arg):
+        c = arg[i]
+        if c in "'\"`":
+            i = skip_string(arg, i)
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0 and c == "?" and arg[i + 1:i + 2] not in (".", "?") and arg[i - 1:i] != "?":
+            q = i
+            break
+        i += 1
+    if q is None:
+        return None
+    depth, i, nested = 0, q + 1, 0
+    while i < len(arg):
+        c = arg[i]
+        if c in "'\"`":
+            i = skip_string(arg, i)
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0 and c == "?" and arg[i + 1:i + 2] not in (".", "?"):
+            nested += 1
+        elif depth == 0 and c == ":":
+            if nested == 0:
+                return arg[:q].strip(), arg[q + 1:i].strip(), arg[i + 1:].strip()
+            nested -= 1
+        i += 1
     return None
+
+
+def is_fixed_message(arg):
+    """A plain string literal, plain literals joined with +, or a ternary whose branches are fixed messages."""
+    arg = arg.strip()
+    if arg.startswith("(") and arg.endswith(")") and skip_balanced(arg, 0, "(", ")") == len(arg):
+        return is_fixed_message(arg[1:-1])
+    t = split_ternary(arg)
+    if t is not None:
+        return is_fixed_message(t[1]) and is_fixed_message(t[2])
+    return all(is_plain_literal(p) for p in split_plus(arg))
+
+
+ERRORISH = re.compile(r"^(?:err|error|e|exc|ex|cause)$")
+
+
+def builds_message(args):
+    """True when the message of the call is not a fixed string: a substitution or concatenation, but also a
+    VARIABLE or any other expression (its content is unknown here: `logger.warn({}, text)`, or a `msg` built a
+    line above). pino: (obj, msg, ...) or (msg, ...); a lone error object is fine (only its class and code are
+    exported)."""
+    if not args:
+        return False
+    first = args[0]
+    if first[:1] in "'\"`":
+        return not is_fixed_message(first)
+    if len(args) >= 2:
+        return not is_fixed_message(args[1])
+    return first[:1] != "{" and not ERRORISH.match(first)
 
 
 def strip_comments_keep_length(text):
@@ -155,8 +213,7 @@ def scan_text(text):
     found = []
     for m in CALL_RE.finditer(clean):
         args = split_args(clean, m.end() - 1)
-        msg = message_arg(args)
-        if msg is not None and has_substitution(msg):
+        if builds_message(args):
             line = clean.count("\n", 0, m.start()) + 1
             found.append((line, text.split("\n")[line - 1].strip()[:140]))
     return found

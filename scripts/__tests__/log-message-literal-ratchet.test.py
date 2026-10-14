@@ -47,6 +47,33 @@ class TestDetector(unittest.TestCase):
         ):
             self.assertEqual(hits(src), [], src)
 
+    def test_a_variable_or_any_other_expression_as_the_message_counts(self):
+        # the message is whatever the variable holds: its content is unknown here (raw stderr, a string built above)
+        for src in (
+            "logger.warn({ prober: 'stderr' }, text)",
+            "logger.error({ token, status }, msg)",
+            "logger.warn(text)",
+            "logger.warn({ id }, buildMessage(id))",
+            "logger.warn({ id }, label || 'fallback')",
+            "logger.warn({ id }, obj.message)",
+        ):
+            self.assertEqual(hits(src), [1], src)
+
+    def test_a_lone_error_or_object_is_not_a_message(self):
+        for src in ("logger.error(err)", "logger.warn(error)", "logger.error({ err, id })", "logger.fatal(e)"):
+            self.assertEqual(hits(src), [], src)
+        self.assertEqual(hits("logger.warn(somethingElse)"), [1])
+
+    def test_a_ternary_of_fixed_messages_is_fixed_but_not_one_with_a_built_branch(self):
+        self.assertEqual(hits("logger.warn({ a }, ok ? 'one text' : 'other text')"), [])
+        self.assertEqual(hits("logger.warn({ a }, (ok ? 'one text' : 'other text'))"), [])
+        self.assertEqual(hits("logger.warn({ a }, ok ? 'one text' : `built ${a}`)"), [1])
+        self.assertEqual(hits("logger.warn({ a }, ok ? 'one' : other)"), [1])
+        self.assertEqual(hits("logger.warn({ a }, x ? (y ? 'a' : 'b') : 'c')"), [])
+
+    def test_a_forwarding_wrapper_is_counted_so_it_has_to_be_in_the_baseline(self):
+        self.assertEqual(hits("warn: (obj, msg) => logger.warn(obj, msg),"), [1])
+
     def test_a_value_in_the_bindings_is_not_the_message(self):
         self.assertEqual(hits("logger.warn({ note: `built ${x}`, other: 'a' + b }, 'fixed message')"), [])
 
@@ -94,9 +121,12 @@ class TestCli(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    def test_the_baseline_is_empty_so_no_call_site_is_grandfathered(self):
+    def test_the_baseline_holds_only_the_forwarding_helpers_whose_callers_pass_fixed_messages(self):
         with open(os.path.join(os.path.dirname(HERE), 'log-message-literal-baseline.json')) as fh:
-            self.assertEqual(json.load(fh), {'counts': {}})
+            counts = json.load(fh)['counts']
+        # (obj, msg) => logger.warn(obj, msg) adapters of an injected log interface, and a throttling helper whose
+        # seven callers each pass a literal. A new entry here needs a reason in the pull request.
+        self.assertEqual(counts, {'index.ts': 4, 'web/token-shadow.ts': 1})
 
 
 if __name__ == '__main__':

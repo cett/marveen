@@ -27,9 +27,29 @@ const TEXT_SCRUBS: [RegExp, string][] = [
   [/\b[0-9a-f]{16,}\b/gi, '[id]'],
 ]
 
+// Provider credentials in their own shape, with no "Bearer" or "token=" next to them: an Anthropic or OpenAI key
+// (sk-...), a GitHub token (ghp_/gho_/ghu_/ghs_/ghr_, github_pat_), a Slack token (xoxb-/xoxp-/xoxa-/xoxs-/xoxr-,
+// xapp-), a JSON web token (three base64url segments, the first two starting with eyJ), an AWS access key id
+// (AKIA/ASIA + 16). Applied to every scrubbed text, before the generic rules.
+const KEY_SCRUBS: [RegExp, string][] = [
+  [/\bsk-[A-Za-z0-9][A-Za-z0-9_-]{15,}/g, '***'],
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, '***'],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, '***'],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, '***'],
+  [/\bxapp-[A-Za-z0-9-]{10,}/g, '***'],
+  [/\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}/g, '***'],
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '***'],
+]
+
+// A long run of base64-looking characters that mixes letters and digits (32 or more): a key, a signature, a blob.
+// Only for log text, where such a run is never wanted; in a command (the tool input summary) a long path would
+// match too.
+const BLOB_SCRUB: [RegExp, string] = [/(?=[A-Za-z0-9+/_-]*[A-Za-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{32,}={0,2}/g, '***']
+
 // The credential and home-directory scrub, shortened last so a cut never leaves half a secret behind.
 export function scrubText(value: string, maxChars: number): string {
   let out = value
+  for (const [rx, replacement] of KEY_SCRUBS) out = out.replace(rx, replacement)
   for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
   return out.slice(0, maxChars)
 }
@@ -37,8 +57,9 @@ export function scrubText(value: string, maxChars: number): string {
 // The same plus the free-text shapes above, for a log message.
 export function scrubLogText(value: string, maxChars: number): string {
   let out = value
+  for (const [rx, replacement] of KEY_SCRUBS) out = out.replace(rx, replacement)
   for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
+  out = out.replace(BLOB_SCRUB[0], BLOB_SCRUB[1])
   for (const [rx, replacement] of TEXT_SCRUBS) out = out.replace(rx, replacement)
   return out.slice(0, maxChars)
 }
-
