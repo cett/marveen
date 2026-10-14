@@ -97,7 +97,7 @@ class Base(unittest.TestCase):
 
 class TestDocKey(unittest.TestCase):
     def test_accepts_the_convention(self):
-        for key in ("plan/card1", "brief/card1", "report/card1", "notes/a/2026-10-12-topic", "draft/series/part1-v2"):
+        for key in ("plan/card1", "brief/card1", "report/card1", "notes/a/2026-10-12-topic", "draft/series/part1-v2", "peter-report/2026-10-14"):
             self.assertEqual(wp.validate_doc_key(key), key)
 
     def test_rejects_bad_keys(self):
@@ -227,7 +227,7 @@ class TestUpload(Base):
 
     def test_existing_prefixes_keep_their_implied_type_and_mismatch_refusal(self):
         src = self.doc()
-        implied = {"plan": "plan", "brief": "brief", "report": "report", "notes": "notes", "draft": "notes"}
+        implied = {"plan": "plan", "brief": "brief", "report": "report", "notes": "notes", "draft": "notes", "peter-report": "report"}
         for prefix, expected in implied.items():
             key = prefix + "/a/x"
             self.assertEqual(self.run_main(["--file", src, "--doc-key", key])[0], 0, key)
