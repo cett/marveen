@@ -46,6 +46,7 @@ const EXPECTED: Record<string, string[]> = {
   ],
   PreToolUse: [
     'channel-image-resize.sh', 'egress-gate.mjs', 'destructive-gate.py', 'auth-admin-gate.py',
+    'secret-read-gate.py', 'email-approval-gate.py',
   ],
   Stop: ['telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py'],
