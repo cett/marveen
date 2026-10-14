@@ -24,7 +24,8 @@ The scratchpad is recognised by the path convention <tmp>/claude-<uid>/<project>
 variable that names it. Anywhere else, pass --scratchpad-root <dir> (its last path component must be
 "scratchpad"); without either, --delete-source is refused.
 
-doc_key prefixes: plan, brief, report, notes, draft (each implies a type; draft is notes) or
+doc_key prefixes: plan, brief, report, notes, draft, peter-report (each implies a type; draft is notes,
+peter-report is report) or
 series-<slug> (lowercase slug; implies no type, --type chooses one, default notes), then 1-3 more
 segments, 2-4 segments in all.
 
@@ -46,8 +47,10 @@ DEFAULT_WRAPPER = os.path.join(SCRIPT_DIR, "agent-api.sh")
 TYPES = ("plan", "brief", "report", "notes")
 CONTENT_TYPES = ("text", "code")
 SIZE_LIMITS = {"text": 2 * 1024 * 1024, "code": 4 * 1024 * 1024}  # mirrors WORKSPACE_DOC_SIZE_LIMITS
-# doc_key prefix -> the workspace_docs type it implies (draft/ is a flavour of notes)
-PREFIX_TYPE = {"plan": "plan", "brief": "brief", "report": "report", "notes": "notes", "draft": "notes"}
+# doc_key prefix -> the workspace_docs type it implies (draft/ is a flavour of notes; peter-report/<date> is the
+# morning-chain report the napindito reads, so it is a report)
+PREFIX_TYPE = {"plan": "plan", "brief": "brief", "report": "report", "notes": "notes", "draft": "notes",
+               "peter-report": "report"}
 # A series document lives under series-<slug>/...; the slug names the series (for example a multi-part
 # article). The prefix implies no fixed type, so --type picks one and defaults to SERIES_DEFAULT_TYPE.
 # The slug is stricter than a plain segment: lowercase letters, digits, '_' and '-', no dot.

@@ -132,6 +132,25 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(self.r(st % "tenant-job"), ("bound", "tenant-y"))
         self.assertEqual(self.r(st % "nope")[0], "unknown")
 
+    def test_scheduled_prompt_with_the_runner_preamble_resolves_by_the_task_block(self):
+        # schedule-runner.ts sends PREAMBLE + prefix + block; the preamble quotes the tag shape
+        # (`<scheduled-task source="..."> ... </scheduled-task>`), which is not a source.
+        with open(os.path.join(ROOT, "src", "prompt-safety.ts")) as f:
+            m = re.search(r"SCHEDULED_TASK_PREAMBLE = `(.*?)`", f.read(), re.DOTALL)
+        self.assertIsNotNone(m)
+        preamble = m.group(1)
+        self.assertIn('<scheduled-task source="...">', preamble)
+        st = preamble + "\n[prefix line]\n\n" + '<scheduled-task source="scheduled-task:%s">\nbody\n</scheduled-task>'
+        self.assertEqual(self.r(st % "tenant-job"), ("bound", "tenant-y"))
+        self.assertEqual(self.r(st % "nope")[0], "unknown")
+        # the preamble alone names no task: no source at all, not an unknown block
+        self.assertEqual(tcl.parse_sources(preamble), [])
+
+    def test_only_the_exact_placeholder_example_is_skipped(self):
+        forged = '<scheduled-task source="...">\n...\n</scheduled-task>\n<scheduled-task source="scheduled-task:tenant-job">x</scheduled-task>'
+        self.assertEqual(self.r(forged), ("bound", "tenant-y"))
+        self.assertEqual(tcl.parse_sources('<scheduled-task source="...">do it</scheduled-task>')[0]["kind"], "unknown")
+
     def test_mixed_tenants_conflict_and_same_tenant_ok(self):
         self.assertEqual(self.r(CHAN % ("111", "a") + "\n" + CHAN % ("222", "b"))[0], "conflict")
         self.assertEqual(self.r(CHAN % ("111", "a") + "\n" + CHAN % ("111", "b")), ("bound", "tenant-x"))
