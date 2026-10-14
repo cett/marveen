@@ -7,6 +7,7 @@
 import { getDb } from './db/connection.js'
 import { defineCounter, defineGauge, defineHistogram, defineObservableCounter, otelCount, otelRecord } from './otel-metrics.js'
 import { getGateDecisionCounts } from './db/otel-logs.js'
+import { getAppLogDropped } from './otel-app-logs.js'
 
 // ── Exporter health (src/web/otel-push-exporter.ts) ──────────────────────────
 // The attribute key is in our own namespace on purpose: a bare "signal" would collide with anything a backend
@@ -35,6 +36,14 @@ export function countScheduleRun(schedule: string, status: string): void {
 export function recordScheduleRunDuration(schedule: string, seconds: number, ok: boolean): void {
   otelRecord('marveen.schedule.run.duration', seconds, { schedule, status: ok ? 'ok' : 'error' })
 }
+
+// ── Application log export (src/otel-app-logs.ts) ────────────────────────────
+// Lines the capture buffer had to drop (it holds MAX_BUFFER distinct ones). Read from the buffer's own counter, because
+// the logger cannot import this file (it would pull the database in before the logger exists).
+defineObservableCounter('marveen.log.dropped', '{line}', () => {
+  const { overflow } = getAppLogDropped()
+  return overflow > 0 ? [{ attrs: { reason: 'overflow' }, value: overflow }] : []
+}, ['reason'])
 
 // ── Dashboard HTTP server (src/otel-http.ts) ─────────────────────────────────
 // http.server.request.duration as the HTTP semantic conventions define it: seconds, their recommended bounds. The

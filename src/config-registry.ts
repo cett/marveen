@@ -766,6 +766,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'OTEL_EXPORT_APP_LOGS',
+    type: 'boolean',
+    default: '0',
+    description: 'Az OTLP exportőr a dashboard saját naplósoraiból a warn és efölötti szintűeket is elküldi a /v1/logs útvonalra (alkalmazás-naplók). Alapból KI, az OTEL_EXPORT_ENABLED-del együtt kell, és külön kapcsoló az OTEL_EXPORT_LOGS-tól (audit-események), mert ez másféle adat. Soronként csak az üzenet SABLONJA megy ki (a pino formátum-argumentumai és a kötött mezők, vagyis a hívás adatai soha nem olvasódnak), a hitelesítő adatoktól, a home-útvonaltól, e-mail-címektől, útvonalaktól és hosszú azonosítóktól megtisztítva és 160 karakterre vágva, plusz egy hiba osztályneve és kódja. Heurisztika, nem garancia: a szövegbe magába sütött érték (sablon-literál) az egyetlen, amit a tisztítás nem ismer fel. Azonos sorok egy rekordba olvadnak számlálóval, a puffer 500 különböző sort tart (a régebbieket eldobja, a darabszámot a marveen.log.dropped számolja), újraindításkor elvész. Az exportőr saját sorai nem kerülnek bele.',
+    module: 'observability',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Claude plans module (PR2b/PR2c) ---
   // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
   // heartbeat script's decision to call it (scripts/claude-plan-rotate-check.ts)

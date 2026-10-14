@@ -11,6 +11,7 @@
 // with spaces or a path in it cannot ride out as an attribute.
 
 import { createHmac } from 'node:crypto'
+import type { AppLogRecord } from './otel-app-logs.js'
 import type {
   OtelLogRows, OtelLogSource, ApprovalEventLogRow, RbacDecisionLogRow, ConfigChangeExportRow, AgentAuditExportRow,
   HookAuditExportRow,
@@ -25,7 +26,7 @@ export const LOG_SCOPE_NAME = 'marveen.audit'
 
 interface LogAttribute {
   key: string
-  value: { stringValue?: string }
+  value: { stringValue?: string; intValue?: string }
 }
 
 export interface OtelLogRecord {
@@ -139,6 +140,31 @@ function hookAuditRecord(r: HookAuditExportRow, observed: string): OtelLogRecord
   ])
 }
 
+// ── Application logs (src/otel-app-logs.ts) ─────────────────────────────────
+export const APP_LOG_SCOPE_NAME = 'marveen.app'
+
+const APP_SEVERITY: [number, number, string][] = [[60, 21, 'FATAL'], [50, 17, 'ERROR'], [0, SEVERITY_WARN, 'WARN']]
+
+export function appLogsToRecords(records: AppLogRecord[], nowMs: number = Date.now()): OtelLogRecord[] {
+  const observed = (BigInt(Math.floor(nowMs)) * 1_000_000n).toString()
+  return records.map((r) => {
+    const [, number, text] = APP_SEVERITY.find(([min]) => r.level >= min) as [number, number, string]
+    return {
+      timeUnixNano: (BigInt(Math.max(0, Math.floor(r.firstMs))) * 1_000_000n).toString(),
+      observedTimeUnixNano: observed,
+      severityNumber: number,
+      severityText: text,
+      body: { stringValue: r.message || r.exceptionType || '' },
+      attributes: [
+        { key: 'event.name', value: { stringValue: 'marveen.app.log' } },
+        ...attr('exception.type', r.exceptionType),
+        ...attr('marveen.log.error_code', r.errorCode),
+        ...(r.count > 1 ? [{ key: 'marveen.log.count', value: { intValue: String(r.count) } }] : []),
+      ],
+    }
+  })
+}
+
 export interface MappedLogBatch {
   records: OtelLogRecord[]
   // The highest row id included per source: the cursor to store once the collector has the batch.
@@ -165,6 +191,7 @@ export function logsToOtelJson(
   records: OtelLogRecord[],
   serviceNamespace: string,
   instanceId: string,
+  scopeName: string = LOG_SCOPE_NAME,
 ): { resourceLogs: unknown[] } {
   return {
     resourceLogs: [{
@@ -175,7 +202,7 @@ export function logsToOtelJson(
           { key: 'service.instance.id', value: { stringValue: instanceId } },
         ],
       },
-      scopeLogs: [{ scope: { name: LOG_SCOPE_NAME, version: '1' }, logRecords: records }],
+      scopeLogs: [{ scope: { name: scopeName, version: '1' }, logRecords: records }],
     }],
   }
 }

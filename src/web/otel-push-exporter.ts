@@ -26,7 +26,8 @@ import {
   getOtelLogBatch, setOtelLogCursor, getOtelLogHashSalt, OTEL_LOG_SOURCES,
 } from '../db.js'
 import { spansToOtelJson, tokenUsageToOtelMetricsJson, registryMetricsToOtelJson, serviceInstanceId, durationToOtelMetricsJson } from '../otel-exporter.js'
-import { mapLogBatch, logsToOtelJson } from '../otel-logs.js'
+import { mapLogBatch, logsToOtelJson, appLogsToRecords, APP_LOG_SCOPE_NAME } from '../otel-logs.js'
+import { takeAppLogs, restoreAppLogs } from '../otel-app-logs.js'
 import { recordDurations, takePendingDurations, restorePendingDurations, resetPendingDurations } from '../otel-genai-duration.js'
 import { collectRegistryMetrics } from '../otel-metrics.js'
 import { countExportFailure, countExportRejected } from '../otel-signals.js'
@@ -43,6 +44,7 @@ import { logger } from '../logger.js'
 const PUSH_INTERVAL_MS = 30_000
 const SPAN_BATCH_LIMIT = 500
 const LOG_BATCH_LIMIT = 500 // per audit source
+const APP_LOG_BATCH_LIMIT = 200
 const RESPONSE_BODY_MAX_CHARS = 4096
 
 type Signal = 'traces' | 'metrics' | 'logs'
@@ -326,6 +328,28 @@ async function exportDurations(cfg: ExportConfig): Promise<void> {
   recordFailure('metrics', result, url)
 }
 
+// The dashboard's own warn/error log lines (src/otel-app-logs.ts), opt-in through OTEL_EXPORT_APP_LOGS. They share
+// the logs signal's backoff with the audit events. A failed send puts the lines back (the buffer is bounded and
+// drops its oldest), a payload the collector refuses for good is dropped.
+async function exportAppLogs(cfg: ExportConfig): Promise<void> {
+  if (!due('logs')) return
+  const taken = takeAppLogs(APP_LOG_BATCH_LIMIT)
+  if (taken.length === 0) return
+  const url = `${cfg.endpoint}/v1/logs`
+  const payload = logsToOtelJson(appLogsToRecords(taken), cfg.serviceNamespace, serviceInstanceId(), APP_LOG_SCOPE_NAME)
+  const result = await postJson(url, cfg.headers, payload)
+  if (result.kind === 'ok') {
+    recordSuccess('logs', result.rejected, result.message, url)
+    return
+  }
+  if (result.kind === 'permanent') {
+    recordPermanent('logs', result.status, taken.length, url)
+    return
+  }
+  restoreAppLogs(taken)
+  recordFailure('logs', result, url)
+}
+
 // The registry metrics (exporter health, scheduled runs, inter-agent messages, Telegram events) are sent
 // whenever the collector just answered. Cumulative series are sent every time, so a backend that expires a
 // silent series (Prometheus staleness) never sees them vanish. A failed send is not counted as another
@@ -358,6 +382,13 @@ export async function tick(): Promise<void> {
       await exportLogs(cfg)
     } catch (err) {
       logger.warn({ err }, 'otel-push-exporter: logs export failed')
+    }
+  }
+  if (getEffectiveSettingValue('OTEL_EXPORT_APP_LOGS') === '1') {
+    try {
+      await exportAppLogs(cfg)
+    } catch (err) {
+      logger.warn({ err }, 'otel-push-exporter: application log export failed')
     }
   }
   try {
