@@ -44,6 +44,16 @@ def _attr(attrs, name):
     return m.group(1) if m else None
 
 
+def _is_preamble_example(tag, attrs, body):
+    """True for the literal `<tag source="..."> ... </tag>` the safety preambles quote as an example.
+
+    The scheduled-task preamble (src/prompt-safety.ts) sits in front of every scheduled prompt and shows
+    the tag shape once; read as a real block it has no task name and would resolve the whole prompt to
+    unknown. Only the exact placeholder form is skipped: a real or forged block carries a real source.
+    """
+    return _attr(attrs, "source") == "..." and body.strip() == "..."
+
+
 def channel_name(source):
     """plugin:telegram:telegram -> telegram, plugin:slack-channel:x -> slack-channel."""
     if not source:
@@ -67,6 +77,8 @@ def parse_sources(prompt):
         frame_parts.append(prompt[pos:m.start()])
         pos = m.end()
         tag, attrs = m.group(1), m.group(2)
+        if _is_preamble_example(tag, attrs, m.group(3)):
+            continue
         if tag == "channel":
             channel = channel_name(_attr(attrs, "source"))
             ext = _attr(attrs, "chat_id")
