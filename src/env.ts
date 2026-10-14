@@ -55,10 +55,15 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
 // Values are written UNQUOTED: channels.sh parses with `cut -d= -f2-` and does
 // no quote-stripping, so a quoted value would leak the quotes. Only non-empty
 // string values are written; empty updates are a no-op (no file touch).
+// A key must look like a variable name and a value must be one line: a line break in either would start a
+// new .env line, i.e. let the caller write a key it did not name. Such an entry is skipped.
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const ENV_UNSAFE_VALUE_RE = /[\x00-\x1f\x7f\x85\u2028\u2029]/ // any control character or Unicode line separator
+
 export function updateEnvFile(updates: Record<string, string>): void {
   const envPath = join(resolveEnvRoot(), '.env')
   const entries = Object.entries(updates).filter(
-    ([, v]) => typeof v === 'string' && v.length > 0,
+    ([k, v]) => typeof v === 'string' && v.length > 0 && ENV_KEY_RE.test(k) && !ENV_UNSAFE_VALUE_RE.test(v),
   )
   if (entries.length === 0) return
 

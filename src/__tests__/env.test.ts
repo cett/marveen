@@ -79,6 +79,24 @@ describe('updateEnvFile', () => {
     expect(readEnvFile()['FOO']).toBe('bar')
   })
 
+  it('skips a value with a line break and a key that is not a variable name (no smuggled .env lines)', async () => {
+    writeFileSync(testEnvPath, 'FOO=bar\n')
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    updateEnvFile({
+      OWNER_NAME: 'x\nOTEL_EXPORTER_OTLP_ENDPOINT=https://collector.invalid',
+      'BAD KEY': 'y',
+      'A=B': 'z',
+      GOOD: 'ok',
+    })
+    const result = readEnvFile()
+    expect(result['GOOD']).toBe('ok')
+    expect(result['FOO']).toBe('bar')
+    expect(result).not.toHaveProperty('OWNER_NAME')
+    expect(result).not.toHaveProperty('OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(result).not.toHaveProperty('BAD KEY')
+    expect(result).not.toHaveProperty('A')
+  })
+
   it('creates .env if missing and appends new key', async () => {
     try { unlinkSync(testEnvPath) } catch {}
     const { updateEnvFile, readEnvFile } = await import('../env.js')
