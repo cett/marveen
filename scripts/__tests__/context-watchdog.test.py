@@ -539,6 +539,135 @@ class TestFindTurnStartEvent(unittest.TestCase):
         self.assertIsNone(hook.find_turn_start_event(""))
 
 
+def _tline(uuid, parent, kind, ts, msg_id=None, extra=None):
+    """One transcript line of the shape model_call_duration_ms reads."""
+    obj = {"uuid": uuid, "parentUuid": parent, "type": kind, "timestamp": ts, "message": {}}
+    if msg_id:
+        obj["message"]["id"] = msg_id
+    obj.update(extra or {})
+    return json.dumps(obj, separators=(",", ":"))
+
+
+class TestModelCallDuration(unittest.TestCase):
+    """model_call_duration_ms: an approximation from transcript timestamps that must never raise."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        self.path = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.close()
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+
+    def write(self, lines, raw_tail=""):
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + ("\n" if lines else "") + raw_tail)
+
+    def ev(self, uuid, parent, ts, msg_id="msg_1"):
+        return json.loads(_tline(uuid, parent, "assistant", ts, msg_id))
+
+    def test_single_line_response_is_measured_from_the_line_it_answers(self):
+        self.write([_tline("u1", None, "user", "2026-09-08T10:00:00.000Z"),
+                    _tline("a1", "u1", "assistant", "2026-09-08T10:00:03.250Z", "msg_1")])
+        self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "2026-09-08T10:00:03.250Z")), 3250)
+
+    def test_a_response_of_several_blocks_is_followed_back_to_the_line_before_its_first_block(self):
+        self.write([_tline("r0", None, "user", "2026-09-08T10:00:00.000Z", extra={"toolUseResult": {}}),
+                    _tline("a1", "r0", "assistant", "2026-09-08T10:00:02.000Z", "msg_1"),   # thinking
+                    _tline("a2", "a1", "assistant", "2026-09-08T10:00:04.000Z", "msg_1"),   # text
+                    _tline("a3", "a2", "assistant", "2026-09-08T10:00:07.500Z", "msg_1")])  # tool_use, the usage line
+        self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a3", "a2", "2026-09-08T10:00:07.500Z")), 7500)
+
+    def test_a_parent_that_is_another_response_is_where_the_measurement_starts(self):
+        self.write([_tline("a0", None, "assistant", "2026-09-08T10:00:00.000Z", "msg_0"),
+                    _tline("a1", "a0", "assistant", "2026-09-08T10:00:01.000Z", "msg_1")])
+        self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a1", "a0", "2026-09-08T10:00:01.000Z")), 1000)
+
+    def test_no_parent_uuid_gives_none(self):
+        self.write([_tline("a1", None, "assistant", "2026-09-08T10:00:03.000Z", "msg_1")])
+        self.assertIsNone(hook.model_call_duration_ms(self.path, self.ev("a1", None, "2026-09-08T10:00:03.000Z")))
+
+    def test_a_chain_that_starts_inside_the_response_gives_none(self):
+        self.write([_tline("a1", None, "assistant", "2026-09-08T10:00:00.000Z", "msg_1"),
+                    _tline("a2", "a1", "assistant", "2026-09-08T10:00:05.000Z", "msg_1")])
+        self.assertIsNone(hook.model_call_duration_ms(self.path, self.ev("a2", "a1", "2026-09-08T10:00:05.000Z")))
+
+    def test_a_parent_that_is_not_in_the_transcript_gives_none(self):
+        self.write([_tline("zz", None, "user", "2026-09-08T10:00:00.000Z")])
+        self.assertIsNone(hook.model_call_duration_ms(self.path, self.ev("a1", "missing", "2026-09-08T10:00:03.000Z")))
+
+    def test_a_parent_outside_the_tail_that_was_read_gives_none(self):
+        old = _tline("u1", None, "user", "2026-09-08T10:00:00.000Z")
+        filler = [_tline("f%d" % i, "u1", "user", "2026-09-08T10:00:01.000Z", extra={"pad": "x" * 2000}) for i in range(400)]
+        self.write([old] + filler + [_tline("a1", "f399", "assistant", "2026-09-08T10:00:03.000Z", "msg_1")])
+        self.assertGreater(os.path.getsize(self.path), hook.DURATION_TAIL_BYTES)
+        self.assertIsNone(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "2026-09-08T10:00:03.000Z")))
+        # while a parent that is inside the tail of the same big file is found
+        self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a1", "f399", "2026-09-08T10:00:03.000Z")), 2000)
+
+    def test_text_that_merely_mentions_the_uuid_is_not_the_line(self):
+        # the decoy comes AFTER u1 in the file (the lookup scans from the end) and nests the same id as a key
+        self.write([_tline("u1", None, "user", "2026-09-08T10:00:00.000Z"),
+                    _tline("decoy", None, "user", "2026-09-08T10:00:02.900Z",
+                           extra={"toolUseResult": {"uuid": "u1"}}),
+                    _tline("a1", "u1", "assistant", "2026-09-08T10:00:03.000Z", "msg_1")])
+        self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "2026-09-08T10:00:03.000Z")), 3000)
+
+    def test_garbage_lines_and_a_cut_first_line_are_skipped(self):
+        self.write(["{not json", _tline("u1", None, "user", "2026-09-08T10:00:00.000Z"), "\x00\x01 binary", ""],
+                   raw_tail=_tline("a1", "u1", "assistant", "2026-09-08T10:00:02.000Z", "msg_1"))
+        self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "2026-09-08T10:00:02.000Z")), 2000)
+
+    def test_missing_unreadable_or_empty_input_gives_none(self):
+        ev = self.ev("a1", "u1", "2026-09-08T10:00:03.000Z")
+        self.assertIsNone(hook.model_call_duration_ms("/nonexistent/path.jsonl", ev))
+        self.assertIsNone(hook.model_call_duration_ms("", ev))
+        self.assertIsNone(hook.model_call_duration_ms(None, ev))
+        self.assertIsNone(hook.model_call_duration_ms(os.path.dirname(self.path), ev))  # a directory
+        self.write([])
+        self.assertIsNone(hook.model_call_duration_ms(self.path, ev))
+
+    def test_zero_negative_and_over_the_cap_give_none_and_the_cap_itself_is_kept(self):
+        for start, want in (("2026-09-08T10:00:03.000Z", None),    # zero
+                            ("2026-09-08T10:00:09.000Z", None),    # negative
+                            ("2026-09-08T09:29:59.000Z", None),    # 30 min + 4 s
+                            ("2026-09-08T09:30:03.000Z", hook.DURATION_MAX_MS)):  # exactly the cap
+            self.write([_tline("u1", None, "user", start), _tline("a1", "u1", "assistant", "2026-09-08T10:00:03.000Z", "msg_1")])
+            self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "2026-09-08T10:00:03.000Z")), want, start)
+
+    def test_a_timestamp_that_does_not_parse_gives_none(self):
+        self.write([_tline("u1", None, "user", "yesterday"), _tline("a1", "u1", "assistant", "2026-09-08T10:00:03.000Z", "msg_1")])
+        self.assertIsNone(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "2026-09-08T10:00:03.000Z")))
+        self.write([_tline("u1", None, "user", "2026-09-08T10:00:00.000Z")])
+        self.assertIsNone(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "not a time")))
+
+    def test_a_loop_in_the_parent_chain_ends_at_the_hop_cap(self):
+        self.write([_tline("a1", "a2", "assistant", "2026-09-08T10:00:01.000Z", "msg_1"),
+                    _tline("a2", "a1", "assistant", "2026-09-08T10:00:02.000Z", "msg_1")])
+        self.assertIsNone(hook.model_call_duration_ms(self.path, self.ev("a3", "a1", "2026-09-08T10:00:03.000Z")))
+
+    def test_malformed_events_never_raise(self):
+        self.write([_tline("u1", None, "user", "2026-09-08T10:00:00.000Z")])
+        for bad in (None, {}, {"parentUuid": 5}, {"parentUuid": "u1"}, {"parentUuid": "u1", "message": "str"},
+                    {"parentUuid": "u1", "message": {"id": "m"}, "timestamp": 12345}, "text", 7):
+            try:
+                self.assertIsNone(hook.model_call_duration_ms(self.path, bad))
+            except AssertionError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.fail("raised %r for %r" % (exc, bad))
+
+    def test_reading_the_tail_is_fast_on_a_large_transcript(self):
+        import time
+        self.write([_tline("f%d" % i, None, "user", "2026-09-08T10:00:00.000Z", extra={"pad": "x" * 2000}) for i in range(5000)]
+                   + [_tline("u1", None, "user", "2026-09-08T10:00:00.000Z"),
+                      _tline("a1", "u1", "assistant", "2026-09-08T10:00:02.000Z", "msg_1")])
+        t0 = time.monotonic()
+        self.assertEqual(hook.model_call_duration_ms(self.path, self.ev("a1", "u1", "2026-09-08T10:00:02.000Z")), 2000)
+        self.assertLess(time.monotonic() - t0, 0.5)
+
+
 class TestOtelSpanWrites(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -558,6 +687,41 @@ class TestOtelSpanWrites(unittest.TestCase):
             (span_id,),
         ).fetchone()
         self.assertEqual(row, ("sess-1", "msg_1", "turn-1", MAIN_AGENT, "model.call", "ok"))
+
+    def span_row(self):
+        return self.conn.execute("SELECT start_ms, end_ms, attributes FROM otel_spans WHERE span_id = 'msg_1'").fetchone()
+
+    def test_a_measured_duration_moves_the_start_back_and_marks_the_span_approximate(self):
+        hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1", duration_ms=2500)
+        start, end, attrs = self.span_row()
+        self.assertEqual(end - start, 2500)
+        self.assertEqual(json.loads(attrs)["marveen.duration.source"], "transcript")
+
+    def test_without_a_duration_the_span_is_as_before_and_unmarked(self):
+        for kw in ({}, {"duration_ms": None}):
+            self.conn.execute("DELETE FROM otel_spans")
+            hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1", **kw)
+            start, end, attrs = self.span_row()
+            self.assertEqual(start, end)
+            self.assertNotIn("marveen.duration.source", json.loads(attrs))
+
+    def test_a_duration_that_is_not_plausible_is_ignored_not_trusted(self):
+        for bad in (0, -5, hook.DURATION_MAX_MS + 1, True, "3000", 2.5, float("nan")):
+            self.conn.execute("DELETE FROM otel_spans")
+            hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1", duration_ms=bad)
+            start, end, attrs = self.span_row()
+            self.assertEqual(start, end, bad)
+            self.assertNotIn("marveen.duration.source", json.loads(attrs), bad)
+
+    def test_the_cap_itself_is_accepted(self):
+        hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1", duration_ms=hook.DURATION_MAX_MS)
+        start, end, _ = self.span_row()
+        self.assertEqual(end - start, hook.DURATION_MAX_MS)
+
+    def test_the_span_still_carries_the_token_attributes_next_to_the_marker(self):
+        hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(input_tokens=10, output_tokens=5), "turn-1", duration_ms=1000)
+        attrs = json.loads(self.span_row()[2])
+        self.assertEqual((attrs["input_tokens"], attrs["output_tokens"], attrs["model"]), (10, 5, "claude-test-model"))
 
     def test_span_is_stamped_with_the_served_tenant(self):
         self.conn.execute("INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES ('acme', ?, 1)", (MAIN_AGENT,))

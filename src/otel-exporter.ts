@@ -8,7 +8,9 @@ import { createHash } from 'node:crypto'
 import { hostname } from 'node:os'
 import { PROJECT_ROOT } from './config.js'
 import type { OtelSpan, TokenUsageMetricRow, TokenHistogramRow } from './db.js'
+import type { PendingDurations } from './otel-genai-duration.js'
 import {
+  GENAI_DURATION_BUCKET_BOUNDS, DURATION_SOURCE_KEY, DURATION_SOURCE_TRANSCRIPT,
   GENAI_PROVIDER_NAME, GENAI_TOKEN_BUCKET_BOUNDS, SPAN_KIND_CLIENT, SPAN_KIND_INTERNAL, SPAN_KIND_PRODUCER,
   TEMPORALITY_DELTA,
 } from './otel-genai.js'
@@ -59,6 +61,8 @@ export const EXPORT_ATTRIBUTE_ALLOWLIST: ReadonlySet<string> = new Set([
   'msg_id', 'from', 'to',
   'schedule', 'schedule_type',
   'model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens',
+  // Set only on a model.call span whose duration was approximated from transcript timestamps.
+  'marveen.duration.source',
 ])
 
 // Opt-in attribute (OTEL_EXPORT_INPUT_SUMMARY): a short description of what a tool call was given. The
@@ -499,6 +503,57 @@ export function tokenUsageToOtelMetricsJson(
     })
   }
 
+  return { resourceMetrics }
+}
+
+// gen_ai.client.operation.duration (src/otel-genai-duration.ts): a DELTA histogram of how long model
+// responses took, in seconds, one data point per (agent, model, tenant). Every data point carries
+// marveen.duration.source=transcript: the figure is an approximation from transcript timestamps.
+export const OPERATION_DURATION_METRIC = 'gen_ai.client.operation.duration'
+
+export function durationToOtelMetricsJson(
+  batch: PendingDurations,
+  untilMs: number,
+  serviceNamespace = 'marveen',
+  opts: OtelExportOptions = {},
+): OtelMetricsExportPayload {
+  const instanceId = opts.serviceInstanceId ?? serviceInstanceId()
+  const startNano = msToNano(batch.sinceMs)
+  const endNano = msToNano(Math.max(untilMs, batch.sinceMs))
+  const byAgent = new Map<string, OtelHistogramDataPoint[]>()
+  for (const s of batch.series) {
+    if (!(s.count > 0)) continue
+    const points = byAgent.get(s.agentId) ?? []
+    points.push({
+      attributes: [
+        ...genAiAttributes(s.model, null, s.agentId, s.tenantId),
+        toOtelAttribute(DURATION_SOURCE_KEY, DURATION_SOURCE_TRANSCRIPT),
+      ],
+      startTimeUnixNano: startNano,
+      timeUnixNano: endNano,
+      count: String(s.count),
+      sum: s.sum,
+      bucketCounts: s.buckets.map(String),
+      explicitBounds: [...GENAI_DURATION_BUCKET_BOUNDS],
+      min: s.min,
+      max: s.max,
+    })
+    byAgent.set(s.agentId, points)
+  }
+  const resourceMetrics: ResourceMetrics[] = []
+  for (const [agentId, dataPoints] of byAgent) {
+    resourceMetrics.push({
+      resource: { attributes: resourceAttributes(agentId, serviceNamespace, instanceId) },
+      scopeMetrics: [{
+        scope: { name: 'marveen', version: '1' },
+        metrics: [{
+          name: OPERATION_DURATION_METRIC,
+          unit: 's',
+          histogram: { dataPoints, aggregationTemporality: TEMPORALITY_DELTA },
+        }],
+      }],
+    })
+  }
   return { resourceMetrics }
 }
 

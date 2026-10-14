@@ -25,8 +25,9 @@ import {
   sumTokenUsageWindow, tokenUsageHistogramWindow,
   getOtelLogBatch, setOtelLogCursor, getOtelLogHashSalt, OTEL_LOG_SOURCES,
 } from '../db.js'
-import { spansToOtelJson, tokenUsageToOtelMetricsJson, registryMetricsToOtelJson, serviceInstanceId } from '../otel-exporter.js'
+import { spansToOtelJson, tokenUsageToOtelMetricsJson, registryMetricsToOtelJson, serviceInstanceId, durationToOtelMetricsJson } from '../otel-exporter.js'
 import { mapLogBatch, logsToOtelJson } from '../otel-logs.js'
+import { recordDurations, takePendingDurations, restorePendingDurations, resetPendingDurations } from '../otel-genai-duration.js'
 import { collectRegistryMetrics } from '../otel-metrics.js'
 import { countExportFailure, countExportRejected } from '../otel-signals.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
@@ -83,6 +84,7 @@ export function resetOtelExporterStatus(): void {
   state.traces = freshSignalState()
   state.metrics = freshSignalState()
   state.logs = freshSignalState()
+  resetPendingDurations()
   lastConfigProblem = ''
 }
 
@@ -229,6 +231,7 @@ async function exportTraces(cfg: ExportConfig): Promise<boolean> {
   if (result.kind === 'ok') {
     recordSuccess('traces', result.rejected, result.message, url)
     done()
+    recordDurations(spans) // the response durations ride out with the next metrics export
     return true
   }
   if (result.kind === 'permanent') {
@@ -303,6 +306,26 @@ async function exportLogs(cfg: ExportConfig): Promise<boolean> {
   return false
 }
 
+// gen_ai.client.operation.duration: the model.call durations collected while exporting traces
+// (src/otel-genai-duration.ts). A failed send puts them back; a batch the collector refuses for good is dropped.
+async function exportDurations(cfg: ExportConfig): Promise<void> {
+  if (!due('metrics')) return
+  const batch = takePendingDurations()
+  if (!batch) return
+  const url = `${cfg.endpoint}/v1/metrics`
+  const result = await postJson(url, cfg.headers, durationToOtelMetricsJson(batch, Date.now(), cfg.serviceNamespace, readOtelExportOptions()))
+  if (result.kind === 'ok') {
+    recordSuccess('metrics', result.rejected, result.message, url)
+    return
+  }
+  if (result.kind === 'permanent') {
+    recordPermanent('metrics', result.status, batch.series.reduce((n, s) => n + s.count, 0), url)
+    return
+  }
+  restorePendingDurations(batch)
+  recordFailure('metrics', result, url)
+}
+
 // The registry metrics (exporter health, scheduled runs, inter-agent messages, Telegram events) are sent
 // whenever the collector just answered. Cumulative series are sent every time, so a backend that expires a
 // silent series (Prometheus staleness) never sees them vanish. A failed send is not counted as another
@@ -336,6 +359,11 @@ export async function tick(): Promise<void> {
     } catch (err) {
       logger.warn({ err }, 'otel-push-exporter: logs export failed')
     }
+  }
+  try {
+    await exportDurations(cfg)
+  } catch (err) {
+    logger.warn({ err }, 'otel-push-exporter: operation duration export failed')
   }
   // Not while the collector is failing (a second request into the same outage); right after it recovered, yes.
   if (state.traces.consecutiveFailures > 0 || state.metrics.consecutiveFailures > 0 || state.logs.consecutiveFailures > 0 || !due('metrics')) return
