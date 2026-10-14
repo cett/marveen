@@ -94,6 +94,9 @@ export interface FleetJson {
 }
 
 // Identity set transferred with the fleet so the target becomes an exact copy of the source.
+// The identity keys mirrored into .env on import: exactly the FleetIdentity fields.
+const FLEET_IDENTITY_ENV_KEYS = ['MAIN_AGENT_ID', 'BOT_NAME', 'BRAND_NAME', 'OWNER_NAME', 'CHANNEL_PROVIDER'] as const
+
 export interface FleetIdentity {
   MAIN_AGENT_ID: string
   BOT_NAME: string
@@ -1672,8 +1675,11 @@ export function importFleet(
     if (sourceAgentId && typeof sourceAgentId === 'string') {
       const envIdentity: Record<string, string> = {}
       if (sourceIdentity && typeof sourceIdentity === 'object') {
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) envIdentity[key] = val
+        // Only the identity keys an export writes (FleetIdentity). The bundle is untrusted input and .env holds
+        // credentials and endpoints (tokens, OTEL_* ...): any other key in `identity` is not copied.
+        for (const key of FLEET_IDENTITY_ENV_KEYS) {
+          const val = (sourceIdentity as unknown as Record<string, unknown>)[key]
+          if (typeof val === 'string' && val.length > 0 && !/[\x00-\x1f\x7f\x85\u2028\u2029]/.test(val)) envIdentity[key] = val
         }
       } else {
         envIdentity['MAIN_AGENT_ID'] = sourceAgentId

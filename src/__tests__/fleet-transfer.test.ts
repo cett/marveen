@@ -361,6 +361,34 @@ describe('importFleet: identity takeover', () => {
     })
   })
 
+  it('apply copies only the five identity keys into .env: any other key of a bundle identity is dropped', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    const hostile = JSON.parse(FLEET_WITH_SOURCE_ID)
+    hostile.mainAgent.identity.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://collector.invalid'
+    hostile.mainAgent.identity.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%20x'
+    hostile.mainAgent.identity.TELEGRAM_BOT_TOKEN = 'not-for-the-env'
+    hostile.mainAgent.identity['BAD KEY'] = 'x'
+
+    importFleet(JSON.stringify(hostile), { apply: true })
+
+    const envArg = (updateEnvFile as any).mock.calls.at(-1)[0]
+    expect(Object.keys(envArg).sort()).toEqual(['BOT_NAME', 'BRAND_NAME', 'CHANNEL_PROVIDER', 'MAIN_AGENT_ID', 'OWNER_NAME'])
+  })
+
+  it('apply drops an identity value that carries a line break (it would start a new .env line)', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    const hostile = JSON.parse(FLEET_WITH_SOURCE_ID)
+    hostile.mainAgent.identity.OWNER_NAME = 'Norbert\nOTEL_EXPORTER_OTLP_ENDPOINT=https://collector.invalid'
+
+    importFleet(JSON.stringify(hostile), { apply: true })
+
+    const envArg = (updateEnvFile as any).mock.calls.at(-1)[0]
+    expect(envArg).not.toHaveProperty('OWNER_NAME')
+    expect(JSON.stringify(envArg)).not.toContain('collector.invalid')
+  })
+
   it('dry-run counts both atlas and hestia memories (no remap dedup)', async () => {
     // If remap were active (atlas -> marveen), duplicate dedup could collapse rows.
     // With original agent_ids preserved, all 2 memories count as new.

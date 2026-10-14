@@ -77,7 +77,7 @@ vi.mock('../channel-provider.js', () => ({
 }))
 vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'marveen-channels' }))
 
-const { tryHandleOnboarding } = await import('../web/routes/onboarding.js')
+const { tryHandleOnboarding, setEnvKey } = await import('../web/routes/onboarding.js')
 
 function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
   const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
@@ -400,5 +400,92 @@ describe('unrelated paths', () => {
     const { ctx } = makeCtx('GET', '/api/something-else')
     const handled = await tryHandleOnboarding(ctx)
     expect(handled).toBe(false)
+  })
+})
+
+describe('POST /api/onboarding/claude-auth: a value that is not one clean line is never persisted', () => {
+  const INJECTED = 'TELEGRAM_BOT_TOKEN=attacker'
+  // The inconclusive probe is the path that persists an unverified value, so it is the one that matters.
+  beforeEach(() => { mocks.liveProbeAuth.mockResolvedValue('unknown') })
+
+  it.each([
+    ['LF', `sk-ant-oat-abc\n${INJECTED}`],
+    ['CR', `sk-ant-oat-abc\r${INJECTED}`],
+    ['NUL', 'sk-ant-oat-abc\0def'],
+    ['Unicode line separator', 'sk-ant-oat-abc def'],
+    ['space', 'sk-ant-oat-abc def'],
+  ])('rejects a setup token with %s inside, before any probe or write', async (_n, token) => {
+    const { ctx, out } = makeCtx('POST', '/api/onboarding/claude-auth', { token })
+    await tryHandleOnboarding(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.reason).toBe('bad-token')
+    expect(mocks.liveProbeAuth).not.toHaveBeenCalled()
+    expect(existsSync(join(SANDBOX, '.env'))).toBe(false)
+    expect(existsSync(join(SANDBOX, '.claude-oauth-token'))).toBe(false)
+  })
+
+  it.each([
+    ['LF', `sk-ant-key1\n${INJECTED}`],
+    ['CR', `sk-ant-key1\r${INJECTED}`],
+    ['Unicode line separator', 'sk-ant-key1 def'],
+  ])('rejects an API key with %s inside, before any probe or write', async (_n, apiKey) => {
+    const { ctx, out } = makeCtx('POST', '/api/onboarding/claude-auth', { apiKey })
+    await tryHandleOnboarding(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.reason).toBe('bad-key')
+    expect(mocks.liveProbeAuth).not.toHaveBeenCalled()
+    expect(existsSync(join(SANDBOX, '.env'))).toBe(false)
+  })
+
+  it('still stores a clean token whose surrounding whitespace was only padding', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/onboarding/claude-auth', { token: '  sk-ant-oat-abc_DEF-123\n' })
+    await tryHandleOnboarding(ctx)
+    expect(out.status).toBe(200)
+    expect(readFileSync(join(SANDBOX, '.env'), 'utf-8')).toBe('CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-abc_DEF-123\n')
+  })
+
+  it('does not touch an existing env file when a line-break token is refused', async () => {
+    writeFileSync(join(SANDBOX, '.env'), 'KEEP=1\n')
+    const { ctx } = makeCtx('POST', '/api/onboarding/claude-auth', { token: `sk-ant-oat-abc\n${INJECTED}` })
+    await tryHandleOnboarding(ctx)
+    expect(readFileSync(join(SANDBOX, '.env'), 'utf-8')).toBe('KEEP=1\n')
+  })
+})
+
+describe('POST /api/onboarding/identity: names that are not one clean line are refused', () => {
+  it.each([
+    ['LF', 'Owner\nINJECTED=1'],
+    ['Unicode line separator', 'Owner INJECTED=1'],
+    ['NEL', 'Owner\u0085INJECTED'],
+    ['DEL', 'Owner\u007fx'],
+  ])('rejects an owner name with %s, nothing written', async (_n, ownerName) => {
+    const { ctx, out } = makeCtx('POST', '/api/onboarding/identity', { agentName: 'Agent', ownerName })
+    await tryHandleOnboarding(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.reason).toBe('bad-name')
+    expect(existsSync(join(SANDBOX, '.env'))).toBe(false)
+  })
+})
+
+describe('setEnvKey: the writer itself refuses what is not one clean line', () => {
+  it.each([
+    ['LF', 'sk-ant-oat-abc\nTELEGRAM_BOT_TOKEN=attacker'],
+    ['CR', 'x\ry'],
+    ['Unicode line separator', 'x\u2028y'],
+  ])('throws for a value with %s and leaves the file untouched', (_n, value) => {
+    writeFileSync(join(SANDBOX, '.env'), 'KEEP=1\n')
+    expect(() => setEnvKey('CLAUDE_CODE_OAUTH_TOKEN', value)).toThrow(/single clean line/)
+    expect(readFileSync(join(SANDBOX, '.env'), 'utf-8')).toBe('KEEP=1\n')
+  })
+
+  it('throws for a key that is not a variable name', () => {
+    expect(() => setEnvKey('A\nB', 'v')).toThrow()
+    expect(() => setEnvKey('A=B', 'v')).toThrow()
+  })
+
+  it('still writes a clean entry and replaces the previous line of the same key', () => {
+    writeFileSync(join(SANDBOX, '.env'), 'KEEP=1\nK=old\n')
+    setEnvKey('K', 'new')
+    expect(readFileSync(join(SANDBOX, '.env'), 'utf-8')).toBe('KEEP=1\nK=new\n')
   })
 })

@@ -16,6 +16,7 @@ import {
 } from '../channel-monitor.js'
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
 import { json, readBody } from '../http-helpers.js'
+import { isSafeEnvEntry } from '../../env.js'
 import type { RouteContext } from './types.js'
 
 // First-run onboarding for the "pre-install now, configure later" flow: the
@@ -114,7 +115,9 @@ function agentsRunning(): boolean {
 
 // Atomic, idempotent .env update for one key: drop any prior line for the key,
 // keep every other line verbatim, append the new value, chmod 600. Never sed.
-function setEnvKey(key: string, value: string): void {
+export function setEnvKey(key: string, value: string): void {
+  // A key or value that is not one clean line would start a second line, i.e. write a key the caller did not name.
+  if (!isSafeEnvEntry(key, value)) throw new Error('refusing to write an env entry that is not a single clean line')
   let lines: string[] = []
   try { lines = readFileSync(ENV_FILE, 'utf-8').split('\n') } catch { /* fresh .env */ }
   const kept = lines.filter((l) => l.length > 0 && !l.startsWith(key + '='))
@@ -206,7 +209,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const agentName = (body.agentName ?? '').trim()
     const ownerName = (body.ownerName ?? '').trim()
     if (!agentName || !ownerName) { json(res, { error: 'required', hint: 'agentName es ownerName szukseges.', reason: 'missing' }, 400); return true }
-    if (agentName.length > 40 || ownerName.length > 60 || /[\n\r\0=]/.test(agentName + ownerName)) {
+    if (agentName.length > 40 || ownerName.length > 60 || /=/.test(agentName + ownerName) || !isSafeEnvEntry('BOT_NAME', agentName + ownerName)) {
       json(res, { error: 'invalid_value', hint: 'A nev tul hosszu vagy tiltott karaktert tartalmaz.', reason: 'bad-name' }, 400)
       return true
     }
@@ -277,8 +280,10 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const token = (body.token ?? '').trim()
     const apiKey = (body.apiKey ?? '').trim()
     if (!token && !apiKey) { json(res, { error: 'required', hint: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }
-    if (token && !/^sk-ant-oat/.test(token)) { json(res, { error: 'invalid_value', field: 'token', hint: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
-    if (apiKey && !/^sk-ant-/.test(apiKey)) { json(res, { error: 'invalid_value', field: 'apiKey', hint: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
+    // Anchored to the whole value with a closed character set: a prefix-only check let a line break through,
+    // and the value goes into an env file line (and a token file) as is.
+    if (token && !/^sk-ant-oat[A-Za-z0-9_-]*$/.test(token)) { json(res, { error: 'invalid_value', field: 'token', hint: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
+    if (apiKey && !/^sk-ant-[A-Za-z0-9_-]*$/.test(apiKey)) { json(res, { error: 'invalid_value', field: 'apiKey', hint: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
 
     // Verify BEFORE persisting, with a REAL probe. 2026-07-15 bootcamp bug 3:
     // the old persist-then-verify order stored a mistyped/revoked token into
