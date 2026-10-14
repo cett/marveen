@@ -119,6 +119,13 @@ def main():
 
     headers = auth.headers({'Content-Type': 'application/json'})
     try:
+        # W3C trace context: the trace id the exporter derives for this session's spans (sha256 of the session
+        # id), so a slow or failed POST shows up in the same trace. Best effort, never blocks the call.
+        import hashlib
+        headers['traceparent'] = '00-%s-%s-01' % (hashlib.sha256(session_id.encode()).hexdigest()[:32], os.urandom(8).hex())
+    except Exception:
+        pass
+    try:
         urllib.request.urlopen(
             urllib.request.Request(f'{base_url}/tool-log', data=body, headers=headers, method='POST'),
             timeout=3,

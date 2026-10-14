@@ -11,6 +11,7 @@ import type { OtelSpan, TokenUsageMetricRow, TokenHistogramRow } from './db.js'
 import type { PendingDurations } from './otel-genai-duration.js'
 import {
   GENAI_DURATION_BUCKET_BOUNDS, DURATION_SOURCE_KEY, DURATION_SOURCE_TRANSCRIPT,
+  SPAN_KIND_SERVER,
   GENAI_PROVIDER_NAME, GENAI_TOKEN_BUCKET_BOUNDS, SPAN_KIND_CLIENT, SPAN_KIND_INTERNAL, SPAN_KIND_PRODUCER,
   TEMPORALITY_DELTA,
 } from './otel-genai.js'
@@ -63,6 +64,8 @@ export const EXPORT_ATTRIBUTE_ALLOWLIST: ReadonlySet<string> = new Set([
   'model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens',
   // Set only on a model.call span whose duration was approximated from transcript timestamps.
   'marveen.duration.source',
+  // http.server spans (src/otel-http.ts): the method, the route TEMPLATE (never the raw path) and the status.
+  'http_method', 'http_route', 'http_status',
 ])
 
 // Opt-in attribute (OTEL_EXPORT_INPUT_SUMMARY): a short description of what a tool call was given. The
@@ -127,13 +130,14 @@ function toOtelAttribute(key: string, val: unknown): OtelAttribute {
 //   invoke_agent   <- agent.turn   (one agent turn; INTERNAL)
 // Anything else (inter-agent messages, schedule runs, spans written through POST /api/spans) keeps its name;
 // an inter-agent message is a PRODUCER, the rest INTERNAL.
-type SpanFamily = 'chat' | 'execute_tool' | 'invoke_agent' | 'message' | 'other'
+type SpanFamily = 'chat' | 'execute_tool' | 'invoke_agent' | 'message' | 'http_server' | 'other'
 
 function spanFamily(operation: string): SpanFamily {
   if (operation === 'model.call') return 'chat'
   if (operation.startsWith('tool.')) return 'execute_tool'
   if (operation === 'agent.turn') return 'invoke_agent'
   if (operation.includes('->')) return 'message'
+  if (operation === 'http.server') return 'http_server'
   return 'other'
 }
 
@@ -148,6 +152,11 @@ const ATTRIBUTE_RENAMES: Partial<Record<SpanFamily, Record<string, string[]>>> =
     cache_read_tokens: ['gen_ai.usage.cache_read.input_tokens'],
     cache_creation_tokens: ['gen_ai.usage.cache_creation.input_tokens'],
   },
+  http_server: {
+    http_method: ['http.request.method'],
+    http_route: ['http.route'],
+    http_status: ['http.response.status_code'],
+  },
   execute_tool: {
     tool_name: ['gen_ai.tool.name'],
     mcp_server: ['marveen.mcp.server'],
@@ -160,6 +169,7 @@ const SPAN_KINDS: Record<SpanFamily, number> = {
   execute_tool: SPAN_KIND_INTERNAL,
   invoke_agent: SPAN_KIND_INTERNAL,
   message: SPAN_KIND_PRODUCER,
+  http_server: SPAN_KIND_SERVER,
   other: SPAN_KIND_INTERNAL,
 }
 
@@ -180,6 +190,10 @@ function spanName(s: OtelSpan, family: SpanFamily, blob: Record<string, unknown>
     return tool ? `execute_tool ${tool}` : 'execute_tool'
   }
   if (family === 'invoke_agent') return `invoke_agent ${nameValue(s.agent_id)}`.trim()
+  if (family === 'http_server') {
+    // The convention's span name: "{method} {route}", the route being the template, never the raw path.
+    return `${nameValue(blob['http_method']) || 'HTTP'} ${nameValue(blob['http_route'])}`.trim()
+  }
   return s.operation
 }
 
@@ -239,6 +253,8 @@ function msToNano(ms: number): string {
 // output, so trace/span correlation (parent-child links across multiple
 // export calls) is preserved.
 function toHexId(id: string, byteLen: 8 | 16): string {
+  // A trace id taken over from a W3C traceparent header (src/otel-http.ts) is already the id to send.
+  if (id.startsWith('w3c-') && new RegExp(`^[0-9a-f]{${byteLen * 2}}$`).test(id.slice(4))) return id.slice(4)
   return createHash('sha256').update(id).digest('hex').slice(0, byteLen * 2)
 }
 

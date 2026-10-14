@@ -53,8 +53,25 @@ def _headers(agent_id=None, kind=agent_token.KIND_AGENT):
         {"Content-Type": "application/json"})
 
 
-def request(method, path, body=None, timeout=2, agent_id=None, kind=agent_token.KIND_AGENT):
+def traceparent(session_id):
+    """A W3C traceparent header value for a request made on behalf of `session_id`, or None. The trace id is the
+    one the OTLP exporter derives for that session's spans (sha256 of the session id, first 32 hex), so the
+    dashboard's http.server span of a slow or failed request lands in the same trace. Never raises."""
+    try:
+        if not session_id:
+            return None
+        import hashlib
+        return "00-%s-%s-01" % (hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()[:32], os.urandom(8).hex())
+    except Exception:
+        return None
+
+
+def request(method, path, body=None, timeout=2, agent_id=None, kind=agent_token.KIND_AGENT, session_id=None):
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(base_url() + path, data=data, method=method, headers=_headers(agent_id, kind))
+    headers = _headers(agent_id, kind)
+    tp = traceparent(session_id)
+    if tp:
+        headers["traceparent"] = tp
+    req = urllib.request.Request(base_url() + path, data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8") or "null")

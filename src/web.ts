@@ -16,6 +16,7 @@ import { runRbacGate } from './web/rbac-shadow-log.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
+import { instrumentHttpRequest } from './otel-http.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
 import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
@@ -219,6 +220,10 @@ export function startWebServer(port = 3420): http.Server {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const { path, deprecated, apiVersion } = normalizePath(url.pathname)
     const method = req.method || 'GET'
+
+    // HTTP server telemetry (OTel H6a): the duration of every request with a route TEMPLATE, a span for the slow and
+    // the failed ones (src/otel-http.ts). Recorded when the response is done.
+    instrumentHttpRequest(req, res, method, path)
 
     // DNS-rebinding defence: reject requests whose Host header is not in the
     // permitted set. A rebinding attack routes a foreign page's JS to 127.0.0.1

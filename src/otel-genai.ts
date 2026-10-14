@@ -23,6 +23,7 @@ export const GENAI_PROVIDER_NAME = 'anthropic'
 
 // OTLP span kinds (opentelemetry-proto trace.proto SpanKind).
 export const SPAN_KIND_INTERNAL = 1
+export const SPAN_KIND_SERVER = 2
 export const SPAN_KIND_CLIENT = 3
 export const SPAN_KIND_PRODUCER = 4
 

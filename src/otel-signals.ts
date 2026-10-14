@@ -36,6 +36,17 @@ export function recordScheduleRunDuration(schedule: string, seconds: number, ok:
   otelRecord('marveen.schedule.run.duration', seconds, { schedule, status: ok ? 'ok' : 'error' })
 }
 
+// ── Dashboard HTTP server (src/otel-http.ts) ─────────────────────────────────
+// http.server.request.duration as the HTTP semantic conventions define it: seconds, their recommended bounds. The
+// route is a TEMPLATE (src/otel-http.ts httpRouteTemplate), never the raw path or the query string.
+const HTTP_DURATION_BOUNDS = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10] as const
+defineHistogram('http.server.request.duration', 's', ['http.request.method', 'http.route', 'http.response.status_code'], HTTP_DURATION_BOUNDS)
+export function recordHttpServerRequest(method: string, route: string, status: number, seconds: number): void {
+  otelRecord('http.server.request.duration', seconds, {
+    'http.request.method': method, 'http.route': route, 'http.response.status_code': status,
+  })
+}
+
 // ── Inter-agent messages (src/web/message-router.ts) ─────────────────────────
 defineCounter('marveen.agent_messages.delivered', '{message}')
 defineHistogram('marveen.agent_messages.delivery.duration', 's')
