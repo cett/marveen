@@ -25,6 +25,20 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: vi.fn((key: string) => settings[key]),
 }))
 
+// .env stand-in for the OTEL keys: the headers (and, while they are set, the endpoint) are read from .env
+// only. Any other caller of readEnvFile (config.ts at import) still gets the real thing.
+const envFile = vi.hoisted(() => ({}) as Record<string, string>)
+vi.mock('../env.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../env.js')>()
+  return {
+    ...actual,
+    readEnvFile: (keys?: string[]) =>
+      keys && keys.length > 0 && keys.every((k) => k.startsWith('OTEL_'))
+        ? Object.fromEntries(Object.entries(envFile).filter(([k]) => keys.includes(k)))
+        : actual.readEnvFile(keys),
+  }
+})
+
 const { tick, getOtelExporterStatus, resetOtelExporterStatus } = await import('../web/otel-push-exporter.js')
 
 beforeAll(() => {
@@ -36,6 +50,7 @@ beforeEach(() => {
   settings.OTEL_EXPORTER_OTLP_ENDPOINT = ''
   settings.OTEL_EXPORTER_OTLP_HEADERS = ''
   settings.OTEL_SERVICE_NAME = 'marveen'
+  for (const k of Object.keys(envFile)) delete envFile[k]
   resetOtelExporterStatus()
   setOtelMetricsExportWatermark(0)
   getDb().exec("DELETE FROM otel_spans WHERE trace_id LIKE 'trace-tick-test-%'")
@@ -148,10 +163,16 @@ describe('tick', () => {
 
 describe('transport behaviour', () => {
   const ENDPOINT = 'http://collector.local:4318'
+  // `headers` and (while headers are set) the endpoint live in .env; everything else in the settings table
   function enable(extra: Partial<typeof settings> = {}) {
     settings.OTEL_EXPORT_ENABLED = '1'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = ENDPOINT
-    Object.assign(settings, extra)
+    const { OTEL_EXPORTER_OTLP_HEADERS: headers, ...rest } = extra
+    Object.assign(settings, rest)
+    if (headers) {
+      envFile.OTEL_EXPORTER_OTLP_HEADERS = headers
+      envFile.OTEL_EXPORTER_OTLP_ENDPOINT = rest.OTEL_EXPORTER_OTLP_ENDPOINT ?? ENDPOINT
+    }
   }
   const callsTo = (spy: ReturnType<typeof vi.spyOn>, suffix: string) =>
     spy.mock.calls.filter((c: unknown[]) => String(c[0]).endsWith(suffix))
@@ -177,6 +198,43 @@ describe('transport behaviour', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).toContain('trace-tick-test-h2')
+  })
+
+  it('binds the headers to the .env endpoint: an endpoint written to the settings table cannot receive them', async () => {
+    enable({ OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer%20tok' })
+    settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://attacker.example' // settings-table value, e.g. a repointed endpoint
+    seedClosedSpan('trace-tick-test-bind1', 'span-bind1')
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+
+    await tick()
+
+    const urls = fetchSpy.mock.calls.map(c => String(c[0]))
+    expect(urls.length).toBeGreaterThan(0)
+    for (const u of urls) expect(u.startsWith(ENDPOINT)).toBe(true)
+    expect(urls.some(u => u.includes('attacker'))).toBe(false)
+  })
+
+  it('exports nothing when headers are in .env but the endpoint is only in the settings table', async () => {
+    enable({ OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer%20tok' })
+    delete envFile.OTEL_EXPORTER_OTLP_ENDPOINT
+    seedClosedSpan('trace-tick-test-bind2', 'span-bind2')
+    const fetchSpy = vi.spyOn(global, 'fetch')
+
+    await tick()
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('ignores headers written to the settings table (the headers are .env only)', async () => {
+    enable()
+    settings.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%20fromdb' // not read at all
+    seedClosedSpan('trace-tick-test-bind3', 'span-bind3')
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+
+    await tick()
+
+    const init = fetchSpy.mock.calls.find(c => String(c[0]).endsWith('/v1/traces'))![1] as RequestInit
+    expect(JSON.stringify(init.headers)).not.toContain('fromdb')
   })
 
   it('does not export to an endpoint that is not an http(s) URL', async () => {

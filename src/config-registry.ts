@@ -728,7 +728,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'OTEL_EXPORTER_OTLP_HEADERS',
     type: 'string',
     default: '',
-    description: 'Extra HTTP fejlécek az OTLP exportnál (tipikusan hitelesítés), az OTel szabványos formátumában: név1=érték1,név2=érték2, az értékek százalék-kódolva (pl. Authorization=Bearer%20abc). Csak a .env-ből (vagy a környezetből) olvasódik, ciklusonként újra, újraindítás nélkül. secret:true -- a GET /api/settings nem adja vissza, a POST /api/settings nem írja, mert a fejléc tokent hordoz. A fejlécek csak https-en, vagy privát hálózaton lévő http endpointra mennek ki: nyilvános hostra sima http-n az export le van tiltva. A Content-Type és a hosztfejlécek nem felülírhatók.',
+    description: 'Extra HTTP fejlécek az OTLP exportnál (tipikusan hitelesítés), az OTel szabványos formátumában: név1=érték1,név2=érték2, az értékek százalék-kódolva (pl. Authorization=Bearer%20abc). Csak a .env-ből olvasódik (a beállítások táblából soha), ciklusonként újra, újraindítás nélkül. Amíg be van állítva, az OTEL_EXPORTER_OTLP_ENDPOINT-ot is a .env-ből olvassa (a dashboardon megadott érték nem számít), hogy a fejléc hitelesítő adata ne mehessen más hostra egy átírt endpointtal; ha a fejléc .env-ben van, de az endpoint nincs, nem exportál. secret:true -- a GET /api/settings nem adja vissza, a POST /api/settings nem írja, mert a fejléc tokent hordoz. A fejlécek csak https-en, vagy privát hálózaton lévő http endpointra mennek ki: nyilvános hostra sima http-n az export le van tiltva. A Content-Type és a hosztfejlécek nem felülírhatók.',
     module: 'observability',
     secret: true,
     requiresRestart: false,

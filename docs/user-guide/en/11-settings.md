@@ -175,7 +175,7 @@ The `OTEL_*` keys configure the telemetry exporter. It pushes closed traces and 
 |-----|-------------|
 | `OTEL_EXPORT_ENABLED` | Turns the push exporter on (default off) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector base URL, `http://` or `https://` (for example `http://localhost:4318`), without credentials in it; traces go to `/v1/traces`, metrics to `/v1/metrics` |
-| `OTEL_EXPORTER_OTLP_HEADERS` | Extra request headers, usually authentication, in the OpenTelemetry format `name1=value1,name2=value2` with each value percent-encoded (`Authorization=Bearer%20abc`). Set it in the `.env` file only: it is a secret, so the dashboard neither shows nor writes it |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Extra request headers, usually authentication, in the OpenTelemetry format `name1=value1,name2=value2` with each value percent-encoded (`Authorization=Bearer%20abc`). Set it in the `.env` file only: it is a secret, so the dashboard neither shows nor writes it. While it is set, `OTEL_EXPORTER_OTLP_ENDPOINT` is read from `.env` too (a value entered in the dashboard is ignored), so the credential can only go to the host you wrote next to it; with the headers in `.env` and no endpoint there, nothing is exported |
 | `OTEL_SERVICE_NAME` | Value of the `service.namespace` resource attribute |
 | `OTEL_EXPORT_INPUT_SUMMARY` | Also export the short description of what a tool call was given (default off, see below) |
 

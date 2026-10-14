@@ -27,6 +27,7 @@ import {
 import { spansToOtelJson, tokenUsageToOtelMetricsJson, exporterStatsToOtelMetricsJson } from '../otel-exporter.js'
 import type { ExporterStats } from '../otel-exporter.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { readEnvFile } from '../env.js'
 import { readOtelExportOptions } from '../otel-export-options.js'
 import {
   parseOtlpHeaders, checkEndpoint, isPermanentStatus, parsePartialSuccess,
@@ -87,19 +88,43 @@ interface ExportConfig {
   serviceNamespace: string
 }
 
-function readConfig(): { enabled: boolean; endpoint: string; headersRaw: string; serviceNamespace: string } {
+// The headers carry a credential, so they are read from .env only (never from the settings table, which
+// an admin session or the shared token can write) and they are bound to the endpoint: while headers are
+// set, the endpoint is read from .env as well. Repointing the endpoint through the dashboard then cannot
+// send the credential to another host; it takes a change to the .env file.
+function readConfig(): {
+  enabled: boolean
+  endpoint: string
+  headersRaw: string
+  serviceNamespace: string
+  endpointMissingForHeaders: boolean
+} {
   const enabled = getEffectiveSettingValue('OTEL_EXPORT_ENABLED') === '1'
-  const endpoint = String(getEffectiveSettingValue('OTEL_EXPORTER_OTLP_ENDPOINT')).trim()
-  const headersRaw = String(getEffectiveSettingValue('OTEL_EXPORTER_OTLP_HEADERS')).trim()
   const serviceNamespace = String(getEffectiveSettingValue('OTEL_SERVICE_NAME')).trim() || 'marveen'
-  return { enabled, endpoint, headersRaw, serviceNamespace }
+  const env = readEnvFile(['OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_EXPORTER_OTLP_HEADERS'])
+  const headersRaw = (env['OTEL_EXPORTER_OTLP_HEADERS'] ?? '').trim()
+  if (headersRaw) {
+    const endpoint = (env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? '').trim()
+    return { enabled, endpoint, headersRaw, serviceNamespace, endpointMissingForHeaders: !endpoint }
+  }
+  const endpoint = String(getEffectiveSettingValue('OTEL_EXPORTER_OTLP_ENDPOINT')).trim()
+  return { enabled, endpoint, headersRaw: '', serviceNamespace, endpointMissingForHeaders: false }
 }
 
 // The validated configuration, or null (with one warning per distinct problem) when the endpoint or
 // the headers cannot be used.
 function resolveConfig(): ExportConfig | null {
-  const { enabled, endpoint, headersRaw, serviceNamespace } = readConfig()
-  if (!enabled || !endpoint) return null
+  const { enabled, endpoint, headersRaw, serviceNamespace, endpointMissingForHeaders } = readConfig()
+  if (!enabled) return null
+  if (endpointMissingForHeaders) {
+    const reason = 'OTEL_EXPORTER_OTLP_HEADERS is set in .env, so OTEL_EXPORTER_OTLP_ENDPOINT must be set in .env too (the credential is bound to the endpoint file); nothing is exported'
+    if (reason !== lastConfigProblem) {
+      lastConfigProblem = reason
+      logger.warn(`otel-push-exporter: ${reason}`)
+    }
+    return null
+  }
+  if (!endpoint) return null
   const { headers, rejected } = parseOtlpHeaders(headersRaw)
   const check = checkEndpoint(endpoint, Object.keys(headers).length > 0)
   const problem = !check.ok

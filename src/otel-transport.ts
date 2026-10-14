@@ -11,7 +11,8 @@ const RESERVED_HEADERS = new Set(['content-type', 'content-length', 'content-enc
 
 export interface ParsedHeaders {
   headers: Record<string, string>
-  // Header NAMES that were skipped (never the values: they carry credentials)
+  // Header NAMES that were skipped, or a fixed placeholder. Never a value, and never a pair without a
+  // `=` (that may be a bare credential): both go to the log.
   rejected: string[]
 }
 
@@ -25,7 +26,12 @@ export function parseOtlpHeaders(raw: string): ParsedHeaders {
     if (!trimmed) continue
     const eq = trimmed.indexOf('=')
     const name = (eq === -1 ? trimmed : trimmed.slice(0, eq)).trim()
-    if (eq === -1 || !HEADER_NAME_RE.test(name) || RESERVED_HEADERS.has(name.toLowerCase())) {
+    if (eq === -1) {
+      // no `=`: this could be a bare token pasted without its name, so it is never echoed
+      rejected.push('(missing =)')
+      continue
+    }
+    if (!HEADER_NAME_RE.test(name) || RESERVED_HEADERS.has(name.toLowerCase())) {
       rejected.push(HEADER_NAME_RE.test(name) ? name : '(unreadable)')
       continue
     }

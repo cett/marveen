@@ -18,8 +18,9 @@ describe('parseOtlpHeaders', () => {
   it('skips an unusable pair and reports the NAME only, never the value', () => {
     const { headers, rejected } = parseOtlpHeaders('good=1,noequals,bad name=secret-value,x=%ZZ')
     expect(headers).toEqual({ good: '1' })
-    expect(rejected).toEqual(['noequals', '(unreadable)', 'x'])
+    expect(rejected).toEqual(['(missing =)', '(unreadable)', 'x'])
     expect(JSON.stringify(rejected)).not.toContain('secret-value')
+    expect(JSON.stringify(rejected)).not.toContain('noequals')
   })
 
   it('refuses the headers the exporter owns', () => {
