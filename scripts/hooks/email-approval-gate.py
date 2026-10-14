@@ -572,7 +572,7 @@ def main() -> None:
     sys.exit(0)
 
 
-if __name__ == '__main__':
+def _run_with_failclosed_net():
     try:
         main()
     except SystemExit:
@@ -583,3 +583,16 @@ if __name__ == '__main__':
         except Exception:  # noqa: BLE001
             pass
         sys.exit(2)
+
+
+if __name__ == '__main__':
+    # OTel H5b: count this run's outcome after the verdict (best effort, never changes it; see
+    # gate_audit_lib.py). A missing or broken audit module leaves the gate exactly as it was.
+    try:
+        from gate_audit_lib import audited
+    except Exception:  # noqa: BLE001
+        audited = None
+    if audited is None:
+        _run_with_failclosed_net()
+    else:
+        audited('email-approval-gate', _run_with_failclosed_net, deny_row=True)
