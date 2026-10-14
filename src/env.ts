@@ -60,10 +60,16 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const ENV_UNSAFE_VALUE_RE = /[\x00-\x1f\x7f\x85\u2028\u2029]/ // any control character or Unicode line separator
 
+// True when `key=value` can be written as exactly one line that names only `key`. Shared with the writers
+// that do not go through updateEnvFile, so they cannot be talked into a second, unintended line.
+export function isSafeEnvEntry(key: string, value: string): boolean {
+  return typeof key === 'string' && typeof value === 'string' && ENV_KEY_RE.test(key) && !ENV_UNSAFE_VALUE_RE.test(value)
+}
+
 export function updateEnvFile(updates: Record<string, string>): void {
   const envPath = join(resolveEnvRoot(), '.env')
   const entries = Object.entries(updates).filter(
-    ([k, v]) => typeof v === 'string' && v.length > 0 && ENV_KEY_RE.test(k) && !ENV_UNSAFE_VALUE_RE.test(v),
+    ([k, v]) => typeof v === 'string' && v.length > 0 && isSafeEnvEntry(k, v),
   )
   if (entries.length === 0) return
 

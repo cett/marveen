@@ -146,3 +146,20 @@ describe('updateEnvFile', () => {
     expect(statSync(testEnvPath).mode & 0o777).toBe(0o600)
   })
 })
+
+describe('isSafeEnvEntry', () => {
+  it('accepts a plain variable name with a one-line value', async () => {
+    const { isSafeEnvEntry } = await import('../env.js')
+    expect(isSafeEnvEntry('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat-abc')).toBe(true)
+  })
+
+  it.each(['a\nb', 'a\rb', 'a\0b', 'a b', 'a b', 'a\u0085b', 'a\u007fb'])('refuses a value with a line break or control character (%j)', async (v) => {
+    const { isSafeEnvEntry } = await import('../env.js')
+    expect(isSafeEnvEntry('KEY', v)).toBe(false)
+  })
+
+  it.each(['', '1KEY', 'A B', 'A=B', 'A\nB'])('refuses the key %j', async (k) => {
+    const { isSafeEnvEntry } = await import('../env.js')
+    expect(isSafeEnvEntry(k, 'v')).toBe(false)
+  })
+})
