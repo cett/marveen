@@ -223,7 +223,8 @@ export function startWebServer(port = 3420): http.Server {
 
     // HTTP server telemetry (OTel H6a): the duration of every request with a route TEMPLATE, a span for the slow and
     // the failed ones (src/otel-http.ts). Recorded when the response is done.
-    instrumentHttpRequest(req, res, method, path)
+    const httpTrust = { authenticated: false }
+    instrumentHttpRequest(req, res, method, path, httpTrust)
 
     // DNS-rebinding defence: reject requests whose Host header is not in the
     // permitted set. A rebinding attack routes a foreign page's JS to 127.0.0.1
@@ -278,6 +279,7 @@ export function startWebServer(port = 3420): http.Server {
     // decides whether a missing principal is a 401 (gated /api/* + fleet
     // manifest) or a public probe (auth status/login, avatars).
     const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN, true)
+    httpTrust.authenticated = auth.kind !== 'none' // a traceparent is believed only from a caller with credentials
     if (requiresAuth(path, method) && auth.kind === 'none') {
       if (isFederationWireEndpoint(path, method)) {
         // 401s are otherwise silent; federation-endpoint auth failures are the

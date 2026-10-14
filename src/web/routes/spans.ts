@@ -43,6 +43,13 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'required', hint: 'trace_id and span_id required' }, 400)
       return true
     }
+    // `w3c-` ids are the server's own: the dashboard stores the trace id of a traceparent it received that way
+    // (src/otel-http.ts) and the OTLP mapping sends them as they are. A caller must not be able to write spans
+    // into a chosen trace by naming it.
+    if ([data.trace_id, data.span_id, data.parent_span_id].some((v) => typeof v === 'string' && v.startsWith('w3c-'))) {
+      json(res, { error: 'invalid_value', hint: 'ids starting with w3c- are reserved' }, 400)
+      return true
+    }
     // Only checked when agent_id is present on the request (the open path and
     // the create-on-close upsert path both require it) -- a bare close of an
     // already-existing span carries no agent_id and was already tenant-checked

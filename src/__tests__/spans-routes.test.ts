@@ -330,3 +330,28 @@ describe('spans route: tenant-IDOR guard', () => {
     expect(spans[0].name).toBe('op-a')
   })
 })
+
+describe('POST /api/spans -- reserved w3c- ids', () => {
+  it.each([
+    ['trace_id', { trace_id: 'w3c-4bf92f3577b34da6a3ce929d0e0e4736', span_id: 's1' }],
+    ['span_id', { trace_id: 't1', span_id: 'w3c-00f067aa0ba902b7' }],
+    ['parent_span_id', { trace_id: 't1', span_id: 's1', parent_span_id: 'w3c-00f067aa0ba902b7' }],
+  ])('refuses a %s that names a server-side trace', async (_name, ids) => {
+    const { ctx, status, body } = makeCtx({
+      method: 'POST', path: '/api/spans', body: { ...ids, agent_id: 'agent-a', operation: 'tool.call', start_ms: 1000 },
+    })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(400)
+    expect(body().error).toBe('invalid_value')
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM otel_spans').get()).toEqual({ n: 0 })
+  })
+
+  it('still takes an ordinary id that merely contains w3c', async () => {
+    const { ctx, status } = makeCtx({
+      method: 'POST', path: '/api/spans',
+      body: { trace_id: 'my-w3c-trace', span_id: 's1', agent_id: 'agent-a', operation: 'tool.call', start_ms: 1000 },
+    })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(200)
+  })
+})

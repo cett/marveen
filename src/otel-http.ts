@@ -48,15 +48,19 @@ const OTHER_ROUTE = '/other'
 const seenRoutes = new Set<string>()
 
 // Path (already without the /api/v1 alias, the query string is not part of it) -> low-cardinality route template.
-export function httpRouteTemplate(path: string): string {
+// `coarse` gives the resource only (/api/kanban): used for the answers that say no (4xx), which also covers every
+// request nobody authenticated. Those never add to the set of known templates, so a stranger sending made-up
+// paths can neither fill the cap (and push the real routes into /other) nor learn which paths exist.
+export function httpRouteTemplate(path: string, coarse = false): string {
   if (path === '/api' || !path.startsWith('/api/')) return 'static'
-  const segments = path.split('/').filter(Boolean).slice(1, MAX_SEGMENTS + 1) // after "api"
+  const segments = path.split('/').filter(Boolean).slice(1, coarse ? 2 : MAX_SEGMENTS + 1) // after "api"
   const out: string[] = ['api']
   segments.forEach((seg, i) => {
     const word = seg.toLowerCase()
     out.push((i === 0 ? RESOURCES : STATIC_SEGMENTS).has(word) ? word : '{id}')
   })
   const template = '/' + out.join('/')
+  if (coarse) return template // at most the number of resources: bounded by itself
   if (seenRoutes.has(template)) return template
   if (seenRoutes.size >= MAX_DISTINCT_ROUTES) return OTHER_ROUTE
   seenRoutes.add(template)
@@ -97,19 +101,23 @@ export interface HttpRequestFacts {
   seconds: number
   agentId?: string | null
   traceparent?: unknown
+  // Only a traceparent that came with credentials is believed; anyone else's is ignored (and cannot steer a span
+  // into a trace of their choosing).
+  authenticated?: boolean
   nowMs?: number
 }
 
 export function recordHttpRequest(f: HttpRequestFacts): void {
   try {
-    const route = httpRouteTemplate(f.path)
+    const refused = f.status >= 400 && f.status < 500
+    const route = httpRouteTemplate(f.path, refused)
     const method = httpMethod(f.method)
     const status = Number.isInteger(f.status) && f.status >= 100 && f.status <= 599 ? f.status : 0
     recordHttpServerRequest(method, route, status, f.seconds)
     if (status >= 500 || f.seconds >= SLOW_REQUEST_SECONDS) {
       const endMs = f.nowMs ?? Date.now()
       const startMs = Math.max(0, endMs - Math.round(f.seconds * 1000))
-      const traceId = traceIdFromTraceparent(f.traceparent) ?? randomBytes(16).toString('hex')
+      const traceId = (f.authenticated ? traceIdFromTraceparent(f.traceparent) : null) ?? randomBytes(16).toString('hex')
       const spanId = randomBytes(8).toString('hex')
       upsertOtelSpan({
         trace_id: traceId, span_id: spanId, parent_span_id: null, agent_id: f.agentId || 'dashboard',
@@ -133,7 +141,9 @@ function isEventStream(req: http.IncomingMessage, res: http.ServerResponse): boo
 // Called once per request at the top of the server's handler: records the request when its response is done.
 // An answer cut short by the client is no measurement, and neither is an event stream (its "duration" is the
 // length of the connection).
-export function instrumentHttpRequest(req: http.IncomingMessage, res: http.ServerResponse, method: string, path: string): void {
+// `trust` is read when the response is done, so the handler can set `authenticated` once it has resolved the caller.
+export interface HttpTrust { authenticated: boolean }
+export function instrumentHttpRequest(req: http.IncomingMessage, res: http.ServerResponse, method: string, path: string, trust: HttpTrust = { authenticated: false }): void {
   const t0 = process.hrtime.bigint()
   res.once('close', () => {
     if (!res.writableFinished) return
@@ -141,6 +151,7 @@ export function instrumentHttpRequest(req: http.IncomingMessage, res: http.Serve
     recordHttpRequest({
       method, path, status: res.statusCode, seconds: Number(process.hrtime.bigint() - t0) / 1e9,
       traceparent: req.headers['traceparent'],
+      authenticated: trust.authenticated,
     })
   })
 }

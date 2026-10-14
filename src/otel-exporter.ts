@@ -9,6 +9,7 @@ import { hostname } from 'node:os'
 import { PROJECT_ROOT } from './config.js'
 import type { OtelSpan, TokenUsageMetricRow, TokenHistogramRow } from './db.js'
 import type { PendingDurations } from './otel-genai-duration.js'
+import { scrubText } from './otel-scrub.js'
 import {
   GENAI_DURATION_BUCKET_BOUNDS, DURATION_SOURCE_KEY, DURATION_SOURCE_TRANSCRIPT,
   SPAN_KIND_SERVER,
@@ -78,27 +79,8 @@ export interface OtelExportOptions {
   serviceInstanceId?: string
 }
 
-// Second scrub for the opt-in input_summary, on top of the hook's own redaction. It removes the credential
-// shapes that are cheap to recognise: user:password embedded in a URL (with or without the scheme),
-// curl's -u / --user, "Authorization:" / Bearer / Basic values, and password= / token= / secret= /
-// api_key= assignments. It also drops the home directory (it names the machine's user). It is a
-// heuristic, not a guarantee, which is why the attribute stays off by default. Shortened last, so a cut
-// never leaves half a secret behind.
-const SCRUBS: [RegExp, string][] = [
-  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1***@'],
-  [/\b[^\s/@:]+:[^\s/@]+@/g, '***@'],
-  [/(\s(?:-u|--user)(?:\s+|=))\S+/g, '$1***'],
-  [/\b(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+|token\s+)?\S+/gi, '$1***'],
-  [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***'],
-  [/\b((?:pass(?:word|wd)?|token|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*)\S+/gi, '$1***'],
-  [/(--?(?:pass(?:word|wd)?|token|secret|api[_-]?key)\s+)\S+/gi, '$1***'],
-  [/\/(?:Users|home)\/[^/\s]+/g, '/~'],
-]
-
 export function scrubInputSummary(value: string): string {
-  let out = value
-  for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
-  return out.slice(0, INPUT_SUMMARY_MAX_CHARS)
+  return scrubText(value, INPUT_SUMMARY_MAX_CHARS)
 }
 
 // Stable per-installation id: the host name and install path are hashed, so the collector can tell two
@@ -252,9 +234,11 @@ function msToNano(ms: number): string {
 // "clean up" the original string: the same input always yields the same
 // output, so trace/span correlation (parent-child links across multiple
 // export calls) is preserved.
-function toHexId(id: string, byteLen: 8 | 16): string {
-  // A trace id taken over from a W3C traceparent header (src/otel-http.ts) is already the id to send.
-  if (id.startsWith('w3c-') && new RegExp(`^[0-9a-f]{${byteLen * 2}}$`).test(id.slice(4))) return id.slice(4)
+function toHexId(id: string, byteLen: 8 | 16, passthrough = false): string {
+  // A trace id taken over from a W3C traceparent header (src/otel-http.ts) is already the id to send. Only for the
+  // server's own http.server spans: any other span that carries such an id (written through POST /api/spans or by
+  // mistake) is hashed like every other id, so it cannot be steered into someone else's trace.
+  if (passthrough && id.startsWith('w3c-') && new RegExp(`^[0-9a-f]{${byteLen * 2}}$`).test(id.slice(4))) return id.slice(4)
   return createHash('sha256').update(id).digest('hex').slice(0, byteLen * 2)
 }
 
@@ -290,7 +274,7 @@ export function spansToOtelJson(
       const blob = parseBlob(s.attributes)
       const errorType = errorTypeOf(s.status)
       const out: OtelSpanExport = {
-        traceId: toHexId(s.trace_id, 16),
+        traceId: toHexId(s.trace_id, 16, s.operation === 'http.server'),
         spanId: toHexId(s.span_id, 8),
         name: spanName(s, family, blob),
         kind: SPAN_KINDS[family],
