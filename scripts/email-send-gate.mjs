@@ -39,11 +39,29 @@ import { dirname, join } from 'node:path'
 // (command-position analysis); this list remains ONLY as the conservative
 // fallback when a command cannot be tokenized (unbalanced quote) -- on
 // unparseable input the gate behaves exactly as before, never weaker.
+// "<anchor> ... <keyword>" on ONE line, in linear time. The regex /anchor[^\n]*keyword/ is quadratic on a
+// long line that repeats the anchor and never has the keyword after it (every anchor scans to the end of the
+// line and backtracks: 17000 repeats of `resend ` took 1.1 s on an idle machine, over 3 s on a loaded CI
+// runner). The first anchor on a line leaves the widest remainder, so looking for the keyword after the
+// first anchor only finds exactly what the regex found: same verdicts, one pass. Both patterns must be
+// non-global (no lastIndex state).
+function sameLineAfter(anchor, keyword) {
+  return {
+    test(text) {
+      for (const line of String(text).split('\n')) {
+        const m = anchor.exec(line)
+        if (m && keyword.test(line.slice(m.index + m[0].length))) return true
+      }
+      return false
+    },
+  }
+}
+
 const SEND_PATTERNS = [
   /support-mail\/send\.py/i,
   /\bsend\.py\b/i,
   /api\.resend\.com/i,
-  /\bresend\b[^\n]*\b(email|send|message)\b/i,
+  sameLineAfter(/\bresend\b/i, /\b(email|send|message)\b/i),
   /\bsendmail\b/i,
   /\bmsmtp\b/i,
   /\bswaks\b/i,
@@ -54,7 +72,7 @@ const SEND_PATTERNS = [
   // patterns catch (no "sendmail"/"mail.send" substring). Also gate any direct
   // call to the exported sendMail() (e.g. a one-off `node -e`/`tsx -e` that
   // imports the module without going through the CLI).
-  /\bgraph-mail\b[^\n]*\bsend\b/i,
+  sameLineAfter(/\bgraph-mail\b/i, /\bsend\b/i),
   /\bsendMail\s*\(/i,
 ]
 
