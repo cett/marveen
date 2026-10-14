@@ -8,14 +8,17 @@ import { getDb } from './db/connection.js'
 import { defineCounter, defineGauge, defineHistogram, otelCount, otelRecord } from './otel-metrics.js'
 
 // ── Exporter health (src/web/otel-push-exporter.ts) ──────────────────────────
-defineCounter('marveen.otel.export.failures', '{request}', ['signal'])
-defineCounter('marveen.otel.export.rejected', '{item}', ['signal'])
+// The attribute key is in our own namespace on purpose: a bare "signal" would collide with anything a backend
+// or another exporter labels the same way, and the key is what dashboards filter on (documented, pinned by a test).
+const SIGNAL_ATTR = 'marveen.otel.signal'
+defineCounter('marveen.otel.export.failures', '{request}', [SIGNAL_ATTR])
+defineCounter('marveen.otel.export.rejected', '{item}', [SIGNAL_ATTR])
 
 export function countExportFailure(signal: 'traces' | 'metrics'): void {
-  otelCount('marveen.otel.export.failures', { signal })
+  otelCount('marveen.otel.export.failures', { [SIGNAL_ATTR]: signal })
 }
 export function countExportRejected(signal: 'traces' | 'metrics', items: number): void {
-  otelCount('marveen.otel.export.rejected', { signal }, items)
+  otelCount('marveen.otel.export.rejected', { [SIGNAL_ATTR]: signal }, items)
 }
 
 // ── Scheduled tasks (src/db/tasks.ts appendTaskRun, src/web/command-task.ts) ─

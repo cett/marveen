@@ -343,6 +343,8 @@ describe('transport behaviour', () => {
     const failures = metrics.find((m: any) => m.name === 'marveen.otel.export.failures').sum
     expect(failures.aggregationTemporality).toBe(2) // cumulative
     expect(failures.isMonotonic).toBe(true)
+    // the attribute key is part of the contract (dashboards filter on it)
+    expect(failures.dataPoints.every((d: any) => d.attributes.length === 1 && d.attributes[0].key === 'marveen.otel.signal')).toBe(true)
     const traces = failures.dataPoints.find((d: any) => d.attributes[0].value.stringValue === 'traces')
     expect(traces.asInt).toBe('1')
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import { initDatabase, getDb, appendTaskRun, upsertOtelSpan, getOtelTrace } from '../db.js'
 import { collectRegistryMetrics, resetMetricValues } from '../otel-metrics.js'
-import { recordMessageDelivered } from '../otel-signals.js'
+import { recordMessageDelivered, countExportFailure, countExportRejected } from '../otel-signals.js'
 import { recordMessageFailure } from '../web/message-router.js'
 
 beforeAll(() => initDatabase(':memory:'))
@@ -86,5 +86,26 @@ describe('Telegram channel events', () => {
     const all = JSON.stringify(collectRegistryMetrics())
     expect(all).not.toContain('hello private text')
     expect(all).not.toContain('some_user')
+  })
+})
+
+describe('exporter health counters', () => {
+  it('label the signal with the marveen.otel.signal key, not a bare "signal"', () => {
+    countExportFailure('traces')
+    countExportFailure('metrics')
+    countExportFailure('metrics')
+    countExportRejected('traces', 4)
+    const failures = points('marveen.otel.export.failures')
+    expect(failures.map((p) => p.attributes.map((a: any) => a.key))).toEqual(failures.map(() => ['marveen.otel.signal']))
+    expect(Object.fromEntries(failures.map((p) => [attrMap(p)['marveen.otel.signal'], p.asInt]))).toEqual({ traces: '1', metrics: '2' })
+    const rejected = points('marveen.otel.export.rejected')
+    expect(rejected).toHaveLength(1)
+    expect(attrMap(rejected[0])).toEqual({ 'marveen.otel.signal': 'traces' })
+    expect(rejected[0].asInt).toBe('4')
+  })
+
+  it('drops an attribute key the metric does not declare (a bare "signal" is not one)', () => {
+    countExportFailure('traces')
+    for (const p of points('marveen.otel.export.failures')) expect(Object.keys(attrMap(p))).not.toContain('signal')
   })
 })
