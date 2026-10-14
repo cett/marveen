@@ -14,7 +14,7 @@ import { createHmac } from 'node:crypto'
 import type { AppLogRecord } from './otel-app-logs.js'
 import type {
   OtelLogRows, OtelLogSource, ApprovalEventLogRow, RbacDecisionLogRow, ConfigChangeExportRow, AgentAuditExportRow,
-  HookAuditExportRow,
+  HookAuditExportRow, BlackboardExportRow, KanbanEventExportRow,
 } from './db/otel-logs.js'
 
 const SEVERITY_INFO = 9
@@ -165,6 +165,25 @@ export function appLogsToRecords(records: AppLogRecord[], nowMs: number = Date.n
   })
 }
 
+function blackboardRecord(r: BlackboardExportRow, observed: string): OtelLogRecord {
+  const status = token(r.status) ?? '_other'
+  return record(`marveen.blackboard.${status}`, status === 'blocked' ? SEVERITY_WARN : SEVERITY_INFO, r.created_at, observed, [
+    ...attr('marveen.blackboard.status', status),
+    // An agent name, like marveen.agent.id on the spans; token() bounds it. The summary text is not read.
+    ...attr('marveen.agent.id', token(r.agent_id)),
+  ])
+}
+
+function kanbanRecord(r: KanbanEventExportRow, salt: string, observed: string): OtelLogRecord {
+  return record('marveen.kanban.card.moved', SEVERITY_INFO, r.created_at, observed, [
+    ...attr('marveen.kanban.from_status', token(r.from_status)),
+    ...attr('marveen.kanban.to_status', token(r.to_status)),
+    // The card id is only ever a keyed hash: enough to follow one card through its columns, nothing to look up.
+    ...attr('marveen.kanban.card.hash', actorHash(r.card_id, salt)),
+    ...attr('marveen.actor.hash', actorHash(r.actor, salt)),
+  ])
+}
+
 export interface MappedLogBatch {
   records: OtelLogRecord[]
   // The highest row id included per source: the cursor to store once the collector has the batch.
@@ -184,6 +203,8 @@ export function mapLogBatch(rows: OtelLogRows, salt: string, nowMs: number = Dat
   take('config_change_log', rows.config_change_log, (r) => configRecord(r, salt, observed))
   take('agent_audit_log', rows.agent_audit_log, (r) => agentAuditRecord(r, salt, observed))
   take('hook_audit_log', rows.hook_audit_log, (r) => hookAuditRecord(r, observed))
+  take('fleet_blackboard_history', rows.fleet_blackboard_history, (r) => blackboardRecord(r, observed))
+  take('kanban_card_events', rows.kanban_card_events, (r) => kanbanRecord(r, salt, observed))
   return { records, cursors }
 }
 

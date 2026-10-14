@@ -10,7 +10,10 @@
 import { randomBytes } from 'node:crypto'
 import { db } from './connection.js'
 
-export const OTEL_LOG_SOURCES = ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log'] as const
+export const OTEL_LOG_SOURCES = [
+  'approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log',
+  'fleet_blackboard_history', 'kanban_card_events',
+] as const
 export type OtelLogSource = (typeof OTEL_LOG_SOURCES)[number]
 
 export interface ApprovalEventLogRow {
@@ -62,12 +65,33 @@ export interface HookAuditExportRow {
   tenant_id: string | null
 }
 
+// What an agent announced on the blackboard: who and which state. The summary text and the task reference are not read.
+export interface BlackboardExportRow {
+  id: number
+  agent_id: string
+  status: string
+  created_at: number
+}
+
+// A kanban card moving between columns: the card id (only as a keyed hash, to follow one card), the two statuses and
+// the actor. The title, description and comments are not in this table and are not read.
+export interface KanbanEventExportRow {
+  id: number
+  card_id: string
+  from_status: string | null
+  to_status: string
+  actor: string | null
+  created_at: number
+}
+
 export interface OtelLogRows {
   approval_events: ApprovalEventLogRow[]
   rbac_shadow_log: RbacDecisionLogRow[]
   config_change_log: ConfigChangeExportRow[]
   agent_audit_log: AgentAuditExportRow[]
   hook_audit_log: HookAuditExportRow[]
+  fleet_blackboard_history: BlackboardExportRow[]
+  kanban_card_events: KanbanEventExportRow[]
 }
 
 function currentMaxId(source: OtelLogSource): number {
@@ -79,6 +103,8 @@ function currentMaxId(source: OtelLogSource): number {
       case 'config_change_log': return db.prepare('SELECT MAX(id) AS m FROM config_change_log').get()
       case 'agent_audit_log': return db.prepare('SELECT MAX(id) AS m FROM agent_audit_log').get()
       case 'hook_audit_log': return db.prepare('SELECT MAX(id) AS m FROM hook_audit_log').get()
+      case 'fleet_blackboard_history': return db.prepare('SELECT MAX(id) AS m FROM fleet_blackboard_history').get()
+      case 'kanban_card_events': return db.prepare('SELECT MAX(id) AS m FROM kanban_card_events').get()
     }
   })() as { m: number | null } | undefined
   return row?.m ?? 0
@@ -149,5 +175,11 @@ export function getOtelLogBatch(limit: number): OtelLogRows {
       `SELECT id, ts, agent_id, hook_type, verdict, trigger_source, reason, tenant_id
        FROM hook_audit_log WHERE id > ? AND verdict IN ('deny', 'defer') ORDER BY id ASC LIMIT ?`,
     ).all(getOtelLogCursor('hook_audit_log'), limit) as HookAuditExportRow[],
+    fleet_blackboard_history: db.prepare(
+      `SELECT id, agent_id, status, created_at FROM fleet_blackboard_history WHERE id > ? ORDER BY id ASC LIMIT ?`,
+    ).all(getOtelLogCursor('fleet_blackboard_history'), limit) as BlackboardExportRow[],
+    kanban_card_events: db.prepare(
+      `SELECT id, card_id, from_status, to_status, actor, created_at FROM kanban_card_events WHERE id > ? ORDER BY id ASC LIMIT ?`,
+    ).all(getOtelLogCursor('kanban_card_events'), limit) as KanbanEventExportRow[],
   }
 }

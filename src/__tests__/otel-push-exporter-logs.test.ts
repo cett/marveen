@@ -48,7 +48,7 @@ beforeEach(() => {
   for (const k of Object.keys(envFile)) delete envFile[k]
   resetOtelExporterStatus()
   resetMetricValues()
-  getDb().exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log; DELETE FROM otel_logs_export_state;')
+  getDb().exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log; DELETE FROM fleet_blackboard_history; DELETE FROM kanban_card_events; DELETE FROM otel_logs_export_state;')
   vi.restoreAllMocks()
 })
 
@@ -68,7 +68,7 @@ function bodyOf(call: unknown[]): string {
 
 // Starts the cursors at the current end of every table (what the first tick does), then lets the test seed.
 function primeCursors() {
-  for (const s of ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log'] as const) getOtelLogCursor(s)
+  for (const s of ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log', 'fleet_blackboard_history', 'kanban_card_events'] as const) getOtelLogCursor(s)
 }
 
 describe('log export through tick', () => {
@@ -202,6 +202,25 @@ describe('log export through tick', () => {
     expect(logCalls(fetchSpy)).toHaveLength(2) // the same row again, then
     await tick()
     expect(logCalls(fetchSpy)).toHaveLength(2) // never again
+  })
+
+  it('sends a blackboard post and a card move without their text, and the cursors move only after an answer', async () => {
+    primeCursors()
+    getDb().prepare("INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, created_at) VALUES ('agent-a', 'REF-CONTENT', 'blocked', 'TEXT-CONTENT', 1700000006)").run()
+    getDb().prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-CONTENT', 'planned', 'done', 'user-a', 1700000007)").run()
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('no', { status: 503 }))
+    await tick()
+    const first = bodyOf(logCalls(fetchSpy)[0])
+    expect(first).toContain('marveen.blackboard.blocked')
+    expect(first).toContain('marveen.kanban.card.moved')
+    expect(first).not.toMatch(/CONTENT|user-a/)
+    const l = getOtelExporterStatus().logs
+    vi.spyOn(Date, 'now').mockReturnValue(l.nextAttemptMs + 1)
+    fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }))
+    await tick()
+    expect(logCalls(fetchSpy)).toHaveLength(2)
+    await tick()
+    expect(logCalls(fetchSpy)).toHaveLength(2)
   })
 
   it('does not write to any audit table (read-only)', async () => {

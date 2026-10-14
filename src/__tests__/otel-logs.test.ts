@@ -11,7 +11,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   const db = getDb()
-  db.exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log;')
+  db.exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log; DELETE FROM fleet_blackboard_history; DELETE FROM kanban_card_events;')
   db.exec('DELETE FROM otel_logs_export_state')
 })
 
@@ -274,6 +274,61 @@ describe('hook_audit_log (the gate refusals)', () => {
     expect(getOtelLogBatch(100).hook_audit_log).toHaveLength(0)
     seedHook('deny', { reason: 'gate_error' })
     expect(getOtelLogBatch(100).hook_audit_log.map((r) => r.reason)).toEqual(['gate_error'])
+  })
+})
+
+describe('blackboard and kanban events', () => {
+  function seedBoard(status: string, agent = 'agent-a') {
+    getDb().prepare("INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, created_at) VALUES (?, 'CARD-REF-CONTENT', ?, 'SUMMARY-CONTENT secret plan', 1700000004)").run(agent, status)
+  }
+  function seedMove(from: string | null, to: string, actor: string | null = 'user-a', card = 'card-id-1') {
+    getDb().prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, 1700000005)').run(card, from, to, actor)
+  }
+
+  it('reads only the agent, the status and the time of a blackboard row', () => {
+    getOtelLogCursor('fleet_blackboard_history')
+    seedBoard('blocked'); seedBoard('done')
+    const batch = getOtelLogBatch(100)
+    expect(JSON.stringify(batch)).not.toMatch(/CONTENT|secret plan/)
+    const recs = mapLogBatch(batch, SALT).records
+    expect(recs.map((r) => [r.body.stringValue, r.severityText])).toEqual([['marveen.blackboard.blocked', 'WARN'], ['marveen.blackboard.done', 'INFO']])
+    expect(attrs(recs[0])).toEqual({ 'event.name': 'marveen.blackboard.blocked', 'marveen.blackboard.status': 'blocked', 'marveen.agent.id': 'agent-a' })
+    expect(JSON.stringify(recs)).not.toMatch(/CONTENT|secret plan/)
+  })
+
+  it('maps a card move with the two statuses and keyed hashes of the card and the actor, never the ids', () => {
+    getOtelLogCursor('kanban_card_events')
+    seedMove('planned', 'in_progress', 'user-a', 'card-id-1')
+    seedMove(null, 'planned', null, 'card-id-1')
+    const recs = mapLogBatch(getOtelLogBatch(100), SALT).records
+    const a = attrs(recs[0])
+    expect(a['marveen.kanban.from_status']).toBe('planned')
+    expect(a['marveen.kanban.to_status']).toBe('in_progress')
+    expect(a['marveen.kanban.card.hash']).toBe(actorHash('card-id-1', SALT))
+    expect(a['marveen.actor.hash']).toBe(actorHash('user-a', SALT))
+    expect(JSON.stringify(recs)).not.toMatch(/card-id-1|user-a/)
+    // the same card hashes the same in the next event, so a card can be followed; a created card has no from_status or actor
+    const b = attrs(recs[1])
+    expect(b['marveen.kanban.card.hash']).toBe(a['marveen.kanban.card.hash'])
+    expect(b['marveen.kanban.from_status']).toBeUndefined()
+    expect(b['marveen.actor.hash']).toBeUndefined()
+  })
+
+  it('bounds a status that is not an identifier', () => {
+    getOtelLogCursor('kanban_card_events')
+    seedMove('free text status', 'another /path/like status')
+    const [r] = mapLogBatch(getOtelLogBatch(100), SALT).records
+    expect(attrs(r)['marveen.kanban.from_status']).toBe('_other')
+    expect(attrs(r)['marveen.kanban.to_status']).toBe('_other')
+  })
+
+  it('starts both sources at the end of the table', () => {
+    seedBoard('active'); seedMove(null, 'planned')
+    expect(getOtelLogBatch(100).fleet_blackboard_history).toHaveLength(0)
+    expect(getOtelLogBatch(100).kanban_card_events).toHaveLength(0)
+    seedBoard('done'); seedMove('planned', 'done')
+    expect(getOtelLogBatch(100).fleet_blackboard_history).toHaveLength(1)
+    expect(getOtelLogBatch(100).kanban_card_events).toHaveLength(1)
   })
 })
 
