@@ -368,9 +368,15 @@ def upsert_otel_span(conn, trace_id, span_id, parent_span_id, agent_id, operatio
     """Same upsert shape as db/observability.ts's upsertOtelSpan (TS side,
     used by the F2 tool-call span) -- INSERT, and on a (trace_id, span_id)
     conflict, only refresh end_ms/status/attributes so a span already closed
-    by another writer is never reopened."""
+    by another writer is never reopened. A span the push exporter already sent
+    (exported_at set) whose end_ms or status moves goes out again: exported_at
+    is cleared so its final state is not lost."""
     on_conflict = """
         ON CONFLICT (trace_id, span_id) DO UPDATE SET
+          exported_at = CASE
+            WHEN otel_spans.exported_at IS NOT NULL
+             AND (excluded.end_ms IS NOT otel_spans.end_ms OR excluded.status IS NOT otel_spans.status)
+            THEN NULL ELSE otel_spans.exported_at END,
           end_ms = excluded.end_ms,
           status = excluded.status,
           attributes = COALESCE(excluded.attributes, otel_spans.attributes)
@@ -399,7 +405,7 @@ def close_stale_turn_spans(conn, trace_id: str, keep_span_id: str) -> None:
     named for the agent.turn span."""
     conn.execute(
         """
-        UPDATE otel_spans SET status = 'ok'
+        UPDATE otel_spans SET status = 'ok', exported_at = NULL
         WHERE trace_id = ? AND operation = 'agent.turn' AND status = 'running' AND span_id != ?
         """,
         (trace_id, keep_span_id),

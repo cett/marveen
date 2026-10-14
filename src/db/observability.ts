@@ -205,6 +205,10 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
     INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (trace_id, span_id) DO UPDATE SET
+      exported_at = CASE
+        WHEN otel_spans.exported_at IS NOT NULL
+         AND (excluded.end_ms IS NOT otel_spans.end_ms OR excluded.status IS NOT otel_spans.status)
+        THEN NULL ELSE otel_spans.exported_at END,
       end_ms = excluded.end_ms,
       status = excluded.status,
       attributes = COALESCE(excluded.attributes, otel_spans.attributes)
@@ -218,8 +222,11 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
 
 export function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
   return db.prepare(`
-    UPDATE otel_spans SET end_ms = ?, status = ? WHERE trace_id = ? AND span_id = ?
-  `).run(endMs, status, traceId, spanId).changes > 0
+    UPDATE otel_spans SET
+      exported_at = CASE WHEN exported_at IS NOT NULL AND (end_ms IS NOT ? OR status IS NOT ?) THEN NULL ELSE exported_at END,
+      end_ms = ?, status = ?
+    WHERE trace_id = ? AND span_id = ?
+  `).run(endMs, status, endMs, status, traceId, spanId).changes > 0
 }
 
 export function getOtelTrace(traceId: string): OtelSpan[] {
@@ -285,7 +292,9 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
 // agent.turn span grows with every tool call of the turn) and is exported once, so shipping it early
 // would freeze a truncated duration at the collector. The one exception is a running span that has not
 // moved for OTEL_RUNNING_SPAN_IDLE_MS: nothing closes the last turn of a session, so it is exported as
-// it stands once the agent has been idle that long.
+// it stands once the agent has been idle that long. A span that changes after it was exported (the
+// turn went on, or was closed for real) has exported_at cleared by upsertOtelSpan / closeOtelSpan and by
+// the hook's own writes, so its final state goes out once more under the same span id.
 export const OTEL_RUNNING_SPAN_IDLE_MS = 15 * 60 * 1000
 
 export function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): OtelSpan[] {

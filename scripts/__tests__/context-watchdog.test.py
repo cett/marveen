@@ -618,6 +618,50 @@ class TestOtelSpanWrites(unittest.TestCase):
         ).fetchall())
         self.assertEqual(rows, {"turn-1": "ok", "turn-2": "running"})
 
+    def _mark_exported(self, span_id):
+        self.conn.execute("UPDATE otel_spans SET exported_at = 5 WHERE span_id = ?", (span_id,))
+        self.conn.commit()
+
+    def _exported_at(self, span_id):
+        return self.conn.execute("SELECT exported_at FROM otel_spans WHERE span_id = ?", (span_id,)).fetchone()[0]
+
+    def test_turn_exported_idle_goes_out_again_when_the_next_turn_closes_it(self):
+        # The push exporter sends a running turn that sat idle; if the session then goes on and the next
+        # turn boundary closes it for real, the closed state must be exported (exported_at cleared).
+        turn1 = _user_event(uuid="turn-1", ts="2026-09-08T09:00:00.000Z")
+        turn2 = _user_event(uuid="turn-2", ts="2026-09-08T09:05:00.000Z")
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn1, 1000)
+        self._mark_exported("turn-1")
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn2, 2000)
+        hook.close_stale_turn_spans(self.conn, "sess-1", keep_span_id="turn-2")
+        self.assertIsNone(self._exported_at("turn-1"))
+        self.assertEqual(self.conn.execute("SELECT status FROM otel_spans WHERE span_id='turn-1'").fetchone()[0], "ok")
+
+    def test_close_stale_leaves_exported_at_of_a_span_it_does_not_close(self):
+        turn1 = _user_event(uuid="turn-1", ts="2026-09-08T09:00:00.000Z")
+        turn2 = _user_event(uuid="turn-2", ts="2026-09-08T09:05:00.000Z")
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn1, 1000)
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn2, 2000)
+        hook.close_stale_turn_spans(self.conn, "sess-1", keep_span_id="turn-2")
+        self._mark_exported("turn-1")  # already closed and exported: a second close pass must not re-queue it
+        hook.close_stale_turn_spans(self.conn, "sess-1", keep_span_id="turn-2")
+        self.assertEqual(self._exported_at("turn-1"), 5)
+
+    def test_exported_turn_that_keeps_running_is_queued_again_only_when_end_ms_moves(self):
+        turn1 = _user_event(uuid="turn-1", ts="2026-09-08T09:00:00.000Z")
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn1, 1000)
+        self._mark_exported("turn-1")
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn1, 1000)  # same values: no change
+        self.assertEqual(self._exported_at("turn-1"), 5)
+        hook.write_agent_turn_span(self.conn, MAIN_AGENT, "sess-1", turn1, 3000)  # the turn went on
+        self.assertIsNone(self._exported_at("turn-1"))
+
+    def test_model_call_span_rewritten_with_the_same_values_stays_exported(self):
+        hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1")
+        self._mark_exported("msg_1")
+        hook.write_model_call_span(self.conn, MAIN_AGENT, "sess-1", _usage_event(), "turn-1")
+        self.assertEqual(self._exported_at("msg_1"), 5)
+
 
 class TestRecordHandoffAudit(unittest.TestCase):
     """Audit-trail instrumentation: every HANDOFF firing must land a

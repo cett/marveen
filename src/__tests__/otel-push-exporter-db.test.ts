@@ -66,6 +66,51 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     expect(getUnexportedOtelSpans(100, now + 1000).map(r => r.span_id)).toContain('turn-1')
   })
 
+  it('re-exports a span whose final state arrives after it was exported idle (upsert and close both clear exported_at)', () => {
+    const now = 10_000_000
+    const seedRunning = () => upsertOtelSpan({
+      trace_id: 'trace-push-test-late', span_id: 'late-1', parent_span_id: null,
+      agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 3_600_000, end_ms: now - 2_000_000,
+      status: 'running', attributes: null,
+    })
+    const pending = (at: number) => getUnexportedOtelSpans(100, at).map(r => r.span_id)
+
+    // exported as idle-running ...
+    seedRunning()
+    expect(pending(now)).toContain('late-1')
+    markOtelSpansExported([{ trace_id: 'trace-push-test-late', span_id: 'late-1' }], now)
+    expect(pending(now)).not.toContain('late-1')
+
+    // ... the same write again changes nothing, so nothing is re-sent
+    seedRunning()
+    expect(pending(now)).not.toContain('late-1')
+
+    // ... the turn went on: upsert moves end_ms, then it is closed for real
+    upsertOtelSpan({
+      trace_id: 'trace-push-test-late', span_id: 'late-1', parent_span_id: null,
+      agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 3_600_000, end_ms: now - 1000,
+      status: 'running', attributes: null,
+    })
+    closeOtelSpan('trace-push-test-late', 'late-1', now, 'ok')
+    expect(pending(now)).toContain('late-1')
+    expect(getUnexportedOtelSpans(100, now).find(r => r.span_id === 'late-1')).toMatchObject({ end_ms: now, status: 'ok' })
+
+    // exported again in its final state: closing it once more with the same values does not queue it again
+    markOtelSpansExported([{ trace_id: 'trace-push-test-late', span_id: 'late-1' }], now)
+    closeOtelSpan('trace-push-test-late', 'late-1', now, 'ok')
+    expect(pending(now)).not.toContain('late-1')
+  })
+
+  it('a close without an earlier export is exported once, and the re-export rule does not touch other spans', () => {
+    seedSpan('trace-push-test-plain', 'plain-1', true)
+    seedSpan('trace-push-test-other', 'other-1', true)
+    markOtelSpansExported([{ trace_id: 'trace-push-test-other', span_id: 'other-1' }], Date.now())
+    closeOtelSpan('trace-push-test-plain', 'plain-1', 2000, 'ok') // unchanged values
+    const ids = getUnexportedOtelSpans(100).map(r => r.span_id)
+    expect(ids).toContain('plain-1')
+    expect(ids).not.toContain('other-1')
+  })
+
   it('excludes a span once markOtelSpansExported has run for it', () => {
     seedSpan('trace-push-test-3', 'span-3', true)
     const before = getUnexportedOtelSpans(1000).map(r => r.trace_id)

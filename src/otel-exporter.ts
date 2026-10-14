@@ -65,13 +65,27 @@ export interface OtelExportOptions {
   serviceInstanceId?: string
 }
 
-// Second scrub for the opt-in input_summary: credentials embedded in a URL, and the home directory
-// (it names the machine's user). Shortened last, so a cut never leaves half a secret behind.
+// Second scrub for the opt-in input_summary, on top of the hook's own redaction. It removes the credential
+// shapes that are cheap to recognise: user:password embedded in a URL (with or without the scheme),
+// curl's -u / --user, "Authorization:" / Bearer / Basic values, and password= / token= / secret= /
+// api_key= assignments. It also drops the home directory (it names the machine's user). It is a
+// heuristic, not a guarantee, which is why the attribute stays off by default. Shortened last, so a cut
+// never leaves half a secret behind.
+const SCRUBS: [RegExp, string][] = [
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1***@'],
+  [/\b[^\s/@:]+:[^\s/@]+@/g, '***@'],
+  [/(\s(?:-u|--user)(?:\s+|=))\S+/g, '$1***'],
+  [/\b(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+|token\s+)?\S+/gi, '$1***'],
+  [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***'],
+  [/\b((?:pass(?:word|wd)?|token|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*)\S+/gi, '$1***'],
+  [/(--?(?:pass(?:word|wd)?|token|secret|api[_-]?key)\s+)\S+/gi, '$1***'],
+  [/\/(?:Users|home)\/[^/\s]+/g, '/~'],
+]
+
 export function scrubInputSummary(value: string): string {
-  return value
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1***@')
-    .replace(/\/(?:Users|home)\/[^/\s]+/g, '/~')
-    .slice(0, INPUT_SUMMARY_MAX_CHARS)
+  let out = value
+  for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
+  return out.slice(0, INPUT_SUMMARY_MAX_CHARS)
 }
 
 // Stable per-installation id: the host name and install path are hashed, so the collector can tell two

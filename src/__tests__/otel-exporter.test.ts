@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { spansToOtelJson, tokenUsageToOtelMetricsJson } from '../otel-exporter.js'
+import { spansToOtelJson, tokenUsageToOtelMetricsJson, scrubInputSummary } from '../otel-exporter.js'
 import type { OtelSpan, TokenUsageMetricRow } from '../db.js'
 
 function span(overrides: Partial<OtelSpan> = {}): OtelSpan {
@@ -136,6 +136,30 @@ describe('spansToOtelJson', () => {
     expect(value).toContain('https://***@host/x')
     expect(value).not.toContain('pw@')
     expect(value).not.toContain('someone')
+  })
+
+  it.each([
+    ['curl -u admin:hunter2 https://host/x', 'hunter2'],
+    ['curl --user admin:hunter2 https://host/x', 'hunter2'],
+    ['curl --user=admin:hunter2 https://host/x', 'hunter2'],
+    ['git clone https://deploy:hunter2@host/repo.git', 'hunter2'],
+    ['psql admin:hunter2@dbhost/app', 'hunter2'],
+    ['curl -H "Authorization: Bearer abcdef123456" https://host', 'abcdef123456'],
+    ['curl -H "Authorization: Basic YWRtaW46aHVudGVy" https://host', 'YWRtaW46aHVudGVy'],
+    ['export API_KEY=hunter2 && run', 'hunter2'],
+    ['run --password hunter2', 'hunter2'],
+    ['run token=hunter2', 'hunter2'],
+  ])('input_summary scrub removes the credential in: %s', (input, secret) => {
+    const blob = JSON.stringify({ input_summary: input })
+    const out = spansToOtelJson([span({ attributes: blob })], 'marveen', { includeInputSummary: true })
+    const value = out.resourceSpans[0].scopeSpans[0].spans[0].attributes.find(a => a.key === 'input_summary')?.value.stringValue ?? ''
+    expect(value).not.toContain(secret)
+    expect(value.length).toBeGreaterThan(0)
+  })
+
+  it('input_summary scrub leaves an ordinary command readable', () => {
+    expect(scrubInputSummary('git status --short && npm run build')).toBe('git status --short && npm run build')
+    expect(scrubInputSummary('grep -rn "password policy" docs')).toContain('docs')
   })
 
   it('stamps marveen.tenant.id on the span and the resource, and splits one agent by tenant', () => {

@@ -737,7 +737,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'OTEL_EXPORT_INPUT_SUMMARY',
     type: 'boolean',
     default: '0',
-    description: 'Az OTLP trace-ekhez a tool-hívások input_summary attribútuma is kimegy (Bash parancs eleje, fájlútvonal, URL, keresőkifejezés). Alapból KI: a hook redakciója heurisztika, a tartalom nem hagyhatja el a gépet. Bekapcsolva is csak a rövidített (120 karakter), URL-hitelesítőtől és home-útvonaltól megtisztított változat megy. Az exportőr egyébként attribútum-allowlistet használ: minden más, nem ismert attribútumkulcs eldobódik.',
+    description: 'Az OTLP trace-ekhez a tool-hívások input_summary attribútuma is kimegy (Bash parancs eleje, fájlútvonal, URL, keresőkifejezés). Alapból KI: a hook redakciója heurisztika, a tartalom nem hagyhatja el a gépet. Bekapcsolva is csak a rövidített (120 karakter), a felismert hitelesítő adatoktól (URL-ben, curl -u, Authorization/Bearer, password=/token= értékadás; heurisztika, nem garancia) és a home-útvonaltól megtisztított változat megy. Az exportőr egyébként attribútum-allowlistet használ: minden más, nem ismert attribútumkulcs eldobódik.',
     module: 'observability',
     secret: false,
     requiresRestart: false,
