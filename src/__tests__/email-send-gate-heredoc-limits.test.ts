@@ -101,6 +101,10 @@ describe('scanHeredocs finds exactly what the old regex found', () => {
 })
 
 const REPEAT = (s: string, n: number) => s.repeat(n)
+// A hang guard, not a speed test: a shape that takes this long is a regex gone quadratic or worse. A loaded or
+// instrumented runner (CI, the coverage step) is several times slower than an idle machine, so the wall-clock
+// limit is wide there; the quadratic-versus-linear check below does not depend on the machine's speed.
+const HANG_LIMIT_MS = process.env.CI ? 10_000 : 3000
 const CAP = MAX_CMD_CHARS
 
 const HOSTILE: Array<[string, () => string]> = [
@@ -129,9 +133,65 @@ describe('hostile shapes finish fast or are refused as too large (a deny), never
         verdict = 'limit'
       }
       const ms = Date.now() - t0
-      expect(ms, `${name}: ${ms} ms (${verdict})`).toBeLessThan(3000)
+      expect(ms, `${name}: ${ms} ms (${verdict})`).toBeLessThan(HANG_LIMIT_MS)
     })
   }
+
+  // The legacy content patterns run when a command cannot be tokenized (an unbalanced quote). Two of them were
+  // /anchor[^\n]*keyword/, quadratic on a long line that repeats the anchor and has no keyword after it.
+  describe('the legacy fallback patterns stay linear', () => {
+    const time = (cmd: string) => {
+      const runs: number[] = []
+      for (let i = 0; i < 3; i++) {
+        const t0 = process.hrtime.bigint()
+        isSendInvocation(cmd)
+        runs.push(Number(process.hrtime.bigint() - t0) / 1e6)
+      }
+      return runs.sort((a, b) => a - b)[1] // the median of three
+    }
+    for (const [anchor, mk] of [
+      ['resend', (n: number) => "'" + REPEAT('resend ', n)],
+      ['graph-mail', (n: number) => "'" + REPEAT('graph-mail ', n)],
+    ] as Array<[string, (n: number) => string]>) {
+      it(`${anchor} repeated: 4x the input costs about 4x the time, not 16x`, () => {
+        const small = time(mk(2500))
+        const large = time(mk(10_000))
+        expect(large, `small ${small.toFixed(1)} ms, large ${large.toFixed(1)} ms`).toBeLessThan(9 * Math.max(small, 5))
+      })
+    }
+
+    // Reference: the original regexes, written out. isSendInvocation falls back to exactly these on an
+    // unbalanced quote, so the verdicts must agree on every generated command.
+    const REFERENCE = [
+      /support-mail\/send\.py/i, /\bsend\.py\b/i, /api\.resend\.com/i, /\bresend\b[^\n]*\b(email|send|message)\b/i,
+      /\bsendmail\b/i, /\bmsmtp\b/i, /\bswaks\b/i, /\bsmtplib\b|SMTP\s*\(/i, /\bmail\.send\b|\bsendEmail\b/i,
+      /\bgraph-mail\b[^\n]*\bsend\b/i, /\bsendMail\s*\(/i,
+    ]
+    it('gives the same verdict as the original regexes on 20000 generated commands', () => {
+      const words = ['resend', 'RESEND', 'send', 'email', 'message', 'graph-mail', 'foo', 'resendx', 'xsend', 'sendmail', 'send.py',
+        '-', '.', '\n', '\n', ' ', ' ', '(', 'sendMail', 'SMTP', 'mail.send']
+      let seed = 12345
+      const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+      let hits = 0
+      for (let i = 0; i < 20_000; i++) {
+        const len = 1 + rnd(14)
+        let cmd = "'" // unbalanced: the fallback path
+        for (let j = 0; j < len; j++) cmd += words[rnd(words.length)] + (rnd(3) === 0 ? '' : ' ')
+        const want = REFERENCE.some((re) => re.test(cmd))
+        if (want) hits++
+        expect(isSendInvocation(cmd), JSON.stringify(cmd)).toBe(want)
+      }
+      expect(hits).toBeGreaterThan(1000) // both outcomes are exercised
+      expect(hits).toBeLessThan(19_000)
+    })
+
+    it('keeps the line boundary: an anchor and a keyword on different lines do not match', () => {
+      expect(isSendInvocation("' resend\nsend")).toBe(false)
+      expect(isSendInvocation("' resend send")).toBe(true)
+      expect(isSendInvocation("' graph-mail\nsend")).toBe(false)
+      expect(isSendInvocation("' graph-mail x send")).toBe(true)
+    })
+  })
 
   it('200 openers x 100K padding (18 s+ before) is refused at once', () => {
     const cmd = Array.from({ length: 200 }, (_, i) => `cat <<T${i}\n`).join('') + 'x'.repeat(100_000)

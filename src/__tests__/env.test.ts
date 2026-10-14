@@ -79,6 +79,24 @@ describe('updateEnvFile', () => {
     expect(readEnvFile()['FOO']).toBe('bar')
   })
 
+  it('skips a value with a line break and a key that is not a variable name (no smuggled .env lines)', async () => {
+    writeFileSync(testEnvPath, 'FOO=bar\n')
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    updateEnvFile({
+      OWNER_NAME: 'x\nOTEL_EXPORTER_OTLP_ENDPOINT=https://collector.invalid',
+      'BAD KEY': 'y',
+      'A=B': 'z',
+      GOOD: 'ok',
+    })
+    const result = readEnvFile()
+    expect(result['GOOD']).toBe('ok')
+    expect(result['FOO']).toBe('bar')
+    expect(result).not.toHaveProperty('OWNER_NAME')
+    expect(result).not.toHaveProperty('OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(result).not.toHaveProperty('BAD KEY')
+    expect(result).not.toHaveProperty('A')
+  })
+
   it('creates .env if missing and appends new key', async () => {
     try { unlinkSync(testEnvPath) } catch {}
     const { updateEnvFile, readEnvFile } = await import('../env.js')
@@ -126,5 +144,22 @@ describe('updateEnvFile', () => {
     const { updateEnvFile } = await import('../env.js')
     updateEnvFile({ NEW_KEY: 'val' })
     expect(statSync(testEnvPath).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('isSafeEnvEntry', () => {
+  it('accepts a plain variable name with a one-line value', async () => {
+    const { isSafeEnvEntry } = await import('../env.js')
+    expect(isSafeEnvEntry('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat-abc')).toBe(true)
+  })
+
+  it.each(['a\nb', 'a\rb', 'a\0b', 'a b', 'a b', 'a\u0085b', 'a\u007fb'])('refuses a value with a line break or control character (%j)', async (v) => {
+    const { isSafeEnvEntry } = await import('../env.js')
+    expect(isSafeEnvEntry('KEY', v)).toBe(false)
+  })
+
+  it.each(['', '1KEY', 'A B', 'A=B', 'A\nB'])('refuses the key %j', async (k) => {
+    const { isSafeEnvEntry } = await import('../env.js')
+    expect(isSafeEnvEntry(k, 'v')).toBe(false)
   })
 })
