@@ -5,6 +5,7 @@
     "scripts/ensure-native-modules.sh": "C",
     "scripts/hooks/auth-admin-gate.py": "A",
     "scripts/hooks/context-watchdog.py": "A",
+    "scripts/hooks/gate_audit_lib.py": "A",
     "scripts/hooks/hook_db_path.py": "A",
     "scripts/hooks/tenant-skill-gate.py": "A",
     "scripts/hooks/tenant_context_lib.py": "A",
@@ -39,9 +40,7 @@
       }
     },
     "scripts/hooks/auth-admin-gate.py": {
-      "dialect": {
-        "PRAGMA": 1
-      },
+      "dialect": {},
       "direct": {
         "claudeclaw.db": 12,
         "sqlite3 CLI": 5
@@ -55,6 +54,16 @@
       "direct": {
         "python sqlite3": 1,
         "sqlite3.connect": 2
+      }
+    },
+    "scripts/hooks/gate_audit_lib.py": {
+      "dialect": {
+        "PRAGMA": 1
+      },
+      "direct": {
+        "claudeclaw.db": 1,
+        "python sqlite3": 1,
+        "sqlite3.connect": 1
       }
     },
     "scripts/hooks/hook_db_path.py": {

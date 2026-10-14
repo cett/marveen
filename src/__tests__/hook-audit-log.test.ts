@@ -1,10 +1,11 @@
 // Tests for the structured hook audit log (db.ts): insertHookAuditLog,
 // listHookAuditLog, pruneHookAuditLog.
 //
-// By design only DENY verdicts are meant to be written by callers (the
-// post-tool-injection-gate hook never logs allow), but the storage layer
-// itself is agnostic -- it stores whatever verdict it is given and lets the
-// query layer filter. These tests exercise the storage layer directly.
+// The storage layer is agnostic about the verdict: it stores whatever it is given
+// and lets the query layer filter. (The table is NOT deny-only in practice:
+// browser-content-notice writes 'allow' rows, the context watchdog 'handoff'
+// rows, the gates 'deny' rows -- see the comment above HookAuditLogEntry in
+// db/audit.ts.) These tests exercise the storage layer directly.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { initDatabase, insertHookAuditLog, listHookAuditLog, pruneHookAuditLog } from '../db.js'

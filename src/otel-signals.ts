@@ -5,7 +5,8 @@
 // it may carry; anything else is dropped by the registry.
 
 import { getDb } from './db/connection.js'
-import { defineCounter, defineGauge, defineHistogram, otelCount, otelRecord } from './otel-metrics.js'
+import { defineCounter, defineGauge, defineHistogram, defineObservableCounter, otelCount, otelRecord } from './otel-metrics.js'
+import { getGateDecisionCounts } from './db/otel-logs.js'
 
 // ── Exporter health (src/web/otel-push-exporter.ts) ──────────────────────────
 // The attribute key is in our own namespace on purpose: a bare "signal" would collide with anything a backend
@@ -73,3 +74,19 @@ defineGauge('marveen.channel.handoff.oldest_pending_age', 's', () => {
     .all() as { source: string; oldest: number | null }[]
   return rows.filter((r) => r.oldest != null).map((r) => ({ attrs: { channel: r.source }, value: Math.max(0, nowSec() - (r.oldest as number)) }))
 }, ['channel'])
+
+// ── PreToolUse gate verdicts (scripts/hooks/gate_audit_lib.py writes gate_decision_counts) ──
+// A gate (destructive-gate, secret-read-gate ...) and its verdict: allow, deny, or error (a gate process that
+// ended with neither 0 nor 2). `reason` is the fixed code of a deny or error and is left out for an allow.
+// Counts only: nothing of the call the gate looked at is ever stored.
+defineObservableCounter('marveen.gate.decisions', '{decision}', () => {
+  return getGateDecisionCounts().map((r) => ({
+    attrs: {
+      'marveen.gate': r.gate,
+      'marveen.gate.decision': r.decision,
+      ...(r.reason ? { 'marveen.gate.reason': r.reason } : {}),
+    },
+    value: r.count,
+    startMs: r.first_at * 1000,
+  }))
+}, ['marveen.gate', 'marveen.gate.decision', 'marveen.gate.reason'])

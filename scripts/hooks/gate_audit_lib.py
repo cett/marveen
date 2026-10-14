@@ -18,18 +18,23 @@ THE GATE'S VERDICT IS NEVER AT STAKE HERE (the rules of the H5b review):
   3. The gate imports this module inside try/except: a missing or broken file leaves the gate exactly as it
      was before (see the import stanza at the bottom of each gate).
   4. A row can carry only what is listed here: the gate name (from GATES), the decision (DECISIONS), a
-     reason code (REASONS, a fixed enum, never free text) and the agent id derived from the event's cwd. No
-     command, file path, recipient, tool input or output ever reaches this module's write: the module reads
-     the event only to find `cwd`, and keeps nothing else.
+     reason code (REASONS, a fixed enum, never free text) and the agent id. This module never reads the hook
+     event: no command, file path, recipient, tool input or output can reach the write, because the module
+     does not have them.
+
+WHO THE AGENT IS comes from the process, not from the event. The event's cwd follows the agent's own `cd`, so an
+agent could point it at another agent's directory and have its denials filed under that agent. The launcher
+fixes CLAUDE_CONFIG_DIR (<install>/agents/<id>/...) and CLAUDE_PROJECT_DIR before the session starts, and
+a tool call cannot change the environment of a hook process. Neither names an agent -> agent_id stays NULL
+(unattributed), never a guess. The tenant is not resolved either (tenant_id stays NULL = unresolved, as for
+any row whose tenant cannot be told).
 
 A limit: a gate that ends the process with os._exit (auth-admin-gate's hard timeout) never returns here, so
 that deny is not counted. Pure stdlib.
 """
-import json
 import os
 import signal
 import sqlite3
-import sys
 import time
 from urllib.parse import quote
 
@@ -46,42 +51,10 @@ REASONS = frozenset({'denied', 'gate_error', 'exit_code'})
 
 BUSY_TIMEOUT_MS = 200
 WRITE_BUDGET_S = 1
-_CAPTURE_LIMIT = 1 << 20  # of the event, to find `cwd`; a larger event just has no agent id
 
 
 class _WriteBudgetExceeded(Exception):
     pass
-
-
-class _TeeStdin(object):
-    """Reads like the real stdin and remembers what was read (up to _CAPTURE_LIMIT), so the wrapper can find
-    the event's cwd without the gate having to hand it over. Every other attribute is the real stdin's."""
-
-    def __init__(self, inner):
-        self._inner = inner
-        self._chunks = []
-        self._size = 0
-
-    def _keep(self, data):
-        if isinstance(data, str) and self._size <= _CAPTURE_LIMIT:
-            self._chunks.append(data)
-            self._size += len(data)
-        return data
-
-    def read(self, *args):
-        return self._keep(self._inner.read(*args))
-
-    def readline(self, *args):
-        return self._keep(self._inner.readline(*args))
-
-    def captured(self):
-        return ''.join(self._chunks) if self._size <= _CAPTURE_LIMIT else ''
-
-    def __iter__(self):
-        return iter(self._inner)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
 
 
 def _classify(code):
@@ -114,17 +87,35 @@ def _main_agent_id():
     return None
 
 
-def _agent_id(captured):
-    """The agent behind the event's cwd: <install>/agents/<id> is <id>, the install itself is the main agent,
-    anything else (a scratch directory, a worktree) names no agent -> None. Never raises."""
+def _agent_under(path, install):
+    """The id when `path` is <install>/agents/<id>[/...]; '' when it is the install itself; None otherwise."""
+    path = os.path.normpath(path)
+    agents_root = os.path.join(install, 'agents')
+    if path.startswith(agents_root + os.sep):
+        return path[len(agents_root) + 1:].split(os.sep)[0] or None
+    if path == install:
+        return ''
+    return None
+
+
+def _trusted_agent_id():
+    """The agent this hook process runs for, from the launcher's environment (see the module docstring).
+    CLAUDE_CONFIG_DIR first (a sub-agent has its own under agents/<id>), then CLAUDE_PROJECT_DIR (the directory
+    the session started in: agents/<id>, or the install itself for the main agent). Never raises."""
     try:
-        cwd = str(json.loads(captured).get('cwd') or '').rstrip('/')
-        install = _install_dir().rstrip('/')
-        agents_root = os.path.join(install, 'agents')
-        if cwd.startswith(agents_root + os.sep):
-            return cwd[len(agents_root) + 1:].split(os.sep)[0] or None
-        if cwd == install or not cwd:
-            return _main_agent_id()
+        install = os.path.normpath(_install_dir())
+        config = os.environ.get('CLAUDE_CONFIG_DIR')
+        if config:
+            found = _agent_under(config, install)
+            if found:
+                return found
+        project = os.environ.get('CLAUDE_PROJECT_DIR')
+        if project:
+            found = _agent_under(project, install)
+            if found:
+                return found
+            if found == '':
+                return _main_agent_id()
         return None
     except BaseException:  # noqa: BLE001 -- see rule 2 in the module docstring
         return None
@@ -197,17 +188,10 @@ def record(gate, decision, reason, agent_id=None, deny_row=False, db_path=None):
 
 def audited(gate, main, deny_row=False):
     """Run `main` (a gate's entry point) and record how it ended. Exits exactly as `main` would have."""
-    tee = None
-    try:
-        tee = _TeeStdin(sys.stdin)
-        sys.stdin = tee
-    except BaseException:  # noqa: BLE001 -- no tee: the outcome is still counted, without an agent id
-        tee = None
 
     def finish(decision, reason):
         try:
-            agent = _agent_id(tee.captured()) if tee is not None else None
-            record(gate, decision, reason, agent_id=agent, deny_row=deny_row)
+            record(gate, decision, reason, agent_id=_trusted_agent_id(), deny_row=deny_row)
         except BaseException:  # noqa: BLE001
             pass
 

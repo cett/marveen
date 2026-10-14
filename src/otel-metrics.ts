@@ -28,7 +28,13 @@ interface GaugeDef extends BaseDef {
   kind: 'gauge'
   collect: () => { attrs?: MetricAttrs; value: number }[]
 }
-type MetricDef = CounterDef | HistogramDef | GaugeDef
+// A cumulative, monotonic sum whose running value lives in the database (written by another process, such as
+// the gate hooks), read when an export happens. `startMs` is when the oldest series began counting.
+interface ObservableCounterDef extends BaseDef {
+  kind: 'observable_counter'
+  collect: () => { attrs?: MetricAttrs; value: number; startMs?: number }[]
+}
+type MetricDef = CounterDef | HistogramDef | GaugeDef | ObservableCounterDef
 
 interface HistogramSeries { count: number; sum: number; min: number; max: number; buckets: number[] }
 
@@ -54,6 +60,12 @@ export function defineGauge(
   name: string, unit: string, collect: GaugeDef['collect'], attrKeys: readonly string[] = [],
 ): void {
   defs.set(name, { kind: 'gauge', name, unit, attrKeys, collect })
+}
+
+export function defineObservableCounter(
+  name: string, unit: string, collect: ObservableCounterDef['collect'], attrKeys: readonly string[] = [],
+): void {
+  defs.set(name, { kind: 'observable_counter', name, unit, attrKeys, collect })
 }
 
 function pickAttrs(def: BaseDef, attrs: MetricAttrs | undefined): MetricAttrs {
@@ -137,6 +149,25 @@ export function collectRegistryMetrics(nowMs = Date.now()): RegistryMetric[] {
           aggregationTemporality: 2, isMonotonic: true,
           dataPoints: series.map((s) => ({
             attributes: toAttributes(s.attrs), startTimeUnixNano: start, timeUnixNano: now, asInt: String(Math.round(s.value)),
+          })),
+        },
+      })
+    } else if (def.kind === 'observable_counter') {
+      let points: { attrs?: MetricAttrs; value: number; startMs?: number }[] = []
+      try {
+        points = def.collect()
+      } catch {
+        continue // unreadable, skipped, never fatal to the export
+      }
+      if (points.length === 0) continue
+      out.push({
+        name: def.name, unit: def.unit,
+        sum: {
+          aggregationTemporality: 2, isMonotonic: true,
+          dataPoints: points.map((p) => ({
+            attributes: toAttributes(pickAttrs(def, p.attrs)),
+            startTimeUnixNano: p.startMs !== undefined ? nano(p.startMs) : start,
+            timeUnixNano: now, asInt: String(Math.round(p.value)),
           })),
         },
       })

@@ -48,7 +48,7 @@ beforeEach(() => {
   for (const k of Object.keys(envFile)) delete envFile[k]
   resetOtelExporterStatus()
   resetMetricValues()
-  getDb().exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM otel_logs_export_state;')
+  getDb().exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log; DELETE FROM otel_logs_export_state;')
   vi.restoreAllMocks()
 })
 
@@ -68,7 +68,7 @@ function bodyOf(call: unknown[]): string {
 
 // Starts the cursors at the current end of every table (what the first tick does), then lets the test seed.
 function primeCursors() {
-  for (const s of ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log'] as const) getOtelLogCursor(s)
+  for (const s of ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log'] as const) getOtelLogCursor(s)
 }
 
 describe('log export through tick', () => {
@@ -182,6 +182,26 @@ describe('log export through tick', () => {
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('connection refused'))
     await expect(tick()).resolves.toBeUndefined()
     expect(getOtelExporterStatus().logs.failures).toBe(1)
+  })
+
+  it('sends a gate refusal and moves the hook_audit_log cursor only after the collector answered', async () => {
+    primeCursors()
+    getDb().prepare(
+      `INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source)
+       VALUES (1700000003, 'agent-a', 'PreToolUse', 'deny', 'TOOL-CONTENT', 'HASH-CONTENT', 'denied', 'SESSION-CONTENT', 'destructive-gate')`,
+    ).run()
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('no', { status: 503 }))
+    await tick()
+    expect(logCalls(fetchSpy)).toHaveLength(1)
+    expect(bodyOf(logCalls(fetchSpy)[0])).toContain('destructive-gate')
+    expect(bodyOf(logCalls(fetchSpy)[0])).not.toContain('CONTENT')
+    const l = getOtelExporterStatus().logs
+    vi.spyOn(Date, 'now').mockReturnValue(l.nextAttemptMs + 1)
+    fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }))
+    await tick()
+    expect(logCalls(fetchSpy)).toHaveLength(2) // the same row again, then
+    await tick()
+    expect(logCalls(fetchSpy)).toHaveLength(2) // never again
   })
 
   it('does not write to any audit table (read-only)', async () => {

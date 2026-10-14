@@ -10,7 +10,7 @@
 import { randomBytes } from 'node:crypto'
 import { db } from './connection.js'
 
-export const OTEL_LOG_SOURCES = ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log'] as const
+export const OTEL_LOG_SOURCES = ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log'] as const
 export type OtelLogSource = (typeof OTEL_LOG_SOURCES)[number]
 
 export interface ApprovalEventLogRow {
@@ -51,11 +51,23 @@ export interface AgentAuditExportRow {
   created_at: number
 }
 
+export interface HookAuditExportRow {
+  id: number
+  ts: number
+  agent_id: string | null
+  hook_type: string
+  verdict: string
+  trigger_source: string | null
+  reason: string | null
+  tenant_id: string | null
+}
+
 export interface OtelLogRows {
   approval_events: ApprovalEventLogRow[]
   rbac_shadow_log: RbacDecisionLogRow[]
   config_change_log: ConfigChangeExportRow[]
   agent_audit_log: AgentAuditExportRow[]
+  hook_audit_log: HookAuditExportRow[]
 }
 
 function currentMaxId(source: OtelLogSource): number {
@@ -66,6 +78,7 @@ function currentMaxId(source: OtelLogSource): number {
       case 'rbac_shadow_log': return db.prepare('SELECT MAX(id) AS m FROM rbac_shadow_log').get()
       case 'config_change_log': return db.prepare('SELECT MAX(id) AS m FROM config_change_log').get()
       case 'agent_audit_log': return db.prepare('SELECT MAX(id) AS m FROM agent_audit_log').get()
+      case 'hook_audit_log': return db.prepare('SELECT MAX(id) AS m FROM hook_audit_log').get()
     }
   })() as { m: number | null } | undefined
   return row?.m ?? 0
@@ -96,6 +109,20 @@ export function getOtelLogHashSalt(): string {
   return (db.prepare('SELECT salt FROM otel_logs_hash_salt WHERE id = 1').get() as { salt: string }).salt
 }
 
+// Gate verdict counts (migration 0083), for the marveen.gate.decisions counter: one row per gate, decision and
+// reason code, with the running count and the time of the first one.
+export interface GateDecisionCountRow {
+  gate: string
+  decision: string
+  reason: string
+  count: number
+  first_at: number
+}
+export function getGateDecisionCounts(): GateDecisionCountRow[] {
+  return db.prepare('SELECT gate, decision, reason, count, first_at FROM gate_decision_counts ORDER BY gate, decision, reason')
+    .all() as GateDecisionCountRow[]
+}
+
 // The next batch of every source, oldest first, `limit` rows per source. rbac 'permitted' rows are not
 // exported: that is request-level traffic of non-admin callers, a volume the log stream should not carry
 // (the refusals, which is what an audit reads, are exported).
@@ -115,5 +142,12 @@ export function getOtelLogBatch(limit: number): OtelLogRows {
     agent_audit_log: db.prepare(
       `SELECT id, agent_id, entity, action, created_at FROM agent_audit_log WHERE id > ? ORDER BY id ASC LIMIT ?`,
     ).all(getOtelLogCursor('agent_audit_log'), limit) as AgentAuditExportRow[],
+    // Only the refusals. tool_name, content_hash and session_id are not read: the row says which gate said no,
+    // for which agent, with which reason code. (The allow rows of browser-content-notice and the handoff rows of
+    // the context watchdog are not security events.)
+    hook_audit_log: db.prepare(
+      `SELECT id, ts, agent_id, hook_type, verdict, trigger_source, reason, tenant_id
+       FROM hook_audit_log WHERE id > ? AND verdict IN ('deny', 'defer') ORDER BY id ASC LIMIT ?`,
+    ).all(getOtelLogCursor('hook_audit_log'), limit) as HookAuditExportRow[],
   }
 }

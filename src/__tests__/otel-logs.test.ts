@@ -11,7 +11,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   const db = getDb()
-  db.exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log;')
+  db.exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log;')
   db.exec('DELETE FROM otel_logs_export_state')
 })
 
@@ -223,6 +223,57 @@ describe('mapLogBatch', () => {
     const { cursors } = mapLogBatch(batch, SALT)
     expect(cursors.approval_events).toBe(batch.approval_events[1].id)
     expect(cursors.config_change_log).toBeUndefined()
+  })
+})
+
+describe('hook_audit_log (the gate refusals)', () => {
+  function seedHook(verdict: string, over: Partial<{ tool: string | null; hash: string | null; reason: string | null; session: string | null; source: string | null; agent: string | null; tenant: string | null }> = {}) {
+    const o = { tool: 'TOOL-CONTENT', hash: 'HASH-CONTENT', reason: 'denied', session: 'SESSION-CONTENT', source: 'secret-read-gate', agent: 'agent-a', tenant: null, ...over }
+    getDb().prepare(
+      `INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id)
+       VALUES (1700000002, ?, 'PreToolUse', ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(o.agent, verdict, o.tool, o.hash, o.reason, o.session, o.source, o.tenant)
+  }
+
+  it('exports deny and defer rows only: the allow and handoff rows are not security events', () => {
+    getOtelLogCursor('hook_audit_log')
+    seedHook('allow'); seedHook('handoff'); seedHook('deny'); seedHook('defer')
+    expect(getOtelLogBatch(100).hook_audit_log.map((r) => r.verdict)).toEqual(['deny', 'defer'])
+  })
+
+  it('maps a refusal to a WARN with the gate, the reason code and the agent, and nothing that came from the call', () => {
+    getOtelLogCursor('hook_audit_log')
+    seedHook('deny', { tenant: 'tenant-a' })
+    const batch = getOtelLogBatch(100)
+    expect(JSON.stringify(batch)).not.toMatch(/CONTENT/)
+    const [r] = mapLogBatch(batch, SALT).records
+    expect(r.body.stringValue).toBe('marveen.hook.deny')
+    expect(r.severityNumber).toBe(13)
+    const a = attrs(r)
+    expect(a).toMatchObject({
+      'marveen.hook.verdict': 'deny', 'marveen.hook.type': 'PreToolUse', 'marveen.gate': 'secret-read-gate',
+      'marveen.hook.reason': 'denied', 'marveen.agent.id': 'agent-a', 'marveen.tenant.id': 'tenant-a',
+    })
+    expect(JSON.stringify(r)).not.toMatch(/CONTENT/)
+  })
+
+  it('bounds a reason or a producer that is not an identifier, and labels a missing tenant unresolved', () => {
+    getOtelLogCursor('hook_audit_log')
+    seedHook('deny', { reason: 'ctx=45% of /some/path', source: null, agent: null })
+    const [r] = mapLogBatch(getOtelLogBatch(100), SALT).records
+    const a = attrs(r)
+    expect(a['marveen.hook.reason']).toBe('_other')
+    expect(a['marveen.gate']).toBeUndefined()
+    expect(a['marveen.agent.id']).toBeUndefined()
+    expect(a['marveen.tenant.id']).toBe('unresolved')
+    expect(JSON.stringify(r)).not.toContain('/some/path')
+  })
+
+  it('starts at the end of the table like the other sources', () => {
+    seedHook('deny'); seedHook('deny')
+    expect(getOtelLogBatch(100).hook_audit_log).toHaveLength(0)
+    seedHook('deny', { reason: 'gate_error' })
+    expect(getOtelLogBatch(100).hook_audit_log.map((r) => r.reason)).toEqual(['gate_error'])
   })
 })
 

@@ -9,6 +9,7 @@ beforeEach(() => {
   resetMetricValues()
   getDb().exec('DELETE FROM agent_messages')
   getDb().exec('DELETE FROM incoming_events')
+  getDb().exec('DELETE FROM gate_decision_counts')
 })
 
 const metric = (name: string) => collectRegistryMetrics().find((m) => m.name === name)
@@ -107,5 +108,49 @@ describe('exporter health counters', () => {
   it('drops an attribute key the metric does not declare (a bare "signal" is not one)', () => {
     countExportFailure('traces')
     for (const p of points('marveen.otel.export.failures')) expect(Object.keys(attrMap(p))).not.toContain('signal')
+  })
+})
+
+describe('marveen.gate.decisions (written by the gate hooks)', () => {
+  function seedCount(gate: string, decision: string, reason: string, count: number, firstAt = 1_700_000_000) {
+    getDb().prepare(
+      'INSERT INTO gate_decision_counts (gate, decision, reason, count, first_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(gate, decision, reason, count, firstAt, firstAt)
+  }
+
+  it('is absent while no gate has counted anything', () => {
+    expect(metric('marveen.gate.decisions')).toBeUndefined()
+  })
+
+  it('is a cumulative monotonic sum with one point per gate, decision and reason', () => {
+    seedCount('destructive-gate', 'allow', '', 120)
+    seedCount('destructive-gate', 'deny', 'denied', 3, 1_700_000_500)
+    const m = metric('marveen.gate.decisions')!
+    expect(m.sum?.isMonotonic).toBe(true)
+    expect(m.sum?.aggregationTemporality).toBe(2)
+    const byDecision = Object.fromEntries(points('marveen.gate.decisions').map((p) => [attrMap(p)['marveen.gate.decision'], p]))
+    expect(byDecision['allow'].asInt).toBe('120')
+    expect(byDecision['deny'].asInt).toBe('3')
+    expect(attrMap(byDecision['deny'])).toEqual({
+      'marveen.gate': 'destructive-gate', 'marveen.gate.decision': 'deny', 'marveen.gate.reason': 'denied',
+    })
+    // an allow has no reason attribute at all, not an empty one
+    expect(attrMap(byDecision['allow'])['marveen.gate.reason']).toBeUndefined()
+  })
+
+  it('starts each series at the time of its first decision, not at the process start', () => {
+    seedCount('secret-read-gate', 'allow', '', 5, 1_700_000_000)
+    const [p] = points('marveen.gate.decisions')
+    expect(p.startTimeUnixNano).toBe('1700000000000000000')
+  })
+
+  it('is skipped, not fatal, when the table cannot be read', () => {
+    getDb().exec('ALTER TABLE gate_decision_counts RENAME TO gate_decision_counts_gone')
+    try {
+      expect(() => collectRegistryMetrics()).not.toThrow()
+      expect(metric('marveen.gate.decisions')).toBeUndefined()
+    } finally {
+      getDb().exec('ALTER TABLE gate_decision_counts_gone RENAME TO gate_decision_counts')
+    }
   })
 })

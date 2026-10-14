@@ -13,6 +13,7 @@
 import { createHmac } from 'node:crypto'
 import type {
   OtelLogRows, OtelLogSource, ApprovalEventLogRow, RbacDecisionLogRow, ConfigChangeExportRow, AgentAuditExportRow,
+  HookAuditExportRow,
 } from './db/otel-logs.js'
 
 const SEVERITY_INFO = 9
@@ -124,6 +125,20 @@ function agentAuditRecord(r: AgentAuditExportRow, salt: string, observed: string
   ])
 }
 
+function hookAuditRecord(r: HookAuditExportRow, observed: string): OtelLogRecord {
+  const verdict = token(r.verdict) ?? '_other'
+  return record(`marveen.hook.${verdict}`, SEVERITY_WARN, r.ts, observed, [
+    ...attr('marveen.hook.verdict', verdict),
+    ...attr('marveen.hook.type', token(r.hook_type)),
+    // trigger_source names the producer: a gate (destructive-gate ...) or, on older rows, nothing.
+    ...attr('marveen.gate', token(r.trigger_source)),
+    ...attr('marveen.hook.reason', token(r.reason)),
+    // The agent id of a hook row is an agent name, like marveen.agent.id on the spans; token() bounds it.
+    ...attr('marveen.agent.id', token(r.agent_id)),
+    ...tenantAttr(r.tenant_id),
+  ])
+}
+
 export interface MappedLogBatch {
   records: OtelLogRecord[]
   // The highest row id included per source: the cursor to store once the collector has the batch.
@@ -142,6 +157,7 @@ export function mapLogBatch(rows: OtelLogRows, salt: string, nowMs: number = Dat
   take('rbac_shadow_log', rows.rbac_shadow_log, (r) => rbacRecord(r, salt, observed))
   take('config_change_log', rows.config_change_log, (r) => configRecord(r, salt, observed))
   take('agent_audit_log', rows.agent_audit_log, (r) => agentAuditRecord(r, salt, observed))
+  take('hook_audit_log', rows.hook_audit_log, (r) => hookAuditRecord(r, observed))
   return { records, cursors }
 }
 

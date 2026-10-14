@@ -278,61 +278,93 @@ class AuditedCase(unittest.TestCase):
                 lib._write = orig
 
     def test_the_verdict_survives_a_broken_agent_lookup_and_a_broken_record(self):
-        orig_agent, orig_record = lib._agent_id, lib.record
-        lib._agent_id = lambda *a: (_ for _ in ()).throw(KeyboardInterrupt())
+        orig_agent, orig_record = lib._trusted_agent_id, lib.record
+        lib._trusted_agent_id = lambda *a: (_ for _ in ()).throw(KeyboardInterrupt())
         try:
             def main():
                 sys.exit(2)
             self.assertEqual(self.run_audited(main), ('exit', 2))
         finally:
-            lib._agent_id = orig_agent
+            lib._trusted_agent_id = orig_agent
         lib.record = lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())
         try:
             self.assertEqual(self.run_audited(main), ('exit', 2))
         finally:
             lib.record = orig_record
 
-    def test_the_agent_comes_from_the_events_cwd_and_nothing_else_of_the_event_is_kept(self):
-        import io
-        install = os.path.dirname(os.path.dirname(HOOKS))
-        cwd = os.path.join(install, 'agents', 'agent-a')
-        event = {'tool_name': 'Bash', 'cwd': cwd,
-                 'tool_input': {'command': SENTINEL_CMD, 'file_path': SENTINEL_PATH, 'to': SENTINEL_RECIPIENT}}
-        sys.stdin = io.StringIO(json.dumps(event))
+    def with_env(self, **env):
+        """Set (value) or clear (None) environment variables for one test, restored by addCleanup."""
+        for key, value in env.items():
+            old = os.environ.get(key)
+            self.addCleanup(lambda k=key, o=old: os.environ.pop(k, None) if o is None else os.environ.__setitem__(k, o))
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
+    def deny_and_get_agent(self):
         def main():
-            json.loads(sys.stdin.read())
             sys.exit(2)
         self.assertEqual(self.run_audited(main, deny_row=True), ('exit', 2))
-        self.assertEqual(rows(self.db, 'SELECT agent_id, trigger_source FROM hook_audit_log'), [('agent-a', 'secret-read-gate')])
+        return rows(self.db, 'SELECT agent_id FROM hook_audit_log')[-1][0]
+
+    def test_the_agent_comes_from_the_launchers_environment_and_nothing_of_the_event_is_kept(self):
+        import io
+        install = os.path.dirname(os.path.dirname(HOOKS))
+        self.with_env(CLAUDE_CONFIG_DIR=os.path.join(install, 'agents', 'agent-a', '.claude-config'), CLAUDE_PROJECT_DIR=None)
+        event = {'tool_name': 'Bash', 'cwd': os.path.join(install, 'agents', 'agent-b'),
+                 'tool_input': {'command': SENTINEL_CMD, 'file_path': SENTINEL_PATH, 'to': SENTINEL_RECIPIENT}}
+        sys.stdin = io.StringIO(json.dumps(event))
+        self.assertEqual(self.deny_and_get_agent(), 'agent-a')  # NOT agent-b, whose directory the event's cwd names
+        self.assertEqual(rows(self.db, 'SELECT trigger_source FROM hook_audit_log'), [('secret-read-gate',)])
         dump = json.dumps(rows(self.db, 'SELECT * FROM hook_audit_log') + rows(self.db, 'SELECT * FROM gate_decision_counts'))
-        for s in (SENTINEL_CMD, SENTINEL_PATH, SENTINEL_RECIPIENT):
-            self.assertNotIn(s, dump)
         with open(self.db, 'rb') as fh:
             raw = fh.read()
-        for s in (SENTINEL_CMD, SENTINEL_PATH, SENTINEL_RECIPIENT):
+        for s in (SENTINEL_CMD, SENTINEL_PATH, SENTINEL_RECIPIENT, 'agent-b'):
+            self.assertNotIn(s, dump)
             self.assertNotIn(s.encode(), raw)
 
-    def test_a_cwd_that_names_no_agent_gives_no_agent_id(self):
+    def test_an_agent_cannot_have_its_denials_filed_under_another_by_changing_directory(self):
         import io
-        sys.stdin = io.StringIO(json.dumps({'cwd': '/some/scratch/dir'}))
+        install = os.path.dirname(os.path.dirname(HOOKS))
+        self.with_env(CLAUDE_CONFIG_DIR=None, CLAUDE_PROJECT_DIR=os.path.join(install, 'agents', 'agent-a'))
+        sys.stdin = io.StringIO(json.dumps({'cwd': os.path.join(install, 'agents', 'agent-b')}))
+        self.assertEqual(self.deny_and_get_agent(), 'agent-a')
 
-        def main():
-            sys.stdin.read()
-            sys.exit(2)
-        self.run_audited(main, deny_row=True)
-        self.assertEqual(rows(self.db, 'SELECT agent_id FROM hook_audit_log'), [(None,)])
+    def test_the_project_directory_alone_names_the_agent_and_the_install_itself_is_the_main_agent(self):
+        install = os.path.dirname(os.path.dirname(HOOKS))
+        self.with_env(CLAUDE_CONFIG_DIR=None, CLAUDE_PROJECT_DIR=os.path.join(install, 'agents', 'agent-c', 'sub', 'dir'))
+        self.assertEqual(self.deny_and_get_agent(), 'agent-c')
+        self.with_env(CLAUDE_PROJECT_DIR=install, MAIN_AGENT_ID='agent-main')
+        self.assertEqual(self.deny_and_get_agent(), 'agent-main')
 
-    def test_the_real_stdin_still_reads_the_same_through_the_tee(self):
+    def test_no_trusted_environment_means_no_agent_id_never_a_guess(self):
+        install = os.path.dirname(os.path.dirname(HOOKS))
+        self.with_env(CLAUDE_CONFIG_DIR=None, CLAUDE_PROJECT_DIR=None, MAIN_AGENT_ID='agent-main')
+        self.assertIsNone(self.deny_and_get_agent())
+        self.with_env(CLAUDE_CONFIG_DIR='/somewhere/else/.claude', CLAUDE_PROJECT_DIR='/some/scratch/dir')
+        self.assertIsNone(self.deny_and_get_agent())
+        # a path that only looks like the agents directory
+        self.with_env(CLAUDE_PROJECT_DIR=os.path.join(install, 'agentsX', 'agent-a'))
+        self.assertIsNone(self.deny_and_get_agent())
+        self.with_env(CLAUDE_PROJECT_DIR=os.path.join(install, 'agents-evil', 'x'))
+        self.assertIsNone(self.deny_and_get_agent())
+        self.with_env(CLAUDE_PROJECT_DIR=os.path.join(install, 'agents'))
+        self.assertIsNone(self.deny_and_get_agent())
+
+    def test_stdin_is_left_alone(self):
         import io
-        sys.stdin = io.StringIO('line one\nline two\n')
+        stream = io.StringIO('line one\nline two\n')
+        sys.stdin = stream
         seen = []
 
         def main():
+            seen.append(sys.stdin is stream)
             seen.append(sys.stdin.readline())
             seen.append(sys.stdin.read())
         self.run_audited(main)
-        self.assertEqual(seen, ['line one\n', 'line two\n'])
+        self.assertEqual(seen, [True, 'line one\n', 'line two\n'])
+        self.assertIs(sys.stdin, stream)
 
     def test_a_gate_name_outside_the_list_just_runs_the_gate(self):
         def main():
@@ -455,6 +487,21 @@ class GateProcessCase(unittest.TestCase):
                     holder.close()
                 self.assertEqual(got, baseline, gate)
                 self.assertLess(self.elapsed, 20, gate)
+
+    def test_a_gate_files_its_denial_under_the_agent_the_launcher_started_it_for(self):
+        env_agent = {'CLAUDE_CONFIG_DIR': os.path.join(self.root, 'agents', 'agent-a', '.claude-config')}
+        for gate, (deny_row, deny_spec, allow_spec) in GATE_CASES.items():
+            if not deny_row:
+                continue
+            path = os.path.join(self.work, 'agent-%s.db' % gate)
+            make_audit_db(path)
+            payload = self.payload(deny_spec, self.root)
+            env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': self.root, 'LEDGER_DB_PATH': path,
+                   'AUTH_ADMIN_GATE_NO_AUDIT': '1', **env_agent}
+            p = subprocess.run([sys.executable, os.path.join(self.root, 'scripts', 'hooks', gate + '.py')],
+                               input=payload.encode(), capture_output=True, env=env, timeout=60)
+            self.assertEqual(p.returncode, 2, gate)
+            self.assertEqual(rows(path, 'SELECT agent_id FROM hook_audit_log'), [('agent-a',)], gate)
 
     def test_a_healthy_run_leaves_the_count_and_the_deny_row_behind(self):
         for gate, (deny_row, deny_spec, allow_spec) in GATE_CASES.items():
