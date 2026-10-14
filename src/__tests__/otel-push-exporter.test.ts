@@ -161,6 +161,34 @@ describe('tick', () => {
     const body = JSON.parse(String((metricsCall![1] as RequestInit).body))
     expect(body.resourceMetrics.length).toBeGreaterThan(0)
   })
+
+  it('sends the window tokens as a DELTA gen_ai.client.token.usage histogram of one observation per type', async () => {
+    settings.OTEL_EXPORT_ENABLED = '1'
+    settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.local:4318'
+    getDb().prepare(`
+      INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model, tenant_id)
+      VALUES ('agent-tick-test-hist', 's1', ?, 50, 10, 700, 0, 0, 'claude-sonnet-5', 'default')
+    `).run(Math.floor(Date.now() / 1000))
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+
+    await tick()
+
+    const bodies = fetchSpy.mock.calls
+      .filter(c => String(c[0]).endsWith('/v1/metrics'))
+      .map(c => JSON.parse(String((c[1] as RequestInit).body)))
+    const block = bodies
+      .flatMap(b => b.resourceMetrics)
+      .find((r: any) => r.resource.attributes.some((a: any) => a.value.stringValue === 'marveen-agent-agent-tick-test-hist'))
+    expect(block).toBeDefined()
+    const metrics = block.scopeMetrics[0].metrics
+    const hist = metrics.find((m: any) => m.name === 'gen_ai.client.token.usage')
+    expect(hist.histogram.aggregationTemporality).toBe(1)
+    expect(hist.histogram.dataPoints.map((p: any) => [p.attributes.find((a: any) => a.key === 'gen_ai.token.type').value.stringValue, p.count, p.sum]).sort())
+      .toEqual([['input', '1', 50], ['output', '1', 10]])
+    const other = metrics.find((m: any) => m.name === 'marveen.gen_ai.client.token.usage.other')
+    expect(other.sum.aggregationTemporality).toBe(1)
+    expect(other.sum.dataPoints.map((p: any) => p.asInt)).toEqual(['700'])
+  })
 })
 
 describe('transport behaviour', () => {

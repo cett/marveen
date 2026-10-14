@@ -22,7 +22,7 @@
 import {
   getUnexportedOtelSpans, markOtelSpansExported,
   getOtelMetricsExportState, setOtelMetricsExportWatermark,
-  sumTokenUsageWindow,
+  sumTokenUsageWindow, tokenUsageHistogramWindow,
 } from '../db.js'
 import { spansToOtelJson, tokenUsageToOtelMetricsJson, registryMetricsToOtelJson } from '../otel-exporter.js'
 import { collectRegistryMetrics } from '../otel-metrics.js'
@@ -242,13 +242,14 @@ async function exportMetrics(cfg: ExportConfig): Promise<boolean> {
   const untilSec = Math.floor(nowMs / 1000)
   if (untilSec <= sinceSec) return false
 
+  const histogramRows = tokenUsageHistogramWindow(sinceSec, untilSec)
   const rows = sumTokenUsageWindow(sinceSec, untilSec)
   // Advance the watermark even with zero rows -- an empty window is still a
   // fully-covered window, and not advancing would just re-scan it forever.
-  if (rows.length === 0) { setOtelMetricsExportWatermark(nowMs); return false }
+  if (rows.length === 0 && histogramRows.length === 0) { setOtelMetricsExportWatermark(nowMs); return false }
 
   const url = `${cfg.endpoint}/v1/metrics`
-  const payload = tokenUsageToOtelMetricsJson(rows, sinceSec, untilSec, cfg.serviceNamespace, readOtelExportOptions())
+  const payload = tokenUsageToOtelMetricsJson(histogramRows, rows, sinceSec, untilSec, cfg.serviceNamespace, readOtelExportOptions())
   const result = await postJson(url, cfg.headers, payload)
   if (result.kind === 'ok') {
     recordSuccess('metrics', result.rejected, result.message, url)

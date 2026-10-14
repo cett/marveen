@@ -195,7 +195,8 @@ describe('GET /api/otel-export', () => {
     await tryHandleSpans(ctx)
     expect(status()).toBe(200)
     expect(body()).toHaveProperty('resourceSpans')
-    expect(body().resourceSpans[0].scopeSpans[0].spans[0].name).toBe('tool.call')
+    // the pull route maps to the GenAI names exactly like the push exporter does
+    expect(body().resourceSpans[0].scopeSpans[0].spans[0].name).toBe('execute_tool call')
   })
 
   it('applies the attribute allowlist: a free-form attribute and input_summary stay inside', async () => {
@@ -206,7 +207,8 @@ describe('GET /api/otel-export', () => {
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/otel-export' })
     await tryHandleSpans(ctx)
     const keys = body().resourceSpans[0].scopeSpans[0].spans[0].attributes.map((a: any) => a.key)
-    expect(keys).toContain('tool_name')
+    expect(keys).toContain('gen_ai.tool.name')
+    expect(keys).not.toContain('tool_name')
     expect(keys).not.toContain('input_summary')
     expect(keys).not.toContain('body')
   })

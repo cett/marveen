@@ -8,7 +8,7 @@ import {
   upsertOtelSpan, closeOtelSpan,
   getUnexportedOtelSpans, markOtelSpansExported, OTEL_RUNNING_SPAN_IDLE_MS,
   getOtelMetricsExportState, setOtelMetricsExportWatermark,
-  sumTokenUsageWindow,
+  sumTokenUsageWindow, tokenUsageHistogramWindow,
 } from '../db.js'
 
 beforeAll(() => {
@@ -196,5 +196,78 @@ describe('sumTokenUsageWindow', () => {
     insertUsage('agent-push-test-d', 5000, 10, 0)
     const rows = sumTokenUsageWindow(0, 100)
     expect(rows.find(r => r.agent === 'agent-push-test-d')).toBeUndefined()
+  })
+})
+
+describe('tokenUsageHistogramWindow', () => {
+  function insertUsage(agent: string, tsSec: number, input: number, output: number, model = 'claude-sonnet-5', tenant = 'default') {
+    getDb().prepare(`
+      INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model, tenant_id)
+      VALUES (?, 's1', ?, ?, ?, 0, 0, 0, ?, ?)
+    `).run(agent, tsSec, input, output, model, tenant)
+  }
+  const mine = (agent: string, since = 0, until = 2000) => tokenUsageHistogramWindow(since, until).filter(r => r.agent === agent)
+
+  it('puts a value in the first bucket whose bound is >= the value, and past the last bound in the open-ended one', () => {
+    // bounds: 1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864
+    const cases: [number, number][] = [
+      [1, 0], [2, 1], [4, 1], [5, 2], [16, 2], [17, 3], [64, 3], [65, 4],
+      [67_108_864, 13], [67_108_865, 14], [900_000_000, 14],
+    ]
+    for (const [value] of cases) insertUsage('agent-push-test-h1', 1000, value, 0)
+    const rows = mine('agent-push-test-h1')
+    for (const [value, bucket] of cases) {
+      const row = rows.find(r => r.bucket === bucket && r.min_value <= value && r.max_value >= value)
+      expect(row, `value ${value} should be in bucket ${bucket}`).toBeDefined()
+    }
+    // every observation was counted exactly once
+    expect(rows.reduce((acc, r) => acc + r.n, 0)).toBe(cases.length)
+  })
+
+  it('counts, sums and bounds the observations of one bucket', () => {
+    insertUsage('agent-push-test-h2', 1000, 20, 0)
+    insertUsage('agent-push-test-h2', 1100, 60, 0)
+    const [row] = mine('agent-push-test-h2')
+    expect(row).toMatchObject({ token_type: 'input', bucket: 3, n: 2, total: 80, min_value: 20, max_value: 60 })
+  })
+
+  it('keeps the input and the output side apart and skips a zero value (no observation)', () => {
+    insertUsage('agent-push-test-h3', 1000, 100, 0)
+    insertUsage('agent-push-test-h3', 1100, 0, 7)
+    insertUsage('agent-push-test-h3', 1200, 0, 0)
+    const rows = mine('agent-push-test-h3')
+    expect(rows.map(r => `${r.token_type}:${r.n}:${r.total}`).sort()).toEqual(['input:1:100', 'output:1:7'])
+  })
+
+  it('uses the same window as the sums: lower bound exclusive, upper bound inclusive', () => {
+    insertUsage('agent-push-test-h4', 1000, 10, 0) // at since: excluded
+    insertUsage('agent-push-test-h4', 2000, 10, 0) // at until: included
+    insertUsage('agent-push-test-h4', 2001, 10, 0) // after until: excluded
+    const rows = mine('agent-push-test-h4', 1000, 2000)
+    expect(rows.reduce((acc, r) => acc + r.n, 0)).toBe(1)
+  })
+
+  it('groups by agent, model and tenant', () => {
+    // token_usage is unique on (agent, session, timestamp, input, output): vary the counts
+    insertUsage('agent-push-test-h5', 1000, 10, 0, 'claude-sonnet-5', 'default')
+    insertUsage('agent-push-test-h5', 1000, 11, 0, 'claude-opus-5', 'default')
+    insertUsage('agent-push-test-h5', 1000, 12, 0, 'claude-sonnet-5', 'tenant-b')
+    expect(mine('agent-push-test-h5')).toHaveLength(3)
+  })
+
+  it('adds up to the same tokens as sumTokenUsageWindow for input and output', () => {
+    insertUsage('agent-push-test-h6', 1000, 7, 3)
+    insertUsage('agent-push-test-h6', 1100, 5000, 900)
+    insertUsage('agent-push-test-h6', 1200, 123456, 0)
+    const hist = mine('agent-push-test-h6')
+    const sum = sumTokenUsageWindow(0, 2000).find(r => r.agent === 'agent-push-test-h6')!
+    const total = (type: string) => hist.filter(r => r.token_type === type).reduce((acc, r) => acc + r.total, 0)
+    expect(total('input')).toBe(sum.input_tokens)
+    expect(total('output')).toBe(sum.output_tokens)
+  })
+
+  it('returns nothing when the window is empty', () => {
+    insertUsage('agent-push-test-h7', 5000, 10, 10)
+    expect(mine('agent-push-test-h7', 0, 100)).toEqual([])
   })
 })

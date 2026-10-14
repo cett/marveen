@@ -7,6 +7,7 @@ import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
+import { GENAI_TOKEN_BUCKET_BOUNDS } from '../otel-genai.js'
 
 export function recordMemoryRead(
   agentId: string,
@@ -363,6 +364,38 @@ export function sumTokenUsageWindow(sinceSec: number, untilSec: number): TokenUs
     WHERE timestamp > ? AND timestamp <= ?
     GROUP BY agent, model, tenant_id
   `).all(sinceSec, untilSec) as TokenUsageMetricRow[]
+}
+
+// One token_usage row is one model response, so the per-response token count of the input and output
+// side can be binned into the gen_ai.client.token.usage histogram. The bucket index is computed in SQL
+// (the first bound >= the value, bounds.length for the open-ended last bucket), so a long backlog after an
+// outage is aggregated by SQLite and not pulled into memory row by row. Zero values are not an observation.
+export interface TokenHistogramRow {
+  agent: string
+  model: string | null
+  tenant_id: string
+  token_type: 'input' | 'output'
+  bucket: number
+  n: number
+  total: number
+  min_value: number
+  max_value: number
+}
+
+function bucketCaseSql(column: string): string {
+  const whens = GENAI_TOKEN_BUCKET_BOUNDS.map((bound, i) => `WHEN ${column} <= ${bound} THEN ${i}`).join(' ')
+  return `CASE ${whens} ELSE ${GENAI_TOKEN_BUCKET_BOUNDS.length} END`
+}
+
+export function tokenUsageHistogramWindow(sinceSec: number, untilSec: number): TokenHistogramRow[] {
+  const side = (column: 'input_tokens' | 'output_tokens', type: 'input' | 'output') => `
+    SELECT agent, model, tenant_id, '${type}' AS token_type, ${bucketCaseSql(column)} AS bucket,
+           COUNT(*) AS n, SUM(${column}) AS total, MIN(${column}) AS min_value, MAX(${column}) AS max_value
+    FROM token_usage
+    WHERE timestamp > @since AND timestamp <= @until AND ${column} > 0
+    GROUP BY agent, model, tenant_id, bucket`
+  return db.prepare(`${side('input_tokens', 'input')} UNION ALL ${side('output_tokens', 'output')}`)
+    .all({ since: sinceSec, until: untilSec }) as TokenHistogramRow[]
 }
 
 // ── B2B Tenant registry ───────────────────────────────────────────────────────
