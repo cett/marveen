@@ -299,3 +299,55 @@ export function tokenUsageToOtelMetricsJson(
 
   return { resourceMetrics }
 }
+
+// ── Exporter self-metrics ─────────────────────────────────────────────────────
+// The exporter's own health, sent as two cumulative counters once the collector is reachable again:
+// requests that failed and items the collector or the exporter discarded. Without them a failing push
+// is a log line nobody reads and a gap in a Grafana panel.
+
+export interface ExporterSignalStats {
+  failures: number
+  rejected: number
+}
+
+export type ExporterStats = Record<'traces' | 'metrics', ExporterSignalStats>
+
+export function exporterStatsToOtelMetricsJson(
+  stats: ExporterStats,
+  startedAtSec: number,
+  nowSec: number,
+  serviceNamespace = 'marveen',
+  opts: OtelExportOptions = {},
+): OtelMetricsExportPayload {
+  const instanceId = opts.serviceInstanceId ?? serviceInstanceId()
+  const startNano = msToNano(startedAtSec * 1000)
+  const nowNano = msToNano(nowSec * 1000)
+  const point = (signal: string, value: number): OtelNumberDataPoint => ({
+    attributes: [{ key: 'marveen.otel.signal', value: { stringValue: signal } }],
+    startTimeUnixNano: startNano,
+    timeUnixNano: nowNano,
+    asInt: String(Math.round(value)),
+  })
+  const counter = (name: string, unit: string, pick: (s: ExporterSignalStats) => number): OtelMetric => ({
+    name,
+    unit,
+    // 2 = AGGREGATION_TEMPORALITY_CUMULATIVE: a running total since the process started
+    sum: {
+      dataPoints: (['traces', 'metrics'] as const).map((signal) => point(signal, pick(stats[signal]))),
+      aggregationTemporality: 2,
+      isMonotonic: true,
+    },
+  })
+  return {
+    resourceMetrics: [{
+      resource: { attributes: resourceAttributes('exporter', serviceNamespace, instanceId) },
+      scopeMetrics: [{
+        scope: { name: 'marveen', version: '1' },
+        metrics: [
+          counter('marveen.otel.export.failures', '{request}', (s) => s.failures),
+          counter('marveen.otel.export.rejected', '{item}', (s) => s.rejected),
+        ],
+      }],
+    }],
+  }
+}

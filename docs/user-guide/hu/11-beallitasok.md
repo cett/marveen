@@ -174,9 +174,14 @@ Az `OTEL_*` kulcsok a telemetria-exportert konfigurálják. Az exportőr 30 más
 | Kulcs | Leírás |
 |-----|-------------|
 | `OTEL_EXPORT_ENABLED` | Bekapcsolja a push exportőrt (alapból ki) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | A collector bázis-URL-je, például `http://localhost:4318`; a trace-ek a `/v1/traces`, a metrikák a `/v1/metrics` útvonalra mennek |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | A collector bázis-URL-je, `http://` vagy `https://` (például `http://localhost:4318`), hitelesítő adat nélkül; a trace-ek a `/v1/traces`, a metrikák a `/v1/metrics` útvonalra mennek |
+| `OTEL_EXPORTER_OTLP_HEADERS` | További kérés-fejlécek, általában hitelesítés, az OpenTelemetry formátumában: `név1=érték1,név2=érték2`, az értékek százalék-kódolva (`Authorization=Bearer%20abc`). Csak a `.env` fájlban add meg: titok, a dashboard sem mutatja, sem nem írja |
 | `OTEL_SERVICE_NAME` | A `service.namespace` resource attribútum értéke |
 | `OTEL_EXPORT_INPUT_SUMMARY` | A tool-hívások rövid leírását (mit kapott a tool) is kiexportálja (alapból ki, lásd lent) |
+
+Az exportőr OTLP-t beszél HTTP-n, JSON törzzsel, mást nem: nincs gRPC és nincs protokoll-választó. A fejlécek `https`-en mennek ki, vagy sima `http`-n privát hálózaton belül (localhost, privát cím, `.local` vagy egyszavas hostnév); beállított fejléceknél a nyilvános hoston lévő `http` endpointot egyáltalán nem használja. Az átirányítást nem követi, így a fejléc sosem jut más hostra.
+
+Ha a collector hibázik, az exportőr 30 másodpercet, aztán 60-at, 120-at és így tovább legfeljebb 10 percet vár a következő próbáig (a collector `Retry-After` értékét tiszteletben tartja), jelenként külön, és közben megtartja az adatot. Ha a válasz azt mondja, hogy maga a törzs hibás (400, 413, 415, 422), a köteget eldobja ahelyett, hogy örökké újrapróbálná. Ha a collector csak egy köteg egy részét fogadja el, a többit megszámolja, nem próbálja újra. A számok a collectornak, amint újra válaszol, két számlálóként mennek el: `marveen.otel.export.failures` (kérések) és `marveen.otel.export.rejected` (elemek), `marveen.otel.signal` szerint (`traces` vagy `metrics`) bontva, és minden hiba figyelmeztetés a dashboard logjában.
 
 Csak egy rögzített attribútumkészlet hagyja el a gépet: a tool neve, az MCP szerver és tool, az üzenetazonosító, a feladó és a címzett, a modell és a token-számok. Minden más, ami egy spanen van, eldobódik. A tool-hívás input_summary mezője (egy parancs eleje, fájlútvonal, URL) nem exportálódik, hacsak az `OTEL_EXPORT_INPUT_SUMMARY` nincs bekapcsolva, és akkor is 120 karakterre rövidítve, a felismert hitelesítő adatok (`user:password@`, `curl -u`, Authorization, Bearer és Basic értékek, `password=` vagy `token=` jellegű értékadások) és a home-könyvtár nélkül. Ez a szűrés heurisztika, nem garancia: tartsd kikapcsolva, hacsak a collector nem olyan helyen van, ahol a parancssorok megbízhatóak. Minden span és resource hordozza a `marveen.tenant.id` (`unresolved`, ha a tenant nem volt megállapítható) és a `service.instance.id` attribútumot (egy hash, ami sem a gépnevet, sem a telepítési útvonalat nem árulja el).
 

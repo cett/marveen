@@ -174,9 +174,14 @@ The `OTEL_*` keys configure the telemetry exporter. It pushes closed traces and 
 | Key | Description |
 |-----|-------------|
 | `OTEL_EXPORT_ENABLED` | Turns the push exporter on (default off) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector base URL, for example `http://localhost:4318`; traces go to `/v1/traces`, metrics to `/v1/metrics` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector base URL, `http://` or `https://` (for example `http://localhost:4318`), without credentials in it; traces go to `/v1/traces`, metrics to `/v1/metrics` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Extra request headers, usually authentication, in the OpenTelemetry format `name1=value1,name2=value2` with each value percent-encoded (`Authorization=Bearer%20abc`). Set it in the `.env` file only: it is a secret, so the dashboard neither shows nor writes it |
 | `OTEL_SERVICE_NAME` | Value of the `service.namespace` resource attribute |
 | `OTEL_EXPORT_INPUT_SUMMARY` | Also export the short description of what a tool call was given (default off, see below) |
+
+The exporter speaks OTLP over HTTP with a JSON body, nothing else: there is no gRPC and no protocol switch. Headers are sent over `https`, or over plain `http` inside a private network (localhost, a private address, a `.local` or single-word host name); with headers set, an `http` endpoint on a public host is not used at all. Redirects are not followed, so a header never reaches another host.
+
+When the collector fails, the exporter waits 30 seconds, then 60, 120 and so on up to 10 minutes before the next try (a `Retry-After` from the collector is honoured), per signal, and keeps the data meanwhile. A reply that says the payload itself is wrong (400, 413, 415, 422) discards that batch instead of retrying it for ever. If the collector accepts only part of a batch, the rest is counted, not retried. The counts go to the collector once it answers again as two counters, `marveen.otel.export.failures` (requests) and `marveen.otel.export.rejected` (items), each split by `marveen.otel.signal` (`traces` or `metrics`), and each failure is a warning in the dashboard log.
 
 Only a fixed set of span attributes leaves the machine: tool name, MCP server and tool, message id, sender and recipient, model and the token counts. Anything else on a span is dropped. The input summary of a tool call (the start of a command, a file path, a URL) is not exported unless `OTEL_EXPORT_INPUT_SUMMARY` is on, and even then it is shortened to 120 characters with the credentials it recognises (`user:password@`, `curl -u`, Authorization, Bearer and Basic values, `password=` or `token=` style assignments) and the home directory removed. This scrub is a heuristic, not a guarantee: keep the switch off unless the collector is somewhere you trust with command lines. Every span and resource carries `marveen.tenant.id` (`unresolved` when the tenant could not be determined) and `service.instance.id` (a hash that names neither the host nor the install path).
 

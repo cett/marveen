@@ -16,6 +16,7 @@ describe('config-registry', () => {
     // the known channel-credential keys are secret, nothing else.
     expect(SETTINGS_REGISTRY.filter((s) => s.secret).map((s) => s.key).sort()).toEqual([
       'ALLOWED_CHAT_ID',
+      'OTEL_EXPORTER_OTLP_HEADERS',
       'TELEGRAM_BOT_TOKEN',
     ])
     expect(getSettingDefinition('KANBAN_WIP_PLANNED')?.module).toBe('kanban')
