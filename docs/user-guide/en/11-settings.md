@@ -169,7 +169,16 @@ Log retention, telemetry, and backup policies.
 
 ### OpenTelemetry
 
-The `OTEL_*` keys configure the telemetry exporter (endpoint, headers, protocol).
+The `OTEL_*` keys configure the telemetry exporter. It pushes closed traces and the token usage metric as OTLP/HTTP JSON to the collector every 30 seconds.
+
+| Key | Description |
+|-----|-------------|
+| `OTEL_EXPORT_ENABLED` | Turns the push exporter on (default off) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector base URL, for example `http://localhost:4318`; traces go to `/v1/traces`, metrics to `/v1/metrics` |
+| `OTEL_SERVICE_NAME` | Value of the `service.namespace` resource attribute |
+| `OTEL_EXPORT_INPUT_SUMMARY` | Also export the short description of what a tool call was given (default off, see below) |
+
+Only a fixed set of span attributes leaves the machine: tool name, MCP server and tool, message id, sender and recipient, model and the token counts. Anything else on a span is dropped. The input summary of a tool call (the start of a command, a file path, a URL) is not exported unless `OTEL_EXPORT_INPUT_SUMMARY` is on, and even then it is shortened to 120 characters with credentials in URLs and the home directory removed. Every span and resource carries `marveen.tenant.id` (`unresolved` when the tenant could not be determined) and `service.instance.id` (a hash that names neither the host nor the install path).
 
 ### Backups
 

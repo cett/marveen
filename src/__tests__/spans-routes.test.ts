@@ -198,6 +198,19 @@ describe('GET /api/otel-export', () => {
     expect(body().resourceSpans[0].scopeSpans[0].spans[0].name).toBe('tool.call')
   })
 
+  it('applies the attribute allowlist: a free-form attribute and input_summary stay inside', async () => {
+    getDb().prepare(`
+      INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+      VALUES ('t1', 's1', NULL, 'agent-a', 'tool.Bash', 1000, 2000, 'ok', ?)
+    `).run(JSON.stringify({ tool_name: 'Bash', input_summary: 'ls /secret', body: 'message text' }))
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/otel-export' })
+    await tryHandleSpans(ctx)
+    const keys = body().resourceSpans[0].scopeSpans[0].spans[0].attributes.map((a: any) => a.key)
+    expect(keys).toContain('tool_name')
+    expect(keys).not.toContain('input_summary')
+    expect(keys).not.toContain('body')
+  })
+
   it('filters by agent, from, and to', async () => {
     getDb().prepare(`
       INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)

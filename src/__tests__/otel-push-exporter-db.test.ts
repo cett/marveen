@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import {
   initDatabase, getDb,
   upsertOtelSpan, closeOtelSpan,
-  getUnexportedOtelSpans, markOtelSpansExported,
+  getUnexportedOtelSpans, markOtelSpansExported, OTEL_RUNNING_SPAN_IDLE_MS,
   getOtelMetricsExportState, setOtelMetricsExportWatermark,
   sumTokenUsageWindow,
 } from '../db.js'
@@ -38,6 +38,32 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     const traceIds = rows.map(r => r.trace_id)
     expect(traceIds).toContain('trace-push-test-1')
     expect(traceIds).not.toContain('trace-push-test-2')
+  })
+
+  it('holds back a running span whose end_ms still moves (agent.turn), exporting it only after it closed or went idle', () => {
+    const now = 10_000_000
+    // agent.turn shape: running, end_ms rolled forward by the hook on every tool call
+    upsertOtelSpan({
+      trace_id: 'trace-push-test-turn', span_id: 'turn-1', parent_span_id: null,
+      agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 60_000, end_ms: now - 1000,
+      status: 'running', attributes: null,
+    })
+    expect(getUnexportedOtelSpans(100, now).map(r => r.span_id)).not.toContain('turn-1')
+
+    // the next tool call moves end_ms: still held back, so no truncated duration is ever shipped
+    upsertOtelSpan({
+      trace_id: 'trace-push-test-turn', span_id: 'turn-1', parent_span_id: null,
+      agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 60_000, end_ms: now,
+      status: 'running', attributes: null,
+    })
+    expect(getUnexportedOtelSpans(100, now + 1000).map(r => r.span_id)).not.toContain('turn-1')
+
+    // the idle window passed with no further tool call: the last turn of a session goes out as it stands
+    expect(getUnexportedOtelSpans(100, now + OTEL_RUNNING_SPAN_IDLE_MS).map(r => r.span_id)).toContain('turn-1')
+
+    // or the turn is closed (status ok) by the next turn boundary: exported at once
+    closeOtelSpan('trace-push-test-turn', 'turn-1', now, 'ok')
+    expect(getUnexportedOtelSpans(100, now + 1000).map(r => r.span_id)).toContain('turn-1')
   })
 
   it('excludes a span once markOtelSpansExported has run for it', () => {

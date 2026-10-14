@@ -184,6 +184,8 @@ export interface OtelSpan {
   end_ms: number | null
   status: 'ok' | 'error' | 'timeout' | 'running'
   attributes: string | null
+  // NULL = the tenant could not be resolved when the span was written (migration 0077)
+  tenant_id?: string | null
 }
 
 // The shape message-router's stampTraceOnMessage
@@ -279,15 +281,21 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
 
 // ── OTLP push exporter (#800/#802) ────────────────────────────────────────────
 // Closed, not-yet-pushed spans -- the push loop's per-tick trace batch.
-// "Closed" (end_ms set) so a span still open on another agent's turn is
-// never exported half-finished; it becomes visible once it closes.
-export function getUnexportedOtelSpans(limit = 500): OtelSpan[] {
+// "Closed" means a terminal status. A span still 'running' keeps moving its end_ms forward (the
+// agent.turn span grows with every tool call of the turn) and is exported once, so shipping it early
+// would freeze a truncated duration at the collector. The one exception is a running span that has not
+// moved for OTEL_RUNNING_SPAN_IDLE_MS: nothing closes the last turn of a session, so it is exported as
+// it stands once the agent has been idle that long.
+export const OTEL_RUNNING_SPAN_IDLE_MS = 15 * 60 * 1000
+
+export function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): OtelSpan[] {
   return db.prepare(`
     SELECT * FROM otel_spans
     WHERE end_ms IS NOT NULL AND exported_at IS NULL
+      AND (status != 'running' OR end_ms <= ?)
     ORDER BY end_ms ASC
     LIMIT ?
-  `).all(limit) as OtelSpan[]
+  `).all(nowMs - OTEL_RUNNING_SPAN_IDLE_MS, limit) as OtelSpan[]
 }
 
 // Marks a batch of spans as pushed. Runs as one transaction so a crash

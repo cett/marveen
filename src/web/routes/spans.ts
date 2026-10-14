@@ -2,6 +2,7 @@ import { upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces, queryOtelS
 import { readBody, json } from '../http-helpers.js'
 import { callerMayActAs } from '../fleet-agent-identity.js'
 import { spansToOtelJson } from '../../otel-exporter.js'
+import { readOtelExportOptions } from '../../otel-export-options.js'
 import type { RouteContext } from './types.js'
 
 // Tenant-IDOR guard: otel_spans is agent_id-keyed
@@ -143,7 +144,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     // No agent filter supplied: a non-admin caller gets their own tenant's
     // spans only, never the whole fleet's.
     if (!agentParam && !isAdmin) spans = spans.filter(s => resolveAgentTenant(s.agent_id) === callerTenant)
-    const payload = spansToOtelJson(spans)
+    const payload = spansToOtelJson(spans, undefined, readOtelExportOptions())
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(payload))
     return true

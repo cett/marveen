@@ -5,6 +5,8 @@
 // Spec: opentelemetry-proto/trace/v1/trace.proto (JSON encoding)
 
 import { createHash } from 'node:crypto'
+import { hostname } from 'node:os'
+import { PROJECT_ROOT } from './config.js'
 import type { OtelSpan, TokenUsageMetricRow } from './db.js'
 
 interface OtelAttribute {
@@ -44,17 +46,54 @@ function statusCode(status: OtelSpan['status']): number {
   return 0 // running / unknown
 }
 
-// Parse the JSON attributes blob stored in the DB into OTEL attribute list.
-// The blob is expected to be a flat Record<string, string | number | boolean>.
-function parseAttributes(raw: string | null): OtelAttribute[] {
+// Span attribute keys that may leave the machine. An allowlist, not a denylist: every other key of a
+// span's attributes blob is dropped, so a future span writer (or POST /api/spans, which takes free
+// JSON) cannot push content through the exporter by accident. Identifiers and counters only.
+export const EXPORT_ATTRIBUTE_ALLOWLIST: ReadonlySet<string> = new Set([
+  'tool_name', 'mcp_server', 'mcp_tool',
+  'msg_id', 'from', 'to',
+  'model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens',
+])
+
+// Opt-in attribute (OTEL_EXPORT_INPUT_SUMMARY): a short description of what a tool call was given. The
+// hook already redacts it heuristically, which is not enough to ship it off the machine by default.
+const INPUT_SUMMARY_KEY = 'input_summary'
+const INPUT_SUMMARY_MAX_CHARS = 120
+
+export interface OtelExportOptions {
+  includeInputSummary?: boolean
+  serviceInstanceId?: string
+}
+
+// Second scrub for the opt-in input_summary: credentials embedded in a URL, and the home directory
+// (it names the machine's user). Shortened last, so a cut never leaves half a secret behind.
+export function scrubInputSummary(value: string): string {
+  return value
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1***@')
+    .replace(/\/(?:Users|home)\/[^/\s]+/g, '/~')
+    .slice(0, INPUT_SUMMARY_MAX_CHARS)
+}
+
+// Stable per-installation id: the host name and install path are hashed, so the collector can tell two
+// Marveen instances apart without learning either.
+export function serviceInstanceId(): string {
+  return createHash('sha256').update(`${hostname()}\n${PROJECT_ROOT}`).digest('hex').slice(0, 12)
+}
+
+// Parse the JSON attributes blob stored in the DB into the OTEL attribute list, keeping only allowlisted
+// keys. The blob is expected to be a flat Record<string, string | number | boolean>.
+function parseAttributes(raw: string | null, includeInputSummary: boolean): OtelAttribute[] {
   if (!raw) return []
   try {
     const obj = JSON.parse(raw) as Record<string, unknown>
-    return Object.entries(obj).map(([key, val]) => {
-      if (typeof val === 'boolean') return { key, value: { boolValue: val } }
-      if (typeof val === 'number') return { key, value: { intValue: String(Math.round(val)) } }
-      return { key, value: { stringValue: String(val) } }
-    })
+    return Object.entries(obj)
+      .filter(([key]) => EXPORT_ATTRIBUTE_ALLOWLIST.has(key) || (includeInputSummary && key === INPUT_SUMMARY_KEY))
+      .map(([key, rawVal]) => {
+        const val = key === INPUT_SUMMARY_KEY ? scrubInputSummary(String(rawVal)) : rawVal
+        if (typeof val === 'boolean') return { key, value: { boolValue: val } }
+        if (typeof val === 'number') return { key, value: { intValue: String(Math.round(val)) } }
+        return { key, value: { stringValue: String(val) } }
+      })
   } catch {
     return []
   }
@@ -77,21 +116,33 @@ function toHexId(id: string, byteLen: 8 | 16): string {
   return createHash('sha256').update(id).digest('hex').slice(0, byteLen * 2)
 }
 
-// Group spans by agent_id, then emit one resourceSpans block per agent
-// so Grafana Tempo / Jaeger can filter by service.name. `serviceNamespace`
-// distinguishes multiple Marveen deployments pushing to the same collector
-// (OTEL_SERVICE_NAME setting); per-agent service.name is unaffected.
-export function spansToOtelJson(spans: OtelSpan[], serviceNamespace = 'marveen'): OtelExportPayload {
-  const byAgent = new Map<string, OtelSpan[]>()
+// Tenant label for a span whose tenant could not be resolved (otel_spans.tenant_id NULL, see migration
+// 0077): not 'default', which would pass it off as the default tenant's.
+const UNRESOLVED_TENANT = 'unresolved'
+
+// Group spans by (agent_id, tenant), then emit one resourceSpans block per group so Grafana Tempo /
+// Jaeger can filter by service.name and tenant. `serviceNamespace` distinguishes multiple Marveen
+// deployments pushing to the same collector (OTEL_SERVICE_NAME setting); per-agent service.name is
+// unaffected. Only allowlisted span attributes are exported (EXPORT_ATTRIBUTE_ALLOWLIST).
+export function spansToOtelJson(
+  spans: OtelSpan[],
+  serviceNamespace = 'marveen',
+  opts: OtelExportOptions = {},
+): OtelExportPayload {
+  const includeInputSummary = opts.includeInputSummary === true
+  const instanceId = opts.serviceInstanceId ?? serviceInstanceId()
+  const groups = new Map<string, { agentId: string; tenant: string; spans: OtelSpan[] }>()
   for (const span of spans) {
-    const bucket = byAgent.get(span.agent_id) ?? []
-    bucket.push(span)
-    byAgent.set(span.agent_id, bucket)
+    const tenant = span.tenant_id ?? UNRESOLVED_TENANT
+    const key = `${span.agent_id}\u0000${tenant}`
+    const group = groups.get(key) ?? { agentId: span.agent_id, tenant, spans: [] }
+    group.spans.push(span)
+    groups.set(key, group)
   }
 
   const resourceSpans: ResourceSpans[] = []
-  for (const [agentId, agentSpans] of byAgent) {
-    const exportedSpans: OtelSpanExport[] = agentSpans.map((s) => {
+  for (const { agentId, tenant, spans: groupSpans } of groups.values()) {
+    const exportedSpans: OtelSpanExport[] = groupSpans.map((s) => {
       const endMs = s.end_ms ?? s.start_ms // fallback for still-running spans
       const out: OtelSpanExport = {
         traceId: toHexId(s.trace_id, 16),
@@ -102,8 +153,9 @@ export function spansToOtelJson(spans: OtelSpan[], serviceNamespace = 'marveen')
         status: { code: statusCode(s.status) },
         attributes: [
           { key: 'agent.id', value: { stringValue: s.agent_id } },
+          { key: 'marveen.tenant.id', value: { stringValue: tenant } },
           { key: 'span.status', value: { stringValue: s.status } },
-          ...parseAttributes(s.attributes),
+          ...parseAttributes(s.attributes, includeInputSummary),
         ],
       }
       if (s.parent_span_id) out.parentSpanId = toHexId(s.parent_span_id, 8)
@@ -111,12 +163,7 @@ export function spansToOtelJson(spans: OtelSpan[], serviceNamespace = 'marveen')
     })
 
     resourceSpans.push({
-      resource: {
-        attributes: [
-          { key: 'service.name', value: { stringValue: `marveen-agent-${agentId}` } },
-          { key: 'service.namespace', value: { stringValue: serviceNamespace } },
-        ],
-      },
+      resource: { attributes: resourceAttributes(agentId, serviceNamespace, instanceId, tenant) },
       scopeSpans: [{
         scope: { name: 'marveen', version: '1' },
         spans: exportedSpans,
@@ -125,6 +172,15 @@ export function spansToOtelJson(spans: OtelSpan[], serviceNamespace = 'marveen')
   }
 
   return { resourceSpans }
+}
+
+function resourceAttributes(agentId: string, serviceNamespace: string, instanceId: string, tenant?: string): OtelAttribute[] {
+  return [
+    { key: 'service.name', value: { stringValue: `marveen-agent-${agentId}` } },
+    { key: 'service.namespace', value: { stringValue: serviceNamespace } },
+    { key: 'service.instance.id', value: { stringValue: instanceId } },
+    ...(tenant ? [{ key: 'marveen.tenant.id', value: { stringValue: tenant } }] : []),
+  ]
 }
 
 // ── OTLP Metrics (gen_ai.client.token.usage) ──────────────────────────────────
@@ -179,7 +235,9 @@ export function tokenUsageToOtelMetricsJson(
   windowStartSec: number,
   windowEndSec: number,
   serviceNamespace = 'marveen',
+  opts: OtelExportOptions = {},
 ): OtelMetricsExportPayload {
+  const instanceId = opts.serviceInstanceId ?? serviceInstanceId()
   const startNano = msToNano(windowStartSec * 1000)
   const endNano = msToNano(windowEndSec * 1000)
 
@@ -213,12 +271,7 @@ export function tokenUsageToOtelMetricsJson(
     if (dataPoints.length === 0) continue
 
     resourceMetrics.push({
-      resource: {
-        attributes: [
-          { key: 'service.name', value: { stringValue: `marveen-agent-${agentId}` } },
-          { key: 'service.namespace', value: { stringValue: serviceNamespace } },
-        ],
-      },
+      resource: { attributes: resourceAttributes(agentId, serviceNamespace, instanceId) },
       scopeMetrics: [{
         scope: { name: 'marveen', version: '1' },
         metrics: [{

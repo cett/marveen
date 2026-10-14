@@ -169,7 +169,16 @@ Naplók, telemetria és mentési politikák.
 
 ### OpenTelemetria
 
-Az `OTEL_*` kulcsok a telemetria-exportert konfigurálják (végpont, fejlécek, protokoll).
+Az `OTEL_*` kulcsok a telemetria-exportert konfigurálják. Az exportőr 30 másodpercenként OTLP/HTTP JSON-ban küldi a lezárt trace-eket és a token-használat metrikát a collectornak.
+
+| Kulcs | Leírás |
+|-----|-------------|
+| `OTEL_EXPORT_ENABLED` | Bekapcsolja a push exportőrt (alapból ki) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | A collector bázis-URL-je, például `http://localhost:4318`; a trace-ek a `/v1/traces`, a metrikák a `/v1/metrics` útvonalra mennek |
+| `OTEL_SERVICE_NAME` | A `service.namespace` resource attribútum értéke |
+| `OTEL_EXPORT_INPUT_SUMMARY` | A tool-hívások rövid leírását (mit kapott a tool) is kiexportálja (alapból ki, lásd lent) |
+
+Csak egy rögzített attribútumkészlet hagyja el a gépet: a tool neve, az MCP szerver és tool, az üzenetazonosító, a feladó és a címzett, a modell és a token-számok. Minden más, ami egy spanen van, eldobódik. A tool-hívás input_summary mezője (egy parancs eleje, fájlútvonal, URL) nem exportálódik, hacsak az `OTEL_EXPORT_INPUT_SUMMARY` nincs bekapcsolva, és akkor is 120 karakterre rövidítve, az URL-ben lévő hitelesítő adatok és a home-könyvtár nélkül. Minden span és resource hordozza a `marveen.tenant.id` (`unresolved`, ha a tenant nem volt megállapítható) és a `service.instance.id` attribútumot (egy hash, ami sem a gépnevet, sem a telepítési útvonalat nem árulja el).
 
 ### Mentések
 

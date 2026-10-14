@@ -17,6 +17,7 @@ import {
 } from '../db.js'
 import { spansToOtelJson, tokenUsageToOtelMetricsJson } from '../otel-exporter.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { readOtelExportOptions } from '../otel-export-options.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 import { logger } from '../logger.js'
 
@@ -48,7 +49,7 @@ async function exportTraces(endpoint: string, serviceNamespace: string): Promise
   const spans = getUnexportedOtelSpans(SPAN_BATCH_LIMIT)
   if (spans.length === 0) return
 
-  const payload = spansToOtelJson(spans, serviceNamespace)
+  const payload = spansToOtelJson(spans, serviceNamespace, readOtelExportOptions())
   const ok = await postJson(`${endpoint}/v1/traces`, payload)
   if (!ok) return
   markOtelSpansExported(spans.map((s) => ({ trace_id: s.trace_id, span_id: s.span_id })), Date.now())
@@ -66,7 +67,7 @@ async function exportMetrics(endpoint: string, serviceNamespace: string): Promis
   // fully-covered window, and not advancing would just re-scan it forever.
   if (rows.length === 0) { setOtelMetricsExportWatermark(nowMs); return }
 
-  const payload = tokenUsageToOtelMetricsJson(rows, sinceSec, untilSec, serviceNamespace)
+  const payload = tokenUsageToOtelMetricsJson(rows, sinceSec, untilSec, serviceNamespace, readOtelExportOptions())
   const ok = await postJson(`${endpoint}/v1/metrics`, payload)
   if (!ok) return
   setOtelMetricsExportWatermark(nowMs)

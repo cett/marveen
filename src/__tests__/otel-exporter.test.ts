@@ -99,13 +99,70 @@ describe('spansToOtelJson', () => {
     expect(childSpan.parentSpanId).toBe(parentSpan.spanId)
   })
 
-  it('parses string attributes from JSON blob', () => {
-    const result = spansToOtelJson([span({ attributes: JSON.stringify({ env: 'prod', count: 3 }) })])
+  it('parses allowlisted string and number attributes from the JSON blob', () => {
+    const result = spansToOtelJson([span({ attributes: JSON.stringify({ model: 'model-x', input_tokens: 3 }) })])
     const s = result.resourceSpans[0].scopeSpans[0].spans[0]
-    const envAttr = s.attributes.find(a => a.key === 'env')
-    expect(envAttr?.value.stringValue).toBe('prod')
-    const countAttr = s.attributes.find(a => a.key === 'count')
-    expect(countAttr?.value.intValue).toBe('3')
+    expect(s.attributes.find(a => a.key === 'model')?.value.stringValue).toBe('model-x')
+    expect(s.attributes.find(a => a.key === 'input_tokens')?.value.intValue).toBe('3')
+  })
+
+  it('drops every attribute key that is not on the allowlist (content never leaves through a free-form span)', () => {
+    const blob = JSON.stringify({
+      tool_name: 'Bash', msg_id: 7, body: 'secret text', chat_id: '123', note: 'x', env: 'prod',
+    })
+    const keys = spansToOtelJson([span({ attributes: blob })]).resourceSpans[0].scopeSpans[0].spans[0]
+      .attributes.map(a => a.key)
+    expect(keys).toContain('tool_name')
+    expect(keys).toContain('msg_id')
+    for (const dropped of ['body', 'chat_id', 'note', 'env']) expect(keys).not.toContain(dropped)
+  })
+
+  it('does not export input_summary by default', () => {
+    const blob = JSON.stringify({ tool_name: 'Bash', input_summary: 'curl https://u:pw@host/x' })
+    const keys = spansToOtelJson([span({ attributes: blob })]).resourceSpans[0].scopeSpans[0].spans[0]
+      .attributes.map(a => a.key)
+    expect(keys).not.toContain('input_summary')
+    expect(JSON.stringify(spansToOtelJson([span({ attributes: blob })]))).not.toContain('pw@')
+  })
+
+  it('exports a scrubbed, shortened input_summary only when asked to', () => {
+    const blob = JSON.stringify({
+      input_summary: 'curl https://user:pw@host/x ' + ['', 'Users', 'someone', 'proj', 'file.txt '].join('/') + 'y'.repeat(300),
+    })
+    const out = spansToOtelJson([span({ attributes: blob })], 'marveen', { includeInputSummary: true })
+    const attr = out.resourceSpans[0].scopeSpans[0].spans[0].attributes.find(a => a.key === 'input_summary')
+    const value = attr?.value.stringValue ?? ''
+    expect(value.length).toBeLessThanOrEqual(120)
+    expect(value).toContain('https://***@host/x')
+    expect(value).not.toContain('pw@')
+    expect(value).not.toContain('someone')
+  })
+
+  it('stamps marveen.tenant.id on the span and the resource, and splits one agent by tenant', () => {
+    const out = spansToOtelJson([
+      span({ span_id: 's1', tenant_id: 'tenant-x' }),
+      span({ span_id: 's2', tenant_id: 'tenant-y' }),
+      span({ span_id: 's3', tenant_id: null }),
+    ])
+    expect(out.resourceSpans).toHaveLength(3)
+    const tenants = out.resourceSpans.map(r => ({
+      resource: r.resource.attributes.find(a => a.key === 'marveen.tenant.id')?.value.stringValue,
+      span: r.scopeSpans[0].spans[0].attributes.find(a => a.key === 'marveen.tenant.id')?.value.stringValue,
+    }))
+    expect(tenants).toEqual([
+      { resource: 'tenant-x', span: 'tenant-x' },
+      { resource: 'tenant-y', span: 'tenant-y' },
+      { resource: 'unresolved', span: 'unresolved' },
+    ])
+  })
+
+  it('sets service.instance.id on every resource, a stable value that names neither host nor path', () => {
+    const a = spansToOtelJson([span()]).resourceSpans[0].resource.attributes.find(x => x.key === 'service.instance.id')
+    const b = spansToOtelJson([span()]).resourceSpans[0].resource.attributes.find(x => x.key === 'service.instance.id')
+    expect(a?.value.stringValue).toMatch(/^[0-9a-f]{12}$/)
+    expect(a?.value.stringValue).toBe(b?.value.stringValue)
+    const given = spansToOtelJson([span()], 'marveen', { serviceInstanceId: 'inst-1' })
+    expect(given.resourceSpans[0].resource.attributes.find(x => x.key === 'service.instance.id')?.value.stringValue).toBe('inst-1')
   })
 
   it('skips malformed attributes JSON without throwing', () => {
@@ -175,6 +232,15 @@ function tokenRow(overrides: Partial<TokenUsageMetricRow> = {}): TokenUsageMetri
     ...overrides,
   }
 }
+
+describe('tokenUsageToOtelMetricsJson resource', () => {
+  it('carries service.instance.id', () => {
+    const row = { agent: 'agent-a', model: 'm', tenant_id: 'default', input_tokens: 1, output_tokens: 0,
+      cache_read_tokens: 0, cache_creation_tokens: 0, thinking_tokens: 0 } as TokenUsageMetricRow
+    const out = tokenUsageToOtelMetricsJson([row], 0, 60, 'marveen', { serviceInstanceId: 'inst-1' })
+    expect(out.resourceMetrics[0].resource.attributes.find(a => a.key === 'service.instance.id')?.value.stringValue).toBe('inst-1')
+  })
+})
 
 describe('tokenUsageToOtelMetricsJson', () => {
   it('returns empty resourceMetrics for empty input', () => {

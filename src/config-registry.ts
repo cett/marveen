@@ -733,6 +733,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'OTEL_EXPORT_INPUT_SUMMARY',
+    type: 'boolean',
+    default: '0',
+    description: 'Az OTLP trace-ekhez a tool-hívások input_summary attribútuma is kimegy (Bash parancs eleje, fájlútvonal, URL, keresőkifejezés). Alapból KI: a hook redakciója heurisztika, a tartalom nem hagyhatja el a gépet. Bekapcsolva is csak a rövidített (120 karakter), URL-hitelesítőtől és home-útvonaltól megtisztított változat megy. Az exportőr egyébként attribútum-allowlistet használ: minden más, nem ismert attribútumkulcs eldobódik.',
+    module: 'observability',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Claude plans module (PR2b/PR2c) ---
   // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
   // heartbeat script's decision to call it (scripts/claude-plan-rotate-check.ts)
