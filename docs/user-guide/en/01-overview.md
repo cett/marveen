@@ -16,6 +16,14 @@ A compact panel at the top shows:
 
 The subtitle next to each number adds context: e.g. "same as yesterday" or "+3 from yesterday".
 
+### Attention required `[ADMIN]`
+
+When something needs action, an "Attention required" panel appears under the stat cards with the to-dos: pending approvals, undelivered messages, stuck scheduled tasks, agents that are not running. Each row has a link or button to the right view.
+
+Next to **N errors in the last 4 hours**, the **Details** button opens the list of failed runs (the newest 20, newest first): when it happened, what it was (the operation and the scheduled task name, or the HTTP method, route and status) and which agent it belongs to. If there are more errors than that, the number of the rest is shown at the bottom. When the Overview is rebuilt (for example when you return to it from another view or switch tenant), a list you opened stays open.
+
+Two things are not counted as errors: a command-type scheduled task that ends with the `42` "finding" exit code (a check that produced a report, see the Tasks chapter), and a request that arrives with malformed JSON (it gets a 400 answer).
+
 ### Team table
 
 The team table shows the live status of every configured agent. Each row displays:
@@ -44,6 +52,6 @@ In multi-tenant setups, a dropdown in the top-right lets you switch between tena
 
 ## Tips
 
-- The Overview refreshes automatically every 30 seconds.
+- The Blackboard table refreshes automatically every 15 seconds. The rest of the page (counters, the attention panel, recent activity, the quota strip) is loaded when you open the Overview or switch tenant; to see newer numbers, open the page again.
 - The Blackboard status (`active` / `done` / `blocked`) next to an agent row shows whether the agent is currently working.
 - If an agent is `blocked`, the Blackboard row also shows the reason for the block.

@@ -16,6 +16,14 @@ Az oldal tetején kompakt számpanelen jelenik meg:
 
 A számok melletti alcím kontextust ad: pl. "ugyanaz mint tegnap" vagy "+3 a tegnapihoz képest".
 
+### Figyelmet igénylő dolgok `[ADMIN]`
+
+Ha valami beavatkozást kér, a statisztika-csík alatt egy "Figyelmet igényel" panel jelenik meg a teendőkkel: függő jóváhagyások, kézbesítetlen üzenetek, elakadt ütemezett feladatok, nem futó ágensek. Minden sor mellett link vagy gomb visz a megfelelő nézetre.
+
+Az **N hiba az elmúlt 4 órában** sor mellett a **Részletek** gomb kinyitja a hibás futások listáját (a legfrissebb 20, időrendben visszafelé): mikor történt, mi volt (művelet és az ütemezett feladat neve, vagy a HTTP-metódus, útvonal és státusz), és melyik ágenshez tartozik. Ha ennél több hiba van, a lista alján a többi száma látszik. Ha az Áttekintés újra felépül (például másik nézetről visszatérve vagy bérlőváltáskor), a megnyitott lista nyitva marad.
+
+Nem számít hibának az a parancs típusú ütemezett feladat, amely a `42`-es "lelet" kilépési kóddal ér véget (ellenőrzés, amely jelentést készített, lásd a Feladatok fejezetet), és az sem, ha egy kérés hibás JSON-nal érkezik (az 400-as választ kap).
+
 ### Csapattábla
 
 A csapattábla az összes konfigurált ágens élő állapotát mutatja. Soronként látható:
@@ -44,6 +52,6 @@ Ha a rendszer több bérlővel (tenanttal) működik, a jobb felső sarokban tal
 
 ## Tippek
 
-- Az Áttekintés 30 másodpercenként automatikusan frissül.
+- A Blackboard-tábla 15 másodpercenként automatikusan frissül. Az oldal többi része (számlálók, a figyelmet igénylő panel, a friss események, a kvóta-csík) az Áttekintés megnyitásakor vagy bérlőváltáskor töltődik be; frissebb számokhoz nyisd meg újra az oldalt.
 - A Blackboard-sor melletti állapotkód (`active` / `done` / `blocked`) jelzi, hogy az ágens éppen dolgozik-e.
 - Ha egy ágens "blocked" állapotban van, a Blackboard-sorban szerepel a blokkoló ok is.

@@ -59,6 +59,49 @@ export function countOverviewErrorSpansSince(sinceMs: number): number {
   return row.c
 }
 
+export interface OverviewErrorSpan {
+  trace_id: string
+  span_id: string
+  agent_id: string
+  operation: string
+  status: 'error' | 'timeout'
+  start_ms: number
+  duration_ms: number | null
+  // A short what-was-it label built only from the attribute keys the writers of these spans set
+  // (a schedule name, an HTTP method + route template + status); never the raw attributes.
+  detail: string
+}
+
+function errorSpanDetail(operation: string, attributes: string | null): string {
+  if (!attributes) return ''
+  try {
+    const a = JSON.parse(attributes) as Record<string, unknown>
+    const str = (v: unknown) => (typeof v === 'string' || typeof v === 'number' ? String(v).slice(0, 120) : '')
+    if (operation === 'http.server') return [str(a.http_method), str(a.http_route), str(a.http_status)].filter(Boolean).join(' ')
+    return str(a.schedule)
+  } catch {
+    return ''
+  }
+}
+
+// The newest error/timeout spans since sinceMs, the rows behind countOverviewErrorSpansSince.
+export function listOverviewErrorSpansSince(sinceMs: number, limit: number): OverviewErrorSpan[] {
+  const rows = db.prepare(
+    `SELECT trace_id, span_id, agent_id, operation, status, start_ms, end_ms, attributes
+       FROM otel_spans WHERE status IN ('error','timeout') AND start_ms >= ?
+      ORDER BY start_ms DESC LIMIT ?`
+  ).all(sinceMs, limit) as Array<{
+    trace_id: string; span_id: string; agent_id: string; operation: string; status: 'error' | 'timeout'
+    start_ms: number; end_ms: number | null; attributes: string | null
+  }>
+  return rows.map(r => ({
+    trace_id: r.trace_id, span_id: r.span_id, agent_id: r.agent_id, operation: r.operation, status: r.status,
+    start_ms: r.start_ms,
+    duration_ms: r.end_ms == null ? null : Math.max(0, r.end_ms - r.start_ms),
+    detail: errorSpanDetail(r.operation, r.attributes),
+  }))
+}
+
 export function countOverviewPendingMessages(tenantId: string | null): number {
   const { tc, tp } = tenantFilter(tenantId)
   const row = db.prepare(`SELECT COUNT(*) as c FROM agent_messages WHERE status='pending'${tc}`).get(...tp) as { c: number }

@@ -93,11 +93,12 @@ Működése:
 
 ### Állapotfájl és hiba-riasztások
 
-Minden futás frissíti a `store/command-task-health.json` fájlt, amely parancs típusú feladatonként egy bejegyzést tartalmaz: az egymás utáni hibák számát, hogy ment-e már riasztás, az utolsó állapotot (`ok` vagy `fail`) és az utolsó futás idejét (ezredmásodperc az epoch óta).
+Minden futás frissíti a `store/command-task-health.json` fájlt, amely parancs típusú feladatonként egy bejegyzést tartalmaz: az egymás utáni hibák számát, hogy ment-e már riasztás, az utolsó állapotot (`ok`, `findings` vagy `fail`) és az utolsó futás idejét (ezredmásodperc az epoch óta).
 
 - Egy sikeres futás nullázza a hibaszámlálót.
 - Amikor a számláló eléri a `failThreshold` értékét, egyetlen Telegram-riasztás megy a tulajdonosnak a hiba részleteivel. A további hibák nem ismétlik a riasztást.
 - A riasztás utáni első sikeres futás egyetlen "helyreállt" üzenetet küld, és törli a riasztási állapotot.
+- Az a parancs, amely valamit ellenőriz és jelentése van (figyelő), `42`-es kóddal léphet ki. Ez **lelet**, nem futási hiba: az Áttekintésen nem számít hibának, nem növeli a hibaszámlálót, és a lelet kezdetén egyetlen "lelet" riasztást küld (az első tiszta futás után "helyreállt" üzenet jön). Minden más nem nulla kilépési kód továbbra is hiba.
 - A riasztáshoz be kell állítani a Telegram bot tokent és a tulajdonos csevegését; ennek hiányában a riasztás kimarad, és csak a naplóba kerül. A riasztás szövege jelenleg mindig magyar.
 
 Minden lefutott futás bekerül a feladat futási előzményeibe is. A listában látható `parancs lefutott` jelvény csak azt jelzi, hogy a futás elindult; az eredményt az állapotfájlból lehet kiolvasni.

@@ -206,7 +206,9 @@ async function renderClaudeUpdate() {
   }
   const warnings = []
   if (d.status === 'failed') warnings.push(t('updates.claude.failed'))
-  if (d.stale) warnings.push(t('updates.claude.stale', { days: d.checkAgeDays == null ? '?' : d.checkAgeDays }))
+  // Before the first run there is no check to be old: only an overdue task is a warning (d.stale), and then
+  // the message names the days only when a check exists to count them from.
+  if (d.stale) warnings.push(d.checkAgeDays == null ? t('updates.claude.stale_never') : t('updates.claude.stale', { days: d.checkAgeDays }))
   if (d.behind && d.status !== 'pinned') warnings.push(t('updates.claude.behind', { latest: d.latest }))
   if (d.rolloutPending) warnings.push(t('updates.claude.pending'))
   if (d.incomplete && d.incomplete.length) warnings.push(t('updates.claude.incomplete', { list: d.incomplete.join(', ') }))

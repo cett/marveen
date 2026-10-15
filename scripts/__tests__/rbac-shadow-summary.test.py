@@ -141,14 +141,14 @@ class MainExitContractTest(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertIn("7 rows", out)
 
-    def test_would_deny_exits_one_with_the_compact_line_on_stderr(self):
+    def test_would_deny_exits_with_the_findings_code_and_the_compact_line_on_stderr(self):
         code, out, err = run_main(summary(would=3, top=[TOP], principals=[PRINCIPAL]))
         self.assertEqual(code, mod.EXIT_FINDINGS)
         self.assertIn("3 would-deny", err)
         self.assertEqual(err.count("\n"), 1)  # a single line: the alert keeps the first 200 chars
         self.assertIn("POST /api/kanban/cards", out)
 
-    def test_denied_alone_also_exits_one(self):
+    def test_denied_alone_also_exits_with_the_findings_code(self):
         code, _, err = run_main(summary(denied=2))
         self.assertEqual(code, mod.EXIT_FINDINGS)
         self.assertIn("2 denied", err)

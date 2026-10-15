@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `94e2ea33` vs fork `2cb6f503`, 2026-10-15
+> Állapot: upstream `e0ab2226` vs fork `4a7b54e2`, 2026-10-15
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -69,6 +69,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 - **Automatikus helyreállás:** újraindítás vagy crash után az ágensek 60 másodpercen belül visszaállnak, a lefagyott sessiont is beleértve.
 - **Központi Claude Code frissítés:** a beépített automatikus frissítő minden sessionben ki van kapcsolva (egyszerre induló sessionök korábban ugyanazt a közös telepítést írták egyszerre, és a bináris futó session alatt cserélődött). Helyette egy hetente futó, zárolt feladat frissít egyszer, megőrzi a rögzített verziót és az AVX nélküli gépek tartását, majd a futó sessionöket csak idle állapotban, egyenként, a fő-agenst utoljára indítja újra; az állapot a Frissítések nézetben látszik.
+- **Hibák láthatósága és a leletek megkülönböztetése:** az Áttekintés "N hiba az elmúlt 4 órában" figyelmeztetése kinyitja a hibás futások listáját (mikor, mi, melyik ágens), a hibás JSON-törzsű kérés 400-at kap a 500 helyett (így nem számít szerverhibának), és az a parancs típusú ütemezett feladat, amely a dedikált lelet-kilépési kóddal (42) ér véget, nem futási hiba: egy riasztást küld a lelet kezdetén, a hibaszámlálót nem növeli.
 - **Modell-fallback:** limit esetén konfigurálható lánc lép életbe (pl. opus, sonnet, haiku). A lefokozás tartós, az operátor beállítását nem írja felül, a visszaállás az ágens saját modelljére történik, újraindítás után is. A limit-észlelés szűk, hogy a pane-ben idézett szöveg ne váltson ki cserét.
 - **Kontextus-védelem:** a proaktív watchdog hook minden tool-hívásnál figyeli a kontextus telítettségét, közvetlenül frissíti a token-használati adatot, és küszöbnél rolling HANDOFF-összefoglalót injektál. A fail-closed restart-kapu csak élő munkát jelző jelzésekre blokkol (aktív gyermekfolyamat, kézbesítetlen kimenet, megválaszolatlan kérdés), az elavult jelek elévülnek.
 - **Ágens-futtatás:** a provider-dispatch (Claude/Ollama/Deepseek/OpenRouter) háttér-workerben fut (így a kanban AI-bontás helyi modellen is futhat), a session végén az auto-skillify hook skill-vázlatot generál.
@@ -105,7 +106,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, #1880, #1882, #927, #1881, #1883, #1863, #1797, #1796, #1879, #1795, #1794, #1789,
 
-Állapot: upstream `94e2ea33` vs fork `2cb6f503`, 2026-10-15
+Állapot: upstream `e0ab2226` vs fork `4a7b54e2`, 2026-10-15
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (fejlesztő -> koordinátor) frissítsd ezt a szakaszt
      a friss git log alapján:

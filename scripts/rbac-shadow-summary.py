@@ -6,16 +6,19 @@ GET /api/v1/rbac/shadow-log?summary=1 and decides:
 
   exit 0  no would-deny and no denied rows in the window: the shadow
           observation is clean for that day
-  exit 1  at least one would-deny / denied row: a possible FALSE POSITIVE of
+  exit 42 at least one would-deny / denied row: a possible FALSE POSITIVE of
           the gate (a legitimate non-admin request enforce mode would refuse).
           The first line of stderr is a compact one-line report, which is what
-          the command-task alert carries
-  exit 2  the summary could not be read (dashboard down, bad token, bad JSON)
+          the command-task alert carries. 42 is the command-task "findings"
+          exit code: a finding, not a failed run, so the run is not an error
+          span and does not count toward the failure streak
+  exit 2  the summary could not be read (dashboard down, bad token, bad JSON):
+          a real failure
 
-Both non-zero exits alert through the command-task health (failThreshold 1);
-the alert fires when the failure streak starts and again after a clean day,
-so a persistent finding is reported once, not every morning. The full report
-goes to stdout for the task log.
+Both non-zero exits alert through the command-task health; the alert fires
+when the finding (or failure streak) starts and again after a clean day, so a
+persistent finding is reported once, not every morning. The full report goes
+to stdout for the task log.
 
 An EMPTY window (zero rows of any kind) is also reported on stdout: it means
 "no non-admin traffic arrived", which must not be read as "no false positives".
@@ -41,7 +44,7 @@ STORE_DIR = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(REPO_ROOT, "stor
 DASHBOARD_TOKEN_FILE = os.path.join(STORE_DIR, ".dashboard-token")
 
 EXIT_CLEAN = 0
-EXIT_FINDINGS = 1
+EXIT_FINDINGS = 42  # COMMAND_EXIT_FINDINGS in src/web/command-task.ts
 EXIT_UNREADABLE = 2
 
 TOP_SHOWN = 5

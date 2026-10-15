@@ -42,7 +42,7 @@ Below the version status, a **Claude Code** card shows how the `claude` binary i
 - **Last check** -- when the weekly update task last ran and how it ended: updated, already current, held back (pinned) or failed.
 - **Warnings** (the card gets an amber edge):
   - the last update run failed (nothing was restarted, and the task alerts on Telegram after the first failure);
-  - the last check is more than 10 days old, so the weekly task is not running -- check the Tasks page;
+  - the last check is more than 10 days old, so the weekly task is not running -- check the Tasks page. If the task has not run even once since it was set up, the warning appears only when the setup is itself more than 10 days old; before the first run the card just says that the task has not run yet and when it is due;
   - a newer version is published than the installed one;
   - **restart pending** -- sessions that started before the update still run the old build;
   - sessions that could not be restarted automatically (restart them by hand).

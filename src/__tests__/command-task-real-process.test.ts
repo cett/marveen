@@ -51,6 +51,13 @@ describe('runCommandTask with real processes', () => {
     expect(lastHealth('real-task')).toMatchObject({ lastStatus: 'ok', fails: 0 })
   }, 15000)
 
+  it('a real exit 42 is a finding, and any other non-zero exit is still a failure', async () => {
+    await runCommandTask(task({ name: 'finding-task', command: 'echo "3 would-deny" >&2; exit 42', failThreshold: 1 }), Date.now())
+    expect(lastHealth('finding-task')).toMatchObject({ lastStatus: 'findings', fails: 0, alerted: true })
+    await runCommandTask(task({ name: 'failing-task', command: 'exit 1', failThreshold: 1 }), Date.now())
+    expect(lastHealth('failing-task')).toMatchObject({ lastStatus: 'fail', fails: 1, alerted: true })
+  }, 15000)
+
   it('the event loop keeps serving while a command runs', async () => {
     let served = 0
     server.on('request', () => { served++ })

@@ -121,6 +121,18 @@ export async function readJsonBody<T>(req: http.IncomingMessage): Promise<T> {
   return JSON.parse(body.toString()) as T
 }
 
+// True when `err` is the SyntaxError a route got from JSON.parse-ing a request body that really is not valid
+// JSON (a truncated or malformed client payload). The top-level handler answers that with a 400, because it is
+// the caller's mistake, not a server fault: a 500 would also be recorded as an error span. Both conditions are
+// needed so an unrelated SyntaxError (a stored value that does not parse) still stays a 500: the error comes from
+// a JSON.parse call AND the body this request sent does not parse.
+export function isInvalidJsonBodyError(err: unknown, req: http.IncomingMessage): boolean {
+  if (!(err instanceof SyntaxError) || !err.stack?.includes('JSON.parse')) return false
+  const body = readBodies.get(req)
+  if (!body) return false
+  try { JSON.parse(body.toString()); return false } catch { return true }
+}
+
 // Phase B -- enforcing mode.
 // If a new test breaks here: either the new code uses a non-canonical token (fix the code),
 // or this pairing is genuinely valid and missing from ALLOWED_STATUS_TOKENS (fix the table
