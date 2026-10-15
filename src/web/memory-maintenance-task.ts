@@ -1,5 +1,6 @@
 import { PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { getScheduleFromDb, patchSchedule } from '../db.js'
+import { logger } from '../logger.js'
 
 // The nightly `memory-maintenance` command task used to be an inline `curl | grep -q '"ok":true'` chain. It now runs
 // scripts/memory-maintenance.sh, which also reports memories that could not be linked (exit 42, a finding). The
@@ -18,10 +19,12 @@ export function memoryMaintenanceCommand(installDir: string, webPort: number, ag
 }
 
 /** True for the two stock inline forms shipped before the script: with or without the `$API` variable and --agent. */
-export function isStockInlineMemoryMaintenanceCommand(command: string, installDir: string): boolean {
+export function isStockInlineMemoryMaintenanceCommand(command: string, installDir: string, agent?: string): boolean {
   const root = escapeRegExp(installDir)
+  // With `agent` given, an inline --agent must name exactly that agent; without it any agent id fits.
+  const inlineAgent = agent === undefined ? AGENT_ID : escapeRegExp(agent)
   const call = (api: string, seconds: number, path: string): string =>
-    `bash ${api} (?:--agent ${AGENT_ID} )?--max-time ${seconds} POST ${path} '\\{\\}' \\| grep -q '"ok":true'`
+    `bash ${api} (?:--agent ${inlineAgent} )?--max-time ${seconds} POST ${path} '\\{\\}' \\| grep -q '"ok":true'`
   const forms = [
     // variable form (the seed file of the previous release)
     new RegExp(
@@ -42,6 +45,12 @@ export function ensureMemoryMaintenanceCommand(installDir: string = PROJECT_ROOT
   if (!row || row.type !== 'command' || !row.command) return false
   if (!new RegExp(`^${AGENT_ID}$`).test(row.agent)) return false
   if (!isStockInlineMemoryMaintenanceCommand(row.command, installDir)) return false
+  // An inline --agent that is not the row's agent was put there by the operator: moving the row to the script
+  // (which runs as row.agent) would silently drop it, so such a row counts as customised and stays as it is.
+  if (!isStockInlineMemoryMaintenanceCommand(row.command, installDir, row.agent)) {
+    logger.warn({ task: MEMORY_MAINTENANCE_TASK, agent: row.agent }, 'memory-maintenance: the command names another agent than the task, leaving it as it is')
+    return false
+  }
   patchSchedule(MEMORY_MAINTENANCE_TASK, { command: memoryMaintenanceCommand(installDir, webPort, row.agent) })
   return true
 }

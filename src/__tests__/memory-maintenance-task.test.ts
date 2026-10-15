@@ -30,6 +30,13 @@ beforeEach(() => {
 })
 
 describe('isStockInlineMemoryMaintenanceCommand', () => {
+  it('with an agent given, an inline --agent has to be that agent; without --agent any agent fits', () => {
+    expect(isStockInlineMemoryMaintenanceCommand(variableForm('a'), ROOT, 'a')).toBe(true)
+    expect(isStockInlineMemoryMaintenanceCommand(variableForm('a'), ROOT, 'b')).toBe(false)
+    expect(isStockInlineMemoryMaintenanceCommand(directForm(), ROOT, 'b')).toBe(true)
+    expect(isStockInlineMemoryMaintenanceCommand(variableForm('a'), ROOT)).toBe(true)
+  })
+
   it('recognises both stock inline forms', () => {
     expect(isStockInlineMemoryMaintenanceCommand(variableForm(), ROOT)).toBe(true)
     expect(isStockInlineMemoryMaintenanceCommand(variableForm('other-agent', 4567), ROOT)).toBe(true)
@@ -63,6 +70,19 @@ describe('ensureMemoryMaintenanceCommand', () => {
     seedRow(directForm(), { agent: 'second-agent' })
     ensureMemoryMaintenanceCommand(ROOT, 3420)
     expect(getScheduleFromDb('memory-maintenance')?.command).toContain('memory-maintenance.sh\' second-agent')
+  })
+
+  it('moves a row whose inline --agent is the row\'s own agent', () => {
+    seedRow(variableForm('second-agent'), { agent: 'second-agent' })
+    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(true)
+    expect(getScheduleFromDb('memory-maintenance')?.command).toContain('memory-maintenance.sh\' second-agent')
+  })
+
+  it('leaves a row alone whose inline --agent differs from the row\'s agent (the operator chose it)', () => {
+    const custom = variableForm('operator-chosen')
+    seedRow(custom, { agent: 'main-agent' })
+    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
+    expect(getScheduleFromDb('memory-maintenance')?.command).toBe(custom)
   })
 
   it('is idempotent: the migrated row is left alone on the next start', () => {
