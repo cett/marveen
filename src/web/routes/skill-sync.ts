@@ -1,10 +1,16 @@
 import { MAX_SKILL_FILE_BYTES } from '../../skill-files.js'
 import { syncCompanionFile, syncSkillContent, syncTenantSkill, type SkillSyncResult } from '../../skill-sync.js'
 import { RequestBodyTooLargeError, readBody, json } from '../http-helpers.js'
+import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import type { RouteContext } from './types.js'
 
 // POST /api/skill-sync - the write-back half of scripts/hooks/skill-sql-sync.py
-// (see src/skill-sync.ts). Not in the RBAC table, so admin-only.
+// (see src/skill-sync.ts). The hook runs in an agent's session and sends the agent's OWN token, so the
+// endpoint is reachable with skills:write (admin and fleet_agent). A fleet_agent token gets the same
+// narrowing as PUT /api/skills/sql/:id: it writes back only the skills of its own agent
+// ("agent/<token agent>/<name>", SKILL.md or a companion file). A global skill, another agent's skill
+// and a tenant-level skill (a generated tenant copy, a tenant companion) are other agents' input, so
+// those stay admin work and answer 403.
 //   {kind:'skill',     skill_id, content}
 //   {kind:'tenant',    header_id, agent_id, dir_name, content}
 //   {kind:'companion', skill_id, rel_path, content_base64, mode?, tenant_agent?}
@@ -13,6 +19,13 @@ type Body = Record<string, unknown>
 
 function text(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0
+}
+
+/** True for "agent/<agentId>/<name>" with exactly three plain segments. */
+function isOwnAgentSkillId(skillId: string, agentId: string | undefined): boolean {
+  if (!agentId) return false
+  const parts = skillId.split('/')
+  return parts.length === 3 && parts[0] === 'agent' && parts[1] === agentId && parts[2] !== ''
 }
 
 export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
@@ -36,6 +49,15 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // A fleet_agent token writes back only the skills of its own agent (see the header comment).
+  const fleetAgent = ctx.role === 'fleet_agent'
+  const refuseFleet = (skillId: string): true => {
+    recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
+    json(res, { error: 'forbidden', hint: 'A fleet agent token writes back its own agent skills only (agent/<name>/<skill>)' }, 403)
+    return true
+  }
+  const claimed = (v: unknown): string => (typeof v === 'string' ? v : '')
+
   const need = (field: string): true => {
     json(res, { error: 'required', field, hint: `${field} is required` }, 400)
     return true
@@ -49,6 +71,7 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
   if (body['kind'] === 'skill') {
     if (!text(body['skill_id'])) return need('skill_id')
     if (typeof body['content'] !== 'string') return need('content')
+    if (fleetAgent && !isOwnAgentSkillId(body['skill_id'], ctx.tokenAgentId)) return refuseFleet(body['skill_id'])
     return reply(syncSkillContent(body['skill_id'], body['content']))
   }
 
@@ -57,6 +80,7 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
     if (!text(body['agent_id'])) return need('agent_id')
     if (!text(body['dir_name'])) return need('dir_name')
     if (typeof body['content'] !== 'string') return need('content')
+    if (fleetAgent) return refuseFleet(body['header_id'])
     return reply(syncTenantSkill(body['header_id'], body['agent_id'], body['dir_name'], body['content']))
   }
 
@@ -74,6 +98,9 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
     if (agent !== undefined && agent !== null && !text(agent)) {
       json(res, { error: 'invalid_value', field: 'tenant_agent', hint: 'tenant_agent must be a string when given' }, 400)
       return true
+    }
+    if (fleetAgent && (!isOwnAgentSkillId(body['skill_id'], ctx.tokenAgentId) || (agent !== undefined && agent !== null))) {
+      return refuseFleet(claimed(body['skill_id']))
     }
     return reply(syncCompanionFile(body['skill_id'], body['rel_path'], Buffer.from(b64, 'base64'), mode as number | undefined, (agent as string | null | undefined) ?? null))
   }

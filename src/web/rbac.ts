@@ -263,6 +263,8 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'POST', pathPattern: '/api/skills/sql', prefix: true, permission: 'skills:write' },
   { method: 'PUT', pathPattern: '/api/skills/sql', prefix: true, permission: 'skills:write' },
   { method: 'DELETE', pathPattern: '/api/skills/sql', prefix: true, permission: 'skills:write' },
+  // The hook write-back of an edited skill file: the route holds a fleet_agent token to its own agent's skills.
+  { method: 'POST', pathPattern: '/api/skill-sync', prefix: false, permission: 'skills:write' },
   { method: 'GET', pathPattern: '/api/egress-allowlist', prefix: false, permission: 'fleet-config:read' },
   { method: 'GET', pathPattern: '/api/autonomy', prefix: false, permission: 'fleet-config:read' },
   { method: 'GET', pathPattern: '/api/voice/directive', prefix: false, permission: 'fleet-config:read' },
