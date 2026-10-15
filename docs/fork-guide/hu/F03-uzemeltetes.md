@@ -103,6 +103,34 @@ AUTO_UPDATE_ENABLED=1
 
 Engedélyezve, a seedelt `auto-update` ütemezett feladat minden szerdán 04:00-kor futtatja az `update.sh`-t és az eredményről értesítést küld a csatornán.
 
+## Claude Code frissítés
+
+Ez különbözik a fenti Marveen-frissítéstől: magát a `claude` binárist frissíti.
+
+A Claude Code beépített automatikus frissítője **minden sessionben ki van kapcsolva** (`DISABLE_AUTOUPDATER=1` minden indítási helyen és a tmux globális környezetében). Ha egyszerre indul újra sok session, korábban mindegyik ugyanabban a másodpercben indította a frissítőt az egyetlen közös telepítésre (az npm-global telepítések `ENOTEMPTY` hibával buktak a csomagkönyvtár átnevezésén), a binárist pedig egy futó session alatt cserélte ki valaki olyan pillanatban, amit senki sem választott.
+
+Helyette egyetlen command task frissít egyszer:
+
+- A `claude-update` ütemezés (telepítésenként egyszer seedelve, hétfő 06:00 a szerver időzónájában) a `scripts/claude-update.sh`-t futtatja. Zárat vesz, összeveti a telepített verziót a legfrissebb kiadottal, egyszer frissít (natív telepítésnél `claude update`, npm-global telepítésnél egyetlen `npm install -g`), ellenőrzi, hogy a bináris még fut, és az eredményt a `store/claude-update.json`-ba írja. Hibánál az első előfordulásra Telegram-riasztás megy, és semmi sem indul újra.
+- Valódi verzióváltás után a dashboard újraindítja a váltás előtt indult sessionöket: **csak idle sessionöket, egyenként, legalább 45 másodperc eltéréssel, a fő-agenst utoljára**. A sub-agentek `--continue`-val folytatják, a fő-agens friss beszélgetéssel jön vissza (a memória megmarad). A távoli agentek a saját telepítésüket használják, őket nem érinti.
+- A **Frissítések** nézet mutatja a telepített és a legfrissebb verziót, az utolsó ellenőrzést, hogy van-e függő újraindítás, és figyelmeztet, ha az utolsó ellenőrzés 10 napnál régebbi (a heti feladat nem fut).
+
+Vezérlés:
+
+```bash
+# Ellenőrzés változtatás nélkül (kiírja a telepített/legfrissebb verziót)
+bash scripts/claude-update.sh --check
+
+# A flotta tartása egy verzión (a heti feladat ilyenkor csak "pinned"-et rögzít)
+echo 2.1.300 > store/claude-pin        # vagy: CLAUDE_UPDATE_PIN=2.1.300 a környezetben
+rm store/claude-pin                    # a tartás feloldása
+```
+
+- Az AVX nélküli x86 gépeket mindig tartjuk: a rögzített Node-alapú buildet (`install-linux.sh`) nem szabad a legfrissebb Bun binárisra cserélni, ami AVX nélkül összeomlik.
+- A `CLAUDE_UPDATE_AUTO_RESTART=0` (Beállítások, system modul) megtartja a frissítést, de a futó sessionöket a régi buildön hagyja a következő újraindulásukig; a Frissítések nézet ilyenkor függőben levőként mutatja az újraindítást.
+- A frissítés azonnal futtatható a Feladatok oldalon (a `claude-update` "futtatás most" gombja). A frissítés leállításához tiltsd le az ütemezést; a törlést a rendszer megjegyzi, a feladatot nem hozza létre újra.
+- Visszalépés: telepítsd kézzel a régebbi verziót, majd rögzítsd a `store/claude-pin` fájllal.
+
 ## Egészség-ellenőrzés
 
 ```bash

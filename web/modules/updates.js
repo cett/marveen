@@ -178,6 +178,46 @@ export async function loadUpdates() {
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()
+  renderClaudeUpdate()
+}
+
+// Central Claude Code update (scripts/claude-update.sh + the idle-only restart).
+// Read-only card: the weekly task is a normal schedule (run-now lives on the
+// Tasks page) and the auto-restart switch is a registry setting.
+async function renderClaudeUpdate() {
+  const box = document.getElementById('updatesClaude')
+  if (!box) return
+  let d
+  try {
+    const res = await fetch('/api/claude-update/status')
+    if (!res.ok) { box.hidden = true; return }
+    d = await res.json()
+  } catch { box.hidden = true; return }
+  const lines = []
+  if (d.installed) {
+    lines.push(`<p>${escapeHtml(t('updates.claude.version', { installed: d.installed, latest: d.latest || '?' }))}</p>`)
+  }
+  if (d.checkedAt) {
+    const when = new Date(d.checkedAt * 1000).toLocaleString()
+    const statusLabel = d.status ? t('updates.claude.status.' + d.status) : ''
+    lines.push(`<p>${escapeHtml(t('updates.claude.last_check', { when, status: statusLabel }))}${d.message && d.status === 'failed' ? ' ' + escapeHtml(d.message) : ''}</p>`)
+  } else {
+    lines.push(`<p>${escapeHtml(t('updates.claude.never'))}</p>`)
+  }
+  const warnings = []
+  if (d.status === 'failed') warnings.push(t('updates.claude.failed'))
+  if (d.stale) warnings.push(t('updates.claude.stale', { days: d.checkAgeDays == null ? '?' : d.checkAgeDays }))
+  if (d.behind && d.status !== 'pinned') warnings.push(t('updates.claude.behind', { latest: d.latest }))
+  if (d.rolloutPending) warnings.push(t('updates.claude.pending'))
+  if (d.incomplete && d.incomplete.length) warnings.push(t('updates.claude.incomplete', { list: d.incomplete.join(', ') }))
+  const warn = warnings.length > 0
+  box.className = warn ? 'updates-claude warn' : 'updates-claude'
+  box.hidden = false
+  box.innerHTML = `<strong>${escapeHtml(t('updates.claude.title'))}</strong>`
+    + lines.join('')
+    + warnings.map((w) => `<p class="updates-claude-warn">${escapeHtml(w)}</p>`).join('')
+    + (d.restarted && d.restarted.length ? `<p>${escapeHtml(t('updates.claude.restarted', { list: d.restarted.join(', ') }))}</p>` : '')
+    + `<p class="updates-claude-hint">${escapeHtml(t('updates.claude.hint'))}</p>`
 }
 
 // Post-rollback diagnosis offer (PR-D). Reads /api/updates/status: if the last

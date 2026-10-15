@@ -34,6 +34,25 @@ A sáv bezárható; a bezárás a böngészőben tárolódik (agonként külön)
 
 ---
 
+## Claude Code frissítés
+
+A verzióállapot alatt egy **Claude Code** kártya mutatja, hogyan tartja magát naprakészen maga a `claude` bináris. Ez különbözik a fenti Marveen-frissítéstől. A kártya csak adminoknak látható.
+
+- **Telepített / legfrissebb kiadott** -- a gépen futó verzió és a legújabb kiadott.
+- **Utolsó ellenőrzés** -- mikor futott utoljára a heti frissítő feladat, és hogyan végződött: frissítve, már a legfrissebb, visszatartva (rögzített verzió) vagy sikertelen.
+- **Figyelmeztetések** (a kártya széle borostyánsárga lesz):
+  - az utolsó frissítési futás sikertelen volt (semmi sem indult újra, és a feladat az első hibánál Telegramon riaszt);
+  - az utolsó ellenőrzés 10 napnál régebbi, vagyis a heti feladat nem fut -- nézd meg a Feladatok oldalt;
+  - újabb verzió van kiadva, mint a telepített;
+  - **újraindítás függőben** -- a frissítés előtt indult sessionök még a régi buildet futtatják;
+  - sessionök, amiket nem sikerült automatikusan újraindítani (indítsd újra kézzel).
+
+Működés: a beépített automatikus frissítés minden sessionben ki van kapcsolva. Hetente egyszer (hétfő 06:00) a `claude-update` feladat egyetlen alkalommal frissíti a Claude Code-ot. Utána a dashboard újraindítja a frissítés előtt indult, futó sessionöket -- csak az idle-ket, egyenként, a fő-agenst utoljára. A sub-agentek folytatják a beszélgetésüket; a fő-agens friss beszélgetéssel jön vissza (a memóriája megmarad).
+
+Azonnali frissítéshez nyisd meg a **Feladatok** oldalt, és futtasd most a `claude-update`-et. Verzió tartásához vagy az automatikus újraindítás kikapcsolásához lásd az üzemeltetési útmutatót ("Claude Code frissítés").
+
+---
+
 ## Kapcsolódó fejezetek
 
 - [18 - Profil](18-profil.md) -- jelszó-visszaállítás, break-glass, security:reset

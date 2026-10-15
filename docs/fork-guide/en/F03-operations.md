@@ -103,6 +103,34 @@ AUTO_UPDATE_ENABLED=1
 
 When enabled, the seeded `auto-update` scheduled task runs `update.sh` every Wednesday at 04:00 and sends a notification on the configured channel.
 
+## Claude Code updates
+
+This is separate from the Marveen update above: it updates the `claude` binary itself.
+
+Claude Code's built-in auto-updater is **switched off in every session** (`DISABLE_AUTOUPDATER=1` at every launch site and in the tmux global environment). With a fleet of sessions respawned together, each session used to start the updater in the same second against the one shared install (npm-global installs failed with `ENOTEMPTY` on the package-directory rename), and the binary changed under a running session at a moment nobody chose.
+
+Instead, one command task updates the binary once:
+
+- The `claude-update` schedule (seeded once per install, Monday 06:00 in the server's time zone) runs `scripts/claude-update.sh`. It takes a lock, compares the installed version with the latest published one, updates once (`claude update` for a native install, a single `npm install -g` for an npm-global install), checks that the binary still runs and records the result in `store/claude-update.json`. A failure alerts on Telegram after the first occurrence and restarts nothing.
+- After a real version change the dashboard restarts the sessions that started before the change: **only idle sessions, one at a time, at least 45 seconds apart, the main agent last**. Sub-agents resume with `--continue`; the main agent comes back with a fresh conversation (memory persists). Remote agents run their own install and are not touched.
+- The **Updates** view shows the installed and latest version, the last check, whether a restart is pending and a warning when the last check is older than 10 days (the weekly task is not running).
+
+Controls:
+
+```bash
+# Check without changing anything (prints installed/latest)
+bash scripts/claude-update.sh --check
+
+# Hold the fleet on a version (the weekly task then only records "pinned")
+echo 2.1.300 > store/claude-pin        # or: CLAUDE_UPDATE_PIN=2.1.300 in the environment
+rm store/claude-pin                    # release the hold
+```
+
+- AVX-less x86 hosts are always held: the pinned Node-based build (`install-linux.sh`) must not be replaced by the latest Bun binary, which crashes without AVX.
+- `CLAUDE_UPDATE_AUTO_RESTART=0` (Settings, system module) keeps the update but leaves running sessions on the old build until their next restart; the Updates view then shows the restart as pending.
+- Run the update now from the Tasks page ("run now" on `claude-update`). To stop updating, disable that schedule; deleting it is remembered and the task is not re-created.
+- Rollback: install the older version by hand, then pin it with `store/claude-pin`.
+
 ## Health check
 
 ```bash

@@ -1790,6 +1790,22 @@ window._i18n.en = {
   'updates.diagnose.failed':     'Diagnosis did not start: {msg}',
   'updates.diagnose.needs_human':'The last update failed, and this machine cannot run an AI agent (the CPU lacks AVX). Manual intervention needed. Check store/update.log.',
 
+  'updates.claude.title':        'Claude Code',
+  'updates.claude.version':      'Installed: {installed}, latest published: {latest}.',
+  'updates.claude.last_check':   'Last check: {when}. {status}',
+  'updates.claude.never':        'The weekly update task has not run yet.',
+  'updates.claude.status.updated':    'Updated.',
+  'updates.claude.status.up-to-date': 'Already current.',
+  'updates.claude.status.pinned':     'Held back (pinned).',
+  'updates.claude.status.failed':     'The update failed.',
+  'updates.claude.failed':       'The last update run failed; nothing was restarted. The task alerts on Telegram after the first failure.',
+  'updates.claude.stale':        'The last check is {days} days old: the weekly claude-update task is not running. Check the Tasks page.',
+  'updates.claude.behind':       'A newer version is published: {latest}.',
+  'updates.claude.pending':      'Restart pending: sessions started before the update still run the old build. They restart one at a time when idle, the main agent last.',
+  'updates.claude.incomplete':   'These sessions could not be restarted automatically, restart them by hand: {list}.',
+  'updates.claude.restarted':    'Restarted onto the new build: {list}.',
+  'updates.claude.hint':         'The built-in auto-update is off in every session. Claude Code is updated once a week by the claude-update task (Monday 06:00); run it now from the Tasks page.',
+
   // --- Ideas toasts ---
   'ideas.toast.score_saved':     'Score saved',
   'ideas.toast.comment_error':   'Comment save error',

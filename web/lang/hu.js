@@ -1792,6 +1792,22 @@ window._i18n.hu = {
   'updates.diagnose.failed':     'A diagnózis nem indult el: {msg}',
   'updates.diagnose.needs_human':'A legutóbbi frissítés sikertelen volt, és ez a gép nem tud AI-agenst futtatni (a CPU nem támogatja az AVX-et). Kézi beavatkozás szükséges. Nézd meg a store/update.log fájlt.',
 
+  'updates.claude.title':        'Claude Code',
+  'updates.claude.version':      'Telepítve: {installed}, legfrissebb kiadott: {latest}.',
+  'updates.claude.last_check':   'Utolsó ellenőrzés: {when}. {status}',
+  'updates.claude.never':        'A heti frissítő feladat még nem futott.',
+  'updates.claude.status.updated':    'Frissítve.',
+  'updates.claude.status.up-to-date': 'Már a legfrissebb.',
+  'updates.claude.status.pinned':     'Visszatartva (rögzített verzió).',
+  'updates.claude.status.failed':     'A frissítés sikertelen volt.',
+  'updates.claude.failed':       'Az utolsó frissítési futás sikertelen volt; semmi sem lett újraindítva. A feladat az első hibánál Telegramon riaszt.',
+  'updates.claude.stale':        'Az utolsó ellenőrzés {days} napos: a heti claude-update feladat nem fut. Nézd meg a Feladatok oldalt.',
+  'updates.claude.behind':       'Újabb verzió érhető el: {latest}.',
+  'updates.claude.pending':      'Újraindítás függőben: a frissítés előtt indult sessionök még a régi buildet futtatják. Idle állapotban, egyenként indulnak újra, a fő-agens utoljára.',
+  'updates.claude.incomplete':   'Ezeket a sessionöket nem sikerült automatikusan újraindítani, indítsd újra kézzel: {list}.',
+  'updates.claude.restarted':    'Újraindítva az új buildre: {list}.',
+  'updates.claude.hint':         'A beépített automatikus frissítés minden sessionben ki van kapcsolva. A Claude Code-ot hetente egyszer a claude-update feladat frissíti (hétfő 06:00); a Feladatok oldalon azonnal is futtatható.',
+
   // --- Ideas toasts ---
   'ideas.toast.score_saved':     'Pontozás mentve',
   'ideas.toast.comment_error':   'Megjegyzés mentés hiba',
