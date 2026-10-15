@@ -574,7 +574,7 @@ describe('GET /api/overview — non-admin response omits fleet-level fields', ()
     'tokensToday', 'pendingApprovals', 'errors4h', 'errorSpans', 'stuckTasks',
   ] as const
 
-  it('viewer role: all nine fleet-level fields are absent', async () => {
+  it('viewer role: all ten fleet-level fields are absent', async () => {
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'viewer' })
     await tryHandleOverview(ctx)
     for (const field of FLEET_FIELDS) {
@@ -590,7 +590,7 @@ describe('GET /api/overview — non-admin response omits fleet-level fields', ()
     expect(out.body).toHaveProperty('activity')
   })
 
-  it('admin role: all nine fleet-level fields are present', async () => {
+  it('admin role: all ten fleet-level fields are present', async () => {
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
     for (const field of FLEET_FIELDS) {

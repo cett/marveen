@@ -20,7 +20,7 @@ A számok melletti alcím kontextust ad: pl. "ugyanaz mint tegnap" vagy "+3 a te
 
 Ha valami beavatkozást kér, a statisztika-csík alatt egy "Figyelmet igényel" panel jelenik meg a teendőkkel: függő jóváhagyások, kézbesítetlen üzenetek, elakadt ütemezett feladatok, nem futó ágensek. Minden sor mellett link vagy gomb visz a megfelelő nézetre.
 
-Az **N hiba az elmúlt 4 órában** sor mellett a **Részletek** gomb kinyitja a hibás futások listáját (a legfrissebb 20, időrendben visszafelé): mikor történt, mi volt (művelet és az ütemezett feladat neve, vagy a HTTP-metódus, útvonal és státusz), és melyik ágenshez tartozik. Ha ennél több hiba van, a lista alján a többi száma látszik. A lista a 30 másodperces frissítés után is nyitva marad.
+Az **N hiba az elmúlt 4 órában** sor mellett a **Részletek** gomb kinyitja a hibás futások listáját (a legfrissebb 20, időrendben visszafelé): mikor történt, mi volt (művelet és az ütemezett feladat neve, vagy a HTTP-metódus, útvonal és státusz), és melyik ágenshez tartozik. Ha ennél több hiba van, a lista alján a többi száma látszik. Ha az Áttekintés újra felépül (például másik nézetről visszatérve vagy bérlőváltáskor), a megnyitott lista nyitva marad.
 
 Nem számít hibának az a parancs típusú ütemezett feladat, amely a `42`-es "lelet" kilépési kóddal ér véget (ellenőrzés, amely jelentést készített, lásd a Feladatok fejezetet), és az sem, ha egy kérés hibás JSON-nal érkezik (az 400-as választ kap).
 

@@ -12,7 +12,7 @@ let _ovActiveAgentFilter = null
 let _bbPollTimer = null
 let _ovTenantGetter = null
 let _ovInited = false
-// Attention items whose detail list the admin has opened (survives the periodic re-render).
+// Attention items whose detail list the admin has opened (kept when the Overview is rebuilt).
 const _ovAttentionOpen = new Set()
 
 async function _ensureOverviewInited() {
@@ -211,7 +211,7 @@ export async function loadOverview() {
         const detail = item.detailId ? '<ul class="attention-detail"' + (open ? '' : ' hidden') + '>' + item.detailHtml + '</ul>' : ''
         return '<div class="attention-item"><span>' + escapeHtml(item.icon) + '</span><span>' + escapeHtml(item.text) + '</span>' + action + '</div>' + detail
       }).join('')
-      // The detail list is part of the re-rendered markup, so which ones are open is kept across the 30 s refresh.
+      // The detail list is part of the re-rendered markup, so which ones are open is kept when the Overview is rebuilt.
       attBody.querySelectorAll('[data-attention-toggle]').forEach(function(btn) {
         btn.onclick = function() {
           const id = btn.getAttribute('data-attention-toggle')
