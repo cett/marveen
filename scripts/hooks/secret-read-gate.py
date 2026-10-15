@@ -458,4 +458,13 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    # OTel H5b: count this run's outcome after the verdict (best effort, never changes it; see
+    # gate_audit_lib.py). A missing or broken audit module leaves the gate exactly as it was.
+    try:
+        from gate_audit_lib import audited
+    except Exception:  # noqa: BLE001
+        audited = None
+    if audited is None:
+        main()
+    else:
+        audited('secret-read-gate', main, deny_row=True)

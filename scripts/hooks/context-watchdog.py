@@ -208,6 +208,92 @@ def _parse_ts(ts_raw):
         return None
 
 
+def _parse_ts_ms(ts_raw):
+    """Like _parse_ts but with millisecond resolution (the transcript stamps lines to the millisecond)."""
+    if not ts_raw:
+        return None
+    try:
+        return int(round(datetime.datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp() * 1000))
+    except Exception:
+        return None
+
+
+# How long a model response took, approximated from transcript timestamps (see model_call_duration_ms).
+DURATION_TAIL_BYTES = 512 * 1024      # only the end of the transcript is read: the lines of a response are recent
+DURATION_MAX_HOPS = 20                # blocks of one response followed back through parentUuid
+DURATION_MAX_MS = 30 * 60 * 1000      # a larger difference is a pause, not a response: no duration
+
+
+def _transcript_tail_lines(transcript_path):
+    """The last DURATION_TAIL_BYTES of the transcript as lines (a cut first line is dropped). Raises on I/O error."""
+    with open(transcript_path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        start = max(0, size - DURATION_TAIL_BYTES)
+        f.seek(start)
+        data = f.read()
+    if start > 0:
+        _, _, data = data.partition(b"\n")
+    return data.decode("utf-8", "replace").splitlines()
+
+
+def _find_transcript_line(lines, uuid):
+    """The parsed transcript line whose own `uuid` is `uuid`, or None. A cheap substring test first, so only the
+    candidate line is parsed; the parsed uuid is then checked, so text that merely mentions the id does not count."""
+    needle = '"uuid":"%s"' % uuid
+    for line in reversed(lines):
+        if needle not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("uuid") == uuid:
+            return obj
+    return None
+
+
+def model_call_duration_ms(transcript_path, ev):
+    """APPROXIMATE wall time of the model response `ev` is the (last) usage line of, in ms, or None.
+
+    The transcript has no field for it. A response is written as one line per content block (thinking, text,
+    tool_use), all with the same message id, each pointing at the previous one through parentUuid; the first
+    block's parent is the line the model was answering (the user prompt or the tool_result). So: follow parentUuid
+    from `ev` while the parent is an assistant line of the SAME response, and take the difference between the
+    timestamp of `ev` and that first non-response line. It includes the time the harness took to write the
+    line, and nothing the model spent before its first block is written is excluded.
+
+    Any doubt gives None and NEVER raises: no parentUuid, the chain leaves the tail that was read, unreadable
+    file or line, a timestamp that does not parse, a difference of zero or less, or over DURATION_MAX_MS. A
+    missing duration just leaves the span without one."""
+    try:
+        parent = ev.get("parentUuid")
+        message_id = (ev.get("message") or {}).get("id")
+        end_ms = _parse_ts_ms(ev.get("timestamp"))
+        if not transcript_path or not parent or not message_id or end_ms is None:
+            return None
+        lines = _transcript_tail_lines(transcript_path)
+        start_ms = None
+        for _ in range(DURATION_MAX_HOPS):
+            line = _find_transcript_line(lines, parent)
+            if line is None:
+                return None
+            same_response = (line.get("type") == "assistant"
+                             and (line.get("message") or {}).get("id") == message_id)
+            if same_response:
+                parent = line.get("parentUuid")
+                if not parent:
+                    return None  # the chain starts inside the response: nothing to measure from
+                continue
+            start_ms = _parse_ts_ms(line.get("timestamp"))
+            break
+        if start_ms is None:
+            return None
+        duration = end_ms - start_ms
+        return duration if 0 < duration <= DURATION_MAX_MS else None
+    except Exception:
+        return None
+
+
 def resolve_tenant(conn, agent_id: str) -> str:
     """Mirrors src/db.ts resolveAgentTenant() exactly (same table, same
     enabled=1 filter, same 0/1/many -> default/tenant/_multi_ rule)."""
@@ -368,9 +454,15 @@ def upsert_otel_span(conn, trace_id, span_id, parent_span_id, agent_id, operatio
     """Same upsert shape as db/observability.ts's upsertOtelSpan (TS side,
     used by the F2 tool-call span) -- INSERT, and on a (trace_id, span_id)
     conflict, only refresh end_ms/status/attributes so a span already closed
-    by another writer is never reopened."""
+    by another writer is never reopened. A span the push exporter already sent
+    (exported_at set) whose end_ms or status moves goes out again: exported_at
+    is cleared so its final state is not lost."""
     on_conflict = """
         ON CONFLICT (trace_id, span_id) DO UPDATE SET
+          exported_at = CASE
+            WHEN otel_spans.exported_at IS NOT NULL
+             AND (excluded.end_ms IS NOT otel_spans.end_ms OR excluded.status IS NOT otel_spans.status)
+            THEN NULL ELSE otel_spans.exported_at END,
           end_ms = excluded.end_ms,
           status = excluded.status,
           attributes = COALESCE(excluded.attributes, otel_spans.attributes)
@@ -399,7 +491,7 @@ def close_stale_turn_spans(conn, trace_id: str, keep_span_id: str) -> None:
     named for the agent.turn span."""
     conn.execute(
         """
-        UPDATE otel_spans SET status = 'ok'
+        UPDATE otel_spans SET status = 'ok', exported_at = NULL
         WHERE trace_id = ? AND operation = 'agent.turn' AND status = 'running' AND span_id != ?
         """,
         (trace_id, keep_span_id),
@@ -432,12 +524,19 @@ def write_agent_turn_span(conn, agent_id: str, session_id: str, turn_ev: dict, l
     return turn_span_id
 
 
-def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_span_id) -> str | None:
+def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_span_id,
+                          duration_ms=None) -> str | None:
     """Upsert the model.call span for the latest assistant usage event.
     span_id = the Anthropic API message id (msg_..., already unique per
     model call, present on every usage-bearing transcript line) -- so a
     later PostToolUse call that re-reads the same "latest" line before a
-    newer one exists is a harmless no-op upsert, not a duplicate span."""
+    newer one exists is a harmless no-op upsert, not a duplicate span.
+
+    `duration_ms` (model_call_duration_ms) moves the span's start back from the
+    response's transcript time; the span is then marked marveen.duration.source=
+    transcript, because the figure is an approximation. Without one (None, or
+    anything that is not a plausible positive duration) the span is as before:
+    start == end, no marker."""
     msg = ev.get("message") or {}
     usage = msg.get("usage") or {}
     model_id = msg.get("id")
@@ -445,6 +544,17 @@ def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_s
     if not model_id or ts is None:
         return None
     ts_ms = ts * 1000
+    attributes = {
+        "model": msg.get("model"),
+        "input_tokens": int(usage.get("input_tokens") or 0),
+        "output_tokens": int(usage.get("output_tokens") or 0),
+        "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
+        "cache_creation_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+    }
+    start_ms = ts_ms
+    if isinstance(duration_ms, int) and not isinstance(duration_ms, bool) and 0 < duration_ms <= DURATION_MAX_MS:
+        start_ms = ts_ms - duration_ms
+        attributes["marveen.duration.source"] = "transcript"
     upsert_otel_span(
         conn,
         trace_id=session_id,
@@ -452,16 +562,10 @@ def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_s
         parent_span_id=turn_span_id,
         agent_id=agent_id,
         operation="model.call",
-        start_ms=ts_ms,
+        start_ms=start_ms,
         end_ms=ts_ms,
         status="ok",
-        attributes=json.dumps({
-            "model": msg.get("model"),
-            "input_tokens": int(usage.get("input_tokens") or 0),
-            "output_tokens": int(usage.get("output_tokens") or 0),
-            "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
-            "cache_creation_tokens": int(usage.get("cache_creation_input_tokens") or 0),
-        }),
+        attributes=json.dumps(attributes),
     )
     return model_id
 
@@ -772,7 +876,8 @@ def main():
                 turn_span_id = write_agent_turn_span(conn, agent_id, session_id, turn_ev, ev_ts * 1000)
                 if turn_span_id:
                     close_stale_turn_spans(conn, session_id, turn_span_id)
-        write_model_call_span(conn, agent_id, session_id, ev, turn_span_id)
+        write_model_call_span(conn, agent_id, session_id, ev, turn_span_id,
+                              duration_ms=model_call_duration_ms(transcript_path, ev))
         conn.commit()
 
         threshold = _read_gate_threshold(agent_id)

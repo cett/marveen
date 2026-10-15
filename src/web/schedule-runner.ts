@@ -1424,8 +1424,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
   if (APP_TZ_INVALID) {
     logger.warn(
       { rejectedTz: APP_TZ_INVALID, cronTz },
-      `schedule-runner: SCHEDULER_TZ="${APP_TZ_INVALID}" is not a usable timezone -- ` +
-        `ignored, scheduling on "${cronTz}" instead. Fix the value (e.g. "Europe/Budapest") ` +
+      'schedule-runner: SCHEDULER_TZ is not a usable timezone (the value is in rejectedTz) -- ' +
+        'ignored, scheduling on the zone in cronTz instead. Fix the value (e.g. "Europe/Budapest") ' +
         'and restart, or every fixed-time cron runs on the wrong wall clock.',
     )
   }

@@ -1,0 +1,229 @@
+// Maps audit-table rows to OTLP log records (OTel H5a). Pure: rows in, JSON out, no I/O.
+//
+// What leaves the machine, per record: an event name, a severity, the time, and a handful of bounded
+// identifiers (decision, role, permission, setting key, entity, action). What never does:
+//   - content: config values (old_value / new_value), audit `detail`, approval `ref`, the raw request path;
+//     the DB layer does not even select those columns (src/db/otel-logs.ts);
+//   - a name: every actor (user, token, device, agent) is replaced by marveen.actor.hash, an HMAC with a
+//     per-install salt, so the same actor is the same value across records but cannot be read back.
+// A free-text column that the writer fills with a machine token (reason, event, key ...) is passed through
+// token(), which keeps only a short run of identifier characters: anything else becomes '_other', so a value
+// with spaces or a path in it cannot ride out as an attribute.
+
+import { createHmac } from 'node:crypto'
+import type { AppLogRecord } from './otel-app-logs.js'
+import type {
+  OtelLogRows, OtelLogSource, ApprovalEventLogRow, RbacDecisionLogRow, ConfigChangeExportRow, AgentAuditExportRow,
+  HookAuditExportRow, BlackboardExportRow, KanbanEventExportRow,
+} from './db/otel-logs.js'
+
+const SEVERITY_INFO = 9
+const SEVERITY_WARN = 13
+
+const TOKEN_RE = /^[A-Za-z0-9_.:-]{1,64}$/
+const UNRESOLVED_TENANT = 'unresolved'
+export const LOG_SCOPE_NAME = 'marveen.audit'
+
+interface LogAttribute {
+  key: string
+  value: { stringValue?: string; intValue?: string }
+}
+
+export interface OtelLogRecord {
+  timeUnixNano: string
+  observedTimeUnixNano: string
+  severityNumber: number
+  severityText: string
+  body: { stringValue: string }
+  attributes: LogAttribute[]
+}
+
+// A bounded machine token, or '_other'. Empty input has no token (null).
+export function token(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  const s = String(value)
+  if (s === '') return null
+  return TOKEN_RE.test(s) ? s : '_other'
+}
+
+// Actor pseudonym: HMAC-SHA256(salt, actor), 16 hex chars. Null for an empty actor (nothing to pseudonymise).
+export function actorHash(actor: unknown, salt: string): string | null {
+  if (actor === null || actor === undefined || actor === '') return null
+  return createHmac('sha256', salt).update(String(actor)).digest('hex').slice(0, 16)
+}
+
+function secToNano(sec: number): string {
+  return (BigInt(Math.max(0, Math.floor(Number(sec) || 0))) * 1_000_000_000n).toString()
+}
+
+function attr(key: string, value: string | null): LogAttribute[] {
+  return value === null ? [] : [{ key, value: { stringValue: value } }]
+}
+
+function record(
+  eventName: string,
+  severity: number,
+  tsSec: number,
+  observedNano: string,
+  attributes: LogAttribute[],
+): OtelLogRecord {
+  return {
+    timeUnixNano: secToNano(tsSec),
+    observedTimeUnixNano: observedNano,
+    severityNumber: severity,
+    severityText: severity >= SEVERITY_WARN ? 'WARN' : 'INFO',
+    body: { stringValue: eventName },
+    attributes: [{ key: 'event.name', value: { stringValue: eventName } }, ...attributes],
+  }
+}
+
+function tenantAttr(tenantId: string | null): LogAttribute[] {
+  return attr('marveen.tenant.id', token(tenantId) ?? UNRESOLVED_TENANT)
+}
+
+function approvalRecord(r: ApprovalEventLogRow, salt: string, observed: string): OtelLogRecord {
+  const event = token(r.event) ?? '_other'
+  // A refusal is the signal an audit looks for; consume / decide events are routine.
+  const refused = /refused|denied/.test(event)
+  return record(`marveen.approval.${event}`, refused ? SEVERITY_WARN : SEVERITY_INFO, r.created_at, observed, [
+    ...attr('marveen.approval.id', token(r.approval_id)),
+    ...attr('marveen.approval.event', event),
+    ...attr('marveen.approval.reason', token(r.reason)),
+    ...attr('marveen.actor.hash', actorHash(r.actor, salt)),
+    ...tenantAttr(r.tenant_id),
+  ])
+}
+
+function rbacRecord(r: RbacDecisionLogRow, salt: string, observed: string): OtelLogRecord {
+  const decision = token(r.decision) ?? '_other'
+  return record(`marveen.rbac.${decision}`, SEVERITY_WARN, r.ts, observed, [
+    ...attr('marveen.rbac.decision', decision),
+    ...attr('http.request.method', token(r.method)),
+    ...attr('marveen.rbac.permission', token(r.permission)),
+    ...attr('marveen.rbac.role', token(r.role)),
+    ...attr('marveen.rbac.reason', token(r.reason)),
+    ...attr('marveen.principal.kind', token(r.principal_kind)),
+    ...attr('marveen.actor.hash', actorHash(r.principal, salt)),
+    ...tenantAttr(r.tenant_id),
+  ])
+}
+
+function configRecord(r: ConfigChangeExportRow, salt: string, observed: string): OtelLogRecord {
+  return record('marveen.config.changed', SEVERITY_INFO, r.created_at, observed, [
+    ...attr('marveen.config.key', token(r.key)),
+    ...attr('marveen.actor.hash', actorHash(r.actor, salt)),
+  ])
+}
+
+function agentAuditRecord(r: AgentAuditExportRow, salt: string, observed: string): OtelLogRecord {
+  const entity = token(r.entity) ?? '_other'
+  const action = token(r.action) ?? '_other'
+  return record(`marveen.audit.${entity}.${action}`, SEVERITY_INFO, r.created_at, observed, [
+    ...attr('marveen.audit.entity', entity),
+    ...attr('marveen.audit.action', action),
+    // agent_audit_log.agent_id is an agent id OR the session user / token / device behind a request.
+    ...attr('marveen.actor.hash', actorHash(r.agent_id, salt)),
+  ])
+}
+
+function hookAuditRecord(r: HookAuditExportRow, observed: string): OtelLogRecord {
+  const verdict = token(r.verdict) ?? '_other'
+  return record(`marveen.hook.${verdict}`, SEVERITY_WARN, r.ts, observed, [
+    ...attr('marveen.hook.verdict', verdict),
+    ...attr('marveen.hook.type', token(r.hook_type)),
+    // trigger_source names the producer: a gate (destructive-gate ...) or, on older rows, nothing.
+    ...attr('marveen.gate', token(r.trigger_source)),
+    ...attr('marveen.hook.reason', token(r.reason)),
+    // The agent id of a hook row is an agent name, like marveen.agent.id on the spans; token() bounds it.
+    ...attr('marveen.agent.id', token(r.agent_id)),
+    ...tenantAttr(r.tenant_id),
+  ])
+}
+
+// ── Application logs (src/otel-app-logs.ts) ─────────────────────────────────
+export const APP_LOG_SCOPE_NAME = 'marveen.app'
+
+const APP_SEVERITY: [number, number, string][] = [[60, 21, 'FATAL'], [50, 17, 'ERROR'], [0, SEVERITY_WARN, 'WARN']]
+
+export function appLogsToRecords(records: AppLogRecord[], nowMs: number = Date.now()): OtelLogRecord[] {
+  const observed = (BigInt(Math.floor(nowMs)) * 1_000_000n).toString()
+  return records.map((r) => {
+    const [, number, text] = APP_SEVERITY.find(([min]) => r.level >= min) as [number, number, string]
+    return {
+      timeUnixNano: (BigInt(Math.max(0, Math.floor(r.firstMs))) * 1_000_000n).toString(),
+      observedTimeUnixNano: observed,
+      severityNumber: number,
+      severityText: text,
+      body: { stringValue: r.message || r.exceptionType || '' },
+      attributes: [
+        { key: 'event.name', value: { stringValue: 'marveen.app.log' } },
+        ...attr('exception.type', r.exceptionType),
+        ...attr('marveen.log.error_code', r.errorCode),
+        ...(r.count > 1 ? [{ key: 'marveen.log.count', value: { intValue: String(r.count) } }] : []),
+      ],
+    }
+  })
+}
+
+function blackboardRecord(r: BlackboardExportRow, observed: string): OtelLogRecord {
+  const status = token(r.status) ?? '_other'
+  return record(`marveen.blackboard.${status}`, status === 'blocked' ? SEVERITY_WARN : SEVERITY_INFO, r.created_at, observed, [
+    ...attr('marveen.blackboard.status', status),
+    // An agent name, like marveen.agent.id on the spans; token() bounds it. The summary text is not read.
+    ...attr('marveen.agent.id', token(r.agent_id)),
+  ])
+}
+
+function kanbanRecord(r: KanbanEventExportRow, salt: string, observed: string): OtelLogRecord {
+  return record('marveen.kanban.card.moved', SEVERITY_INFO, r.created_at, observed, [
+    ...attr('marveen.kanban.from_status', token(r.from_status)),
+    ...attr('marveen.kanban.to_status', token(r.to_status)),
+    // The card id is only ever a keyed hash: enough to follow one card through its columns, nothing to look up.
+    ...attr('marveen.kanban.card.hash', actorHash(r.card_id, salt)),
+    ...attr('marveen.actor.hash', actorHash(r.actor, salt)),
+  ])
+}
+
+export interface MappedLogBatch {
+  records: OtelLogRecord[]
+  // The highest row id included per source: the cursor to store once the collector has the batch.
+  cursors: Partial<Record<OtelLogSource, number>>
+}
+
+export function mapLogBatch(rows: OtelLogRows, salt: string, nowMs: number = Date.now()): MappedLogBatch {
+  const observed = (BigInt(Math.floor(nowMs)) * 1_000_000n).toString()
+  const records: OtelLogRecord[] = []
+  const cursors: Partial<Record<OtelLogSource, number>> = {}
+  const take = <T extends { id: number }>(source: OtelLogSource, list: T[], map: (r: T) => OtelLogRecord) => {
+    for (const r of list) records.push(map(r))
+    if (list.length > 0) cursors[source] = list[list.length - 1].id
+  }
+  take('approval_events', rows.approval_events, (r) => approvalRecord(r, salt, observed))
+  take('rbac_shadow_log', rows.rbac_shadow_log, (r) => rbacRecord(r, salt, observed))
+  take('config_change_log', rows.config_change_log, (r) => configRecord(r, salt, observed))
+  take('agent_audit_log', rows.agent_audit_log, (r) => agentAuditRecord(r, salt, observed))
+  take('hook_audit_log', rows.hook_audit_log, (r) => hookAuditRecord(r, observed))
+  take('fleet_blackboard_history', rows.fleet_blackboard_history, (r) => blackboardRecord(r, observed))
+  take('kanban_card_events', rows.kanban_card_events, (r) => kanbanRecord(r, salt, observed))
+  return { records, cursors }
+}
+
+export function logsToOtelJson(
+  records: OtelLogRecord[],
+  serviceNamespace: string,
+  instanceId: string,
+  scopeName: string = LOG_SCOPE_NAME,
+): { resourceLogs: unknown[] } {
+  return {
+    resourceLogs: [{
+      resource: {
+        attributes: [
+          { key: 'service.name', value: { stringValue: 'marveen-dashboard' } },
+          { key: 'service.namespace', value: { stringValue: serviceNamespace } },
+          { key: 'service.instance.id', value: { stringValue: instanceId } },
+        ],
+      },
+      scopeLogs: [{ scope: { name: scopeName, version: '1' }, logRecords: records }],
+    }],
+  }
+}

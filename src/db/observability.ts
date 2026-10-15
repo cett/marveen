@@ -7,6 +7,7 @@ import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
+import { GENAI_TOKEN_BUCKET_BOUNDS } from '../otel-genai.js'
 
 export function recordMemoryRead(
   agentId: string,
@@ -184,6 +185,8 @@ export interface OtelSpan {
   end_ms: number | null
   status: 'ok' | 'error' | 'timeout' | 'running'
   attributes: string | null
+  // NULL = the tenant could not be resolved when the span was written (migration 0077)
+  tenant_id?: string | null
 }
 
 // The shape message-router's stampTraceOnMessage
@@ -203,6 +206,10 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
     INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (trace_id, span_id) DO UPDATE SET
+      exported_at = CASE
+        WHEN otel_spans.exported_at IS NOT NULL
+         AND (excluded.end_ms IS NOT otel_spans.end_ms OR excluded.status IS NOT otel_spans.status)
+        THEN NULL ELSE otel_spans.exported_at END,
       end_ms = excluded.end_ms,
       status = excluded.status,
       attributes = COALESCE(excluded.attributes, otel_spans.attributes)
@@ -216,8 +223,11 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
 
 export function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
   return db.prepare(`
-    UPDATE otel_spans SET end_ms = ?, status = ? WHERE trace_id = ? AND span_id = ?
-  `).run(endMs, status, traceId, spanId).changes > 0
+    UPDATE otel_spans SET
+      exported_at = CASE WHEN exported_at IS NOT NULL AND (end_ms IS NOT ? OR status IS NOT ?) THEN NULL ELSE exported_at END,
+      end_ms = ?, status = ?
+    WHERE trace_id = ? AND span_id = ?
+  `).run(endMs, status, endMs, status, traceId, spanId).changes > 0
 }
 
 export function getOtelTrace(traceId: string): OtelSpan[] {
@@ -279,15 +289,23 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
 
 // ── OTLP push exporter (#800/#802) ────────────────────────────────────────────
 // Closed, not-yet-pushed spans -- the push loop's per-tick trace batch.
-// "Closed" (end_ms set) so a span still open on another agent's turn is
-// never exported half-finished; it becomes visible once it closes.
-export function getUnexportedOtelSpans(limit = 500): OtelSpan[] {
+// "Closed" means a terminal status. A span still 'running' keeps moving its end_ms forward (the
+// agent.turn span grows with every tool call of the turn) and is exported once, so shipping it early
+// would freeze a truncated duration at the collector. The one exception is a running span that has not
+// moved for OTEL_RUNNING_SPAN_IDLE_MS: nothing closes the last turn of a session, so it is exported as
+// it stands once the agent has been idle that long. A span that changes after it was exported (the
+// turn went on, or was closed for real) has exported_at cleared by upsertOtelSpan / closeOtelSpan and by
+// the hook's own writes, so its final state goes out once more under the same span id.
+export const OTEL_RUNNING_SPAN_IDLE_MS = 15 * 60 * 1000
+
+export function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): OtelSpan[] {
   return db.prepare(`
     SELECT * FROM otel_spans
     WHERE end_ms IS NOT NULL AND exported_at IS NULL
+      AND (status != 'running' OR end_ms <= ?)
     ORDER BY end_ms ASC
     LIMIT ?
-  `).all(limit) as OtelSpan[]
+  `).all(nowMs - OTEL_RUNNING_SPAN_IDLE_MS, limit) as OtelSpan[]
 }
 
 // Marks a batch of spans as pushed. Runs as one transaction so a crash
@@ -346,6 +364,38 @@ export function sumTokenUsageWindow(sinceSec: number, untilSec: number): TokenUs
     WHERE timestamp > ? AND timestamp <= ?
     GROUP BY agent, model, tenant_id
   `).all(sinceSec, untilSec) as TokenUsageMetricRow[]
+}
+
+// One token_usage row is one model response, so the per-response token count of the input and output
+// side can be binned into the gen_ai.client.token.usage histogram. The bucket index is computed in SQL
+// (the first bound >= the value, bounds.length for the open-ended last bucket), so a long backlog after an
+// outage is aggregated by SQLite and not pulled into memory row by row. Zero values are not an observation.
+export interface TokenHistogramRow {
+  agent: string
+  model: string | null
+  tenant_id: string
+  token_type: 'input' | 'output'
+  bucket: number
+  n: number
+  total: number
+  min_value: number
+  max_value: number
+}
+
+function bucketCaseSql(column: string): string {
+  const whens = GENAI_TOKEN_BUCKET_BOUNDS.map((bound, i) => `WHEN ${column} <= ${bound} THEN ${i}`).join(' ')
+  return `CASE ${whens} ELSE ${GENAI_TOKEN_BUCKET_BOUNDS.length} END`
+}
+
+export function tokenUsageHistogramWindow(sinceSec: number, untilSec: number): TokenHistogramRow[] {
+  const side = (column: 'input_tokens' | 'output_tokens', type: 'input' | 'output') => `
+    SELECT agent, model, tenant_id, '${type}' AS token_type, ${bucketCaseSql(column)} AS bucket,
+           COUNT(*) AS n, SUM(${column}) AS total, MIN(${column}) AS min_value, MAX(${column}) AS max_value
+    FROM token_usage
+    WHERE timestamp > @since AND timestamp <= @until AND ${column} > 0
+    GROUP BY agent, model, tenant_id, bucket`
+  return db.prepare(`${side('input_tokens', 'input')} UNION ALL ${side('output_tokens', 'output')}`)
+    .all({ since: sinceSec, until: untilSec }) as TokenHistogramRow[]
 }
 
 // ── B2B Tenant registry ───────────────────────────────────────────────────────

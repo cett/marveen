@@ -5,7 +5,8 @@ import { STORE_DIR, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from "../config.js"
 import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
-import { appendTaskRun } from "../db.js"
+import { appendTaskRun, upsertOtelSpan } from "../db.js"
+import { recordScheduleRunDuration } from "../otel-signals.js"
 import type { ScheduledTask } from "./scheduled-tasks-io.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM
@@ -145,7 +146,19 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
   const timeoutMs = task.timeoutMs && task.timeoutMs > 0 ? task.timeoutMs : 10_000
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
   const map = load()
+  const startedMs = Date.now()
   const { ok, detail } = await runCommand(task.command as string, timeoutMs)
+  const endedMs = Date.now()
+  // Two separate guards: a failing metric must not cost the span, nor the other way round.
+  try { recordScheduleRunDuration(task.name, (endedMs - startedMs) / 1000, ok) } catch { /* telemetry is never fatal to the task */ }
+  try {
+    upsertOtelSpan({
+      trace_id: `schedule-${task.name}-${startedMs}`, span_id: 'run', parent_span_id: null,
+      agent_id: task.agent || 'system', operation: 'schedule.run', start_ms: startedMs, end_ms: endedMs,
+      status: ok ? 'ok' : 'error',
+      attributes: JSON.stringify({ schedule: task.name, schedule_type: 'command' }),
+    })
+  } catch { /* telemetry is never fatal to the task */ }
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()

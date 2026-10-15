@@ -2,6 +2,7 @@ import { upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces, queryOtelS
 import { readBody, json } from '../http-helpers.js'
 import { callerMayActAs } from '../fleet-agent-identity.js'
 import { spansToOtelJson } from '../../otel-exporter.js'
+import { readOtelExportOptions } from '../../otel-export-options.js'
 import type { RouteContext } from './types.js'
 
 // Tenant-IDOR guard: otel_spans is agent_id-keyed
@@ -40,6 +41,13 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     }
     if (!data.trace_id || !data.span_id) {
       json(res, { error: 'required', hint: 'trace_id and span_id required' }, 400)
+      return true
+    }
+    // `w3c-` ids are the server's own: the dashboard stores the trace id of a traceparent it received that way
+    // (src/otel-http.ts) and the OTLP mapping sends them as they are. A caller must not be able to write spans
+    // into a chosen trace by naming it.
+    if ([data.trace_id, data.span_id, data.parent_span_id].some((v) => typeof v === 'string' && v.startsWith('w3c-'))) {
+      json(res, { error: 'invalid_value', hint: 'ids starting with w3c- are reserved' }, 400)
       return true
     }
     // Only checked when agent_id is present on the request (the open path and
@@ -143,7 +151,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     // No agent filter supplied: a non-admin caller gets their own tenant's
     // spans only, never the whole fleet's.
     if (!agentParam && !isAdmin) spans = spans.filter(s => resolveAgentTenant(s.agent_id) === callerTenant)
-    const payload = spansToOtelJson(spans)
+    const payload = spansToOtelJson(spans, undefined, readOtelExportOptions())
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(payload))
     return true

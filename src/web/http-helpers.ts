@@ -130,7 +130,7 @@ function reportViolation(violation: string, token: string, status: number): void
   if (process.env.NODE_ENV === 'test') {
     throw new Error(msg)
   }
-  logger.error({ token, status }, msg)
+  logger.error({ token, status, violation }, 'api-error-catalog: invariant violation')
 }
 
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {

@@ -4,6 +4,7 @@
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
 import { resolveWriteTenant } from './write-tenant.js'
+import { countScheduleRun } from '../otel-signals.js'
 import { stripGeneratedHeader } from '../skill-header.js'
 import { sanitizeSkillFileMode } from '../skill-files.js'
 
@@ -90,6 +91,7 @@ export function appendTaskRun(name: string, agent: string, status = 'fired'): vo
   const schedule = db.prepare('SELECT tenant_id FROM schedules WHERE id = ?').get(name) as { tenant_id: string | null } | undefined
   const tenantId = schedule?.tenant_id ?? resolveWriteTenant(agent)
   db.prepare('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)').run(name, agent, now, status, tenantId)
+  countScheduleRun(name, status)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
   db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
 }

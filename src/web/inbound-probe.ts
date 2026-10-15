@@ -328,7 +328,8 @@ function spawnProber(): void {
     })
     proberProcess.stderr?.on('data', (data: Buffer) => {
       const text = data.toString('utf-8').trim()
-      if (text) logger.warn({ prober: 'stderr' }, text)
+      // The prober's raw stderr is data, not a message: it goes in a bound field (cut), the message is fixed.
+      if (text) logger.warn({ prober: 'stderr', stderr: text.slice(0, 1000) }, 'Inbound prober wrote to stderr')
     })
     proberProcess.on('exit', (code) => {
       logger.info({ code }, 'Inbound prober process exited')

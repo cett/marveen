@@ -1,3 +1,4 @@
+import { recordMessageDelivered, countMessageFailed } from '../otel-signals.js'
 import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -5,6 +6,7 @@ import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
   markMessageDelivered,
+  closeOtelSpan,
   markMessageDone,
   markMessageFailed,
   markMessageNoSession,
@@ -40,6 +42,15 @@ import { oneLine } from './approval-owner-notice.js'
 // exists / stays busy) is marked failed so it stops clogging the pending
 // queue and we stop re-scanning it forever. Matches the scheduled-task retry
 // window so a long turn that ate one also eats the other.
+
+// A message that ends as failed must not leave its inter-agent span open, and the failure is counted by reason.
+export function recordMessageFailure(msg: { trace_id?: string | null; span_id?: string | null }, reason: Parameters<typeof countMessageFailed>[0]): void {
+  countMessageFailed(reason)
+  try {
+    if (msg.trace_id && msg.span_id) closeOtelSpan(msg.trace_id, msg.span_id, Date.now(), 'error')
+  } catch { /* telemetry is never fatal to delivery */ }
+}
+
 const MESSAGE_ABANDON_WINDOW_MS = 60 * 60 * 1000
 // How long a message must have waited before the stale-parked-input janitor is
 // allowed to clear the receiver's input box. Long enough that a brief, genuine
@@ -329,6 +340,7 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
     attempts++
     if (result.kind === 'delivered') {
       const marked = markMessageDelivered(msg.id)
+      if (marked) recordMessageDelivered(msg.created_at)
       if (marked && result.remoteId) {
         setMessageResult(msg.id, `fed:${msg.to_agent.split('/')[0]}:${result.remoteId}`)
       }
@@ -574,6 +586,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        recordMessageFailure(msg, 'abandoned')
         notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -674,6 +687,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        recordMessageFailure(msg, 'invalid_sender')
         routerLoggedMisses.delete(msg.id)
         continue
       }
@@ -734,6 +748,8 @@ export async function runMessageRouterTick(): Promise<void> {
         recordDelivery(session, prefix + wrapped)
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+        } else {
+          recordMessageDelivered(msg.created_at)
         }
         // Propagate trace context: the receiving agent inherits this trace_id
         // and span_id so its next outbound message continues the same chain.
@@ -758,6 +774,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        recordMessageFailure(msg, 'inject_failed')
         notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -767,6 +784,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        recordMessageFailure(msg, 'error')
         routerLoggedMisses.delete(msg.id)
       }
     }

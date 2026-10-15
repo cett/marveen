@@ -187,7 +187,12 @@ describe('spawnProber via startInboundProber', () => {
     expect(loggerMock.debug).toHaveBeenCalledWith({ prober: 'stdout' }, 'hello from prober')
 
     child.stderr.emit('data', Buffer.from('a warning\n'))
-    expect(loggerMock.warn).toHaveBeenCalledWith({ prober: 'stderr' }, 'a warning')
+    // the prober's raw stderr is data: a bound field, with a fixed message (the log export sends the message)
+    expect(loggerMock.warn).toHaveBeenCalledWith({ prober: 'stderr', stderr: 'a warning' }, 'Inbound prober wrote to stderr')
+    child.stderr.emit('data', Buffer.from('x'.repeat(5000)))
+    const longCall = loggerMock.warn.mock.calls[loggerMock.warn.mock.calls.length - 1]
+    expect((longCall[0] as { stderr: string }).stderr).toHaveLength(1000)
+    expect(longCall[1]).toBe('Inbound prober wrote to stderr')
 
     // still "running" (exitCode null) -> the next tick must not double-spawn
     await vi.advanceTimersByTimeAsync(DEFAULT_INTERVAL_MS)

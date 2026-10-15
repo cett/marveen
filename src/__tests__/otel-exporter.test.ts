@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { spansToOtelJson, tokenUsageToOtelMetricsJson } from '../otel-exporter.js'
-import type { OtelSpan, TokenUsageMetricRow } from '../db.js'
+import { spansToOtelJson, tokenUsageToOtelMetricsJson, scrubInputSummary } from '../otel-exporter.js'
+import type { OtelSpan, TokenUsageMetricRow, TokenHistogramRow } from '../db.js'
 
 function span(overrides: Partial<OtelSpan> = {}): OtelSpan {
   return {
@@ -99,13 +99,94 @@ describe('spansToOtelJson', () => {
     expect(childSpan.parentSpanId).toBe(parentSpan.spanId)
   })
 
-  it('parses string attributes from JSON blob', () => {
-    const result = spansToOtelJson([span({ attributes: JSON.stringify({ env: 'prod', count: 3 }) })])
+  it('parses allowlisted string and number attributes from the JSON blob', () => {
+    const result = spansToOtelJson([span({ attributes: JSON.stringify({ model: 'model-x', input_tokens: 3 }) })])
     const s = result.resourceSpans[0].scopeSpans[0].spans[0]
-    const envAttr = s.attributes.find(a => a.key === 'env')
-    expect(envAttr?.value.stringValue).toBe('prod')
-    const countAttr = s.attributes.find(a => a.key === 'count')
-    expect(countAttr?.value.intValue).toBe('3')
+    expect(s.attributes.find(a => a.key === 'model')?.value.stringValue).toBe('model-x')
+    expect(s.attributes.find(a => a.key === 'input_tokens')?.value.intValue).toBe('3')
+  })
+
+  it('drops every attribute key that is not on the allowlist (content never leaves through a free-form span)', () => {
+    const blob = JSON.stringify({
+      tool_name: 'Bash', msg_id: 7, body: 'secret text', chat_id: '123', note: 'x', env: 'prod',
+    })
+    const keys = spansToOtelJson([span({ attributes: blob })]).resourceSpans[0].scopeSpans[0].spans[0]
+      .attributes.map(a => a.key)
+    expect(keys).toContain('tool_name')
+    expect(keys).toContain('msg_id')
+    for (const dropped of ['body', 'chat_id', 'note', 'env']) expect(keys).not.toContain(dropped)
+  })
+
+  it('does not export input_summary by default', () => {
+    const blob = JSON.stringify({ tool_name: 'Bash', input_summary: 'curl https://u:pw@host/x' })
+    const keys = spansToOtelJson([span({ attributes: blob })]).resourceSpans[0].scopeSpans[0].spans[0]
+      .attributes.map(a => a.key)
+    expect(keys).not.toContain('input_summary')
+    expect(JSON.stringify(spansToOtelJson([span({ attributes: blob })]))).not.toContain('pw@')
+  })
+
+  it('exports a scrubbed, shortened input_summary only when asked to', () => {
+    const blob = JSON.stringify({
+      input_summary: 'curl https://user:pw@host/x ' + ['', 'Users', 'someone', 'proj', 'file.txt '].join('/') + 'y'.repeat(300),
+    })
+    const out = spansToOtelJson([span({ attributes: blob })], 'marveen', { includeInputSummary: true })
+    const attr = out.resourceSpans[0].scopeSpans[0].spans[0].attributes.find(a => a.key === 'input_summary')
+    const value = attr?.value.stringValue ?? ''
+    expect(value.length).toBeLessThanOrEqual(120)
+    expect(value).toContain('https://***@host/x')
+    expect(value).not.toContain('pw@')
+    expect(value).not.toContain('someone')
+  })
+
+  it.each([
+    ['curl -u admin:hunter2 https://host/x', 'hunter2'],
+    ['curl --user admin:hunter2 https://host/x', 'hunter2'],
+    ['curl --user=admin:hunter2 https://host/x', 'hunter2'],
+    ['git clone https://deploy:hunter2@host/repo.git', 'hunter2'],
+    ['psql admin:hunter2@dbhost/app', 'hunter2'],
+    ['curl -H "Authorization: Bearer abcdef123456" https://host', 'abcdef123456'],
+    ['curl -H "Authorization: Basic YWRtaW46aHVudGVy" https://host', 'YWRtaW46aHVudGVy'],
+    ['export API_KEY=hunter2 && run', 'hunter2'],
+    ['run --password hunter2', 'hunter2'],
+    ['run token=hunter2', 'hunter2'],
+  ])('input_summary scrub removes the credential in: %s', (input, secret) => {
+    const blob = JSON.stringify({ input_summary: input })
+    const out = spansToOtelJson([span({ attributes: blob })], 'marveen', { includeInputSummary: true })
+    const value = out.resourceSpans[0].scopeSpans[0].spans[0].attributes.find(a => a.key === 'input_summary')?.value.stringValue ?? ''
+    expect(value).not.toContain(secret)
+    expect(value.length).toBeGreaterThan(0)
+  })
+
+  it('input_summary scrub leaves an ordinary command readable', () => {
+    expect(scrubInputSummary('git status --short && npm run build')).toBe('git status --short && npm run build')
+    expect(scrubInputSummary('grep -rn "password policy" docs')).toContain('docs')
+  })
+
+  it('stamps marveen.tenant.id on the span and the resource, and splits one agent by tenant', () => {
+    const out = spansToOtelJson([
+      span({ span_id: 's1', tenant_id: 'tenant-x' }),
+      span({ span_id: 's2', tenant_id: 'tenant-y' }),
+      span({ span_id: 's3', tenant_id: null }),
+    ])
+    expect(out.resourceSpans).toHaveLength(3)
+    const tenants = out.resourceSpans.map(r => ({
+      resource: r.resource.attributes.find(a => a.key === 'marveen.tenant.id')?.value.stringValue,
+      span: r.scopeSpans[0].spans[0].attributes.find(a => a.key === 'marveen.tenant.id')?.value.stringValue,
+    }))
+    expect(tenants).toEqual([
+      { resource: 'tenant-x', span: 'tenant-x' },
+      { resource: 'tenant-y', span: 'tenant-y' },
+      { resource: 'unresolved', span: 'unresolved' },
+    ])
+  })
+
+  it('sets service.instance.id on every resource, a stable value that names neither host nor path', () => {
+    const a = spansToOtelJson([span()]).resourceSpans[0].resource.attributes.find(x => x.key === 'service.instance.id')
+    const b = spansToOtelJson([span()]).resourceSpans[0].resource.attributes.find(x => x.key === 'service.instance.id')
+    expect(a?.value.stringValue).toMatch(/^[0-9a-f]{12}$/)
+    expect(a?.value.stringValue).toBe(b?.value.stringValue)
+    const given = spansToOtelJson([span()], 'marveen', { serviceInstanceId: 'inst-1' })
+    expect(given.resourceSpans[0].resource.attributes.find(x => x.key === 'service.instance.id')?.value.stringValue).toBe('inst-1')
   })
 
   it('skips malformed attributes JSON without throwing', () => {
@@ -176,69 +257,276 @@ function tokenRow(overrides: Partial<TokenUsageMetricRow> = {}): TokenUsageMetri
   }
 }
 
-describe('tokenUsageToOtelMetricsJson', () => {
-  it('returns empty resourceMetrics for empty input', () => {
-    const result = tokenUsageToOtelMetricsJson([], 1000, 2000)
-    expect(result.resourceMetrics).toHaveLength(0)
+function histRow(overrides: Partial<TokenHistogramRow> = {}): TokenHistogramRow {
+  return {
+    agent: 'agent-a',
+    model: 'claude-sonnet-5',
+    tenant_id: 'default',
+    token_type: 'input',
+    bucket: 3,
+    n: 1,
+    total: 40,
+    min_value: 40,
+    max_value: 40,
+    ...overrides,
+  }
+}
+
+type Json = Record<string, any>
+const attr = (point: Json, key: string) => point.attributes.find((a: Json) => a.key === key)?.value.stringValue
+const metricOf = (out: Json, name: string, block = 0): Json | undefined =>
+  out.resourceMetrics[block]?.scopeMetrics[0].metrics.find((m: Json) => m.name === name)
+
+describe('tokenUsageToOtelMetricsJson resource', () => {
+  it('carries service.instance.id', () => {
+    const out = tokenUsageToOtelMetricsJson([histRow()], [tokenRow({ input_tokens: 40 })], 0, 60, 'marveen', { serviceInstanceId: 'inst-1' })
+    expect(out.resourceMetrics[0].resource.attributes.find(a => a.key === 'service.instance.id')?.value.stringValue).toBe('inst-1')
+  })
+})
+
+describe('tokenUsageToOtelMetricsJson: gen_ai.client.token.usage histogram', () => {
+  it('returns no resourceMetrics for empty input', () => {
+    expect(tokenUsageToOtelMetricsJson([], [], 1000, 2000).resourceMetrics).toHaveLength(0)
   })
 
-  it('groups rows by agent into separate resourceMetrics blocks', () => {
-    const rows = [
-      tokenRow({ agent: 'agent-a', input_tokens: 10 }),
-      tokenRow({ agent: 'agent-b', input_tokens: 20 }),
-    ]
-    const result = tokenUsageToOtelMetricsJson(rows, 1000, 2000)
-    expect(result.resourceMetrics).toHaveLength(2)
-  })
-
-  it('emits one data point per nonzero token-type field', () => {
-    const rows = [tokenRow({ input_tokens: 10, output_tokens: 5, cache_read_tokens: 0 })]
-    const result = tokenUsageToOtelMetricsJson(rows, 1000, 2000)
-    const points = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints
-    expect(points).toHaveLength(2)
-    const types = points.map(p => p.attributes.find(a => a.key === 'gen_ai.token.type')?.value.stringValue)
-    expect(types.sort()).toEqual(['input', 'output'])
-  })
-
-  it('skips zero-value token types entirely', () => {
-    const rows = [tokenRow({ input_tokens: 0, output_tokens: 0 })]
-    const result = tokenUsageToOtelMetricsJson(rows, 1000, 2000)
-    expect(result.resourceMetrics).toHaveLength(0)
-  })
-
-  it('sets the metric name to gen_ai.client.token.usage', () => {
-    const result = tokenUsageToOtelMetricsJson([tokenRow({ input_tokens: 1 })], 1000, 2000)
-    expect(result.resourceMetrics[0].scopeMetrics[0].metrics[0].name).toBe('gen_ai.client.token.usage')
-  })
-
-  it('carries model, agent, and tenant as data-point attributes', () => {
-    const result = tokenUsageToOtelMetricsJson(
-      [tokenRow({ agent: 'agent-a', model: 'claude-sonnet-5', tenant_id: 'acme', input_tokens: 1 })],
+  it('groups the rows of different agents into separate resourceMetrics blocks', () => {
+    const out = tokenUsageToOtelMetricsJson(
+      [histRow({ agent: 'agent-a' }), histRow({ agent: 'agent-b' })],
+      [tokenRow({ agent: 'agent-a', input_tokens: 40 }), tokenRow({ agent: 'agent-b', input_tokens: 40 })],
       1000, 2000,
     )
-    const attrs = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].attributes
-    expect(attrs.find(a => a.key === 'gen_ai.request.model')?.value.stringValue).toBe('claude-sonnet-5')
-    expect(attrs.find(a => a.key === 'marveen.agent.id')?.value.stringValue).toBe('agent-a')
-    expect(attrs.find(a => a.key === 'marveen.tenant.id')?.value.stringValue).toBe('acme')
+    expect(out.resourceMetrics).toHaveLength(2)
   })
 
-  it('falls back model to "unknown" when null', () => {
-    const result = tokenUsageToOtelMetricsJson([tokenRow({ model: null, input_tokens: 1 })], 1000, 2000)
-    const attrs = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].attributes
-    expect(attrs.find(a => a.key === 'gen_ai.request.model')?.value.stringValue).toBe('unknown')
+  it('is a DELTA histogram (temporality 1; 2 is CUMULATIVE) and not a sum', () => {
+    const out = tokenUsageToOtelMetricsJson([histRow()], [], 1000, 2000)
+    const metric = metricOf(out, 'gen_ai.client.token.usage')
+    expect(metric?.histogram.aggregationTemporality).toBe(1)
+    expect(metric?.sum).toBeUndefined()
+    expect(metric?.unit).toBe('{token}')
+  })
+
+  it('folds the per-bucket rows of one series into count, sum, min, max and bucket counts', () => {
+    const out = tokenUsageToOtelMetricsJson([
+      histRow({ bucket: 0, n: 2, total: 2, min_value: 1, max_value: 1 }),
+      histRow({ bucket: 3, n: 1, total: 40, min_value: 40, max_value: 40 }),
+      histRow({ bucket: 14, n: 1, total: 70_000_000, min_value: 70_000_000, max_value: 70_000_000 }),
+    ], [], 1000, 2000)
+    const point = metricOf(out, 'gen_ai.client.token.usage')!.histogram.dataPoints[0]
+    expect(point.count).toBe('4')
+    expect(point.sum).toBe(70_000_042)
+    expect(point.min).toBe(1)
+    expect(point.max).toBe(70_000_000)
+    expect(point.explicitBounds).toHaveLength(14)
+    expect(point.bucketCounts).toHaveLength(15) // one more than the bounds: the open-ended last bucket
+    expect(point.bucketCounts[0]).toBe('2')
+    expect(point.bucketCounts[3]).toBe('1')
+    expect(point.bucketCounts[14]).toBe('1')
+    expect(point.bucketCounts.reduce((a: number, c: string) => a + Number(c), 0)).toBe(4) // = count
+  })
+
+  it('keeps input and output, different models and different tenants as separate series', () => {
+    const out = tokenUsageToOtelMetricsJson([
+      histRow({ token_type: 'input' }),
+      histRow({ token_type: 'output' }),
+      histRow({ model: 'claude-haiku-5' }),
+      histRow({ tenant_id: 'tenant-b' }),
+    ], [], 1000, 2000)
+    expect(metricOf(out, 'gen_ai.client.token.usage')!.histogram.dataPoints).toHaveLength(4)
+  })
+
+  it('labels a series with the convention attributes, model, agent and tenant', () => {
+    const out = tokenUsageToOtelMetricsJson([histRow({ tenant_id: 'tenant-b', token_type: 'output' })], [], 1000, 2000)
+    const point = metricOf(out, 'gen_ai.client.token.usage')!.histogram.dataPoints[0]
+    expect(attr(point, 'gen_ai.operation.name')).toBe('chat')
+    expect(attr(point, 'gen_ai.provider.name')).toBe('anthropic')
+    expect(attr(point, 'gen_ai.token.type')).toBe('output')
+    expect(attr(point, 'gen_ai.request.model')).toBe('claude-sonnet-5')
+    expect(attr(point, 'gen_ai.response.model')).toBe('claude-sonnet-5')
+    expect(attr(point, 'marveen.agent.id')).toBe('agent-a')
+    expect(attr(point, 'marveen.tenant.id')).toBe('tenant-b')
+  })
+
+  it('falls back the model to "unknown" when null', () => {
+    const out = tokenUsageToOtelMetricsJson([histRow({ model: null })], [], 1000, 2000)
+    expect(attr(metricOf(out, 'gen_ai.client.token.usage')!.histogram.dataPoints[0], 'gen_ai.request.model')).toBe('unknown')
   })
 
   it('converts the window bounds (seconds) to nanosecond start/end timestamps', () => {
-    const result = tokenUsageToOtelMetricsJson([tokenRow({ input_tokens: 1 })], 1000, 1030)
-    const p = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0]
-    expect(p.startTimeUnixNano).toBe('1000000000000')
-    expect(p.timeUnixNano).toBe('1030000000000')
+    const out = tokenUsageToOtelMetricsJson([histRow()], [], 1000, 1030)
+    const point = metricOf(out, 'gen_ai.client.token.usage')!.histogram.dataPoints[0]
+    expect(point.startTimeUnixNano).toBe('1000000000000')
+    expect(point.timeUnixNano).toBe('1030000000000')
   })
 
-  it('marks the sum as DELTA (2) and monotonic', () => {
-    const result = tokenUsageToOtelMetricsJson([tokenRow({ input_tokens: 1 })], 1000, 2000)
-    const sum = result.resourceMetrics[0].scopeMetrics[0].metrics[0].sum
-    expect(sum.aggregationTemporality).toBe(2)
-    expect(sum.isMonotonic).toBe(true)
+  it('never carries cache or thinking tokens, the conventions know only input and output', () => {
+    const out = tokenUsageToOtelMetricsJson(
+      [histRow()], [tokenRow({ input_tokens: 40, cache_read_tokens: 500, thinking_tokens: 9 })], 1000, 2000,
+    )
+    const types = metricOf(out, 'gen_ai.client.token.usage')!.histogram.dataPoints.map((p: Json) => attr(p, 'gen_ai.token.type'))
+    expect(types).toEqual(['input'])
+  })
+
+  it('ignores a row with an out-of-range bucket or no observations instead of corrupting the series', () => {
+    const out = tokenUsageToOtelMetricsJson(
+      [histRow({ bucket: 15 }), histRow({ bucket: -1 }), histRow({ n: 0 })], [], 1000, 2000,
+    )
+    expect(out.resourceMetrics).toHaveLength(0)
+  })
+})
+
+describe('tokenUsageToOtelMetricsJson: marveen.gen_ai.client.token.usage.other', () => {
+  it('carries cache_read, cache_creation and thinking as a DELTA monotonic sum, nonzero values only', () => {
+    const out = tokenUsageToOtelMetricsJson(
+      [], [tokenRow({ input_tokens: 10, cache_read_tokens: 500, cache_creation_tokens: 0, thinking_tokens: 9 })], 1000, 2000,
+    )
+    const metric = metricOf(out, 'marveen.gen_ai.client.token.usage.other')!
+    expect(metric.sum.aggregationTemporality).toBe(1)
+    expect(metric.sum.isMonotonic).toBe(true)
+    const byType = Object.fromEntries(metric.sum.dataPoints.map((p: Json) => [attr(p, 'marveen.token.type'), p.asInt]))
+    expect(byType).toEqual({ cache_read: '500', thinking: '9' })
+  })
+
+  it('does not repeat input or output in it', () => {
+    const out = tokenUsageToOtelMetricsJson([], [tokenRow({ input_tokens: 10, output_tokens: 5 })], 1000, 2000)
+    expect(out.resourceMetrics).toHaveLength(0)
+  })
+
+  it('skips a window of zero token types entirely', () => {
+    expect(tokenUsageToOtelMetricsJson([], [tokenRow()], 1000, 2000).resourceMetrics).toHaveLength(0)
+  })
+})
+
+describe('spansToOtelJson: GenAI semantic conventions', () => {
+  const exportOne = (s: OtelSpan, opts = {}) => spansToOtelJson([s], 'marveen', { serviceInstanceId: 'inst-1', ...opts }).resourceSpans[0].scopeSpans[0].spans[0] as Json
+  const keys = (s: Json) => s.attributes.map((a: Json) => a.key)
+  const val = (s: Json, key: string) => {
+    const v = s.attributes.find((a: Json) => a.key === key)?.value
+    return v?.stringValue ?? v?.intValue
+  }
+
+  const modelCall = (blob: object = {}, overrides: Partial<OtelSpan> = {}) => span({
+    operation: 'model.call',
+    attributes: JSON.stringify({
+      model: 'claude-sonnet-5', input_tokens: 100, output_tokens: 20, cache_read_tokens: 5000, cache_creation_tokens: 300, ...blob,
+    }),
+    ...overrides,
+  })
+
+  it('maps model.call to "chat <model>", CLIENT, with the gen_ai usage attributes and none of the old keys', () => {
+    const s = exportOne(modelCall())
+    expect(s.name).toBe('chat claude-sonnet-5')
+    expect(s.kind).toBe(3)
+    expect(val(s, 'gen_ai.operation.name')).toBe('chat')
+    expect(val(s, 'gen_ai.provider.name')).toBe('anthropic')
+    expect(val(s, 'gen_ai.request.model')).toBe('claude-sonnet-5')
+    expect(val(s, 'gen_ai.response.model')).toBe('claude-sonnet-5')
+    expect(val(s, 'gen_ai.usage.input_tokens')).toBe('100')
+    expect(val(s, 'gen_ai.usage.output_tokens')).toBe('20')
+    expect(val(s, 'gen_ai.usage.cache_read.input_tokens')).toBe('5000')
+    expect(val(s, 'gen_ai.usage.cache_creation.input_tokens')).toBe('300')
+    for (const old of ['model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens']) {
+      expect(keys(s)).not.toContain(old)
+    }
+  })
+
+  it('names a model.call without a model just "chat"', () => {
+    expect(exportOne(modelCall({ model: undefined })).name).toBe('chat')
+    expect(exportOne(span({ operation: 'model.call', attributes: null })).name).toBe('chat')
+  })
+
+  it('keeps a model name that is long or multi-line out of the span name as one short line', () => {
+    const s = exportOne(modelCall({ model: `m${'x'.repeat(100)}\nTELEGRAM_BOT_TOKEN=abc` }))
+    expect(s.name).not.toMatch(/[\n\r]/)
+    expect(s.name.length).toBeLessThanOrEqual('chat '.length + 64)
+  })
+
+  it('maps tool.<name> to "execute_tool <name>", INTERNAL, with gen_ai.tool.name and the MCP keys under marveen.*', () => {
+    const s = exportOne(span({
+      operation: 'tool.mcp__fleet__send',
+      attributes: JSON.stringify({ tool_name: 'mcp__fleet__send', mcp_server: 'fleet', mcp_tool: 'send' }),
+    }))
+    expect(s.name).toBe('execute_tool mcp__fleet__send')
+    expect(s.kind).toBe(1)
+    expect(val(s, 'gen_ai.operation.name')).toBe('execute_tool')
+    expect(val(s, 'gen_ai.tool.name')).toBe('mcp__fleet__send')
+    expect(val(s, 'marveen.mcp.server')).toBe('fleet')
+    expect(val(s, 'marveen.mcp.tool')).toBe('send')
+    for (const old of ['tool_name', 'mcp_server', 'mcp_tool']) expect(keys(s)).not.toContain(old)
+  })
+
+  it('takes the tool name from the operation when the blob has none', () => {
+    const s = exportOne(span({ operation: 'tool.Bash', attributes: null }))
+    expect(s.name).toBe('execute_tool Bash')
+    expect(val(s, 'gen_ai.operation.name')).toBe('execute_tool')
+  })
+
+  it('maps agent.turn to "invoke_agent <agent>", INTERNAL, with the agent id and name', () => {
+    const s = exportOne(span({ operation: 'agent.turn', agent_id: 'agent-a', attributes: null }))
+    expect(s.name).toBe('invoke_agent agent-a')
+    expect(s.kind).toBe(1)
+    expect(val(s, 'gen_ai.operation.name')).toBe('invoke_agent')
+    expect(val(s, 'gen_ai.provider.name')).toBe('anthropic')
+    expect(val(s, 'gen_ai.agent.id')).toBe('agent-a')
+    expect(val(s, 'gen_ai.agent.name')).toBe('agent-a')
+  })
+
+  it('exports an inter-agent message as a PRODUCER with its name and msg_id/from/to untouched', () => {
+    const s = exportOne(span({ operation: 'agent-a->agent-b', attributes: JSON.stringify({ msg_id: 7, from: 'agent-a', to: 'agent-b' }) }))
+    expect(s.name).toBe('agent-a->agent-b')
+    expect(s.kind).toBe(4)
+    expect(val(s, 'msg_id')).toBe('7')
+    expect(val(s, 'from')).toBe('agent-a')
+    expect(val(s, 'to')).toBe('agent-b')
+    expect(keys(s).filter((k: string) => k.startsWith('gen_ai.'))).toEqual([])
+  })
+
+  it('leaves any other span with its name, INTERNAL and no gen_ai attributes', () => {
+    const s = exportOne(span({ operation: 'schedule.run', attributes: JSON.stringify({ schedule: 'nightly', schedule_type: 'command' }) }))
+    expect(s.name).toBe('schedule.run')
+    expect(s.kind).toBe(1)
+    expect(val(s, 'schedule')).toBe('nightly')
+    expect(keys(s).filter((k: string) => k.startsWith('gen_ai.'))).toEqual([])
+  })
+
+  it('still drops a blob key that is not allowlisted on a renamed span', () => {
+    const s = exportOne(modelCall({ prompt: 'secret text', gen_ai: 'x' }))
+    expect(keys(s)).not.toContain('prompt')
+    expect(keys(s)).not.toContain('gen_ai')
+    expect(JSON.stringify(s)).not.toContain('secret text')
+  })
+
+  it('does not let a blob key shadow a convention attribute', () => {
+    const s = exportOne(modelCall({ 'gen_ai.operation.name': 'embeddings', 'gen_ai.provider.name': 'other' }))
+    expect(s.attributes.filter((a: Json) => a.key === 'gen_ai.operation.name')).toHaveLength(1)
+    expect(val(s, 'gen_ai.operation.name')).toBe('chat')
+    expect(val(s, 'gen_ai.provider.name')).toBe('anthropic')
+  })
+
+  it('survives a blob that is not an object', () => {
+    for (const raw of ['[1,2]', '"text"', 'null', '{broken']) {
+      const s = exportOne(span({ operation: 'model.call', attributes: raw }))
+      expect(s.name).toBe('chat')
+    }
+  })
+
+  it('marks an error span with status ERROR, a status message and error.type _OTHER', () => {
+    const s = exportOne(span({ status: 'error' }))
+    expect(s.status).toEqual({ code: 2, message: '_OTHER' })
+    expect(val(s, 'error.type')).toBe('_OTHER')
+  })
+
+  it('marks a timed-out span with error.type timeout', () => {
+    const s = exportOne(span({ status: 'timeout' }))
+    expect(s.status).toEqual({ code: 2, message: 'timeout' })
+    expect(val(s, 'error.type')).toBe('timeout')
+  })
+
+  it('gives an ok or running span no error.type and no status message', () => {
+    for (const [status, code] of [['ok', 1], ['running', 0]] as const) {
+      const s = exportOne(span({ status }))
+      expect(s.status).toEqual({ code })
+      expect(keys(s)).not.toContain('error.type')
+    }
   })
 })

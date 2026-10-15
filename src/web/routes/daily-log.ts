@@ -36,7 +36,7 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
     const homoglyphs = detectHomoglyphs(data.content)
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
-      logger.warn({ agent: agentId }, `daily-log entry saved with ${warning}`)
+      logger.warn({ agent: agentId, warning }, 'daily-log entry saved with homoglyph warning')
       json(res, { ok: true, homoglyph_warning: warning })
       return true
     }

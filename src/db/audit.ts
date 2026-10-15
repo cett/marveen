@@ -292,10 +292,16 @@ export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
   `).all(cutoff30, cutoff90) as SkillUsageSummaryRow[]
 }
 
-// Originally deny-only (the injection-detection gate); 'handoff' was added
-// for the context watchdog's proactive-compaction rows and 'allow' gained a
-// second producer (the now-retired context-compact-monitor.sh's PreCompact
-// rows, while it still existed).
+// Migration 0037 describes this table as deny-only. It never was, in practice,
+// and is not today: the injection-detection gate and (since the PreToolUse gates
+// count themselves, scripts/hooks/gate_audit_lib.py) secret-read-gate,
+// email-approval-gate, outgoing-copy-gate and tenant-skill-gate write 'deny'
+// rows; destructive-gate and auth-admin-gate post theirs through the API;
+// browser-content-notice writes 'allow' rows; 'handoff' was added for the
+// context watchdog's proactive-compaction rows; and 'allow' had a second
+// producer (the retired context-compact-monitor.sh's PreCompact rows).
+// An allow RATE has no row per call: gate_decision_counts (migration 0083)
+// holds the running count per gate and verdict.
 // trigger_source (migration 0038) names which of those two producers wrote
 // a given handoff/PreCompact row directly, instead of leaving it to be
 // inferred from the hook_type+verdict combination.

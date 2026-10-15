@@ -195,7 +195,22 @@ describe('GET /api/otel-export', () => {
     await tryHandleSpans(ctx)
     expect(status()).toBe(200)
     expect(body()).toHaveProperty('resourceSpans')
-    expect(body().resourceSpans[0].scopeSpans[0].spans[0].name).toBe('tool.call')
+    // the pull route maps to the GenAI names exactly like the push exporter does
+    expect(body().resourceSpans[0].scopeSpans[0].spans[0].name).toBe('execute_tool call')
+  })
+
+  it('applies the attribute allowlist: a free-form attribute and input_summary stay inside', async () => {
+    getDb().prepare(`
+      INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+      VALUES ('t1', 's1', NULL, 'agent-a', 'tool.Bash', 1000, 2000, 'ok', ?)
+    `).run(JSON.stringify({ tool_name: 'Bash', input_summary: 'ls /secret', body: 'message text' }))
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/otel-export' })
+    await tryHandleSpans(ctx)
+    const keys = body().resourceSpans[0].scopeSpans[0].spans[0].attributes.map((a: any) => a.key)
+    expect(keys).toContain('gen_ai.tool.name')
+    expect(keys).not.toContain('tool_name')
+    expect(keys).not.toContain('input_summary')
+    expect(keys).not.toContain('body')
   })
 
   it('filters by agent, from, and to', async () => {
@@ -313,5 +328,30 @@ describe('spans route: tenant-IDOR guard', () => {
     const spans = body().resourceSpans.flatMap((r: any) => r.scopeSpans[0].spans)
     expect(spans).toHaveLength(1)
     expect(spans[0].name).toBe('op-a')
+  })
+})
+
+describe('POST /api/spans -- reserved w3c- ids', () => {
+  it.each([
+    ['trace_id', { trace_id: 'w3c-4bf92f3577b34da6a3ce929d0e0e4736', span_id: 's1' }],
+    ['span_id', { trace_id: 't1', span_id: 'w3c-00f067aa0ba902b7' }],
+    ['parent_span_id', { trace_id: 't1', span_id: 's1', parent_span_id: 'w3c-00f067aa0ba902b7' }],
+  ])('refuses a %s that names a server-side trace', async (_name, ids) => {
+    const { ctx, status, body } = makeCtx({
+      method: 'POST', path: '/api/spans', body: { ...ids, agent_id: 'agent-a', operation: 'tool.call', start_ms: 1000 },
+    })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(400)
+    expect(body().error).toBe('invalid_value')
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM otel_spans').get()).toEqual({ n: 0 })
+  })
+
+  it('still takes an ordinary id that merely contains w3c', async () => {
+    const { ctx, status } = makeCtx({
+      method: 'POST', path: '/api/spans',
+      body: { trace_id: 'my-w3c-trace', span_id: 's1', agent_id: 'agent-a', operation: 'tool.call', start_ms: 1000 },
+    })
+    await tryHandleSpans(ctx)
+    expect(status()).toBe(200)
   })
 })
