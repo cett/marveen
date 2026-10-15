@@ -95,6 +95,28 @@ nav { display: flex; gap: 4px; }
   margin: 8px 0 12px;
   color: var(--text-muted);
 }
+.updates-claude {
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  border-left: 4px solid var(--success);
+  margin: 0 0 20px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.updates-claude.warn {
+  border-left-color: var(--warning);
+}
+.updates-claude p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+}
+.updates-claude .updates-claude-warn {
+  color: var(--text);
+}
+.updates-claude .updates-claude-hint {
+  font-size: 12px;
+}
 .updates-summary code {
   background: var(--bg-card);
   padding: 2px 6px;

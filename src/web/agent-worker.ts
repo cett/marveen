@@ -485,6 +485,8 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
+    // Central claude-update task owns updates; no per-session auto-update race.
+    'export DISABLE_AUTOUPDATER=1; ' +
     buildProviderEnv(WORKER_MODEL) +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`

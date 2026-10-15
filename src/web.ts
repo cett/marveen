@@ -74,6 +74,9 @@ import { tryHandleRecall } from './web/routes/recall.js'
 import { tryHandleBackgroundTasks, sweepOrphanedBackgroundTasks } from './web/routes/background-tasks.js'
 import { tryHandleOverview } from './web/routes/overview.js'
 import { tryHandleUpdates } from './web/routes/updates.js'
+import { tryHandleClaudeUpdate } from './web/routes/claude-update.js'
+import { startClaudeUpdateRolloutRunner } from './web/claude-update-runner.js'
+import { ensureClaudeUpdateTask } from './web/claude-update.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
@@ -160,6 +163,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleRecall)
   .add(tryHandleOverview)
   .add(tryHandleUpdates)
+  .add(tryHandleClaudeUpdate)
   .add(tryHandleOnboarding)
   .add(tryHandleStatus)
   .add(tryHandleAutonomy)
@@ -532,6 +536,9 @@ export function startWebServer(port = 3420): http.Server {
   const autoRestartInterval = webOnly ? undefined : startAutoRestartRunner()
   if (!webOnly) logger.info('Auto-restart runner started (60s poll, 40s offset)')
 
+  const claudeUpdateRolloutInterval = webOnly ? undefined : startClaudeUpdateRolloutRunner()
+  if (!webOnly) logger.info('Claude update rollout runner started (60s poll, idle-only, no-op until an update lands)')
+
   const modelFallbackInterval = webOnly ? undefined : startModelFallbackRunner()
   if (!webOnly) logger.info('Model-fallback runner started (60s poll, 50s offset)')
 
@@ -724,6 +731,12 @@ export function startWebServer(port = 3420): http.Server {
       logger.warn({ err }, 'Schedule DB seed skipped')
     }
     try {
+      // After the file seed above: an empty table must still get the shipped file seeds first.
+      if (ensureClaudeUpdateTask()) logger.info('Weekly claude-update task seeded')
+    } catch (err) {
+      logger.warn({ err }, 'claude-update task seed skipped')
+    }
+    try {
       // update.sh refreshed shipped skill files: bring their DB rows along before the regen writes rows back over files.
       const refreshed = applySeedSkillRefreshMarker()
       if (refreshed.applied > 0 || refreshed.errors > 0) logger.info(refreshed, 'Refreshed seed skills applied to the DB')
@@ -788,6 +801,7 @@ export function startWebServer(port = 3420): http.Server {
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
+    if (claudeUpdateRolloutInterval) clearInterval(claudeUpdateRolloutInterval)
     clearInterval(modelFallbackInterval)
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)

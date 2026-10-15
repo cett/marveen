@@ -56,6 +56,8 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
 
   const shellCmd = [
     `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
+    // No in-process auto-update: updates run through the central claude-update task.
+    `export DISABLE_AUTOUPDATER=1`,
     `${CLAUDE} -p "$BG_PROMPT" --output-format text 2>&1`,
   ].join(' && ')
 

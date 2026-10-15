@@ -710,6 +710,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'CLAUDE_UPDATE_AUTO_RESTART',
+    type: 'boolean',
+    default: '1',
+    description: 'A heti Claude Code frissítés (claude-update feladat) után a már futó sessionök automatikus újraindítása: csak idle sessionöket, egyenként, lépcsőzve, a fő-agenst utoljára indítja újra (a sub-agentek --continue-val, a fő-agens friss beszélgetéssel). Kikapcsolva a frissítés megtörténik, de a futó sessionök a régi verzión maradnak a következő kézi vagy ütemezett újraindításig; a Frissítések nézet jelzi a függőben levő újraindítást.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Observability module (OTel push exporter, #800/#802) ---
   {
     key: 'OTEL_EXPORT_ENABLED',

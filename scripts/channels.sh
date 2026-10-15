@@ -274,14 +274,15 @@ export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 # documented sandbox escape hatch. Harmless for non-root (guarded by uid check).
 [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
 
-# AVX-less x86 host: the install pinned a Node-based claude (cli.js entrypoint,
-# see install-linux.sh CLAUDE_PIN) because the Bun standalone binary SIGILLs
-# without AVX. The auto-updater would swap the pin for the latest Bun binary on
-# first run, killing every session -- disable it here so all agent sessions
-# inherit the guard via tmux. No-op on AVX-capable and ARM hosts.
-if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
-  export DISABLE_AUTOUPDATER=1
-fi
+# The built-in auto-updater is off for every session, on every host: a fleet of
+# sessions started together all update the one shared install at the same
+# moment (npm-global: ENOTEMPTY), and the binary changes under a running
+# session at a moment nobody chose. Updates run through the single lock-guarded
+# claude-update command task (scripts/claude-update.sh) instead, which also
+# honours the AVX-less pin (install-linux.sh CLAUDE_PIN: the Bun standalone
+# binary SIGILLs without AVX, so an unpinned update would kill every session).
+# Inherited by every sub-agent via the tmux global env set below.
+export DISABLE_AUTOUPDATER=1
 
 # Disable Claude Code's "Prompt Suggestions" (the grayed-out/DIM suggested command
 # shown in the input box, picked from git history / conversation). For headless
@@ -330,7 +331,7 @@ TMUX="$(command -v tmux)"
 # independent of the tmux session-name check. Set ONLY here -- never in the
 # sub-agent spawn path (agent-process-spawn.ts) -- so a sub-agent's process
 # environment never carries it.
-MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 MARVEEN_COORDINATOR_PUSH_ALLOWED=1 && "
+MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 DISABLE_AUTOUPDATER=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 MARVEEN_COORDINATOR_PUSH_ALLOWED=1 && "
 
 # Resolve the main agent's model so we can pass --model explicitly. Without
 # --model claude-code falls back to its built-in default, which can drift
@@ -528,6 +529,7 @@ fi
 # Propagate the prompt-suggestion disable to every sub-agent tmux session.
 $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
 $TMUX set-environment -g CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY 1 2>/dev/null || true
+$TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone

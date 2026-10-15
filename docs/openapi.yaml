@@ -5985,6 +5985,20 @@ paths:
               schema:
                 type: object
 
+  /claude-update/status:
+    get:
+      tags: [internal]
+      operationId: getClaudeUpdateStatus
+      summary: Central Claude Code update state (installed and latest version, last check, pending restart rollout)
+      x-internal: true
+      responses:
+        "200":
+          description: Update state
+          content:
+            application/json:
+              schema:
+                type: object
+
   /onboarding:
     get:
       tags: [internal]

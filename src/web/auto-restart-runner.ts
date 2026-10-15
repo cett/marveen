@@ -79,7 +79,7 @@ function paneIsIdle(session: string, host: string | null): boolean {
 // point, the main agent's nightly restart had NEVER run on this host. The
 // symptom was invisible: a log line nobody reads, while the dashboard showed
 // auto-restart as enabled and correctly scheduled.
-function restartMainChannelsSession(): void {
+export function restartMainChannelsSession(): void {
   if (mainRestartMechanism(existsSync('/bin/launchctl')) === 'launchd') {
     const uid = typeof process.getuid === 'function' ? process.getuid() : ''
     // Label keys off SERVICE_ID (defaults to MAIN_AGENT_ID) so it matches the
