@@ -470,7 +470,14 @@ export type RecordMemoryReadEventResponse = OkResponse
 
 export type ResortMemoriesResponse = OkResponse & Record<string, unknown>
 
-export type MaintainMemoryLinksResponse = OkResponse & Record<string, unknown>
+export type MaintainMemoryLinksResponse = OkResponse & {
+  reembedded?: number;
+  linksCreated?: number;
+  /** Memories whose links could not be written; the run went on without them (see the dashboard log). */
+  linksFailed?: number;
+  linksPruned?: number;
+  orphans?: number;
+}
 
 export type GetMemoryResponse = Memory
 

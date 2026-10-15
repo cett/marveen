@@ -317,13 +317,18 @@ export interface MemoryLink {
  * Upsert a directed link between two memories. If (src, dst, type) already
  * exists the weight is replaced with the new value (ON CONFLICT DO UPDATE).
  * Returns the row id of the upserted link.
+ *
+ * The table only accepts 0 < weight <= 1. A cosine similarity computed in floating point can land a rounding
+ * error above 1 for (near-)identical embeddings, so anything above 1 is stored as 1; a weight that is not a
+ * positive number is the caller's bug and still fails the CHECK.
  */
 export function upsertMemoryLink(
   srcId: number,
   dstId: number,
   linkType: MemoryLink['link_type'],
-  weight: number,
+  rawWeight: number,
 ): number {
+  const weight = rawWeight > 1 ? 1 : rawWeight
   const stmt = db.prepare(
     `INSERT INTO memory_links (src_id, dst_id, link_type, weight)
      VALUES (?, ?, ?, ?)
@@ -407,7 +412,9 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
     const candBlob = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(candidate.id) as { embedding_blob: Buffer | null } | undefined
     if (!candBlob?.embedding_blob) continue
     const sim = cosineSimilarity(queryVec, blobToFloats(candBlob.embedding_blob))
-    if (sim < effectiveThreshold) continue
+    // NaN (a zero vector on either side) and sim <= 0 (a caller threshold of 0 or below) are no link: the table
+    // takes weights in (0, 1] only.
+    if (!(sim > 0) || sim < effectiveThreshold) continue
     upsertMemoryLink(memoryId, candidate.id, 'semantic', sim)
     linked++
     if (linked >= maxNeighbors) break
@@ -418,6 +425,8 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
 export interface LinkMaintenanceResult {
   reembedded: number
   linksCreated: number
+  /** memories whose links could not be written; the run goes on without them (see the warn log) */
+  linksFailed: number
   linksPruned: number
   orphans: number
 }
@@ -462,9 +471,17 @@ export async function runLinkMaintenance(opts: {
     `SELECT id FROM memories WHERE embedding_blob IS NOT NULL AND updated_at >= ?`
   ).all(cutoff) as { id: number }[]
 
+  // One memory whose links cannot be written must not stop the run for all the others (and keep the nightly
+  // maintenance failing): it is logged and counted, the run goes on.
   let linksCreated = 0
+  let linksFailed = 0
   for (const { id } of toLink) {
-    linksCreated += await linkToNeighbors(id)
+    try {
+      linksCreated += await linkToNeighbors(id)
+    } catch (err) {
+      linksFailed++
+      logger.warn({ err, memoryId: id }, 'Link maintenance: linking a memory failed, continuing')
+    }
   }
 
   // Step 3: prune decayed links
@@ -478,8 +495,8 @@ export async function runLinkMaintenance(opts: {
   ).get() as { c: number }
   const orphans = orphanRow.c
 
-  logger.info({ reembedded, linksCreated, linksPruned, orphans }, 'Link maintenance complete')
-  return { reembedded, linksCreated, linksPruned, orphans }
+  logger.info({ reembedded, linksCreated, linksFailed, linksPruned, orphans }, 'Link maintenance complete')
+  return { reembedded, linksCreated, linksFailed, linksPruned, orphans }
 }
 
 /**
