@@ -126,6 +126,7 @@ window._i18n.hu = {
   'nav.ideas':        'Ötletláda',
   'nav.artifacts':      'Artifaktek',
   'nav.workspaceDocs':  'Munkadokumentumok',
+  'workspace.search_placeholder': 'Keresés a címben és a tartalomban',
   'nav.group.team':        'Csapat',
   'nav.group.knowledge':   'Tudás',
   'nav.group.stats':       'Statisztikák',

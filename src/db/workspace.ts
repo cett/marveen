@@ -233,24 +233,21 @@ export function searchWorkspaceDocs(
   q: string,
   opts: { agentId?: string; tenantId?: string; limit: number },
 ): WorkspaceDocSearchResult[] {
-  const conditions: string[] = []
-  const params: unknown[] = [ftsEscape(q)]
-  if (opts.tenantId !== undefined) { conditions.push('wd.tenant_id = ?'); params.push(opts.tenantId) }
-  if (opts.agentId) { conditions.push('wd.agent_id = ?'); params.push(opts.agentId) }
-  const where = conditions.length ? `AND ${conditions.join(' AND ')}` : ''
-  params.push(opts.limit)
-
+  const { where, params } = workspaceDocsWhere({ agentId: opts.agentId, tenantId: opts.tenantId }, 'wd.')
   return db.prepare(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
            wd.task_ref, wd.doc_key, wd.created_at, wd.updated_at,
            snippet(workspace_docs_fts, 1, '[', ']', '...', 15) AS snippet
-    FROM workspace_docs_fts
-    JOIN workspace_docs wd ON wd.rowid = workspace_docs_fts.rowid
-    WHERE workspace_docs_fts MATCH ?
-      ${where}
+    ${ftsFrom(where)}
     ORDER BY rank
     LIMIT ?
-  `).all(...params) as WorkspaceDocSearchResult[]
+  `).all(...params, ftsEscape(q), opts.limit) as WorkspaceDocSearchResult[]
+}
+
+// The one place that joins the FTS index to workspace_docs (alias wd): `where` is a workspaceDocsWhere(.., 'wd.')
+// clause; the MATCH expression is the last bind parameter.
+function ftsFrom(where: string): string {
+  return `FROM workspace_docs_fts JOIN workspace_docs wd ON wd.rowid = workspace_docs_fts.rowid ${where} AND workspace_docs_fts MATCH ?`
 }
 
 /**
@@ -366,19 +363,58 @@ export interface ListWorkspaceDocsFilter {
   metaOnly?: boolean
 }
 
-function workspaceDocsWhere(filter: ListWorkspaceDocsFilter): { where: string; params: unknown[] } {
+function workspaceDocsWhere(filter: ListWorkspaceDocsFilter, alias = ""): { where: string; params: unknown[] } {
+  const a = alias
   let where = 'WHERE 1=1'
   const params: unknown[] = []
-  if (filter.agentId) { where += ' AND agent_id = ?'; params.push(filter.agentId) }
+  if (filter.agentId) { where += ` AND ${a}agent_id = ?`; params.push(filter.agentId) }
   if (filter.tenantId !== null && filter.tenantId !== undefined) {
-    where += ' AND tenant_id = ?'; params.push(filter.tenantId)
+    where += ` AND ${a}tenant_id = ?`; params.push(filter.tenantId)
   }
-  if (filter.type) { where += ' AND type = ?'; params.push(filter.type) }
-  if (filter.contentType) { where += ' AND content_type = ?'; params.push(filter.contentType) }
-  if (filter.taskRef) { where += ' AND task_ref = ?'; params.push(filter.taskRef) }
-  if (filter.docKey) { where += ' AND doc_key = ?'; params.push(filter.docKey) }
-  else if (filter.docKeyPrefix) { where += ' AND doc_key LIKE ?'; params.push(`${filter.docKeyPrefix}%`) }
+  if (filter.type) { where += ` AND ${a}type = ?`; params.push(filter.type) }
+  if (filter.contentType) { where += ` AND ${a}content_type = ?`; params.push(filter.contentType) }
+  if (filter.taskRef) { where += ` AND ${a}task_ref = ?`; params.push(filter.taskRef) }
+  if (filter.docKey) { where += ` AND ${a}doc_key = ?`; params.push(filter.docKey) }
+  else if (filter.docKeyPrefix) { where += ` AND ${a}doc_key LIKE ?`; params.push(`${filter.docKeyPrefix}%`) }
   return { where, params }
+}
+
+// FTS5 MATCH expression for a box of words: every whitespace-separated word, quoted (so FTS operators typed by
+// the user are plain text), all of them required. null when there is no word.
+function ftsAllTerms(q: string): string | null {
+  const terms = q.split(/\s+/).filter(Boolean)
+  return terms.length ? terms.map(ftsEscape).join(' ') : null
+}
+
+export interface WorkspaceDocSearchHit extends WorkspaceDoc {
+  /** the matching excerpt, the hit words between [ and ] */
+  snippet: string
+}
+
+/**
+ * Content search for the Workspace Docs list: full-text over title and content (workspace_docs_fts), every word
+ * of `q` required, best match first, combined with the same filters the list takes and paged the same way.
+ * `filter.tenantId` is applied in SQL like everywhere else, so a tenant's search never sees another tenant's
+ * documents; `undefined`/`null` means no tenant filter and is for an already verified admin caller only.
+ * Rows carry metadata and a snippet, never the body. Binary documents have no text and so no hits.
+ */
+export function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilter): { items: WorkspaceDocSearchHit[]; total: number } {
+  const match = ftsAllTerms(q)
+  if (!match) return { items: [], total: 0 }
+  const { where, params } = workspaceDocsWhere(filter, 'wd.')
+  const from = ftsFrom(where)
+  const total = (db.prepare(`SELECT COUNT(*) AS n ${from}`).get(...params, match) as { n: number }).n
+  let sql = `SELECT wd.id, wd.agent_id, wd.tenant_id, wd.doc_key, wd.title, wd.content_type, wd.type, wd.task_ref,
+                    wd.size_bytes, wd.created_at, wd.updated_at, wd.last_accessed_at,
+                    snippet(workspace_docs_fts, 1, '[', ']', '...', 15) AS snippet
+             ${from} ORDER BY rank, wd.updated_at DESC`
+  const pageParams: unknown[] = [...params, match]
+  if (filter.limit && filter.limit > 0) {
+    sql += ' LIMIT ?'; pageParams.push(filter.limit)
+    if (filter.offset && filter.offset > 0) { sql += ' OFFSET ?'; pageParams.push(filter.offset) }
+  }
+  const rows = db.prepare(sql).all(...pageParams) as (DbRow & { snippet: string })[]
+  return { items: rows.map(r => ({ ...rowToDocMeta(r), snippet: r.snippet })), total }
 }
 
 export function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): WorkspaceDoc[] {

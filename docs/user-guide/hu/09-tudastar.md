@@ -107,6 +107,16 @@ A Munkadokumentumok (Workspace Docs) aloldal az ágensek által a közös munkat
 - **Típus** - szűrés dokumentum-típus szerint
 - **Tartalom** - szűrés tartalomtípus szerint
 - **Bérlő** - bérlő-szintű szűrés
+- **Keresőmező** - keresés a dokumentumok címében és tartalmában (lásd alább)
+
+### Keresés a tartalomban
+
+A szűrősor keresőmezőjébe írt szavakra a **Keresés** gombbal vagy az Enter billentyűvel lehet keresni. A találati listában csak azok a dokumentumok maradnak, amelyek címében vagy tartalmában az összes beírt szó szerepel (sorrendtől és helytől függetlenül), a legjobb találat elöl. A találat címe alatt a dokumentum megfelelő részlete látszik, a keresett szavak kiemelve.
+
+- A keresés együtt működik a többi szűrővel (ágens, típus, tartalom, bérlő), és a találati lista lapozható.
+- Bérlőként csak a saját bérlőd dokumentumaiban keres; más bérlő dokumentuma soha nem jelenik meg. Rendszergazdaként a bérlő-szűrővel szűkíthető.
+- A bináris dokumentumoknak nincs szöveges tartalmuk, ezért a tartalomkeresés nem találja meg őket (a címük alapján igen).
+- A keresőmező üresen hagyva a teljes lista jelenik meg. A keresett szöveg legfeljebb 200 karakter lehet.
 
 ### Megtekintés és törlés
 
