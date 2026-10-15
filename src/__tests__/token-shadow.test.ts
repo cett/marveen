@@ -242,6 +242,59 @@ describe('shared_token_use', () => {
   })
 })
 
+describe('shared_token_use on /api/messages: the sender the body names', () => {
+  const post = async (headers: Record<string, string>, body?: unknown) => {
+    const req = observe(sharedAuth, 'POST', '/api/messages', headers, body)
+    await drain(req)
+  }
+  const uses = () => rows('shared_token_use').map((r) => [r.caller, r.caller_source, r.target, r.count])
+
+  it('a call with no X-Agent-Id is traced to the `from` it claims', async () => {
+    await post({}, { from: 'Agent-B', to: 'agent-c', content: 'x' })
+    expect(uses()).toEqual([['', 'none', 'agent-b', 1]])
+  })
+  it('a declared caller keeps its row, with the body sender as the target', async () => {
+    await post({ 'x-agent-id': 'agent-a' }, { from: 'agent-b', to: 'agent-c', content: 'x' })
+    expect(uses()).toEqual([['agent-a', 'self_declared', 'agent-b', 1]])
+  })
+  it('a body with no `from`, a non-string `from`, a bad charset, or no JSON counts once with an empty or marker target', async () => {
+    await post({}, { to: 'agent-c' })
+    await post({}, { from: 42 })
+    await post({}, { from: 'x'.repeat(200) })
+    await post({}, '{not json')
+    await post({})
+    expect(uses()).toEqual([['', 'none', '', 4], ['', 'none', '_invalid', 1]])
+  })
+  it('every request is counted exactly once, also when the body is never read (the close flushes it)', () => {
+    const req = observe(sharedAuth, 'POST', '/api/messages', {}, { from: 'agent-b' })
+    expect(total('shared_token_use')).toBe(0)
+    req.emit('close')
+    req.emit('close')
+    expect(uses()).toEqual([['', 'none', '', 1]])
+  })
+  it('a body read after the close is not counted a second time', async () => {
+    const req = observe(sharedAuth, 'POST', '/api/messages', {}, { from: 'agent-b' })
+    req.emit('close')
+    await drain(req)
+    expect(total('shared_token_use')).toBe(1)
+  })
+  it('a read of /api/messages and the other routes are counted at once, with no target', () => {
+    observe(sharedAuth, 'GET', '/api/messages', { 'x-agent-id': 'agent-a' })
+    observe(sharedAuth, 'POST', '/api/kanban', { 'x-agent-id': 'agent-a' })
+    expect(uses()).toEqual([['agent-a', 'self_declared', '', 1], ['agent-a', 'self_declared', '', 1]])
+  })
+  it('only the shared token is labelled: a fleet token is counted as before', async () => {
+    const req = observe(fleetAuth('agent-a'), 'POST', '/api/messages', {}, { from: 'agent-b' })
+    await drain(req)
+    expect(total('shared_token_use')).toBe(0)
+    expect(rows('agent_id_mismatch').map((r) => r.target)).toEqual(['agent-b'])
+  })
+  it('the identity category is unchanged for a declared caller naming another sender', async () => {
+    await post({ 'x-agent-id': 'agent-a' }, { from: 'agent-b' })
+    expect(rows('agent_id_mismatch').map((r) => [r.caller, r.target, r.count])).toEqual([['agent-a', 'agent-b', 1]])
+  })
+})
+
 describe('agent_id_mismatch (own-scoped endpoints, first the ledger)', () => {
   it('a fleet token of agent-a naming agent-b in the path', () => {
     observe(fleetAuth('agent-a'), 'GET', '/api/conversation-ledger/agent-b/recent')
@@ -391,6 +444,13 @@ describe('tenant context', () => {
     observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
     observe(sharedAuth, 'GET', '/api/kanban', {})
     expect(rows('missing_tenant_context').map((r) => [r.caller, r.caller_source, r.count])).toEqual([['agent-shared', 'self_declared', 1]])
+  })
+  it('a shared-token miss carries the same reason label as a fleet-token refusal', () => {
+    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
+    getDb().prepare('INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)').run('agent-shared', 'tenant-a', 'conflict', Math.floor(Date.now() / 1000))
+    resetTokenShadowForTests()
+    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
+    expect(rows('missing_tenant_context').map((r) => [r.caller_source, r.target, r.count])).toEqual([['self_declared', 'conflict', 1], ['self_declared', 'no_row', 1]])
   })
   it('GET /api/memories of a shared agent without a tenant, from the shared token and from a fleet token', () => {
     observe(sharedAuth, 'GET', '/api/memories?agent=agent-shared', { 'x-agent-id': MAIN })
