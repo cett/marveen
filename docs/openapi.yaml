@@ -1511,8 +1511,21 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/OkResponse"
                   - type: object
+                    properties:
+                      reembedded: { type: integer }
+                      linksCreated: { type: integer }
+                      linksFailed:
+                        type: integer
+                        description: Memories whose links could not be written (their links are rolled back); the run went on without them, see the dashboard log. A few failures still answer 200.
+                      memoriesAttempted:
+                        type: integer
+                        description: Memories the run tried to link, the denominator of linksFailed.
+                      linksPruned: { type: integer }
+                      orphans: { type: integer }
         "500":
-          description: Maintenance failed
+          description: >
+            Maintenance failed, or failed for most memories (at least two failed and more than half of
+            those attempted, so the cause is the environment, not one memory); the hint says how many.
           content:
             application/json:
               schema:

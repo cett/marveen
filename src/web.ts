@@ -77,6 +77,7 @@ import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleClaudeUpdate } from './web/routes/claude-update.js'
 import { startClaudeUpdateRolloutRunner } from './web/claude-update-runner.js'
 import { ensureClaudeUpdateTask } from './web/claude-update.js'
+import { ensureMemoryMaintenanceCommand } from './web/memory-maintenance-task.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
@@ -733,6 +734,12 @@ export function startWebServer(port = 3420): http.Server {
       if (seeded > 0) logger.info({ seeded }, 'Schedules table seeded from files')
     } catch (err) {
       logger.warn({ err }, 'Schedule DB seed skipped')
+    }
+    try {
+      // The nightly memory maintenance moved from an inline curl chain to a script; an install that still has the stock chain follows.
+      if (ensureMemoryMaintenanceCommand()) logger.info('memory-maintenance task moved to scripts/memory-maintenance.sh')
+    } catch (err) {
+      logger.warn({ err }, 'memory-maintenance command migration skipped')
     }
     try {
       // After the file seed above: an empty table must still get the shipped file seeds first.
