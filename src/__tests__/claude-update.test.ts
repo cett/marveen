@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -39,7 +39,7 @@ function makeDeps(fleet: FakeSession[], opts: { now?: number; autoRestart?: bool
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'claude-update-ts-'))
-  paths = { stateFile: join(tmp, 'claude-update.json'), rolloutFile: join(tmp, 'claude-update-rollout.json') }
+  paths = { stateFile: join(tmp, 'claude-update.json'), rolloutFile: join(tmp, 'claude-update-rollout.json'), seededFile: join(tmp, 'claude-update.seeded') }
 })
 
 afterEach(() => {
@@ -166,9 +166,20 @@ describe('rolloutStep', () => {
 })
 
 describe('getClaudeUpdateStatus', () => {
-  it('reports an install that was never checked as stale', () => {
+  it('does not call an install stale before its first run when the task was set up recently', () => {
     expect(getClaudeUpdateStatus(2_000_000, paths)).toMatchObject({
-      installed: null, checkedAt: null, checkAgeDays: null, stale: true, behind: false, rolloutPending: false,
+      installed: null, checkedAt: null, checkAgeDays: null, neverChecked: true, stale: false, behind: false, rolloutPending: false,
+    })
+    writeFileSync(paths.seededFile as string, 'x\n')
+    const seeded = Math.floor(statSync(paths.seededFile as string).mtimeMs / 1000)
+    expect(getClaudeUpdateStatus(seeded + 3 * 86400, paths)).toMatchObject({ neverChecked: true, stale: false, checkAgeDays: null })
+  })
+
+  it('calls an install that never ran the task stale once it was set up longer ago than the stale limit', () => {
+    writeFileSync(paths.seededFile as string, 'x\n')
+    const seeded = Math.floor(statSync(paths.seededFile as string).mtimeMs / 1000)
+    expect(getClaudeUpdateStatus(seeded + (CLAUDE_UPDATE_STALE_DAYS + 1) * 86400, paths)).toMatchObject({
+      neverChecked: true, stale: true, checkAgeDays: null,
     })
   })
 
@@ -188,7 +199,7 @@ describe('getClaudeUpdateStatus', () => {
 
   it('survives a corrupt state file', () => {
     writeFileSync(paths.stateFile, '{not json')
-    expect(getClaudeUpdateStatus(1_000_100, paths).stale).toBe(true)
+    expect(getClaudeUpdateStatus(1_000_100, paths)).toMatchObject({ installed: null, neverChecked: true, stale: false })
   })
 })
 

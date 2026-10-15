@@ -40,11 +40,11 @@ describe('GET /api/claude-update/status', () => {
     expect(out.body).toMatchObject({ installed: '2.1.300', latest: '2.1.310', behind: true, stale: false, rolloutPending: true })
   })
 
-  it('answers an install that never ran the task with a stale, empty state', async () => {
+  it('answers an install that never ran the task with an empty, not-yet-stale state', async () => {
     const { tryHandleClaudeUpdate } = await import('../web/routes/claude-update.js')
     const { ctx, out } = makeCtx('GET', '/api/claude-update/status')
     expect(await tryHandleClaudeUpdate(ctx)).toBe(true)
-    expect(out.body).toMatchObject({ installed: null, stale: true, rolloutPending: false })
+    expect(out.body).toMatchObject({ installed: null, neverChecked: true, stale: false, rolloutPending: false })
   })
 
   it('leaves other paths and methods alone', async () => {

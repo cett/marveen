@@ -12,6 +12,8 @@ let _ovActiveAgentFilter = null
 let _bbPollTimer = null
 let _ovTenantGetter = null
 let _ovInited = false
+// Attention items whose detail list the admin has opened (survives the periodic re-render).
+const _ovAttentionOpen = new Set()
 
 async function _ensureOverviewInited() {
   if (_ovInited) return
@@ -28,6 +30,19 @@ function formatRelative(ts) {
   if (hr < 24) return t('common.time.hour_abbr', { h: hr })
   const day = Math.floor(hr / 24)
   return t('common.time.day_abbr', { n: day })
+}
+
+// The rows behind the "N errors in the last 4 hours" warning: when, what (operation + schedule or route), who.
+function renderErrorSpans(spans, total) {
+  const rows = spans.map(function(s) {
+    const what = s.detail ? s.operation + ' ' + s.detail : s.operation
+    const state = s.status === 'timeout' ? ' (' + t('overview.errors.timeout') + ')' : ''
+    return '<li title="' + escapeHtml(s.trace_id) + '"><span class="attention-detail-time">' + escapeHtml(formatRelative(s.start_ms)) + '</span>'
+      + '<span class="attention-detail-what">' + escapeHtml(what + state) + '</span>'
+      + '<span class="attention-detail-agent">' + escapeHtml(s.agent_id) + '</span></li>'
+  })
+  if (total > spans.length) rows.push('<li class="attention-detail-more">' + escapeHtml(t('overview.errors.more', { n: total - spans.length })) + '</li>')
+  return rows.join('')
 }
 
 // Forward-looking duration, reusing the same abbreviations formatRelative uses
@@ -181,7 +196,7 @@ export async function loadOverview() {
     if (isAdminView && pendingApprovals > 0) attItems.push({ icon: '⏳', text: pendingApprovals + ' üggő jóváhagyás vár', href: '#approvals', label: 'Megnyitás' })
     if (unread > 0) attItems.push({ icon: '\u{1F4AC}', text: unread + ' kézbesítetlen inter-agent üzenet', href: '#messages', label: 'Üzenetek' })
     if (isAdminView && stuck > 0) attItems.push({ icon: '⏰', text: stuck + ' ütemezett feladat elakadt', href: '#tasks', label: 'Feladatok' })
-    if (isAdminView && errors4h > 0) attItems.push({ icon: '⚠', text: errors4h + ' hiba az elmúlt 4 órában', href: '#status', label: 'Státusz' })
+    if (isAdminView && errors4h > 0) attItems.push({ icon: '⚠', text: errors4h + ' hiba az elmúlt 4 órában', label: t('overview.errors.details'), detailId: 'errors', detailHtml: renderErrorSpans(d.errorSpans || [], errors4h) })
     const stoppedAgents = isAdminView ? (d.agents.list || []).filter(function(a) { return !a.running && a.role !== 'main' }) : []
     if (stoppedAgents.length > 0) attItems.push({ icon: '\u{1F534}', text: stoppedAgents.length + ' ágens nem fut (' + stoppedAgents.map(function(a) { return a.label }).join(', ') + ')', href: '#agents', label: 'Ágensek' })
 
@@ -189,8 +204,25 @@ export async function loadOverview() {
       attSection.hidden = false
       attBadge.textContent = attItems.length
       attBody.innerHTML = attItems.map(function(item) {
-        return '<div class="attention-item"><span>' + escapeHtml(item.icon) + '</span><span>' + escapeHtml(item.text) + '</span><a href="' + escapeHtml(item.href) + '">' + escapeHtml(item.label) + '</a></div>'
+        const open = !!item.detailId && _ovAttentionOpen.has(item.detailId)
+        const action = item.detailId
+          ? '<button type="button" class="attention-link" data-attention-toggle="' + escapeHtml(item.detailId) + '" aria-expanded="' + open + '">' + escapeHtml(item.label) + '</button>'
+          : '<a href="' + escapeHtml(item.href) + '">' + escapeHtml(item.label) + '</a>'
+        const detail = item.detailId ? '<ul class="attention-detail"' + (open ? '' : ' hidden') + '>' + item.detailHtml + '</ul>' : ''
+        return '<div class="attention-item"><span>' + escapeHtml(item.icon) + '</span><span>' + escapeHtml(item.text) + '</span>' + action + '</div>' + detail
       }).join('')
+      // The detail list is part of the re-rendered markup, so which ones are open is kept across the 30 s refresh.
+      attBody.querySelectorAll('[data-attention-toggle]').forEach(function(btn) {
+        btn.onclick = function() {
+          const id = btn.getAttribute('data-attention-toggle')
+          const list = btn.parentElement.nextElementSibling
+          if (!list) return
+          const nowOpen = list.hidden
+          list.hidden = !nowOpen
+          btn.setAttribute('aria-expanded', String(nowOpen))
+          if (nowOpen) _ovAttentionOpen.add(id); else _ovAttentionOpen.delete(id)
+        }
+      })
       const toggle = document.getElementById('attentionToggle')
       const header = document.getElementById('attentionHeader')
       header.onclick = function() {

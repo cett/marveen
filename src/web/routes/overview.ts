@@ -6,7 +6,7 @@ import {
   countTaskRunsBetween, listSkillsForTenant, resolveAgentTenant,
   countOverviewMemories, countOverviewMemoryCategories, countOverviewArtifacts,
   listOverviewLastActive, sumOverviewTokensSince, countOverviewPendingApprovals,
-  countOverviewErrorSpansSince, countOverviewPendingMessages, countOverviewStuckScheduledTasks,
+  countOverviewErrorSpansSince, listOverviewErrorSpansSince, countOverviewPendingMessages, countOverviewStuckScheduledTasks,
   listOverviewRecentMemories, listOverviewRecentMessages, listOverviewRecentApprovals,
 } from '../../db.js'
 import {
@@ -17,6 +17,9 @@ import { isAgentRunning } from '../agent-process.js'
 import { jsonMaybeGzip } from '../http-helpers.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC } from '../quota.js'
 import type { RouteContext } from './types.js'
+
+// How many of the 4-hour error spans the Overview warning lists (the warning's count is the full total).
+const ERROR_SPANS_SHOWN = 20
 
 // Count "real" user turns (operator prompts, Telegram messages) in every
 // Claude Code session JSONL under ~/.claude/projects/. Filters out
@@ -163,6 +166,13 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     try {
       errors4h = countOverviewErrorSpansSince(fourHoursAgo)
     } catch { /* ignore */ }
+    // The newest of those spans, so the Overview warning can show what failed instead of a bare count.
+    let errorSpans: ReturnType<typeof listOverviewErrorSpansSince> = []
+    if (isAdmin && errors4h > 0) {
+      try {
+        errorSpans = listOverviewErrorSpansSince(fourHoursAgo, ERROR_SPANS_SHOWN)
+      } catch { /* ignore */ }
+    }
 
     // Undelivered inter-agent messages (pending = not yet delivered to recipient session)
     let unreadMessages = 0
@@ -275,6 +285,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         tokensToday,
         pendingApprovals,
         errors4h,
+        errorSpans,
         stuckTasks,
         quota,
       }),
