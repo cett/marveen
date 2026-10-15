@@ -248,7 +248,7 @@ A Marveen telepítéskor seed-feladatokat hoz létre:
 | `auto-update` | `0 4 * * 3` (szerdánként) | Automatikus frissítés (opt-in, `AUTO_UPDATE_ENABLED=1`) |
 | `kanban-audit` | `0 8,12,16,20 * * *` | 4 óránkénti kanban-tisztítás, beakadt taskok detekciója |
 | `nightly-backup` | `0 3 * * *` | Napi adatmentés (`scripts/backup.sh`), LLM nélküli command feladat |
-| `memory-maintenance` | `15 3 * * *` | Napi memória-karbantartás (tier-átsorolás, verziók prune-olása, link-gráf karbantartás), LLM nélküli command feladat |
+| `memory-maintenance` | `15 3 * * *` | Napi memória-karbantartás (tier-átsorolás, verziók prune-olása, link-gráf karbantartás), LLM nélküli command feladat, a `scripts/memory-maintenance.sh`-t futtatja: egy sikertelen hívás, vagy ha a link-karbantartás a memóriák többségénél elbukik, hibás futás; az összekötni nem tudott memóriák lelet (42-es kilépési kód) |
 | `budget-plafon-monitor` | saját cron | Token-felhasználás küszöb-figyelés |
 | `bumblebee-hygiene-scan` | saját cron | Bumblebee (Go) service egészség-ellenőrzés |
 

@@ -3,8 +3,8 @@
   "agent": "{{MAIN_AGENT_ID}}",
   "enabled": true,
   "type": "command",
-  "description": "Napi memória-karbantartás LLM nélkül: tier-átsorolás és memory_versions prune (POST /api/memories/resort), majd a link-gráf karbantartása (POST /api/memories/links/maintain). Hibánál a command-task health Telegram-riasztást küld.",
-  "command": "API='{{INSTALL_DIR}}/scripts/agent-api.sh'; export DASHBOARD_BASE_URL='http://localhost:{{WEB_PORT}}'; bash \"$API\" --agent {{MAIN_AGENT_ID}} --max-time 120 POST /api/memories/resort '{}' | grep -q '\"ok\":true' && bash \"$API\" --agent {{MAIN_AGENT_ID}} --max-time 300 POST /api/memories/links/maintain '{}' | grep -q '\"ok\":true'",
+  "description": "Napi memória-karbantartás LLM nélkül: tier-átsorolás és memory_versions prune (POST /api/memories/resort), majd a link-gráf karbantartása (POST /api/memories/links/maintain). Hibánál a command-task health Telegram-riasztást küld; ha a link-karbantartás néhány memóriát nem tudott összekötni (linksFailed), lelet (42-es kilépési kód) jelzi.",
+  "command": "export DASHBOARD_BASE_URL='http://localhost:{{WEB_PORT}}'; bash '{{INSTALL_DIR}}/scripts/memory-maintenance.sh' {{MAIN_AGENT_ID}}",
   "timeoutMs": 480000,
   "failThreshold": 1,
   "createdAt": 0

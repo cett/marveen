@@ -5,7 +5,10 @@
  * (the ANN extension is not available in tests, the cross-agent import path scans the BLOBs).
  */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { initDatabase, getDb, upsertMemoryLink, linkToNeighbors, runLinkMaintenance } from '../db.js'
+import {
+  initDatabase, getDb, upsertMemoryLink, linkToNeighbors, runLinkMaintenance, linkMaintenanceFailedSystemically,
+  WEIGHT_ROUNDING_TOLERANCE,
+} from '../db.js'
 
 const DIM = 768
 
@@ -116,5 +119,81 @@ describe('runLinkMaintenance', () => {
     expect(links(b).length).toBeGreaterThan(0)
     expect(links(c).length).toBeGreaterThan(0)
     expect(result.linksCreated).toBe(links(b).length + links(c).length)
+  })
+})
+
+describe('upsertMemoryLink: the rounding tolerance is narrow', () => {
+  it('stores a weight within the tolerance above 1 as 1', () => {
+    const a = addMemory('a', OVER_ONE)
+    const b = addMemory('b', OVER_ONE)
+    upsertMemoryLink(a, b, 'semantic', 1 + WEIGHT_ROUNDING_TOLERANCE / 2)
+    expect(links(a)[0].weight).toBe(1)
+  })
+
+  it.each([1.5, 1 + 1e-8, Number.POSITIVE_INFINITY, Number.NaN, 0, -0.2])('does not store %s: it is a caller bug and fails loudly', (w) => {
+    const a = addMemory('a', OVER_ONE)
+    const b = addMemory('b', OVER_ONE)
+    expect(() => upsertMemoryLink(a, b, 'semantic', w)).toThrow(/constraint failed/)
+    expect(links(a)).toEqual([])
+  })
+})
+
+describe('linkToNeighbors: all of a memory\'s links or none', () => {
+  it('rolls back the links already written when a later write fails', async () => {
+    const a = addMemory('a', OVER_ONE)
+    addMemory('b', OVER_ONE)
+    addMemory('c', OVER_ONE)
+    // The second link written for `a` fails, whichever neighbour that is.
+    getDb().exec(`CREATE TRIGGER fail_second BEFORE INSERT ON memory_links
+                  WHEN NEW.src_id = ${a} AND (SELECT COUNT(*) FROM memory_links WHERE src_id = ${a}) >= 1
+                  BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END`)
+    await expect(linkToNeighbors(a)).rejects.toThrow(/simulated write failure/)
+    expect(links(a)).toEqual([])
+  })
+
+  it('keeps all links of a memory when every write succeeds', async () => {
+    const a = addMemory('a', OVER_ONE)
+    addMemory('b', OVER_ONE)
+    addMemory('c', OVER_ONE)
+    await expect(linkToNeighbors(a)).resolves.toBe(2)
+    expect(links(a)).toHaveLength(2)
+  })
+})
+
+describe('linkMaintenanceFailedSystemically', () => {
+  it.each([
+    [0, 0, false],
+    [0, 50, false],
+    [1, 1, false], // a single failure is never enough to call the environment broken
+    [1, 3, false],
+    [2, 2, true],
+    [2, 3, true],
+    [2, 4, false], // exactly half is not a majority
+    [2, 10, false],
+    [3, 5, true],
+    [6, 10, true],
+  ])('%i failed of %i attempted -> systemic %s', (failed, attempted, expected) => {
+    expect(linkMaintenanceFailedSystemically({ linksFailed: failed, memoriesAttempted: attempted })).toBe(expected)
+  })
+})
+
+describe('runLinkMaintenance: attempted memories', () => {
+  it('reports how many memories it tried', async () => {
+    addMemory('a', OVER_ONE)
+    addMemory('b', OVER_ONE)
+    addMemory('c', ZERO)
+    const result = await runLinkMaintenance()
+    expect(result.memoriesAttempted).toBe(3)
+    expect(result.linksFailed).toBe(0)
+  })
+
+  it('counts every memory as failed when no link can be written at all', async () => {
+    addMemory('a', OVER_ONE)
+    addMemory('b', OVER_ONE)
+    addMemory('c', OVER_ONE)
+    getDb().exec(`CREATE TRIGGER fail_all BEFORE INSERT ON memory_links BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`)
+    const result = await runLinkMaintenance()
+    expect(result).toMatchObject({ linksCreated: 0, linksFailed: 3, memoriesAttempted: 3 })
+    expect(linkMaintenanceFailedSystemically(result)).toBe(true)
   })
 })

@@ -3,7 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, countMemoriesForChat, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
-  runMemoryMaintenance, runLinkMaintenance, getLinksForMemories, writeAgentAuditLog,
+  runMemoryMaintenance, runLinkMaintenance, linkMaintenanceFailedSystemically, getLinksForMemories, writeAgentAuditLog,
   syncVecMemoryDelete,
   hybridSearchDocs,
   searchMemoriesLikeForAgent, searchMemoriesLike, listUpdatedSinceLastReadIds,
@@ -425,6 +425,17 @@ Respond ONLY with JSON, nothing else:
         weightThreshold: opts.weight_threshold,
         maxAge: opts.max_age_seconds,
       })
+      // Most memories failing means the environment is broken (disk, index, lock), not one bad memory: that is a
+      // failed run, never an ok:true the nightly task would take for success. A few failures stay ok:true with
+      // linksFailed set, and the maintenance task reports them as a finding.
+      if (linkMaintenanceFailedSystemically(result)) {
+        logger.error({ ...result }, 'Link maintenance failed for most memories')
+        json(res, {
+          error: 'internal_error',
+          hint: `Link maintenance failed for ${result.linksFailed} of ${result.memoriesAttempted} memories (see the dashboard log)`,
+        }, 500)
+        return true
+      }
       json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Link maintenance failed')

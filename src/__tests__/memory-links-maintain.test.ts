@@ -34,6 +34,7 @@ vi.mock('../db.js', () => ({
   getMemoryVersions: vi.fn().mockReturnValue([]),
   runMemoryMaintenance: vi.fn().mockReturnValue({ warmToCold: 0, coldToWarm: 0, prunedVersions: 0 }),
   runLinkMaintenance: mockRunLinkMaintenance,
+  linkMaintenanceFailedSystemically: (r: { linksFailed: number; memoriesAttempted: number }) => r.linksFailed >= 2 && r.linksFailed * 2 > r.memoriesAttempted,
   getLinksForMemories: mockGetLinksForMemories,
 }))
 
@@ -88,6 +89,29 @@ describe('POST /api/memories/links/maintain', () => {
     await tryHandleMemories(ctx)
     expect(mockRunLinkMaintenance).toHaveBeenCalledWith(expect.objectContaining({ weightThreshold: 0.2 }))
     expect(out.body.ok).toBe(true)
+  })
+
+  it('answers 200 ok:true with linksFailed when only a few memories failed', async () => {
+    mockRunLinkMaintenance.mockResolvedValueOnce({
+      reembedded: 0, linksCreated: 20, linksFailed: 1, memoriesAttempted: 10, linksPruned: 0, orphans: 0,
+    })
+    const { ctx, out } = makeCtx('POST', '/api/memories/links/maintain')
+    await tryHandleMemories(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.ok).toBe(true)
+    expect(out.body.linksFailed).toBe(1)
+  })
+
+  it('answers 500 without ok:true when most memories failed (the nightly task must see a failed run)', async () => {
+    mockRunLinkMaintenance.mockResolvedValueOnce({
+      reembedded: 0, linksCreated: 0, linksFailed: 10, memoriesAttempted: 10, linksPruned: 0, orphans: 0,
+    })
+    const { ctx, out } = makeCtx('POST', '/api/memories/links/maintain')
+    await tryHandleMemories(ctx)
+    expect(out.status).toBe(500)
+    expect(out.body.error).toBe('internal_error')
+    expect(out.body.hint).toContain('10 of 10 memories')
+    expect(out.body.ok).toBeUndefined()
   })
 
   it('returns 500 when runLinkMaintenance throws', async () => {

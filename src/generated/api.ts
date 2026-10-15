@@ -473,8 +473,10 @@ export type ResortMemoriesResponse = OkResponse & Record<string, unknown>
 export type MaintainMemoryLinksResponse = OkResponse & {
   reembedded?: number;
   linksCreated?: number;
-  /** Memories whose links could not be written; the run went on without them (see the dashboard log). */
+  /** Memories whose links could not be written (their links are rolled back); the run went on without them, see the dashboard log. A few failures still answer 200. */
   linksFailed?: number;
+  /** Memories the run tried to link, the denominator of linksFailed. */
+  memoriesAttempted?: number;
   linksPruned?: number;
   orphans?: number;
 }

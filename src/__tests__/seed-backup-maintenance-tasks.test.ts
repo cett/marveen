@@ -80,18 +80,12 @@ describe('seed task shape', () => {
     expect(readConfig('nightly-backup').command).toBe("bash '{{INSTALL_DIR}}/scripts/backup.sh'")
   })
 
-  it('the maintenance resorts memories, then maintains links, and fails if either call fails', () => {
+  it('the maintenance runs the script (resort, then link upkeep, findings code for unlinked memories) as the main agent', () => {
     const { command } = readConfig('memory-maintenance')
-    const resort = command.indexOf('/api/memories/resort')
-    const links = command.indexOf('/api/memories/links/maintain')
-    expect(resort).toBeGreaterThan(-1)
-    expect(links).toBeGreaterThan(resort)
+    expect(command).toContain("bash '{{INSTALL_DIR}}/scripts/memory-maintenance.sh' {{MAIN_AGENT_ID}}")
     expect(command).toContain('{{WEB_PORT}}')
-    // Each step must be gated on `"ok":true` (an HTTP error body has none) and chained with &&
-    // so a failed resort skips (and fails) the whole task.
-    expect(command.match(/bash "\$API" /g)).toHaveLength(2)
-    expect(command.match(/grep -q '"ok":true'/g)).toHaveLength(2)
-    expect(command).toContain("| grep -q '\"ok\":true' && bash")
+    // The two calls and their ok:true gating live in the script now (scripts/__tests__ and memory-maintenance-script.test.ts).
+    expect(command).not.toContain('grep')
   })
 })
 
@@ -145,13 +139,10 @@ describe('seeding into the schedules DB', () => {
       type: 'command', prompt: '', enabled: 1, agent: 'main-agent',
       schedule: '15 3 * * *', timeout_ms: 480000, fail_threshold: 1, status: 'live',
     })
-    // The calls go through the API wrapper (own token resolved there, never on the command line).
-    expect(maint?.command).toContain("'/opt/marveen/scripts/agent-api.sh'")
+    // The script makes the calls through the API wrapper (own token resolved there, never on the command line).
+    expect(maint?.command).toContain("bash '/opt/marveen/scripts/memory-maintenance.sh' main-agent")
     expect(maint?.command).toContain("DASHBOARD_BASE_URL='http://localhost:4567'")
-    expect(maint?.command).toContain('--agent main-agent')
     expect(maint?.command).not.toMatch(/dashboard-token|Bearer/)
-    expect(maint?.command).toContain('/api/memories/resort')
-    expect(maint?.command).toContain('/api/memories/links/maintain')
     expect(maint?.command).not.toContain('{{')
     expect(backup?.command).not.toContain('{{')
   })

@@ -319,16 +319,19 @@ export interface MemoryLink {
  * Returns the row id of the upserted link.
  *
  * The table only accepts 0 < weight <= 1. A cosine similarity computed in floating point can land a rounding
- * error above 1 for (near-)identical embeddings, so anything above 1 is stored as 1; a weight that is not a
- * positive number is the caller's bug and still fails the CHECK.
+ * error above 1 for (near-)identical embeddings (observed: 1 + 2.2e-16), so a weight within WEIGHT_ROUNDING_TOLERANCE
+ * above 1 is stored as 1. Anything further out (1.5, Infinity), NaN and a non-positive weight are a caller bug and
+ * still fail the CHECK, loudly.
  */
+export const WEIGHT_ROUNDING_TOLERANCE = 1e-9
+
 export function upsertMemoryLink(
   srcId: number,
   dstId: number,
   linkType: MemoryLink['link_type'],
   rawWeight: number,
 ): number {
-  const weight = rawWeight > 1 ? 1 : rawWeight
+  const weight = rawWeight > 1 && rawWeight <= 1 + WEIGHT_ROUNDING_TOLERANCE ? 1 : rawWeight
   const stmt = db.prepare(
     `INSERT INTO memory_links (src_id, dst_id, link_type, weight)
      VALUES (?, ?, ?, ?)
@@ -406,7 +409,7 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   const effectiveThreshold = crossAgent ? Math.min(similarityThreshold, 0.65) : similarityThreshold
   const candidates = await vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1, crossAgent)
 
-  let linked = 0
+  const wanted: { id: number; sim: number }[] = []
   for (const candidate of candidates) {
     if (candidate.id === memoryId) continue
     const candBlob = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(candidate.id) as { embedding_blob: Buffer | null } | undefined
@@ -415,20 +418,37 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
     // NaN (a zero vector on either side) and sim <= 0 (a caller threshold of 0 or below) are no link: the table
     // takes weights in (0, 1] only.
     if (!(sim > 0) || sim < effectiveThreshold) continue
-    upsertMemoryLink(memoryId, candidate.id, 'semantic', sim)
-    linked++
-    if (linked >= maxNeighbors) break
+    wanted.push({ id: candidate.id, sim })
+    if (wanted.length >= maxNeighbors) break
   }
-  return linked
+  // All of this memory's links or none: a failing write rolls back the links already written for it, so a memory
+  // reported as failed never keeps half its neighbours.
+  const writeAll = db.transaction((items: { id: number; sim: number }[]) => {
+    for (const w of items) upsertMemoryLink(memoryId, w.id, 'semantic', w.sim)
+  })
+  writeAll(wanted)
+  return wanted.length
 }
 
 export interface LinkMaintenanceResult {
   reembedded: number
   linksCreated: number
-  /** memories whose links could not be written; the run goes on without them (see the warn log) */
+  /** memories whose links could not be written (rolled back); the run goes on without them, see the warn log */
   linksFailed: number
+  /** memories the run tried to link, the denominator of linksFailed */
+  memoriesAttempted: number
   linksPruned: number
   orphans: number
+}
+
+/**
+ * True when so many memories failed that the cause is the environment (disk, index, lock, schema) and not one bad
+ * memory: at least two failed and more than half of those attempted. The run is then a failed run (the route
+ * answers 500, the nightly task fails). Fewer failures are a partial result: the run succeeds, `linksFailed` says
+ * how many, and the maintenance task reports it as a finding.
+ */
+export function linkMaintenanceFailedSystemically(r: Pick<LinkMaintenanceResult, 'linksFailed' | 'memoriesAttempted'>): boolean {
+  return r.linksFailed >= 2 && r.linksFailed * 2 > r.memoriesAttempted
 }
 
 /**
@@ -495,8 +515,9 @@ export async function runLinkMaintenance(opts: {
   ).get() as { c: number }
   const orphans = orphanRow.c
 
-  logger.info({ reembedded, linksCreated, linksFailed, linksPruned, orphans }, 'Link maintenance complete')
-  return { reembedded, linksCreated, linksFailed, linksPruned, orphans }
+  const memoriesAttempted = toLink.length
+  logger.info({ reembedded, linksCreated, linksFailed, memoriesAttempted, linksPruned, orphans }, 'Link maintenance complete')
+  return { reembedded, linksCreated, linksFailed, memoriesAttempted, linksPruned, orphans }
 }
 
 /**
