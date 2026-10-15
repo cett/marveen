@@ -93,12 +93,19 @@ export function deleteDashboardUser(username: string): boolean {
   return info.changes > 0
 }
 
+/**
+ * The calendar day (YYYY-MM-DD) in the app's time zone, which is the day daily_logs rows are filed under.
+ * Not the UTC day: between local midnight and the UTC midnight the two differ. en-CA formats as YYYY-MM-DD.
+ */
+export function appLocalDate(at: Date = new Date()): string {
+  return at.toLocaleDateString('en-CA', { timeZone: APP_TZ })
+}
+
 export function appendDailyLog(agentId: string, content: string): void {
   const now = Math.floor(Date.now() / 1000)
   // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
   // local time lands on the previous day and the "ma" recall query misses it.
-  // en-CA formats as YYYY-MM-DD.
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
+  const today = appLocalDate()
   db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)')
     .run(agentId, today, content, now, resolveWriteTenant(agentId))
 }
