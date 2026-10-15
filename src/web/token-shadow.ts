@@ -7,7 +7,9 @@
 //   shared_token_use                 a request authenticated with the shared dashboard token (the
 //                                    file token, enrolled in api_tokens as 'dashboard'; no agent). Who it was is the
 //                                    X-Agent-Id header: a SELF-DECLARATION (caller_source
-//                                    'self_declared'), or nobody ('none').
+//                                    'self_declared'), or nobody ('none'). A write to /api/messages
+//                                    also carries the body's `from` as the target, so a call with no
+//                                    identification can still be traced to the sender it claims.
 //   agent_id_mismatch                a non-main-agent caller names ANOTHER agent on an endpoint that
 //                                    takes an agent id and trusts the caller's word (the ledger,
 //                                    agent state, daily log, telemetry, artifacts, messages.from,
@@ -22,6 +24,8 @@
 //                                    fresh tenant context: a fleet-agent token refused 403 for it
 //                                    (caller_source 'token'), or a shared-token request that
 //                                    declares such an agent and names no ?tenant= (self_declared).
+//                                    target = why there was no tenant (no_row | unknown | conflict |
+//                                    stale | not_serving | error), in both cases.
 //   shared_agent_memories_no_tenant  GET /api/memories?agent=<shared agent> with no ?tenant= and no
 //                                    tenant context for that agent (the memory read of a shared
 //                                    agent the tenant-less shared token makes). target = the agent.
@@ -448,6 +452,29 @@ function agentHasNoTenant(agentId: string): boolean {
 
 // ── request entry points ────────────────────────────────────────────────────
 
+// A shared-token write to /api/messages is counted when its body has been read, so the row can carry
+// the `from` the body names. The count is never lost: the request's close flushes it unlabelled.
+const sharedUseDeferred = new WeakMap<http.IncomingMessage, Base>()
+
+/** The sender a /api/messages body claims, as a counter label: '' when it names none or is not JSON. */
+function messageSenderTarget(body: Buffer): string {
+  if (body.length === 0 || body.length > BODY_PEEK_MAX_BYTES) return ''
+  try {
+    const data: unknown = JSON.parse(body.toString('utf8'))
+    const from = data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>)['from'] : undefined
+    return typeof from === 'string' ? cleanAgentId(from) : ''
+  } catch {
+    return ''
+  }
+}
+
+function flushSharedUse(req: http.IncomingMessage, target: string): void {
+  const base = sharedUseDeferred.get(req)
+  if (!base) return
+  sharedUseDeferred.delete(req)
+  recordTokenShadow(base, { category: 'shared_token_use', target })
+}
+
 interface Pending { base: Base; spec: WatchSpec; recorded: Set<string>; caller: string; refusable: boolean; omittedMain: boolean }
 const pendingBodies = new WeakMap<http.IncomingMessage, Pending>()
 
@@ -583,14 +610,20 @@ export function observeTokenUsage(
       method, route: normalizeRoute(path), client: classifyClient(req.headers['user-agent']),
       caller: who.caller, callerSource: who.source,
     }
-    if (who.shared) recordTokenShadow(base, { category: 'shared_token_use', target: '' })
-
     const spec = watchSpecFor(path)
+    if (who.shared) {
+      if (spec?.prefix === '/api/messages' && isWriteMethod(method) && typeof req.once === 'function') {
+        sharedUseDeferred.set(req, base)
+        req.once('close', () => flushSharedUse(req, ''))
+      } else {
+        recordTokenShadow(base, { category: 'shared_token_use', target: '' })
+      }
+    }
     const hasTenantParam = !!url.searchParams.get('tenant')
 
     // (4) tenant context. A shared-token request that declares a shared agent and names no tenant.
     if (who.shared && who.source === 'self_declared' && !hasTenantParam && agentHasNoTenant(who.caller)) {
-      recordTokenShadow(base, { category: 'missing_tenant_context', target: '' })
+      recordTokenShadow(base, { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) })
     }
     // The memory read of a shared agent from a caller that has no tenant of its own to scope it by.
     if (spec?.prefix === '/api/memories' && method === 'GET' && !hasTenantParam && (who.shared || who.fleetAgent)) {
@@ -652,6 +685,11 @@ export function observeTokenUsage(
 
 /** Called by readBody once the body is complete; counts the agent ids a body names. Never throws. */
 export function observeRequestBody(req: http.IncomingMessage, body: Buffer, mainAgentId: string = MAIN_AGENT_ID): void {
+  try {
+    if (sharedUseDeferred.has(req)) flushSharedUse(req, messageSenderTarget(body))
+  } catch (err) {
+    warnThrottled(err, 'token-shadow: shared-use record failed')
+  }
   const pending = pendingBodies.get(req)
   if (!pending) return
   pendingBodies.delete(req)
