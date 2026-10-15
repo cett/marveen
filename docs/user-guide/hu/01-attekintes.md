@@ -52,6 +52,6 @@ Ha a rendszer több bérlővel (tenanttal) működik, a jobb felső sarokban tal
 
 ## Tippek
 
-- Az Áttekintés 30 másodpercenként automatikusan frissül.
+- A Blackboard-tábla 15 másodpercenként automatikusan frissül. Az oldal többi része (számlálók, a figyelmet igénylő panel, a friss események, a kvóta-csík) az Áttekintés megnyitásakor vagy bérlőváltáskor töltődik be; frissebb számokhoz nyisd meg újra az oldalt.
 - A Blackboard-sor melletti állapotkód (`active` / `done` / `blocked`) jelzi, hogy az ágens éppen dolgozik-e.
 - Ha egy ágens "blocked" állapotban van, a Blackboard-sorban szerepel a blokkoló ok is.

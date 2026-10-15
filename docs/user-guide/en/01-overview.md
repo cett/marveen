@@ -52,6 +52,6 @@ In multi-tenant setups, a dropdown in the top-right lets you switch between tena
 
 ## Tips
 
-- The Overview refreshes automatically every 30 seconds.
+- The Blackboard table refreshes automatically every 15 seconds. The rest of the page (counters, the attention panel, recent activity, the quota strip) is loaded when you open the Overview or switch tenant; to see newer numbers, open the page again.
 - The Blackboard status (`active` / `done` / `blocked`) next to an agent row shows whether the agent is currently working.
 - If an agent is `blocked`, the Blackboard row also shows the reason for the block.
