@@ -7,10 +7,10 @@
 // tool-log-otel-span.test.ts) rather than mocking db.js, since the route's
 // only job is thin request parsing around three already-tested db.js calls.
 
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { initDatabase, createTenant, setTenantAgentAvailability } from '../db.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { initDatabase, createTenant, setTenantAgentAvailability, appLocalDate } from '../db.js'
+import { MAIN_AGENT_ID, APP_TZ } from '../config.js'
 import { tryHandleDailyLog } from '../web/routes/daily-log.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -63,7 +63,7 @@ describe('tryHandleDailyLog', () => {
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true })
 
-    const today = new Date().toISOString().split('T')[0]
+    const today = appLocalDate()
     const { ctx: getCtx, out: getOut } = makeCtx('GET', `/api/daily-log?agent=agent-b&date=${today}`)
     expect(await tryHandleDailyLog(getCtx)).toBe(true)
     expect(getOut.body).toHaveLength(1)
@@ -74,7 +74,7 @@ describe('tryHandleDailyLog', () => {
     const { ctx } = makeCtx('POST', '/api/daily-log', { content: 'main agent entry' })
     expect(await tryHandleDailyLog(ctx)).toBe(true)
 
-    const today = new Date().toISOString().split('T')[0]
+    const today = appLocalDate()
     const { ctx: getCtx, out: getOut } = makeCtx('GET', `/api/daily-log?date=${today}`)
     await tryHandleDailyLog(getCtx)
     expect(getOut.body.some((e: any) => e.content === 'main agent entry')).toBe(true)
@@ -93,6 +93,40 @@ describe('tryHandleDailyLog', () => {
     expect(getOut.body.some((e: any) => e.content === 'no explicit date')).toBe(true)
   })
 
+  // The entry is filed under the app time zone's day, so the default day of a bare GET has to be the same one.
+  // With the clock fixed just after local midnight (22:30 UTC, 00:30 in Budapest) the UTC day and the local
+  // day differ: the stretch in which the default date used to be wrong.
+  it.each([
+    ['just after local midnight, before UTC midnight', '2026-10-15T22:30:00Z'],
+    ['midday', '2026-10-15T10:00:00Z'],
+    ['just before local midnight', '2026-10-15T21:30:00Z'],
+  ])('GET with no date reads the day the entry was filed under (%s)', async (_label, iso) => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date(iso))
+      const agent = `agent-clock-${iso}`
+      const { ctx } = makeCtx('POST', '/api/daily-log', { agent_id: agent, content: `at ${iso}` })
+      await tryHandleDailyLog(ctx)
+
+      const { ctx: getCtx, out: getOut } = makeCtx('GET', `/api/daily-log?agent=${agent}`)
+      await tryHandleDailyLog(getCtx)
+      expect(getOut.body.map((e: any) => e.content)).toEqual([`at ${iso}`])
+
+      const { ctx: datesCtx, out: datesOut } = makeCtx('GET', `/api/daily-log/dates?agent=${agent}`)
+      await tryHandleDailyLog(datesCtx)
+      expect(datesOut.body).toEqual([appLocalDate()])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('files an entry after local midnight under the new local day, not the UTC day (Budapest)', () => {
+    if (APP_TZ !== 'Europe/Budapest') return
+    expect(appLocalDate(new Date('2026-10-15T22:30:00Z'))).toBe('2026-10-16')
+    expect(appLocalDate(new Date('2026-10-15T21:30:00Z'))).toBe('2026-10-15')
+    expect(appLocalDate(new Date('2026-01-15T23:30:00Z'))).toBe('2026-01-16') // winter time, UTC+1
+  })
+
   it('GET returns an empty array for a date with no entries', async () => {
     const { ctx, out } = makeCtx('GET', '/api/daily-log?agent=agent-c&date=2000-01-01')
     expect(await tryHandleDailyLog(ctx)).toBe(true)
@@ -105,7 +139,7 @@ describe('tryHandleDailyLog', () => {
 
     const { ctx: datesCtx, out: datesOut } = makeCtx('GET', '/api/daily-log/dates?agent=agent-d')
     expect(await tryHandleDailyLog(datesCtx)).toBe(true)
-    const today = new Date().toISOString().split('T')[0]
+    const today = appLocalDate()
     expect(datesOut.body).toContain(today)
   })
 
@@ -115,7 +149,7 @@ describe('tryHandleDailyLog', () => {
 
     const { ctx: datesCtx, out: datesOut } = makeCtx('GET', '/api/daily-log/dates')
     await tryHandleDailyLog(datesCtx)
-    const today = new Date().toISOString().split('T')[0]
+    const today = appLocalDate()
     expect(datesOut.body).toContain(today)
   })
 

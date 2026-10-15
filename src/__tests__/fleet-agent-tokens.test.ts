@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto'
 import type http from 'node:http'
 import {
   initDatabase, getDb, createTenant, setTenantAgentAvailability, insertApiToken, revokeApiToken,
-  logLedgerTurn, recentLedgerTurns, getDailyLog, listApiTokenRows,
+  logLedgerTurn, recentLedgerTurns, getDailyLog, listApiTokenRows, appLocalDate,
 } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
@@ -198,7 +198,7 @@ describe('other own-agent endpoints', () => {
 
   it('daily log: an omitted agent_id is the token agent, not the main agent; a foreign one is 403', async () => {
     expect((await request('tok-alpha', 'POST', '/api/daily-log', { content: 'from alpha' })).status).toBe(200)
-    const date = new Date().toISOString().split('T')[0]!
+    const date = appLocalDate()
     expect(getDailyLog('alpha', date).map(e => e.content)).toEqual(['from alpha'])
     expect(getDailyLog('main-agent', date)).toEqual([])
     expect((await request('tok-alpha', 'POST', '/api/daily-log', { agent_id: 'beta', content: 'forged' })).status).toBe(403)

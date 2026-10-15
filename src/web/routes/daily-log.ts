@@ -1,4 +1,4 @@
-import { appendDailyLog, getDailyLog, getDailyLogDates, resolveAgentTenant } from '../../db.js'
+import { appendDailyLog, appLocalDate, getDailyLog, getDailyLogDates, resolveAgentTenant } from '../../db.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -47,7 +47,9 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/daily-log' && method === 'GET') {
     const agent = actingAgentId(ctx, url.searchParams.get('agent'), MAIN_AGENT_ID)
     if (tenantBlocked(ctx, agent)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
-    const date = url.searchParams.get('date') || new Date().toISOString().split('T')[0]
+    // The default day is the one entries are filed under (the app time zone's), not the UTC day: between local
+    // midnight and UTC midnight a bare GET would otherwise read yesterday's, empty, log.
+    const date = url.searchParams.get('date') || appLocalDate()
     json(res, getDailyLog(agent, date))
     return true
   }
