@@ -4193,7 +4193,10 @@ paths:
                           properties:
                             snippet:
                               type: string
-                              description: Only with `q`. The matching excerpt, the hit words between `[` and `]`.
+                              nullable: true
+                              description: >
+                                Only with `q`. The matching excerpt of the column that matched best (the title for a
+                                title-only hit), the hit words between `[` and `]`. Null when that column is empty.
                   total:
                     type: integer
     post:

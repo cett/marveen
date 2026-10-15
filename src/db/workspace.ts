@@ -387,8 +387,11 @@ function ftsAllTerms(q: string): string | null {
 }
 
 export interface WorkspaceDocSearchHit extends WorkspaceDoc {
-  /** the matching excerpt, the hit words between [ and ] */
-  snippet: string
+  /**
+   * The matching excerpt of the column that matched best (the title for a title-only hit), the hit words between
+   * [ and ]. SQLite gives NULL when that column is empty, so a consumer must cope with null.
+   */
+  snippet: string | null
 }
 
 /**
@@ -406,14 +409,14 @@ export function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilt
   const total = (db.prepare(`SELECT COUNT(*) AS n ${from}`).get(...params, match) as { n: number }).n
   let sql = `SELECT wd.id, wd.agent_id, wd.tenant_id, wd.doc_key, wd.title, wd.content_type, wd.type, wd.task_ref,
                     wd.size_bytes, wd.created_at, wd.updated_at, wd.last_accessed_at,
-                    snippet(workspace_docs_fts, 1, '[', ']', '...', 15) AS snippet
+                    snippet(workspace_docs_fts, -1, '[', ']', '...', 15) AS snippet
              ${from} ORDER BY rank, wd.updated_at DESC`
   const pageParams: unknown[] = [...params, match]
   if (filter.limit && filter.limit > 0) {
     sql += ' LIMIT ?'; pageParams.push(filter.limit)
     if (filter.offset && filter.offset > 0) { sql += ' OFFSET ?'; pageParams.push(filter.offset) }
   }
-  const rows = db.prepare(sql).all(...pageParams) as (DbRow & { snippet: string })[]
+  const rows = db.prepare(sql).all(...pageParams) as (DbRow & { snippet: string | null })[]
   return { items: rows.map(r => ({ ...rowToDocMeta(r), snippet: r.snippet })), total }
 }
 

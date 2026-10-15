@@ -50,8 +50,26 @@ describe('searchWorkspaceDocsPage', () => {
     const { items, total } = searchWorkspaceDocsPage('zebracrossing', {})
     expect(total).toBe(2)
     expect(items).toHaveLength(2)
-    expect(items.some(i => i.snippet.includes('[zebracrossing]'))).toBe(true)
     for (const i of items) expect(i.content).toBeNull()
+    // Each hit shows the column it matched in: the body excerpt for a body hit, the title for a title-only hit.
+    const byTitle = new Map(items.map(i => [i.title, i.snippet]))
+    expect(byTitle.get('Roadmap')).toContain('[zebracrossing]')
+    expect(byTitle.get('Roadmap')).toContain('review is due')
+    expect(byTitle.get('zebracrossing notes')).toBe('[zebracrossing] notes')
+  })
+
+  it('a title-only hit never shows an unrelated body excerpt', () => {
+    seed({ title: 'quokka overview', content: 'a long body about something else entirely, with no hit word in it' })
+    const [hit] = searchWorkspaceDocsPage('quokka', {}).items
+    expect(hit.snippet).toBe('[quokka] overview')
+    expect(hit.snippet).not.toContain('something else')
+  })
+
+  it('a binary document is found by its title, with the title as the snippet', () => {
+    seed({ title: 'quokka picture', content: null, content_type: 'binary', content_blob: Buffer.from('zzz') } as any)
+    const { items, total } = searchWorkspaceDocsPage('quokka', {})
+    expect(total).toBe(1)
+    expect(items[0].snippet).toBe('[quokka] picture')
   })
 
   it('requires every word, in any order and place', () => {
