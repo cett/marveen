@@ -62,3 +62,42 @@ describe('evaluateCommandResult', () => {
     expect(actions).toEqual(['none', 'none', 'alert'])
   })
 })
+
+// A command that exits with its findings code (COMMAND_EXIT_FINDINGS) reports something; it did not fail.
+describe('evaluateCommandResult: findings', () => {
+  it('alerts once when the findings start, without touching the failure streak', () => {
+    const first = evaluateCommandResult(undefined, 'findings', 2, T)
+    expect(first.action).toBe('findings')
+    expect(first.next).toMatchObject({ fails: 0, alerted: true, lastStatus: 'findings' })
+    // failThreshold 2 or 1 makes no difference to a finding
+    expect(evaluateCommandResult(undefined, 'findings', 1, T).action).toBe('findings')
+  })
+
+  it('does not repeat the alert while the findings go on', () => {
+    const first = evaluateCommandResult(undefined, 'findings', 1, T)
+    const again = evaluateCommandResult(first.next, 'findings', 1, T)
+    expect(again.action).toBe('none')
+    expect(again.next).toMatchObject({ fails: 0, alerted: true, lastStatus: 'findings' })
+  })
+
+  it('recovers once after the first clean run', () => {
+    const first = evaluateCommandResult(undefined, 'findings', 1, T)
+    const clean = evaluateCommandResult(first.next, 'ok', 1, T)
+    expect(clean.action).toBe('recover')
+    expect(clean.next).toMatchObject({ fails: 0, alerted: false, lastStatus: 'ok' })
+  })
+
+  it('resets a failure streak that came before it (a finding is a run that worked)', () => {
+    const prev: CommandHealth = { fails: 1, alerted: false, lastStatus: 'fail', lastRun: 0 }
+    const { next, action } = evaluateCommandResult(prev, 'findings', 3, T)
+    expect(action).toBe('findings')
+    expect(next.fails).toBe(0)
+  })
+
+  it('a real failure after a finding stays silent while alerted, and counts the streak', () => {
+    const first = evaluateCommandResult(undefined, 'findings', 1, T)
+    const failed = evaluateCommandResult(first.next, 'fail', 1, T)
+    expect(failed.action).toBe('none')
+    expect(failed.next).toMatchObject({ fails: 1, lastStatus: 'fail' })
+  })
+})

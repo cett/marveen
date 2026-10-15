@@ -13,7 +13,7 @@ import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
 import { resolveRole, resolveTenantId } from './web/authz.js'
 import { runRbacGate } from './web/rbac-shadow-log.js'
-import { json } from './web/http-helpers.js'
+import { json, isInvalidJsonBodyError } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { instrumentHttpRequest } from './otel-http.js'
@@ -357,6 +357,10 @@ export function startWebServer(port = 3420): http.Server {
       res.writeHead(404)
       res.end('Not found')
     } catch (err) {
+      if (isInvalidJsonBodyError(err, req)) {
+        json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400)
+        return
+      }
       logger.error({ err }, 'Web szerver hiba')
       json(res, { error: 'internal_error', hint: 'Szerver hiba' }, 500)
     }

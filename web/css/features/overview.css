@@ -262,6 +262,35 @@
   white-space: nowrap;
 }
 .attention-item a:hover { text-decoration: underline; }
+.attention-item .attention-link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.attention-item .attention-link:hover { text-decoration: underline; }
+.attention-detail {
+  list-style: none;
+  margin: -4px 0 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.attention-detail[hidden] { display: none; }
+.attention-detail li { display: flex; gap: 10px; padding: 3px 0; }
+.attention-detail-time { color: var(--text-muted); min-width: 36px; }
+.attention-detail-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.attention-detail-agent { color: var(--text-muted); white-space: nowrap; }
+.attention-detail-more { color: var(--text-muted); }
 
 /* Section titles */
 .ov-section-title {

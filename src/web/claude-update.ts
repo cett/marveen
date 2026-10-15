@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { seedScheduleIfAbsent } from '../db.js'
@@ -56,8 +56,20 @@ export interface RolloutState {
   incomplete?: string[]
 }
 
-export interface ClaudeUpdatePaths { stateFile: string; rolloutFile: string }
-const defaultPaths = (): ClaudeUpdatePaths => ({ stateFile: join(STORE_DIR, STATE_FILE), rolloutFile: join(STORE_DIR, ROLLOUT_FILE) })
+export interface ClaudeUpdatePaths {
+  stateFile: string
+  rolloutFile: string
+  /** the marker written when the task was seeded: the age baseline of an install that never ran it */
+  seededFile?: string
+}
+const defaultPaths = (): ClaudeUpdatePaths => ({
+  stateFile: join(STORE_DIR, STATE_FILE), rolloutFile: join(STORE_DIR, ROLLOUT_FILE), seededFile: join(STORE_DIR, SEEDED_MARKER),
+})
+
+function seededAtSec(p: ClaudeUpdatePaths): number | null {
+  if (!p.seededFile) return null
+  try { return Math.floor(statSync(p.seededFile).mtimeMs / 1000) } catch { return null }
+}
 
 function readJson<T extends object>(path: string): T {
   try {
@@ -100,7 +112,12 @@ export interface ClaudeUpdateStatus {
   checkAgeDays: number | null
   /** a newer version is published than the installed one */
   behind: boolean
-  /** never checked, or the last check is older than CLAUDE_UPDATE_STALE_DAYS */
+  /** the weekly task has not run yet (no check recorded); not a fault by itself, its first run may still be ahead */
+  neverChecked: boolean
+  /**
+   * the weekly task is overdue: the last check, or for an install that never ran it the moment the task was set up,
+   * is older than CLAUDE_UPDATE_STALE_DAYS. False before the first run while the task is still young.
+   */
   stale: boolean
   /** a version change happened and its rollout has not finished */
   rolloutPending: boolean
@@ -115,6 +132,8 @@ export function getClaudeUpdateStatus(nowSec: number = Math.floor(Date.now() / 1
   const updatedAt = typeof st.updatedAt === 'number' ? st.updatedAt : null
   const checkAgeDays = checkedAt == null ? null : Math.max(0, Math.floor((nowSec - checkedAt) / 86400))
   const forThisUpdate = updatedAt != null && ro.forUpdatedAt === updatedAt
+  const baselineSec = checkedAt ?? seededAtSec(p)
+  const baselineAgeDays = baselineSec == null ? null : Math.max(0, Math.floor((nowSec - baselineSec) / 86400))
   return {
     installed: st.installed ?? null,
     latest: st.latest ?? null,
@@ -126,7 +145,8 @@ export function getClaudeUpdateStatus(nowSec: number = Math.floor(Date.now() / 1
     updatedAt,
     checkAgeDays,
     behind: !!st.installed && !!st.latest && compareVersions(st.installed, st.latest) < 0,
-    stale: checkAgeDays == null || checkAgeDays > CLAUDE_UPDATE_STALE_DAYS,
+    neverChecked: checkedAt == null,
+    stale: baselineAgeDays != null && baselineAgeDays > CLAUDE_UPDATE_STALE_DAYS,
     rolloutPending: updatedAt != null && ro.doneForUpdatedAt !== updatedAt,
     restarted: forThisUpdate ? ro.restarted ?? [] : [],
     incomplete: forThisUpdate ? ro.incomplete ?? [] : [],

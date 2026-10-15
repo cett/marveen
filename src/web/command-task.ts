@@ -19,7 +19,7 @@ const HEALTH_PATH = join(STORE_DIR, "command-task-health.json")
 export interface CommandHealth {
   fails: number
   alerted: boolean
-  lastStatus: "ok" | "fail" | "unknown"
+  lastStatus: "ok" | "fail" | "findings" | "unknown"
   lastRun: number
 }
 type HealthMap = Record<string, CommandHealth>
@@ -36,29 +36,42 @@ function persist(): void {
   catch (err) { logger.warn({ err }, "command-task: failed to persist health map") }
 }
 
-export type CommandAction = "none" | "alert" | "recover"
+export type CommandAction = "none" | "alert" | "findings" | "recover"
+
+// A command that checks something and found it wanting (a monitor with a
+// report, not a crashed job) exits with this code. It is a finding, not a run
+// failure: the run span stays ok and the failure streak is not touched, but the
+// owner is still told once (like a failure alert) and hears about the recovery.
+// Any other non-zero exit stays a failure.
+export const COMMAND_EXIT_FINDINGS = 42
+export type CommandOutcome = "ok" | "findings" | "fail"
 
 // Pure decision function so the failure/recovery policy is unit-testable
-// without spawning processes. success=true zeroes the streak; an alert
-// fires exactly once when the streak first reaches failThreshold; a
-// recover fires once when a previously-alerted task succeeds again.
+// without spawning processes. "ok" zeroes the streak; a failure alerts exactly
+// once when the streak first reaches failThreshold; "findings" alerts once when
+// the findings start (it never counts toward the failure streak); a recover
+// fires once when a previously-alerted task runs clean again. A boolean is the
+// old success flag.
 export function evaluateCommandResult(
   prev: CommandHealth | undefined,
-  success: boolean,
+  outcome: CommandOutcome | boolean,
   failThreshold: number,
   now: number,
 ): { next: CommandHealth; action: CommandAction } {
+  const kind: CommandOutcome = typeof outcome === "boolean" ? (outcome ? "ok" : "fail") : outcome
   const wasAlerted = prev?.alerted ?? false
-  const fails = success ? 0 : (prev?.fails ?? 0) + 1
+  const fails = kind === "fail" ? (prev?.fails ?? 0) + 1 : 0
   let action: CommandAction = "none"
   let alerted = wasAlerted
-  if (success) {
+  if (kind === "ok") {
     if (wasAlerted) { action = "recover"; alerted = false }
+  } else if (kind === "findings") {
+    if (!wasAlerted) { action = "findings"; alerted = true }
   } else if (fails >= failThreshold && !wasAlerted) {
     action = "alert"; alerted = true
   }
   return {
-    next: { fails, alerted, lastStatus: success ? "ok" : "fail", lastRun: now },
+    next: { fails, alerted, lastStatus: kind, lastRun: now },
     action,
   }
 }
@@ -72,13 +85,13 @@ const KILL_GRACE_MS = 2000
 // dashboard's own API (curl http://localhost:<port>/api/...) could never be
 // answered and would simply time out. The child gets its own process group so a
 // timeout takes the whole tree down (bash, curl, tar, ...), not just the shell.
-function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; detail: string }> {
+function runCommand(cmd: string, timeoutMs: number): Promise<{ outcome: CommandOutcome; detail: string }> {
   return new Promise((resolve) => {
     let settled = false
     let timedOut = false
     let stderr = ""
     let timer: NodeJS.Timeout | undefined
-    const finish = (r: { ok: boolean; detail: string }) => {
+    const finish = (r: { outcome: CommandOutcome; detail: string }) => {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
@@ -88,7 +101,7 @@ function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; deta
     try {
       child = spawn("bash", ["-lc", cmd], { stdio: ["ignore", "ignore", "pipe"], detached: true })
     } catch (err) {
-      finish({ ok: false, detail: (err as Error).message })
+      finish({ outcome: "fail", detail: (err as Error).message })
       return
     }
     const killTree = (signal: NodeJS.Signals) => {
@@ -100,19 +113,19 @@ function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; deta
     child.stderr?.on("data", (d: Buffer) => {
       if (stderr.length < MAX_STDERR_BYTES) stderr += d.toString()
     })
-    child.on("error", (err) => finish({ ok: false, detail: err.message }))
+    child.on("error", (err) => finish({ outcome: "fail", detail: err.message }))
     child.on("close", (code, signal) => {
-      if (timedOut) return finish({ ok: false, detail: `timeout ${timeoutMs}ms` })
-      if (code === 0) return finish({ ok: true, detail: "exit 0" })
+      if (timedOut) return finish({ outcome: "fail", detail: `timeout ${timeoutMs}ms` })
+      if (code === 0) return finish({ outcome: "ok", detail: "exit 0" })
       const err = stderr.trim().slice(0, 200)
-      finish({ ok: false, detail: `exit ${code ?? signal}${err ? ": " + err : ""}` })
+      finish({ outcome: code === COMMAND_EXIT_FINDINGS ? "findings" : "fail", detail: `exit ${code ?? signal}${err ? ": " + err : ""}` })
     })
     timer = setTimeout(() => {
       timedOut = true
       killTree("SIGTERM")
       setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS).unref()
       // do not wait for a stubborn tree to exit: the run is already a failure
-      finish({ ok: false, detail: `timeout ${timeoutMs}ms` })
+      finish({ outcome: "fail", detail: `timeout ${timeoutMs}ms` })
     }, timeoutMs)
   })
 }
@@ -147,7 +160,9 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
   const map = load()
   const startedMs = Date.now()
-  const { ok, detail } = await runCommand(task.command as string, timeoutMs)
+  const { outcome, detail } = await runCommand(task.command as string, timeoutMs)
+  // A finding is a run that did its job: only a real failure is an error span / error metric.
+  const ok = outcome !== "fail"
   const endedMs = Date.now()
   // Two separate guards: a failing metric must not cost the span, nor the other way round.
   try { recordScheduleRunDuration(task.name, (endedMs - startedMs) / 1000, ok) } catch { /* telemetry is never fatal to the task */ }
@@ -156,14 +171,14 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
       trace_id: `schedule-${task.name}-${startedMs}`, span_id: 'run', parent_span_id: null,
       agent_id: task.agent || 'system', operation: 'schedule.run', start_ms: startedMs, end_ms: endedMs,
       status: ok ? 'ok' : 'error',
-      attributes: JSON.stringify({ schedule: task.name, schedule_type: 'command' }),
+      attributes: JSON.stringify({ schedule: task.name, schedule_type: 'command', ...(outcome === 'findings' && { outcome: 'findings' }) }),
     })
   } catch { /* telemetry is never fatal to the task */ }
-  const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
+  const { next, action } = evaluateCommandResult(map[task.name], outcome, failThreshold, now)
   map[task.name] = next
   persist()
   try { appendTaskRun(task.name, task.agent || "system") } catch { /* non-fatal */ }
-  logger.info({ task: task.name, ok, detail, fails: next.fails, action }, "command task ran")
+  logger.info({ task: task.name, ok, outcome, detail, fails: next.fails, action }, "command task ran")
 
   if (action === "none") return
   if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) {
@@ -173,7 +188,9 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
   const label = task.description || task.name
   const text = action === "alert"
     ? `\u{1F534} Hiba: ${label} nem v\u00e1laszol (${next.fails}. egym\u00e1s ut\u00e1ni hiba). R\u00e9szlet: ${detail}`
-    : `\u{1F7E2} Helyre\u00e1llt: ${label} ism\u00e9t OK.`
+    : action === "findings"
+      ? `\u{1F7E0} Lelet: ${label}. R\u00e9szlet: ${detail}`
+      : `\u{1F7E2} Helyre\u00e1llt: ${label} ism\u00e9t OK.`
   sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
     .then(() => logger.info({ task: task.name, action }, "command task alert sent"))
     .catch((err) => logger.warn({ err, task: task.name }, "command task alert send failed"))

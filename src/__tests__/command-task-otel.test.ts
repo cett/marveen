@@ -112,6 +112,26 @@ describe('runCommandTask: schedule.run span and duration metric', () => {
     expect(recordDurationMock).toHaveBeenCalledWith('nightly-check', 1, false)
   })
 
+  it('records the findings exit code as an ok span, an ok duration and one "finding" alert (not an error)', async () => {
+    const { runCommandTask, COMMAND_EXIT_FINDINGS } = await freshModule()
+    nextSpawn({ code: COMMAND_EXIT_FINDINGS, runMs: 1000 })
+    await runCommandTask(task(), START_MS)
+    expect(upsertOtelSpanMock.mock.calls[0][0]).toMatchObject({ status: 'ok', start_ms: START_MS, end_ms: START_MS + 1000 })
+    expect(JSON.parse(upsertOtelSpanMock.mock.calls[0][0].attributes)).toEqual({ schedule: 'nightly-check', schedule_type: 'command', outcome: 'findings' })
+    expect(recordDurationMock).toHaveBeenCalledWith('nightly-check', 1, true)
+    expect(sendTelegramMessageMock).toHaveBeenCalledTimes(1)
+    expect(sendTelegramMessageMock.mock.calls[0][2]).toContain('Lelet')
+    const persisted = JSON.parse(atomicWriteFileSyncMock.mock.calls[0][1] as string)
+    expect(persisted['nightly-check']).toMatchObject({ fails: 0, alerted: true, lastStatus: 'findings' })
+  })
+
+  it('keeps any other non-zero exit code a failure', async () => {
+    const { runCommandTask, COMMAND_EXIT_FINDINGS } = await freshModule()
+    nextSpawn({ code: COMMAND_EXIT_FINDINGS + 1, runMs: 1000 })
+    await runCommandTask(task(), START_MS)
+    expect(upsertOtelSpanMock.mock.calls[0][0]).toMatchObject({ status: 'error' })
+  })
+
   it('marks a command that cannot be started (child error event) as an error', async () => {
     const { runCommandTask } = await freshModule()
     nextSpawn({ error: new Error('spawn bash ENOENT'), runMs: 0 })

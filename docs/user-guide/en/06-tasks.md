@@ -93,11 +93,12 @@ How it behaves:
 
 ### Health file and failure alerts
 
-Every run updates `store/command-task-health.json`, which holds one entry per command task: the number of consecutive failures, whether an alert has already been sent, the last status (`ok` or `fail`) and the time of the last run (milliseconds since the epoch).
+Every run updates `store/command-task-health.json`, which holds one entry per command task: the number of consecutive failures, whether an alert has already been sent, the last status (`ok`, `findings` or `fail`) and the time of the last run (milliseconds since the epoch).
 
 - A success resets the failure counter.
 - When the counter reaches `failThreshold`, one Telegram alert goes to the owner with the failure detail. Further failures do not repeat the alert.
 - The first success after an alert sends a single "recovered" message and clears the alert state.
+- A command that checks something and has a report (a monitor) can exit with code `42`. That is a **finding**, not a failed run: it does not count as an error on the Overview, does not touch the failure counter, and sends one "finding" alert when the findings start (and a "recovered" message after the first clean run). Any other non-zero exit stays a failure.
 - Alerts need the Telegram bot token and the owner chat to be configured; otherwise the alert is skipped and only written to the log. The alert text is currently always Hungarian.
 
 Each finished run is also added to the task's run history. The badge in the list (`command ran`) only tells that the run was started; read the health file for the result.

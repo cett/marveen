@@ -5931,6 +5931,25 @@ paths:
                     x-admin-only: true
                     description: Admin-only. Omitted for non-admin callers.
                     type: integer
+                  errorSpans:
+                    x-admin-only: true
+                    description: >
+                      Admin-only. Omitted for non-admin callers. The newest (up to 20) error or
+                      timeout spans of the last 4 hours, newest first -- the rows behind `errors4h`.
+                      Empty when there are none. A command task that exits with its findings code
+                      (a finding, not a failed run) is not an error span.
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        trace_id: { type: string }
+                        span_id: { type: string }
+                        agent_id: { type: string }
+                        operation: { type: string, description: "For example `schedule.run` or `http.server`." }
+                        status: { type: string, enum: [error, timeout] }
+                        start_ms: { type: integer, description: Unix timestamp in milliseconds }
+                        duration_ms: { type: integer, nullable: true }
+                        detail: { type: string, description: "Short label: the schedule name, or the HTTP method, route template and status." }
                   stuckTasks:
                     x-admin-only: true
                     description: Admin-only. Omitted for non-admin callers.

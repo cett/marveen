@@ -42,7 +42,7 @@ A verzióállapot alatt egy **Claude Code** kártya mutatja, hogyan tartja magá
 - **Utolsó ellenőrzés** -- mikor futott utoljára a heti frissítő feladat, és hogyan végződött: frissítve, már a legfrissebb, visszatartva (rögzített verzió) vagy sikertelen.
 - **Figyelmeztetések** (a kártya széle borostyánsárga lesz):
   - az utolsó frissítési futás sikertelen volt (semmi sem indult újra, és a feladat az első hibánál Telegramon riaszt);
-  - az utolsó ellenőrzés 10 napnál régebbi, vagyis a heti feladat nem fut -- nézd meg a Feladatok oldalt;
+  - az utolsó ellenőrzés 10 napnál régebbi, vagyis a heti feladat nem fut -- nézd meg a Feladatok oldalt. Ha a feladat a beállítása óta még egyszer sem futott, a figyelmeztetés csak akkor jelenik meg, ha a beállítás is több mint 10 napos; az első futás előtt a kártya csak jelzi, hogy a feladat még nem futott, és mikor esedékes;
   - újabb verzió van kiadva, mint a telepített;
   - **újraindítás függőben** -- a frissítés előtt indult sessionök még a régi buildet futtatják;
   - sessionök, amiket nem sikerült automatikusan újraindítani (indítsd újra kézzel).

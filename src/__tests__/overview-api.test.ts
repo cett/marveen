@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { initDatabase, getDb, createApproval, createSkill, createTenant, setTenantAgentAvailability } from '../db.js'
+import { initDatabase, getDb, createApproval, createSkill, createTenant, setTenantAgentAvailability, upsertOtelSpan } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../web/agent-config.js', () => ({
@@ -571,10 +571,10 @@ describe('GET /api/overview — tenant isolation', () => {
 describe('GET /api/overview — non-admin response omits fleet-level fields', () => {
   const FLEET_FIELDS = [
     'agents', 'tasksToday', 'tasksYesterday', 'artifacts', 'skills',
-    'tokensToday', 'pendingApprovals', 'errors4h', 'stuckTasks',
+    'tokensToday', 'pendingApprovals', 'errors4h', 'errorSpans', 'stuckTasks',
   ] as const
 
-  it('viewer role: all nine fleet-level fields are absent', async () => {
+  it('viewer role: all ten fleet-level fields are absent', async () => {
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'viewer' })
     await tryHandleOverview(ctx)
     for (const field of FLEET_FIELDS) {
@@ -590,11 +590,66 @@ describe('GET /api/overview — non-admin response omits fleet-level fields', ()
     expect(out.body).toHaveProperty('activity')
   })
 
-  it('admin role: all nine fleet-level fields are present', async () => {
+  it('admin role: all ten fleet-level fields are present', async () => {
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
     for (const field of FLEET_FIELDS) {
       expect(out.body, `field "${field}" must be present for admin`).toHaveProperty(field)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// errorSpans: the rows behind the errors4h warning
+// ---------------------------------------------------------------------------
+
+describe('GET /api/overview — errorSpans', () => {
+  function span(id: string, over: Partial<Parameters<typeof upsertOtelSpan>[0]> = {}) {
+    upsertOtelSpan({
+      trace_id: `t-${id}`, span_id: id, parent_span_id: null, agent_id: 'agent-a', operation: 'schedule.run',
+      start_ms: Date.now() - 60_000, end_ms: Date.now() - 59_000, status: 'error',
+      attributes: JSON.stringify({ schedule: 'nightly', schedule_type: 'command' }), ...over,
+    })
+  }
+
+  it('is empty when there is no error span', async () => {
+    const { ctx, out } = fakeCtx('/api/overview')
+    await tryHandleOverview(ctx)
+    expect(out.body.errors4h).toBe(0)
+    expect(out.body.errorSpans).toEqual([])
+  })
+
+  it('lists the 4-hour error and timeout spans newest first, with a short label', async () => {
+    const now = Date.now()
+    span('a', { start_ms: now - 3_000_000, end_ms: now - 2_999_000 })
+    span('b', {
+      operation: 'http.server', agent_id: 'dashboard', start_ms: now - 1_000_000, end_ms: now - 999_000, status: 'timeout',
+      attributes: JSON.stringify({ http_method: 'POST', http_route: '/api/messages', http_status: 500 }),
+    })
+    span('old', { start_ms: now - 5 * 3_600_000, end_ms: now - 5 * 3_600_000 + 10 })
+    span('fine', { status: 'ok' })
+    const { ctx, out } = fakeCtx('/api/overview')
+    await tryHandleOverview(ctx)
+    expect(out.body.errors4h).toBe(2)
+    expect(out.body.errorSpans.map((s: any) => s.span_id)).toEqual(['b', 'a'])
+    expect(out.body.errorSpans[0]).toMatchObject({
+      trace_id: 't-b', agent_id: 'dashboard', operation: 'http.server', status: 'timeout', duration_ms: 1000, detail: 'POST /api/messages 500',
+    })
+    expect(out.body.errorSpans[1]).toMatchObject({ operation: 'schedule.run', status: 'error', detail: 'nightly' })
+  })
+
+  it('shows at most 20 spans while errors4h keeps the full count', async () => {
+    for (let i = 0; i < 25; i++) span(`s${i}`, { start_ms: Date.now() - 1000 - i })
+    const { ctx, out } = fakeCtx('/api/overview')
+    await tryHandleOverview(ctx)
+    expect(out.body.errors4h).toBe(25)
+    expect(out.body.errorSpans).toHaveLength(20)
+  })
+
+  it('never returns the raw attributes', async () => {
+    span('x', { attributes: JSON.stringify({ schedule: 'nightly', secret: 'TOKEN-VALUE' }) })
+    const { ctx, out } = fakeCtx('/api/overview')
+    await tryHandleOverview(ctx)
+    expect(JSON.stringify(out.body.errorSpans)).not.toContain('TOKEN-VALUE')
   })
 })
