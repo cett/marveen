@@ -34,6 +34,8 @@ Egy kártyára kattintva megnyílik a részlet-nézet, ahol a teljes tartalom ol
 
 Az ágensek által generált napi összefoglalók, dátum szerint böngészhetők. A napló az aznap elvégzett feladatokat, döntéseket és eseményeket rögzíti. A dátumnavigációs nyilakkal a korábbi napok naplói is megtekinthetők.
 
+A fő agent naplójába minden este 22:30-kor (a szerver időzónájában) automatikusan bekerül egy **"Napi összefoglaló"** bejegyzés is, amelyet a `daily-log-summary` ütemezett feladat ír (lásd [06 - Feladatok](06-feladatok.md#esti-napi-napló-összefoglaló)): az aznapi új memóriák, a létrehozott és lezárt kártyák, a munkadokumentumok és a merge-elt pull requestek. A semmit sem tartalmazó nap is kap egy egysoros bejegyzést, így a napló egy hiányzó napja azt jelenti, hogy a feladat nem futott.
+
 ### Gráf / Idővonal
 
 A Gráf fülön az emlékek közötti kapcsolatok interaktív hálózat-gráfon jelennek meg; a csomópontok tier szerint színezve mutatják az összefüggéseket. Az Idővonal fülön az emlékek kronologikus sávdiagramon láthatók.

@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, WEB_PORT } from '../config.js'
 import {
   getTenant,
   getTenantForMainAgent,
@@ -173,6 +173,53 @@ export function createStarterPack(
   const result = emptyResult(tenantId, name, 'created', resolved.agent)
   result.created.push(name)
   return { ok: true, result }
+}
+
+// ── Automatic creation for new tenants ────────────────────────────────────────
+
+// A tenant created from now on gets its starter task (as the same draft + disabled row the button makes) without
+// anyone asking. A new tenant has no agent yet, so creation usually cannot pick one: the tenant is then marked
+// "pending" and the task is made when an agent is enabled for it. The marker is a file per tenant, removed once the
+// task exists, so a task an admin deletes later does not come back, and a tenant that existed before this
+// (no marker) is left to the button as before.
+
+const PENDING_DIR_NAME = 'starter-pack-pending'
+const pendingMarker = (tenantId: string): string | null =>
+  /^[a-z0-9_-]+$/.test(tenantId) ? join(STORE_DIR, PENDING_DIR_NAME, tenantId) : null
+
+/** Marks a freshly created tenant as owed its starter task. */
+export function markStarterPackPending(tenantId: string): void {
+  const file = pendingMarker(tenantId)
+  if (!file) return
+  try {
+    mkdirSync(join(STORE_DIR, PENDING_DIR_NAME), { recursive: true })
+    writeFileSync(file, new Date().toISOString() + '\n')
+  } catch (err) {
+    logger.warn({ err, tenantId }, 'starter pack: could not mark the tenant as pending')
+  }
+}
+
+export function starterPackIsPending(tenantId: string): boolean {
+  const file = pendingMarker(tenantId)
+  return file !== null && existsSync(file)
+}
+
+/**
+ * Creates the starter task of a tenant that is owed one, if an agent can be chosen now. A tenant that is not
+ * pending is left alone. Returns the result when the task was created, null otherwise (not pending, or no agent yet).
+ */
+export function autoCreateStarterPack(ctx: RouteContext, tenantId: string): StarterResult | null {
+  if (!starterPackIsPending(tenantId)) return null
+  const out = createStarterPack(ctx, tenantId)
+  const file = pendingMarker(tenantId)!
+  const settle = (): void => { try { unlinkSync(file) } catch { /* already gone */ } }
+  if (out.ok) {
+    settle()
+    return out.result.created.length > 0 ? out.result : null
+  }
+  // A name taken by another tenant's task cannot be solved by waiting; every other refusal is "no agent yet".
+  if (out.error === 'name_conflict') settle()
+  return null
 }
 
 type StarterPlan =

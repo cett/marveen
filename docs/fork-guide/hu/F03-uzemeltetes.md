@@ -192,7 +192,7 @@ Korlátok: ez a tenant-skillek **használatát** kényszeríti ki, a shell oldal
 
 ### Alapcsomag egy meglévő tenantra
 
-Az alapcsomag (egy napi összefoglaló ütemezett feladat, részletek: F07 "Tenant alapcsomag") nem jön létre magától: sem új tenantnál, sem a már meglévőknél nincs automatikus utólagos létrehozás. Az admin kéri, tenantonként, bármikor; a kérés idempotens, ismétlése sosem ír felül semmit. A dashboardon a Tenantok fül **Alapcsomag** gombja végzi, API-n:
+Az alapcsomag (egy napi összefoglaló ütemezett feladat, részletek: F07 "Tenant alapcsomag") magától csak az azt bevezető kiadás után létrehozott tenantnál jön létre (lásd F07 "Tenant alapcsomag", automatikus létrehozás); a már meglévő tenant nem kapja meg automatikusan. Ezeknél és javításhoz az admin kéri, tenantonként, bármikor; a kérés idempotens, ismétlése sosem ír felül semmit. A dashboardon a Tenantok fül **Alapcsomag** gombja végzi, API-n:
 
 ```bash
 bash scripts/agent-api.sh --token operator POST /api/v1/admin/tenants/<tenant>/starter-pack '{"agent_id":"<ágens>"}'

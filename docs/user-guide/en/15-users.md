@@ -158,7 +158,7 @@ Scheduled tasks are owned by a tenant (details in [06 - Tasks](06-tasks.md)):
 
 ### Tenant starter pack
 
-The starter pack is a ready-made scheduled task (a daily summary) for a tenant. What the task does, how to activate it and who gets the channel message: [06 - Tasks](06-tasks.md#tenant-starter-pack). This section describes where the button is and who can reach what.
+The starter pack is a ready-made scheduled task (a daily summary) for a tenant. What the task does, how to activate it and who gets the channel message: [06 - Tasks](06-tasks.md#tenant-starter-pack). A tenant created from now on gets the task by itself (a draft, paused), as soon as an agent can be chosen for it; the button is for tenants that already existed, for choosing the agent and for repairing the task. This section describes where the button is and who can reach what.
 
 **Where the button is.** On the **Tenants** tab, in each tenant's row next to the agent-management button, there is a **Starter pack** button (not on the `default` tenant). Clicking it opens the Starter pack panel below the tenant list. The panel shows:
 

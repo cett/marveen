@@ -45,7 +45,7 @@ import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, listAgentNames } from '../agent-config.js'
 import { getHighRiskMcpServersForAgent } from '../mcp-risk-policy.js'
 import { regenTenantSkillFilesForAgentChange } from '../skill-regen.js'
-import { createStarterPack, describeStarterPack, reconcileStarterPack } from '../tenant-starter-pack.js'
+import { autoCreateStarterPack, createStarterPack, describeStarterPack, markStarterPackPending, reconcileStarterPack } from '../tenant-starter-pack.js'
 import { logger } from '../../logger.js'
 import { denyUnlessHumanSession } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
@@ -102,6 +102,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
     const tenant = createTenant(id, displayName)
     auditAdmin(ctx, 'admin.tenant.create', id, { display_name: displayName })
+    // The new tenant is owed a starter task (a draft, disabled); it is made now if an agent can be chosen, else when one is enabled.
+    try { markStarterPackPending(id); autoCreateStarterPack(ctx, id) } catch (err) { logger.warn({ err, tenantId: id }, 'tenant starter task could not be created for the new tenant') }
     json(res, tenant, 201)
     return true
   }
@@ -573,6 +575,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     try { regenTenantSkillFilesForAgentChange(sanitizedAgentId, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant skill files could not be reconciled after an availability change') }
     // The tenant's starter task follows the agent behind it; a failure here never fails the PUT.
     try { reconcileStarterPack(ctx, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant starter task could not be reconciled after an availability change') }
+    // A tenant created without an agent is owed its starter task: this is the moment an agent may have become available.
+    try { autoCreateStarterPack(ctx, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant starter task could not be created after an availability change') }
     json(res, { tenant_id: row.tenant_id, agent_id: row.agent_id, enabled: row.enabled === 1, updated_at: row.updated_at })
     return true
   }

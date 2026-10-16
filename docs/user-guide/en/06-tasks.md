@@ -217,9 +217,22 @@ Besides the tenant move, the fields an edit can change are the description, prom
 
 ---
 
+## Evening daily-log summary
+
+Every install has a ready-made task named `daily-log-summary`. It is a command task (no LLM, so it costs nothing and does not need a running session) that runs every day at 22:30 in the server time zone, as the main agent, and writes one entry headed `## Napi összefoglaló <date>` to that agent's daily log (Memories view, Daily log). The entry lists, for the default tenant only:
+
+- the memories saved that day: how many per agent and the most frequent keywords (up to 8). The text of a memory is never copied into the log, because it is free private text and no filter can promise to catch every secret in it,
+- the kanban cards created, finished and moved that day,
+- the workspace documents written or changed that day,
+- the pull requests merged that day (the merge commits of this installation's checkout).
+
+A list is cut at 8 rows ("and N more"), and each quoted text (a card or document title, a merge subject) at about 90 characters. A keyword is kept only if it is short and plain: one with a secret or an e-mail address in it, with more than 4 digits, or longer than 40 characters is left out. Before a text is quoted, credentials in it (API keys, tokens, `Bearer` values, `password=` and `jelszó:` assignments, passwords inside URLs, private key blocks, long key-like strings) and the home directory are replaced by `***`, and e-mail addresses by `[email]`. Hyphenated and snake_case names such as document keys stay readable. On a day with none of these the entry is a single line, "Nem volt rögzített aktivitás" (no recorded activity), so that a gap in the log can only mean the task did not run. The task writes once a day: if the log already holds the day's header (a manual run after the scheduled one) it does nothing. A run missed because the computer was asleep is made up until 23:55; after that the day is not filed late.
+
+The task is created once, the first time an installation starts with this version, also on an existing installation. It is an ordinary task: you can change its time, pause it or delete it in the Tasks list, and a deleted or edited task is not put back or overwritten by a restart. Two failed runs in a row raise an alert. Run it by hand from the task's menu to write today's entry early.
+
 ## Tenant starter pack
 
-Every tenant other than `default` can be given a ready-made scheduled task, the **starter pack**. For now it consists of a single task, a daily summary named `<tenant>-starter-daily-summary`. Only a global admin can create it, on the Tenants tab of the Users view (see [15 - Users](15-users.md#tenant-starter-pack)); after that the task also appears in the Tasks list like any other.
+Every tenant other than `default` can be given a ready-made scheduled task, the **starter pack**. For now it consists of a single task, a daily summary named `<tenant>-starter-daily-summary`. A tenant created from now on gets it by itself, as soon as an agent can be chosen for it: at creation if the tenant already has one, otherwise when the first agent is enabled for it on the Users view. For an existing tenant, and to repair a task, a global admin creates it on the Tenants tab of the Users view (see [15 - Users](15-users.md#tenant-starter-pack)); after that the task also appears in the Tasks list like any other. An automatically created task is a draft and paused, like one made by hand, so nothing goes out before someone has looked at it; a task an admin deleted is not created again.
 
 | Setting | Value |
 |---------|-------|
