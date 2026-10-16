@@ -3,7 +3,7 @@
 // the repository holds a complete key-shaped string.
 
 import { describe, it, expect } from 'vitest'
-import { scrubText, scrubLogText } from '../otel-scrub.js'
+import { scrubText, scrubLogText, scrubBlobs } from '../otel-scrub.js'
 
 const A = (n: number) => 'A'.repeat(n)
 const j = (...parts: string[]) => parts.join('')
@@ -74,6 +74,72 @@ describe('a long run of base64-looking characters in a log message', () => {
   it('is not applied to the tool input summary, where a long path is legitimate', () => {
     const path = 'src/some/directory/with-a-quite-long-name-1234567890/and/more/file.ts'
     expect(scrubText(`edit ${path}`, 200)).toContain('with-a-quite-long-name-1234567890')
+  })
+})
+
+describe('the long-run rule is one linear pass', () => {
+  // The rule as it was before: both conditions as lookaheads in front of the run. Kept here as the reference for
+  // the behaviour (which shapes become ***), not for speed.
+  const REFERENCE = /(?=[A-Za-z0-9+/_-]*[A-Za-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{32,}={0,2}/g
+
+  it('stars out exactly what the lookahead form starred out', () => {
+    // A small deterministic generator (no Math.random), so a failure repeats.
+    let seed = 20261016
+    const next = (n: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed % n
+    }
+    const alphabets = ['ab', 'aB1', 'a1', 'a1+/_-=', 'abc1 ', 'a1/ .=-', '09az_-', 'Zz9+= \n']
+    for (let i = 0; i < 4000; i++) {
+      const alphabet = alphabets[next(alphabets.length)]
+      const len = next(120)
+      let text = ''
+      for (let k = 0; k < len; k++) text += alphabet[next(alphabet.length)]
+      expect(scrubBlobs(text), JSON.stringify(text)).toBe(text.replace(REFERENCE, '***'))
+    }
+  })
+
+  it('keeps the boundary cases of the length, the padding and the two conditions', () => {
+    const run = (n: number, fill = 'a1') => fill.repeat(Math.ceil(n / fill.length)).slice(0, n)
+    for (const text of [
+      run(31), run(32), run(33), `${run(32)}=`, `${run(32)}==`, `${run(32)}===`, `x ${run(32)}== y`,
+      run(40, 'a'), run(40, '7'), `${run(31, 'a')}7`, `7${run(31, 'a')}`, `${run(20, 'a')} ${run(20, '7')}`,
+      `${run(16, 'a')}/${run(16, '7')}`, `${run(40)}+${run(40)}`, '', 'x',
+    ]) {
+      expect(scrubBlobs(text), JSON.stringify(text)).toBe(text.replace(REFERENCE, '***'))
+    }
+    expect(scrubBlobs(run(32))).toBe('***')
+    expect(scrubBlobs(`${run(32)}==`)).toBe('***')
+    expect(scrubBlobs(run(31))).toBe(run(31))
+    expect(scrubBlobs(run(40, 'a'))).toBe(run(40, 'a'))
+    expect(scrubBlobs(run(40, '7'))).toBe(run(40, '7'))
+  })
+
+  it('does not slow down on a very long run that is left alone', () => {
+    // 300k characters with no digit, or with no letter: the lookahead form rescanned the rest of the run from
+    // every position (minutes); one pass takes a few milliseconds. The bound is loose enough for a loaded CI host.
+    for (const text of ['ab/'.repeat(100_000), 'a'.repeat(300_000), '7'.repeat(300_000), 'a-b_c+d/'.repeat(40_000)]) {
+      const start = performance.now()
+      const out = scrubBlobs(text)
+      const ms = performance.now() - start
+      expect(out === text, 'left alone').toBe(true)
+      expect(ms).toBeLessThan(500)
+    }
+  })
+
+  it('does not slow down on a very long run that is starred out, or on many runs just under the limit', () => {
+    for (const text of ['aB3'.repeat(100_000), 'aB3'.repeat(10) + ' ', `${'a1'.repeat(15)} `.repeat(20_000)]) {
+      const start = performance.now()
+      scrubBlobs(text)
+      expect(performance.now() - start).toBeLessThan(500)
+    }
+  })
+
+  it('stays quick through the log text scrub on a long slash separated message', () => {
+    const start = performance.now()
+    const out = scrubLogText('ab/'.repeat(100_000), 160)
+    expect(performance.now() - start).toBeLessThan(500)
+    expect(out).toBe('ab[path]/')
   })
 })
 

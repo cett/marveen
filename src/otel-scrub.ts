@@ -43,8 +43,17 @@ const KEY_SCRUBS: [RegExp, string][] = [
 
 // A long run of base64-looking characters that mixes letters and digits (32 or more): a key, a signature, a blob.
 // Only for log text, where such a run is never wanted; in a command (the tool input summary) a long path would
-// match too.
-const BLOB_SCRUB: [RegExp, string] = [/(?=[A-Za-z0-9+/_-]*[A-Za-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{32,}={0,2}/g, '***']
+// match too. The match is the whole run (plus up to two "=" of padding) and the letter and digit conditions are
+// checked on it afterwards, so one pass over the text is enough. With the two conditions as lookaheads in front of
+// the run, every start position of a long run without a digit (or without a letter) scanned to the end of it:
+// quadratic in the length of the run.
+const BLOB_RUN = /[A-Za-z0-9+/_-]{32,}={0,2}/g
+const HAS_LETTER = /[A-Za-z]/
+const HAS_DIGIT = /\d/
+
+export function scrubBlobs(value: string): string {
+  return value.replace(BLOB_RUN, run => (HAS_LETTER.test(run) && HAS_DIGIT.test(run) ? '***' : run))
+}
 
 // The credential and home-directory scrub, shortened last so a cut never leaves half a secret behind.
 export function scrubText(value: string, maxChars: number): string {
@@ -59,7 +68,7 @@ export function scrubLogText(value: string, maxChars: number): string {
   let out = value
   for (const [rx, replacement] of KEY_SCRUBS) out = out.replace(rx, replacement)
   for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
-  out = out.replace(BLOB_SCRUB[0], BLOB_SCRUB[1])
+  out = scrubBlobs(out)
   for (const [rx, replacement] of TEXT_SCRUBS) out = out.replace(rx, replacement)
   return out.slice(0, maxChars)
 }
