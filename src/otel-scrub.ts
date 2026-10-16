@@ -43,12 +43,37 @@ const KEY_SCRUBS: [RegExp, string][] = [
 
 // A long run of base64-looking characters that mixes letters and digits (32 or more): a key, a signature, a blob.
 // Only for log text, where such a run is never wanted; in a command (the tool input summary) a long path would
-// match too.
-const BLOB_SCRUB: [RegExp, string] = [/(?=[A-Za-z0-9+/_-]*[A-Za-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{32,}={0,2}/g, '***']
+// match too. The match is the whole run (plus up to two "=" of padding) and the letter and digit conditions are
+// checked on it afterwards, so one pass over the text is enough. With the two conditions as lookaheads in front of
+// the run, every start position of a long run without a digit (or without a letter) scanned to the end of it:
+// quadratic in the length of the run.
+const BLOB_RUN = /[A-Za-z0-9+/_-]{32,}={0,2}/g
+const HAS_LETTER = /[A-Za-z]/
+const HAS_DIGIT = /\d/
+
+export function scrubBlobs(value: string): string {
+  return value.replace(BLOB_RUN, run => (HAS_LETTER.test(run) && HAS_DIGIT.test(run) ? '***' : run))
+}
+
+// The user:password@, URL userinfo and e-mail rules go quadratic on one very long unbroken run, so the text is cut to
+// a bound before the rules see it (same bound as scripts/daily-log-summary.py). A rule can also shrink what it
+// replaces (a long run becomes ***), so the end of the cut input can still reach the result; a credential split by
+// the cut would then pass as a fragment too short for its rule. When the text was cut, the unbroken token the cut
+// ended in is therefore dropped as well.
+export const SCRUB_INPUT_LIMIT = 4000
+
+function boundInput(value: string, maxChars: number): string {
+  const limit = Math.max(SCRUB_INPUT_LIMIT, maxChars * 4)
+  if (value.length <= limit) return value
+  let end = limit
+  while (end > 0 && !/\s/.test(value[end - 1])) end--
+  // no whitespace at all: one giant token, drop the last 200 characters of the cut as the daily log script does
+  return value.slice(0, end > 0 ? end : limit - 200)
+}
 
 // The credential and home-directory scrub, shortened last so a cut never leaves half a secret behind.
 export function scrubText(value: string, maxChars: number): string {
-  let out = value
+  let out = boundInput(value, maxChars)
   for (const [rx, replacement] of KEY_SCRUBS) out = out.replace(rx, replacement)
   for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
   return out.slice(0, maxChars)
@@ -56,10 +81,10 @@ export function scrubText(value: string, maxChars: number): string {
 
 // The same plus the free-text shapes above, for a log message.
 export function scrubLogText(value: string, maxChars: number): string {
-  let out = value
+  let out = boundInput(value, maxChars)
   for (const [rx, replacement] of KEY_SCRUBS) out = out.replace(rx, replacement)
   for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
-  out = out.replace(BLOB_SCRUB[0], BLOB_SCRUB[1])
+  out = scrubBlobs(out)
   for (const [rx, replacement] of TEXT_SCRUBS) out = out.replace(rx, replacement)
   return out.slice(0, maxChars)
 }
