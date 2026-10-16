@@ -61,6 +61,10 @@ AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/ti
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# portable_mtime (GNU stat, then BSD stat, so it works on macOS too). If the helper file is missing the calls below
+# fail with "command not found", which reads as "age unknown" and takes the safe side (not stale / defer).
+. "$INSTALL_DIR/scripts/lib/portable.sh" 2>/dev/null || echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] WARN scripts/lib/portable.sh missing -- file ages unknown, no respawn on age"
+
 # --- resolve the channels session + provider (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
@@ -113,9 +117,14 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   # keepalive probe itself was never configured.
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
-  ka_mtime=$(stat -c %Y "$KEEPALIVE_FILE" 2>/dev/null || echo 0)
-  age=$(( now - ka_mtime ))
-  [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
+  if ka_mtime="$(portable_mtime "$KEEPALIVE_FILE")"; then
+    age=$(( now - ka_mtime ))
+    [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
+  else
+    # An mtime that cannot be read is not a stale file: reading it as 0 made every tick look wedged and
+    # respawned the main session every 15 minutes.
+    log "cannot read the mtime of $KEEPALIVE_FILE -- STALE=false"
+  fi
 fi
 
 # --- signal 2: AUTHDEAD (pane auth-marker scan via channels-auth-probe.mjs) ---
@@ -150,7 +159,11 @@ fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
 if [ -f "$RESPAWN_STAMP" ]; then
-  last=$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)
+  if ! last="$(portable_mtime "$RESPAWN_STAMP")"; then
+    # Unknown is the safe side here too: a stamp whose age cannot be read counts as fresh, so no respawn storm.
+    log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but the age of $RESPAWN_STAMP cannot be read -- deferring"
+    exit 0
+  fi
   if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but within respawn grace -- deferring"
     exit 0

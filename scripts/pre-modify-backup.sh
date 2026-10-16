@@ -19,6 +19,9 @@ LABEL="${1:-manual}"
 TS="$(date +%Y%m%d-%H%M%S)"
 DEST="$BKDIR/${TS}-${LABEL}"
 
+# portable_sha256 (sha256sum or shasum). A missing helper file only degrades the manifest to NOHASH entries.
+. "$REPO/scripts/lib/portable.sh" 2>/dev/null || echo "  WARN scripts/lib/portable.sh missing -- the manifest will carry NOHASH instead of hashes"
+
 mkdir -p "$DEST"
 
 # Consistent SQLite snapshot (NOT a raw cp -- the live dashboard may be mid-write).
@@ -73,7 +76,10 @@ for rel in $PERSONAL_FILES; do
   if [ -f "$REPO/$rel" ]; then
     mkdir -p "$PERSONAL_DIR/$(dirname "$rel")"
     cp -p "$REPO/$rel" "$PERSONAL_DIR/$rel" 2>/dev/null
-    printf '%s  %s\n' "$(sha256sum "$REPO/$rel" | cut -d' ' -f1)" "$rel" >> "$PERSONAL_DIR/MANIFEST.txt"
+    # macOS has no sha256sum; portable_sha256 falls back to shasum. A file that cannot be hashed is marked
+    # NOHASH, never written with an empty hash (an empty column looks like a valid, matching entry).
+    file_hash="$(portable_sha256 "$REPO/$rel")" || file_hash="NOHASH"
+    printf '%s  %s\n' "${file_hash:-NOHASH}" "$rel" >> "$PERSONAL_DIR/MANIFEST.txt"
     PERSONAL_SAVED=$((PERSONAL_SAVED + 1))
   else
     # Only reachable via an explicit list: a named file that is already gone is

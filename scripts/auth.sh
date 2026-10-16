@@ -15,6 +15,9 @@ set -u
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="$INSTALL_DIR/.env"
+# portable_timeout: `timeout` is missing on macOS unless coreutils is installed. Without the helper file the auth
+# check below reports "could not confirm", the same as a failed check.
+. "$INSTALL_DIR/scripts/lib/portable.sh" 2>/dev/null || true
 
 BOLD='\033[1m'; DIM='\033[2m'; GREEN='\033[0;32m'; ORANGE='\033[0;33m'; RED='\033[0;31m'; NC='\033[0m'
 ok()   { echo -e "  ${GREEN}✓${NC} $*"; }
@@ -85,7 +88,7 @@ ok "Szolgaltatasok ujrainditva (${SLUG}-dashboard / ${SLUG}-channels)"
 # --- 4. Verify (auth status = no API-spend; doctor for the rest) ---
 echo ""
 echo -e "  Ellenorzes..."
-if command -v claude >/dev/null 2>&1 && timeout 25 claude auth status </dev/null >/dev/null 2>&1; then
+if command -v claude >/dev/null 2>&1 && portable_timeout 25 claude auth status</dev/null >/dev/null 2>&1; then
   ok "claude auth status: bejelentkezve"
 else
   warn "claude auth status nem erositi meg a bejelentkezest -- ellenorizd a tokent/halozatot."
