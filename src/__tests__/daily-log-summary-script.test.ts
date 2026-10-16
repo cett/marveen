@@ -104,6 +104,40 @@ describe('daily-log-summary.py', () => {
     expect(c).not.toContain(String.fromCharCode(0x2014))
   })
 
+  it('scrubs credentials out of every quoted text before it reaches the log', () => {
+    // The fixtures are assembled from pieces so no key-shaped literal sits in the source.
+    const sk = 'sk' + '-' + 'a1B2c3D4e5F6g7H8i9J0'
+    const gh = 'ghp' + '_' + 'A1b2C3d4E5f6G7h8I9j0K1l2'
+    const jwt = ['eyJ' + 'hbGciOi', 'eyJ' + 'zdWIiOjE', 'sig' + 'nature123'].join('.')
+    const pem = '-----BEGIN ' + 'PRIVATE KEY-----\nMIIBVQIBADANBgkq\n-----END ' + 'PRIVATE KEY-----'
+    const aws = 'AKIA' + 'ABCDEFGHIJKLMNOP'
+    const blob = 'Zm9vYmFy' + '1234567890abcdefghijklmnopqrstuvwx'
+    answer('GET-memories', [
+      // The secret starts before the 90-character cut and ends after it: scrubbing after the cut would leave a stub.
+      // (Only the first 8 memories are listed, so the cases below stay within 8 rows.)
+      { id: 0, agent_id: 'alpha', content: 'x'.repeat(80) + ' ' + sk + ' tail', created_at: during },
+      { id: 1, agent_id: 'alpha', content: `anthropic key ${sk} was pasted`, created_at: during },
+      { id: 2, agent_id: 'alpha', content: `github ${gh} leaked`, created_at: during },
+      { id: 3, agent_id: 'alpha', content: 'curl -H "Authorization: Bearer abcdefgh12345678" postgres://admin:s3cretpw@db.example/app', created_at: during },
+      { id: 4, agent_id: 'alpha', content: 'password=hunter2hunter2 and jelszó: titkosjelszo99', created_at: during },
+      { id: 5, agent_id: 'alpha', content: `token ${jwt} ${aws}`, created_at: during },
+      { id: 6, agent_id: 'alpha', content: `key file:\n${pem}\nend`, created_at: during },
+      { id: 7, agent_id: 'alpha', content: `blob ${blob} and home /home/someone/secret-dir`, created_at: during },
+    ])
+    answer('GET-kanban', [{ id: 'k1', title: `Rotate ${sk} now`, status: 'planned', assignee: 'alpha', created_at: during, updated_at: during }])
+    const r = run()
+    expect(r.code).toBe(0)
+    const c = posted()!.content
+    for (const secret of [sk, 'a1B2c3D4e5', gh, 'A1b2C3d4E5', 'abcdefgh12345678', 'hunter2', 'titkosjelszo99', jwt,
+      aws, 'MIIBVQIBADAN', 'PRIVATE KEY', blob, 'someone', 's3cretpw', 'sk-a1B']) {
+      expect(c).not.toContain(secret)
+    }
+    expect(c).toContain('***')
+    // The texts around the secrets survive.
+    expect(c).toContain('anthropic key ***')
+    expect(c).toContain('password=***')
+  })
+
   it('caps a long list and says how many more there are', () => {
     answer('GET-memories', Array.from({ length: 11 }, (_, i) => ({ id: i, agent_id: 'alpha', content: `memory ${i}`, created_at: during + i })))
     const c = (run(), posted()!.content)

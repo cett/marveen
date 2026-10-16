@@ -9,7 +9,7 @@ install did that day, from the dashboard API only (never the database):
   - kanban cards created, finished and moved that day (the default tenant)
   - workspace documents written or changed that day (the default tenant)
   - pull requests merged that day (first-parent merge commits of this checkout)
-A day with none of these still gets a one-line entry: a daily log with a gap could not be told from a broken
+Every quoted text is credential-scrubbed first (scrub() below). A day with none of these still gets a one-line entry: a daily log with a gap could not be told from a broken
 writer (that is how the empty log of October 2026 went unnoticed).
 
 It runs once a day: if the log already holds the header for that day the script does nothing, so a manual re-run
@@ -22,9 +22,15 @@ Env: DAILY_LOG_SUMMARY_API   the API wrapper to call (default: agent-api.sh next
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date as Date, datetime, timedelta
+
+# TENANT FILTER IS MANDATORY: the dashboard answers this script as the main agent with an admin token, so every
+# list it returns can hold other tenants' rows, and nothing but this script keeps them out of the default tenant's
+# log. Every NEW data source added below MUST be filtered with in_default_tenant() before it is counted or listed,
+# and MUST get a test row of another tenant in daily-log-summary-script.test.ts.
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 API = os.environ.get("DAILY_LOG_SUMMARY_API") or os.path.join(HERE, "agent-api.sh")
@@ -62,8 +68,42 @@ def rows(payload, *keys):
     return []
 
 
+# Credential scrub for every piece of text that is quoted into the log (a memory, a card or document title, a merge
+# subject). A port of the key shapes of src/otel-scrub.ts (KEY_SCRUBS, SCRUBS, BLOB_SCRUB), plus a PEM block and the
+# Hungarian words for password and key. It is a heuristic, like the original; keep the two in step when one changes.
+# It runs on the WHOLE text before the text is cut to EXCERPT characters, so a cut never leaves half a secret.
+_I = re.IGNORECASE
+_SCRUBS = [
+    (re.compile(r"-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----.*?(?:-----END [A-Z ]*-----|$)", re.S), "***"),
+    (re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{15,}"), "***"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "***"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "***"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"), "***"),
+    (re.compile(r"\bxapp-[A-Za-z0-9-]{10,}"), "***"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}"), "***"),
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "***"),
+    (re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^\s/@]+@", _I), r"\1***@"),
+    (re.compile(r"\b[^\s/@:]+:[^\s/@]+@"), "***@"),
+    (re.compile(r"(\s(?:-u|--user)(?:\s+|=))\S+"), r"\1***"),
+    (re.compile(r"\b(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+|token\s+)?\S+", _I), r"\1***"),
+    (re.compile(r"\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", _I), r"\1 ***"),
+    (re.compile(r"\b((?:pass(?:word|wd)?|jelsz[óo]|token|secret|titok|api[_-]?key|access[_-]?key|kulcs)\s*[:=]\s*)\S+", _I), r"\1***"),
+    (re.compile(r"(--?(?:pass(?:word|wd)?|token|secret|api[_-]?key)\s+)\S+", _I), r"\1***"),
+    (re.compile(r"/(?:Users|home)/[^/\s]+"), "/~"),
+    # a long run of base64-looking characters that mixes letters and digits: a key, a signature, a blob
+    (re.compile(r"(?=[A-Za-z0-9+/_-]*[A-Za-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{32,}={0,2}"), "***"),
+]
+
+
+def scrub(text):
+    out = str(text or "")
+    for rx, replacement in _SCRUBS:
+        out = rx.sub(replacement, out)
+    return out
+
+
 def one_line(text, limit=EXCERPT):
-    s = " ".join(str(text or "").split())
+    s = " ".join(scrub(text).split())
     return s if len(s) <= limit else s[: limit - 3] + "..."
 
 
