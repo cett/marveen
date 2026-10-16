@@ -138,6 +138,26 @@ describe('daily-log-summary.py', () => {
     expect(c).toContain('password=***')
   })
 
+  it('keeps hyphenated doc keys and names readable, still catches real blobs and e-mail addresses, leaves paths and ids', () => {
+    const blob = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo' + '0123456789+/abcdef'
+    answer('GET-memories', [
+      { id: 1, agent_id: 'alpha', content: 'see report/ecfcec5c-workspace-search-delta-qa and', created_at: during },
+      { id: 2, agent_id: 'alpha', content: 'series-998/part-2-facts-and-figures-for-readers ok', created_at: during },
+      { id: 3, agent_id: 'alpha', content: `blob ${blob} end`, created_at: during },
+      { id: 4, agent_id: 'alpha', content: 'write to jane.doe+x@example.org please', created_at: during },
+      // Only the e-mail part of the log-text shapes is ported: a path and a hex id stay as they are.
+      { id: 5, agent_id: 'alpha', content: 'ran /var/log/app/run and id deadbeefdeadbeef', created_at: during },
+    ])
+    const c = (run(), posted()!.content)
+    expect(c).toContain('see report/ecfcec5c-workspace-search-delta-qa and')
+    expect(c).toContain('series-998/part-2-facts-and-figures-for-readers ok')
+    expect(c).toContain('blob *** end')
+    expect(c).not.toContain('QUJDREVG')
+    expect(c).toContain('write to [email] please')
+    expect(c).not.toContain('jane.doe')
+    expect(c).toContain('ran /var/log/app/run and id deadbeefdeadbeef')
+  })
+
   it('caps a long list and says how many more there are', () => {
     answer('GET-memories', Array.from({ length: 11 }, (_, i) => ({ id: i, agent_id: 'alpha', content: `memory ${i}`, created_at: during + i })))
     const c = (run(), posted()!.content)

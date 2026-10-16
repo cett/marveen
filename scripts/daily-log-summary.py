@@ -69,8 +69,8 @@ def rows(payload, *keys):
 
 
 # Credential scrub for every piece of text that is quoted into the log (a memory, a card or document title, a merge
-# subject). A port of the key shapes of src/otel-scrub.ts (KEY_SCRUBS, SCRUBS, BLOB_SCRUB), plus a PEM block and the
-# Hungarian words for password and key. It is a heuristic, like the original; keep the two in step when one changes.
+# subject). A port of the key shapes of src/otel-scrub.ts (KEY_SCRUBS, SCRUBS, BLOB_SCRUB, the e-mail rule of
+# TEXT_SCRUBS), plus a PEM block and the Hungarian words for password and key. It is a heuristic, like the original; keep the two in step when one changes.
 # It runs on the WHOLE text before the text is cut to EXCERPT characters, so a cut never leaves half a secret.
 _I = re.IGNORECASE
 _SCRUBS = [
@@ -90,8 +90,12 @@ _SCRUBS = [
     (re.compile(r"\b((?:pass(?:word|wd)?|jelsz[óo]|token|secret|titok|api[_-]?key|access[_-]?key|kulcs)\s*[:=]\s*)\S+", _I), r"\1***"),
     (re.compile(r"(--?(?:pass(?:word|wd)?|token|secret|api[_-]?key)\s+)\S+", _I), r"\1***"),
     (re.compile(r"/(?:Users|home)/[^/\s]+"), "/~"),
-    # a long run of base64-looking characters that mixes letters and digits: a key, a signature, a blob
-    (re.compile(r"(?=[A-Za-z0-9+/_-]*[A-Za-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{32,}={0,2}"), "***"),
+    # A long run of base64-looking characters that mixes letters and digits: a key, a signature, a blob. The hyphen is
+    # NOT part of the class (the original has it): our own doc_keys and memory names are hyphenated words with ids
+    # in them (report/<id>-workspace-search-delta-qa) and must stay readable; a hyphen splits a run into short pieces.
+    (re.compile(r"(?=[A-Za-z0-9+/_]*[A-Za-z])(?=[A-Za-z0-9+/_]*\d)[A-Za-z0-9+/_]{32,}={0,2}"), "***"),
+    # an e-mail address (the e-mail part of TEXT_SCRUBS; its path and id shapes are left out on purpose)
+    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[email]"),
 ]
 
 
