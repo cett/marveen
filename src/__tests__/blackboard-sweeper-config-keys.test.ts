@@ -28,7 +28,7 @@ const { TIER_CONFIG_KEY } = await import('../web/blackboard-stale-sweeper.js')
 const EXPECTED_DEFAULTS: Record<string, number> = {
   BB_STALE_ORCHESTRATOR_MIN: 120,
   BB_STALE_INTERACTIVE_MIN:   90,
-  BB_STALE_SHORT_RUNNING_MIN: 15,
+  BB_STALE_SHORT_RUNNING_MIN: 30,
   BB_STALE_DEFAULT_MIN:       60,
 }
 

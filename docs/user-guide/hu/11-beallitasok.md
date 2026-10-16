@@ -144,7 +144,7 @@ A blackboard-figyelő és a stale-detektáló küszöbértékei.
 
 ### Stale-detektálás
 
-A `BB_STALE_*` kulcsok azt szabályozzák, mennyi idő elteltével minősít a monitor egy ágens-sort elavultnak a blackboardon.
+A `BB_STALE_*` kulcsok azt szabályozzák, mennyi idő elteltével minősít a monitor egy ágens-sort elavultnak a blackboardon. Az érték perc, és az ágens tier-jétől függ: `BB_STALE_ORCHESTRATOR_MIN` (alapérték 120), `BB_STALE_INTERACTIVE_MIN` (90), `BB_STALE_SHORT_RUNNING_MIN` (30, tartomány 5-60; heartbeat és ütemezett ágensek), `BB_STALE_DEFAULT_MIN` (60) és `BB_STALE_ASSIGNED_MIN` (120, delegált, de még el nem kezdett feladatok). Az az ágens, akinek az ütemezett futása éppen tart, futás közben sosem lesz elavult.
 
 ---
 

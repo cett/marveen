@@ -916,6 +916,59 @@ class TestBuildHandoff(unittest.TestCase):
         self.assertIn("CONTEXT-WATCHDOG HANDOFF", text)
         self.assertIn("60%", text)
 
+    def _own_row(self, status, agent=None, summary="doing the thing"):
+        self.conn.execute(
+            "INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at) VALUES "
+            "(?, ?, NULL, ?, ?, 100)", ("b-" + status, agent or MAIN_AGENT, status, summary)
+        )
+        self.conn.commit()
+
+    def test_an_open_own_row_comes_with_the_instruction_to_close_it(self):
+        for status in ("active", "stale"):
+            with self.subTest(status=status):
+                self.conn.execute("DELETE FROM fleet_blackboard")
+                self._own_row(status)
+                text = hook.build_handoff(self.conn, MAIN_AGENT, 0.62, 248000, 400000)
+                self.assertIn("Aktualis feladat (%s): doing the thing" % status, text)
+                self.assertIn(hook.HANDOFF_CLOSE_ROW_NOTE, text)
+                self.assertIn("done", hook.HANDOFF_CLOSE_ROW_NOTE)
+                self.assertIn("blocked", hook.HANDOFF_CLOSE_ROW_NOTE)
+                # the note belongs right under the row it is about
+                lines = text.split("\n")
+                row_at = next(i for i, l in enumerate(lines) if l.startswith("Aktualis feladat"))
+                self.assertEqual(lines[row_at + 1], hook.HANDOFF_CLOSE_ROW_NOTE)
+
+    def test_a_closed_or_missing_own_row_gets_no_instruction(self):
+        for status in ("done", "blocked", "assigned"):
+            with self.subTest(status=status):
+                self.conn.execute("DELETE FROM fleet_blackboard")
+                self._own_row(status)
+                text = hook.build_handoff(self.conn, MAIN_AGENT, 0.62, 248000, 400000)
+                self.assertIn("Aktualis feladat (%s)" % status, text)
+                self.assertNotIn(hook.HANDOFF_CLOSE_ROW_NOTE, text)
+        self.conn.execute("DELETE FROM fleet_blackboard")
+        self.conn.commit()
+        self.assertNotIn(hook.HANDOFF_CLOSE_ROW_NOTE, hook.build_handoff(self.conn, MAIN_AGENT, 0.6, 240000, 400000))
+
+    def test_another_agents_open_row_is_not_my_instruction(self):
+        self._own_row("active", agent="agent-other")
+        text = hook.build_handoff(self.conn, MAIN_AGENT, 0.6, 240000, 400000)
+        self.assertNotIn(hook.HANDOFF_CLOSE_ROW_NOTE, text)
+        self.assertNotIn("Aktualis feladat", text)
+
+    def test_the_instruction_survives_the_size_cap_with_a_long_summary(self):
+        self._own_row("active", summary="x" * 5000)
+        text = hook.build_handoff(self.conn, MAIN_AGENT, 0.9, 360000, 400000)
+        self.assertIn(hook.HANDOFF_CLOSE_ROW_NOTE, text)
+        self.assertTrue(text.endswith("[/CONTEXT-WATCHDOG HANDOFF]"))
+
+    def test_the_note_does_not_change_between_calls_so_the_dedup_hash_is_stable(self):
+        self._own_row("active")
+        a = hook.build_handoff(self.conn, MAIN_AGENT, 0.62, 248000, 400000)
+        b = hook.build_handoff(self.conn, MAIN_AGENT, 0.64, 256000, 400000)
+        self.assertEqual(hook._hash_handoff_text(a), hook._hash_handoff_text(b))
+        self.assertTrue(len(hook.HANDOFF_CLOSE_ROW_NOTE) < 300)
+
 
 class TestHashHandoffText(unittest.TestCase):
     """_hash_handoff_text() must ignore the two lines that change on every

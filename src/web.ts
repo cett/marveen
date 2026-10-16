@@ -27,7 +27,7 @@ import { startUpdateChecker } from './web/update-checker.js'
 import { startBlackboardStaleSweeper } from './web/blackboard-stale-sweeper.js'
 import { startOtelPushExporter } from './web/otel-push-exporter.js'
 import { startWorkspaceDocsTtlSweeper } from './web/workspace-docs-ttl-sweeper.js'
-import { startScheduleRunner } from './web/schedule-runner.js'
+import { startScheduleRunner, getInflightScheduleAgents } from './web/schedule-runner.js'
 import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
 import { regenSkillFilesFromSQL, importSkillCompanionFilesFromDisk, findSkillFileGaps, setTenantSkillAgentProbe } from './web/skill-regen.js'
 import { isAgentRunning as isAgentSessionRunning } from './web/agent-process-session.js'
@@ -561,7 +561,7 @@ export function startWebServer(port = 3420): http.Server {
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
 
-  const blackboardStaleInterval = webOnly ? undefined : startBlackboardStaleSweeper()
+  const blackboardStaleInterval = webOnly ? undefined : startBlackboardStaleSweeper(getInflightScheduleAgents)
   if (!webOnly) logger.info('Blackboard stale sweeper started (5min sweep)')
 
   const otelPushInterval = webOnly ? undefined : startOtelPushExporter()

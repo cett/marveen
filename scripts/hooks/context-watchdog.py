@@ -137,6 +137,14 @@ DEFAULT_THRESHOLD_TOKENS = 400_000
 # Cap on the injected HANDOFF text so a single tool call can't inject an
 # unbounded amount of context (mirrors ledger-replay.py's own byte cap).
 MAX_HANDOFF_CHARS = 2000
+HANDOFF_SUMMARY_MAX_CHARS = 600
+# An own blackboard row in one of these states is unfinished work the handoff must hand over together
+# with the duty to close it ('stale' is an 'active' row the sweeper gave up on, still open).
+OPEN_BLACKBOARD_STATUSES = ("active", "stale")
+HANDOFF_CLOSE_ROW_NOTE = (
+    "FIGYELEM: a fenti blackboard-sorod nyitott. Ha a munka kesz, zard done-ra (POST /api/blackboard, "
+    "status=done, rovid osszefoglalo); ha elakadtal, blocked-re. Az ujrainditas nem zarja le."
+)
 
 
 def _install_dir() -> str:
@@ -625,7 +633,13 @@ def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) 
     )
     if own_bb:
         task_ref, status, summary = own_bb
-        lines.append(f"Aktualis feladat ({status}): {summary}" + (f" [kanban {task_ref}]" if task_ref else ""))
+        # The API caps a summary at 500 characters; the clip only matters for a row written another way,
+        # and keeps the close-the-row note below inside MAX_HANDOFF_CHARS.
+        lines.append(f"Aktualis feladat ({status}): {str(summary)[:HANDOFF_SUMMARY_MAX_CHARS]}" + (f" [kanban {task_ref}]" if task_ref else ""))
+        # A restart or a fresh session never closes the row: it stays open (and the stale sweeper
+        # marks it stale) until the agent that finishes the work says so. Tell that agent.
+        if status in OPEN_BLACKBOARD_STATUSES:
+            lines.append(HANDOFF_CLOSE_ROW_NOTE)
 
     bb_rows = _fetchall(
         conn,

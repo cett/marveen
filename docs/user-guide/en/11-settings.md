@@ -144,7 +144,7 @@ Blackboard monitoring and stale-detection thresholds.
 
 ### Stale detection
 
-The `BB_STALE_*` keys control how long the monitor waits before marking an agent's blackboard row as stale.
+The `BB_STALE_*` keys control how long the monitor waits before marking an agent's blackboard row as stale. The value is in minutes and depends on the agent's tier: `BB_STALE_ORCHESTRATOR_MIN` (default 120), `BB_STALE_INTERACTIVE_MIN` (90), `BB_STALE_SHORT_RUNNING_MIN` (30, range 5 to 60; heartbeat and scheduled agents), `BB_STALE_DEFAULT_MIN` (60) and `BB_STALE_ASSIGNED_MIN` (120, delegated tasks nobody has started). An agent whose scheduled run is still in progress is never marked stale while it runs.
 
 ---
 

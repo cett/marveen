@@ -19,7 +19,13 @@ function resolveThresholdSec(agentId: string): number {
   return (getEffectiveSettingValue(key) as number) * 60
 }
 
-export function startBlackboardStaleSweeper(): NodeJS.Timeout {
+// `getInFlightAgents` names the agents whose scheduled run is still being
+// tracked (see getInflightScheduleAgents in schedule-runner.ts); their active
+// row is the runner's to close, so it is not marked stale while the run lasts.
+// A provider that throws must not stop the sweep: stale marking then runs as before.
+export function startBlackboardStaleSweeper(
+  getInFlightAgents: () => ReadonlySet<string> = () => new Set(),
+): NodeJS.Timeout {
   const sweep = () => {
     try {
       const activeIds = getActiveBlackboardAgentIds()
@@ -29,7 +35,13 @@ export function startBlackboardStaleSweeper(): NodeJS.Timeout {
       }
       const defaultSec = resolveThresholdSec('__nonexistent__')
       const assignedSec = (getEffectiveSettingValue('BB_STALE_ASSIGNED_MIN') as number) * 60
-      const marked = markBlackboardStale(thresholdsByAgent, defaultSec, assignedSec)
+      let inFlight: ReadonlySet<string> = new Set()
+      try {
+        inFlight = getInFlightAgents()
+      } catch (err) {
+        logger.warn({ err }, 'blackboard-stale-sweeper: in-flight lookup failed, sweeping without the exemption')
+      }
+      const marked = markBlackboardStale(thresholdsByAgent, defaultSec, assignedSec, undefined, inFlight)
       if (marked > 0) {
         logger.info({ marked }, 'blackboard-stale-sweeper: marked stale rows')
       }

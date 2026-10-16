@@ -197,6 +197,26 @@ class NudgeOnHoldTest(unittest.TestCase):
         self.assertTrue(mod.nudge_on_hold({"status": "delivered", "ts": NOW - 600}, None, NOW))
 
 
+class IsOpenIdleTest(unittest.TestCase):
+    def test_active_and_stale_rows_older_than_thirty_minutes_count(self):
+        for status in ("active", "stale"):
+            self.assertTrue(mod.is_open_idle({"status": status, "updated_at": NOW - 31 * 60}, NOW), status)
+
+    def test_exactly_thirty_minutes_is_not_open_idle(self):
+        self.assertFalse(mod.is_open_idle({"status": "active", "updated_at": NOW - 30 * 60}, NOW))
+
+    def test_one_second_over_is(self):
+        self.assertTrue(mod.is_open_idle({"status": "active", "updated_at": NOW - 30 * 60 - 1}, NOW))
+
+    def test_other_statuses_and_a_missing_row_never_do(self):
+        for status in ("done", "blocked", "assigned", None):
+            self.assertFalse(mod.is_open_idle({"status": status, "updated_at": NOW - 9 * 3600}, NOW), status)
+        self.assertFalse(mod.is_open_idle(None, NOW))
+
+    def test_a_row_without_a_timestamp_is_treated_as_very_old(self):
+        self.assertTrue(mod.is_open_idle({"status": "active"}, NOW))
+
+
 class IsWakeGapTest(unittest.TestCase):
     def test_first_ever_sweep_is_not_a_gap(self):
         self.assertFalse(mod.is_wake_gap(None, NOW))
@@ -540,6 +560,125 @@ class MainTest(unittest.TestCase):
         self._fleet()
         self.assertEqual(mod.main(["--dry-run"]), 0)
         self.assertEqual(self.store.puts, [])
+
+    # --- idle agent with a forgotten active/stale row ------------------------
+
+    def _open_idle_fleet(self, row=None):
+        """agent-a idle (pane at the prompt) with an active row 45 minutes old; agent-b idle, no row."""
+        self._fleet()
+        self.panes["agent-a"] = "> idle"
+        self.board = [{"agent_id": "agent-a", **(row or {"status": "active", "updated_at": NOW - 45 * 60})}]
+
+    def test_idle_agent_with_an_old_active_row_is_nudged_and_counted(self):
+        self._open_idle_fleet()
+        self.assertEqual(mod.main([]), 0)
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+        self.assertEqual(self.sent[0]["content"], mod.OPEN_IDLE_NUDGE_TEXT)
+        self.assertTrue(self.sent[0]["content"].startswith("[blackboard-hygiene]"))
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_idle_agent_with_an_old_stale_row_is_nudged_too(self):
+        self._open_idle_fleet({"status": "stale", "updated_at": NOW - 45 * 60})
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+        self.assertEqual(self.sent[0]["content"], mod.OPEN_IDLE_NUDGE_TEXT)
+
+    def test_a_row_younger_than_thirty_minutes_is_left_alone(self):
+        self._open_idle_fleet({"status": "active", "updated_at": NOW - 29 * 60})
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {})
+
+    def test_closed_rows_of_an_idle_agent_are_not_this_nudge(self):
+        for status in ("done", "assigned"):
+            with self.subTest(status=status):
+                self.sent.clear()
+                self._open_idle_fleet({"status": status, "updated_at": NOW - 5 * 3600})
+                mod.main([])
+                self.assertNotIn(mod.OPEN_IDLE_NUDGE_TEXT, [m["content"] for m in self.sent])
+
+    def test_a_blocked_row_keeps_its_own_text_not_the_open_idle_one(self):
+        self._open_idle_fleet({"status": "blocked", "updated_at": NOW - 2 * 3600})
+        mod.main([])
+        self.assertEqual([m["content"] for m in self.sent], [mod.BLOCKED_IDLE_NUDGE_TEXT])
+
+    def test_an_active_pane_with_an_old_active_row_gets_the_lagging_text_only(self):
+        # not idle: the lagging branch (2 h rule) decides, the open-idle branch stays out of it
+        self._fleet({"status": "active", "updated_at": NOW - 45 * 60})
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self._fleet({"status": "active", "updated_at": NOW - 3 * 3600})
+        mod.main([])
+        self.assertEqual([m["content"] for m in self.sent], [mod.NUDGE_TEXT])
+
+    def test_the_coordinator_is_never_nudged_for_an_open_row(self):
+        self._open_idle_fleet()
+        self.panes["coord"] = "> idle"
+        self.board.append({"agent_id": "coord", "status": "active", "updated_at": NOW - 5 * 3600})
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_a_stopped_agent_with_an_open_row_is_not_nudged(self):
+        self._open_idle_fleet()
+        self.board = [{"agent_id": "agent-c", "status": "active", "updated_at": NOW - 5 * 3600}]
+        mod.main([])
+        self.assertEqual(self.sent, [])
+
+    def test_second_consecutive_round_escalates_with_the_open_idle_text_and_resets(self):
+        self.store.seed({"agent-a": 1})
+        self._open_idle_fleet()
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a", "coord"])
+        self.assertTrue(self.sent[1]["content"].startswith("[ESZKALACIO]"))
+        self.assertIn("open-idle", self.sent[1]["content"])
+        self.assertIn("agent-a", self.sent[1]["content"])
+        self.assertEqual(self._counters(), {})
+
+    def test_a_fresh_nudge_inside_the_cooldown_holds_it_and_keeps_the_counter(self):
+        self.store.seed({"agent-a": 1})
+        self._open_idle_fleet()
+        self.store.add_msg("agent-a", mod.OPEN_IDLE_NUDGE_TEXT, 10 * 60)
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {"agent-a": 1})
+
+    def test_a_pending_nudge_holds_it(self):
+        self._open_idle_fleet()
+        self.store.add_msg("agent-a", mod.OPEN_IDLE_NUDGE_TEXT, 50 * 60, status="pending")
+        mod.main([])
+        self.assertEqual(self.sent, [])
+
+    def test_a_nudge_after_the_cooldown_is_repeated(self):
+        self._open_idle_fleet()
+        self.store.add_msg("agent-a", mod.OPEN_IDLE_NUDGE_TEXT, 40 * 60)
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_a_coordinator_maintenance_turn_holds_it(self):
+        self._open_idle_fleet()
+        self.store.add_msg("agent-a", HEARTBEAT, 5 * 60)
+        mod.main([])
+        self.assertEqual(self.sent, [])
+
+    def test_the_same_fixture_with_an_old_heartbeat_is_nudged(self):
+        self._open_idle_fleet()
+        self.store.add_msg("agent-a", HEARTBEAT, 20 * 60)
+        mod.main([])
+        self.assertEqual([m["to"] for m in self.sent], ["agent-a"])
+
+    def test_dry_run_reports_open_idle_and_sends_and_writes_nothing(self):
+        self._open_idle_fleet()
+        self.assertEqual(mod.main(["--dry-run"]), 0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.store.puts, [])
+        self.assertIn("open_idle=agent-a", print.call_args[0][0])
+
+    def test_the_wake_guard_still_swallows_the_round(self):
+        self.store.state[mod.LAST_SWEEP_KEY] = NOW - 3 * 3600
+        self._open_idle_fleet()
+        mod.main([])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._counters(), {})
 
     def test_state_read_failure_exits_nonzero_without_side_effects(self):
         # An unreadable state must not look like "no counters": nothing is sent or written.

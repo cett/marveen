@@ -95,6 +95,18 @@ bash scripts/agent-api.sh GET /api/blackboard
 
 An agent updates its own row while working (`status: active/done/blocked`), so other agents and the dashboard can see who is doing what.
 
+**Row lifecycle and stale detection.** There is one row per agent. Who writes it depends on the work:
+
+- A scheduled task or heartbeat: the schedule runner writes `active` (summary = the task name) before it injects the prompt and `done` when the session goes idle again; the agent does not have to. If the agent rewrote the row in between (own summary, `blocked`), the runner backs off and the agent closes it itself.
+- Interactive work (3 or more tool calls): the agent posts `active` at the start and `done` or `blocked` at the end. A restart or a fresh session never closes a row (the row survives in the database, the work may not be finished), so the HANDOFF the context watchdog writes says so under `Aktualis feladat` whenever the agent's own row is `active` or `stale`.
+
+The stale sweeper (every 5 minutes) turns an `active` row into `stale` when it has not been updated for longer than the threshold of the agent's tier (`BB_STALE_ORCHESTRATOR_MIN` 120, `BB_STALE_INTERACTIVE_MIN` 90, `BB_STALE_SHORT_RUNNING_MIN` 30, `BB_STALE_DEFAULT_MIN` 60; an `assigned` row uses `BB_STALE_ASSIGNED_MIN` 120). Settings screen or `.env`; the values are minutes. Two rules keep it from marking live work:
+
+- An agent whose scheduled run is still tracked in flight is skipped (its `active` row belongs to the runner). A run that really hangs is caught by the task-timeout alert instead.
+- If a `stale` row is still the runner's own (same summary and task reference), the runner still writes `done` when the run ends. A `stale` row the agent rewrote is left alone.
+
+The hygiene monitor (`scripts/blackboard-hygiene.py`, hourly command task) is the safety net behind both: it nudges an agent that works without keeping its row current, an idle agent with a `blocked` row older than 1 hour, and an idle agent whose `active`/`stale` row is older than 30 minutes (to close it). A nudge is held back by a coordinator maintenance turn or a fresh nudge, two rounds in a row escalate to the coordinator, and the coordinator itself is never nudged.
+
 ### Inter-agent messaging
 
 Agents communicate via the `agent_messages` queue:
