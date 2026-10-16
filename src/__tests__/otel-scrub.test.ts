@@ -139,7 +139,45 @@ describe('the long-run rule is one linear pass', () => {
     const start = performance.now()
     const out = scrubLogText('ab/'.repeat(100_000), 160)
     expect(performance.now() - start).toBeLessThan(500)
-    expect(out).toBe('ab[path]/')
+    expect(out.startsWith('ab[path]')).toBe(true)
+  })
+})
+
+describe('the text is bound before the rules see it', () => {
+  // The e-mail, user:password@ and URL userinfo rules rescan a long unbroken run from every start position.
+  const SHAPES: Record<string, string> = {
+    'an e-mail like run': 'ab.'.repeat(100_000),
+    'a hyphenated run': 'ab-'.repeat(100_000),
+    'a plain letter run': 'a'.repeat(300_000),
+    'a colon run': 'a:'.repeat(150_000),
+    'a scheme like run': 'a+'.repeat(150_000),
+  }
+
+  for (const [name, text] of Object.entries(SHAPES)) {
+    it(`finishes quickly on ${name}, in a log message and in a tool input summary`, () => {
+      for (const scrub of [scrubLogText, scrubText]) {
+        const start = performance.now()
+        const out = scrub(text, 160)
+        expect(performance.now() - start).toBeLessThan(500)
+        expect(out.length).toBeLessThanOrEqual(160)
+      }
+    })
+  }
+
+  it('still removes what sits in the part that reaches the result, ahead of a huge tail', () => {
+    const key = j('gh', 'p_', A(36))
+    const tail = 'ab.'.repeat(100_000)
+    for (const scrub of [scrubText, scrubLogText]) {
+      const out = scrub(`failed with ${key} for password=hunter2 ${tail}`, 160)
+      expect(out).toContain('failed with *** for password=*** ')
+      expect(out).not.toContain('hunter2')
+    }
+    expect(scrubLogText(`mail jane.doe@example.org ${tail}`, 160).startsWith('mail [email] ')).toBe(true)
+  })
+
+  it('keeps a text under the bound exactly as before', () => {
+    const text = `${'x '.repeat(1500)}contact jane.doe@example.org`
+    expect(scrubLogText(text, 5000).endsWith('contact [email]')).toBe(true)
   })
 })
 

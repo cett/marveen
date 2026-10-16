@@ -55,9 +55,19 @@ export function scrubBlobs(value: string): string {
   return value.replace(BLOB_RUN, run => (HAS_LETTER.test(run) && HAS_DIGIT.test(run) ? '***' : run))
 }
 
+// The user:password@, URL userinfo and e-mail rules go quadratic on one very long unbroken run, so the text is cut to
+// a bound before the rules see it (same bound as scripts/daily-log-summary.py). The result is cut to maxChars anyway,
+// and a rule changes the length of what it replaces by a small factor at most, so the part of the input that can
+// reach the result lies far inside the bound and a secret split by this cut cannot be in it.
+export const SCRUB_INPUT_LIMIT = 4000
+
+function boundInput(value: string, maxChars: number): string {
+  return value.slice(0, Math.max(SCRUB_INPUT_LIMIT, maxChars * 4))
+}
+
 // The credential and home-directory scrub, shortened last so a cut never leaves half a secret behind.
 export function scrubText(value: string, maxChars: number): string {
-  let out = value
+  let out = boundInput(value, maxChars)
   for (const [rx, replacement] of KEY_SCRUBS) out = out.replace(rx, replacement)
   for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
   return out.slice(0, maxChars)
@@ -65,7 +75,7 @@ export function scrubText(value: string, maxChars: number): string {
 
 // The same plus the free-text shapes above, for a log message.
 export function scrubLogText(value: string, maxChars: number): string {
-  let out = value
+  let out = boundInput(value, maxChars)
   for (const [rx, replacement] of KEY_SCRUBS) out = out.replace(rx, replacement)
   for (const [rx, replacement] of SCRUBS) out = out.replace(rx, replacement)
   out = scrubBlobs(out)
