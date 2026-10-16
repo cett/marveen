@@ -5,7 +5,8 @@ Usage: python3 scripts/daily-log-summary.py <agent-id> [--date YYYY-MM-DD]
 
 Writes ONE entry, headed "## Napi összefoglaló <date>", to the daily log of <agent-id> (the main agent): what the
 install did that day, from the dashboard API only (never the database):
-  - memories saved that day (the default tenant), counted per agent with a few excerpts
+  - memories saved that day (the default tenant): counted per agent, with the most frequent keywords. The TEXT of
+    a memory is never quoted (decision of the owner: it is free private text and no scrub is a guarantee)
   - kanban cards created, finished and moved that day (the default tenant)
   - workspace documents written or changed that day (the default tenant)
   - pull requests merged that day (first-parent merge commits of this checkout)
@@ -153,6 +154,36 @@ def ts_in(row, field, start, end):
     return isinstance(v, (int, float)) and start <= v < end
 
 
+KEYWORD_MAX_RAW = 40   # a longer "keyword" is text in disguise: skipped, never quoted
+KEYWORD_LIMIT = 30     # characters kept of a keyword
+KEYWORD_MAX_DIGITS = 4 # a keyword with more digits is not quoted
+MAX_KEYWORDS = 8
+
+
+def top_keywords(memories):
+    """The most frequent keywords of the memories, scrubbed. Keywords only: never the memory text."""
+    counts = {}
+    for m in memories:
+        raw = m.get("keywords")
+        if not isinstance(raw, str):
+            continue
+        for part in re.split(r"[,;\n]", raw[:2000]):
+            kw = part.strip()
+            if not kw or len(kw) > KEYWORD_MAX_RAW:
+                continue
+            # A keyword is a plain word or two (a year, a version or a short id is fine): one with more digits than
+            # that looks like a token or a key whose shape no scrub rule knows, so it is dropped, not quoted.
+            if sum(ch.isdigit() for ch in kw) > KEYWORD_MAX_DIGITS:
+                continue
+            clean = one_line(kw, KEYWORD_LIMIT)
+            if "***" in clean or "[email]" in clean:
+                continue
+            key = clean.lower()
+            counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [(k, n) for k, n in ranked[:MAX_KEYWORDS]]
+
+
 def day_window(day):
     start = datetime(day.year, day.month, day.day)
     end = start + timedelta(days=1)
@@ -208,10 +239,10 @@ def build(day, agent):
             per_agent[m.get("agent_id") or "?"] = per_agent.get(m.get("agent_id") or "?", 0) + 1
         who = ", ".join("%s %d" % (a, n) for a, n in sorted(per_agent.items(), key=lambda kv: (-kv[1], kv[0])))
         lines.append("Új memória: %d (%s)" % (len(memories), who))
-        for m in memories[:MAX_LISTED]:
-            lines.append("- [%s] %s" % (m.get("agent_id") or "?", one_line(m.get("content") or m.get("title"))))
-        if len(memories) > MAX_LISTED:
-            lines.append("- és még %d" % (len(memories) - MAX_LISTED))
+        # The text of a memory is NEVER quoted (it is the one source of free, private text); only its keywords are.
+        words = top_keywords(memories)
+        if words:
+            lines.append("Kulcsszavak: " + ", ".join("%s (%d)" % (w, n) for w, n in words))
     section("Új kanban kártya", created, lambda c: "%s (%s)" % (one_line(c.get("title")), c.get("assignee") or "nincs gazda"))
     section("Lezárt kanban kártya", done, lambda c: "%s (%s)" % (one_line(c.get("title")), c.get("assignee") or "nincs gazda"))
     section("Mozgott kanban kártya", touched, lambda c: "%s -> %s" % (one_line(c.get("title")), c.get("status")))

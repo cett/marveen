@@ -39,6 +39,10 @@ const answer = (name: string, body: unknown, rc = 0): void => {
   writeFileSync(join(dir, `${name}.body`), typeof body === 'string' ? body : JSON.stringify(body))
   if (rc !== 0) writeFileSync(join(dir, `${name}.rc`), String(rc))
 }
+// The scrub is exercised through the card titles, the free text the log still quotes: rows shaped like the memory
+// fixtures ({ content, created_at }) become created cards whose title is that content.
+const answerAsCards = (items: { id: number; content: string; created_at: number; agent_id?: string }[]): void =>
+  answer('GET-kanban', items.map(i => ({ id: `k${i.id}`, title: i.content, status: 'planned', assignee: 'alpha', created_at: i.created_at, updated_at: i.created_at })))
 const calls = (): string[] => (existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf-8').trim().split('\n') : [])
 const posted = (): { agent_id: string; content: string } | null =>
   existsSync(join(dir, 'posted-body')) ? JSON.parse(readFileSync(join(dir, 'posted-body'), 'utf-8')) : null
@@ -66,11 +70,11 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 describe('daily-log-summary.py', () => {
   it('writes one headed entry for the main agent with the day\'s memories, cards and documents', () => {
     answer('GET-memories', [
-      { id: 1, agent_id: 'alpha', tenant_id: 'default', content: 'Decided to move the backup to 03:00', created_at: during },
-      { id: 2, agent_id: 'alpha', content: 'second one', created_at: during + 60 },
-      { id: 3, agent_id: 'beta', tenant_id: 'default', content: 'beta note', created_at: during },
-      { id: 4, agent_id: 'alpha', tenant_id: 'default', content: 'yesterday\'s memory', created_at: before },
-      { id: 5, agent_id: 'gamma', tenant_id: 'acme', content: 'another tenant\'s secret', created_at: during },
+      { id: 1, agent_id: 'alpha', tenant_id: 'default', content: 'Decided to move the backup to 03:00', keywords: 'backup, Schedule', created_at: during },
+      { id: 2, agent_id: 'alpha', content: 'second one', keywords: 'backup; cron', created_at: during + 60 },
+      { id: 3, agent_id: 'beta', tenant_id: 'default', content: 'beta note', keywords: 'schedule', created_at: during },
+      { id: 4, agent_id: 'alpha', tenant_id: 'default', content: 'yesterday\'s memory', keywords: 'yesterdaykw', created_at: before },
+      { id: 5, agent_id: 'gamma', tenant_id: 'acme', content: 'another tenant\'s secret', keywords: 'othertenantkw', created_at: during },
     ])
     answer('GET-kanban', [
       { id: 'k1', title: 'New card', status: 'planned', assignee: 'alpha', created_at: during, updated_at: during },
@@ -91,7 +95,11 @@ describe('daily-log-summary.py', () => {
     const c = body.content
     expect(c.split('\n')[0]).toBe(`## Napi összefoglaló ${DAY}`)
     expect(c).toContain('Új memória: 3 (alpha 2, beta 1)')
-    expect(c).toContain('Decided to move the backup to 03:00')
+    // Keywords of the day's default-tenant memories, most frequent first (case-folded), and never the memory text.
+    expect(c).toContain('Kulcsszavak: backup (2), schedule (2), cron (1)')
+    for (const text of ['Decided to move', 'second one', 'beta note']) expect(c).not.toContain(text)
+    expect(c).not.toContain('yesterdaykw')
+    expect(c).not.toContain('othertenantkw')
     expect(c).toContain('Új kanban kártya: 1')
     expect(c).toContain('- New card (alpha)')
     expect(c).toContain('Lezárt kanban kártya: 1')
@@ -113,7 +121,7 @@ describe('daily-log-summary.py', () => {
     const pem = '-----BEGIN ' + 'PRIVATE KEY-----\nMIIBVQIBADANBgkq\n-----END ' + 'PRIVATE KEY-----'
     const aws = 'AKIA' + 'ABCDEFGHIJKLMNOP'
     const blob = 'Zm9vYmFy' + '1234567890abcdefghijklmnopqrstuvwx'
-    answer('GET-memories', [
+    answerAsCards([
       // The secret starts before the 90-character cut and ends after it: scrubbing after the cut would leave a stub.
       // (Only the first 8 memories are listed, so the cases below stay within 8 rows.)
       { id: 0, agent_id: 'alpha', content: 'x'.repeat(80) + ' ' + sk + ' tail', created_at: during },
@@ -125,7 +133,7 @@ describe('daily-log-summary.py', () => {
       { id: 6, agent_id: 'alpha', content: `key file:\n${pem}\nend`, created_at: during },
       { id: 7, agent_id: 'alpha', content: `blob ${blob} and home /home/someone/secret-dir`, created_at: during },
     ])
-    answer('GET-kanban', [{ id: 'k1', title: `Rotate ${sk} now`, status: 'planned', assignee: 'alpha', created_at: during, updated_at: during }])
+    answer('GET-workspace', { items: [{ id: 'd1', title: `Rotate ${sk} now`, agent_id: 'alpha', tenant_id: 'default', created_at: during, updated_at: during }], total: 1 })
     const r = run()
     expect(r.code).toBe(0)
     const c = posted()!.content
@@ -143,7 +151,7 @@ describe('daily-log-summary.py', () => {
     const blob = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo' + '0123456789+/abcdef'
     // A base64url token keeps its hyphen and underscore, so the plain blob rule would split it into short pieces.
     const urlSafe = 'aB3-dE6_gH9' + 'jK2-mN5_pQ8sT1-vW4_yZ7aB0cD'
-    answer('GET-memories', [
+    answerAsCards([
       { id: 6, agent_id: 'alpha', content: `session ${urlSafe} closed`, created_at: during },
       { id: 1, agent_id: 'alpha', content: 'see report/ecfcec5c-workspace-search-delta-qa and', created_at: during },
       { id: 2, agent_id: 'alpha', content: 'series-998/part-2-facts-and-figures-for-readers ok hot_1017_phase0_phase1_prep_drafts', created_at: during },
@@ -169,7 +177,7 @@ describe('daily-log-summary.py', () => {
     const stripeLower = 'secret_' + 'a8f3c2e1b7d94f60a1b2c3d4e5f6a7b8'
     const hexDigest = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
     const camel = 'token_' + 'Ab12Cd34_Ef56Gh78_Ij90Kl12_Mn34Op56'
-    answer('GET-memories', [
+    answerAsCards([
       { id: 1, agent_id: 'alpha', content: `stripe ${stripe} here`, created_at: during },
       { id: 2, agent_id: 'alpha', content: `lower ${stripeLower} here`, created_at: during },
       { id: 3, agent_id: 'alpha', content: `digest ${hexDigest} here`, created_at: during },
@@ -183,7 +191,7 @@ describe('daily-log-summary.py', () => {
   })
 
   it('does not take hex fragments or plus-joined base64 pieces for an identifier, but keeps a UUID and slash-joined doc keys', () => {
-    answer('GET-memories', [
+    answerAsCards([
       { id: 1, agent_id: 'alpha', content: 'hexunder a1b2c3d4_e5f6a7b8_c9d0e1f2_a3b4c5d6 end', created_at: during },
       { id: 2, agent_id: 'alpha', content: 'hexdash 9f86d081-884c7d65-9a2feaa0-c55ad015 end', created_at: during },
       { id: 3, agent_id: 'alpha', content: 'plus abc123+def456+ghi789+jkl012+mno345+pqr end', created_at: during },
@@ -203,7 +211,7 @@ describe('daily-log-summary.py', () => {
     const tail = '4eC39HqLyjWDarjtT1zdp7dc'
     const forms = ['sk' + '_test_' + tail, 'sk' + '_live_' + tail, 'rk' + '_live_' + tail, 'pk' + '_test_' + tail, 'whsec' + '_' + tail]
     const longPiece = 'prefix-' + 'abcdefghijklmnopqrstuvwxyz0123456789ab' + '-suffix'
-    answer('GET-memories', [
+    answerAsCards([
       ...forms.map((f, i) => ({ id: i, agent_id: 'alpha', content: `form ${f} end`, created_at: during })),
       { id: 10, agent_id: 'alpha', content: `tagged ${longPiece} end`, created_at: during },
       { id: 11, agent_id: 'alpha', content: 'names hot_1017_phase0_phase1_prep_drafts and report/ecfcec5c-workspace-search-delta-qa', created_at: during },
@@ -217,7 +225,7 @@ describe('daily-log-summary.py', () => {
   })
 
   it('handles a huge text without a number or separator in time (no quadratic scrub)', () => {
-    answer('GET-memories', [
+    answerAsCards([
       { id: 1, agent_id: 'alpha', content: 'a'.repeat(300_000), created_at: during },
       { id: 2, agent_id: 'alpha', content: 'abcdef-'.repeat(60_000), created_at: during },
       { id: 3, agent_id: 'alpha', content: ('word' + 'x'.repeat(40) + ' ').repeat(20_000), created_at: during },
@@ -225,15 +233,40 @@ describe('daily-log-summary.py', () => {
     const started = Date.now()
     expect(run().code).toBe(0)
     expect(Date.now() - started).toBeLessThan(4000)
-    expect(posted()!.content).toContain('Új memória: 3')
+    expect(posted()!.content).toContain('Új kanban kártya: 3')
   })
 
   it('caps a long list and says how many more there are', () => {
-    answer('GET-memories', Array.from({ length: 11 }, (_, i) => ({ id: i, agent_id: 'alpha', content: `memory ${i}`, created_at: during + i })))
+    answerAsCards(Array.from({ length: 11 }, (_, i) => ({ id: i, content: `card ${i}`, created_at: during + i })))
     const c = (run(), posted()!.content)
-    expect(c).toContain('Új memória: 11 (alpha 11)')
+    expect(c).toContain('Új kanban kártya: 11')
     expect(c).toContain('- és még 3')
-    expect(c).not.toContain('memory 10')
+    expect(c).not.toContain('card 10')
+  })
+
+  it('never quotes memory text: a secret placed in a memory appears in no form, only scrubbed keywords do', () => {
+    // Assembled from pieces so no key-shaped literal sits in the source.
+    const sk = 'sk' + '_test_' + '4eC39HqLyjWDarjtT1zdp7dc'
+    const apiKey = 'api_key_' + 'abcd1234efgh5678'
+    const hexParts = '9f86d081-884c7d65-9a2feaa0-c55ad015'
+    const encoded = 'token%3D' + 'abcdef1234567890ABCDEF'
+    const spaced = 't o k e n = ' + 'abcdef1234567890ABCDEF'
+    const ghKey = 'ghp' + '_' + 'AbCdEfGhIjKlMnOpQrStUvWx'
+    answer('GET-memories', [
+      { id: 1, agent_id: 'alpha', content: `stripe ${sk} and ${apiKey} and ${hexParts}`, keywords: 'billing, ' + sk, created_at: during },
+      { id: 2, agent_id: 'alpha', content: `${encoded} and ${spaced} password=hunter2hunter2`, keywords: 'billing, ' + apiKey, created_at: during },
+      { id: 3, agent_id: 'alpha', content: 'A perfectly harmless sentence about the weekly planning meeting', keywords: 'planning, ' + 'a'.repeat(45) + ', jane@example.org, ' + ghKey, created_at: during },
+    ])
+    expect(run().code).toBe(0)
+    const c = posted()!.content
+    // No fragment of any memory text, whatever its shape.
+    for (const part of [sk, '4eC39Hq', 'sk_test', apiKey, 'abcd1234', hexParts, '9f86d081', encoded, 'token%3D', spaced, 'abcdef1234567890',
+      'hunter2', 'stripe', 'harmless', 'weekly planning', 'jane@', 'example.org', 'AbCdEfGh']) {
+      expect(c).not.toContain(part)
+    }
+    // The count and the scrubbed keywords of the day are there; a keyword with a secret or an address is dropped.
+    expect(c).toContain('Új memória: 3 (alpha 3)')
+    expect(c).toContain('Kulcsszavak: billing (2), planning (1)')
   })
 
   it('files a day without activity as a one-line entry instead of leaving a gap', () => {
