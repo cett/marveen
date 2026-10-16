@@ -22,6 +22,8 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -303,6 +305,49 @@ class OpenForkPrTest(unittest.TestCase):
         self.assertIn('GitHub 301', done.stderr)
         self.assertEqual(len(self.stub.requests), 1)
         self.assertNoToken(done)
+
+
+class NetworkErrorScrubTest(unittest.TestCase):
+    """A real network failure never carries the token, so the scrub of the network error branch is exercised
+    in-process: the opener is replaced by one that fails with a reason that holds the token."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('open_fork_pr_under_test', SCRIPT)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def failure_message(self, error):
+        class Opener:
+            def open(self, request, timeout=None):
+                raise error
+
+        with mock.patch.object(self.mod, 'read_token', return_value=TOKEN), \
+                mock.patch.object(self.mod.urllib.request, 'build_opener', return_value=Opener()), \
+                mock.patch.dict(os.environ, {'OPEN_FORK_PR_API_BASE': ''}):
+            with self.assertRaises(self.mod.Failure) as caught:
+                self.mod.open_pr('feat/x', 'title', 'body', 'develop')
+        return str(caught.exception)
+
+    def test_a_token_in_the_reason_of_a_urlerror_is_starred_out(self):
+        message = self.failure_message(urllib.error.URLError('proxy refused Bearer %s here' % TOKEN))
+        self.assertIn('could not reach GitHub', message)
+        self.assertIn('Bearer *** here', message)
+        self.assertNotIn(TOKEN, message)
+
+    def test_a_token_in_an_oserror_is_starred_out(self):
+        message = self.failure_message(OSError('connection to host with %s dropped' % TOKEN))
+        self.assertIn('could not reach GitHub', message)
+        self.assertIn('with *** dropped', message)
+        self.assertNotIn(TOKEN, message)
+
+    def test_a_token_in_an_http_error_body_is_starred_out_in_process_too(self):
+        import io
+        error = urllib.error.HTTPError('http://x', 500, 'err', {}, io.BytesIO(('{"message": "oops %s"}' % TOKEN).encode()))
+        message = self.failure_message(error)
+        self.assertIn('GitHub 500: oops ***', message)
+        self.assertNotIn(TOKEN, message)
 
 
 if __name__ == '__main__':
