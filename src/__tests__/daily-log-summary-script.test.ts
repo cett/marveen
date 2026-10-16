@@ -182,6 +182,24 @@ describe('daily-log-summary.py', () => {
     expect(c).toContain('uuid 123e4567-e89b-12d3-a456-426614174000 stays')
   })
 
+  it('scrubs every Stripe form, a separator-joined key with one long piece, and keeps snake_case and doc_keys', () => {
+    // Assembled from pieces so no key-shaped literal sits in the source.
+    const tail = '4eC39HqLyjWDarjtT1zdp7dc'
+    const forms = ['sk' + '_test_' + tail, 'sk' + '_live_' + tail, 'rk' + '_live_' + tail, 'pk' + '_test_' + tail, 'whsec' + '_' + tail]
+    const longPiece = 'prefix-' + 'abcdefghijklmnopqrstuvwxyz0123456789ab' + '-suffix'
+    answer('GET-memories', [
+      ...forms.map((f, i) => ({ id: i, agent_id: 'alpha', content: `form ${f} end`, created_at: during })),
+      { id: 10, agent_id: 'alpha', content: `tagged ${longPiece} end`, created_at: during },
+      { id: 11, agent_id: 'alpha', content: 'names hot_1017_phase0_phase1_prep_drafts and report/ecfcec5c-workspace-search-delta-qa', created_at: during },
+    ])
+    expect(run().code).toBe(0)
+    const c = posted()!.content
+    for (const f of forms) expect(c).not.toContain(f.slice(0, 14))
+    expect(c).not.toContain(tail)
+    expect(c).not.toContain('abcdefghijklmnop')
+    expect(c).toContain('names hot_1017_phase0_phase1_prep_drafts and report/ecfcec5c-workspace-search-delta-qa')
+  })
+
   it('handles a huge text without a number or separator in time (no quadratic scrub)', () => {
     answer('GET-memories', [
       { id: 1, agent_id: 'alpha', content: 'a'.repeat(300_000), created_at: during },

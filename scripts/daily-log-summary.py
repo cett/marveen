@@ -75,7 +75,7 @@ def rows(payload, *keys):
 _I = re.IGNORECASE
 _SCRUBS = [
     (re.compile(r"-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----.*?(?:-----END [A-Z ]*-----|$)", re.S), "***"),
-    (re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{15,}"), "***"),
+    (re.compile(r"\bsk[-_][A-Za-z0-9][A-Za-z0-9_-]{15,}"), "***"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "***"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "***"),
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"), "***"),
