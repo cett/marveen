@@ -54,7 +54,7 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }))
 
-import { tryHandleVoice } from '../web/routes/voice.js'
+import { tryHandleVoice, voiceSystemDepsHint } from '../web/routes/voice.js'
 import { spawn } from 'node:child_process'
 import { logger } from '../logger.js'
 import { buildTtsDirective, inboundIsAudio } from '../web/voice-directive.js'
@@ -358,13 +358,32 @@ describe('POST /api/voice/install', () => {
     expect(spawn).not.toHaveBeenCalled()
   })
 
-  it('offers the sudo command when system deps are missing', async () => {
-    mockVoiceInstalled = false
-    queueSpawn({ stdout: 'MISSING\n', code: 0 })
-    const { ctx, out } = makeCtx('POST', '/api/voice/install')
-    await tryHandleVoice(ctx)
-    expect(out.body.needsSudo).toBe(true)
-    expect(out.body.sudoCommand).toMatch(/apt-get install/)
+  // The hint depends on the host, so each case pins the platform it asserts.
+  async function installHintOn(platform: NodeJS.Platform) {
+    const real = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: platform })
+    try {
+      mockVoiceInstalled = false
+      queueSpawn({ stdout: 'MISSING\n', code: 0 })
+      const { ctx, out } = makeCtx('POST', '/api/voice/install')
+      await tryHandleVoice(ctx)
+      return out.body
+    } finally {
+      Object.defineProperty(process, 'platform', real)
+    }
+  }
+
+  it('offers the sudo command when system deps are missing (Linux)', async () => {
+    const body = await installHintOn('linux')
+    expect(body.needsSudo).toBe(true)
+    expect(body.sudoCommand).toMatch(/apt-get install/)
+  })
+
+  it('offers a Homebrew command without sudo on macOS when system deps are missing', async () => {
+    const body = await installHintOn('darwin')
+    expect(body.needsSudo).toBe(true)
+    expect(body.sudoCommand).toBe('brew install ffmpeg')
+    expect(body.sudoCommand).not.toMatch(/sudo|apt-get/)
   })
 
   it('starts the background install when deps are present', async () => {
@@ -386,5 +405,22 @@ describe('tryHandleVoice -- unrelated paths', () => {
     const { ctx } = makeCtx('GET', '/api/something-else')
     const handled = await tryHandleVoice(ctx)
     expect(handled).toBe(false)
+  })
+})
+
+describe('voiceSystemDepsHint', () => {
+  it('darwin -> Homebrew, no sudo, no apt', () => {
+    expect(voiceSystemDepsHint('darwin')).toEqual({ needsSudo: true, sudoCommand: 'brew install ffmpeg' })
+  })
+
+  it.each(['linux', 'freebsd', 'win32'] as const)('%s -> the apt line, as before', (p) => {
+    const h = voiceSystemDepsHint(p)
+    expect(h.needsSudo).toBe(true)
+    expect(h.sudoCommand).toBe('sudo apt-get install -y --no-install-recommends ffmpeg python3-venv python3')
+  })
+
+  it('defaults to the host platform', () => {
+    const expected = process.platform === 'darwin' ? /^brew install/ : /^sudo apt-get install/
+    expect(voiceSystemDepsHint().sudoCommand).toMatch(expected)
   })
 })

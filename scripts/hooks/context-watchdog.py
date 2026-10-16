@@ -110,6 +110,7 @@ as tool-log-capture.py): fail/timeout/crash -> SILENT PASS, exit 0 always.
 This is observability + best-effort continuity, not a gate -- it must never
 block a tool call. No network calls anywhere in this script.
 """
+from __future__ import annotations  # `X | None` annotations: python3 can be the macOS system 3.9
 import sys
 import os
 import json

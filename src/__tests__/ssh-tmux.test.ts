@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
 import {
+  CONTROL_PATH,
   shQuote,
   buildTmuxInvocation,
   buildSshExec,
@@ -90,6 +93,40 @@ describe('SSH_OPTS', () => {
     expect(controlDir()).toMatch(/marveen-ssh/)
     // Not the bare `/tmp/<file>` form flagged as world-writable.
     expect(controlPathOpt).not.toMatch(/ControlPath=\/tmp\/[^/]+%/)
+  })
+
+  // The socket name must not grow with the user/host name: macOS caps a unix
+  // socket path at 104 bytes and a long FQDN overflowed the spelled-out form.
+  it('names the ControlMaster socket by the %C hash, not by user/host/port', () => {
+    expect(CONTROL_PATH).toMatch(/\/cm-%C$/)
+    expect(CONTROL_PATH).not.toMatch(/%[rhp]/)
+    expect(SSH_OPTS).toContain(`ControlPath=${CONTROL_PATH}`)
+  })
+
+  // Real ssh, no mocks: `ssh -G` prints the config with the tokens expanded
+  // exactly as the connection would. ssh appends "." + 16 random chars to the
+  // socket path while binding it, so the expanded path needs 17 bytes of room.
+  const SUN_PATH_MAX = 104
+  const BIND_SUFFIX = 17
+  const expandControlPath = (template: string): string | null => {
+    const longHost = `${'h'.repeat(60)}.example.internal`
+    try {
+      const out = execFileSync('ssh', ['-G', '-o', `ControlPath=${template}`, '-l', 'someuser', longHost], {
+        encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      return out.split('\n').find(l => l.startsWith('controlpath '))?.slice('controlpath '.length) ?? null
+    } catch { return null }
+  }
+  const sshCanExpand = expandControlPath('/tmp/x-%C') !== null
+
+  it.skipIf(!sshCanExpand)('the expanded socket path fits the unix socket limit for a long user and host', () => {
+    const expanded = expandControlPath(CONTROL_PATH)
+    expect(expanded).not.toBeNull()
+    expect(expanded as string).not.toContain('%')
+    expect((expanded as string).length + BIND_SUFFIX).toBeLessThanOrEqual(SUN_PATH_MAX)
+    // Same long names, the old spelled-out template: proves the check bites.
+    const old = expandControlPath(join(controlDir(), 'cm-%r@%h:%p'))
+    expect((old as string).length + BIND_SUFFIX).toBeGreaterThan(SUN_PATH_MAX)
   })
 })
 

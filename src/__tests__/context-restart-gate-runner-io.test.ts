@@ -30,8 +30,20 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 const SESSION = 'gate-io-test-session'
 
+// Seconds -> the `[[dd-]hh:]mm:ss` shape of `ps -o etime=` (right-aligned and
+// space padded, as BSD ps prints it).
+function toEtime(secs: number): string {
+  const d = Math.floor(secs / 86400)
+  const h = Math.floor((secs % 86400) / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = secs % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const body = d > 0 ? `${d}-${pad(h)}:${pad(m)}:${pad(s)}` : h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`
+  return body.padStart(12)
+}
+
 // Builds an execFileSync dispatcher mimicking tmux list-panes + the four
-// per-pid `ps` lookups (comm=/etimes=/args=) that hasLiveChildProcesses and
+// per-pid `ps` lookups (comm=/etime=/args=) that hasLiveChildProcesses and
 // getLiveWorkChildArgs walk the process tree with.
 async function mockProcessTree(opts: {
   panePid?: number | 'fail'
@@ -47,10 +59,14 @@ async function mockProcessTree(opts: {
       if (opts.panePid === undefined || opts.panePid === 'fail') throw new Error('tmux: no such session')
       return `${opts.panePid}\n` as unknown as Buffer
     }
-    if (args.includes('--ppid')) {
-      const parent = Number(args[args.indexOf('--ppid') + 1])
-      const kids = opts.children?.[parent] ?? []
-      return kids.join('\n') as unknown as Buffer
+    // The portable snapshot form: BSD ps has no --ppid. Rows are padded like
+    // the real thing, with unrelated processes mixed in.
+    if (args.includes('-axo')) {
+      const rows = ['  1     0', ' 99999     1']
+      for (const [parent, kids] of Object.entries(opts.children ?? {})) {
+        for (const kid of kids) rows.push(`${String(kid).padStart(6)} ${String(parent).padStart(5)}`)
+      }
+      return rows.join('\n') + '\n' as unknown as Buffer
     }
     if (args[0] === '-p') {
       const pid = Number(args[1])
@@ -59,10 +75,10 @@ async function mockProcessTree(opts: {
         if (v === undefined || v === 'fail') throw new Error(`ps -o comm= failed for ${pid}`)
         return `${v}\n` as unknown as Buffer
       }
-      if (args.includes('etimes=')) {
+      if (args.includes('etime=')) {
         const v = opts.age?.[pid]
-        if (v === undefined || v === 'fail') throw new Error(`ps -o etimes= failed for ${pid}`)
-        return `${v}\n` as unknown as Buffer
+        if (v === undefined || v === 'fail') throw new Error(`ps -o etime= failed for ${pid}`)
+        return `${toEtime(v)}\n` as unknown as Buffer
       }
       if (args.includes('args=')) {
         const v = opts.args?.[pid]

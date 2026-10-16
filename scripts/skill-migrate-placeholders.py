@@ -38,6 +38,8 @@ Runtime token resolution:
   creation time. No additional wiring is needed for skill-file angle-bracket tokens.
 """
 
+from __future__ import annotations  # `X | None` annotations: python3 can be the macOS system 3.9
+
 import argparse
 import os
 import re

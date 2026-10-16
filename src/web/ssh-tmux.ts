@@ -40,8 +40,15 @@ export function controlDir(): string {
   return `/tmp/marveen-ssh-${id}`
 }
 
-/** ControlMaster socket path template (ssh expands %r/%h/%p itself). */
-export const CONTROL_PATH: string = join(controlDir(), 'cm-%r@%h:%p')
+/**
+ * ControlMaster socket path template (ssh expands %C itself). %C is the hash of
+ * local host + remote host + port + user (fixed 40 hex characters, OpenSSH
+ * 6.7+), so the socket name has a constant length. The spelled-out
+ * `cm-%r@%h:%p` grows with the user and host name and, with a long FQDN, blows
+ * the 104 byte unix socket path limit on macOS (108 on Linux): ssh then fails
+ * with "path too long" / "unix_listener: path ... too long for Unix domain socket".
+ */
+export const CONTROL_PATH: string = join(controlDir(), 'cm-%C')
 
 // Shared ssh options for every remote call.
 //  - BatchMode=yes        : never block on an interactive auth prompt.
