@@ -36,6 +36,7 @@ matcher; same script, told apart by the payload) in the tracked project settings
 templates/settings.json.template (sub-agents); ensureAgentHooks seeds the UserPromptSubmit entry into
 existing sub-agents and ensureSkillUsageMatcher widens an older Skill|Read matcher at startup.
 """
+from __future__ import annotations  # `X | None` annotations: python3 can be the macOS system 3.9
 import sys
 import os
 import re
