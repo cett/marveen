@@ -76,7 +76,8 @@ make_install() {
   local root="$1"
   mkdir -p "$root/scripts/lib" "$root/store"
   cp "$SCRIPT_SRC" "$root/scripts/channel-watchdog.sh"
-  cp "$SRC_DIR/lib/portable.sh" "$root/scripts/lib/portable.sh"
+  # NO_LIB=1 leaves the helper file out, as on a checkout that has not been updated completely
+  [ "${NO_LIB:-}" = "1" ] || cp "$SRC_DIR/lib/portable.sh" "$root/scripts/lib/portable.sh"
   chmod +x "$root/scripts/channel-watchdog.sh"
   printf 'MAIN_AGENT_ID=testbot\n' > "$root/.env"
 }
@@ -141,6 +142,24 @@ case "$OUT" in *"cannot read the mtime"*) pass "the log says why" ;; *) fail "th
 run_case bsd-stamp-unreadable bsd old fresh "last-respawn"
 assert_eq "an unreadable stamp age defers instead of respawning" "0" "$RESPAWNS"
 case "$OUT" in *"cannot be read -- deferring"*) pass "the log says the stamp age is unreadable" ;; *) fail "the log says the stamp age is unreadable ($OUT)" ;; esac
+
+# scripts/lib/portable.sh physically missing (an incomplete update). The age helpers are then "command not found",
+# which must read as "age unknown": no respawn on age, and a WARN line that says why. Without the guard an old
+# keepalive would have been read as mtime 0 and the main session respawned on every tick.
+echo "helper file scripts/lib/portable.sh missing"
+NO_LIB=1 run_case nolib-old gnu old none
+assert_eq "an old keepalive is NOT acted on without the helper: no respawn" "0" "$RESPAWNS"
+assert_eq "the watchdog still runs to the end: exit 0" "0" "$RC"
+case "$OUT" in *"WARN scripts/lib/portable.sh missing"*) pass "the log carries the WARN about the missing helper" ;; *) fail "the log carries the WARN about the missing helper ($OUT)" ;; esac
+case "$OUT" in *"cannot read the mtime"*) pass "the log says the keepalive age is unknown" ;; *) fail "the log says the keepalive age is unknown ($OUT)" ;; esac
+
+NO_LIB=1 run_case nolib-old-bsd bsd old old
+assert_eq "same on a BSD stat host with an old respawn stamp: no respawn" "0" "$RESPAWNS"
+
+# the control: with the helper present the very same fixture respawns, so the cases above prove the helper's absence
+run_case withlib-old gnu old none
+assert_eq "control: the same old keepalive WITH the helper respawns once" "1" "$RESPAWNS"
+case "$OUT" in *"WARN scripts/lib/portable.sh missing"*) fail "control: no missing-helper WARN when the helper exists" ;; *) pass "control: no missing-helper WARN when the helper exists" ;; esac
 
 echo "the stat of this host"
 run_case real-fresh real fresh none

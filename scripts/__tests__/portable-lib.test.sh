@@ -181,6 +181,38 @@ assert_eq "a failing claude auth status still warns" "WARN" "$(verify_output "$R
 grep -q 'portable_timeout 25 claude auth status' "$SRC_DIR/auth.sh" \
   && pass "auth.sh calls portable_timeout" || fail "auth.sh calls portable_timeout"
 
+# The whole script, run end to end in a throw-away install (service scripts are stubs, so no launchctl/systemctl):
+# with the helper file physically missing the auth check cannot run `portable_timeout` (command not found), and
+# the script must degrade to its warning, still write the token and finish with exit 0.
+echo "auth.sh: whole run, helper file missing"
+AUTH_FIXTURE_TOKEN="fixture-token-value"
+run_auth() {
+  local root="$1"
+  mkdir -p "$root/bin"
+  cp "$SRC_DIR/auth.sh" "$root/scripts/"
+  printf '#!/bin/sh\nexit 0\n' > "$root/scripts/stop.sh"; cp "$root/scripts/stop.sh" "$root/scripts/start.sh"
+  chmod +x "$root/scripts/stop.sh" "$root/scripts/start.sh"
+  stub "$root/bin" claude "exit 0"
+  printf 'MAIN_AGENT_ID=testbot\n' > "$root/.env"
+  AUTH_OUT="$( cd "$root" && printf '1\n%s\n' "$AUTH_FIXTURE_TOKEN" \
+    | env -i HOME="$root" PATH="$root/bin:/usr/bin:/bin" /bin/bash "$root/scripts/auth.sh" 2>&1 )"
+  AUTH_RC=$?
+}
+
+ROOT="$TMP/auth-nolib"; mkdir -p "$ROOT/scripts/lib"     # lib dir exists, portable.sh does not
+run_auth "$ROOT"
+assert_eq "no helper: the script finishes with exit 0" "0" "$AUTH_RC"
+case "$AUTH_OUT" in *"claude auth status nem erositi"*) pass "no helper: the auth check falls back to the warning" ;; *) fail "no helper: the auth check falls back to the warning ($AUTH_OUT)" ;; esac
+case "$AUTH_OUT" in *"bejelentkezve"*) fail "no helper: must not claim a confirmed login" ;; *) pass "no helper: does not claim a confirmed login" ;; esac
+assert_eq "no helper: the token is still written to .env" "CLAUDE_CODE_OAUTH_TOKEN=$AUTH_FIXTURE_TOKEN" "$(grep '^CLAUDE_CODE_OAUTH_TOKEN=' "$ROOT/.env")"
+assert_eq "no helper: other .env lines are preserved" "MAIN_AGENT_ID=testbot" "$(grep '^MAIN_AGENT_ID=' "$ROOT/.env")"
+
+# control: the same run WITH the helper confirms the login, so the warning above is caused by the missing file
+ROOT="$TMP/auth-withlib"; mkdir -p "$ROOT/scripts/lib"; cp "$LIB" "$ROOT/scripts/lib/portable.sh"
+run_auth "$ROOT"
+assert_eq "control: with the helper the script finishes with exit 0" "0" "$AUTH_RC"
+case "$AUTH_OUT" in *"bejelentkezve"*) pass "control: with the helper the login is confirmed" ;; *) fail "control: with the helper the login is confirmed ($AUTH_OUT)" ;; esac
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
