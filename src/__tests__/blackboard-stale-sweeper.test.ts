@@ -206,3 +206,55 @@ describe('markBlackboardStale with assigned rows', () => {
     expect(row.status).not.toBe('done')
   })
 })
+
+describe('markBlackboardStale with agents whose scheduled run is in flight', () => {
+  const NOW = Math.floor(Date.now() / 1000)
+  const statusOf = (id: string) =>
+    (getDb().prepare('SELECT status FROM fleet_blackboard WHERE id = ?').get(id) as { status: string }).status
+  const insert = (id: string, agent: string, status: string, ageMin: number) =>
+    getDb().prepare(
+      'INSERT OR REPLACE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)',
+    ).run(id, agent, status, 'scheduled-task', NOW - ageMin * 60)
+
+  it('leaves the active row of an in-flight agent alone even far past its threshold', () => {
+    insert('bb-inflight-1', 'agent-inflight-1', 'active', 300)
+    markBlackboardStale({ 'agent-inflight-1': 15 * 60 }, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-1']))
+    expect(statusOf('bb-inflight-1')).toBe('active')
+  })
+
+  it('still marks the same row stale once the agent is no longer in flight', () => {
+    insert('bb-inflight-2', 'agent-inflight-2', 'active', 300)
+    markBlackboardStale({ 'agent-inflight-2': 15 * 60 }, 60 * 60, 120 * 60, NOW, new Set(['agent-someone-else']))
+    expect(statusOf('bb-inflight-2')).toBe('stale')
+  })
+
+  it('without the argument behaves as before (nothing exempt)', () => {
+    insert('bb-inflight-3', 'agent-inflight-3', 'active', 300)
+    markBlackboardStale({ 'agent-inflight-3': 15 * 60 }, 60 * 60, 120 * 60, NOW)
+    expect(statusOf('bb-inflight-3')).toBe('stale')
+  })
+
+  it('exempts only the in-flight agent: another agent\'s overdue row is still marked', () => {
+    insert('bb-inflight-4a', 'agent-inflight-4a', 'active', 300)
+    insert('bb-inflight-4b', 'agent-inflight-4b', 'active', 300)
+    markBlackboardStale({}, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-4a']))
+    expect(statusOf('bb-inflight-4a')).toBe('active')
+    expect(statusOf('bb-inflight-4b')).toBe('stale')
+  })
+
+  it('does not exempt an assigned row (delegated work that never started)', () => {
+    insert('bb-inflight-5', 'agent-inflight-5', 'assigned', 300)
+    markBlackboardStale({}, 60 * 60, 20 * 60, NOW, new Set(['agent-inflight-5']))
+    expect(statusOf('bb-inflight-5')).toBe('stale')
+  })
+
+  it('writes no history row and does not touch updated_at for the exempt row', () => {
+    insert('bb-inflight-6', 'agent-inflight-6', 'active', 300)
+    const before = getDb().prepare("SELECT COUNT(*) AS n FROM fleet_blackboard_history WHERE agent_id = ?").get('agent-inflight-6') as { n: number }
+    markBlackboardStale({}, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-6']))
+    const after = getDb().prepare("SELECT COUNT(*) AS n FROM fleet_blackboard_history WHERE agent_id = ?").get('agent-inflight-6') as { n: number }
+    expect(after.n).toBe(before.n)
+    const row = getDb().prepare('SELECT updated_at FROM fleet_blackboard WHERE id = ?').get('bb-inflight-6') as { updated_at: number }
+    expect(row.updated_at).toBe(NOW - 300 * 60)
+  })
+})

@@ -228,17 +228,42 @@ export function decideTaskTimeout(
   return 'hold'
 }
 
+// Agents with a scheduled injection still being tracked whose active row the
+// runner wrote itself. The blackboard stale sweeper leaves these rows alone: the
+// work is legitimately running (a task longer than the tier threshold used to be
+// marked stale while it ran), and a task that really hangs is caught by the
+// task-timeout alert instead. Computed from the live map, so there is no second
+// registry to keep in step with the three places an entry is dropped.
+export function getInflightScheduleAgents(): Set<string> {
+  return agentsWithRunnerRow(taskInflightMap.values())
+}
+
+// Pure core of the above, exported for tests. An entry without a snapshot never
+// wrote a row (the upsert failed), so it has nothing to protect.
+export function agentsWithRunnerRow(entries: Iterable<TaskInflightEntry>): Set<string> {
+  const agents = new Set<string>()
+  for (const entry of entries) {
+    if (entry.blackboardSnapshot) agents.add(entry.agentName)
+  }
+  return agents
+}
+
 // Write status=done to the blackboard when the watchdog clears a task entry,
 // but only if the agent has not modified the row since the runner wrote active.
+// A row the sweeper turned `stale` in the meantime still counts as unchanged:
+// the sweeper only touches `status`, so a stale row whose summary and task_ref
+// are still the runner's own is the sweeper's doing, not the agent's. Without
+// this a task that outlived its tier threshold could never end as done.
 // Exported so the done-write path (including task_ref passthrough) can be tested
 // in isolation against a mocked db layer.
 export function applyBlackboardDone(entry: TaskInflightEntry): void {
   if (!entry.sawTurn || !entry.blackboardSnapshot) return
   const cur = findBlackboardRowByAgent(entry.agentName)
+  const snap = entry.blackboardSnapshot
   const unchanged = cur !== undefined &&
-    cur.status === entry.blackboardSnapshot.status &&
-    cur.summary === entry.blackboardSnapshot.summary &&
-    (cur.task_ref ?? null) === entry.blackboardSnapshot.task_ref
+    (cur.status === snap.status || (snap.status === 'active' && cur.status === 'stale')) &&
+    cur.summary === snap.summary &&
+    (cur.task_ref ?? null) === snap.task_ref
   if (unchanged) {
     upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
   }

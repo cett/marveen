@@ -606,19 +606,25 @@ export function pruneAgentMessages(): number {
 // use the per-agent tier threshold (thresholdsByAgent/defaultThresholdSec);
 // 'assigned' rows (delegated but never picked up) use the flat
 // assignedThresholdSec instead, since a not-yet-started task has no tier of
-// its own. Returns how many rows were marked. Called by the
-// blackboard-stale-sweeper on a background interval.
+// its own. 'active' rows of the agents in skipActiveAgentIds are left alone
+// (their scheduled run is still in flight and the runner closes the row).
+// Returns how many rows were marked. Called by the blackboard-stale-sweeper on
+// a background interval.
 export function markBlackboardStale(
   thresholdsByAgent: Record<string, number>,
   defaultThresholdSec: number,
   assignedThresholdSec: number,
   nowSec = Math.floor(Date.now() / 1000),
+  skipActiveAgentIds: ReadonlySet<string> = new Set(),
 ): number {
   const rows = db.prepare(
     `SELECT id, agent_id, task_ref, summary, updated_at, status FROM fleet_blackboard WHERE status IN ('active', 'assigned')`,
   ).all() as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number; status: string }[]
   let marked = 0
   for (const row of rows) {
+    // An agent whose scheduled run is still in flight owns its active row: the
+    // runner closes it. (An 'assigned' row is not started work, so it is not exempt.)
+    if (row.status === 'active' && skipActiveAgentIds.has(row.agent_id)) continue
     const threshold = row.status === 'assigned' ? assignedThresholdSec : (thresholdsByAgent[row.agent_id] ?? defaultThresholdSec)
     if (nowSec - row.updated_at > threshold) {
       db.prepare(

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { decideTaskTimeout, applyBlackboardDone, type TaskInflightEntry } from '../web/schedule-runner.js'
+import {
+  decideTaskTimeout, applyBlackboardDone, agentsWithRunnerRow, getInflightScheduleAgents,
+  type TaskInflightEntry,
+} from '../web/schedule-runner.js'
 
 vi.mock('../db.js', () => ({
   upsertBlackboard: vi.fn().mockReturnValue({ status: 'done', summary: '', task_ref: null }),
@@ -184,5 +187,81 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
 
     applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
     expect(upsertBlackboard).not.toHaveBeenCalled()
+  })
+
+  // The sweeper marks a long-running task's active row stale while it runs. The
+  // row is still the runner's own (same summary and task_ref), so the done write
+  // must go through; otherwise such a task could never end as done.
+  describe('a row the stale sweeper got to first', () => {
+    const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
+
+    it('closes a stale row whose summary and task_ref are still the runner\'s own', () => {
+      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+        { status: 'stale', summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
+      )
+      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      expect(upsertBlackboard).toHaveBeenCalledTimes(1)
+      expect(upsertBlackboard).toHaveBeenCalledWith('agent-a', { status: 'done', summary: 'kanban-task', task_ref: 'card-abc' })
+    })
+
+    it('closes a stale row with a null task_ref too', () => {
+      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+        { status: 'stale', summary: 'kanban-task', task_ref: null, updated_at: 0, agent_id: 'agent-a' } as any,
+      )
+      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: { ...snapshot, task_ref: null } })
+      expect(upsertBlackboard).toHaveBeenCalledWith('agent-a', { status: 'done', summary: 'kanban-task', task_ref: null })
+    })
+
+    it('leaves a stale row alone when the agent changed the summary', () => {
+      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+        { status: 'stale', summary: 'agent wrote this', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
+      )
+      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      expect(upsertBlackboard).not.toHaveBeenCalled()
+    })
+
+    it('leaves a stale row alone when the task_ref differs', () => {
+      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+        { status: 'stale', summary: 'kanban-task', task_ref: 'card-other', updated_at: 0, agent_id: 'agent-a' } as any,
+      )
+      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      expect(upsertBlackboard).not.toHaveBeenCalled()
+    })
+
+    it.each(['done', 'blocked', 'assigned'])('still leaves a %s row alone (only stale is forgiven)', (status) => {
+      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+        { status, summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
+      )
+      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      expect(upsertBlackboard).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when the agent has no row at all', () => {
+      vi.mocked(findBlackboardRowByAgent).mockReturnValue(undefined)
+      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      expect(upsertBlackboard).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('agentsWithRunnerRow / getInflightScheduleAgents', () => {
+  const entry = (agentName: string, withSnapshot: boolean): TaskInflightEntry => ({
+    taskName: 't', agentName, session: 's', host: null, injectedAt: 0, alerted: false, sawTurn: false,
+    workingDir: '/tmp', configDir: undefined, timeoutMs: 1,
+    blackboardSnapshot: withSnapshot ? { status: 'active', summary: 't', task_ref: null } : undefined,
+  })
+
+  it('names the agents whose in-flight entry wrote a row, once each', () => {
+    const got = agentsWithRunnerRow([entry('agent-a', true), entry('agent-b', true), entry('agent-a', true)])
+    expect([...got].sort()).toEqual(['agent-a', 'agent-b'])
+  })
+
+  it('ignores an entry that never wrote a row', () => {
+    expect([...agentsWithRunnerRow([entry('agent-a', false), entry('agent-b', true)])]).toEqual(['agent-b'])
+  })
+
+  it('is empty for no entries, and the live map starts empty', () => {
+    expect(agentsWithRunnerRow([]).size).toBe(0)
+    expect(getInflightScheduleAgents().size).toBe(0)
   })
 })

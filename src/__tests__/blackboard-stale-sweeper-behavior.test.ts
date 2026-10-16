@@ -69,6 +69,8 @@ describe('startBlackboardStaleSweeper', () => {
       { 'agent-a': 120 * 60, 'agent-b': 30 * 60 },
       30 * 60,
       45 * 60,
+      undefined,
+      new Set(),
     )
     clearInterval(handle)
   })
@@ -78,7 +80,36 @@ describe('startBlackboardStaleSweeper', () => {
     getAgentTierMock.mockReturnValue('some-unmapped-tier')
     const handle = startBlackboardStaleSweeper()
     await vi.advanceTimersByTimeAsync(5 * 60_000)
-    expect(markBlackboardStaleMock).toHaveBeenCalledWith({ 'agent-x': 30 * 60 }, 30 * 60, 45 * 60)
+    expect(markBlackboardStaleMock).toHaveBeenCalledWith({ 'agent-x': 30 * 60 }, 30 * 60, 45 * 60, undefined, new Set())
+    clearInterval(handle)
+  })
+
+  it('hands the agents with a scheduled run in flight to markBlackboardStale as the exemption', async () => {
+    const inFlight = new Set(['agent-a'])
+    const handle = startBlackboardStaleSweeper(() => inFlight)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(markBlackboardStaleMock).toHaveBeenCalledTimes(1)
+    expect(markBlackboardStaleMock.mock.calls[0]![4]).toBe(inFlight)
+    clearInterval(handle)
+  })
+
+  it('asks for the in-flight agents on every tick, not once at start', async () => {
+    const provider = vi.fn().mockReturnValueOnce(new Set(['agent-a'])).mockReturnValue(new Set())
+    const handle = startBlackboardStaleSweeper(provider)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(provider).toHaveBeenCalledTimes(2)
+    expect([...markBlackboardStaleMock.mock.calls[0]![4]]).toEqual(['agent-a'])
+    expect([...markBlackboardStaleMock.mock.calls[1]![4]]).toEqual([])
+    clearInterval(handle)
+  })
+
+  it('a throwing provider does not stop the sweep: it runs without the exemption', async () => {
+    const handle = startBlackboardStaleSweeper(() => { throw new Error('provider down') })
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(markBlackboardStaleMock).toHaveBeenCalledTimes(1)
+    expect([...markBlackboardStaleMock.mock.calls[0]![4]]).toEqual([])
+    expect(sweepStaleActivePlansMock).toHaveBeenCalledTimes(1)
     clearInterval(handle)
   })
 
