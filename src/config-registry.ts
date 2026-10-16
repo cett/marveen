@@ -660,10 +660,10 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'BB_STALE_SHORT_RUNNING_MIN',
     type: 'int',
-    default: 15,
+    default: 30,
     min: 5,
     max: 60,
-    description: 'Blackboard stale-határ (perc) a short-running tier ágenseinek. Heartbeat/ütemezett, percek alatt kész.',
+    description: 'Blackboard stale-határ (perc) a short-running tier ágenseinek. Heartbeat/ütemezett, percek alatt kész. Alapérték 30: a hosszabb ütemezett futások (15-20 perc) se minősüljenek elavultnak futás közben.',
     module: 'blackboard',
     secret: false,
     requiresRestart: false,
