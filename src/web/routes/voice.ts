@@ -30,6 +30,24 @@ const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
 const VTOOLS_PY = join(VOICE_DIR, '_vtools.py')
 const VENV_PY = join(VOICE_DIR, 'venv', 'bin', 'python')
 
+/**
+ * Pure: the manual step that installs the system packages the voice toolkit
+ * needs (ffmpeg with libopus, python3 with venv). The dashboard has no root,
+ * so it hands the user the command. `needsSudo` is the flag the UI keys on to
+ * show "run this in a terminal", so it stays true on macOS too, where the
+ * command (Homebrew) simply has no sudo in it. Anything that is not macOS gets
+ * the apt line, as before. Exported for tests.
+ */
+export function voiceSystemDepsHint(platform: NodeJS.Platform = process.platform): { needsSudo: true; sudoCommand: string } {
+  if (platform === 'darwin') {
+    return { needsSudo: true, sudoCommand: 'brew install ffmpeg' }
+  }
+  return {
+    needsSudo: true,
+    sudoCommand: 'sudo apt-get install -y --no-install-recommends ffmpeg python3-venv python3',
+  }
+}
+
 // Telegram file_ids are base64url + some punctuation; reject anything else.
 const SAFE_FILE_ID_RE = /^[A-Za-z0-9_\-]{10,200}$/
 
@@ -282,10 +300,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     const depsMissing = !depCheck.stdout.trim().endsWith('OK')
 
     if (depsMissing) {
-      json(res, {
-        needsSudo: true,
-        sudoCommand: 'sudo apt-get install -y --no-install-recommends ffmpeg python3-venv python3',
-      })
+      json(res, voiceSystemDepsHint())
       return true
     }
 
