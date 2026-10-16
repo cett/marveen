@@ -74,8 +74,9 @@ EOF
 # one throw-away install tree per case; prints its path
 make_install() {
   local root="$1"
-  mkdir -p "$root/scripts" "$root/store"
+  mkdir -p "$root/scripts/lib" "$root/store"
   cp "$SCRIPT_SRC" "$root/scripts/channel-watchdog.sh"
+  cp "$SRC_DIR/lib/portable.sh" "$root/scripts/lib/portable.sh"
   chmod +x "$root/scripts/channel-watchdog.sh"
   printf 'MAIN_AGENT_ID=testbot\n' > "$root/.env"
 }

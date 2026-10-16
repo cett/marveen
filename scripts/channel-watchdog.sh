@@ -61,17 +61,9 @@ AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/ti
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
-# mtime of a file in epoch seconds, on GNU and BSD (macOS) hosts alike. GNU stat (-c %Y) goes first: on a GNU host
-# "stat -f" means filesystem status and prints a multi-line report with exit 0, so it can only be the fallback, and
-# the answer must be all digits before it is believed. On macOS "stat -c" is an illegal option (exit 1), so the BSD
-# form (-f %m) answers. Prints nothing and returns 1 when neither form gives a number.
-file_mtime() {
-  local out
-  out="$(stat -c %Y "$1" 2>/dev/null)" || out=""
-  case "$out" in ''|*[!0-9]*) out="$(stat -f %m "$1" 2>/dev/null)" || out="" ;; esac
-  case "$out" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s\n' "$out"
-}
+# portable_mtime (GNU stat, then BSD stat, so it works on macOS too). If the helper file is missing the calls below
+# fail with "command not found", which reads as "age unknown" and takes the safe side (not stale / defer).
+. "$INSTALL_DIR/scripts/lib/portable.sh" 2>/dev/null || echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] WARN scripts/lib/portable.sh missing -- file ages unknown, no respawn on age"
 
 # --- resolve the channels session + provider (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
@@ -125,7 +117,7 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   # keepalive probe itself was never configured.
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
-  if ka_mtime="$(file_mtime "$KEEPALIVE_FILE")"; then
+  if ka_mtime="$(portable_mtime "$KEEPALIVE_FILE")"; then
     age=$(( now - ka_mtime ))
     [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
   else
@@ -167,7 +159,7 @@ fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
 if [ -f "$RESPAWN_STAMP" ]; then
-  if ! last="$(file_mtime "$RESPAWN_STAMP")"; then
+  if ! last="$(portable_mtime "$RESPAWN_STAMP")"; then
     # Unknown is the safe side here too: a stamp whose age cannot be read counts as fresh, so no respawn storm.
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but the age of $RESPAWN_STAMP cannot be read -- deferring"
     exit 0
