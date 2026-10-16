@@ -90,10 +90,11 @@ _SCRUBS = [
     (re.compile(r"\b((?:pass(?:word|wd)?|jelsz[óo]|token|secret|titok|api[_-]?key|access[_-]?key|kulcs)\s*[:=]\s*)\S+", _I), r"\1***"),
     (re.compile(r"(--?(?:pass(?:word|wd)?|token|secret|api[_-]?key)\s+)\S+", _I), r"\1***"),
     (re.compile(r"/(?:Users|home)/[^/\s]+"), "/~"),
-    # A long run of base64-looking characters that mixes letters and digits: a key, a signature, a blob. The hyphen is
-    # NOT part of the class (the original has it): our own doc_keys and memory names are hyphenated words with ids
-    # in them (report/<id>-workspace-search-delta-qa) and must stay readable; a hyphen splits a run into short pieces.
-    (re.compile(r"(?=[A-Za-z0-9+/_]*[A-Za-z])(?=[A-Za-z0-9+/_]*\d)[A-Za-z0-9+/_]{32,}={0,2}"), "***"),
+    # A long run of base64-looking characters that mixes letters and digits: a key, a signature, a blob. The hyphen
+    # and the underscore are NOT part of the class (the original has them): our own doc_keys and memory names are
+    # hyphenated or snake_case words with ids in them (report/<id>-workspace-search-delta-qa, hot_1017_phase0_prep)
+    # and must stay readable; either character splits a run into short pieces.
+    (re.compile(r"(?=[A-Za-z0-9+/]*[A-Za-z])(?=[A-Za-z0-9+/]*\d)[A-Za-z0-9+/]{32,}={0,2}"), "***"),
     # an e-mail address (the e-mail part of TEXT_SCRUBS; its path and id shapes are left out on purpose)
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[email]"),
 ]

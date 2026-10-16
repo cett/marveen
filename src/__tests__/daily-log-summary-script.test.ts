@@ -142,7 +142,7 @@ describe('daily-log-summary.py', () => {
     const blob = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo' + '0123456789+/abcdef'
     answer('GET-memories', [
       { id: 1, agent_id: 'alpha', content: 'see report/ecfcec5c-workspace-search-delta-qa and', created_at: during },
-      { id: 2, agent_id: 'alpha', content: 'series-998/part-2-facts-and-figures-for-readers ok', created_at: during },
+      { id: 2, agent_id: 'alpha', content: 'series-998/part-2-facts-and-figures-for-readers ok hot_1017_phase0_phase1_prep_drafts', created_at: during },
       { id: 3, agent_id: 'alpha', content: `blob ${blob} end`, created_at: during },
       { id: 4, agent_id: 'alpha', content: 'write to jane.doe+x@example.org please', created_at: during },
       // Only the e-mail part of the log-text shapes is ported: a path and a hex id stay as they are.
@@ -150,7 +150,7 @@ describe('daily-log-summary.py', () => {
     ])
     const c = (run(), posted()!.content)
     expect(c).toContain('see report/ecfcec5c-workspace-search-delta-qa and')
-    expect(c).toContain('series-998/part-2-facts-and-figures-for-readers ok')
+    expect(c).toContain('series-998/part-2-facts-and-figures-for-readers ok hot_1017_phase0_phase1_prep_drafts')
     expect(c).toContain('blob *** end')
     expect(c).not.toContain('QUJDREVG')
     expect(c).toContain('write to [email] please')
