@@ -95,6 +95,18 @@ bash scripts/agent-api.sh GET /api/blackboard
 
 Egy ágens munka közben frissíti a saját sorát (`status: active/done/blocked`), így a többi ágens és a dashboard látja, ki mivel foglalkozik.
 
+**A sor életciklusa és az elavulás-jelzés.** Ágensenként egy sor van. Hogy ki írja, a munka fajtájától függ:
+
+- Ütemezett feladat vagy heartbeat: az ütemező (schedule runner) írja az `active` sort (summary = a feladat neve) a prompt beküldése előtt, és a `done`-t, amikor a session újra üresjáratba kerül; az ágensnek nem kell. Ha az ágens közben átírta a sort (saját summary, `blocked`), a runner visszalép, és az ágens zárja le maga.
+- Interaktív munka (3 vagy több tool-hívás): az ágens a végén `done`-ra vagy `blocked`-re állítja a sort, az elején `active`-ra. Az újraindítás vagy egy friss session soha nem zár le sort (a sor megmarad az adatbázisban, a munka lehet, hogy nem kész), ezért a kontextus-őr HANDOFF-ja ezt kimondja az `Aktualis feladat` alatt, amikor az ágens saját sora `active` vagy `stale`.
+
+Az elavulás-figyelő (5 percenként) `stale`-re állítja az `active` sort, ha az ágens tier-jének küszöbénél régebben nem frissült (`BB_STALE_ORCHESTRATOR_MIN` 120, `BB_STALE_INTERACTIVE_MIN` 90, `BB_STALE_SHORT_RUNNING_MIN` 30, `BB_STALE_DEFAULT_MIN` 60; az `assigned` sor a `BB_STALE_ASSIGNED_MIN`-t használja, 120). A Beállítások képernyőn vagy az `.env`-ben állítható, az érték perc. Két szabály védi az élő munkát:
+
+- Az az ágens, akinek az ütemezett futása még követés alatt van, kimarad (az `active` sora a runneré). A tényleg beragadt futást a feladat-időtúllépés riasztás fogja meg.
+- Ha egy `stale` sor még a runner sajátja (azonos summary és feladat-hivatkozás), a runner a futás végén akkor is `done`-t ír. Az ágens által átírt `stale` sorhoz nem nyúl.
+
+A hygiene-monitor (`scripts/blackboard-hygiene.py`, óránkénti parancs-feladat) a biztonsági háló mindkettő mögött: figyelmezteti azt az ágenst, amelyik dolgozik, de nem tartja naprakészen a sorát, azt az üresjáratos ágenst, amelynek `blocked` sora több mint 1 órás, és azt az üresjáratos ágenst, amelynek `active`/`stale` sora több mint 30 perces (hogy zárja le). A figyelmeztetést visszatartja a koordinátor karbantartó köre vagy egy friss figyelmeztetés, két egymás utáni kör a koordinátorhoz eszkalál, és magát a koordinátort sosem figyelmezteti.
+
 ### Inter-agent kommunikáció
 
 Az ágensek az `agent_messages` tábla üzenetsoron keresztül kommunikálnak:
