@@ -54,7 +54,9 @@ def evaluated_annotations(tree):
                     yield node.returns.lineno, node.returns
                 yield from visit(node.body, True)
             elif isinstance(node, ast.ClassDef):
-                yield from visit(node.body, in_function)
+                # a class body runs when the class statement runs, even inside a function, so its class-level
+                # annotations are evaluated there too: the "local variable" exemption ends at the class
+                yield from visit(node.body, False)
             elif isinstance(node, ast.AnnAssign):
                 # a local variable's annotation is not evaluated; a module or class level one is
                 if not in_function:
@@ -106,6 +108,19 @@ class Scan(unittest.TestCase):
 
     def test_a_local_variable_annotation_is_not_evaluated(self):
         self.assertEqual(pep604_lines('def f():\n    x: int | None = None\n'), [])
+
+    def test_a_class_defined_inside_a_function_is_evaluated_at_class_level(self):
+        # the class body runs when the function runs: `y: int | None` is a TypeError on 3.9 there
+        self.assertEqual(pep604_lines('def f():\n    class C:\n        y: int | None = None\n'), [3])
+        self.assertEqual(pep604_lines('async def f():\n    class C:\n        y: int | None = None\n'), [3])
+        # nested twice, and inside a compound statement of the function
+        self.assertEqual(pep604_lines('def f():\n    if True:\n        class C:\n            class D:\n                y: int | None\n'), [5])
+        self.assertEqual(pep604_lines('def f():\n    try:\n        pass\n    finally:\n        class C:\n            y: int | None = 1\n'), [6])
+        # a method of such a class: its signature is evaluated too, its local variables are not
+        self.assertEqual(pep604_lines('def f():\n    class C:\n        def m(self, x: int | None):\n            z: int | None = 1\n'), [3])
+        # the exemption still holds for a local variable beside the class
+        self.assertEqual(pep604_lines('def f():\n    x: int | None = None\n    class C:\n        pass\n'), [])
+        self.assertEqual(pep604_lines('def f():\n    class C:\n        pass\n    x: int | None = None\n'), [])
 
     def test_the_future_import_clears_everything(self):
         self.assertEqual(pep604_lines('from __future__ import annotations\ndef f(x: str | None): pass\nY: int | None = 1\n'), [])
