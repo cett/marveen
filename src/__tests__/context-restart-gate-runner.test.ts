@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest'
+import { spawn } from 'node:child_process'
 import {
   isInfrastructureChild,
   findClaudePidInTree,
+  isClaudeComm,
+  parseChildPids,
+  parseEtimeOutput,
+  getChildPids,
+  getPidAgeSeconds,
+  getCommForPid,
   extractMcpPackageNames,
   isMcpProcess,
   TASKSTATE_FRESH_WINDOW_MS,
@@ -66,6 +73,119 @@ describe('findClaudePidInTree', () => {
       { pid: 202, comm: 'claude' },
     ]
     expect(findClaudePidInTree(100, 'bash', children)).toBe(201)
+  })
+
+  // macOS prints the full executable path for `ps -o comm=`.
+  it('macOS shape: a full-path comm is claude (pane and child)', () => {
+    expect(findClaudePidInTree(100, '/opt/tools/bin/claude', [])).toBe(100)
+    const children = [{ pid: 200, comm: '/bin/zsh' }, { pid: 201, comm: '/opt/tools/bin/claude' }]
+    expect(findClaudePidInTree(100, '/bin/zsh', children)).toBe(201)
+  })
+
+  it('a null child comm (ps lookup failed) is skipped, not matched', () => {
+    const children = [{ pid: 200, comm: null }, { pid: 201, comm: 'claude' }]
+    expect(findClaudePidInTree(100, 'bash', children)).toBe(201)
+  })
+})
+
+describe('isClaudeComm', () => {
+  it('accepts the bare name and a path ending in /claude', () => {
+    expect(isClaudeComm('claude')).toBe(true)
+    expect(isClaudeComm('/opt/tools/bin/claude')).toBe(true)
+  })
+
+  it('rejects look-alikes', () => {
+    expect(isClaudeComm('claude-code')).toBe(false)
+    expect(isClaudeComm('/opt/bin/notclaude')).toBe(false)
+    expect(isClaudeComm('/opt/claude/bin/node')).toBe(false)
+    expect(isClaudeComm('')).toBe(false)
+  })
+})
+
+// parseChildPids: children from one `ps -axo pid=,ppid=` snapshot (the form
+// both GNU and BSD ps accept; `--ppid` is GNU only).
+describe('parseChildPids', () => {
+  const snapshot = [
+    '    1     0',
+    '  100     1',
+    '  200   100',
+    '12345   100',
+    '  300   200',
+    '',
+  ].join('\n')
+
+  it('returns exactly the direct children of the parent', () => {
+    expect(parseChildPids(snapshot, 100)).toEqual([200, 12345])
+    expect(parseChildPids(snapshot, 200)).toEqual([300])
+  })
+
+  it('does not match a pid that is only a substring of another (10 vs 100)', () => {
+    expect(parseChildPids(snapshot, 10)).toEqual([])
+  })
+
+  it('a parent without children and an empty snapshot give an empty list', () => {
+    expect(parseChildPids(snapshot, 300)).toEqual([])
+    expect(parseChildPids('', 100)).toEqual([])
+  })
+
+  it('skips malformed lines (header, garbage, a third column) instead of throwing', () => {
+    const noisy = ['  PID  PPID', 'garbage', '  200   100 extra', '  201   100'].join('\n')
+    expect(parseChildPids(noisy, 100)).toEqual([201])
+  })
+})
+
+// parseEtimeOutput: `ps -o etime=` ([[dd-]hh:]mm:ss), the portable replacement
+// for the GNU-only `etimes=`.
+describe('parseEtimeOutput', () => {
+  it('parses mm:ss, hh:mm:ss and dd-hh:mm:ss, padded or not', () => {
+    expect(parseEtimeOutput('00:07\n')).toBe(7)
+    expect(parseEtimeOutput('   05:12')).toBe(312)
+    expect(parseEtimeOutput('01:05:23\n')).toBe(3923)
+    expect(parseEtimeOutput(' 2-03:04:05\n')).toBe(183845)
+  })
+
+  it('returns null (fail-closed upstream) for empty, plain-seconds and malformed output', () => {
+    expect(parseEtimeOutput('')).toBeNull()
+    expect(parseEtimeOutput('\n')).toBeNull()
+    expect(parseEtimeOutput('312')).toBeNull()      // the old etimes= shape is NOT etime
+    expect(parseEtimeOutput('05:99')).toBeNull()
+    expect(parseEtimeOutput('ps: error')).toBeNull()
+  })
+})
+
+// The host's own ps, no mocks: this is the check that a GNU-only flag cannot
+// pass. On a BSD/macOS host `ps --ppid` and `-o etimes=` fail outright, so the
+// helpers would return [] / null and these tests fail.
+describe('real ps on this host', () => {
+  it('finds a spawned child via getChildPids and reads a small non-negative age', async () => {
+    const child = spawn('/bin/sleep', ['30'], { stdio: 'ignore' })
+    try {
+      expect(child.pid).toBeTypeOf('number')
+      const pid = child.pid as number
+      expect(getChildPids(process.pid)).toContain(pid)
+      expect(getChildPids(pid)).toEqual([])
+      const age = getPidAgeSeconds(pid)
+      expect(age).not.toBeNull()
+      expect(age as number).toBeGreaterThanOrEqual(0)
+      expect(age as number).toBeLessThan(30)
+      const comm = getCommForPid(pid)
+      expect(comm === 'sleep' || comm?.endsWith('/sleep')).toBe(true)
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it('a pid that does not exist gives null / empty, not a throw', () => {
+    // First pid in the valid range that no process holds (kill -0 -> ESRCH).
+    let dead = 99000
+    while (dead > 1000) {
+      try { process.kill(dead, 0); dead-- } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ESRCH') break
+        dead--
+      }
+    }
+    expect(getPidAgeSeconds(dead)).toBeNull()
+    expect(getChildPids(dead)).toEqual([])
   })
 })
 

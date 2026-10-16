@@ -11,6 +11,7 @@ import { readContextTokensDetailed } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { getHardGuardPhase } from './context-guard-runner.js'
+import { parseEtimeToSeconds } from './agent-restart-policy.js'
 import { readGateConfig, readGateRunState, writeGateRunState, type GateRunState } from './context-restart-gate-store.js'
 import {
   getDispatchedPendingStats,
@@ -158,22 +159,46 @@ function getPanePid(session: string): number | null {
   } catch { return null }
 }
 
-function getChildPids(parentPid: number): number[] {
+/**
+ * Pure: pids whose parent is `parentPid`, from `ps -axo pid=,ppid=` output.
+ * One snapshot filtered here instead of `ps --ppid`, which only GNU procps
+ * knows (BSD/macOS ps answers "illegal option"). Malformed lines are skipped.
+ * Exported for tests.
+ */
+export function parseChildPids(psOut: string, parentPid: number): number[] {
+  const pids: number[] = []
+  for (const line of psOut.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s*$/)
+    if (!m) continue
+    if (parseInt(m[2]!, 10) === parentPid) pids.push(parseInt(m[1]!, 10))
+  }
+  return pids
+}
+
+export function getChildPids(parentPid: number): number[] {
   try {
-    const out = execFileSync('/bin/ps', ['--ppid', String(parentPid), '-o', 'pid='],
-      { timeout: 3000, encoding: 'utf-8' })
-    return out.split('\n')
-      .map(l => parseInt(l.trim(), 10))
-      .filter(n => Number.isFinite(n) && n > 0)
+    const out = execFileSync('/bin/ps', ['-axo', 'pid=,ppid='],
+      { timeout: 3000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    return parseChildPids(out, parentPid)
   } catch { return [] }
 }
 
-function getPidAgeSeconds(pid: number): number | null {
+/**
+ * Pure: elapsed seconds from `ps -o etime=` output ([[dd-]hh:]mm:ss), or null
+ * when it cannot be parsed. `etimes=` (plain seconds) is a GNU-only keyword
+ * (BSD/macOS: "keyword not found"), `etime=` exists on both.
+ * Exported for tests.
+ */
+export function parseEtimeOutput(out: string): number | null {
+  const secs = parseEtimeToSeconds(out)
+  return secs < 0 ? null : secs
+}
+
+export function getPidAgeSeconds(pid: number): number | null {
   try {
-    const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'etimes='],
+    const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'etime='],
       { timeout: 2000, encoding: 'utf-8' })
-    const secs = parseInt(out.trim(), 10)
-    return Number.isFinite(secs) ? secs : null
+    return parseEtimeOutput(out)
   } catch { return null }
 }
 
@@ -185,12 +210,22 @@ function getChildArgsStr(pid: number): string | null {
   } catch { return null }
 }
 
-function getCommForPid(pid: number): string | null {
+export function getCommForPid(pid: number): string | null {
   try {
     const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='],
       { timeout: 2000, encoding: 'utf-8' })
     return out.trim() || null
   } catch { return null }
+}
+
+/**
+ * Pure: is this `ps -o comm=` value the claude binary? Linux prints the bare
+ * name, macOS prints the full executable path, so both `claude` and `/.../claude`
+ * count (same rule as channel-coordinator/liveness.ts).
+ * Exported for tests.
+ */
+export function isClaudeComm(comm: string): boolean {
+  return comm === 'claude' || comm.endsWith('/claude')
 }
 
 /**
@@ -209,9 +244,9 @@ export function findClaudePidInTree(
   children: ReadonlyArray<{ pid: number; comm: string | null }>,
 ): number | null {
   if (paneComm === null) return null
-  if (paneComm === 'claude') return panePid
+  if (isClaudeComm(paneComm)) return panePid
   for (const child of children) {
-    if (child.comm === 'claude') return child.pid
+    if (child.comm !== null && isClaudeComm(child.comm)) return child.pid
   }
   return null
 }
