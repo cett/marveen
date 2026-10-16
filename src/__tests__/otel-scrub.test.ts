@@ -183,6 +183,11 @@ describe('the text is bound before the rules see it', () => {
     const out = scrubLogText(`${blob} ${key}`, 160)
     expect(out).toBe('*** ')
     expect(out).not.toContain('sk-')
+    // no whitespace anywhere, comma and quote separated: the last 200 characters of the cut go, which is longer than
+    // the shortest run any rule needs, so a key split by the cut cannot stay as a fragment
+    const compact = scrubLogText(`${blob},"${key}"`, 160)
+    expect(compact).toBe('***')
+    expect(compact).not.toContain('sk-')
     // a cut that falls on whitespace drops nothing
     const spaced = `${'ab '.repeat(1333)} ${j('sk-', 'ant-', 'api03-', A(40))}`
     expect(scrubLogText(spaced, 5000)).toBe(`${'ab '.repeat(1333)} ***`)
