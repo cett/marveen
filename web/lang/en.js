@@ -126,6 +126,7 @@ window._i18n.en = {
   'nav.ideas':        'Ideas',
   'nav.artifacts':      'Artifacts',
   'nav.workspaceDocs':  'Workspace Docs',
+  'workspace.search_placeholder': 'Search titles and content',
   'nav.group.team':        'Team',
   'nav.group.knowledge':   'Knowledge',
   'nav.group.stats':       'Statistics',

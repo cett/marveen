@@ -4166,6 +4166,16 @@ paths:
           in: query
           schema:
             type: string
+        - name: q
+          in: query
+          description: >
+            Content search: full-text over title and content, every word required, best match first.
+            Combines with the other filters and with `limit`/`offset`; the tenant scope applies (a non-admin
+            only searches its own tenant). With `q` the items carry metadata and a `snippet` instead of the
+            body (`content` is null), the hit words between `[` and `]`. At most 200 characters.
+          schema:
+            type: string
+            maxLength: 200
       responses:
         "200":
           description: Workspace doc list
@@ -4177,7 +4187,16 @@ paths:
                   items:
                     type: array
                     items:
-                      $ref: '#/components/schemas/WorkspaceDoc'
+                      allOf:
+                        - $ref: '#/components/schemas/WorkspaceDoc'
+                        - type: object
+                          properties:
+                            snippet:
+                              type: string
+                              nullable: true
+                              description: >
+                                Only with `q`. The matching excerpt of the column that matched best (the title for a
+                                title-only hit), the hit words between `[` and `]`. Null when that column is empty.
                   total:
                     type: integer
     post:

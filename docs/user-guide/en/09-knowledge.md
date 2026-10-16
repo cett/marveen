@@ -107,6 +107,16 @@ The Workspace Docs sub-page lists documents that agents have written to the shar
 - **Type** - filter by document type
 - **Content** - filter by content type
 - **Tenant** - tenant-level filtering
+- **Search box** - search the titles and content of the documents (see below)
+
+### Searching the content
+
+Type words into the search box of the filter row and press the **Search** button or Enter. The list then keeps only the documents whose title or content contains all the words you typed (in any order and place), best match first. Under each hit's title you see the matching excerpt of the document with the searched words highlighted.
+
+- The search works together with the other filters (agent, type, content, tenant), and the result list is paged.
+- As a tenant user you search only your own tenant's documents; another tenant's document never appears. An administrator can narrow it with the tenant filter.
+- Binary documents have no text, so the content search does not find them (their title can still match).
+- With the search box empty, the full list is shown. The search text is at most 200 characters.
 
 ### Viewing and deleting
 

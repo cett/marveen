@@ -12,7 +12,7 @@ import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import {
   saveWorkspaceDoc, getWorkspaceDoc, getWorkspaceDocBlob,
-  listWorkspaceDocs, countWorkspaceDocs, patchWorkspaceDoc, deleteWorkspaceDoc,
+  listWorkspaceDocs, countWorkspaceDocs, searchWorkspaceDocsPage, patchWorkspaceDoc, deleteWorkspaceDoc,
   peekWorkspaceDoc, storeWorkspaceDocEmbedding, WORKSPACE_DOC_SIZE_LIMITS,
   type WorkspaceDocType, type WorkspaceContentType,
 } from '../../db/workspace.js'
@@ -24,6 +24,9 @@ const VALID_CONTENT_TYPES = new Set<WorkspaceContentType>(['text', 'code', 'bina
 function agentOnly(ctx: RouteContext): boolean {
   return ctx.auth?.kind === 'token'
 }
+
+// Longest search box content accepted; a longer one is not a search for words.
+const MAX_SEARCH_QUERY_CHARS = 200
 
 function effectiveTenant(ctx: RouteContext): string | null {
   const isAdmin = ctx.role === 'admin'
@@ -77,6 +80,18 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
       docKey:       url.searchParams.get('doc_key') ?? undefined,
       docKeyPrefix: url.searchParams.get('doc_key_prefix') ?? undefined,
       metaOnly:     url.searchParams.get('meta_only') === 'true',
+    }
+    // ?q= switches the list to a content search (title + body, every word required, best match first). The same
+    // filters, the tenant scope and the paging apply; items carry metadata and a snippet instead of the body.
+    const q = url.searchParams.get('q')?.trim()
+    if (q) {
+      if (q.length > MAX_SEARCH_QUERY_CHARS) {
+        json(res, { error: 'invalid_value', field: 'q', hint: `"q" is at most ${MAX_SEARCH_QUERY_CHARS} characters` }, 400)
+        return true
+      }
+      const found = searchWorkspaceDocsPage(q, { ...filter, limit, offset })
+      json(res, { items: found.items, total: found.total, offset, limit: limit ?? null })
+      return true
     }
     const docs = listWorkspaceDocs({ ...filter, limit, offset })
     const total = countWorkspaceDocs(filter)

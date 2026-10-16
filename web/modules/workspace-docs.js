@@ -15,6 +15,7 @@ const contentTypeFilter = () => document.getElementById('wdContentTypeFilter')
 const tenantFilter      = () => document.getElementById('wdTenantFilter')
 const tenantFilterWrap  = () => document.getElementById('wdTenantFilterWrap')
 const searchBtn         = () => document.getElementById('wdSearchBtn')
+const queryInput        = () => document.getElementById('wdQuery')
 const listEl            = () => document.getElementById('wdList')
 const emptyEl           = () => document.getElementById('wdEmpty')
 const previewPanel      = () => document.getElementById('wdPreview')
@@ -50,8 +51,10 @@ async function _loadWorkspaceDocsPage() {
   const type        = typeFilter()?.value || ''
   const contentType = contentTypeFilter()?.value || ''
   const tenant      = tenantFilter()?.value?.trim() || ''
+  const query       = queryInput()?.value?.trim() || ''
 
   const params = new URLSearchParams()
+  if (query)       params.set('q', query)
   if (agent)       params.set('agent', agent)
   if (type)        params.set('type', type)
   if (contentType) params.set('content_type', contentType)
@@ -64,7 +67,7 @@ async function _loadWorkspaceDocsPage() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     const rows = Array.isArray(data.items) ? data.items : []
-    renderList(rows)
+    renderList(rows, query)
     renderPaginator(document.getElementById('wdPagination'), {
       offset: _state.offset,
       limit: WD_LIMIT,
@@ -77,13 +80,20 @@ async function _loadWorkspaceDocsPage() {
   }
 }
 
-function renderList(docs) {
+// A search snippet comes from the API unescaped with the hit words between [ and ]; escape it first, then turn
+// the markers into <mark>. A document that itself contains such brackets can show a stray highlight, nothing more.
+function snippetHtml(snippet) {
+  return escapeHtml(snippet).replace(/\[([^\[\]]*)\]/g, '<mark>$1</mark>')
+}
+
+function renderList(docs, query = '') {
   const el  = listEl()
   const emp = emptyEl()
   if (!el || !emp) return
 
   if (!docs.length) {
     el.innerHTML = ''
+    emp.textContent = query ? 'Nincs a keresésre illeszkedő dokumentum.' : 'Nincs találat.'
     emp.hidden = false
     return
   }
@@ -104,7 +114,7 @@ function renderList(docs) {
     <tbody>
       ${docs.map(d => `
         <tr data-wd-id="${escapeHtml(d.id)}">
-          <td>${escapeHtml(d.title)}${d.task_ref ? ' <span style="color:var(--text-muted);font-size:11px">[' + escapeHtml(d.task_ref) + ']</span>' : ''}</td>
+          <td>${escapeHtml(d.title)}${d.task_ref ? ' <span style="color:var(--text-muted);font-size:11px">[' + escapeHtml(d.task_ref) + ']</span>' : ''}${d.snippet ? '<div class="wd-snippet" style="color:var(--text-muted);font-size:12px;margin-top:2px">' + snippetHtml(d.snippet) + '</div>' : ''}</td>
           <td style="color:var(--text-muted)">${escapeHtml(d.agent_id)}</td>
           <td><code>${escapeHtml(d.type)}</code></td>
           <td><code>${escapeHtml(d.content_type)}</code></td>
@@ -261,6 +271,9 @@ export async function initWorkspaceDocs() {
   await Promise.all([populateAgentFilter(), populateTenantFilter()])
 
   searchBtn()?.addEventListener('click', loadWorkspaceDocs)
+  queryInput()?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); loadWorkspaceDocs() }
+  })
 
   listEl()?.addEventListener('click', (e) => {
     const viewBtn = e.target.closest('.wd-view-btn')
