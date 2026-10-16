@@ -182,6 +182,22 @@ describe('daily-log-summary.py', () => {
     expect(c).toContain('uuid 123e4567-e89b-12d3-a456-426614174000 stays')
   })
 
+  it('does not take hex fragments or plus-joined base64 pieces for an identifier, but keeps a UUID and slash-joined doc keys', () => {
+    answer('GET-memories', [
+      { id: 1, agent_id: 'alpha', content: 'hexunder a1b2c3d4_e5f6a7b8_c9d0e1f2_a3b4c5d6 end', created_at: during },
+      { id: 2, agent_id: 'alpha', content: 'hexdash 9f86d081-884c7d65-9a2feaa0-c55ad015 end', created_at: during },
+      { id: 3, agent_id: 'alpha', content: 'plus abc123+def456+ghi789+jkl012+mno345+pqr end', created_at: during },
+      { id: 4, agent_id: 'alpha', content: 'uuid 123e4567-e89b-12d3-a456-426614174000 stays', created_at: during },
+      { id: 5, agent_id: 'alpha', content: 'key report/ecfcec5c-workspace-search-delta-qa/part-2 stays', created_at: during },
+    ])
+    expect(run().code).toBe(0)
+    const c = posted()!.content
+    for (const secret of ['a1b2c3d4_e5f6', '9f86d081-884c', 'abc123+def456']) expect(c).not.toContain(secret)
+    expect(c).toContain('hexunder *** end')
+    expect(c).toContain('uuid 123e4567-e89b-12d3-a456-426614174000 stays')
+    expect(c).toContain('key report/ecfcec5c-workspace-search-delta-qa/part-2 stays')
+  })
+
   it('scrubs every Stripe form, a separator-joined key with one long piece, and keeps snake_case and doc_keys', () => {
     // Assembled from pieces so no key-shaped literal sits in the source.
     const tail = '4eC39HqLyjWDarjtT1zdp7dc'

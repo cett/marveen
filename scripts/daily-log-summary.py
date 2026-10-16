@@ -101,6 +101,8 @@ _SCRUBS = [
 # short. A random token has a long or mixed-case piece (sk_test_51Hx..., a base64url string, a hex digest).
 _BLOB_RUN = re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}")
 _IDENT_PIECE = re.compile(r"[a-z0-9]{0,16}")
+# The canonical UUID form is an id, not a secret, and the log is more useful with it readable.
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Every rule above is linear on short text but some (as in the original) go quadratic on one very long run, so the
 # text is cut first. The cut is far beyond the excerpt (90 characters); the tail of the scrubbed text is dropped so
@@ -113,8 +115,14 @@ def _scrub_blob(match):
     run = match.group(0)
     if not (re.search(r"[A-Za-z]", run) and re.search(r"\d", run)):
         return run
-    pieces = re.split(r"[-_/+]", run.rstrip("="))
-    if all(_IDENT_PIECE.fullmatch(p) for p in pieces) and len(pieces) > 1:
+    if _UUID.fullmatch(run):
+        return run
+    # '/' joins words in a doc_key (report/<id>-...), '+' never does (it only occurs in base64), so it stays inside a
+    # piece and fails the identifier test below.
+    pieces = re.split(r"[-_/]", run.rstrip("="))
+    # An identifier has words: at least one piece with a letter outside a-f, so fragments of a hex digest joined by
+    # hyphens or underscores are not taken for one.
+    if len(pieces) > 1 and all(_IDENT_PIECE.fullmatch(p) for p in pieces) and any(re.search(r"[g-z]", p) for p in pieces):
         return run
     return "***"
 
