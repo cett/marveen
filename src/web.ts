@@ -78,6 +78,7 @@ import { tryHandleClaudeUpdate } from './web/routes/claude-update.js'
 import { startClaudeUpdateRolloutRunner } from './web/claude-update-runner.js'
 import { ensureClaudeUpdateTask } from './web/claude-update.js'
 import { ensureMemoryMaintenanceCommand } from './web/memory-maintenance-task.js'
+import { ensureDailyLogSummaryTask } from './web/daily-log-summary-task.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
@@ -746,6 +747,11 @@ export function startWebServer(port = 3420): http.Server {
       if (ensureClaudeUpdateTask()) logger.info('Weekly claude-update task seeded')
     } catch (err) {
       logger.warn({ err }, 'claude-update task seed skipped')
+    }
+    try {
+      if (ensureDailyLogSummaryTask()) logger.info('Evening daily-log-summary task seeded')
+    } catch (err) {
+      logger.warn({ err }, 'daily-log-summary task seed skipped')
     }
     try {
       // update.sh refreshed shipped skill files: bring their DB rows along before the regen writes rows back over files.

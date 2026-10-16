@@ -11,6 +11,8 @@ vi.mock('../web/tenant-starter-pack.js', () => ({
   reconcileStarterPack: reconcile,
   createStarterPack: vi.fn(),
   describeStarterPack: vi.fn(),
+  autoCreateStarterPack: vi.fn(),
+  markStarterPackPending: vi.fn(),
 }))
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),

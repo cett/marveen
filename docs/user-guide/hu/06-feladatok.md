@@ -217,9 +217,22 @@ A tenant-áthelyezésen kívül egy szerkesztés ezeket a mezőket változtathat
 
 ---
 
+## Esti napi napló összefoglaló
+
+Minden telepítésnek van egy kész feladata `daily-log-summary` néven. Parancs típusú feladat (nincs LLM, ezért ingyenes, és nem kell hozzá futó session), amely minden nap 22:30-kor, a szerver időzónájában, a fő agent nevében egy `## Napi összefoglaló <dátum>` fejléces bejegyzést ír az agent napi naplójába (Memória nézet, Napi napló). A bejegyzés csak a `default` tenant adataiból sorolja fel:
+
+- az aznap mentett memóriákat agensenként számolva, az első néhány részlettel,
+- az aznap létrehozott, lezárt és mozgatott kanban kártyákat,
+- az aznap írt vagy módosított munkadokumentumokat,
+- az aznap merge-elt pull requesteket (a telepítés checkoutjának merge commitjai).
+
+Egy lista 8 sornál megvágódik ("és még N"). Olyan napon, amikor ezek egyike sincs, a bejegyzés egyetlen sor ("Nem volt rögzített aktivitás"), hogy a napló egy hiányzó napja csak azt jelenthesse, hogy a feladat nem futott. A feladat naponta egyszer ír: ha a napló már tartalmazza a nap fejlécét (például egy kézi futás az ütemezett után), nem csinál semmit. Az alvó gép miatt elmaradt futás 23:55-ig pótlódik, utána a nap nem kerül be utólag.
+
+A feladat egyszer jön létre, a telepítés első indulásakor ezzel a verzióval, már meglévő telepítésen is. Közönséges feladat: az idejét a Feladatok listán módosíthatod, szüneteltetheted vagy törölheted, és egy újraindítás sem állítja vissza a törölt, sem nem írja felül a módosított feladatot. Két egymás utáni hibás futás riasztást ad. A feladat menüjéből kézzel is futtatható, ha a mai bejegyzést korábban akarod megírni.
+
 ## Tenant alapcsomag
 
-Minden `default`-tól különböző tenantnak létrehozható egy kész ütemezett feladat, az **alapcsomag**. Jelenleg egyetlen feladatból áll, a `<tenant>-starter-daily-summary` nevű napi összefoglalóból. Létrehozni csak globális admin tud, a Felhasználók nézet Tenantok fülén (lásd [15 - Felhasználók](15-felhasznalok.md#tenant-alapcsomag)); a feladat utána a Feladatok listájában is ott van, mint bármelyik másik.
+Minden `default`-tól különböző tenantnak létrehozható egy kész ütemezett feladat, az **alapcsomag**. Jelenleg egyetlen feladatból áll, a `<tenant>-starter-daily-summary` nevű napi összefoglalóból. A mostantól létrehozott tenant magától megkapja, amint kiválasztható hozzá egy ágens: létrehozáskor, ha a tenantnak már van, különben amikor az első ágenst engedélyezik neki a Felhasználók nézeten. Meglévő tenantnál és javításhoz csak globális admin tudja létrehozni, a Felhasználók nézet Tenantok fülén (lásd [15 - Felhasználók](15-felhasznalok.md#tenant-alapcsomag)); a feladat utána a Feladatok listájában is ott van, mint bármelyik másik. Az automatikusan létrejött feladat is piszkozat és szüneteltetett, mint a kézzel készített, így semmi nem megy ki, amíg valaki meg nem nézte; az admin által törölt feladat nem jön létre újra.
 
 | Beállítás | Érték |
 |-----------|-------|

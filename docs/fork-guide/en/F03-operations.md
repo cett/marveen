@@ -192,7 +192,7 @@ Limits: this enforces the **use** of tenant skills, best-effort on the shell sid
 
 ### Starter pack for an existing tenant
 
-The starter pack (one daily-summary scheduled task, details: F07 "Tenant starter pack") is not created by itself: neither a new tenant nor an existing one gets it automatically. An admin asks for it, per tenant, at any time; the request is idempotent, and repeating it never overwrites anything. On the dashboard the **Starter pack** button on the Tenants tab does it; through the API:
+The starter pack (one daily-summary scheduled task, details: F07 "Tenant starter pack") is created by itself only for a tenant created after the release that introduced it (see F07 "Tenant starter pack", automatic creation); an existing tenant does not get it automatically. For those, and for a repair, an admin asks for it, per tenant, at any time; the request is idempotent, and repeating it never overwrites anything. On the dashboard the **Starter pack** button on the Tenants tab does it; through the API:
 
 ```bash
 bash scripts/agent-api.sh --token operator POST /api/v1/admin/tenants/<tenant>/starter-pack '{"agent_id":"<agent>"}'

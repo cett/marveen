@@ -34,6 +34,8 @@ Clicking a card opens the detail view where the full content can be read and edi
 
 Agent-generated daily summaries, browsable by date. The log records tasks completed, decisions made, and events that occurred during the day. Use the date navigation arrows to view earlier logs.
 
+Every evening at 22:30 (server time zone) the main agent's log also gets an automatic **"Napi összefoglaló"** (daily summary) entry, written by the scheduled task `daily-log-summary` (see [06 - Tasks](06-tasks.md#evening-daily-log-summary)): the day's new memories, cards created and finished, workspace documents and merged pull requests. A day with nothing to report still gets a single line saying so, so a missing day in the log means the task did not run.
+
 ### Graph / Timeline
 
 The Graph tab shows connections between memories as an interactive network graph; nodes are colour-coded by tier to reveal relationships. The Timeline tab displays memories on a chronological swim-lane chart.

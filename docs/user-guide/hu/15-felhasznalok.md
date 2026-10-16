@@ -158,7 +158,7 @@ Az ütemezett feladatoknak tenant a tulajdonosa (részletek: [06 - Feladatok](06
 
 ### Tenant alapcsomag
 
-Az alapcsomag egy kész ütemezett feladat (napi összefoglaló) egy tenantnak. Hogy mit csinál a feladat, hogyan kell aktiválni és kinek megy a csatornaüzenet: [06 - Feladatok](06-feladatok.md#tenant-alapcsomag). Ez a szakasz azt írja le, hol van a gomb, és kinek mi érhető el.
+Az alapcsomag egy kész ütemezett feladat (napi összefoglaló) egy tenantnak. Hogy mit csinál a feladat, hogyan kell aktiválni és kinek megy a csatornaüzenet: [06 - Feladatok](06-feladatok.md#tenant-alapcsomag). A mostantól létrehozott tenant magától megkapja a feladatot (piszkozatként, szüneteltetve), amint kiválasztható hozzá egy ágens; a gomb a már meglévő tenantokhoz, az ágens kiválasztásához és a feladat javításához való. Ez a szakasz azt írja le, hol van a gomb, és kinek mi érhető el.
 
 **A gomb helye.** A **Tenantok** fülön minden tenant sorában, az **Agentkezelés** gomb mellett van az **Alapcsomag** gomb (a `default` tenantnál nincs). A gombra kattintva a tenant-lista alatt megnyílik az Alapcsomag panel, amely megmutatja:
 
