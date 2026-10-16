@@ -56,13 +56,19 @@ export function scrubBlobs(value: string): string {
 }
 
 // The user:password@, URL userinfo and e-mail rules go quadratic on one very long unbroken run, so the text is cut to
-// a bound before the rules see it (same bound as scripts/daily-log-summary.py). The result is cut to maxChars anyway,
-// and a rule changes the length of what it replaces by a small factor at most, so the part of the input that can
-// reach the result lies far inside the bound and a secret split by this cut cannot be in it.
+// a bound before the rules see it (same bound as scripts/daily-log-summary.py). A rule can also shrink what it
+// replaces (a long run becomes ***), so the end of the cut input can still reach the result; a credential split by
+// the cut would then pass as a fragment too short for its rule. When the text was cut, the unbroken token the cut
+// ended in is therefore dropped as well.
 export const SCRUB_INPUT_LIMIT = 4000
 
 function boundInput(value: string, maxChars: number): string {
-  return value.slice(0, Math.max(SCRUB_INPUT_LIMIT, maxChars * 4))
+  const limit = Math.max(SCRUB_INPUT_LIMIT, maxChars * 4)
+  if (value.length <= limit) return value
+  let end = limit
+  while (end > 0 && !/\s/.test(value[end - 1])) end--
+  // no whitespace at all: one giant token, drop the last 200 characters of the cut as the daily log script does
+  return value.slice(0, end > 0 ? end : limit - 200)
 }
 
 // The credential and home-directory scrub, shortened last so a cut never leaves half a secret behind.

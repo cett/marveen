@@ -175,6 +175,19 @@ describe('the text is bound before the rules see it', () => {
     expect(scrubLogText(`mail jane.doe@example.org ${tail}`, 160).startsWith('mail [email] ')).toBe(true)
   })
 
+  it('drops the token the cut ends in, so a key split by the cut is not left as a fragment', () => {
+    // A 3981 character run becomes ***, which brings the end of the cut input into a 160 character result. The key
+    // starts at 3982, so the cut leaves 18 characters of it: too short for the key rule to see.
+    const blob = 'Q9'.repeat(1990) + 'Q'
+    const key = j('sk-', 'ant-', 'api03-', A(40))
+    const out = scrubLogText(`${blob} ${key}`, 160)
+    expect(out).toBe('*** ')
+    expect(out).not.toContain('sk-')
+    // a cut that falls on whitespace drops nothing
+    const spaced = `${'ab '.repeat(1333)} ${j('sk-', 'ant-', 'api03-', A(40))}`
+    expect(scrubLogText(spaced, 5000)).toBe(`${'ab '.repeat(1333)} ***`)
+  })
+
   it('keeps a text under the bound exactly as before', () => {
     const text = `${'x '.repeat(1500)}contact jane.doe@example.org`
     expect(scrubLogText(text, 5000).endsWith('contact [email]')).toBe(true)
