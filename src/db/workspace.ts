@@ -212,7 +212,8 @@ export interface WorkspaceDocSearchResult {
   doc_key: string | null
   created_at: number
   updated_at: number
-  snippet: string
+  /** Match-highlighted excerpt of the best-matching column; null when that column is empty (FTS5 snippet() gives NULL). */
+  snippet: string | null
 }
 
 /**
@@ -237,7 +238,7 @@ export function searchWorkspaceDocs(
   return db.prepare(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
            wd.task_ref, wd.doc_key, wd.created_at, wd.updated_at,
-           snippet(workspace_docs_fts, 1, '[', ']', '...', 15) AS snippet
+           snippet(workspace_docs_fts, -1, '[', ']', '...', 15) AS snippet
     ${ftsFrom(where)}
     ORDER BY rank
     LIMIT ?

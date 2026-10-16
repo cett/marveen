@@ -154,7 +154,8 @@ export interface WorkspaceDocSearchResult {
   created_at: number;
   /** Unix timestamp (seconds) */
   updated_at: number;
-  /** FTS5 match-highlighted excerpt, matches wrapped in `[...]` */
+  /** FTS5 match-highlighted excerpt of the column that matched best (the title for a title-only hit), matches wrapped in `[...]`. Null when that column is empty.
+ */
   snippet: string;
 }
 

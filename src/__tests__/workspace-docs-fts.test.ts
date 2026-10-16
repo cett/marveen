@@ -96,6 +96,24 @@ describe('searchWorkspaceDocs -- content matching', () => {
     expect(results[0].snippet).toContain('[distinctivesnippetterm]')
   })
 
+  it('excerpts the column that matched: the body for a body hit, the title for a title-only hit', () => {
+    seed({ title: 'Roadmap', content: 'the quarterly zebracrossing review is due' })
+    seed({ doc_key: 'k2', title: 'zebracrossing notes', content: 'unrelated body' })
+    const bySnippetOf = new Map(
+      searchWorkspaceDocs('zebracrossing', { tenantId: 'tenant-a', limit: 50 }).map(r => [r.title, r.snippet]),
+    )
+    expect(bySnippetOf.get('Roadmap')).toContain('[zebracrossing]')
+    expect(bySnippetOf.get('Roadmap')).toContain('review is due')
+    // A title-only hit must show the highlighted title, not an unrelated body excerpt.
+    expect(bySnippetOf.get('zebracrossing notes')).toBe('[zebracrossing] notes')
+  })
+
+  it('gives a highlighted title snippet for a title-only hit on a document with an empty body', () => {
+    seed({ title: 'emptybodyterm plan', content: '' })
+    const [hit] = searchWorkspaceDocs('emptybodyterm', { tenantId: 'tenant-a', limit: 50 })
+    expect(hit.snippet).toBe('[emptybodyterm] plan')
+  })
+
   it('respects the limit parameter', () => {
     for (let i = 0; i < 5; i++) seed({ doc_key: `k${i}`, content: 'mentions limittestterm here' })
     const results = searchWorkspaceDocs('limittestterm', { tenantId: 'tenant-a', limit: 2 })
