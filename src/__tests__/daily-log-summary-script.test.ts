@@ -47,6 +47,7 @@ function run(args: string[] = ['main-agent', '--date', DAY]): { code: number | n
   const r = spawnSync('python3', ['-I', SCRIPT, ...args], {
     encoding: 'utf-8',
     env: { ...process.env, DAILY_LOG_SUMMARY_API: fakeApi, DAILY_LOG_SUMMARY_GIT: '0', FAKE_DIR: dir },
+    timeout: 20_000,
   })
   return { code: r.status, stdout: r.stdout, stderr: r.stderr }
 }
@@ -140,7 +141,10 @@ describe('daily-log-summary.py', () => {
 
   it('keeps hyphenated doc keys and names readable, still catches real blobs and e-mail addresses, leaves paths and ids', () => {
     const blob = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo' + '0123456789+/abcdef'
+    // A base64url token keeps its hyphen and underscore, so the plain blob rule would split it into short pieces.
+    const urlSafe = 'aB3-dE6_gH9' + 'jK2-mN5_pQ8sT1-vW4_yZ7aB0cD'
     answer('GET-memories', [
+      { id: 6, agent_id: 'alpha', content: `session ${urlSafe} closed`, created_at: during },
       { id: 1, agent_id: 'alpha', content: 'see report/ecfcec5c-workspace-search-delta-qa and', created_at: during },
       { id: 2, agent_id: 'alpha', content: 'series-998/part-2-facts-and-figures-for-readers ok hot_1017_phase0_phase1_prep_drafts', created_at: during },
       { id: 3, agent_id: 'alpha', content: `blob ${blob} end`, created_at: during },
@@ -153,9 +157,41 @@ describe('daily-log-summary.py', () => {
     expect(c).toContain('series-998/part-2-facts-and-figures-for-readers ok hot_1017_phase0_phase1_prep_drafts')
     expect(c).toContain('blob *** end')
     expect(c).not.toContain('QUJDREVG')
+    expect(c).toContain('session *** closed')
+    expect(c).not.toContain('jK2-mN5')
     expect(c).toContain('write to [email] please')
     expect(c).not.toContain('jane.doe')
     expect(c).toContain('ran /var/log/app/run and id deadbeefdeadbeef')
+  })
+
+  it('still scrubs separator-joined tokens (Stripe-style, hex digest, mixed-case pieces) that are not identifiers', () => {
+    const stripe = 'sk' + '_test_' + '51HxAbCdEfGhIjKlMnOpQr'
+    const stripeLower = 'secret_' + 'a8f3c2e1b7d94f60a1b2c3d4e5f6a7b8'
+    const hexDigest = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
+    const camel = 'token_' + 'Ab12Cd34_Ef56Gh78_Ij90Kl12_Mn34Op56'
+    answer('GET-memories', [
+      { id: 1, agent_id: 'alpha', content: `stripe ${stripe} here`, created_at: during },
+      { id: 2, agent_id: 'alpha', content: `lower ${stripeLower} here`, created_at: during },
+      { id: 3, agent_id: 'alpha', content: `digest ${hexDigest} here`, created_at: during },
+      { id: 4, agent_id: 'alpha', content: `piece ${camel} here`, created_at: during },
+      { id: 5, agent_id: 'alpha', content: 'uuid 123e4567-e89b-12d3-a456-426614174000 stays', created_at: during },
+    ])
+    expect(run().code).toBe(0)
+    const c = posted()!.content
+    for (const secret of ['51HxAbCd', 'a8f3c2e1b7d9', hexDigest, 'Ab12Cd34']) expect(c).not.toContain(secret)
+    expect(c).toContain('uuid 123e4567-e89b-12d3-a456-426614174000 stays')
+  })
+
+  it('handles a huge text without a number or separator in time (no quadratic scrub)', () => {
+    answer('GET-memories', [
+      { id: 1, agent_id: 'alpha', content: 'a'.repeat(300_000), created_at: during },
+      { id: 2, agent_id: 'alpha', content: 'abcdef-'.repeat(60_000), created_at: during },
+      { id: 3, agent_id: 'alpha', content: ('word' + 'x'.repeat(40) + ' ').repeat(20_000), created_at: during },
+    ])
+    const started = Date.now()
+    expect(run().code).toBe(0)
+    expect(Date.now() - started).toBeLessThan(4000)
+    expect(posted()!.content).toContain('Új memória: 3')
   })
 
   it('caps a long list and says how many more there are', () => {

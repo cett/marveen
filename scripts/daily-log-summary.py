@@ -90,21 +90,45 @@ _SCRUBS = [
     (re.compile(r"\b((?:pass(?:word|wd)?|jelsz[óo]|token|secret|titok|api[_-]?key|access[_-]?key|kulcs)\s*[:=]\s*)\S+", _I), r"\1***"),
     (re.compile(r"(--?(?:pass(?:word|wd)?|token|secret|api[_-]?key)\s+)\S+", _I), r"\1***"),
     (re.compile(r"/(?:Users|home)/[^/\s]+"), "/~"),
-    # A long run of base64-looking characters that mixes letters and digits: a key, a signature, a blob. The hyphen
-    # and the underscore are NOT part of the class (the original has them): our own doc_keys and memory names are
-    # hyphenated or snake_case words with ids in them (report/<id>-workspace-search-delta-qa, hot_1017_phase0_prep)
-    # and must stay readable; either character splits a run into short pieces.
-    (re.compile(r"(?=[A-Za-z0-9+/]*[A-Za-z])(?=[A-Za-z0-9+/]*\d)[A-Za-z0-9+/]{32,}={0,2}"), "***"),
-    # an e-mail address (the e-mail part of TEXT_SCRUBS; its path and id shapes are left out on purpose)
-    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[email]"),
+    # Stripe-style keys, whose underscores would otherwise be read as word separators (see _scrub_blob).
+    (re.compile(r"\b(?:[spr]k_(?:live|test)|whsec)_[A-Za-z0-9]{16,}"), "***"),
 ]
+
+# A long run of base64 / base64url characters that mixes letters and digits: a key, a signature, a blob. Unlike the
+# original (a plain character class) it keeps our own identifiers readable: doc_keys and memory names are words
+# joined by hyphens or underscores, with an id in them (report/<id>-workspace-search-delta-qa, hot_1017_phase0_prep).
+# A run is left alone when it is such an identifier: every piece between the separators (- _ / +) is lower case and
+# short. A random token has a long or mixed-case piece (sk_test_51Hx..., a base64url string, a hex digest).
+_BLOB_RUN = re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}")
+_IDENT_PIECE = re.compile(r"[a-z0-9]{0,16}")
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# Every rule above is linear on short text but some (as in the original) go quadratic on one very long run, so the
+# text is cut first. The cut is far beyond the excerpt (90 characters); the tail of the scrubbed text is dropped so
+# a secret split by the cut can never reach the excerpt.
+_SCRUB_INPUT_LIMIT = 4000
+_SCRUB_TAIL_DROP = 200
+
+
+def _scrub_blob(match):
+    run = match.group(0)
+    if not (re.search(r"[A-Za-z]", run) and re.search(r"\d", run)):
+        return run
+    pieces = re.split(r"[-_/+]", run.rstrip("="))
+    if all(_IDENT_PIECE.fullmatch(p) for p in pieces) and len(pieces) > 1:
+        return run
+    return "***"
 
 
 def scrub(text):
     out = str(text or "")
+    truncated = len(out) > _SCRUB_INPUT_LIMIT
+    if truncated:
+        out = out[:_SCRUB_INPUT_LIMIT]
     for rx, replacement in _SCRUBS:
         out = rx.sub(replacement, out)
-    return out
+    out = _BLOB_RUN.sub(_scrub_blob, out)
+    out = _EMAIL.sub("[email]", out)
+    return out[:-_SCRUB_TAIL_DROP] if truncated else out
 
 
 def one_line(text, limit=EXCERPT):
