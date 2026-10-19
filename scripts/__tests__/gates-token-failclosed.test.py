@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Phase T3: a fail-closed gate's verdict must not depend on which token it holds, or on whether it
-holds one at all. The gates only use the dashboard token for a best-effort audit POST; this test
-pins that: the same payloads give the same exit codes with the agent's own token, with only the
-shared token, with no token at all, and with the dashboard unreachable. A mutation (a gate that
+"""Phase T3 / T4-5: a fail-closed gate's verdict must not depend on which token it holds, or on
+whether it holds one at all. The gates only use the dashboard token for a best-effort audit POST;
+this test pins that: the same payloads give the same exit codes with the agent's own token, with
+only a shared token file lying around (which no resolver reads any more, so the gate holds no token
+then, exactly as with no file at all), with no token at all, and with the dashboard unreachable. A mutation (a gate that
 exits 0 when it has no token, i.e. fails open) must be CAUGHT by the same check.
 
 Scope: four gates decide (deny/allow) and so must fail closed: destructive-gate, auth-admin-gate,
@@ -51,7 +52,8 @@ STATES = {
 
 
 def make_install(own, shared, mutate=None):
-    root = tempfile.mkdtemp(prefix="t3-gates-")
+    # realpath: the mutated gate resolves from os.getcwd(), which macOS reports under /private/var
+    root = os.path.realpath(tempfile.mkdtemp(prefix="t3-gates-"))
     shutil.copytree(_HOOKS, os.path.join(root, "scripts", "hooks"), ignore=shutil.ignore_patterns("__pycache__"))
     os.makedirs(os.path.join(root, "store"))
     os.makedirs(os.path.join(root, "agents", "agent-a"))
@@ -157,7 +159,7 @@ class TestEgressGateFailClosedAcrossTokenStates(unittest.TestCase):
 
     def test_the_check_catches_an_egress_gate_that_fails_open_without_a_token(self):
         got = egress_verdicts(mutate=egress_fail_open_without_token)
-        self.assertEqual(got, {"own-token": True, "shared-only": True, "no-token": False})
+        self.assertEqual(got, {"own-token": True, "shared-only": False, "no-token": False})
 
 
 class TestGatesFailClosedAcrossTokenStates(unittest.TestCase):
@@ -169,7 +171,9 @@ class TestGatesFailClosedAcrossTokenStates(unittest.TestCase):
         self.assertNotEqual(mutated, expected())
         wrong = {k for k, v in mutated.items() if v != expected()[k]}
         self.assertTrue(wrong)
-        self.assertTrue(all(k[1] == "no-token" and k[2] == "deny" for k in wrong), wrong)
+        self.assertTrue(all(k[1] in ("shared-only", "no-token") and k[2] == "deny" for k in wrong), wrong)
+        # a shared token file is not a token: the mutation bites there exactly as with no file at all
+        self.assertEqual({k[1] for k in wrong}, {"shared-only", "no-token"})
 
 
 if __name__ == "__main__":
