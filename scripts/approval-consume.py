@@ -84,7 +84,7 @@ def build_request(args):
 def call(path, body, agent=None):
     """POST the body. Returns (status, parsed JSON or None). Raises OSError on network trouble
     and Usage when there is no token to send."""
-    auth = agent_token.resolve(agent_id=agent, shared_file=os.devnull)
+    auth = agent_token.resolve(agent_id=agent)
     if not auth.token:
         raise Usage("no agent token found for this caller (agents/<id>/.agent-token); run it as the agent that asked for the approval")
     req = urllib.request.Request(

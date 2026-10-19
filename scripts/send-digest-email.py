@@ -39,7 +39,6 @@ TOKEN_FILE = os.path.join(GMAIL_CRED_DIR, "token.json")
 CREDENTIALS_FILE = os.path.join(GMAIL_CRED_DIR, "credentials.json")
 
 DASHBOARD_BASE = os.environ.get("MARVEEN_DASHBOARD_BASE", "http://localhost:3420")
-DASHBOARD_TOKEN_FILE = os.path.join(REPO_ROOT, "store", ".dashboard-token")
 
 
 def _load_dotenv():
@@ -72,10 +71,10 @@ def build_signature():
 
 def fetch_digest_content(today):
     """Returns the digest/<today> workspace doc's content, or None if absent."""
-    # Scheduled for the coordinator: its own token, the shared one only if that file is missing.
-    auth = agent_token.resolve(store_dir=os.path.dirname(DASHBOARD_TOKEN_FILE), kind=agent_token.KIND_MAIN, shared_file=DASHBOARD_TOKEN_FILE)
+    # Scheduled for the coordinator: its own token (no shared fallback).
+    auth = agent_token.resolve(store_dir=os.path.join(REPO_ROOT, "store"), kind=agent_token.KIND_MAIN)
     if not auth.token:
-        raise OSError("no dashboard token for the coordinator (own token or %s)" % DASHBOARD_TOKEN_FILE)
+        raise OSError(auth.error or "no token for the coordinator")
     query = urllib.parse.urlencode({"doc_key": f"digest/{today}"})
     url = f"{DASHBOARD_BASE}/api/workspace?{query}"
     req = urllib.request.Request(url, headers=auth.headers())

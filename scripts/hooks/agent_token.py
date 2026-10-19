@@ -1,7 +1,8 @@
 """Which bearer token a fleet process presents to the dashboard API.
 
-Phase T3: the consumers move from the shared dashboard token (store/.dashboard-token) to the
-calling agent's own token (agents/<id>/.agent-token; the main agent's lives in the install root).
+Phase T4-5: every consumer presents the calling agent's OWN token (agents/<id>/.agent-token; the main
+agent's lives in the install root). The shared dashboard token (store/.dashboard-token) is no longer
+read here at all: not as a kind, not as a fallback.
 Which agent the process is: an explicit id, else the working directory (<install>/agents/<id>/...,
 the install root = the main agent), else what the spawner set in the environment (MARVEEN_AGENT_ID,
 or CLAUDE_CONFIG_DIR = <install>/agents/<id>/.claude-config) -- so a hook or script that runs from
@@ -10,12 +11,14 @@ Resolution order for the token, always the same:
 
   1. MARVEEN_AGENT_TOKEN_FILE (explicit file; the test seam and the odd install)
   2. the agent's own token file
-  3. FALLBACK: the shared dashboard token. T3 enforces nothing, so a missing own token must not
-     turn a working call into a failing one. The fallback is deliberately visible: the request
-     carries X-Agent-Id, which the shadow counter files as a self-declared shared-token call
-     with a caller, whereas an unmigrated call has no caller at all. T4 removes step 3.
-  4. nothing readable: no Authorization header, exactly what a hook sent before when the shared
-     token file was missing.
+  3. nothing readable: source SOURCE_NONE, an empty token (so no Authorization header) and `error`
+     naming the fix. There is NO fallback to the shared token: a missing own token is a fault to
+     see, not a call to keep alive. A token that is present but refused (401) is the server's
+     business and is never retried on another one.
+
+KIND_ADMIN is for a call that needs the admin role whoever makes it: the main agent uses its own
+(admin) token; any other agent gets SOURCE_NONE and an `error` that names the way (ask the main agent
+through /api/messages), never a borrowed token.
 
 Nothing here raises, prints or logs. The token is returned to the caller for a request header
 and is kept out of repr() so a stray log line cannot carry it. Pure stdlib.
@@ -23,18 +26,14 @@ and is kept out of repr() so a stray log line cannot carry it. Pure stdlib.
 import os
 
 AGENT_TOKEN_FILENAME = ".agent-token"
-SHARED_TOKEN_FILENAME = ".dashboard-token"
 OPERATOR_TOKEN_FILENAME = ".operator-token"
 
 KIND_AGENT = "agent"
 KIND_OPERATOR = "operator"
-KIND_SHARED = "shared"
 KIND_ADMIN = "admin"
 KIND_MAIN = "main"
 
 SOURCE_AGENT = "agent"
-SOURCE_FALLBACK = "shared-fallback"
-SOURCE_SHARED = "shared"
 SOURCE_OPERATOR = "operator"
 SOURCE_NONE = "none"
 
@@ -44,14 +43,16 @@ _ENV_CONFIG_DIR = "CLAUDE_CONFIG_DIR"
 
 
 class Resolved:
-    """The outcome of a resolution. `token` is empty when source is SOURCE_NONE."""
+    """The outcome of a resolution. `token` is empty when source is SOURCE_NONE, and `error` then
+    says why and how to fix it (a plain sentence for a log line or an exception; never a token)."""
 
-    __slots__ = ("token", "source", "agent_id")
+    __slots__ = ("token", "source", "agent_id", "error")
 
-    def __init__(self, token, source, agent_id):
+    def __init__(self, token, source, agent_id, error=None):
         self.token = token
         self.source = source
         self.agent_id = agent_id
+        self.error = error
 
     def headers(self, base=None):
         h = dict(base or {})
@@ -144,19 +145,31 @@ def agent_token_path(agent_id, install=None):
     return os.path.join(install, "agents", agent_id, AGENT_TOKEN_FILENAME)
 
 
-def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGENT, shared_file=None):
-    """Pick the token for this process. agent_id wins over cwd; with neither, the process cwd
-    decides. store_dir is where .dashboard-token lives (default <install>/store).
+def missing_token_message(agent_id, install=None):
+    """The fix for an agent that has no readable own token file (never contains a token)."""
+    if not agent_id:
+        return ("cannot tell which agent this is (no agent id from the arguments, the working directory or "
+                "MARVEEN_AGENT_ID / CLAUDE_CONFIG_DIR) and so which token file to read; "
+                "set MARVEEN_AGENT_ID or run it as the agent")
+    return ("no readable own token for agent '%s' (%s); the operator issues it with: npm run agent-tokens -- issue %s"
+            % (agent_id, agent_token_path(agent_id, install), agent_id))
 
-    kind: KIND_AGENT (default) is the agent's own token with the shared fallback. KIND_OPERATOR is
-    the operator's named admin token (store/.operator-token) with the same fallback, for the
-    operator scripts. KIND_SHARED is the shared token on purpose, for the endpoints that are still
-    admin:all and that a fleet_agent token would be refused on until T4 decides them. KIND_ADMIN is
-    for a call that needs admin:all whoever makes it: the main agent's own (admin) token, everybody
-    else the shared one. KIND_MAIN acts as the main agent whoever runs it, for the system scripts the
-    dashboard or cron runs on the coordinator's behalf (its own admin token, the shared one only if
-    that file is missing). shared_file names the shared token file outright, for the scripts whose
-    token path is a module constant (and the tests' seam); it replaces <store_dir>/.dashboard-token."""
+
+ADMIN_ONLY_MESSAGE = ("this call needs admin rights and only the main agent holds them: "
+                      "ask the main agent to make it (an inter-agent message through /api/messages)")
+
+
+def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGENT):
+    """Pick the token for this process. agent_id wins over cwd; with neither, the process cwd
+    decides. store_dir is where .operator-token lives (default <install>/store).
+
+    kind: KIND_AGENT (default) is the agent's own token. KIND_OPERATOR is the operator's named admin
+    token (store/.operator-token), for the operator scripts. KIND_ADMIN is for a call that needs
+    admin:all whoever makes it: the main agent's own (admin) token; every other agent gets
+    SOURCE_NONE and ADMIN_ONLY_MESSAGE. KIND_MAIN acts as the main agent whoever runs it, for the
+    system scripts the dashboard or cron runs on the coordinator's behalf (its own admin token).
+    There is no fallback to the shared dashboard token: a missing own token resolves to
+    SOURCE_NONE with an `error` naming the fix, and nothing here reads store/.dashboard-token."""
     install = install or install_dir()
     store = store_dir or os.path.join(install, "store")
     if not agent_id:
@@ -164,30 +177,37 @@ def resolve(agent_id=None, cwd=None, store_dir=None, install=None, kind=KIND_AGE
     if agent_id and ("/" in agent_id or agent_id.startswith(".")):
         agent_id = None
 
-    shared = lambda: _read(shared_file or os.path.join(store, SHARED_TOKEN_FILENAME))
     if kind == KIND_MAIN:
         agent_id, kind = main_agent_id(install) or agent_id, KIND_AGENT
     if kind == KIND_ADMIN:
-        kind = KIND_AGENT if agent_id and agent_id == main_agent_id(install) else KIND_SHARED
-    if kind == KIND_SHARED:
-        t = shared()
-        return Resolved(t, SOURCE_SHARED if t else SOURCE_NONE, agent_id)
+        if not (agent_id and agent_id == main_agent_id(install)):
+            return Resolved("", SOURCE_NONE, agent_id, ADMIN_ONLY_MESSAGE)
+        kind = KIND_AGENT
 
     if kind == KIND_OPERATOR:
-        own, own_source = _read(os.path.join(store, OPERATOR_TOKEN_FILENAME)), SOURCE_OPERATOR
-    else:
-        explicit = os.environ.get(_ENV_TOKEN_FILE, "").strip()
-        own = _read(explicit) if explicit else (_read(agent_token_path(agent_id, install)) if agent_id else "")
-        own_source = SOURCE_AGENT
-    if own:
-        return Resolved(own, own_source, agent_id)
+        own = _read(os.path.join(store, OPERATOR_TOKEN_FILENAME))
+        if own:
+            return Resolved(own, SOURCE_OPERATOR, agent_id)
+        return Resolved("", SOURCE_NONE, agent_id,
+                        "no readable operator token (%s); the operator issues it with: npm run agent-tokens -- issue-operator"
+                        % os.path.join(store, OPERATOR_TOKEN_FILENAME))
 
-    t = shared()
-    if t:
-        return Resolved(t, SOURCE_FALLBACK, agent_id)
-    return Resolved("", SOURCE_NONE, agent_id)
+    explicit = os.environ.get(_ENV_TOKEN_FILE, "").strip()
+    own = _read(explicit) if explicit else (_read(agent_token_path(agent_id, install)) if agent_id else "")
+    if own:
+        return Resolved(own, SOURCE_AGENT, agent_id)
+    return Resolved("", SOURCE_NONE, agent_id, missing_token_message(agent_id, install))
 
 
 def auth_headers(base=None, **kwargs):
     """Request headers carrying the resolved token (and X-Agent-Id when the agent is known)."""
     return resolve(**kwargs).headers(base)
+
+
+def canary_shared_token(store_dir=None, install=None):
+    """The shared dashboard token's value, for ONE caller: the go-live gate's canary
+    (scripts/token-shadow-gate.py), which makes a single deliberate shared-token call to prove the
+    counter is alive. Nothing else may use it; resolve() never returns it. '' when the file is gone
+    (after a rotation the canary then has nothing to send and the gate says so)."""
+    store = store_dir or os.path.join(install or install_dir(), "store")
+    return _read(os.path.join(store, ".dashboard-token"))

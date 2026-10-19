@@ -105,7 +105,6 @@ def _web_port():
 
 DASHBOARD_BASE = os.environ.get("MARVEEN_DASHBOARD_BASE") or "http://localhost:%s" % _web_port()
 STORE_DIR = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(REPO_ROOT, "store")
-DASHBOARD_TOKEN_FILE = os.path.join(STORE_DIR, ".dashboard-token")
 
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "hooks"))
 import agent_token  # noqa: E402
@@ -268,11 +267,11 @@ def next_counters(counters, lagging, held=()):
 
 
 def _auth_headers():
-    """The coordinator's own admin token (X-Agent-Id names it); the shared token only when that
-    file is missing. Raises when there is no token at all, as the old file read did."""
+    """The coordinator's own admin token (X-Agent-Id names it); there is no shared fallback. Raises
+    when there is no token at all, as the old file read did."""
     auth = agent_token.resolve(agent_id=COORDINATOR, store_dir=STORE_DIR)
     if not auth.token:
-        raise FileNotFoundError("no dashboard token for %s (own token or %s)" % (COORDINATOR, DASHBOARD_TOKEN_FILE))
+        raise FileNotFoundError(auth.error or "no token for %s" % COORDINATOR)
     return auth.headers({"Content-Type": "application/json"})
 
 

@@ -50,10 +50,10 @@ def password() -> str:
         raise RuntimeError(
             "support mailbox not configured: set SUPPORT_MAILBOX and SUPPORT_VAULT_KEY in .env"
         )
-    # The vault read is admin:all: the main agent's own token, any other caller the shared one (until T4).
+    # The vault read is admin:all: the main agent's own token; any other caller is told to ask the main agent.
     auth = agent_token.resolve(store_dir=str(ROOT / "store"), kind=agent_token.KIND_ADMIN)
     if not auth.token:
-        raise RuntimeError("no dashboard token in %s" % (ROOT / "store"))
+        raise RuntimeError(auth.error or "no token")
     req = urllib.request.Request(
         f"http://localhost:{WEB_PORT}/api/vault/{VAULT_KEY}",
         headers=auth.headers(),

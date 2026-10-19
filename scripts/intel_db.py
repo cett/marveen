@@ -59,7 +59,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STORE_DIR = Path(os.environ.get("MARVEEN_STORE_DIR") or REPO_ROOT / "store")
-TOKEN_FILE = STORE_DIR / ".dashboard-token"
 REQUEST_TIMEOUT = 20
 
 
@@ -94,10 +93,10 @@ def _base_url() -> str:
 
 
 def _request(method: str, path: str, payload: dict | None = None) -> dict:
-    # /api/intel is admin:all: the main agent's own token, any other caller the shared one (until T4).
-    auth = agent_token.resolve(store_dir=str(STORE_DIR), kind=agent_token.KIND_ADMIN, shared_file=str(TOKEN_FILE))
+    # /api/intel is admin:all: the main agent's own token; any other caller is told to ask the main agent.
+    auth = agent_token.resolve(store_dir=str(STORE_DIR), kind=agent_token.KIND_ADMIN)
     if not auth.token:
-        raise IntelError(f"cannot read the dashboard token ({TOKEN_FILE}): no token")
+        raise IntelError(auth.error or "no token")
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(
         _base_url() + path,

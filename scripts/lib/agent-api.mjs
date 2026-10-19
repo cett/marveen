@@ -1,16 +1,14 @@
 // Which bearer token an .mjs consumer presents to the dashboard API, and a small client on top.
 // Same contract as scripts/agent-api.sh and scripts/hooks/agent_token.py (the three are held in
-// step by their tests): the agent's own token first, then the shared dashboard token as an
-// explicit, visible fallback (the request carries X-Agent-Id), then nothing. A present-but-refused
-// token (401) is never retried on the shared one. Nothing here throws on a missing file, logs, or
-// puts the token anywhere but the Authorization header.
+// step by their tests): the agent's own token, or nothing. There is NO fallback to the shared
+// dashboard token: a missing own token resolves to source 'none' with an `error` naming the fix.
+// A present-but-refused token (401) is the server's business and is never retried on another one.
+// Nothing here throws on a missing file, logs, or puts the token anywhere but the Authorization header.
 import { readFileSync } from 'node:fs'
 import { dirname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const SOURCE_AGENT = 'agent'
-export const SOURCE_FALLBACK = 'shared-fallback'
-export const SOURCE_SHARED = 'shared'
 export const SOURCE_OPERATOR = 'operator'
 export const SOURCE_NONE = 'none'
 
@@ -68,22 +66,28 @@ export function agentTokenPath(agentId, install = installDir(), env = process.en
     : join(install, 'agents', agentId, '.agent-token')
 }
 
+export const ADMIN_ONLY_MESSAGE = 'this call needs admin rights and only the main agent holds them: ask the main agent to make it (an inter-agent message through /api/messages)'
+
+export function missingTokenMessage(agentId, install = installDir(), env = process.env) {
+  if (!agentId) {
+    return 'cannot tell which agent this is (no agent id from the arguments, the working directory or MARVEEN_AGENT_ID / CLAUDE_CONFIG_DIR) and so which token file to read; set MARVEEN_AGENT_ID or run it as the agent'
+  }
+  return `no readable own token for agent '${agentId}' (${agentTokenPath(agentId, install, env)}); the operator issues it with: npm run agent-tokens -- issue ${agentId}`
+}
+
 /**
- * kind: 'agent' (own token, shared fallback) | 'operator' (store/.operator-token, same fallback) |
- * 'shared' (the shared token on purpose, for endpoints that are still admin:all), 'main' (act as the
- * main agent whoever runs it: system scripts), 'admin' (an
- * admin:all call whoever makes it: the main agent's own token, everybody else the shared one).
- * Returns { token, source, agentId, headers(base) }.
+ * kind: 'agent' (own token) | 'operator' (store/.operator-token) | 'main' (act as the main agent
+ * whoever runs it: system scripts) | 'admin' (an admin:all call whoever makes it: the main agent's own
+ * token; every other agent gets source 'none' and ADMIN_ONLY_MESSAGE). There is no fallback to the
+ * shared dashboard token and no 'shared' kind: a missing own token is source 'none' plus `error`.
+ * Returns { token, source, agentId, error, headers(base) }.
  */
 export function resolveToken({ agentId, cwd, kind = 'agent', installDir: install = installDir(), storeDir, env = process.env } = {}) {
   const store = storeDir ?? join(install, 'store')
   let id = agentId || agentIdFromCwd(cwd, install, env) || agentIdFromEnv(install, env)
   if (id && (id.includes('/') || id.startsWith('.'))) id = null
-  if (kind === 'main') { id = mainAgentId(install, env) ?? id; kind = 'agent' }
-  if (kind === 'admin') kind = id && id === mainAgentId(install, env) ? 'agent' : 'shared'
-  const shared = () => readTrim(join(store, '.dashboard-token'))
-  const make = (token, source) => ({
-    token, source, agentId: id ?? null,
+  const make = (token, source, error = null) => ({
+    token, source, agentId: id ?? null, error,
     headers(base = {}) {
       const h = { ...base }
       if (token) h.Authorization = `Bearer ${token}`
@@ -94,19 +98,22 @@ export function resolveToken({ agentId, cwd, kind = 'agent', installDir: install
     toJSON() { return { source, agentId: id ?? null } },
   })
 
-  if (kind === 'shared') { const t = shared(); return make(t, t ? SOURCE_SHARED : SOURCE_NONE) }
-
-  let own, ownSource
-  if (kind === 'operator') {
-    own = readTrim(join(store, '.operator-token')); ownSource = SOURCE_OPERATOR
-  } else {
-    const explicit = (env.MARVEEN_AGENT_TOKEN_FILE || '').trim()
-    own = explicit ? readTrim(explicit) : (id ? readTrim(agentTokenPath(id, install, env)) : '')
-    ownSource = SOURCE_AGENT
+  if (kind === 'main') { id = mainAgentId(install, env) ?? id; kind = 'agent' }
+  if (kind === 'admin') {
+    if (!(id && id === mainAgentId(install, env))) return make('', SOURCE_NONE, ADMIN_ONLY_MESSAGE)
+    kind = 'agent'
   }
-  if (own) return make(own, ownSource)
-  const t = shared()
-  return t ? make(t, SOURCE_FALLBACK) : make('', SOURCE_NONE)
+  if (kind === 'operator') {
+    const path = join(store, '.operator-token')
+    const t = readTrim(path)
+    return t ? make(t, SOURCE_OPERATOR)
+      : make('', SOURCE_NONE, `no readable operator token (${path}); the operator issues it with: npm run agent-tokens -- issue-operator`)
+  }
+  if (kind !== 'agent') return make('', SOURCE_NONE, `unsupported token kind '${kind}' (agent, operator, admin or main)`)
+
+  const explicit = (env.MARVEEN_AGENT_TOKEN_FILE || '').trim()
+  const own = explicit ? readTrim(explicit) : (id ? readTrim(agentTokenPath(id, install, env)) : '')
+  return own ? make(own, SOURCE_AGENT) : make('', SOURCE_NONE, missingTokenMessage(id, install, env))
 }
 
 function baseUrl(install, env) {

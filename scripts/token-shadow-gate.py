@@ -240,10 +240,12 @@ def reader_headers():
 
 
 def canary_headers():
-    auth = agent_token.resolve(agent_id=CANARY, store_dir=STORE_DIR, kind=agent_token.KIND_SHARED)
-    if not auth.token:
+    # The one deliberate shared-token call of the gate (see agent_token.canary_shared_token): resolve()
+    # never hands the shared token out. After a rotation the file is a different token or gone.
+    token = agent_token.canary_shared_token(store_dir=STORE_DIR)
+    if not token:
         return None
-    return auth.headers()
+    return agent_token.Resolved(token, "shared-canary", CANARY).headers()
 
 
 def fetch_category(headers, category, days, caller=None):

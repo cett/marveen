@@ -11,28 +11,25 @@
 #   --max-time SECS     give up on the request after SECS seconds (default: no limit)
 #   --with-status       print the HTTP status as a last extra line after the body (what
 #                       `curl -w '\n%{http_code}'` gave), for scripts that branch on 201 vs 200
-#   --token KIND        agent (default) | operator | shared | admin | main
+#   --token KIND        agent (default) | operator | admin | main
 #                         agent     the agent's own token (agents/<id>/.agent-token, the main
-#                                   agent's in the install root); a MISSING file falls back to the
-#                                   shared token (see below: the fallback is visible to the server,
-#                                   and on the terminal only with AGENT_API_VERBOSE=1)
-#                         operator  store/.operator-token, same fallback
-#                         shared    the shared dashboard token on purpose: for the endpoints that
-#                                   are still admin:all and that a fleet_agent token is refused on
-#                                   (agent start/stop/restart, vault, global skill writes) until T4
+#                                   agent's in the install root)
+#                         operator  store/.operator-token
 #                         admin     for a call that needs admin:all whoever makes it: the main
-#                                   agent uses its own (admin) token, every other agent the shared one
+#                                   agent uses its own (admin) token; every other agent is refused
+#                                   here (exit 3) and told to ask the main agent through
+#                                   /api/messages
 #                         main      act as the main agent whoever runs it: for system scripts run on
-#                                   the coordinator's behalf (its own admin token, shared fallback)
+#                                   the coordinator's behalf (its own admin token)
+# There is no shared-token kind and no fallback to it: store/.dashboard-token is not read here.
 # Output: the response body on stdout. Exit 0 on a 2xx; 22 on any other HTTP status (the status
 # line goes to stderr, the body is still printed); curl's own code when the request never got an
-# answer; 2 on a usage error.
+# answer; 2 on a usage error; 3 when there is no token to send (no own token file, or an admin
+# call by an agent that is not the main one): NO request is made then.
 #
 # The token never appears on a command line: it is handed to curl as a config on STDIN
 # (`curl -K -`), the body goes through a 0600 temp file. A token that is present but REFUSED
-# (401, a revoked or stale file) is NOT retried on the shared token: that would hide the fault.
-# Only a missing or empty file falls back, and then the request carries X-Agent-Id so the
-# dashboard's token-shadow meter shows who fell back. T4 removes the fallback.
+# (401, a revoked or stale file) is NOT retried on another token: that would hide the fault.
 #
 # Env: MARVEEN_AGENT_ID, MARVEEN_AGENT_TOKEN_FILE (explicit own-token file), MAIN_AGENT_ID,
 #      DASHBOARD_BASE_URL (default http://localhost:<MARVEEN_WEB_PORT|WEB_PORT|.env|3420>).
@@ -57,7 +54,8 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-case "$KIND" in agent|operator|shared|admin|main) : ;; *) echo "agent-api: --token must be agent, operator, shared, admin or main" >&2; exit 2 ;; esac
+[ "$KIND" = "shared" ] && { echo "agent-api: --token shared no longer exists: the shared dashboard token is not used by agents any more (use agent, or admin for the main agent)" >&2; exit 2; }
+case "$KIND" in agent|operator|admin|main) : ;; *) echo "agent-api: --token must be agent, operator, admin or main" >&2; exit 2 ;; esac
 [ $# -ge 2 ] || usage
 METHOD="$1"; APIPATH="$2"; BODY="${3-}"
 case "$METHOD" in GET|POST|PUT|PATCH|DELETE) : ;; *) echo "agent-api: bad METHOD '$METHOD'" >&2; exit 2 ;; esac
@@ -96,30 +94,34 @@ case "$AGENT" in */*|.*) AGENT="" ;; esac
 
 if [ "$KIND" = "main" ]; then AGENT="$MAIN"; KIND="agent"; fi
 if [ "$KIND" = "admin" ]; then
-  if [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; then KIND="agent"; else KIND="shared"; fi
+  if [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; then KIND="agent"
+  else
+    echo "agent-api: this call needs admin rights and only the main agent holds them: ask the main agent to make it (an inter-agent message through /api/messages)" >&2
+    exit 3
+  fi
 fi
-SOURCE="none"; TOKEN=""
-read_shared() { TOKEN="$(read_token "$STORE/.dashboard-token")"; }
-case "$KIND" in
-  shared)
-    read_shared; [ -n "$TOKEN" ] && SOURCE="shared" ;;
-  *)
-    if [ "$KIND" = "operator" ]; then
-      TOKEN="$(read_token "$STORE/.operator-token")"; OWN_SOURCE="operator"
-    else
-      OWN_SOURCE="agent"
-      if [ -n "${MARVEEN_AGENT_TOKEN_FILE:-}" ]; then
-        TOKEN="$(read_token "$MARVEEN_AGENT_TOKEN_FILE")"
-      elif [ -n "$AGENT" ]; then
-        if [ "$AGENT" = "$MAIN" ]; then TOKEN="$(read_token "$BASE/.agent-token")"
-        else TOKEN="$(read_token "$BASE/agents/$AGENT/.agent-token")"; fi
-      fi
-    fi
-    if [ -n "$TOKEN" ]; then SOURCE="$OWN_SOURCE"
-    else
-      read_shared; [ -n "$TOKEN" ] && SOURCE="shared-fallback"
-    fi ;;
-esac
+SOURCE="none"; TOKEN=""; TOKEN_PATH=""
+if [ "$KIND" = "operator" ]; then
+  TOKEN_PATH="$STORE/.operator-token"; TOKEN="$(read_token "$TOKEN_PATH")"; OWN_SOURCE="operator"
+else
+  OWN_SOURCE="agent"
+  if [ -n "${MARVEEN_AGENT_TOKEN_FILE:-}" ]; then
+    TOKEN_PATH="$MARVEEN_AGENT_TOKEN_FILE"; TOKEN="$(read_token "$TOKEN_PATH")"
+  elif [ -n "$AGENT" ]; then
+    if [ "$AGENT" = "$MAIN" ]; then TOKEN_PATH="$BASE/.agent-token"; else TOKEN_PATH="$BASE/agents/$AGENT/.agent-token"; fi
+    TOKEN="$(read_token "$TOKEN_PATH")"
+  fi
+fi
+if [ -n "$TOKEN" ]; then SOURCE="$OWN_SOURCE"
+else
+  # No own token: say so and make NO request (a call with no credentials, or on a borrowed one, would
+  # only hide the fault). The fix is named so the next step is not a guess.
+  if [ "$KIND" = "operator" ]; then FIX="npm run agent-tokens -- issue-operator"
+  elif [ -n "$AGENT" ]; then FIX="npm run agent-tokens -- issue $AGENT"
+  else FIX="set MARVEEN_AGENT_ID or run it as the agent"; fi
+  echo "agent-api: no readable own token${TOKEN_PATH:+ ($TOKEN_PATH)} for ${AGENT:-an unknown agent}; the operator issues it with: $FIX" >&2
+  exit 3
+fi
 [ "${AGENT_API_VERBOSE:-}" = "1" ] && echo "agent-api: token source=$SOURCE agent=${AGENT:-?}" >&2
 
 PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(env_file_value WEB_PORT)}}"
@@ -139,11 +141,7 @@ if [ -n "$BODY" ]; then
 fi
 
 # printf is a shell builtin: the token reaches curl through a pipe, never through argv.
-if [ -n "$TOKEN" ]; then
-  RESP="$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -K - "${ARGS[@]}" "$URL")"; RC=$?
-else
-  RESP="$(curl "${ARGS[@]}" "$URL" </dev/null)"; RC=$?
-fi
+RESP="$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -K - "${ARGS[@]}" "$URL")"; RC=$?
 [ "$RC" -eq 0 ] || exit "$RC"
 CODE="${RESP##*$'\n'}"
 printf '%s\n' "${RESP%$'\n'*}"
