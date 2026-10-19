@@ -588,8 +588,12 @@ class TestHookEndToEnd(unittest.TestCase):
         shutil.copy(_HOOK_PATH, os.path.join(self.root, "scripts", "hooks", "skill-usage-capture.py"))
         shutil.copy(os.path.join(os.path.dirname(_HOOK_PATH), "agent_token.py"),
                     os.path.join(self.root, "scripts", "hooks", "agent_token.py"))
-        with open(os.path.join(self.root, "store", ".dashboard-token"), "w") as f:
+        self.agent_dir = os.path.join(self.root, "agents", "agent-a")
+        # the hook signs with the agent's own token; a shared token file is present but never read
+        with open(os.path.join(self.agent_dir, ".agent-token"), "w") as f:
             f.write("tok-123\n")
+        with open(os.path.join(self.root, "store", ".dashboard-token"), "w") as f:
+            f.write("shared-tok\n")
         _Stub.posts = []
         _Stub.delay = 0.0
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Stub)
@@ -633,10 +637,12 @@ class TestHookEndToEnd(unittest.TestCase):
                    "cwd": os.path.join(self.root, "agents", "agent-a")})
         self.assertEqual(_Stub.posts[0]["auth"], "Bearer own-a")
 
-    def test_missing_agent_token_falls_back_to_the_shared_one_and_names_the_agent(self):
-        self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s",
-                   "cwd": os.path.join(self.root, "agents", "agent-a")})
-        self.assertEqual((_Stub.posts[0]["auth"], _Stub.posts[0]["agent"]), ("Bearer tok-123", "agent-a"))
+    def test_missing_agent_token_posts_nothing_and_the_shared_token_never_leaves(self):
+        os.remove(os.path.join(self.agent_dir, ".agent-token"))
+        r = self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s",
+                       "cwd": self.agent_dir})
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(_Stub.posts, [])
 
     def test_skill_tool_posts_tool_call(self):
         self._run({"tool_name": "Skill", "tool_input": {"skill": "fleet-helper"}, "session_id": "s",
@@ -649,26 +655,27 @@ class TestHookEndToEnd(unittest.TestCase):
         self._run({
             "tool_name": "Bash",
             "tool_input": {"command": "cat .claude/skills/a/SKILL.md && cat .claude/skills/b/SKILL.md"},
-            "session_id": "s", "cwd": self.root,
+            "session_id": "s", "cwd": self.agent_dir,
         })
         self.assertEqual([p["body"]["skill_name"] for p in _Stub.posts], ["a", "b"])
 
     def test_irrelevant_bash_posts_nothing(self):
         r = self._run({"tool_name": "Bash", "tool_input": {"command": "ls ~/.claude/skills"},
-                       "session_id": "s", "cwd": self.root})
+                       "session_id": "s", "cwd": self.agent_dir})
         self.assertEqual(r.returncode, 0)
         self.assertEqual(_Stub.posts, [])
 
     def test_no_token_posts_nothing_and_exits_zero(self):
         os.remove(os.path.join(self.root, "store", ".dashboard-token"))
-        r = self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s", "cwd": self.root})
+        os.remove(os.path.join(self.agent_dir, ".agent-token"))
+        r = self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s", "cwd": self.agent_dir})
         self.assertEqual(r.returncode, 0)
         self.assertEqual(_Stub.posts, [])
 
     def test_dead_dashboard_never_blocks(self):
         self.server.shutdown()
         self.server.server_close()
-        r = self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s", "cwd": self.root})
+        r = self._run({"tool_name": "Skill", "tool_input": {"skill": "x"}, "session_id": "s", "cwd": self.agent_dir})
         self.assertEqual(r.returncode, 0)
         # setUp's server is closed twice in tearDown; shutdown on a stopped server is a no-op wait
         self.server = http.server.HTTPServer(("127.0.0.1", 0), _Stub)
@@ -701,7 +708,7 @@ class TestHookEndToEnd(unittest.TestCase):
     def test_a_hung_dashboard_costs_one_time_budget_not_one_per_post(self):
         _Stub.delay = 6.0
         started = time.monotonic()
-        r = self._run({"tool_name": "Bash", "tool_input": {"command": self.FIVE_SKILLS}, "session_id": "s", "cwd": self.root})
+        r = self._run({"tool_name": "Bash", "tool_input": {"command": self.FIVE_SKILLS}, "session_id": "s", "cwd": self.agent_dir})
         elapsed = time.monotonic() - started
         self.assertEqual(r.returncode, 0)
         self.assertLess(elapsed, 3.0, "5 hits against a hung dashboard held the tool call for %.1fs" % elapsed)
@@ -721,12 +728,12 @@ class TestHookEndToEnd(unittest.TestCase):
         _Stub.delay = 2.5
         started = time.monotonic()
         self._run({"tool_name": "Bash", "tool_input": {"command": "cat .claude/skills/a/SKILL.md && cat .claude/skills/b/SKILL.md"},
-                   "session_id": "s", "cwd": self.root})
+                   "session_id": "s", "cwd": self.agent_dir})
         self.assertGreater(time.monotonic() - started, 3.5)
 
     def test_a_slow_but_answering_dashboard_still_gets_every_post_inside_the_budget(self):
         _Stub.delay = 0.1
-        self._run({"tool_name": "Bash", "tool_input": {"command": self.FIVE_SKILLS}, "session_id": "s", "cwd": self.root})
+        self._run({"tool_name": "Bash", "tool_input": {"command": self.FIVE_SKILLS}, "session_id": "s", "cwd": self.agent_dir})
         self.assertEqual(len(_Stub.posts), 5)
 
     def test_garbage_stdin_exits_zero(self):

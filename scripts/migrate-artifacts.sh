@@ -123,8 +123,8 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 # ── token ────────────────────────────────────────────────────────────────────
 
-[ -f "$INSTALL_DIR/store/.operator-token" ] || [ -f "$INSTALL_DIR/store/.dashboard-token" ] \
-  || die "no dashboard token (store/.operator-token or store/.dashboard-token) -- is the dashboard running?"
+[ -f "$INSTALL_DIR/store/.operator-token" ] \
+  || die "no operator token (store/.operator-token; npm run agent-tokens -- issue-operator)"
 BASE_URL="http://127.0.0.1:${WEB_PORT}"
 
 # api_call [--with-status] METHOD PATH [BODY|-]: the operator's token goes through the wrapper, never

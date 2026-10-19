@@ -5,9 +5,9 @@ silent no-op, because a hook must never break the session over a dashboard
 that is down.
 
 The port comes from WEB_PORT (env, then <install>/.env, default 3420). The bearer token is the
-calling agent's own (agent_token.resolve): its agents/<id>/.agent-token, and only when that file is
-missing the shared <store>/.dashboard-token, with X-Agent-Id naming the caller so the token-shadow
-meter can tell the fallback from an unmigrated call. Test override: DASHBOARD_BASE_URL.
+calling agent's own (agent_token.resolve): its agents/<id>/.agent-token, with X-Agent-Id naming the
+caller. When that file is missing the request carries no Authorization header (and so is refused);
+the shared token is never used. Test override: DASHBOARD_BASE_URL.
 """
 import json
 import os

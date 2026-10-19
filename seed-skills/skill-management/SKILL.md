@@ -85,7 +85,7 @@ description: {one-line, specific about triggers}
 - {Known issues, if any}
 ```
 
-4. Save it through the API (the skills DB is the source of truth, `SKILL.md` is a generated cache): `PUT /api/skills/sql/global%2F{name}` with body `{"content": "<the SKILL.md text>"}` (id `agent/<agent>/{name}` for an agent-local skill; the `/` in the id must be `%2F`; build the JSON with a script, e.g. `python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))'`)
+4. Save it through the API (the skills DB is the source of truth, `SKILL.md` is a generated cache). Writing a GLOBAL skill is admin-only, and `--token admin` is the MAIN agent's own token: any other agent does not make that call (it is refused) but sends the finished SKILL.md text to the main agent over `/api/messages` and lets it do the PUT. An agent writes its OWN skill (id `agent/<its own id>/{name}`) with its own token, without `--token`. As the main agent, for a global skill: `PUT /api/skills/sql/global%2F{name}` with body `{"content": "<the SKILL.md text>"}` (id `agent/<agent>/{name}` for an agent-local skill; the `/` in the id must be `%2F`; build the JSON with a script, e.g. `python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))'`)
    ```bash
    python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))' < draft.md \
      | bash scripts/agent-api.sh --token admin PUT /api/skills/sql/global%2F{name} -
@@ -117,7 +117,7 @@ Rules:
 
 1. Show the skill content first
 2. Ask for confirmation: "Delete skill '{name}'? This removes the skill and its generated directory."
-3. On confirmation delete the row; the server removes the generated file and directory itself (only if the file was not hand-edited):
+3. On confirmation delete the row; the server removes the generated file and directory itself (only if the file was not hand-edited). Deleting a global skill is admin-only: the main agent runs this call, any other agent asks it over `/api/messages`:
 ```bash
 bash scripts/agent-api.sh --token admin DELETE "/api/skills/sql/global%2F${NAME}"
 ```

@@ -121,7 +121,7 @@ class FetchSummaryTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".token", delete=False) as tf:
             tf.write("token-a\n")
         try:
-            with patch.object(mod, "DASHBOARD_TOKEN_FILE", tf.name), \
+            with patch.dict(os.environ, {"MARVEEN_AGENT_TOKEN_FILE": tf.name}), \
                     patch.object(mod, "DASHBOARD_BASE", "http://localhost:1234"), \
                     patch.object(mod.urllib.request, "urlopen", fake_urlopen):
                 self.assertEqual(mod.fetch_summary(6), {"total": 0})

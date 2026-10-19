@@ -23,6 +23,7 @@ import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio } from '../voice-directive.js'
+import { resolveOwnStateDir, chatIsPaired } from '../voice-tts-scope.js'
 import { PROJECT_ROOT } from '../../config.js'
 import type { RouteContext } from './types.js'
 
@@ -247,11 +248,27 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     const text = data.text?.trim() ?? ''
     const voiceModel = data.voice_model?.trim() ?? 'hu_HU-imre-medium'
     const chatId = String(data.chat_id ?? '').trim()
-    const stateDir = data.state_dir?.trim() ?? ''
+    let stateDir = data.state_dir?.trim() ?? ''
 
     if (!text) { json(res, { error: 'required', field: 'text', hint: 'text required' }, 400); return true }
     if (!/^\d+$/.test(chatId)) { json(res, { error: 'invalid_value', field: 'chat_id', hint: 'Invalid chat_id' }, 400); return true }
     if (!isSafeStateDir(stateDir)) { json(res, { error: 'invalid_value', field: 'state_dir', hint: 'Invalid state_dir' }, 400); return true }
+
+    // A fleet_agent token speaks only on its OWN channel and only to a chat paired on it. The body
+    // names both, so without this any agent could send voice through another agent's bot to any chat.
+    if (ctx.role === 'fleet_agent') {
+      // From here on the RESOLVED path is the state dir: the check and the use see the same directory.
+      const ownDir = ctx.tokenAgentId ? resolveOwnStateDir(ctx.tokenAgentId, stateDir) : null
+      if (!ownDir) {
+        json(res, { error: 'forbidden', field: 'state_dir', hint: 'A fleet agent token may only speak on its own channel' }, 403)
+        return true
+      }
+      stateDir = ownDir
+      if (!chatIsPaired(stateDir, chatId)) {
+        json(res, { error: 'forbidden', field: 'chat_id', hint: 'chat_id is not paired on this agent\'s channel' }, 403)
+        return true
+      }
+    }
 
     const onnxPath = voiceOnnxPath(voiceModel)
     if (!onnxPath) {

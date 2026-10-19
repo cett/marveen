@@ -218,8 +218,15 @@ export function resolveAuth(
   //    A browser EventSource on an authenticated session reaches step 2 above
   //    and returns the session identity; this step handles token-only clients.
   if (isSsePaneStream(path, method)) {
-    const qtoken = url.searchParams.get('token') ?? ''
-    if (checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
+    const qtoken = (url.searchParams.get('token') ?? '').trim()
+    // The in-memory dashboardToken may still hold the OLD shared value after rotate-shared (until the
+    // next restart). Decide on the in-memory value itself, not on the presented string's formatting:
+    // when its own hash is a registered-but-invalid api_tokens row (revoked), it is not accepted here,
+    // as step 1 would not accept it. Checking the presented string instead would let a padded variant
+    // of the revoked value (hash differs, the Bearer comparison trims) slip past.
+    const held = dbLookups && dashboardToken !== '' ? resolveApiToken(dashboardToken) : null
+    const inMemoryRevoked = held !== null && !held.found && held.registeredButInvalid
+    if (!inMemoryRevoked && checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
     const dk = resolveDeviceKey(qtoken)
     if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
   }

@@ -71,6 +71,9 @@ export const FLEET_AGENT_PERMISSIONS = [
   'skills:write',
   'fleet-config:read',
   'approvals:consume',
+  // POST /api/voice/tts. Narrower than the others: the route holds a fleet_agent to its own channel
+  // and to the chats paired on it (voice-tts-scope.ts), so this permission alone is not "speak as anyone".
+  'voice:speak',
 ] as const
 
 export type Permission = typeof ALL_PERMISSIONS[number] | typeof FLEET_AGENT_PERMISSIONS[number]
@@ -268,6 +271,7 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'GET', pathPattern: '/api/egress-allowlist', prefix: false, permission: 'fleet-config:read' },
   { method: 'GET', pathPattern: '/api/autonomy', prefix: false, permission: 'fleet-config:read' },
   { method: 'GET', pathPattern: '/api/voice/directive', prefix: false, permission: 'fleet-config:read' },
+  { method: 'POST', pathPattern: '/api/voice/tts', prefix: false, permission: 'voice:speak' },
 
   // Messages.
   { method: 'POST', pathPattern: '/api/messages', prefix: true, permission: 'messages:write' },

@@ -69,26 +69,32 @@ class Exceptions(unittest.TestCase):
         self.assertEqual(len(r["excused"]["E3"]), 1)
         self.assertEqual(r["blocking"], [])
 
-    def test_E1_the_main_agent_self_declared_is_excused(self):
+    def test_the_main_agent_self_declared_on_the_shared_token_blocks_now(self):
+        # E1 expired with the shared-token retirement: the main agent has its own token
         r = decide([row(caller=MAIN, source="self_declared")])
-        self.assertEqual(r["state"], "PASS")
-        self.assertEqual(len(r["excused"]["E1"]), 1)
+        self.assertEqual((r["state"], r["exit_code"]), ("FAIL", 1))
+        self.assertEqual(len(r["blocking"]), 1)
+        self.assertEqual(r["excused"], {})
 
-    def test_E2_a_browser_with_no_caller_is_excused(self):
+    def test_a_browser_with_no_caller_on_the_shared_token_blocks_now(self):
+        # E2 expired: every browser holds its own enrolled token
         r = decide([row(client="browser", caller="")])
-        self.assertEqual(r["state"], "PASS")
-        self.assertEqual(len(r["excused"]["E2"]), 1)
+        self.assertEqual((r["state"], r["exit_code"]), ("FAIL", 1))
+        self.assertEqual(r["excused"], {})
+
+    def test_the_canary_is_the_only_exception(self):
+        self.assertEqual([e["id"] for e in gate.EXCEPTIONS], ["E3"])
 
     def test_a_non_main_agent_self_declared_is_blocking_even_though_it_looks_like_E1(self):
         r = decide([row(caller="alpha", source="self_declared")])
         self.assertEqual((r["state"], r["exit_code"]), ("FAIL", 1))
         self.assertEqual(r["excused"], {})
 
-    def test_the_main_agent_name_with_no_declared_source_is_blocking(self):
-        self.assertEqual(decide([row(caller=MAIN, source="none")])["state"], "FAIL")
-        self.assertEqual(decide([row(caller=MAIN, source="token")])["state"], "FAIL")
+    def test_the_main_agent_name_with_any_source_is_blocking(self):
+        for src in ("none", "token", "self_declared"):
+            self.assertEqual(decide([row(caller=MAIN, source=src)])["state"], "FAIL", src)
 
-    def test_E1_needs_a_known_main_agent(self):
+    def test_an_unknown_main_agent_changes_nothing(self):
         self.assertEqual(decide([row(caller="", source="self_declared")], main="")["state"], "FAIL")
 
     def test_a_curl_with_no_caller_is_blocking_even_though_it_looks_like_E2(self):
@@ -122,6 +128,19 @@ class Categories(unittest.TestCase):
         r = decide([row(category="fleet_skill_write_denied", caller="alpha", source="token")])
         self.assertEqual(r["state"], "PASS")
         self.assertEqual(len(r["explain"]), 1)
+
+    def test_shared_token_refused_is_reported_not_blocking(self):
+        r = decide([row(category="shared_token_refused", caller="alpha", source="self_declared")])
+        self.assertEqual((r["state"], r["exit_code"]), ("PASS", 0))
+        self.assertEqual(len(r["refused"]), 1)
+        self.assertEqual(r["blocking"], [])
+        self.assertIn("shared_token_refused", gate.render(r))
+
+    def test_shared_token_refused_is_a_queried_category_and_a_shared_use_row_beside_it_still_blocks(self):
+        self.assertIn("shared_token_refused", gate.CATEGORIES)
+        r = decide([row(category="shared_token_refused"), row()])
+        self.assertEqual(r["state"], "FAIL")
+        self.assertEqual(len(r["refused"]), 1)
 
     def test_unscoped_read_is_informational(self):
         r = decide([row(category="unscoped_read", caller="alpha", source="token", target="*")])
@@ -283,11 +302,13 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("could not read the dashboard", err)
 
-    def test_the_reader_refuses_the_shared_token_fallback(self):
-        fallback = gate.agent_token.Resolved("tok", gate.agent_token.SOURCE_FALLBACK, "x")
-        with patch.object(gate.agent_token, "resolve", lambda **kw: fallback):
-            with self.assertRaises(OSError):
-                gate.reader_headers()
+    def test_the_reader_refuses_a_token_that_is_not_an_own_admin_token(self):
+        for source in (gate.agent_token.SOURCE_NONE, "shared-canary"):
+            with self.subTest(source=source):
+                other = gate.agent_token.Resolved("tok", source, "x")
+                with patch.object(gate.agent_token, "resolve", lambda **kw: other):
+                    with self.assertRaises(OSError):
+                        gate.reader_headers()
 
     def test_the_reader_takes_the_operator_token(self):
         own = gate.agent_token.Resolved("tok", gate.agent_token.SOURCE_OPERATOR, None)
@@ -331,16 +352,19 @@ class Gather(unittest.TestCase):
 
 class Canary(unittest.TestCase):
     def test_the_canary_is_made_as_the_gate_canary_caller_through_the_shared_token(self):
-        seen = {}
+        # the shared token reaches the canary through its one dedicated reader, never through resolve()
+        def no_resolve(**kw):
+            raise AssertionError("resolve() must not be the way to the shared token")
 
-        def fake_resolve(**kw):
-            seen.update(kw)
-            return gate.agent_token.Resolved("shared-tok", gate.agent_token.SOURCE_SHARED, kw.get("agent_id"))
-
-        with patch.object(gate.agent_token, "resolve", fake_resolve):
+        with patch.object(gate.agent_token, "canary_shared_token", lambda **kw: "shared-tok"), \
+             patch.object(gate.agent_token, "resolve", no_resolve):
             headers = gate.canary_headers()
-        self.assertEqual(seen["kind"], gate.agent_token.KIND_SHARED)
+        self.assertEqual(headers["Authorization"], "Bearer shared-tok")
         self.assertEqual(headers["X-Agent-Id"], gate.CANARY)
+
+    def test_there_is_no_canary_when_the_shared_token_is_gone_after_a_rotation(self):
+        with patch.object(gate.agent_token, "canary_shared_token", lambda **kw: ""):
+            self.assertIsNone(gate.canary_headers())
 
     def test_run_canary_is_true_only_when_the_counter_moved(self):
         totals = iter([3, 3, 4])  # before, one poll with no change, one poll after the bump

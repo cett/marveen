@@ -24,7 +24,7 @@ cp templates/.mcp.json.tpl agents/<name>/.mcp.json
 
 ### Agent API tokens and the API wrapper
 
-Every agent calls the dashboard API with its own token (`agents/<id>/.agent-token`; the main agent's lives in the project root), not with the shared `store/.dashboard-token`. The operator has one of their own too (`store/.operator-token`). Manage them on the machine that hosts the install, the dashboard may be stopped:
+Every agent calls the dashboard API with its own token (`agents/<id>/.agent-token`; the main agent's lives in the project root), not with the shared `store/.dashboard-token`, which no script, wrapper or hook reads any more. The operator has one of their own too (`store/.operator-token`). Manage them on the machine that hosts the install, the dashboard may be stopped:
 
 ```bash
 npm run agent-tokens -- issue [--rotate] [--dry-run] [<agent>...]   # default: the main agent and every agent
@@ -32,25 +32,26 @@ npm run agent-tokens -- issue-operator [--rotate]
 npm run agent-tokens -- check [<agent>...]   # read-only: does each token file match an active token? exit 1 if not
 npm run agent-tokens -- list
 npm run agent-tokens -- revoke <agent>
+npm run agent-tokens -- rotate-shared   # always mints a new shared token, revokes the old row; refuses while DASHBOARD_TOKEN is set
 ```
 
-The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose. After a restore, follow the steps in F03, "After a restore: API tokens" (`doctor.sh` and `agent-tokens check` report a missing or stale one).
+The files are `0600`, the command prints the file and never a token, and the backup leaves them out on purpose (the shared token file too). After a restore, follow the steps in F03, "After a restore: API tokens" (`doctor.sh` and `agent-tokens check` report a missing or stale one).
 
 A person opening the dashboard does not use the shared token either: `npm run dashboard-url` (operator-signed, the dashboard must run) prints `<origin>/?enroll=<one-time code>`, which the browser trades for its own named, revocable admin token (`POST /api/auth/enroll-browser`; codes are issued by `POST /api/admin/browser-enroll-codes`, global admin only, single use, 10 minutes, kept in memory). The installers print such a link at the end.
 
 Recipes, hooks and scripts call the API through `scripts/agent-api.sh`, which picks the right token and hands it to curl on stdin, so it never shows up in a process list or a transcript:
 
 ```bash
-bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main] METHOD /api/... [BODY | - | @file]
+bash scripts/agent-api.sh [--agent ID] [--token agent|operator|admin|main] METHOD /api/... [BODY | - | @file]
 ```
 
 - `agent` (default) is the calling agent's own token; the agent comes from `--agent`, `MARVEEN_AGENT_ID`, or the working directory (`agents/<id>/`, the project root is the main agent).
-- `operator` is the operator's token. `admin` is for a call that needs the admin role whoever makes it: the main agent uses its own token, every other agent the shared one. `shared` is the shared token on purpose. `main` acts as the main agent (system scripts).
-- The endpoints a regular agent token is refused on (agent start/stop/restart, vault, egress allowlist writes, global skill writes) stay on the shared token until enforcement: use `--token admin` or `--token operator`.
-- A missing or empty token file falls back to the shared token and the request carries `X-Agent-Id`, so `GET /api/token-shadow` shows who fell back. A token that is present but refused (revoked, stale) is never retried on the shared one: that would hide the fault.
-- Exit code 0 on a 2xx, 22 on any other HTTP status (the status goes to stderr, the body is still printed).
+- `operator` is the operator's token. `admin` is for a call that needs the admin role whoever makes it: the main agent uses its own token, every other agent is refused (exit 3) and asks the main agent through `/api/messages`. `main` acts as the main agent (system scripts).
+- The endpoints a regular agent token is refused on (agent start/stop/restart, vault, egress allowlist writes, global skill writes) are the main agent's or the operator's: use `--token admin` (main agent) or `--token operator`. An agent's own skill (`agent/<id>/<name>`) it may write with its own token; a global skill needs admin.
+- There is no shared-token kind and no fallback to it. `--token shared` is a usage error (exit 2). A missing or empty token file of the agent is exit 3 and **no request is made**; the same holds for `scripts/hooks/agent_token.py` (source `none` with an error) and `scripts/agent-api.mjs`. A token that is present but refused (revoked, stale) is never retried on another token: that would hide the fault.
+- Exit code 0 on a 2xx, 22 on any other HTTP status (the status goes to stderr, the body is still printed), 2 on a usage error, 3 when there is no token to send.
 
-Nothing is enforced by default: the shared token keeps working everywhere.
+The dashboard still accepts the shared token until it is rotated (`agent-tokens rotate-shared`); after that the old value is a 401, counted as `shared_token_refused` in the shadow counter so a straggler that still holds it shows up.
 
 #### Identity enforce (`TOKEN_IDENTITY_MODE`)
 
@@ -62,8 +63,9 @@ What counts as naming an agent follows the permission matrix (`WATCHED` in `src/
 
 `python3 scripts/token-shadow-gate.py --window-start <YYYY-MM-DD>` reads the shadow counter over a measurement window and answers PASS (exit 0), FAIL (exit 1) or INCONCLUSIVE (exit 2). Rotating the shared token waits for a PASS. The window starts at the first 00:00 UTC after the last deploy that touched a call path (the deploy day itself mixes before and after) and needs 7 full UTC days plus today.
 
-- **FAIL**: shared-token use that nothing excuses (the main agent's own declared use, a browser page with no caller and the gate's own canary are the only exceptions, each listed with its reason and expiry in the script), or any `agent_id_mismatch`, `foreign_row_access`, `missing_tenant_context` or `shared_agent_memories_no_tenant` row. The report lists the rows and the last hit; the window restarts after it. Every deploy that changes a call path restarts the clock.
+- **FAIL**: shared-token use of any caller (the gate's own canary is the only exception: the main agent and the dashboard's own page hold their own tokens now, so their former exceptions are gone), or any `agent_id_mismatch`, `foreign_row_access`, `missing_tenant_context` or `shared_agent_memories_no_tenant` row. The report lists the rows and the last hit; the window restarts after it. Every deploy that changes a call path restarts the clock.
 - **INCONCLUSIVE** (never a PASS): the window is too short; an enabled schedule that runs at most weekly has not run in the window; a monthly-or-rarer schedule has no manual run in the window or no clean recipe dry-run (`--manual-run NAME`, `--dry-run-clean NAME` attest them); the dashboard's uptime is not confirmed (`--uptime-confirmed`: it must not have stood still for more than 24 hours on any window day); the canary did not move the counter; a query hit the row limit or the counter holds `_overflow` / `_invalid` rows. A zero count only counts when the counter is proven alive: the gate makes one shared-token call as `gate-canary` and requires the count to grow.
+- Reported, never blocking: `fleet_skill_write_denied`, `unscoped_read` and `shared_token_refused` (after the rotation: which process still knocks with the old token, for the 7-day follow-up).
 - The gate reads with the operator's own token and refuses to read through the shared one (its reads would land in the counter it judges). `TOKEN_SHADOW_WINDOW_START=YYYY-MM-DD` in `.env` makes `doctor.sh` print the gate state as an informational line.
 
 ### Starting and stopping agents

@@ -211,8 +211,8 @@ done
 # --- Agent tokens ---
 # Each agent signs its dashboard calls with its own token file (agents/<id>/.agent-token, the main
 # agent's in the project root) and the operator scripts use store/.operator-token. They are not in the
-# backup, so a restored install lacks them until the issuer runs. While the shared token still works
-# (T3, no enforcement) a missing one is a warning, not a failure.
+# backup, so a restored install lacks them until the issuer runs. There is no shared-token fallback any
+# more, so a missing or stale one is a failure, not a warning.
 echo -e "\n${BOLD}Agent tokens${RESET}"
 # `agent-tokens check` is read-only and compares every token file with the database: a file that is
 # present but not (or no longer) an active token for its subject is as useless as a missing one, which
@@ -227,10 +227,10 @@ elif [ "$TOKEN_CHECK_RC" -eq 1 ] && [ -n "$TOKEN_CHECK_OUT" ]; then
     [ -n "$t_subject" ] && [ "$t_status" != "ok" ] || continue
     case "$t_subject" in
       operator) t_fix="npm run agent-tokens -- issue-operator" ;;
-      shared)   t_fix="see docs/fork-guide/en/F03-operations.md, 'After a restore: API tokens'" ;;
+      shared)   t_fix="npm run agent-tokens -- rotate-shared" ;;
       *)        t_fix="npm run agent-tokens -- issue ${t_subject}" ;;
     esac
-    warn "token ${t_subject}: ${t_status} -- run: ${t_fix}"
+    fail "token ${t_subject}: ${t_status} -- run: ${t_fix}"
   done <<EOF
 $TOKEN_CHECK_OUT
 EOF
@@ -243,11 +243,11 @@ else
     [ -f "${d}.agent-token" ] || MISSING_TOKENS="$MISSING_TOKENS $(basename "$d")"
   done
   if [ -n "$MISSING_TOKENS" ]; then
-    warn "no agent token for:${MISSING_TOKENS} -- run: npm run agent-tokens -- issue"
+    fail "no agent token for:${MISSING_TOKENS} -- run: npm run agent-tokens -- issue"
   else
     ok "Agent tokens: present for the main agent and every agent (agent-tokens check could not run)"
   fi
-  if [ -f "store/.operator-token" ]; then ok "Operator token: present"; else warn "store/.operator-token missing -- run: npm run agent-tokens -- issue-operator"; fi
+  if [ -f "store/.operator-token" ]; then ok "Operator token: present"; else fail "store/.operator-token missing -- run: npm run agent-tokens -- issue-operator"; fi
 fi
 
 # --- Shared token go-live gate (informational, never a failure) ---
@@ -264,7 +264,7 @@ fi
 
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
-if [ -f "store/.operator-token" ] || [ -f "store/.dashboard-token" ]; then
+if [ -f "store/.operator-token" ]; then
   HTTP_ERR="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash scripts/agent-api.sh --token operator --max-time 5 GET /api/agents 2>&1 >/dev/null)"
   if [ -z "$HTTP_ERR" ]; then
     ok "Dashboard API: responding (HTTP 200)"
@@ -272,7 +272,7 @@ if [ -f "store/.operator-token" ] || [ -f "store/.dashboard-token" ]; then
     fail "Dashboard API: ${HTTP_ERR#agent-api: }"
   fi
 else
-  fail "no dashboard token (store/.operator-token or store/.dashboard-token) missing"
+  fail "no operator token (store/.operator-token missing): npm run agent-tokens -- issue-operator"
 fi
 
 # --- Database ---

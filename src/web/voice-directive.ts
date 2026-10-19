@@ -41,8 +41,8 @@ export function inboundIsAudio(kind: string | null | undefined, fileId: string |
 // Build a ready-to-run TTS directive block injected after the STT transcript.
 // The command goes through the API wrapper, which resolves the agent's own token and hands it to
 // curl on stdin: no token is ever written into the directive, so none lands in the agent's context
-// or transcript. /api/voice/tts is still admin-only (no fleet_agent permission covers it), hence
-// `--token admin`: the main agent's own token, the shared one for everybody else, until T4.
+// or transcript. /api/voice/tts takes the agent's own token (voice:speak): the route holds it to its
+// own channel and its paired chats, so no admin token is needed.
 // Returns null if the directive cannot be built.
 export function buildTtsDirective(opts: {
   chatId: string
@@ -61,7 +61,7 @@ export function buildTtsDirective(opts: {
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
       `\`\`\`bash\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `DASHBOARD_BASE_URL=http://localhost:${WEB_PORT} bash '${wrapper}' --agent ${agentId} --token admin POST /api/voice/tts -\n` +
+      `DASHBOARD_BASE_URL=http://localhost:${WEB_PORT} bash '${wrapper}' --agent ${agentId} POST /api/voice/tts -\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti parancsot futtasd le a hangküldéshez.`
     )

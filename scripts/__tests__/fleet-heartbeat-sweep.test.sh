@@ -27,7 +27,7 @@ make_root() { # $1 = case name; prints the ROOT
   mkdir -p "$r/scripts" "$r/store" "$r/bin"
   cp "$SWEEP" "$r/scripts/fleet-heartbeat-sweep.sh"
   cp "$(dirname "$SWEEP")/agent-api.sh" "$r/scripts/agent-api.sh"
-  echo "test-token" > "$r/store/.dashboard-token"
+  echo "test-token" > "$r/.agent-token"   # the coordinator's own token (the sweep runs as the main agent)
   # The sweep talks through scripts/agent-api.sh, which asks curl for `-w '\n%{http_code}'`: the stub answers in that shape.
   printf '#!/bin/sh\necho "[]"\nprintf 200\n' > "$r/bin/curl"; chmod +x "$r/bin/curl"
   # A date stub: with FIXED_NOW set, `date +%s` answers it, so a boundary (resets_at == now) is exact and

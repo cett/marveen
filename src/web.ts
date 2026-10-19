@@ -96,7 +96,7 @@ import { tryHandleModelFallback } from './web/routes/model-fallback.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleRbacShadowLog } from './web/routes/rbac-shadow-log.js'
 import { tryHandleTokenShadow } from './web/routes/token-shadow.js'
-import { answerIdentityRefusal, observeTokenUsage, recordTenantContextRefusal } from './web/token-shadow.js'
+import { answerIdentityRefusal, observeRefusedSharedToken, observeTokenUsage, recordTenantContextRefusal } from './web/token-shadow.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleAgentState } from './web/routes/agent-state.js'
 import { tryHandleIntel } from './web/routes/intel.js'
@@ -292,6 +292,7 @@ export function startWebServer(port = 3420): http.Server {
         // brute-force surface -- make them visible (round-2 scoped-token gate).
         logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
       }
+      observeRefusedSharedToken(req, method, path) // shadow counter: a rotated-away shared token knocking; never throws
       res.writeHead(401, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'unauthorized', hint: 'Bearer token required' }))
       return

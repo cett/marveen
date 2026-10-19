@@ -233,6 +233,8 @@ A forrás a skills DB. A `SKILL.md` (és a `scripts/`, `references/` kísérő f
 ### Automatikus skill generálás
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre skill-t az API-n. Létrehozás és módosítás ugyanaz a hívás; az id URL-kódolt (`global/skill-nev` -> `global%2Fskill-nev`, a `/` nem szerepelhet nyersen):
 
+A globális skill (`global/...`) írása admin-jogú, a `--token admin` pedig a FŐ ágens saját tokenje. Ha te nem a fő ágens vagy, globális skillt ne próbálj írni (elutasítják): küldd el a kész SKILL.md szöveget (id, teljes tartalom) a fő ágensnek a `/api/messages`-en, és ő végzi a PUT-ot. A SAJÁT egyéni skilled (`agent/AGENT_ID/SKILL-NEV`) a saját tokenedmel írhatod, `--token` kapcsoló nélkül. A lenti parancs a fő ágensé (globális skill):
+
 ```bash
 DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh --token admin PUT /api/skills/sql/global%2FSKILL-NEV @skill.json
 ```

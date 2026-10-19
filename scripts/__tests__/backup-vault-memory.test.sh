@@ -26,6 +26,9 @@ new_repo() {
   cp "$INSTALL_DIR/scripts/backup.sh" "$INSTALL_DIR/scripts/verify-restore.sh" "$r/scripts/"
   echo '[{"id":"x","encrypted":"ZW5jcnlwdGVk"}]' > "$r/store/vault.json"; chmod 600 "$r/store/vault.json"
   if command -v sqlite3 >/dev/null 2>&1; then sqlite3 "$r/store/claudeclaw.db" 'CREATE TABLE t(x);'; fi
+  # Token files of every kind exist in the install; none of them may reach the archive.
+  echo shared-fixture > "$r/store/.dashboard-token"; echo operator-fixture > "$r/store/.operator-token"
+  echo main-fixture > "$r/.agent-token"
   mkdir -p "$r/agents/zed/memory" "$r/agents/zed/.claude-config/projects/-p1/memory" \
            "$r/agents/zed/src/memory" "$r/agents/zed/a/b/c/memory" "$r/agents/zed/.claude-config/projects/-p1/sessions" \
            "$r/.channels-config/projects/-p2/memory" "$r/.channels-config/projects/-p2/sessions"
@@ -85,6 +88,7 @@ listing_has "$A" '^home/\.claude/projects/-p3/memory/d\.md$' && pass "symlinked 
 if tar -tzf "$A" | grep -qE '^repo/agents/zed[23]/\.claude-config'; then fail "symlinked projects dir copied under repo/"; else pass "symlinked projects dirs not copied under repo/"; fi
 if listing_has "$A" 'decoy'; then fail "decoy path (deeper memory dir / sessions) swept in"; else pass "depth-pinned: decoys not archived"; fi
 if listing_has "$A" '(^|/)\.vault-key'; then fail "vault key file inside the archive"; else pass "no .vault-key* inside the archive"; fi
+if listing_has "$A" '(^|/)\.(dashboard|operator|agent)-token$'; then fail "a token file (shared, operator or agent) is inside the archive"; else pass "no shared, operator or agent token file inside the archive"; fi
 X="$TMPDIR_BASE/x-a"; mkdir -p "$X"; tar -xpzf "$A" -C "$X"
 if grep -rqF "$KEY_VALUE" "$X"; then fail "key value found inside the archive contents"; else pass "key value absent from archive contents"; fi
 [ "$(mode_of "$X/repo/store/vault.json")" = "600" ] && pass "vault.json keeps mode 0600 in the archive" || fail "vault.json mode changed"

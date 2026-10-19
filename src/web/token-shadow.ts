@@ -29,6 +29,11 @@
 //   shared_agent_memories_no_tenant  GET /api/memories?agent=<shared agent> with no ?tenant= and no
 //                                    tenant context for that agent (the memory read of a shared
 //                                    agent the tenant-less shared token makes). target = the agent.
+//   shared_token_refused             a request presented the shared dashboard token AFTER it was rotated
+//                                    (the hash is a revoked 'dashboard' row in api_tokens): the 401 it got
+//                                    is unchanged, the count makes the straggler visible (a long-running
+//                                    process that still holds the old token). The caller is the X-Agent-Id
+//                                    header (self_declared) or nobody; the route is where it knocked.
 //   fleet_skill_write_denied         a fleet_agent token tried to write a skill it may not (T1's
 //                                    deliberate narrowing). target = the skill's owner.
 //
@@ -42,6 +47,7 @@
 // Cardinality is bounded: routes are templates, caller / target are charset-checked, and the writer
 // folds shapes beyond MAX_ROWS_PER_DAY into one overflow row, because the header is attacker-chosen.
 
+import { createHash } from 'node:crypto'
 import type http from 'node:http'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -50,6 +56,7 @@ import {
   countTokenShadowRowsForDay,
   deleteTokenShadowRowsBefore,
   explainServingTenantMiss,
+  getApiTokenRowByHash,
   getBlackboardRowById,
   getKanbanCard,
   getMemoryOwnerRow,
@@ -71,6 +78,7 @@ export const TOKEN_SHADOW_CATEGORIES = [
   'missing_tenant_context',
   'shared_agent_memories_no_tenant',
   'fleet_skill_write_denied',
+  'shared_token_refused',
 ] as const
 export type TokenShadowCategory = (typeof TOKEN_SHADOW_CATEGORIES)[number]
 
@@ -451,6 +459,34 @@ function agentHasNoTenant(agentId: string): boolean {
 }
 
 // ── request entry points ────────────────────────────────────────────────────
+
+/**
+ * Called where the auth gate answers 401. When the bearer is the shared dashboard token that was
+ * rotated away (its hash is a REVOKED `dashboard` row), counts one shared_token_refused so the
+ * straggler that still holds the old token is visible. Never changes the 401, never throws. A bearer
+ * that is unknown, expired or any other revoked token is not the shared token and is not counted.
+ */
+export function observeRefusedSharedToken(req: http.IncomingMessage, method: string, rawPath: string): void {
+  try {
+    const m = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
+    const bearer = m?.[1]?.trim()
+    if (!bearer) return
+    const path = stripApiVersion(rawPath)
+    if (path === TOKEN_SHADOW_ROUTE) return
+    const row = getApiTokenRowByHash(createHash('sha256').update(bearer).digest('hex'))
+    if (!row || row.name !== DASHBOARD_TOKEN_NAME || row.revoked_at === null) return
+    const declared = cleanAgentId(resolveAgentIdHeader(req))
+    recordTokenShadow(
+      {
+        method, route: normalizeRoute(path), client: classifyClient(req.headers['user-agent']),
+        caller: declared, callerSource: declared ? 'self_declared' : 'none',
+      },
+      { category: 'shared_token_refused', target: '' },
+    )
+  } catch (err) {
+    warnThrottled(err, 'token-shadow: refused-token observation failed')
+  }
+}
 
 // A shared-token write to /api/messages is counted when its body has been read, so the row can carry
 // the `from` the body names. The count is never lost: the request's close flushes it unlabelled.

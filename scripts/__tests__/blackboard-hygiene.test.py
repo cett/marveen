@@ -889,7 +889,7 @@ class BlackboardRowTest(unittest.TestCase):
 
 
 class AuthHeadersTest(unittest.TestCase):
-    """The sweep signs with the coordinator's own token; the shared token only when that file is missing."""
+    """The sweep signs with the coordinator's own token and never with the shared one."""
 
     def setUp(self):
         import tempfile
@@ -921,10 +921,12 @@ class AuthHeadersTest(unittest.TestCase):
         h = mod._auth_headers()
         self.assertEqual(h["Authorization"], "Bearer own-c")
 
-    def test_missing_own_token_falls_back_and_names_the_coordinator(self):
+    def test_a_missing_own_token_raises_the_named_fix_even_with_a_shared_token_file(self):
         self.write(".dashboard-token", "shared\n")
-        h = mod._auth_headers()
-        self.assertEqual((h["Authorization"], h["X-Agent-Id"]), ("Bearer shared", "zz-coordinator"))
+        with self.assertRaises(FileNotFoundError) as ctx:
+            mod._auth_headers()
+        self.assertIn("agent-tokens -- issue zz-coordinator", str(ctx.exception))
+        self.assertNotIn("shared", str(ctx.exception))
 
     def test_no_token_at_all_raises_like_the_old_file_read(self):
         with self.assertRaises(FileNotFoundError):

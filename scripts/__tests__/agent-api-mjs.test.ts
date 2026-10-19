@@ -1,6 +1,6 @@
-// Contract tests for scripts/lib/agent-api.mjs (Phase T3 .mjs token resolution + client). The same
+// Contract tests for scripts/lib/agent-api.mjs (Phase T3/T4-5 .mjs token resolution + client). The same
 // cases as scripts/__tests__/agent-token.test.py and agent-api.test.sh: the three bindings must
-// choose the same token. Neutral fixtures only (agent ids a / m, made-up token strings).
+// choose the same token, and none of them ever reads the shared dashboard token. Neutral fixtures only (agent ids a / m, made-up token strings).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
@@ -34,10 +34,12 @@ describe('identity from the launch (a cwd that names nobody)', () => {
   })
   afterEach(() => rmSync(scratch, { recursive: true, force: true }))
 
-  it('a scratch cwd alone is anonymous and on the shared token', () => {
+  it('a scratch cwd alone is anonymous: no token, an error naming the fix, never the shared token', () => {
     const r = res({ cwd: scratch })
-    expect([r.token, r.source, r.agentId]).toEqual(['shared', 'shared-fallback', null])
+    expect([r.token, r.source, r.agentId]).toEqual(['', 'none', null])
+    expect(r.error).toContain('MARVEEN_AGENT_ID')
     expect(r.headers()['X-Agent-Id']).toBeUndefined()
+    expect(r.headers().Authorization).toBeUndefined()
   })
   it('the config dir of an agent names it, also below it and with a trailing slash', () => {
     for (const dir of [join(install, 'agents', 'a', '.claude-config'), join(install, 'agents', 'a', '.claude-config', 'projects') + '/']) {
@@ -75,43 +77,51 @@ describe('resolveToken', () => {
     put('.agent-token', 'own-m'); put('store/.dashboard-token', 'shared')
     expect(res({ agentId: 'm' }).token).toBe('own-m')
   })
-  it('falls back to the shared token when the own file is missing, and names the caller', () => {
+  it('does not fall back to the shared token when the own file is missing: none plus the named fix', () => {
     put('store/.dashboard-token', 'shared')
     const r = res({ agentId: 'a' })
-    expect([r.token, r.source]).toEqual(['shared', 'shared-fallback'])
-    expect(r.headers()['X-Agent-Id']).toBe('a')
+    expect([r.token, r.source]).toEqual(['', 'none'])
+    expect(r.error).toContain('agent-tokens -- issue a')
+    expect(r.headers().Authorization).toBeUndefined()
+    expect(JSON.stringify(r)).not.toContain('shared')
   })
-  it('treats an empty own file as a miss, not an empty bearer', () => {
+  it('treats an empty own file as a miss, not an empty bearer and not the shared token', () => {
     put('agents/a/.agent-token', '  \n'); put('store/.dashboard-token', 'shared')
-    expect(res({ agentId: 'a' }).source).toBe('shared-fallback')
+    expect(res({ agentId: 'a' }).source).toBe('none')
   })
   it('does not throw when a directory sits where the token file should be', () => {
     mkdirSync(join(install, 'agents', 'a', '.agent-token'))
     put('store/.dashboard-token', 'shared')
-    expect(res({ agentId: 'a' }).source).toBe('shared-fallback')
+    expect(res({ agentId: 'a' }).source).toBe('none')
   })
   it('sends no Authorization header when nothing is readable', () => {
     const r = res({ agentId: 'a' })
     expect([r.token, r.source]).toEqual(['', 'none'])
     expect(r.headers().Authorization).toBeUndefined()
   })
-  it('lets MARVEEN_AGENT_TOKEN_FILE override the agent file, and a missing one still falls back', () => {
+  it('lets MARVEEN_AGENT_TOKEN_FILE override the agent file, and a missing one is none, not the agent file or the shared token', () => {
     put('agents/a/.agent-token', 'own-a'); put('store/.dashboard-token', 'shared')
     const p = put('elsewhere/tok', 'explicit')
     expect(api.resolveToken({ installDir: install, agentId: 'a', env: env({ MARVEEN_AGENT_TOKEN_FILE: p }) }).token).toBe('explicit')
-    expect(api.resolveToken({ installDir: install, agentId: 'a', env: env({ MARVEEN_AGENT_TOKEN_FILE: join(install, 'nope') }) }).source).toBe('shared-fallback')
+    expect(api.resolveToken({ installDir: install, agentId: 'a', env: env({ MARVEEN_AGENT_TOKEN_FILE: join(install, 'nope') }) }).source).toBe('none')
   })
-  it('kind shared uses the shared token on purpose, kind operator its own file with the same fallback', () => {
+  it('there is no shared kind any more, and kind operator has no fallback', () => {
     put('agents/a/.agent-token', 'own-a'); put('store/.dashboard-token', 'shared')
-    expect(res({ agentId: 'a', kind: 'shared' }).source).toBe('shared')
-    expect(res({ agentId: 'a', kind: 'operator' }).source).toBe('shared-fallback')
+    const s = res({ agentId: 'a', kind: 'shared' })
+    expect([s.token, s.source]).toEqual(['', 'none'])
+    expect(s.error).toContain("unsupported token kind 'shared'")
+    const o = res({ agentId: 'a', kind: 'operator' })
+    expect([o.token, o.source]).toEqual(['', 'none'])
+    expect(o.error).toContain('issue-operator')
     put('store/.operator-token', 'op')
     expect(res({ agentId: 'a', kind: 'operator' }).token).toBe('op')
   })
-  it('kind admin is the main agent own token and the shared token for everyone else', () => {
+  it('kind admin is the main agent own token; every other agent gets none and the way to ask the main agent', () => {
     put('.agent-token', 'own-m'); put('agents/a/.agent-token', 'own-a'); put('store/.dashboard-token', 'shared')
     expect(res({ agentId: 'm', kind: 'admin' }).token).toBe('own-m')
-    expect(res({ agentId: 'a', kind: 'admin' }).token).toBe('shared')
+    const r = res({ agentId: 'a', kind: 'admin' })
+    expect([r.token, r.source]).toEqual(['', 'none'])
+    expect(r.error).toBe(api.ADMIN_ONLY_MESSAGE)
   })
   it('kind main acts as the main agent whoever runs it', () => {
     put('.agent-token', 'own-m'); put('agents/a/.agent-token', 'own-a')
@@ -123,7 +133,7 @@ describe('resolveToken', () => {
     expect(res({ cwd: join(install, 'agents', 'a', 'sub') }).token).toBe('own-a')
     expect(api.agentIdFromCwd(install, install, env())).toBe('m')
     const r = res({ cwd: '/some/scratch' })
-    expect(r.source).toBe('shared-fallback')
+    expect(r.source).toBe('none')
     expect(r.headers()['X-Agent-Id']).toBeUndefined()
   })
   it('refuses path-like agent ids', () => {
@@ -131,7 +141,7 @@ describe('resolveToken', () => {
     for (const bad of ['../x', 'a/b', '.hidden']) {
       const r = res({ agentId: bad })
       expect(r.agentId).toBeNull()
-      expect(r.source).toBe('shared-fallback')
+      expect(r.source).toBe('none')
     }
   })
   it('keeps the token out of String() and JSON', () => {
@@ -178,9 +188,10 @@ describe('agentApi', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0].auth).toBe('Bearer own-a')
   })
-  it('marks a fallback request with X-Agent-Id', async () => {
+  it('sends the request without Authorization, never the shared token, when the own file is missing', async () => {
     put('store/.dashboard-token', 'shared')
     await call('GET', '/api/agents', undefined, { agentId: 'a' })
-    expect(seen[0]).toMatchObject({ auth: 'Bearer shared', agent: 'a' })
+    expect(seen[0].auth).toBeUndefined()
+    expect(seen[0].agent).toBe('a')
   })
 })

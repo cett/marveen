@@ -61,9 +61,9 @@ class TestIdentityFromTheLaunch(Base):
         self.scratch = tempfile.mkdtemp(prefix="t3-scratch-")
         self.addCleanup(shutil.rmtree, self.scratch, True)
 
-    def test_a_scratch_cwd_alone_is_anonymous_and_on_the_shared_token(self):
+    def test_a_scratch_cwd_alone_is_anonymous_and_has_no_token(self):
         r = self.res(cwd=self.scratch)
-        self.assertEqual((r.token, r.source, r.agent_id), ("shared", at.SOURCE_FALLBACK, None))
+        self.assertEqual((r.token, r.source, r.agent_id), ("", at.SOURCE_NONE, None))
         self.assertNotIn("X-Agent-Id", r.headers())
 
     def test_config_dir_of_an_agent_names_it(self):
@@ -109,7 +109,7 @@ class TestIdentityFromTheLaunch(Base):
     def test_a_path_like_agent_id_in_the_environment_is_ignored(self):
         os.environ["MARVEEN_AGENT_ID"] = "../x"
         r = self.res(cwd=self.scratch)
-        self.assertEqual((r.agent_id, r.source), (None, at.SOURCE_FALLBACK))
+        self.assertEqual((r.agent_id, r.source), (None, at.SOURCE_NONE))
 
 
 class TestResolution(Base):
@@ -125,17 +125,20 @@ class TestResolution(Base):
         r = self.res(agent_id="m")
         self.assertEqual((r.token, r.source), ("own-m", at.SOURCE_AGENT))
 
-    def test_missing_own_token_falls_back_to_shared_and_says_so(self):
+    def test_missing_own_token_is_none_with_the_fix_named_and_the_shared_token_untouched(self):
         self.put("store/.dashboard-token", "shared")
         r = self.res(agent_id="a")
-        self.assertEqual((r.token, r.source), ("shared", at.SOURCE_FALLBACK))
-        # The fallback is distinguishable in the meter: it names the caller.
-        self.assertEqual(r.headers()["X-Agent-Id"], "a")
+        self.assertEqual((r.token, r.source), ("", at.SOURCE_NONE))
+        self.assertIn("agent-tokens -- issue a", r.error)
+        self.assertNotIn("shared", repr(r) + str(r.error))
+        h = r.headers()
+        self.assertNotIn("Authorization", h)  # no credential at all, and certainly not the shared one
+        self.assertEqual(h["X-Agent-Id"], "a")
 
-    def test_empty_own_token_file_is_a_miss_not_an_empty_bearer(self):
+    def test_empty_own_token_file_is_a_miss_with_no_fallback(self):
         self.put("agents/a/.agent-token", "  \n")
         self.put("store/.dashboard-token", "shared")
-        self.assertEqual(self.res(agent_id="a").source, at.SOURCE_FALLBACK)
+        self.assertEqual(self.res(agent_id="a").source, at.SOURCE_NONE)
 
     def test_unreadable_own_token_is_a_miss(self):
         p = self.put("agents/a/.agent-token", "own-a")
@@ -144,7 +147,7 @@ class TestResolution(Base):
         try:
             if os.access(p, os.R_OK):  # running as root: the mode proves nothing
                 self.skipTest("file still readable")
-            self.assertEqual(self.res(agent_id="a").source, at.SOURCE_FALLBACK)
+            self.assertEqual(self.res(agent_id="a").source, at.SOURCE_NONE)
         finally:
             os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
 
@@ -156,17 +159,27 @@ class TestResolution(Base):
     def test_directory_where_a_token_file_should_be_does_not_raise(self):
         os.makedirs(os.path.join(self.install, "agents", "a", ".agent-token"))
         self.put("store/.dashboard-token", "shared")
-        self.assertEqual(self.res(agent_id="a").source, at.SOURCE_FALLBACK)
+        self.assertEqual(self.res(agent_id="a").source, at.SOURCE_NONE)
 
-    def test_store_dir_override_locates_the_shared_token(self):
+    def test_a_shared_token_in_any_store_dir_is_never_picked_up(self):
         other = tempfile.mkdtemp(prefix="t3-store-")
         try:
             with open(os.path.join(other, ".dashboard-token"), "w") as f:
                 f.write("elsewhere")
             r = self.res(agent_id="a", store_dir=other)
-            self.assertEqual((r.token, r.source), ("elsewhere", at.SOURCE_FALLBACK))
+            self.assertEqual((r.token, r.source), ("", at.SOURCE_NONE))
         finally:
             shutil.rmtree(other, ignore_errors=True)
+
+    def test_no_resolver_surface_exposes_the_shared_token(self):
+        # The shared kind, the fallback source and the shared_file seam are gone; only the gate's
+        # canary has a dedicated reader.
+        for gone in ("KIND_SHARED", "SOURCE_FALLBACK", "SOURCE_SHARED", "SHARED_TOKEN_FILENAME"):
+            self.assertFalse(hasattr(at, gone), gone)
+        with self.assertRaises(TypeError):
+            at.resolve(install=self.install, agent_id="a", shared_file="/x")
+        self.put("store/.dashboard-token", "canary-value")
+        self.assertEqual(at.canary_shared_token(store_dir=os.path.join(self.install, "store")), "canary-value")
 
     def test_env_token_file_overrides_the_agent_file(self):
         self.put("agents/a/.agent-token", "own-a")
@@ -175,11 +188,11 @@ class TestResolution(Base):
         r = self.res(agent_id="a")
         self.assertEqual((r.token, r.source), ("explicit", at.SOURCE_AGENT))
 
-    def test_env_token_file_missing_still_falls_back_instead_of_reading_the_agent_file(self):
+    def test_env_token_file_missing_is_none_not_the_agent_file_and_not_shared(self):
         self.put("agents/a/.agent-token", "own-a")
         self.put("store/.dashboard-token", "shared")
         os.environ["MARVEEN_AGENT_TOKEN_FILE"] = os.path.join(self.install, "nope")
-        self.assertEqual(self.res(agent_id="a").source, at.SOURCE_FALLBACK)
+        self.assertEqual(self.res(agent_id="a").source, at.SOURCE_NONE)
 
 
 class TestIdentity(Base):
@@ -193,10 +206,11 @@ class TestIdentity(Base):
     def test_unknown_cwd_is_not_an_identity(self):
         self.assertIsNone(at.agent_id_from_cwd("/some/scratch", self.install))
 
-    def test_unknown_cwd_gets_the_shared_token_without_a_caller_header(self):
+    def test_unknown_cwd_has_no_token_and_no_caller_header(self):
         self.put("store/.dashboard-token", "shared")
         r = self.res(cwd="/some/scratch")
-        self.assertEqual(r.source, at.SOURCE_FALLBACK)
+        self.assertEqual(r.source, at.SOURCE_NONE)
+        self.assertIn("MARVEEN_AGENT_ID", r.error)  # no identity: the error says how to give one
         self.assertNotIn("X-Agent-Id", r.headers())
 
     def test_cwd_drives_the_resolution(self):
@@ -209,7 +223,7 @@ class TestIdentity(Base):
         for bad in ("../x", "a/b", ".hidden"):
             r = self.res(agent_id=bad)
             self.assertIsNone(r.agent_id, bad)
-            self.assertEqual(r.source, at.SOURCE_FALLBACK, bad)
+            self.assertEqual(r.source, at.SOURCE_NONE, bad)
 
     def test_main_agent_id_read_from_env_file(self):
         os.environ.pop("MAIN_AGENT_ID", None)
@@ -232,47 +246,41 @@ class TestNoLeak(Base):
 
 
 class TestKinds(Base):
-    def test_shared_kind_uses_the_shared_token_even_with_an_own_token(self):
-        self.put("agents/a/.agent-token", "own-a")
-        self.put("store/.dashboard-token", "shared")
-        r = self.res(agent_id="a", kind=at.KIND_SHARED)
-        self.assertEqual((r.token, r.source), ("shared", at.SOURCE_SHARED))
-        self.assertEqual(r.headers()["X-Agent-Id"], "a")
-
-    def test_shared_kind_with_no_shared_token_is_none(self):
-        self.put("agents/a/.agent-token", "own-a")
-        self.assertEqual(self.res(agent_id="a", kind=at.KIND_SHARED).source, at.SOURCE_NONE)
-
-    def test_admin_kind_is_the_main_agents_own_token_and_the_shared_token_for_everyone_else(self):
+    def test_admin_kind_is_the_main_agents_own_token_and_nothing_for_everyone_else(self):
         self.put(".agent-token", "own-m")
         self.put("agents/a/.agent-token", "own-a")
         self.put("store/.dashboard-token", "shared")
         m = self.res(agent_id="m", kind=at.KIND_ADMIN)
-        self.assertEqual((m.token, m.source), ("own-m", at.SOURCE_AGENT))
+        self.assertEqual((m.token, m.source, m.error), ("own-m", at.SOURCE_AGENT, None))
         a = self.res(agent_id="a", kind=at.KIND_ADMIN)
-        self.assertEqual((a.token, a.source), ("shared", at.SOURCE_SHARED))
+        self.assertEqual((a.token, a.source), ("", at.SOURCE_NONE))  # not its own token, not the shared one
+        self.assertEqual(a.error, at.ADMIN_ONLY_MESSAGE)
+        self.assertIn("ask the main agent", a.error)
+        self.assertNotIn("Authorization", a.headers())
+
+    def test_admin_kind_with_no_identity_is_refused_too(self):
+        self.put("store/.dashboard-token", "shared")
+        r = self.res(cwd=self.install + "-nowhere", kind=at.KIND_ADMIN)
+        self.assertEqual((r.token, r.source), ("", at.SOURCE_NONE))
+        self.assertEqual(r.error, at.ADMIN_ONLY_MESSAGE)
 
     def test_main_kind_acts_as_the_main_agent_whoever_runs_it(self):
         self.put(".agent-token", "own-m")
         self.put("agents/a/.agent-token", "own-a")
         r = self.res(agent_id="a", kind=at.KIND_MAIN)
         self.assertEqual((r.token, r.source, r.agent_id), ("own-m", at.SOURCE_AGENT, "m"))
+        # the main agent's own file gone: there is no shared fallback behind it any more
         self.put("store/.dashboard-token", "shared")
         os.remove(os.path.join(self.install, ".agent-token"))
         r = self.res(kind=at.KIND_MAIN)
-        self.assertEqual((r.source, r.agent_id), (at.SOURCE_FALLBACK, "m"))
+        self.assertEqual((r.token, r.source, r.agent_id), ("", at.SOURCE_NONE, "m"))
+        self.assertIn("agent-tokens -- issue m", r.error)
 
-    def test_shared_file_names_the_shared_token_outright(self):
-        other = self.put("elsewhere/shared.token", "from-file")
-        self.put("store/.dashboard-token", "from-store")
-        r = self.res(agent_id="a", shared_file=other)
-        self.assertEqual((r.token, r.source), ("from-file", at.SOURCE_FALLBACK))
-        r = self.res(agent_id="a", kind=at.KIND_SHARED, shared_file=other)
-        self.assertEqual((r.token, r.source), ("from-file", at.SOURCE_SHARED))
-
-    def test_operator_kind_reads_the_operator_file_and_falls_back(self):
+    def test_operator_kind_reads_the_operator_file_and_has_no_fallback(self):
         self.put("store/.dashboard-token", "shared")
-        self.assertEqual(self.res(kind=at.KIND_OPERATOR).source, at.SOURCE_FALLBACK)
+        r = self.res(kind=at.KIND_OPERATOR)
+        self.assertEqual((r.token, r.source), ("", at.SOURCE_NONE))
+        self.assertIn("issue-operator", r.error)
         self.put("store/.operator-token", "op")
         r = self.res(kind=at.KIND_OPERATOR)
         self.assertEqual((r.token, r.source), ("op", at.SOURCE_OPERATOR))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""dashboard_api.request carries the calling agent's own token, and the shared one only as a
-visible fallback (X-Agent-Id names the caller). A local HTTP server records the headers.
+"""dashboard_api.request carries the calling agent's own token and never the shared one (Phase
+T4-5): no fallback, no shared kind. A local HTTP server records the headers.
 
 Privacy: neutral fixture data (agent id zz-test, made-up tokens), temp directories.
 """
@@ -72,10 +72,10 @@ class TestDashboardApiToken(unittest.TestCase):
         api.request("GET", "/api/x", agent_id="zz-test")
         self.assertEqual(Recorder.seen, [{"auth": "Bearer own-zz", "agent": "zz-test"}])
 
-    def test_missing_own_token_falls_back_and_names_the_caller(self):
+    def test_missing_own_token_does_not_fall_back_to_the_shared_one(self):
         self.write(".dashboard-token", "shared")
         api.request("GET", "/api/x", agent_id="zz-test")
-        self.assertEqual(Recorder.seen, [{"auth": "Bearer shared", "agent": "zz-test"}])
+        self.assertEqual(Recorder.seen, [{"auth": None, "agent": "zz-test"}])
 
     def test_no_token_anywhere_still_sends_the_request_without_authorization(self):
         api.request("GET", "/api/x", agent_id="zz-test")
@@ -90,11 +90,11 @@ class TestDashboardApiToken(unittest.TestCase):
         self.assertEqual(len(Recorder.seen), 1)
         self.assertEqual(Recorder.seen[0]["auth"], "Bearer own-zz")
 
-    def test_kind_shared_uses_the_shared_token_on_purpose(self):
+    def test_kind_shared_no_longer_selects_the_shared_token(self):
         os.environ["MARVEEN_AGENT_TOKEN_FILE"] = self.write("own", "own-zz")
         self.write(".dashboard-token", "shared")
         api.request("GET", "/api/x", agent_id="zz-test", kind="shared")
-        self.assertEqual(Recorder.seen[0]["auth"], "Bearer shared")
+        self.assertEqual(Recorder.seen[0]["auth"], "Bearer own-zz")
 
 
 if __name__ == "__main__":

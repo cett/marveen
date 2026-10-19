@@ -41,7 +41,6 @@ REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
 DASHBOARD_BASE = os.environ.get("MARVEEN_DASHBOARD_BASE", "http://localhost:3420")
 STORE_DIR = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(REPO_ROOT, "store")
-DASHBOARD_TOKEN_FILE = os.path.join(STORE_DIR, ".dashboard-token")
 
 EXIT_CLEAN = 0
 EXIT_FINDINGS = 42  # COMMAND_EXIT_FINDINGS in src/web/command-task.ts
@@ -53,10 +52,10 @@ ALERT_MAX_CHARS = 190
 
 
 def fetch_summary(hours):
-    # A scheduled report, run for the coordinator: its own admin token, the shared one only if missing.
-    auth = agent_token.resolve(store_dir=STORE_DIR, kind=agent_token.KIND_MAIN, shared_file=DASHBOARD_TOKEN_FILE)
+    # A scheduled report, run for the coordinator: its own admin token (no shared fallback).
+    auth = agent_token.resolve(store_dir=STORE_DIR, kind=agent_token.KIND_MAIN)
     if not auth.token:
-        raise OSError("no dashboard token for the coordinator (own token or %s)" % DASHBOARD_TOKEN_FILE)
+        raise OSError(auth.error or "no token for the coordinator")
     req = urllib.request.Request(
         "%s/api/v1/rbac/shadow-log?summary=1&since_hours=%d" % (DASHBOARD_BASE, hours),
         headers=auth.headers(),

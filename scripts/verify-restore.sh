@@ -121,13 +121,14 @@ if grep -qF "repo/store/vault.json" <<<"${ARCHIVE_LISTING}"; then
   fi
 fi
 
-# 4c. Token files stay out of the archive. The per-agent and operator token files are re-issued after a
-# restore (npm run agent-tokens); one inside the archive means the backup scope changed.
+# 4c. Token files stay out of the archive. The per-agent, operator and shared dashboard token files are
+# re-issued after a restore (npm run agent-tokens); one inside the archive means the backup scope changed
+# (a shared token in a backup would bring a rotated-away token back to life on restore).
 echo "[4c] Token files outside the archive..."
-if grep -qE '(^|/)\.(agent|operator)-token$' <<<"${ARCHIVE_LISTING}"; then
-  check_fail "an agent or operator token file is INSIDE the archive (the backup scope changed; they are re-issued, never archived)"
+if grep -qE '(^|/)\.(agent|operator|dashboard)-token$' <<<"${ARCHIVE_LISTING}"; then
+  check_fail "an agent, operator or shared dashboard token file is INSIDE the archive (the backup scope changed; they are re-issued, never archived)"
 else
-  check_pass "no agent or operator token file inside the archive"
+  check_pass "no agent, operator or shared dashboard token file inside the archive"
 fi
 
 # 5. DB integrity_check
@@ -193,8 +194,8 @@ echo ""
 echo "After the restore, BEFORE the dashboard and the agents start (the token files are not in the archive):"
 echo "  1. npm run agent-tokens -- issue"
 echo "  2. npm run agent-tokens -- issue-operator"
-echo "  3. if the archive predates a rotation of the shared token (warning above): with the dashboard stopped,"
-echo "     delete store/.dashboard-token; the next dashboard start draws a fresh one and revokes the old row"
+echo "  3. npm run agent-tokens -- rotate-shared   (the shared token file is not in the archive either; this mints a new one"
+echo "     and revokes the restored row, so an old shared token cannot come back to life; works with the dashboard stopped)"
 echo "  4. npm run agent-tokens -- check   (and scripts/doctor.sh)"
 
 # Write to restore_log (best-effort; never abort on failure; DB_PATH is set at step 5b)

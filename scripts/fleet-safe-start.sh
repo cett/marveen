@@ -46,7 +46,7 @@ log() { echo "[fleet-safe-start] $*"; }
 api() { MARVEEN_STORE_DIR="$STORE" DASHBOARD_BASE_URL="$DASH" bash "$HERE/agent-api.sh" --token operator "$@" 2>/dev/null; }
 
 [[ -x "$GATE" ]] || { log "gate script not found/executable: $GATE"; exit 1; }
-[[ -f "$STORE/.operator-token" || -f "$STORE/.dashboard-token" ]] || { log "no dashboard token in $STORE"; exit 1; }
+[[ -f "$STORE/.operator-token" ]] || { log "no operator token in $STORE (npm run agent-tokens -- issue-operator)"; exit 1; }
 
 # Fetch agents (name + running) from the dashboard.
 agents_json="$(api --max-time 10 GET /api/agents)"

@@ -21,8 +21,8 @@ Tables (kept by the dashboard):
 
 Connection: MARVEEN_DASHBOARD_BASE, else http://localhost:<WEB_PORT> (WEB_PORT
 from the environment, then from the install's .env, default 3420); the bearer
-token is read from <store>/.dashboard-token (MARVEEN_STORE_DIR overrides the
-store directory). Where the registry is kept is the dashboard's business
+token is the main agent's own (/api/intel is admin:all); any other caller is told
+to ask the main agent. Where the registry is kept is the dashboard's business
 (see src/intel-store.ts).
 
 CLI (see --help of each subcommand):
@@ -59,7 +59,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STORE_DIR = Path(os.environ.get("MARVEEN_STORE_DIR") or REPO_ROOT / "store")
-TOKEN_FILE = STORE_DIR / ".dashboard-token"
 REQUEST_TIMEOUT = 20
 
 
@@ -94,10 +93,10 @@ def _base_url() -> str:
 
 
 def _request(method: str, path: str, payload: dict | None = None) -> dict:
-    # /api/intel is admin:all: the main agent's own token, any other caller the shared one (until T4).
-    auth = agent_token.resolve(store_dir=str(STORE_DIR), kind=agent_token.KIND_ADMIN, shared_file=str(TOKEN_FILE))
+    # /api/intel is admin:all: the main agent's own token; any other caller is told to ask the main agent.
+    auth = agent_token.resolve(store_dir=str(STORE_DIR), kind=agent_token.KIND_ADMIN)
     if not auth.token:
-        raise IntelError(f"cannot read the dashboard token ({TOKEN_FILE}): no token")
+        raise IntelError(auth.error or "no token")
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(
         _base_url() + path,

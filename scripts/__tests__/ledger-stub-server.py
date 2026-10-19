@@ -6,7 +6,7 @@ SQLite file, so the shell tests can keep asserting on the rows themselves.
 One server handles many databases: the request path is prefixed with
 /db/<percent-encoded database path>, and the hooks reach it through
 LEDGER_BASE_URL. The Bearer token must be "test-token" (the test writes it to
-<store dir>/.dashboard-token), which proves the hooks send their credentials.
+<store dir>/.test-agent-token, handed to the hooks as their own token file), which proves the hooks send their credentials.
 
 Usage: ledger-stub-server.py <port-file>
 The chosen port is written to <port-file> once the server is listening.

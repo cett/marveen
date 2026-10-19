@@ -20,7 +20,7 @@ Checks (each line is OK, WARN, FAIL or INFO):
 The database-side facts (checks 1, 5 and 6) come from the running dashboard, GET /api/admin/tenant-gate-status,
 so the dashboard must be up; the rest is read from the files on disk. The dashboard base URL is
 MARVEEN_DASHBOARD_BASE, else http://localhost:<WEB_PORT> (environment, then the install's .env, default 3420), and
-the bearer token is read from <store>/.dashboard-token (MARVEEN_STORE_DIR overrides the store directory).
+the bearer token is the operator's own (<store>/.operator-token; MARVEEN_STORE_DIR overrides the store directory).
 
 Exit code: 0 = no FAIL, 1 = at least one FAIL (or WARN with --strict). Nothing is written anywhere.
 """
@@ -67,7 +67,7 @@ def fetch_status(root, base_url=None):
     store = os.environ.get("MARVEEN_STORE_DIR") or os.path.join(root, "store")
     auth = agent_token.resolve(store_dir=store, kind=agent_token.KIND_OPERATOR)
     if not auth.token:
-        return None, "cannot read the dashboard token (no operator or dashboard token in %s)" % store, "FAIL"
+        return None, "cannot read the operator token (%s/.operator-token is missing); issue it with: npm run agent-tokens -- issue-operator" % store, "FAIL"
     req = urllib.request.Request(base + "/api/admin/tenant-gate-status", headers=auth.headers())
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:

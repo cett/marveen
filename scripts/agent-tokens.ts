@@ -3,6 +3,7 @@
 //
 //   npm run agent-tokens -- issue [--rotate] [--dry-run] [<agent>...]   # default: the main agent and every agent
 //   npm run agent-tokens -- issue-operator [--rotate]
+//   npm run agent-tokens -- rotate-shared                               # new shared dashboard token; refuses when DASHBOARD_TOKEN is set
 //   npm run agent-tokens -- check [<agent>...]                          # read-only; exit 1 if any file is not ok
 //   npm run agent-tokens -- list
 //   npm run agent-tokens -- revoke <agent>
@@ -14,13 +15,14 @@
 import { MAIN_AGENT_ID } from '../src/config.js'
 import { initDatabase, listApiTokenRows, revokeApiTokensForAgent } from '../src/db.js'
 import { listAgentNames } from '../src/web/agent-config.js'
-import { agentTokenPath, archiveSharedTokenAge, checkAgentTokens, issueAgentToken, issueOperatorToken } from '../src/agent-tokens.js'
+import { agentTokenPath, archiveSharedTokenAge, checkAgentTokens, issueAgentToken, issueOperatorToken, rotateSharedToken } from '../src/agent-tokens.js'
 
 function usage(): never {
   process.stderr.write(
     'Usage:\n' +
     '  agent-tokens issue [--rotate] [--dry-run] [<agent>...]\n' +
     '  agent-tokens issue-operator [--rotate]\n' +
+    '  agent-tokens rotate-shared\n' +
     '  agent-tokens check [<agent>...]\n' +
     '  agent-tokens archive-shared-age <extracted-archive.db>\n' +
     '  agent-tokens list\n' +
@@ -56,6 +58,21 @@ if (cmd === 'issue') {
 } else if (cmd === 'issue-operator') {
   const r = issueOperatorToken({ rotate: flags.has('--rotate') })
   process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+} else if (cmd === 'rotate-shared') {
+  // Always mints a new shared token (no `kept`), writes store/.dashboard-token and revokes the old row
+  // with its hash. Refuses, changing nothing, when DASHBOARD_TOKEN is set (it would override the file).
+  try {
+    const r = rotateSharedToken()
+    process.stdout.write(`shared\t${r.status}\tadmin\t${r.path}\n`)
+    process.stderr.write(
+      'The old shared token is revoked. Restart the dashboard so the in-memory copy is replaced, ' +
+      're-enrol every browser that was enrolled with the shared token (npm run dashboard-url), and ' +
+      'run `agent-tokens check` and doctor.sh.\n',
+    )
+  } catch (err) {
+    process.stderr.write(`shared\tFAILED\t${err instanceof Error ? err.message : String(err)}\n`)
+    process.exit(1)
+  }
 } else if (cmd === 'check') {
   // Read-only: one line per expected token file, exit 1 when any is not `ok`.
   const targets = names.length > 0 ? names : [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]

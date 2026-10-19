@@ -278,7 +278,6 @@ The archive has two groups:
 
 **`repo/` group** (relative to the project root):
 - `store/claudeclaw.db` (+ `-shm`/`-wal`) — database (after WAL checkpoint)
-- `store/.dashboard-token` — shared Bearer token (a restored archive from before a rotation brings the replaced shared token back, see "After a restore: API tokens")
 - the `api_tokens` rows (token hashes) inside the database
 - `store/vault.json` — the *encrypted* secret vault (the key is not in the archive)
 - `.env` — main configuration
@@ -293,13 +292,13 @@ The archive has two groups:
 - `.claude/channels/*/` — channel tokens and pairing state
 - `Library/LaunchAgents/com.<agent-id>.*.plist` — launchd jobs (macOS)
 
-**Not in the archive, on purpose:** the per-agent token files (`agents/<agent>/.agent-token`), the main agent's `.agent-token` in the project root and `store/.operator-token`. They are re-issued after a restore.
+**Not in the archive, on purpose:** the per-agent token files (`agents/<agent>/.agent-token`), the main agent's `.agent-token` in the project root, `store/.operator-token` and the shared dashboard token file `store/.dashboard-token` (an archived shared token would bring a rotated-away token back to life). They are re-issued or rotated after a restore.
 
 ### Vault master key
 
 `store/vault.json` is encrypted; the master key lives in the macOS Keychain (item `com.marveen.vault` / `master-key`) or, as a fallback, in `store/.vault-key`. The key is deliberately **not** in the archive: anyone holding the archive and the key can decrypt the vault. `backup.sh` writes it to `backups/claudeclaw-YYYYMMDD-HHMMSS.vault-key` (0600). **Store that file somewhere other than the archive** (a different disk or a password manager). If no key can be found at backup time, the backup still completes and prints a warning -- the vault in that archive cannot be decrypted. To restore the key: copy the file to `store/.vault-key` (`chmod 600`), or import it into the Keychain without putting the key on a command line (arguments are visible to other processes via `ps`): run `security add-generic-password -U -s com.marveen.vault -a master-key -w` with `-w` as the last option and no value, and paste the key when it prompts.
 
-`scripts/verify-restore.sh` fails if a key file is found *inside* an archive, and warns if `vault.json` is archived but the `.vault-key` sidecar is not next to it. It also fails if an agent or operator token file is found inside an archive (the backup scope changed), warns if the archive's shared token row is older than the live one (the archive predates a rotation), and ends with the token steps below; the `restore_log` note then reads `token-step pending`.
+`scripts/verify-restore.sh` fails if a key file is found *inside* an archive, and warns if `vault.json` is archived but the `.vault-key` sidecar is not next to it. It also fails if an agent, operator or shared dashboard token file is found inside an archive (the backup scope changed), warns if the archive's shared token row is older than the live one (the archive predates a rotation), and ends with the token steps below; the `restore_log` note then reads `token-step pending`.
 
 ### Restore
 
@@ -320,22 +319,26 @@ cp -a /tmp/restore/home/. ~/
 
 ### After a restore: API tokens
 
-Every agent signs its dashboard calls with its own token file, and the operator scripts use `store/.operator-token`; neither is in the archive, so a restored install has agents that cannot call the API until the files are re-issued. Run the token steps **before** the dashboard and the agents start (steps 3 to 5 work with the dashboard stopped: they talk to the database directly):
+Every agent signs its dashboard calls with its own token file, and the operator scripts use `store/.operator-token`; neither is in the archive, so a restored install has agents that cannot call the API until the files are re-issued. There is no shared-token fallback: an agent whose own token is missing gets no answer from the wrapper (`agent-api.sh` exits 3, `agent_token.py` and `agent-api.mjs` report source `none`) and sends no request. The shared dashboard token (`store/.dashboard-token`) is kept out of the archive too, but the database rows are in it, so rotate it as well: the archive may predate an earlier rotation, and a restore must not bring a replaced shared token back. Run the token steps **before** the dashboard and the agents start (steps 2 to 5 work with the dashboard stopped: they talk to the database directly):
 
 ```bash
 # 1. extract the archive and copy it back (see "Restore"), then restore the vault key
 # 2. re-issue the token files; an already valid file is kept, a file the database does not know is replaced
 npm run agent-tokens -- issue
 npm run agent-tokens -- issue-operator
-# 3. only if the archive predates a rotation of the shared token (verify-restore.sh warned): the archive
-#    brings the replaced shared token back. With the dashboard stopped, delete store/.dashboard-token;
-#    the next dashboard start draws a fresh token and revokes the old row. A browser that still holds
-#    the old token (?token= link) has to be enrolled again with `npm run dashboard-url`.
+# 3. rotate the shared token, always: it mints a new one, writes it to store/.dashboard-token and revokes
+#    the restored row, so the old value is refused (401, counted as shared_token_refused). It refuses to
+#    run while DASHBOARD_TOKEN is set in .env or the environment (the variable overrides the file).
+#    A browser that still holds the old token (?token= link) has to be enrolled again with
+#    `npm run dashboard-url`.
+npm run agent-tokens -- rotate-shared
 # 4. check every file against the database
 npm run agent-tokens -- check
 bash scripts/doctor.sh
 # 5. only now start the dashboard and the agents
 ```
+
+`agent-tokens issue-operator` is also what the operator scripts (`fleet-safe-start`, `pre-pr-review`, `settings-verify`, `doctor.sh` and the like) tell you to run when `store/.operator-token` is missing: they take no other token.
 
 `agent-tokens check` is read-only and never prints a token. One line per file, `subject  status  role  path`, exit code 1 when anything is not `ok`:
 
@@ -346,10 +349,10 @@ bash scripts/doctor.sh
 | `unknown_hash` | the database has never seen this token (an older database under newer files, or the reverse) | `issue` replaces it |
 | `revoked` | the token was revoked or has expired | `issue` replaces it |
 | `wrong_role` | the file holds a valid token of another subject or role | `issue` replaces it |
-| `shared_mismatch` | `store/.dashboard-token` does not hash to the active `dashboard` row | step 3 |
-| `shared_in_env` | `DASHBOARD_TOKEN` is set in `.env` or the environment; the archive carries `.env`, and the variable overrides the token file | remove it from `.env`, then step 3 |
+| `shared_mismatch` | `store/.dashboard-token` does not hash to the active `dashboard` row | `rotate-shared` (step 3) |
+| `shared_in_env` | `DASHBOARD_TOKEN` is set in `.env` or the environment; the archive carries `.env`, and the variable overrides the token file | remove it from `.env`, then `rotate-shared` |
 
-`doctor.sh` runs the same check in its "Agent tokens" section.
+`doctor.sh` runs the same check in its "Agent tokens" section. A missing or stale agent or operator token is a FAIL there (not a warning): nothing falls back to the shared token any more.
 
 ### After a restore: regenerate the skill files
 

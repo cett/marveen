@@ -278,7 +278,6 @@ Az archívum két csoportból áll:
 
 **`repo/` csoport** (a projekt könyvtárához képest relatív):
 - `store/claudeclaw.db` (+ `-shm`/`-wal`) -- az adatbázis (WAL-checkpoint után)
-- `store/.dashboard-token` -- közös Bearer token (egy a rotálás előtti archívum visszahozza a lecserélt közös tokent, lásd "Visszaállítás után: API tokenek")
 - az `api_tokens` sorok (token-hash-ek) az adatbázisban
 - `store/vault.json` -- a *titkosított* titokvault (a kulcs nincs az archívumban)
 - `.env` -- fő konfiguráció
@@ -293,13 +292,13 @@ Az archívum két csoportból áll:
 - `.claude/channels/*/` -- csatorna-tokenek és párosítási állapot
 - `Library/LaunchAgents/com.<agent-id>.*.plist` -- launchd jobs (macOS)
 
-**Szándékosan NINCS az archívumban:** az ágensenkénti token-fájlok (`agents/<ágens>/.agent-token`), a fő ágens projekt-gyökérbeli `.agent-token` fájlja és a `store/.operator-token`. Visszaállítás után újra ki kell adni őket.
+**Szándékosan NINCS az archívumban:** az ágensenkénti token-fájlok (`agents/<ágens>/.agent-token`), a fő ágens projekt-gyökérbeli `.agent-token` fájlja, a `store/.operator-token` és a közös dashboard-token fájl, a `store/.dashboard-token` (egy archivált közös token a már lecserélt tokent élesztené újra). Visszaállítás után újra ki kell adni vagy rotálni kell őket.
 
 ### Vault mesterkulcs
 
 A `store/vault.json` titkosított; a mesterkulcs a macOS Keychainben van (`com.marveen.vault` / `master-key` elem), tartaléknak a `store/.vault-key` fájlban. A kulcs szándékosan **nincs** az archívumban: aki az archívumot és a kulcsot is birtokolja, feloldja a vaultot. A `backup.sh` a `backups/claudeclaw-YYYYMMDD-HHMMSS.vault-key` fájlba írja (0600). **Ezt a fájlt az archívumtól máshol tárold** (másik lemez vagy jelszókezelő). Ha a mentéskor nem található kulcs, a mentés lefut és figyelmeztet -- az abban az archívumban lévő vault nem fejthető vissza. Kulcs visszaállítása: másold a fájlt `store/.vault-key` néven (`chmod 600`), vagy importáld a Keychainbe úgy, hogy a kulcs ne kerüljön parancssorba (az argumentumok `ps`-sel más folyamatoknak is látszanak): futtasd a `security add-generic-password -U -s com.marveen.vault -a master-key -w` parancsot `-w` utolsó kapcsolóval, érték nélkül, és a kérésre illeszd be a kulcsot.
 
-A `scripts/verify-restore.sh` hibát jelez, ha egy archívumban kulcsfájlt talál, és figyelmeztet, ha a `vault.json` benne van, de a `.vault-key` sidecar nincs mellette. Hibát jelez akkor is, ha az archívumban ágens- vagy operátor-token fájl van (a mentés hatóköre megváltozott), figyelmeztet, ha az archívum közös-token sora régebbi az élőnél (az archívum a rotálás előtti), és a végén kiírja az alábbi token-lépéseket; a `restore_log` jegyzete ilyenkor `token-step pending`.
+A `scripts/verify-restore.sh` hibát jelez, ha egy archívumban kulcsfájlt talál, és figyelmeztet, ha a `vault.json` benne van, de a `.vault-key` sidecar nincs mellette. Hibát jelez akkor is, ha az archívumban ágens-, operátor- vagy közös dashboard-token fájl van (a mentés hatóköre megváltozott), figyelmeztet, ha az archívum közös-token sora régebbi az élőnél (az archívum a rotálás előtti), és a végén kiírja az alábbi token-lépéseket; a `restore_log` jegyzete ilyenkor `token-step pending`.
 
 ### Visszaállítás
 
@@ -322,17 +321,19 @@ tar -xpzf backups/claudeclaw-20260101-120000.tar.gz \
 
 ### Visszaállítás után: API tokenek
 
-Minden ágens a saját token-fájljával írja alá a dashboard-hívásait, az operátor-scriptek pedig a `store/.operator-token` fájlt használják; egyik sincs az archívumban, ezért egy visszaállított telepítésben az ágensek nem tudnak API-t hívni, amíg a fájlokat újra ki nem adod. A token-lépéseket a dashboard és az ágensek indítása **előtt** futtasd (a 3-5. lépés leállított dashboarddal is megy: közvetlenül az adatbázissal dolgozik):
+Minden ágens a saját token-fájljával írja alá a dashboard-hívásait, az operátor-scriptek pedig a `store/.operator-token` fájlt használják; egyik sincs az archívumban, ezért egy visszaállított telepítésben az ágensek nem tudnak API-t hívni, amíg a fájlokat újra ki nem adod. Közös-token tartalék nincs: ha egy ágens saját tokenje hiányzik, a wrapper nem küld kérést (az `agent-api.sh` 3-as kóddal lép ki, az `agent_token.py` és az `agent-api.mjs` `none` forrást jelez). A közös dashboard-token (`store/.dashboard-token`) szintén kimarad az archívumból, de az adatbázis sorai benne vannak, ezért azt is rotáld: az archívum egy korábbi rotálást megelőzhet, és a visszaállítás nem hozhatja vissza a lecserélt közös tokent. A token-lépéseket a dashboard és az ágensek indítása **előtt** futtasd (a 2-5. lépés leállított dashboarddal is megy: közvetlenül az adatbázissal dolgozik):
 
 ```bash
 # 1. archívum kicsomagolása és visszamásolása (lásd "Visszaállítás"), majd a vault-kulcs visszaállítása
 # 2. a token-fájlok újra kiadása; az érvényes fájl marad, az adatbázis által nem ismert fájl cserélődik
 npm run agent-tokens -- issue
 npm run agent-tokens -- issue-operator
-# 3. csak ha az archívum a közös token rotálása ELŐTTI (a verify-restore.sh figyelmeztetett): az archívum
-#    visszahozza a lecserélt közös tokent. Leállított dashboarddal töröld a store/.dashboard-token fájlt;
-#    a következő dashboard-indítás új tokent húz és visszavonja a régi sort. Az a böngésző, amelyik még
-#    a közös tokent használja (?token= link), az `npm run dashboard-url` linkkel újra beiratkozik.
+# 3. a közös token rotálása, mindig: új tokent állít elő, beírja a store/.dashboard-token fájlba és
+#    visszavonja a visszaállított sort, így a régi érték elutasítást kap (401, shared_token_refused-ként
+#    számolva). Nem fut, amíg a DASHBOARD_TOKEN be van állítva az .env-ben vagy a környezetben (a változó
+#    felülírja a fájlt). Az a böngésző, amelyik még a régi tokent használja (?token= link), az
+#    `npm run dashboard-url` linkkel újra beiratkozik.
+npm run agent-tokens -- rotate-shared
 # 4. minden fájl ellenőrzése az adatbázissal szemben
 npm run agent-tokens -- check
 bash scripts/doctor.sh
@@ -348,10 +349,10 @@ Az `agent-tokens check` csak olvas és tokent soha nem ír ki. Fájlonként egy 
 | `unknown_hash` | az adatbázis ezt a tokent soha nem látta (régebbi adatbázis újabb fájlok alatt, vagy fordítva) | az `issue` lecseréli |
 | `revoked` | a tokent visszavonták vagy lejárt | az `issue` lecseréli |
 | `wrong_role` | a fájlban más alany vagy más szerep érvényes tokenje van | az `issue` lecseréli |
-| `shared_mismatch` | a `store/.dashboard-token` nem az aktív `dashboard` sor hash-ét adja | 3. lépés |
-| `shared_in_env` | `DASHBOARD_TOKEN` van az `.env`-ben vagy a környezetben; az archívum viszi az `.env`-et, a változó pedig felülírja a token-fájlt | töröld az `.env`-ből, majd 3. lépés |
+| `shared_mismatch` | a `store/.dashboard-token` nem az aktív `dashboard` sor hash-ét adja | `rotate-shared` (3. lépés) |
+| `shared_in_env` | `DASHBOARD_TOKEN` van az `.env`-ben vagy a környezetben; az archívum viszi az `.env`-et, a változó pedig felülírja a token-fájlt | töröld az `.env`-ből, majd `rotate-shared` |
 
-A `doctor.sh` az "Agent tokens" szakaszában ugyanezt az ellenőrzést futtatja.
+A `doctor.sh` az "Agent tokens" szakaszában ugyanezt az ellenőrzést futtatja. A hiányzó vagy elavult ágens- vagy operátor-token ott FAIL (nem figyelmeztetés): a közös tokenre már semmi nem esik vissza. Az operátor-scriptek (`fleet-safe-start`, `pre-pr-review`, `settings-verify`, `doctor.sh` és társaik) a hiányzó `store/.operator-token` esetén az `agent-tokens issue-operator` futtatását kérik: más tokent nem fogadnak el.
 
 ### Visszaállítás után: a skill-fájlok újragenerálása
 
