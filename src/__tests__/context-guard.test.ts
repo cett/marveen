@@ -79,6 +79,34 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel(null)).toBe(200_000)
   })
 
+  // Sonnet 5.5 runs the 1M window (sessions measured at 228k-783k tokens, 2026-10-19). With the 200k
+  // default a guard switched on for such an agent would have read 228k as 114% and restarted it.
+  it('Sonnet 5.5 and later is a 1M window, with or without a provider prefix or version suffix', () => {
+    expect(contextLimitForModel('claude-sonnet-5-5')).toBe(1_000_000)
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5')).toBe(1_000_000)
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5-v1:0')).toBe(1_000_000)
+    expect(contextLimitForModel('CLAUDE-SONNET-5-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-sonnet-5-9')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-sonnet-4-6[1m]')).toBe(1_000_000)
+  })
+
+  it('the other Sonnets and Haiku stay at 200k', () => {
+    expect(contextLimitForModel('claude-sonnet-5-1')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-5-4')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-4-6')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-4-5-20250929')).toBe(200_000)
+    expect(contextLimitForModel('claude-haiku-5-5')).toBe(200_000)
+    expect(contextLimitForModel('claude-3-5-sonnet-20241022')).toBe(200_000)
+  })
+
+  it('a 228k session of a Sonnet 5.5 agent is no longer over the act threshold', () => {
+    // 228276 tokens is a real measured Sonnet 5.5 session. Against 200k it is 114% (past hardPct 0.97);
+    // against the 1M window it is 23%.
+    const used = 228_276
+    expect(used / 200_000).toBeGreaterThan(DEFAULT_CONTEXT_GUARD.hardPct)
+    expect(used / contextLimitForModel('claude-sonnet-5-5')).toBeLessThan(DEFAULT_CONTEXT_GUARD.actPct)
+  })
+
   it('steps the limit up when the observation disproves the base', () => {
     expect(calibrateLimit(150_000, 200_000)).toBe(200_000)
     expect(calibrateLimit(489_000, 200_000)).toBe(500_000) // tars 2026-07-09

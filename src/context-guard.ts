@@ -88,7 +88,8 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // 400k, the same figure the soft restart gate reasoned its way to
   // (DEFAULT_THRESHOLD_TOKENS): it leaves a 1M-window model 600k of room for a
   // clean transition, and exceeds a 200k window entirely so the tier never
-  // fires there -- act/hardPct keep those sessions instead.
+  // fires there -- act/hardPct keep those sessions instead. (Sonnet 5.5 has the
+  // 1M window, see contextLimitForModel, so this tier does apply to it.)
   //
   // 500k was the alternative, and the trade is worth recording because moving
   // this number means re-deciding it:
@@ -179,14 +180,24 @@ export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
  * 2026-07-27, two of them killing agents mid-task and losing dispatched
  * instructions).
  *
- * Sonnet stays at 200k deliberately: this host has never observed a sonnet
- * session above 198k, so 200k is the evidenced effective window there. Haiku
- * is 200k by spec. Unknown models stay conservative at 200k -- calibrateLimit
+ * Sonnet 5.5 and later (sonnet-5-5 .. sonnet-5-9, with or without a provider
+ * prefix or a version suffix) have the 1M window as well. Measured 2026-10-19
+ * from this host's transcripts (input + cache_read + cache_creation of a
+ * request, last 8 days, claude-sonnet-5-5 sessions): 783171, 648222, 454611,
+ * 376393 and 228276 tokens, with hundreds of requests above 200k in a single
+ * agent's sessions -- a 200k window cannot hold that. The same sweep saw the
+ * bare `claude-sonnet-5` id reach 792779, so the 198k remark that used to be
+ * here is out of date for it too; it stays at 200k only so that this table
+ * keeps matching the upstream one, and is a decision for the operator
+ * rather than something to change in passing.
+ *
+ * The other Sonnets stay at 200k: no session of sonnet-4.x has been seen
+ * above it. Haiku is 200k by spec. Unknown models stay conservative at 200k -- calibrateLimit
  * and the runner's persisted high-water mark step the denominator up from
  * live evidence, and over-estimating would blind the proactive tiers, while
  * under-estimating is loud and self-correcting.
  */
-const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/]
+const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/, /sonnet-5-[5-9]/]
 
 export function contextLimitForModel(model: string | null | undefined): number {
   if (typeof model !== 'string') return 200_000
