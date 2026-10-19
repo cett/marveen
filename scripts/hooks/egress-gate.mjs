@@ -221,8 +221,8 @@ function writeRuntimeCache(list) {
   }
 }
 
-// The calling agent's own dashboard token (agents/<id>/.agent-token), else the shared one
-// (store/.dashboard-token) while T3 has no enforcement: scripts/lib/agent-api.mjs holds the
+// The calling agent's own dashboard token (agents/<id>/.agent-token) and nothing else: there is no
+// fallback to the shared one (store/.dashboard-token), scripts/lib/agent-api.mjs holds the
 // resolution. The token only decides which identity the allowlist is FETCHED under; the verdict
 // never depends on it (no token, a token the dashboard refuses, or an unloadable resolver all
 // end in the same file fallback below). A dynamic import keeps a missing resolver from taking
