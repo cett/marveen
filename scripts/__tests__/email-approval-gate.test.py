@@ -559,6 +559,26 @@ class ClaimIntent(GateCase):
                     self.assertFalse(c[2]['ref'].startswith('gate-send-'))
                 self.dash.requests.clear()
 
+    def test_a_copy_of_the_sender_at_another_path_earns_no_intent(self):
+        # same file name, other file: the reservation stays plain `gate-` and nothing can adopt it
+        args = " --to ann@example.test --subject 'Weekly notes' --body 'Here are the notes from this week.'"
+        os.makedirs(os.path.join(self.root, 'elsewhere'))
+        self.write('elsewhere/gmail-send.py', '# not the installation\'s sender\n')
+        official = os.path.join(self.root, 'scripts', 'gmail-send.py')
+        for label, cmd, cwd in (
+                ('absolute copy', 'python3 ' + os.path.join(self.root, 'elsewhere', 'gmail-send.py') + args, None),
+                ('relative copy', 'python3 gmail-send.py' + args, os.path.join(self.root, 'elsewhere')),
+                ('relative after cd', 'cd elsewhere && python3 ../scripts/gmail-send.py' + args, None)):
+            with self.subTest(via=label):
+                self.dash.requests.clear()
+                rc, out, err = self.run_gate('Bash', {'command': cmd}, cwd=cwd)
+                self.assertEqual(rc, 0, err)
+                claims = [r for r in self.dash.requests if r[1] == '/api/approvals/claim']
+                self.assertEqual(len(claims), 1)
+                self.assertRegex(claims[0][2]['ref'], r'^gate-[0-9a-f]{32}$')
+        with self.subTest(via='the real one by absolute path'):
+            self.assertRegex(self._ref_of('Bash', {'command': 'python3 ' + official + args}), r'^gate-send-[0-9a-f]{32}$')
+
     def test_the_gate_still_reserves_when_it_reads_the_call_as_the_sender_and_the_approval_is_gone(self):
         # no way around the gate: with nothing to reserve the sender's command is refused like any other send
         self.dash.claim = _conflict('none')

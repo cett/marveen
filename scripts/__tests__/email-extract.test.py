@@ -823,14 +823,83 @@ class OfficialSenderIntent(unittest.TestCase):
     Fail closed: any doubt (a second mail command, a wrapper, a lookalike name, unreadable text) is False, and a False
     only means the reservation stays the gate's, so the worst a miss costs is a refused retry, never a second mail."""
     ARGS = " --to a@example.test --subject S --body B"
+    S = E.OFFICIAL_SENDER_PATH   # THIS installation's gmail-send.py (real path)
+    S_DIR = os.path.dirname(S)
 
     def test_exactly_one_gmail_send_call_is_the_sender(self):
-        for cmd in ("python3 scripts/gmail-send.py" + self.ARGS,
-                    "cd /x && python3 /abs/scripts/gmail-send.py" + self.ARGS,
-                    "env X=1 python3 gmail-send.py" + self.ARGS,
-                    "python3 gmail-send.py" + self.ARGS + " | tee out"):
+        for cmd in ("python3 " + self.S + self.ARGS,
+                    "cd /x && python3 " + self.S + self.ARGS,
+                    "env X=1 python3 " + self.S + self.ARGS,
+                    "python3 " + self.S + self.ARGS + " | tee out",
+                    self.S + self.ARGS):
             with self.subTest(cmd=cmd):
                 self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_a_relative_script_is_judged_against_the_calls_working_directory(self):
+        root = os.path.dirname(self.S_DIR)
+        for cmd, cwd in (("python3 scripts/gmail-send.py" + self.ARGS, root),
+                         ("python3 gmail-send.py" + self.ARGS, self.S_DIR),
+                         ("python3 ../gmail-send.py" + self.ARGS, os.path.join(self.S_DIR, "hooks"))):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_is_official_sender(cmd, cwd))
+
+    def test_a_relative_script_with_no_known_directory_is_not_the_sender(self):
+        # without the cwd (or after a cd, which moves it) the word cannot be tied to the real file: fail closed
+        root = os.path.dirname(self.S_DIR)
+        for cmd, cwd in (("python3 scripts/gmail-send.py" + self.ARGS, None),
+                         ("python3 gmail-send.py" + self.ARGS, ""),
+                         ("python3 gmail-send.py" + self.ARGS, "relative/dir"),
+                         ("cd /elsewhere && python3 scripts/gmail-send.py" + self.ARGS, root),
+                         ("python3 gmail-send.py" + self.ARGS, root)):   # root/gmail-send.py is not the sender
+            with self.subTest(cmd=cmd, cwd=cwd):
+                self.assertFalse(E.command_is_official_sender(cmd, cwd))
+
+    def test_a_copy_of_the_script_at_another_path_is_not_the_sender(self):
+        # same file name, other file: it may do anything, so the gate's reservation must not be marked adoptable for it
+        with tempfile.TemporaryDirectory() as d:
+            copy = os.path.join(d, "gmail-send.py")
+            with open(self.S, "rb") as src, open(copy, "wb") as dst:
+                dst.write(src.read())
+            for cmd, cwd in (("python3 " + copy + self.ARGS, None),
+                             ("python3 /nowhere/scripts/gmail-send.py" + self.ARGS, None),
+                             ("python3 gmail-send.py" + self.ARGS, d),
+                             ("python3 ./gmail-send.py" + self.ARGS, d),
+                             (copy + self.ARGS, None),
+                             ("python3 " + os.path.join(d, "..", os.path.basename(d), "gmail-send.py") + self.ARGS, None)):
+                with self.subTest(cmd=cmd):
+                    self.assertFalse(E.command_is_official_sender(cmd, cwd))
+
+    def test_a_symlink_is_judged_by_where_it_points(self):
+        with tempfile.TemporaryDirectory() as d:
+            to_official = os.path.join(d, "gmail-send.py")
+            os.symlink(self.S, to_official)
+            copy = os.path.join(d, "real-copy.py")
+            with open(self.S, "rb") as src, open(copy, "wb") as dst:
+                dst.write(src.read())
+            to_copy_dir = os.path.join(d, "sub")
+            os.mkdir(to_copy_dir)
+            to_copy = os.path.join(to_copy_dir, "gmail-send.py")
+            os.symlink(copy, to_copy)
+            self.assertTrue(E.command_is_official_sender("python3 " + to_official + self.ARGS))
+            self.assertFalse(E.command_is_official_sender("python3 " + to_copy + self.ARGS))
+
+    def test_the_official_path_can_be_given_explicitly(self):
+        with tempfile.TemporaryDirectory() as d:
+            other = os.path.join(d, "gmail-send.py")
+            open(other, "w").close()
+            self.assertTrue(E.command_is_official_sender("python3 " + other + self.ARGS, None, other))
+            self.assertFalse(E.command_is_official_sender("python3 " + self.S + self.ARGS, None, other))
+
+    def test_a_tilde_script_is_expanded_like_the_shell_does(self):
+        home = os.path.expanduser("~")
+        with tempfile.TemporaryDirectory() as d:
+            other = os.path.join(d, "gmail-send.py")
+            open(other, "w").close()
+            # only a script that really lives under HOME can be spelled with ~; the path is compared after expansion
+            if os.path.commonpath([home, self.S]) == home:
+                tilde = "~" + self.S[len(home):]
+                self.assertTrue(E.command_is_official_sender("python3 " + tilde + self.ARGS))
+            self.assertFalse(E.command_is_official_sender("python3 ~/definitely-not-here/gmail-send.py" + self.ARGS))
 
     def test_every_other_mail_command_is_not(self):
         for cmd in ("python3 send.py" + self.ARGS,
@@ -841,9 +910,10 @@ class OfficialSenderIntent(unittest.TestCase):
                 self.assertFalse(E.command_is_official_sender(cmd))
 
     def test_a_second_mail_command_in_the_same_call_takes_the_intent_away(self):
-        for cmd in ("python3 gmail-send.py" + self.ARGS + " ; python3 send.py" + self.ARGS,
-                    "python3 gmail-send.py" + self.ARGS + " ; python3 gmail-send.py" + self.ARGS,
-                    "python3 gmail-send.py" + self.ARGS + " && curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @r.json"):
+        s = "python3 " + self.S
+        for cmd in (s + self.ARGS + " ; python3 send.py" + self.ARGS,
+                    s + self.ARGS + " ; " + s + self.ARGS,
+                    s + self.ARGS + " && curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @r.json"):
             with self.subTest(cmd=cmd):
                 self.assertFalse(E.command_is_official_sender(cmd))
 
@@ -854,7 +924,7 @@ class OfficialSenderIntent(unittest.TestCase):
                 self.assertFalse(E.command_is_official_sender(cmd))
 
     def test_what_cannot_be_read_exactly_is_not_the_sender(self):
-        for cmd in ("python3 gmail-send.py 'unterminated", "$CMD" + self.ARGS, 'bash -c "$X"', "timeout 30 python3 gmail-send.py" + self.ARGS):
+        for cmd in ("python3 " + self.S + " 'unterminated", "$CMD" + self.ARGS, 'bash -c "$X"', "timeout 30 python3 " + self.S + self.ARGS):
             with self.subTest(cmd=cmd):
                 self.assertFalse(E.command_is_official_sender(cmd))
 
@@ -870,7 +940,7 @@ class OfficialSenderIntent(unittest.TestCase):
             raise RuntimeError("reader bug")
         E._find_sends = boom
         try:
-            self.assertFalse(E.command_is_official_sender("python3 gmail-send.py" + self.ARGS))
+            self.assertFalse(E.command_is_official_sender("python3 " + self.S + self.ARGS))
         finally:
             E._find_sends = original
 

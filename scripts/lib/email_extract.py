@@ -1193,11 +1193,12 @@ def _basename(p: str) -> str:
 
 
 class _Send:
-    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool) -> None:
+    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool, script: str = '') -> None:
         self.kind = kind
         self.args = args
         self.cmd = cmd
         self.cd_seen = cd_seen
+        self.script = script   # the literal word that names the program (path as typed); '' when not known
 
 
 def _find_sends(text: str, depth: int) -> List[_Send]:
@@ -1262,7 +1263,7 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
                 raise Unreadable('the script name is not literal')
             kind = _kind_of(_basename(script.text))
             if kind:
-                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen))
+                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen, script.text))
             continue
         if name in _SHELLS:
             j = k + 1
@@ -1283,7 +1284,7 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
             continue
         kind = _kind_of(name)
         if kind:
-            sends.append(_Send(kind, ws[k + 1:], cmd, cd_seen))
+            sends.append(_Send(kind, ws[k + 1:], cmd, cd_seen, ws[k].text))
     return sends
 
 
@@ -1819,20 +1820,43 @@ def _inert_cmd(ws: List[_Word], k: int) -> bool:
     return _basename(ws[k].text) in _PURE_HEADS
 
 
-def command_is_official_sender(command: Any) -> bool:
-    """True only when a Bash command runs exactly ONE mail command and it is gmail-send.py.
+# The one gmail-send.py of THIS installation (this module lives in scripts/lib, the sender in scripts/).
+OFFICIAL_SENDER_PATH = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, 'gmail-send.py'))
+
+
+def _script_realpath(script: str, cd_seen: bool, cwd: Optional[str]) -> Optional[str]:
+    """The real path the typed script word runs, or None when it cannot be known (relative with no usable cwd)."""
+    if not script or script.startswith('-'):
+        return None
+    path = os.path.expanduser(script) if script.startswith('~') else script
+    if not os.path.isabs(path):
+        # Relative to the call's working directory; after a `cd` in the same call that directory is not the hook's cwd.
+        if cd_seen or not isinstance(cwd, str) or not os.path.isabs(cwd):
+            return None
+        path = os.path.join(cwd, path)
+    return os.path.realpath(path)
+
+
+def command_is_official_sender(command: Any, cwd: Optional[str] = None, official_path: Optional[str] = None) -> bool:
+    """True only when a Bash command runs exactly ONE mail command and it is THE installation's gmail-send.py.
 
     The gate marks the approval it reserves for such a call, so that the sender (and only the sender) may take the
-    reservation over. Everything else -- curl, send.py, a second mail command, a command the reader cannot parse --
-    is NOT the official sender: the reservation stays the gate's and nothing adopts it. Fail closed: any doubt is False.
+    reservation over. Everything else -- curl, send.py, a second mail command, a command the reader cannot parse, and
+    a copy of gmail-send.py at another path (same file name, other code) -- is NOT the official sender: the
+    reservation stays the gate's and nothing adopts it. The script is judged by its real path (symlinks resolved)
+    against `official_path` (default: the sibling of this module); a relative script needs the call's `cwd` and no
+    `cd` in the same call. Fail closed: any doubt is False.
     """
     if not isinstance(command, str):
         return False
     try:
         sends = _find_sends(command, 0)
+        if len(sends) != 1 or sends[0].kind != 'gmailsend':
+            return False
+        got = _script_realpath(sends[0].script, sends[0].cd_seen, cwd)
+        return got is not None and got == os.path.realpath(official_path or OFFICIAL_SENDER_PATH)
     except Exception:  # noqa: BLE001 -- a reader bug must read as "not the sender", never as a pass
         return False
-    return len(sends) == 1 and sends[0].kind == 'gmailsend'
 
 
 def command_sends_mail(command: Any) -> bool:

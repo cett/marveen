@@ -463,7 +463,8 @@ def decide(raw: str, log: Dict[str, Any]) -> str:
     # The ref prefix is the gate's intent: 'gate-send-' only when the call is the official sender (gmail-send.py,
     # alone), which then adopts this reservation instead of asking for a second approval. A mail sent any other way
     # (a Gmail tool, curl, send.py) reserves under plain 'gate-' and nothing can adopt that.
-    official = tool == 'Bash' and bool(extract.command_is_official_sender(tool_input.get('command')))
+    official = tool == 'Bash' and bool(extract.command_is_official_sender(
+        tool_input.get('command'), payload.get('cwd') if isinstance(payload.get('cwd'), str) else None))
     claim_body = {'category': CATEGORY, 'content_hash': content_hash, 'consumer': CONSUMER,
                   'ref': ('gate-send-' if official else 'gate-') + uuid.uuid4().hex}
     try:
