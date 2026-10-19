@@ -901,6 +901,53 @@ class OfficialSenderIntent(unittest.TestCase):
             with self.subTest(cmd=cmd, ok=True):
                 self.assertTrue(E.command_is_official_sender(cmd, os.path.dirname(self.S_DIR)))
 
+    def test_any_option_on_a_pass_through_wrapper_takes_the_intent_away(self):
+        # exec -a NAME / -c / -l, command -p, nohup with options ...: they change how the program starts (a name that begins
+        # with '-' makes a login shell, which reads ~/.bash_profile); only the bare wrapper keeps the mark
+        s = "python3 " + self.S + self.ARGS
+        shell = "bash -c '%s'" % s
+        for cmd in ("exec -a x " + s, "exec -a -bash " + shell, "exec -l " + shell, "exec -c " + s, "exec -cl " + shell,
+                    "command -p " + s, "command -v " + s, "nohup -- " + s, "nohup -p " + s, "builtin -x " + s,
+                    "exec -a x exec " + s, "exec exec -a x " + s, "bash -c 'exec -a x " + s + "'", "bash -c 'exec -l " + shell + "'",
+                    "cd /x && exec -a x " + s, "exec -a x -- " + s,
+                    # an assignment-shaped word after the wrapper: a shell would not run it as an assignment, but the
+                    # reader cannot tell what the program then sees, so it is "not judged" as well
+                    "nohup PYTHONPATH=/x " + s, "exec X=1 " + s, "command X=1 " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        for cmd in ("exec " + s, "command " + s, "nohup " + s, "builtin " + s, "exec " + self.S + self.ARGS,
+                    "nohup " + self.S + self.ARGS, "exec " + shell, "bash -c 'exec " + s + "'"):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_a_redirection_on_a_command_before_the_sender_takes_the_intent_away(self):
+        # echo / cat / true ... are on the short list, but `echo x > scripts/gmail-send.py` writes the very file about to
+        # run: any redirection (output, input, here-document / here-string, descriptor copy) on an earlier command counts
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("echo x > f; " + s, "echo x >> f; " + s, "echo x >| f; " + s, "echo x &> f; " + s, "echo x &>> f; " + s,
+                    "echo x 2> f; " + s, "echo x 1> f; " + s, "echo x > " + self.S + " && " + s, "echo x >> " + self.S + "; " + s,
+                    "> f; " + s, ": > " + self.S + "; " + s, "true 2>&1; " + s, "echo x >&2; " + s, "cat < f; " + s,
+                    "cat <<< x; " + s, "cat <<EOF\nx\nEOF\n" + s, "cd /x > f && " + s, "pwd > f && cd /x && " + s,
+                    "bash -c 'echo x > f; " + s + "'", "echo x > f | " + s, "(echo x > f); " + s, "{ echo x > f; }; " + s,
+                    "echo x > f\n" + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        # the sender's OWN redirection, and any redirection after it, change nothing it can read
+        for cmd in (s + " > out.log", s + " >> out.log 2>&1", s + " 2>&1", s + " < in.txt", s + " > out.log && echo x > f",
+                    "cd /x && " + s + " > out.log", "echo hi; " + s + " 2>/dev/null"):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_the_shell_start_up_file_variables_in_the_command_take_the_intent_away(self):
+        # BASH_ENV (bash -c) and ENV (sh) name a file the shell runs before its code; any assignment or export is "not judged"
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("BASH_ENV=/agent/rc bash -c '%s'" % s, "ENV=/agent/rc sh -c '%s'" % s, "env BASH_ENV=/agent/rc bash -c '%s'" % s,
+                    "env -i BASH_ENV=/agent/rc bash -c '%s'" % s, "export BASH_ENV=/agent/rc; bash -c '%s'" % s,
+                    "export ENV=/agent/rc && sh -c '%s'" % s, "bash -c 'BASH_ENV=/agent/rc " + s + "'", "declare -x BASH_ENV=/agent/rc; " + s,
+                    "BASH_ENV=/agent/rc; bash -c '%s'" % s, "exec env BASH_ENV=/agent/rc " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
     def test_a_nested_shell_that_reads_start_up_files_takes_the_intent_away(self):
         # zsh always reads ~/.zshenv; bash -l / -i read ~/.bash_profile / ~/.bashrc: code the agent may have written there
         # runs before the sender. Plain `bash -c` / `sh -c` read nothing and stay official.

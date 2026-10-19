@@ -855,13 +855,14 @@ class _Word:
 
 
 class _Cmd:
-    __slots__ = ('words', 'stdin', 'piped', 'redirect_dynamic')
+    __slots__ = ('words', 'stdin', 'piped', 'redirect_dynamic', 'redirected')
 
     def __init__(self) -> None:
         self.words: List[_Word] = []
         self.stdin: Optional[Tuple[str, Any]] = None  # ('file', _Word) | ('text', str) | ('pipe', None)
         self.piped = False
         self.redirect_dynamic = False
+        self.redirected = False   # any redirection at all (>, >>, >|, &>, 2>, <, <<, <<<), whatever its target
 
 
 _WS = ' \t'
@@ -886,8 +887,8 @@ class _Lexer:
     def _end_cmd(self, piped_next: bool = False) -> None:
         if self.redirect is not None:
             raise Unreadable('a redirection has no target')
-        if self.cur.words or self.cur.stdin is not None:
-            self.cmds.append(self.cur)
+        if self.cur.words or self.cur.stdin is not None or self.cur.redirected:
+            self.cmds.append(self.cur)   # a bare `> file` has no words but still writes a file
         self.cur = _Cmd()
         self.cur.piped = piped_next
 
@@ -1115,6 +1116,7 @@ class _Lexer:
     def _redirect_operator(self) -> None:
         s, n = self.s, self.n
         c = s[self.i]
+        self.cur.redirected = True
         if self.redirect is not None:
             raise Unreadable('two redirections in a row')
         if s.startswith('<(', self.i) or s.startswith('>(', self.i):
@@ -1251,6 +1253,11 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
         # mapfile, getopts, function definitions, loops ... without having to name them).
         if unsafe_before:
             tainted = True
+        # A redirection on ANY command (also a bare `> file`) can write a file the sender or its interpreter then reads
+        # (`echo x > scripts/gmail-send.py; python3 scripts/gmail-send.py`): it counts as unsafe for the sends after it.
+        # The sender's own redirection (`python3 scripts/gmail-send.py ... > out.log`) only affects what follows it.
+        if cmd.redirected:
+            unsafe_before = True
         # assignments, reserved words, simple pass-through wrappers
         while k < len(ws):
             w = ws[k]
@@ -1268,6 +1275,9 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                 while k < len(ws) and (ws[k].text.startswith('-') or _ASSIGN_RE.match(ws[k].text)):
                     if ws[k].dynamic:
                         raise Unreadable('a wrapper option is not literal')
+                    # exec -a NAME / -c / -l, env/command/builtin options, an assignment word: each changes how or in what
+                    # environment the program starts (a '-' argv[0] makes a login shell). Any of them: not judged.
+                    tainted = True
                     if ws[k].text in ('-u', '-C', '-S'):
                         k += 1  # takes a value
                     k += 1
