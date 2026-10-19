@@ -167,7 +167,6 @@ describe('convertCurl: admin-only endpoints get --token admin', () => {
   it.each([
     ['POST', '/api/agents/x/restart'],
     ['PUT', '/api/skills/sql/global%2Fx'],
-    ['POST', '/api/voice/tts'],
     ['GET', '/api/vault'],
     ['PATCH', '/api/approvals/7'],
   ])('%s %s is admin-only', (method, path) => {
@@ -175,6 +174,7 @@ describe('convertCurl: admin-only endpoints get --token admin', () => {
   })
 
   it.each([
+    ['POST', '/api/voice/tts'],
     ['POST', '/api/memories'],
     ['POST', '/api/daily-log'],
     ['POST', '/api/messages'],
@@ -313,13 +313,13 @@ describe('the admin oracle follows the RBAC table', () => {
   it('knows the endpoints a fleet agent token is refused on today', () => {
     const adminOnly: Array<[string, string]> = [
       ['POST', '/api/agents/x/restart'], ['POST', '/api/agents/x/start'], ['POST', '/api/agents/x/stop'],
-      ['GET', '/api/vault'], ['POST', '/api/voice/tts'], ['GET', '/api/messages'], ['PATCH', '/api/blackboard/abc'],
+      ['GET', '/api/vault'], ['GET', '/api/messages'], ['PATCH', '/api/blackboard/abc'],
       ['POST', '/api/schedules/x/activate'], ['GET', '/api/schedules/tick-status'], ['GET', '/api/agents/x/export'],
     ]
     for (const [m, p] of adminOnly) expect(lib.adminRequirement(m, p).adminOnly, `${m} ${p}`).toBe(true)
     const open: Array<[string, string]> = [
       ['GET', '/api/memories'], ['POST', '/api/daily-log'], ['POST', '/api/messages'], ['POST', '/api/kanban'],
-      ['GET', '/api/blackboard'], ['GET', '/api/agents'], ['GET', '/api/autonomy'], ['POST', '/api/approvals'],
+      ['GET', '/api/blackboard'], ['GET', '/api/agents'], ['GET', '/api/autonomy'], ['POST', '/api/approvals'], ['POST', '/api/voice/tts'],
       ['PUT', '/api/agent-state/a/k'], ['POST', '/api/artifacts'], ['GET', '/api/schedules'],
     ]
     for (const [m, p] of open) expect(lib.adminRequirement(m, p).adminOnly, `${m} ${p}`).toBe(false)
