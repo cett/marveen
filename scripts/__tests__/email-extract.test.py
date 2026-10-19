@@ -829,7 +829,6 @@ class OfficialSenderIntent(unittest.TestCase):
     def test_exactly_one_gmail_send_call_is_the_sender(self):
         for cmd in ("python3 " + self.S + self.ARGS,
                     "cd /x && python3 " + self.S + self.ARGS,
-                    "env X=1 python3 " + self.S + self.ARGS,
                     "python3 " + self.S + self.ARGS + " | tee out",
                     self.S + self.ARGS):
             with self.subTest(cmd=cmd):
@@ -853,6 +852,47 @@ class OfficialSenderIntent(unittest.TestCase):
                          ("python3 gmail-send.py" + self.ARGS, root)):   # root/gmail-send.py is not the sender
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assertFalse(E.command_is_official_sender(cmd, cwd))
+
+    def test_a_nested_shell_keeps_what_the_outer_call_already_did(self):
+        # `cd` before `bash -c`: the relative path inside is not the hook's cwd any more
+        root = os.path.dirname(self.S_DIR)
+        for cmd in ("cd /elsewhere && bash -c 'python3 scripts/gmail-send.py" + self.ARGS + "'",
+                    "cd /elsewhere && sh -c \"python3 scripts/gmail-send.py" + self.ARGS + "\"",
+                    "pushd /elsewhere >/dev/null; bash -lc 'python3 scripts/gmail-send.py" + self.ARGS + "'"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd, root))
+        # control: no cd, the nested relative path is judged against the cwd and matches
+        self.assertTrue(E.command_is_official_sender("bash -c 'python3 scripts/gmail-send.py" + self.ARGS + "'", root))
+        # a cd INSIDE the nested shell was already caught
+        self.assertFalse(E.command_is_official_sender("bash -c 'cd /elsewhere && python3 scripts/gmail-send.py" + self.ARGS + "'", root))
+
+    def test_a_changed_environment_takes_the_intent_away(self):
+        # PYTHONPATH / PATH / NODE_OPTIONS ... make the official file run attacker code; the reader cannot list every
+        # such variable, so any assignment, `env` or environment-setting command before the sender means "not judged"
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("PYTHONPATH=/x " + s,
+                    "FOO=1 " + s,
+                    "env X=1 " + s,
+                    "env " + s,
+                    "export PYTHONPATH=/x && " + s,
+                    "export PYTHONPATH=/x; " + s,
+                    "PYTHONPATH=/x; " + s,
+                    "declare -x PATH=/x; " + s,
+                    "unset PYTHONHOME && " + s,
+                    "source ./env.sh && " + s,
+                    ". ./env.sh && " + s,
+                    "eval 'true' && " + s,
+                    "export PYTHONPATH=/x && bash -c '" + s + "'",
+                    "bash -c 'PYTHONPATH=/x " + s + "'",
+                    "bash -c 'export PYTHONPATH=/x; " + s + "'"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_a_cd_and_a_pipe_do_not_change_the_environment(self):
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("cd /x && " + s, s + " | tee out", s + " > out.log 2>&1", "echo hi; " + s):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_is_official_sender(cmd))
 
     def test_a_copy_of_the_script_at_another_path_is_not_the_sender(self):
         # same file name, other file: it may do anything, so the gate's reservation must not be marked adoptable for it

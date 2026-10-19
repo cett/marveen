@@ -1193,15 +1193,25 @@ def _basename(p: str) -> str:
 
 
 class _Send:
-    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool, script: str = '') -> None:
+    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool, script: str = '', tainted: bool = False) -> None:
         self.kind = kind
         self.args = args
         self.cmd = cmd
         self.cd_seen = cd_seen
         self.script = script   # the literal word that names the program (path as typed); '' when not known
+        # True when the call, before this command, assigned a variable, went through `env`, or ran a command that sets
+        # the shell's environment (export, source, eval ...): the environment the program starts with is then not the
+        # one it was judged in (PYTHONPATH, PATH ...). Only the official-sender intent looks at it.
+        self.tainted = tainted
 
 
-def _find_sends(text: str, depth: int) -> List[_Send]:
+# Commands whose whole job is to change the environment or run other text in this shell.
+_ENV_SETTERS = frozenset(('export', 'declare', 'typeset', 'unset', 'readonly', 'source', '.', 'eval', 'env'))
+
+
+def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: bool = False) -> List[_Send]:
+    # cd_seen_in / tainted_in: what the call did BEFORE this text ran (a nested `bash -c` starts where the outer call
+    # stands: after a `cd` its relative paths are not the hook's cwd, and an exported variable is still set).
     if depth > MAX_SHELL_DEPTH:
         raise Unreadable('shell invocations are nested too deeply')
     lx = _Lexer(text)
@@ -1209,7 +1219,8 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
     if lx.subst:
         raise Unreadable('the command holds a command substitution ($(...), backticks or <(...)); write the mail command on its own with literal values')
     sends: List[_Send] = []
-    cd_seen = False
+    cd_seen = cd_seen_in
+    tainted = tainted_in
     for cmd in cmds:
         ws = cmd.words
         k = 0
@@ -1217,10 +1228,13 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
         while k < len(ws):
             w = ws[k]
             if not w.quoted and _ASSIGN_RE.match(w.text) and not w.text.startswith('='):
+                tainted = True
                 k += 1
             elif w.text in _RESERVED and not w.quoted:
                 k += 1
             elif _basename(w.text) in _PASS_THROUGH and not w.dynamic:
+                if _basename(w.text) == 'env':
+                    tainted = True
                 k += 1
                 while k < len(ws) and (ws[k].text.startswith('-') or _ASSIGN_RE.match(ws[k].text)):
                     if ws[k].dynamic:
@@ -1239,6 +1253,8 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
         if name in ('cd', 'pushd', 'popd'):
             cd_seen = True
             continue
+        if name in _ENV_SETTERS:
+            tainted = True
         if _INTERPRETERS.fullmatch(name):
             j = k + 1
             while j < len(ws):
@@ -1263,7 +1279,7 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
                 raise Unreadable('the script name is not literal')
             kind = _kind_of(_basename(script.text))
             if kind:
-                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen, script.text))
+                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen, script.text, tainted))
             continue
         if name in _SHELLS:
             j = k + 1
@@ -1280,11 +1296,11 @@ def _find_sends(text: str, depth: int) -> List[_Send]:
                     continue
                 break
             if code is not None:
-                sends.extend(_find_sends(code, depth + 1))
+                sends.extend(_find_sends(code, depth + 1, cd_seen, tainted))
             continue
         kind = _kind_of(name)
         if kind:
-            sends.append(_Send(kind, ws[k + 1:], cmd, cd_seen, ws[k].text))
+            sends.append(_Send(kind, ws[k + 1:], cmd, cd_seen, ws[k].text, tainted))
     return sends
 
 
@@ -1851,7 +1867,7 @@ def command_is_official_sender(command: Any, cwd: Optional[str] = None, official
         return False
     try:
         sends = _find_sends(command, 0)
-        if len(sends) != 1 or sends[0].kind != 'gmailsend':
+        if len(sends) != 1 or sends[0].kind != 'gmailsend' or sends[0].tainted:
             return False
         got = _script_realpath(sends[0].script, sends[0].cd_seen, cwd)
         return got is not None and got == os.path.realpath(official_path or OFFICIAL_SENDER_PATH)
