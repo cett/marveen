@@ -209,6 +209,27 @@ describe('propagateStatusForParent (auto status) clears the parent when it becom
     expect(status(PARENT)).toBe('in_progress')
     expect(stamp(PARENT)).not.toBeNull()
   })
+
+  it('a done parent with an old stamp whose child reopens reverts to in_progress with the stamp cleared', () => {
+    // Legacy shape: the parent is done but still carries a stamp (written before the clear rule existed).
+    getDb().prepare("UPDATE kanban_cards SET status = 'done', dispatched_at = 1700000000 WHERE id = ?").run(PARENT)
+    moveKanbanCard(CHILD_1, 'done', 0)
+    moveKanbanCard(CHILD_2, 'done', 0)
+    // Re-open one child; the stale stamp on the parent must not survive the auto-revert.
+    moveKanbanCard(CHILD_2, 'in_progress', 0)
+    propagateStatus(CHILD_2)
+    expect(status(PARENT)).toBe('in_progress')
+    expect(stamp(PARENT)).toBeNull()
+  })
+
+  it('the revert is recorded as an auto event (the stamp change does not swallow the audit row)', () => {
+    getDb().prepare("UPDATE kanban_cards SET status = 'done', dispatched_at = 1700000000 WHERE id = ?").run(PARENT)
+    moveKanbanCard(CHILD_1, 'done', 0)
+    moveKanbanCard(CHILD_2, 'in_progress', 0)
+    propagateStatus(CHILD_2)
+    const ev = getDb().prepare("SELECT from_status, to_status, actor FROM kanban_card_events WHERE card_id = ? AND actor = 'auto'").all(PARENT)
+    expect(ev).toEqual([{ from_status: 'done', to_status: 'in_progress', actor: 'auto' }])
+  })
 })
 
 describe('updateTenantKanbanCard clears it as well', () => {
