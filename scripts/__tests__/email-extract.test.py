@@ -818,5 +818,62 @@ class GmailSendFields(unittest.TestCase):
                     E.gmail_send_fields(args, d)
 
 
+class OfficialSenderIntent(unittest.TestCase):
+    """command_is_official_sender(): the gate marks its reservation for the call that is gmail-send.py and nothing else.
+    Fail closed: any doubt (a second mail command, a wrapper, a lookalike name, unreadable text) is False, and a False
+    only means the reservation stays the gate's, so the worst a miss costs is a refused retry, never a second mail."""
+    ARGS = " --to a@example.test --subject S --body B"
+
+    def test_exactly_one_gmail_send_call_is_the_sender(self):
+        for cmd in ("python3 scripts/gmail-send.py" + self.ARGS,
+                    "cd /x && python3 /abs/scripts/gmail-send.py" + self.ARGS,
+                    "env X=1 python3 gmail-send.py" + self.ARGS,
+                    "python3 gmail-send.py" + self.ARGS + " | tee out"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_every_other_mail_command_is_not(self):
+        for cmd in ("python3 send.py" + self.ARGS,
+                    "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @r.json",
+                    "msmtp a@example.test",
+                    "sendmail -t"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_a_second_mail_command_in_the_same_call_takes_the_intent_away(self):
+        for cmd in ("python3 gmail-send.py" + self.ARGS + " ; python3 send.py" + self.ARGS,
+                    "python3 gmail-send.py" + self.ARGS + " ; python3 gmail-send.py" + self.ARGS,
+                    "python3 gmail-send.py" + self.ARGS + " && curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @r.json"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_naming_the_script_is_not_running_it(self):
+        for cmd in ("git diff scripts/gmail-send.py", "echo gmail-send.py", "cat scripts/gmail-send.py", "ls",
+                    "python3 not-gmail-send.py" + self.ARGS, "python3 gmail-send.py.bak" + self.ARGS):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_what_cannot_be_read_exactly_is_not_the_sender(self):
+        for cmd in ("python3 gmail-send.py 'unterminated", "$CMD" + self.ARGS, 'bash -c "$X"', "timeout 30 python3 gmail-send.py" + self.ARGS):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_not_a_command_is_not_the_sender(self):
+        for bad in (None, 5, ["python3 gmail-send.py"], {"command": "python3 gmail-send.py"}, b"python3 gmail-send.py", True, ""):
+            with self.subTest(bad=bad):
+                self.assertFalse(E.command_is_official_sender(bad))
+
+    def test_a_reader_bug_reads_as_not_the_sender(self):
+        original = E._find_sends
+
+        def boom(*a, **k):
+            raise RuntimeError("reader bug")
+        E._find_sends = boom
+        try:
+            self.assertFalse(E.command_is_official_sender("python3 gmail-send.py" + self.ARGS))
+        finally:
+            E._find_sends = original
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

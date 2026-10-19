@@ -510,6 +510,72 @@ class DecisionTable(GateCase):
             self.assertNotIn(secret, err, 'the text does not help a bypass')
 
 
+class ClaimIntent(GateCase):
+    """The gate always reserves the approval (it never steps back: a wrong reading of a call must not become a way
+    around it); the ref prefix tells the dashboard whether the call is the official sender, which alone may adopt
+    the reservation. The gate itself sends no mode and still checks a v1 answer."""
+    SENDER = "python3 scripts/gmail-send.py --to ann@example.test --subject 'Weekly notes' --body 'Here are the notes from this week.'"
+    OTHERS = {
+        'send.py': "python3 scripts/support-mail/send.py --to ann@example.test --subject 'Weekly notes' --body 'Here are the notes from this week.'",
+        'curl': None,   # filled in setUp (needs the body file)
+    }
+
+    def setUp(self):
+        super().setUp()
+        import base64
+        raw = base64.urlsafe_b64encode(b'To: ann@example.test\r\nSubject: Weekly notes\r\n\r\nHere are the notes from this week.\r\n').decode()
+        self.write('store/r.json', json.dumps({'raw': raw}))
+        self.OTHERS['curl'] = 'curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @store/r.json'
+
+    def _ref_of(self, tool, tool_input):
+        self.dash.requests.clear()
+        rc, out, err = self.run_gate(tool, tool_input)
+        self.assertEqual(rc, 0, err)
+        claims = [r for r in self.dash.requests if r[1] == '/api/approvals/claim']
+        self.assertEqual(len(claims), 1, 'every send is claimed by the gate, whatever it is')
+        body = claims[0][2]
+        self.assertNotIn('mode', body, 'the gate never asks for the sender\'s mode')
+        return body['ref']
+
+    def test_the_official_sender_alone_gets_a_gate_send_ref(self):
+        self.assertRegex(self._ref_of('Bash', {'command': self.SENDER}), r'^gate-send-[0-9a-f]{32}$')
+
+    def test_every_other_way_of_sending_keeps_a_plain_gate_ref_that_nothing_can_adopt(self):
+        cases = [('Gmail tool', SEND_TOOL, dict(MAIL))] + [(name, 'Bash', {'command': cmd}) for name, cmd in self.OTHERS.items()]
+        for label, tool, ti in cases:
+            with self.subTest(via=label):
+                ref = self._ref_of(tool, ti)
+                self.assertRegex(ref, r'^gate-[0-9a-f]{32}$')
+                self.assertFalse(ref.startswith('gate-send-'))
+
+    def test_a_lookalike_of_the_sender_is_not_the_sender(self):
+        # a command that merely names the script, or a second script of another name, must not earn the intent
+        for cmd in ("python3 scripts/not-gmail-send.py --to ann@example.test --subject 'Weekly notes' --body 'x'",
+                    "python3 scripts/gmail-send.py.bak --to ann@example.test --subject 'Weekly notes' --body 'x'"):
+            with self.subTest(cmd=cmd):
+                rc, out, err = self.run_gate('Bash', {'command': cmd})
+                claims = [r for r in self.dash.requests if r[1] == '/api/approvals/claim']
+                for c in claims:
+                    self.assertFalse(c[2]['ref'].startswith('gate-send-'))
+                self.dash.requests.clear()
+
+    def test_the_gate_still_reserves_when_it_reads_the_call_as_the_sender_and_the_approval_is_gone(self):
+        # no way around the gate: with nothing to reserve the sender's command is refused like any other send
+        self.dash.claim = _conflict('none')
+        self.expect_deny(self.run_gate('Bash', {'command': self.SENDER}), 'requested', 'req-1')
+
+    def test_the_gate_still_demands_its_own_v1_answer(self):
+        # a v2 (sender) answer for the gate's claim is not accepted: the two answers are not interchangeable
+        def v2_answer(request):
+            status, body = _claim_ok()(request)
+            a = body['approval']
+            text = 'v2|%s|%s|%s|%s|%s|%s' % (a['content_hash'], a['category'], a['agent_id'], a['consumed_ref'], a['consumed_at'], a['consumed_at'] + 5)
+            body['sig'] = hmac.new(bytes.fromhex(CLAIM_KEY), text.encode('utf-8'), hashlib.sha256).hexdigest()
+            return status, body
+        self.dash.claim = v2_answer
+        self.expect_deny(self.run_gate('Bash', {'command': self.SENDER}), 'claim_unsigned')
+
+
 class ClaimSignature(GateCase):
     """The claim answer must be signed with the key the dashboard keeps in store/.claim-signing-key."""
 
