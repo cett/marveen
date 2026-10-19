@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   initDatabase, getDb, createApproval, getApproval, resolveApproval, listApprovalEvents, claimApproval,
-  CONSUME_REPLAY_WINDOW_S, SEND_ADOPT_WINDOW_S, GATE_SEND_REF_PREFIX,
+  CONSUME_REPLAY_WINDOW_S, SEND_ADOPT_WINDOW_S, GATE_SEND_REF_PREFIX, adoptReservation,
 } from '../db.js'
 
 const HASH = 'a'.repeat(64)
@@ -188,6 +188,60 @@ describe('what the sender may adopt (each condition is in the SQL, each has its 
   it('an expired decision cannot be reserved and sealed in one step either', () => {
     approved({ resolvedAt: NOW - WINDOW - 1 })
     expect(send('s', NOW)).toMatchObject({ ok: false, reason: 'expired' })
+  })
+})
+
+// claimApproval() picks the candidate with a SELECT that repeats the adoption conditions, and inside one synchronous
+// transaction nothing can change between that SELECT and the UPDATE, so through claimApproval() alone a condition
+// removed from the UPDATE's WHERE stays invisible. These tests run the UPDATE on its own against a reservation that
+// breaks exactly one condition: removing that condition from ADOPT_STATEMENT makes its row adopt, and the test fail.
+describe('adoptReservation: the UPDATE guards every condition on its own', () => {
+  const since = NOW - SEND_ADOPT_WINDOW_S
+  const params = { category: 'email_send', content_hash: HASH, principal: 'agent-a', tenant_id: 'default' }
+  const adopt = (id: string, p: Partial<typeof params> = {}) => adoptReservation(id, { ...params, ...p }, since, NOW + 1, 'send-1')
+  /** A fresh reservation of the official sender's kind, then one column changed so exactly one condition fails. */
+  const reservedWith = (patch: string, value: unknown) => {
+    const id = approved()
+    gate()
+    getDb().prepare(`UPDATE approvals SET ${patch} = ? WHERE id = ?`).run(value, id)
+    return id
+  }
+
+  it('control: the untouched reservation is adopted, and only once', () => {
+    const id = approved()
+    gate()
+    expect(adopt(id)).toBe(true)
+    expect(getApproval(id)).toMatchObject({ used_at: NOW + 1, used_ref: 'send-1' })
+    expect(adopt(id)).toBe(false)
+  })
+
+  const broken: Array<[string, string, unknown]> = [
+    ['it is not a dashboard-session decision', 'resolved_via', 'bearer'],
+    ['it is not approved', 'status', 'rejected'],
+    ['the gate reserved nothing', 'consumed_at', null],
+    ['the reservation is older than the adoption window', 'consumed_at', NOW - SEND_ADOPT_WINDOW_S - 1],
+    ['another agent reserved it', 'consumed_by', 'agent-b'],
+    // consumed_by still says the principal, so only the agent_id condition can refuse this one
+    ['the approval belongs to another agent', 'agent_id', 'agent-b'],
+    ['the reservation is not for the official sender', 'consumed_ref', 'gate-1'],
+    ['it was already sealed', 'used_at', NOW],
+  ]
+  for (const [why, column, value] of broken) {
+    it(`refuses when ${why}`, () => {
+      const id = reservedWith(column, value)
+      expect(adopt(id)).toBe(false)
+      expect(getApproval(id)?.used_ref ?? null).toBeNull()
+    })
+  }
+
+  it('refuses another hash, another tenant, another category and another principal than the row\'s', () => {
+    const id = approved()
+    gate()
+    expect(adopt(id, { content_hash: OTHER })).toBe(false)
+    expect(adopt(id, { tenant_id: 'tenant-b' })).toBe(false)
+    expect(adopt(id, { category: 'other_category' })).toBe(false)
+    expect(adopt(id, { principal: 'agent-b' })).toBe(false)
+    expect(getApproval(id)?.used_at).toBeNull()
   })
 })
 

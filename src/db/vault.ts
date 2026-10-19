@@ -362,6 +362,10 @@ function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | 
 // changes the row. Nothing here creates, decides or re-opens an approval: it only stamps a row a person decided in
 // a dashboard session and the SAME agent's gate already reserved FOR THE OFFICIAL SENDER (a `gate-send-` ref: the
 // gate only writes that prefix when it read the call as gmail-send.py), a moment ago, and not sealed yet.
+// The SELECT that picks the candidate repeats these conditions, and inside one synchronous transaction on one
+// connection nothing can change between the two statements, so a test through claimApproval() cannot tell the
+// UPDATE's WHERE from the SELECT's. This WHERE is the second line (a second connection or process would make it the
+// only one), and adoptReservation() is exported so a test can run it alone against rows that break one condition.
 const ADOPT_STATEMENT = `
   UPDATE approvals SET used_at = ?, used_ref = ?
   WHERE id = ? AND category = ? AND status = 'approved' AND content_hash = ? AND tenant_id = ? AND agent_id = ?
@@ -369,6 +373,15 @@ const ADOPT_STATEMENT = `
     AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%'
     AND used_at IS NULL
 `
+
+/** Stamp the gate's reservation `id` as sealed by the sender's `ref`; false when any adoption condition does not hold. */
+export function adoptReservation(
+  id: string, p: Pick<ConsumeParams, 'principal' | 'tenant_id' | 'content_hash'> & { category: string }, adoptSince: number, now: number, ref: string,
+): boolean {
+  return db.prepare(ADOPT_STATEMENT).run(
+    now, ref, id, p.category, p.content_hash, p.tenant_id, p.principal, adoptSince, p.principal,
+  ).changes > 0
+}
 
 /** The ref prefix by which the gate marks a reservation made for the official sender (the intent the sender may adopt). */
 export const GATE_SEND_REF_PREFIX = 'gate-send-'
@@ -468,9 +481,7 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
           AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%' AND used_at IS NULL
         ORDER BY consumed_at DESC, id DESC LIMIT 1
       `).get(...scope, adoptSince, p.principal) as { id: string } | undefined
-      if (reserved && db.prepare(ADOPT_STATEMENT).run(
-        now, ref, reserved.id, p.category, p.content_hash, p.tenant_id, p.principal, adoptSince, p.principal,
-      ).changes > 0) {
+      if (reserved && adoptReservation(reserved.id, p, adoptSince, now, ref as string)) {   // send implies a ref (checked above)
         const approval = getApproval(reserved.id) as Approval
         recordApprovalEvent({ approval_id: reserved.id, tenant_id: approval.tenant_id, event: 'used', reason: 'adopted_gate_reservation', actor: p.principal, ref })
         return { ok: true, replayed: false, adopted: true, approval }
