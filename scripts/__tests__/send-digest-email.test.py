@@ -358,6 +358,16 @@ class TestExceptionStillWorks(unittest.TestCase):
 NOTIFY = "notify-recipient@example.invalid"   # fixture stand-in for the pinned address (the pin is patched to its hash)
 
 
+def _redirect_done_log(case):
+    """Point the done-notice log at a temp file for one test case (never the repository's store/)."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    case.log_path = os.path.join(tmp.name, "done-notice.log")
+    patcher = patch.object(mod, "DONE_NOTICE_LOG", case.log_path)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
 def _pin(address):
     import hashlib
     return patch.object(mod, "_DONE_NOTIFY_RECIPIENT_SHA256", hashlib.sha256(address.strip().casefold().encode()).hexdigest())
@@ -365,6 +375,9 @@ def _pin(address):
 
 class TestDoneNotificationEntryPoint(unittest.TestCase):
     """send_done_notification(): the one named exception for an outside recipient, pinned by hash, same strict header check."""
+
+    def setUp(self):
+        _redirect_done_log(self)
 
     def _send(self, recipient, subject="Done card", body="Fixture body", google=None):
         google = google or _FakeGoogle()
@@ -456,7 +469,130 @@ class TestDoneNotificationEntryPoint(unittest.TestCase):
         self.assertEqual(message_from_bytes(raw).get_all("To"), [OWN])
 
 
+class TestDoneNoticeLimits(unittest.TestCase):
+    """What the fixed recipient still lets through: size-capped, plain text, and one log line per send."""
+
+    def setUp(self):
+        _redirect_done_log(self)
+
+    def _send(self, subject="Done card", body="Fixture body", build=None):
+        google = _FakeGoogle()
+        patches = [_pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google)]
+        if build is not None:
+            patches.append(patch.object(mod, "build_raw_mime", return_value=build))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        try:
+            return mod.send_done_notification("fixture-token", NOTIFY, subject, body), google
+        except mod.SelfSendOnly as exc:
+            return exc, google
+
+    def _log_lines(self):
+        if not os.path.exists(self.log_path):
+            return []
+        with open(self.log_path, encoding="utf-8") as fh:
+            return fh.read().splitlines()
+
+    def test_the_body_cap_is_4096_bytes_and_the_edge_passes(self):
+        result, google = self._send(body="a" * 4096)
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+        self.assertEqual(len(google.sent), 1)
+
+    def test_one_byte_more_is_refused_and_nothing_is_sent_or_logged(self):
+        result, google = self._send(body="a" * 4097)
+        self.assertIsInstance(result, mod.SelfSendOnly)
+        self.assertEqual(google.sent, [])
+        self.assertEqual(google.urls, [], "refused before any request")
+        self.assertEqual(self._log_lines(), [])
+
+    def test_the_body_cap_counts_bytes_not_characters(self):
+        # 2049 two-byte characters are 4098 bytes: under 4096 characters, over 4096 bytes
+        result, google = self._send(body="\u00e9" * 2049)
+        self.assertIsInstance(result, mod.SelfSendOnly)
+        self.assertEqual(google.sent, [])
+        result, google = self._send(body="\u00e9" * 2048)
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+
+    def test_the_subject_cap_is_200_characters(self):
+        result, google = self._send(subject="s" * 200)
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+        result, google = self._send(subject="s" * 201)
+        self.assertIsInstance(result, mod.SelfSendOnly)
+        self.assertEqual(google.sent, [])
+
+    def test_a_subject_or_body_that_is_not_text_is_refused(self):
+        for subject, body in ((None, "b"), ("s", None), (5, "b"), ("s", b"bytes"), (["s"], "b")):
+            with self.subTest(subject=subject, body=body):
+                result, google = self._send(subject=subject, body=body)
+                self.assertIsInstance(result, mod.SelfSendOnly)
+                self.assertEqual(google.sent, [])
+
+    def test_only_plain_text_goes_out(self):
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        for label, build in (("multipart/alternative", None), ("text/html", None)):
+            if label == "multipart/alternative":
+                m = MIMEMultipart("alternative")
+                m.attach(MIMEText("plain", "plain", "utf-8"))
+                m.attach(MIMEText("<b>html</b>", "html", "utf-8"))
+            else:
+                m = MIMEText("<b>html</b>", "html", "utf-8")
+            m["To"] = NOTIFY
+            m["Subject"] = "Done card"
+            raw = _b64(m.as_bytes())
+            with self.subTest(content=label):
+                result, google = self._send(build=raw)
+                self.assertIsInstance(result, mod.SelfSendOnly)
+                self.assertEqual(google.sent, [])
+                self.assertEqual(self._log_lines(), [])
+
+    def test_one_line_per_send_with_time_pin_prefix_and_length_but_no_text(self):
+        import re
+        body = "Secret-looking fixture body \u00e9"
+        subject = "Subject fixture words"
+        result, _ = self._send(subject=subject, body=body)
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+        lines = self._log_lines()
+        self.assertEqual(len(lines), 1)
+        time_part, pin8, length = lines[0].split(" ")
+        self.assertRegex(time_part, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
+        self.assertEqual(pin8, mod._DONE_NOTIFY_RECIPIENT_SHA256[:8])
+        self.assertEqual(int(length), len(body.encode("utf-8")))
+        for forbidden in (body, subject, NOTIFY, "Secret", "fixture"):
+            self.assertNotIn(forbidden, lines[0])
+        self._send()
+        self.assertEqual(len(self._log_lines()), 2, "appended, one line per send")
+
+    def test_a_refused_recipient_leaves_no_log_line(self):
+        google = _FakeGoogle()
+        with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
+            with self.assertRaises(mod.SelfSendOnly):
+                mod.send_done_notification("fixture-token", OTHER, "Done card", "Body")
+        self.assertEqual(self._log_lines(), [])
+
+    def test_if_the_trace_cannot_be_written_nothing_is_sent(self):
+        # fail closed: no trace, no mail
+        with patch.object(mod, "DONE_NOTICE_LOG", os.path.join(os.path.dirname(self.log_path), "no-such-dir", "x.log")):
+            result, google = None, _FakeGoogle()
+            with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
+                with self.assertRaises(OSError):
+                    mod.send_done_notification("fixture-token", NOTIFY, "Done card", "Body")
+        self.assertEqual(google.sent, [])
+
+    def test_the_pin_is_checked_on_the_to_header_the_message_really_carries(self):
+        # the recipient argument says NOTIFY, but the finished message is addressed to OTHER: the header check and the pin
+        # both look at the message, so it is refused
+        forged = mod.build_raw_mime(OTHER, "Done card", "Body")
+        result, google = self._send(build=forged)
+        self.assertIsInstance(result, mod.SelfSendOnly)
+        self.assertEqual(google.sent, [])
+
+
 class TestDoneNotificationDefenceInDepth(unittest.TestCase):
+    def setUp(self):
+        _redirect_done_log(self)
+
     def test_the_header_check_runs_even_if_the_builder_were_to_produce_extra_recipients(self):
         evil = _msg(_BASE + [("To", NOTIFY), ("Bcc", OTHER)])
         google = _FakeGoogle()

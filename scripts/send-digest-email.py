@@ -216,16 +216,57 @@ def send_via_gmail(access_token, raw_mime):
 _DONE_NOTIFY_RECIPIENT_SHA256 = "bf6d1ab3e7185314bfca9ecaf9a3785f9b26401a95bd6a9d383209ab82754bf3"
 
 
+# Size limits of a done notice: the recipient is fixed, so what is left to bound is how much a (possibly injected) caller
+# can push out through it. The body is counted in UTF-8 bytes, the subject in characters.
+_DONE_NOTICE_MAX_BODY_BYTES = 4096
+_DONE_NOTICE_MAX_SUBJECT_CHARS = 200
+
+# One line per attempt that passed every check and is about to be sent: time, first 8 hex characters of the pin hash,
+# body length. Never the text. A module attribute (not an environment variable) so a test can point it elsewhere.
+DONE_NOTICE_LOG = os.path.join(REPO_ROOT, "store", "done-notice.log")
+
+
+def _parsed_to(raw_mime):
+    """The one `To` value of the base64url message as the parser sees it (what Gmail will mail), or None if there is not
+    exactly one."""
+    raw = base64.urlsafe_b64decode(str(raw_mime).encode("ascii") + b"=" * (-len(str(raw_mime)) % 4))
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    values = [str(v).strip() for k, v in msg.raw_items() if k.strip().lower() == "to"]
+    return values[0] if len(values) == 1 else None
+
+
+def _log_done_notice(body_len):
+    """Append the one-line trace. Fails closed: if the trace cannot be written the notice is not sent (OSError)."""
+    line = "%s %s %d\n" % (datetime.now().astimezone().isoformat(timespec="seconds"),
+                           _DONE_NOTIFY_RECIPIENT_SHA256[:8], body_len)
+    with open(DONE_NOTICE_LOG, "a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
 def send_done_notification(access_token, recipient, subject, body):
     """The named entry point of the done-card notifier: mail `recipient`, which must be the one pinned address, and only
-    it. Builds the message itself and applies the same strict header check as the self-send (exactly one To equal to the
-    recipient, no other recipient-bearing header). Raises SelfSendOnly (nothing sent) for any other address."""
+    it. Builds the message itself, applies the same strict header check as the self-send (exactly one To equal to the
+    recipient, no other recipient-bearing header), then checks the pin against the To value that is actually going into
+    the message. Plain text only, body and subject length-capped, one log line per send. Raises SelfSendOnly (nothing
+    sent) for any other address or an oversized / non-plain message."""
+    if not isinstance(subject, str) or not isinstance(body, str):
+        raise SelfSendOnly("subject and body must be text")
+    if len(subject) > _DONE_NOTICE_MAX_SUBJECT_CHARS or len(body.encode("utf-8")) > _DONE_NOTICE_MAX_BODY_BYTES:
+        raise SelfSendOnly("the notice is over the size limit")
     given = str(recipient).strip().casefold() if isinstance(recipient, str) else ""
-    digest = hashlib.sha256(given.encode("utf-8")).hexdigest()
-    if not given or not hmac.compare_digest(digest, _DONE_NOTIFY_RECIPIENT_SHA256):
+    if not given:
         raise SelfSendOnly("the recipient is not the one address the done-card notifier may mail")
     raw_mime = build_raw_mime(given, subject, body)
     assert_self_addressed(raw_mime, given)
+    # The pin runs LAST and on the parsed To header of the finished message, not on the raw input.
+    actual = _parsed_to(raw_mime)
+    if actual is None or not hmac.compare_digest(hashlib.sha256(actual.casefold().encode("utf-8")).hexdigest(),
+                                                 _DONE_NOTIFY_RECIPIENT_SHA256):
+        raise SelfSendOnly("the recipient is not the one address the done-card notifier may mail")
+    raw = base64.urlsafe_b64decode(raw_mime.encode("ascii") + b"=" * (-len(raw_mime) % 4))
+    if email.message_from_bytes(raw, policy=email.policy.default).get_content_type() != "text/plain":
+        raise SelfSendOnly("the notice is not plain text")
+    _log_done_notice(len(body.encode("utf-8")))
     return _post_to_gmail(access_token, raw_mime)
 
 
