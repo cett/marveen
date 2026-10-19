@@ -77,7 +77,7 @@ describe('buildTtsDirective', () => {
     expect(result).toContain('"chat_id":"123456"')
     expect(result).toContain('"voice_model":"hu_HU-imre-medium"')
     expect(result).toContain('"state_dir":"/mock/state/dir"')
-    expect(result).toContain("DASHBOARD_BASE_URL=http://localhost:4242 bash '/mock/install/scripts/agent-api.sh' --agent alpha --token admin POST /api/voice/tts -")
+    expect(result).toContain("DASHBOARD_BASE_URL=http://localhost:4242 bash '/mock/install/scripts/agent-api.sh' --agent alpha POST /api/voice/tts -")
   })
 
   it('never writes a token (or a curl with an Authorization header) into the directive', () => {
