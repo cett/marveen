@@ -170,7 +170,7 @@ Ezért a deploy-blokkerek mindig a userre várnak. Mitigation:
 
 - **Sub-agent stuck-shell + "1 shell still running" TUI blokk**: a sub-agent Claude Code TUI blokkol az új user-input fogadásától ha a "1 shell still running" jelző fennmarad -- egy korábbi háttér-shell NEM fejeződött be, soha. **Diagnosztika**: (1) `tmux list-panes -t agent-<név> -F '#{pane_pid}'` → kapsz egy PID-et (claude.exe), (2) `pgrep -P <pid>` → child processek listája, (3) `ps -o pid,etime,command -p <PID>...` → az ETIMED hosszú zsh shell child a bűnös. **Megoldás**: `kill <stuck_shell_pid>`. A Claude TUI ezután feldolgozza a "Background command... failed with exit code 144" üzenetet, és felszabadítja a TUI input-ot. **Buktató tovább**: ha a TUI "Cooked for Xs" / "Crunched for Xs" animáció-állapotban ragad a kill után is (5+ perc), akkor a TUI-internal deadlock -- escalate a userhez Mission Control session restart kéréssel. State perzisztens (file-rendszerben memória + kanban + skill), restart nem veszt információt.
 
-**Sub-agent restart via dashboard API**:
+**Sub-agent restart via dashboard API** (csak a fő ágens hívhatja: a `--token admin` a fő ágens saját tokenje; nem-fő ágensnél hiba, ilyenkor `/api/messages`-en kérd a fő ágenstől):
 1. `tmux kill-session -t agent-<name>` (megöli a stuck session-t)
 2. `bash scripts/agent-api.sh --token admin POST /api/agents/<name>/start` → `{"ok":true}` válasz
 3. Verify: `tmux ls | grep agent-<name>` → új session friss "created"-dátummal

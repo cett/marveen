@@ -68,6 +68,8 @@ Never hardcode fleet-specific agent names or IDs in a skill. Use these placehold
 
 The skills DB is the source of truth; `SKILL.md` on disk is a generated cache. Create and update are the same call: `PUT /api/skills/sql/<url-encoded id>` (`global/<name>` for a fleet-wide skill, `agent/<AGENT>/<name>` for one agent's own; the `/` in the id must be `%2F`). Build the JSON with a script, never by hand-escaping.
 
+Skill writes are admin-only and `--token admin` is the MAIN agent's own token. Any other agent does not make this call (it would be refused): write the finished SKILL.md text, send it to the main agent over `/api/messages` (id, scope global or agent-local, full text) and let the main agent do the PUT. The commands below are the main agent's.
+
 ```bash
 SKILL_NAME="[kebab-case-name]"
 python3 - <<'PY' | bash scripts/agent-api.sh --token admin PUT "/api/skills/sql/global%2F$SKILL_NAME" -
