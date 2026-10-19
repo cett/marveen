@@ -304,9 +304,9 @@ class TestSendRouteIsGuarded(unittest.TestCase):
         self.assertEqual(google.sent, [])
 
     def test_a_failing_profile_read_sends_nothing(self):
-        def boom(req, timeout=None):
+        def fail_request(req, timeout=None):
             raise OSError("fixture network failure")
-        with patch.object(mod.urllib.request, "urlopen", boom):
+        with patch.object(mod.urllib.request, "urlopen", fail_request):
             with self.assertRaises(OSError):
                 mod.send_via_gmail("fixture-token", mod.build_raw_mime(OWN, "Digest", "Body"))
 
