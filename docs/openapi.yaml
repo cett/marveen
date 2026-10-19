@@ -1884,7 +1884,12 @@ paths:
         are not restricted. The `[Eredmény]` completion notice sent back to the
         delegator is stored in the original message's tenant. A `fleet_agent`
         token (an agent's own token) may only update messages addressed to its
-        own agent; another agent's message is a 403.
+        own agent; another agent's message is a 403. A message closes once:
+        closing one that is already `done` or `failed` is a 409
+        (`status_conflict`, with `current_status`), the stored result stays
+        as the first close left it and no second `[Eredmény]` notice is sent.
+        Before this change the second close overwrote the result and sent a
+        second notice.
       requestBody:
         required: true
         content:
@@ -1928,6 +1933,15 @@ paths:
           description: >-
             Message not found, invalid status transition, or the message
             belongs to another tenant (indistinguishable from a missing id)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            The message is already closed (`done` or `failed`; a refusal is
+            stored as `failed`). Nothing was changed and no completion notice
+            was sent. Body: `error: status_conflict`, `current_status`, `hint`.
           content:
             application/json:
               schema:

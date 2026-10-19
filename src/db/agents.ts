@@ -329,6 +329,30 @@ export function markMessageRefused(id: number, reason?: string): boolean {
   ).run(reason ?? null, reason ?? null, now, id).changes > 0
 }
 
+// Close a message on behalf of its executor (PUT /api/messages/:id), compare-and-set: the single UPDATE only
+// matches a row that is not closed yet, so a second close (a client retry after a timeout, a late duplicate
+// callback) changes nothing and returns false instead of overwriting the first outcome. 'refused' is stored
+// as status='failed' + refused_reason, like markMessageRefused. The done branch backfills delivered_at the
+// same way markMessageDone does (a still-pending row closed directly). The router's own transitions keep
+// using the unconditional markMessage* helpers above; they are not executor callbacks.
+export function closeOpenMessage(id: number, status: 'done' | 'failed' | 'refused', result?: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const text = result ?? null
+  if (status === 'done') {
+    return db.prepare(
+      "UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ? AND status NOT IN ('done','failed')",
+    ).run(text, now, now, id).changes > 0
+  }
+  if (status === 'failed') {
+    return db.prepare(
+      "UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done','failed')",
+    ).run(text, now, id).changes > 0
+  }
+  return db.prepare(
+    "UPDATE agent_messages SET status = 'failed', refused_reason = ?, result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done','failed')",
+  ).run(text, text, now, id).changes > 0
+}
+
 // Stamp the FIRST time the router finds the target
 // session absent for a still-pending row -- not a status change (the row can
 // still be delivered the moment the session reappears). COALESCE keeps the

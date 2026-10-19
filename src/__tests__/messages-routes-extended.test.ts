@@ -2,10 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
-const { mockGetAgentMessage, mockMarkMessageDone, mockMarkMessageFailed } = vi.hoisted(() => ({
+const { mockGetAgentMessage, mockCloseOpenMessage } = vi.hoisted(() => ({
   mockGetAgentMessage: vi.fn().mockReturnValue(null),
-  mockMarkMessageDone: vi.fn().mockReturnValue(true),
-  mockMarkMessageFailed: vi.fn().mockReturnValue(false),
+  mockCloseOpenMessage: vi.fn().mockReturnValue(true),
 }))
 
 vi.mock('../db.js', () => ({
@@ -15,8 +14,7 @@ vi.mock('../db.js', () => ({
   getAgentConversation: vi.fn().mockReturnValue([]),
   getAgentConversationThreads: vi.fn().mockReturnValue([]),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
-  markMessageDone: mockMarkMessageDone,
-  markMessageFailed: mockMarkMessageFailed,
+  closeOpenMessage: mockCloseOpenMessage,
   getAgentMessage: mockGetAgentMessage,
   closeOtelSpan: vi.fn(),
   COMPLETION_REPORT_PREFIX: '[Eredmény]',
@@ -83,8 +81,8 @@ describe('tryHandleMessages - GET extended paths', () => {
 })
 
 describe('tryHandleMessages - PUT /api/messages/:id', () => {
-  it('PUT returns 200 when markMessageDone succeeds and no message found (no OTel/notification)', async () => {
-    mockMarkMessageDone.mockReturnValueOnce(true)
+  it('PUT returns 200 when closeOpenMessage succeeds and no message found (no OTel/notification)', async () => {
+    mockCloseOpenMessage.mockReturnValueOnce(true)
     mockGetAgentMessage.mockReturnValueOnce(null)
     const { ctx, out } = makeCtx('PUT', '/api/messages/42', { status: 'done', result: 'completed ok' })
     const handled = await tryHandleMessages(ctx)
@@ -93,8 +91,8 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
     expect(out.body.ok).toBe(true)
   })
 
-  it('PUT returns 404 when markMessageFailed returns false (message not found)', async () => {
-    mockMarkMessageFailed.mockReturnValueOnce(false)
+  it('PUT returns 404 when closeOpenMessage returns false (message not found)', async () => {
+    mockCloseOpenMessage.mockReturnValueOnce(false)
     const { ctx, out } = makeCtx('PUT', '/api/messages/999', { status: 'failed' })
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
@@ -102,7 +100,7 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
   })
 
   it('PUT with done status closes OTel span when trace_id and span_id present', async () => {
-    mockMarkMessageDone.mockReturnValueOnce(true)
+    mockCloseOpenMessage.mockReturnValueOnce(true)
     mockGetAgentMessage.mockReturnValueOnce({
       id: 42,
       from_agent: 'agent-d',
@@ -118,7 +116,7 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
   })
 
   it('PUT with done status sends reverse notification when from != to and no Eredmeny prefix', async () => {
-    mockMarkMessageDone.mockReturnValueOnce(true)
+    mockCloseOpenMessage.mockReturnValueOnce(true)
     mockGetAgentMessage.mockReturnValueOnce({
       id: 77,
       from_agent: 'agent-d',
@@ -138,7 +136,7 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
   })
 
   it('PUT skips reverse notification when content starts with [Eredmeny]', async () => {
-    mockMarkMessageDone.mockReturnValueOnce(true)
+    mockCloseOpenMessage.mockReturnValueOnce(true)
     mockGetAgentMessage.mockReturnValueOnce({
       id: 88,
       from_agent: 'agent-d',
