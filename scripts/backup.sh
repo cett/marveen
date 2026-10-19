@@ -7,11 +7,12 @@
 #   repo/   -> extract under the project root (this repo)
 #     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
 #       (memories, kanban, artifacts, artifacts_fts*, vec_artifacts* tables)
-#     store/.dashboard-token   (dashboard bearer)
 #     NOT in the archive, on purpose: the per-agent tokens (agents/*/.agent-token, the main agent's
-#     .agent-token in the project root) and store/.operator-token. They are re-issuable and a backup
-#     does not need them. After a restore run `npm run agent-tokens -- issue`,
-#     `npm run agent-tokens -- issue-operator` and `npm run agent-tokens -- check`; scripts/doctor.sh
+#     .agent-token in the project root), store/.operator-token and the shared dashboard token
+#     (store/.dashboard-token). They are re-issuable and a backup does not need them; the shared one
+#     must not be here at all, because a restored copy would bring a rotated-away token back to life.
+#     After a restore run `npm run agent-tokens -- issue`, `npm run agent-tokens -- issue-operator`,
+#     `npm run agent-tokens -- rotate-shared` and `npm run agent-tokens -- check`; scripts/doctor.sh
 #     reports a missing or stale one.
 #     store/vault.json         (ENCRYPTED secret vault; the key is NOT in this archive)
 #     .env                     (project root secrets)
@@ -110,7 +111,6 @@ add_if() {
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
-add_if "${REPOLIST}" "${REPO_ROOT}" store/.dashboard-token
 add_if "${REPOLIST}" "${REPO_ROOT}" store/vault.json
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json

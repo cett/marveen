@@ -76,7 +76,7 @@ echo "verify-restore.sh token checks"
 R="$(new_repo clean 1000)"; A="$(make_archive clean 1000)"
 run_verify "$R" "$A"
 [ "$RC" -eq 0 ] && pass "clean archive: exit 0" || { fail "clean archive: exit $RC"; echo "$OUT"; }
-grep -q "no agent or operator token file inside the archive" <<<"$OUT" && pass "clean archive: token-file check passes" || fail "clean archive: no token-file pass line"
+grep -q "no agent, operator or shared dashboard token file inside the archive" <<<"$OUT" && pass "clean archive: token-file check passes" || fail "clean archive: no token-file pass line"
 grep -q "the archive's shared token is not older than the live one" <<<"$OUT" && pass "equal age: no resurrection warning" || fail "equal age: expected the not-older pass line"
 ! grep -q "WARN\] the archive predates" <<<"$OUT" && pass "equal age: no WARN" || fail "equal age: unexpected WARN"
 grep -q "agent-tokens -- issue-operator" <<<"$OUT" && grep -q "BEFORE the dashboard and the agents start" <<<"$OUT" && pass "the output ends with the token steps" || fail "token steps missing from the output"
@@ -90,7 +90,7 @@ esac
 R="$(new_repo agenttok 1000)"; A="$(make_archive agenttok 1000 "agents/alpha/.agent-token")"
 run_verify "$R" "$A"
 [ "$RC" -eq 1 ] && pass "agent token file in the archive: exit 1" || fail "agent token file in the archive: exit $RC"
-grep -q "\[FAIL\] an agent or operator token file is INSIDE the archive" <<<"$OUT" && pass "agent token file: FAIL line names the problem" || fail "agent token file: no FAIL line"
+grep -q "\[FAIL\] an agent, operator or shared dashboard token file is INSIDE the archive" <<<"$OUT" && pass "agent token file: FAIL line names the problem" || fail "agent token file: no FAIL line"
 
 # --- the main agent's root token file ---
 R="$(new_repo roottok 1000)"; A="$(make_archive roottok 1000 ".agent-token")"
@@ -101,6 +101,13 @@ run_verify "$R" "$A"
 R="$(new_repo operatortok 1000)"; A="$(make_archive operatortok 1000 "store/.operator-token")"
 run_verify "$R" "$A"
 [ "$RC" -eq 1 ] && pass "operator token file in the archive: exit 1" || fail "operator token file in the archive: exit $RC"
+
+# --- the shared dashboard token file: no longer part of a backup, so one inside is a failure ---
+R="$(new_repo sharedtok 1000)"; A="$(make_archive sharedtok 1000 "store/.dashboard-token")"
+run_verify "$R" "$A"
+[ "$RC" -eq 1 ] && pass "shared dashboard token file in the archive: exit 1" || fail "shared dashboard token file in the archive: exit $RC"
+grep -q "shared dashboard token file is INSIDE the archive" <<<"$OUT" && pass "shared token file: FAIL line names the problem" || fail "shared token file: no FAIL line"
+grep -q "npm run agent-tokens -- rotate-shared" <<<"$OUT" && pass "the restore steps name rotate-shared" || fail "restore steps lack rotate-shared"
 
 # --- decoys that are NOT token files must not trip the check ---
 R="$(new_repo decoy 1000)"; A="$(make_archive decoy 1000 "agents/alpha/agent-token-notes.md")"
