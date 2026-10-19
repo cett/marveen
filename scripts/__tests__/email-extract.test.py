@@ -818,5 +818,172 @@ class GmailSendFields(unittest.TestCase):
                     E.gmail_send_fields(args, d)
 
 
+class OfficialSenderIntent(unittest.TestCase):
+    """command_is_official_sender(): the gate marks its reservation for the call that is gmail-send.py and nothing else.
+    Fail closed: any doubt (a second mail command, a wrapper, a lookalike name, unreadable text) is False, and a False
+    only means the reservation stays the gate's, so the worst a miss costs is a refused retry, never a second mail."""
+    ARGS = " --to a@example.test --subject S --body B"
+    S = E.OFFICIAL_SENDER_PATH   # THIS installation's gmail-send.py (real path)
+    S_DIR = os.path.dirname(S)
+
+    def test_exactly_one_gmail_send_call_is_the_sender(self):
+        for cmd in ("python3 " + self.S + self.ARGS,
+                    "cd /x && python3 " + self.S + self.ARGS,
+                    "python3 " + self.S + self.ARGS + " | tee out",
+                    self.S + self.ARGS):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_a_relative_script_is_judged_against_the_calls_working_directory(self):
+        root = os.path.dirname(self.S_DIR)
+        for cmd, cwd in (("python3 scripts/gmail-send.py" + self.ARGS, root),
+                         ("python3 gmail-send.py" + self.ARGS, self.S_DIR),
+                         ("python3 ../gmail-send.py" + self.ARGS, os.path.join(self.S_DIR, "hooks"))):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_is_official_sender(cmd, cwd))
+
+    def test_a_relative_script_with_no_known_directory_is_not_the_sender(self):
+        # without the cwd (or after a cd, which moves it) the word cannot be tied to the real file: fail closed
+        root = os.path.dirname(self.S_DIR)
+        for cmd, cwd in (("python3 scripts/gmail-send.py" + self.ARGS, None),
+                         ("python3 gmail-send.py" + self.ARGS, ""),
+                         ("python3 gmail-send.py" + self.ARGS, "relative/dir"),
+                         ("cd /elsewhere && python3 scripts/gmail-send.py" + self.ARGS, root),
+                         ("python3 gmail-send.py" + self.ARGS, root)):   # root/gmail-send.py is not the sender
+            with self.subTest(cmd=cmd, cwd=cwd):
+                self.assertFalse(E.command_is_official_sender(cmd, cwd))
+
+    def test_a_nested_shell_keeps_what_the_outer_call_already_did(self):
+        # `cd` before `bash -c`: the relative path inside is not the hook's cwd any more
+        root = os.path.dirname(self.S_DIR)
+        for cmd in ("cd /elsewhere && bash -c 'python3 scripts/gmail-send.py" + self.ARGS + "'",
+                    "cd /elsewhere && sh -c \"python3 scripts/gmail-send.py" + self.ARGS + "\"",
+                    "pushd /elsewhere >/dev/null; bash -lc 'python3 scripts/gmail-send.py" + self.ARGS + "'"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd, root))
+        # control: no cd, the nested relative path is judged against the cwd and matches
+        self.assertTrue(E.command_is_official_sender("bash -c 'python3 scripts/gmail-send.py" + self.ARGS + "'", root))
+        # a cd INSIDE the nested shell was already caught
+        self.assertFalse(E.command_is_official_sender("bash -c 'cd /elsewhere && python3 scripts/gmail-send.py" + self.ARGS + "'", root))
+
+    def test_a_changed_environment_takes_the_intent_away(self):
+        # PYTHONPATH / PATH / NODE_OPTIONS ... make the official file run attacker code; the reader cannot list every
+        # such variable, so any assignment, `env` or environment-setting command before the sender means "not judged"
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("PYTHONPATH=/x " + s,
+                    "FOO=1 " + s,
+                    "env X=1 " + s,
+                    "env " + s,
+                    "export PYTHONPATH=/x && " + s,
+                    "export PYTHONPATH=/x; " + s,
+                    "PYTHONPATH=/x; " + s,
+                    "declare -x PATH=/x; " + s,
+                    "unset PYTHONHOME && " + s,
+                    "source ./env.sh && " + s,
+                    ". ./env.sh && " + s,
+                    "eval 'true' && " + s,
+                    "export PYTHONPATH=/x && bash -c '" + s + "'",
+                    "bash -c 'PYTHONPATH=/x " + s + "'",
+                    "bash -c 'export PYTHONPATH=/x; " + s + "'"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_a_cd_and_a_pipe_do_not_change_the_environment(self):
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("cd /x && " + s, s + " | tee out", s + " > out.log 2>&1", "echo hi; " + s):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_a_copy_of_the_script_at_another_path_is_not_the_sender(self):
+        # same file name, other file: it may do anything, so the gate's reservation must not be marked adoptable for it
+        with tempfile.TemporaryDirectory() as d:
+            copy = os.path.join(d, "gmail-send.py")
+            with open(self.S, "rb") as src, open(copy, "wb") as dst:
+                dst.write(src.read())
+            for cmd, cwd in (("python3 " + copy + self.ARGS, None),
+                             ("python3 /nowhere/scripts/gmail-send.py" + self.ARGS, None),
+                             ("python3 gmail-send.py" + self.ARGS, d),
+                             ("python3 ./gmail-send.py" + self.ARGS, d),
+                             (copy + self.ARGS, None),
+                             ("python3 " + os.path.join(d, "..", os.path.basename(d), "gmail-send.py") + self.ARGS, None)):
+                with self.subTest(cmd=cmd):
+                    self.assertFalse(E.command_is_official_sender(cmd, cwd))
+
+    def test_a_symlink_is_judged_by_where_it_points(self):
+        with tempfile.TemporaryDirectory() as d:
+            to_official = os.path.join(d, "gmail-send.py")
+            os.symlink(self.S, to_official)
+            copy = os.path.join(d, "real-copy.py")
+            with open(self.S, "rb") as src, open(copy, "wb") as dst:
+                dst.write(src.read())
+            to_copy_dir = os.path.join(d, "sub")
+            os.mkdir(to_copy_dir)
+            to_copy = os.path.join(to_copy_dir, "gmail-send.py")
+            os.symlink(copy, to_copy)
+            self.assertTrue(E.command_is_official_sender("python3 " + to_official + self.ARGS))
+            self.assertFalse(E.command_is_official_sender("python3 " + to_copy + self.ARGS))
+
+    def test_the_official_path_can_be_given_explicitly(self):
+        with tempfile.TemporaryDirectory() as d:
+            other = os.path.join(d, "gmail-send.py")
+            open(other, "w").close()
+            self.assertTrue(E.command_is_official_sender("python3 " + other + self.ARGS, None, other))
+            self.assertFalse(E.command_is_official_sender("python3 " + self.S + self.ARGS, None, other))
+
+    def test_a_tilde_script_is_expanded_like_the_shell_does(self):
+        home = os.path.expanduser("~")
+        with tempfile.TemporaryDirectory() as d:
+            other = os.path.join(d, "gmail-send.py")
+            open(other, "w").close()
+            # only a script that really lives under HOME can be spelled with ~; the path is compared after expansion
+            if os.path.commonpath([home, self.S]) == home:
+                tilde = "~" + self.S[len(home):]
+                self.assertTrue(E.command_is_official_sender("python3 " + tilde + self.ARGS))
+            self.assertFalse(E.command_is_official_sender("python3 ~/definitely-not-here/gmail-send.py" + self.ARGS))
+
+    def test_every_other_mail_command_is_not(self):
+        for cmd in ("python3 send.py" + self.ARGS,
+                    "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @r.json",
+                    "msmtp a@example.test",
+                    "sendmail -t"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_a_second_mail_command_in_the_same_call_takes_the_intent_away(self):
+        s = "python3 " + self.S
+        for cmd in (s + self.ARGS + " ; python3 send.py" + self.ARGS,
+                    s + self.ARGS + " ; " + s + self.ARGS,
+                    s + self.ARGS + " && curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @r.json"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_naming_the_script_is_not_running_it(self):
+        for cmd in ("git diff scripts/gmail-send.py", "echo gmail-send.py", "cat scripts/gmail-send.py", "ls",
+                    "python3 not-gmail-send.py" + self.ARGS, "python3 gmail-send.py.bak" + self.ARGS):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_what_cannot_be_read_exactly_is_not_the_sender(self):
+        for cmd in ("python3 " + self.S + " 'unterminated", "$CMD" + self.ARGS, 'bash -c "$X"', "timeout 30 python3 " + self.S + self.ARGS):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_not_a_command_is_not_the_sender(self):
+        for bad in (None, 5, ["python3 gmail-send.py"], {"command": "python3 gmail-send.py"}, b"python3 gmail-send.py", True, ""):
+            with self.subTest(bad=bad):
+                self.assertFalse(E.command_is_official_sender(bad))
+
+    def test_a_reader_bug_reads_as_not_the_sender(self):
+        original = E._find_sends
+
+        def boom(*a, **k):
+            raise RuntimeError("reader bug")
+        E._find_sends = boom
+        try:
+            self.assertFalse(E.command_is_official_sender("python3 " + self.S + self.ARGS))
+        finally:
+            E._find_sends = original
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

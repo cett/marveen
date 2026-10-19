@@ -5,7 +5,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { loadOrCreateClaimSigningKey, signClaim } from '../claim-signature.js'
+import { loadOrCreateClaimSigningKey, signClaim, signUse } from '../claim-signature.js'
 import type { RouteContext } from './types.js'
 
 // Using up an approved email request: POST /api/approvals/:id/consume (the approval is named) and
@@ -22,7 +22,7 @@ const MAX_REF_CHARS = 200
 const MAX_CONSUMER_CHARS = 64
 const SAFE_LABEL = /^[\x20-\x7e]*$/
 
-interface UseBody { content_hash: string; category?: string; ref: string | null; consumer: string | null }
+interface UseBody { content_hash: string; category?: string; ref: string | null; consumer: string | null; mode: 'send' | null }
 
 /** The agent a request acts as: the one its token names. A shared token, a session and a device name none. */
 function principalOf(ctx: RouteContext): string | undefined {
@@ -81,7 +81,22 @@ async function readUseBody(ctx: RouteContext, needCategory: boolean): Promise<Us
   if (ref === undefined) return null
   const consumer = label('consumer', MAX_CONSUMER_CHARS)
   if (consumer === undefined) return null
-  return { content_hash: b['content_hash'], category: needCategory ? (b['category'] as string).trim() : undefined, ref, consumer }
+  // `mode: "send"` is the official sender's claim (it seals the effect and takes over the gate's reservation); the
+  // gate sends no mode. It belongs to the claim call and needs the sender's own ref.
+  const rawMode = b['mode']
+  let mode: 'send' | null = null
+  if (rawMode !== undefined && rawMode !== null) {
+    if (rawMode !== 'send' || !needCategory) {
+      invalid(ctx, 'mode', 'mode must be "send", and only on POST /api/approvals/claim')
+      return null
+    }
+    if (ref === null) {
+      json(ctx.res, { error: 'required', field: 'ref', hint: 'ref is required with mode "send"' }, 400)
+      return null
+    }
+    mode = 'send'
+  }
+  return { content_hash: b['content_hash'], category: needCategory ? (b['category'] as string).trim() : undefined, ref, consumer, mode }
 }
 
 /** Every use attempt leaves an audit row, refused or not; a failure to write it changes no answer. */
@@ -90,7 +105,7 @@ function auditUse(principal: string, via: 'id' | 'claim', outcome: ConsumeOutcom
     writeAgentAuditLog({
       agent_id: principal, entity: 'approval', action: 'consume', entity_id: id ?? (outcome.approval ? outcome.approval.id : undefined),
       detail: {
-        via, outcome: outcome.ok ? (outcome.replayed ? 'replayed' : 'consumed') : outcome.reason,
+        via, outcome: outcome.ok ? (outcome.replayed ? 'replayed' : 'adopted' in outcome && outcome.adopted ? 'adopted' : 'consumed') : outcome.reason,
         hash_prefix: hash.slice(0, 12),
       },
     })
@@ -129,7 +144,7 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
   const common = { content_hash: body.content_hash, principal, tenant_id: tenantOf(ctx), window_s: APPROVAL_CONSUME_WINDOW_S, ref: body.ref, consumer: body.consumer }
   const outcome = id !== null
     ? consumeApproval({ ...common, id })
-    : claimApproval({ ...common, category: body.category as string })
+    : claimApproval({ ...common, category: body.category as string, ...(body.mode === 'send' ? { mode: 'send' as const } : {}) })
   auditUse(principal, id !== null ? 'id' : 'claim', outcome, id ?? undefined, body.content_hash)
 
   if (outcome.ok) {
@@ -137,6 +152,15 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
     const a = outcome.approval
     // The signed values are the stored ones, so a replayed answer carries the same signature as the first.
     if (typeof a.consumed_at !== 'number' || typeof a.content_hash !== 'string') return signingUnavailable(ctx)
+    if (body.mode === 'send') {
+      // The sender's answer is a different, versioned signature (v2) over ITS ref and the moment it sealed the use.
+      if (typeof a.used_at !== 'number' || typeof a.used_ref !== 'string') return signingUnavailable(ctx)
+      const sig = signUse({
+        content_hash: a.content_hash, category: a.category, agent_id: a.agent_id, ref: a.used_ref, consumed_at: a.consumed_at, used_at: a.used_at,
+      }, signingKey)
+      json(ctx.res, { ok: true, replayed: outcome.replayed, adopted: 'adopted' in outcome && outcome.adopted === true, window_s: APPROVAL_CONSUME_WINDOW_S, approval: a, sig })
+      return true
+    }
     const sig = signClaim({
       content_hash: a.content_hash, category: a.category, agent_id: a.agent_id, ref: a.consumed_ref ?? null, consumed_at: a.consumed_at,
     }, signingKey)
