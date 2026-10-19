@@ -20,7 +20,13 @@ Blocking (FAIL):
   G2  agent_id_mismatch / foreign_row_access / missing_tenant_context / shared_agent_memories_no_tenant
       rows of any kind (no exceptions: the main agent is by construction never their caller)
 Reported but not blocking: fleet_skill_write_denied (each row to be explained: a delegation that was
-skipped), unscoped_read (informational: the RLS context is a different topic).
+skipped), unscoped_read (informational: the RLS context is a different topic), shared_token_refused
+(after the rotation: a process that still holds the old token; its 401 is unchanged, the rows name the
+straggler for the 7-day follow-up).
+
+No actor is excused on the shared token: the main agent and the dashboard's own page both hold their
+own tokens now, so a shared_token_use row of any caller blocks. The one exception is the gate's own
+canary (E3).
 
 Inconclusive (exit 2) unless satisfied:
   W   the window is at least 8 days
@@ -73,37 +79,22 @@ BLOCKING_ALWAYS = (
 )
 EXPLAIN = "fleet_skill_write_denied"
 INFO = "unscoped_read"
-CATEGORIES = (SHARED,) + BLOCKING_ALWAYS + (EXPLAIN, INFO)
+REFUSED = "shared_token_refused"  # the old shared token knocked AFTER the rotation; reported for the 7-day follow-up
+CATEGORIES = (SHARED,) + BLOCKING_ALWAYS + (EXPLAIN, INFO, REFUSED)
 MARKERS = ("_overflow", "_invalid")
 
 
 # --- the exceptions to G1: ONE place, each with its reason and when it should go -------------------
 # A row of shared_token_use is excused by the first entry whose match() accepts it. Nothing else is.
-def _is_main_self_declared(row, ctx):
-    return bool(ctx["main_agent"]) and row.get("caller") == ctx["main_agent"] and row.get("caller_source") == "self_declared"
-
-
-def _is_enrolled_browser(row, ctx):
-    return row.get("client") == "browser" and not row.get("caller")
-
-
+# E1 (the main agent on its own authority) and E2 (an enrolled browser with no caller) are gone: they
+# expired with the shared-token retirement (the three resolvers have no shared fallback any more and
+# every browser holds its own enrolled token), so a main-agent or browser row on the shared token now
+# blocks like any other.
 def _is_canary(row, ctx):
     return row.get("caller") == CANARY
 
 
 EXCEPTIONS = (
-    {
-        "id": "E1",
-        "reason": "the main agent keeps using the shared token on its own authority (its use stays in scope of the rotation work; the trend is followed, not blocking)",
-        "expires": "when the rotation removes the shared token from the main agent",
-        "match": _is_main_self_declared,
-    },
-    {
-        "id": "E2",
-        "reason": "a browser enrolled with the shared token and no caller (the dashboard's own page)",
-        "expires": "remove once no enrolled browser holds the shared token (browser enrollment gives each browser its own token)",
-        "match": _is_enrolled_browser,
-    },
     {
         "id": "E3",
         "reason": "this gate's own canary call",
@@ -218,6 +209,7 @@ def evaluate(rows_by_category, truncated, canary, schedules, args, today, main_a
         "excused": excused,
         "explain": rows_by_category.get(EXPLAIN, []),
         "info": rows_by_category.get(INFO, []),
+        "refused": rows_by_category.get(REFUSED, []),
         "reasons": reasons,
     }
 
@@ -341,6 +333,10 @@ def render(result):
     if result["info"]:
         out.append("")
         out.append("unscoped_read (informational, not part of this gate): %d row(s)" % len(result["info"]))
+    if result["refused"]:
+        out.append("")
+        out.append("shared_token_refused (reported, not blocking: a straggler still holds the rotated-away token): %d row(s)" % len(result["refused"]))
+        out.extend(_row_line(r) for r in result["refused"])
     if result["reasons"]:
         out.append("")
         out.append("NOT CONCLUSIVE because:")
