@@ -442,3 +442,106 @@ describe('the signature on a used-up answer', () => {
     expect((await claim(hash, SHARED)).status).toBe(403)
   })
 })
+
+// The sender's side of the two phases (claim mode `send`): it adopts the gate's reservation and seals the use, and
+// its answer carries a DIFFERENT signature (v2, over the sender's own ref and used_at). The expected values are
+// recomputed here with node:crypto from the documented texts, not with the helpers under test.
+describe('POST /api/approvals/claim with mode send', () => {
+  const keyBytes = () => Buffer.from(readFileSync(join(flags.storeDir, '.claim-signing-key'), 'utf-8').trim(), 'hex')
+  const hmac = (text: string) => createHmac('sha256', keyBytes()).update(text).digest('hex')
+  const v1 = (a: Record<string, any>) => ['v1', a.content_hash, a.category, a.agent_id, a.consumed_ref ?? '', String(a.consumed_at)].join('|')
+  const v2 = (a: Record<string, any>) => ['v2', a.content_hash, a.category, a.agent_id, a.used_ref, String(a.consumed_at), String(a.used_at)].join('|')
+  const gateClaim = (hash: string, ref = 'gate-send-1') => claim(hash, MAIN, { ref, consumer: 'email-approval-gate' })
+  const sendClaim = (hash: string, ref = 'send-1', caller: Caller = MAIN) => claim(hash, caller, { ref, consumer: 'gmail-send', mode: 'send' })
+
+  async function reserved() {
+    const { id, hash } = await ask()
+    approveByPerson(id)
+    const gate = await gateClaim(hash)
+    expect(gate.status).toBe(200)
+    return { id, hash, gate }
+  }
+
+  it('adopts the gate\'s reservation: one approval, adopted:true, a v2 signature over the sender\'s own ref', async () => {
+    const { id, hash, gate } = await reserved()
+    const out = await sendClaim(hash, 'send-1')
+    expect(out.status).toBe(200)
+    expect(out.body).toMatchObject({ ok: true, replayed: false, adopted: true, window_s: APPROVAL_CONSUME_WINDOW_S })
+    const a = out.body.approval
+    expect(a).toMatchObject({ id, consumed_ref: 'gate-send-1', used_ref: 'send-1' })
+    expect(a.used_at).toEqual(expect.any(Number))
+    expect(v2(a)).toBe(`v2|${hash}|email_send|main-agent|send-1|${a.consumed_at}|${a.used_at}`)
+    expect(out.body.sig).toBe(hmac(v2(a)))
+    // the gate's answer and the sender's answer are not interchangeable
+    expect(out.body.sig).not.toBe(gate.body.sig)
+    expect(out.body.sig).not.toBe(hmac(v1(a)))
+    expect(gate.body.sig).toBe(hmac(v1(gate.body.approval)))
+    expect(listApprovalEvents(id).map((e) => e.event)).toEqual(['consumed', 'used'])
+    expect(auditRows().map((r) => JSON.parse(r.detail).outcome)).toEqual(['consumed', 'adopted'])
+  })
+
+  it('a second sender run is 409 already_used, and the sender\'s retry with its own ref is a replay with the same signature', async () => {
+    const { hash } = await reserved()
+    const first = await sendClaim(hash, 'send-1')
+    const again = await sendClaim(hash, 'send-2')
+    expect(again.status).toBe(409)
+    expect(again.body).toMatchObject({ error: 'conflict', reason: 'already_used' })
+    expect(again.body.sig).toBeUndefined()
+    const retry = await sendClaim(hash, 'send-1')
+    expect(retry.status).toBe(200)
+    expect(retry.body).toMatchObject({ ok: true, replayed: true, adopted: true, sig: first.body.sig })
+  })
+
+  it('the gate\'s own path is unchanged: no mode, a v1 signature, no adopted field, and after the seal still already_consumed', async () => {
+    const { hash, gate } = await reserved()
+    expect(gate.body.adopted).toBeUndefined()
+    expect(gate.body.approval.used_at ?? null).toBeNull()
+    await sendClaim(hash, 'send-1')
+    const gate2 = await gateClaim(hash, 'gate-send-2')
+    expect(gate2.status).toBe(409)
+    expect(gate2.body.reason).toBe('already_consumed')
+  })
+
+  it('with no gate in front the sender reserves and seals: adopted:false, still a v2 signature', async () => {
+    const { id, hash } = await ask()
+    approveByPerson(id)
+    const out = await sendClaim(hash, 'send-1')
+    expect(out.status).toBe(200)
+    expect(out.body).toMatchObject({ ok: true, adopted: false })
+    expect(out.body.approval).toMatchObject({ consumed_ref: 'send-1', used_ref: 'send-1' })
+    expect(out.body.sig).toBe(hmac(v2(out.body.approval)))
+  })
+
+  it('needs the sender\'s ref, a known mode, and is a claim-only field', async () => {
+    const { id, hash } = await reserved()
+    const noRef = await claim(hash, MAIN, { mode: 'send' })
+    expect(noRef.status).toBe(400)
+    expect(noRef.body).toMatchObject({ field: 'ref' })
+    for (const bad of ['burn', 'SEND', '', 1, true, ['send']]) {
+      const out = await claim(hash, MAIN, { mode: bad, ref: 'send-1' })
+      expect(out.status, JSON.stringify(bad)).toBe(400)
+      expect(out.body.field).toBe('mode')
+    }
+    const byId = await consume(id, hash, MAIN, { mode: 'send', ref: 'send-1' })
+    expect(byId.status).toBe(400)
+    expect(byId.body.field).toBe('mode')
+    expect(getApproval(id)?.used_at ?? null).toBeNull()
+  })
+
+  it('does not open a way around the human decision: a token-decided request, a missing grant, another agent, a shared token', async () => {
+    const tokenDecided = await ask()
+    expect(resolveApproval(tokenDecided.id, 'approved', 'agent:main-agent', null, 'bearer')).toBe(true)
+    const refused = await sendClaim(tokenDecided.hash)
+    expect(refused.status).toBe(409)
+    expect(refused.body.reason).toBe('not_human_decided')
+    expect(getApproval(tokenDecided.id)).toMatchObject({ consumed_at: null, used_at: null })
+
+    const { hash } = await reserved()
+    const other = await sendClaim(hash, 'send-1', WORKER)
+    expect(other.status).toBe(409)
+    expect(other.body.reason).toBe('none')
+    expect((await sendClaim(hash, 'send-1', SHARED)).status).toBe(403)
+    expect((await sendClaim(hash, 'send-1', MAIN_OTHER_TENANT)).status).toBe(409)
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM approvals WHERE used_at IS NOT NULL').get()).toEqual({ n: 0 })
+  })
+})
