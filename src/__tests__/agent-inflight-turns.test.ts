@@ -1,4 +1,4 @@
-// 5aa63510 W3 / J1: the "turn in flight" journal (migration 0085, db/agent-inflight-turns.ts) and its
+// Interrupted-turn hint: the "turn in flight" journal (migration 0085, db/agent-inflight-turns.ts) and its
 // HTTP surface (routes/agent-inflight-turn.ts). Real in-memory SQLite, no mocks except the agent list.
 // Neutral fixtures only (agent-a/b, tenant-x/y).
 

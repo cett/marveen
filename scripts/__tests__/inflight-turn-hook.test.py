@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5aa63510 W3 / J1: scripts/hooks/inflight-turn.py (begin / end / replay) as a subprocess in a throwaway
+"""Interrupted-turn hint: scripts/hooks/inflight-turn.py (begin / end / replay) as a subprocess in a throwaway
 install layout against a local recording server.
 
 Pins: what each mode sends, that begin and end print NOTHING (UserPromptSubmit stdout becomes prompt

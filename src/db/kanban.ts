@@ -351,7 +351,7 @@ function propagateStatusForParent(parentId: string): void {
     if (parent.parent_id) propagateStatusForParent(parent.parent_id)
   } else if (!allDone && parent.status === 'done') {
     const prev = parent.status
-    // dispatched_at too: a done parent may carry an old stamp (rows from before 9fd1b306), and the stamp
+    // dispatched_at too: a done parent may carry an old stamp (rows from before the clear rule), and the stamp
     // belongs to ONE stay in in_progress, so the revert starts a fresh stay.
     db.prepare("UPDATE kanban_cards SET status='in_progress', dispatched_at=NULL, updated_at=? WHERE id=?").run(now, parent.id)
     db.prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, 'in_progress', 'auto', ?)").run(parent.id, prev, now)

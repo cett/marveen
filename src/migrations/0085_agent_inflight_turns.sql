@@ -1,4 +1,4 @@
--- Migration 0085: agent_inflight_turns, the "turn in flight" journal (5aa63510 W3 / J1).
+-- Migration 0085: agent_inflight_turns, the "turn in flight" journal (interrupted-turn hint).
 --
 -- When a session dies in the middle of a turn (watchdog respawn, crash, host restart) the next
 -- session starts blind: Claude Code does not re-run an interrupted turn, and an inter-agent

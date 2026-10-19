@@ -1,4 +1,4 @@
-// The "turn in flight" journal (5aa63510 W3 / J1, table from migration 0085).
+// The "turn in flight" journal (interrupted-turn hint, table from migration 0085).
 //
 // Claude Code does not re-run a turn that was cut off by a crash, a watchdog respawn or a host
 // restart, so an inter-agent message or channel prompt injected right before the death is lost

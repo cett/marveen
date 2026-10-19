@@ -1,4 +1,4 @@
-// 9fd1b306: the once-only dispatch guard (kanban_cards.dispatched_at) used to be set on the first move into
+// The once-only dispatch guard (kanban_cards.dispatched_at) used to be set on the first move into
 // in_progress and never cleared, so a card pulled out of in_progress and moved back in did not wake its
 // assignee again. The guard now belongs to ONE stay in in_progress: every write that leaves in_progress
 // clears it (move on both branches, full-card update, parent auto-status, tenant-scoped update), a write

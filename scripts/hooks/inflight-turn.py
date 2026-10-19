@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interrupted-turn hint (5aa63510 W3 / J1): one thin hook, three modes.
+"""Interrupted-turn hint: one thin hook, three modes.
 
   inflight-turn.py begin    UserPromptSubmit: note that a turn started
   inflight-turn.py end      Stop:             the turn finished, drop the note

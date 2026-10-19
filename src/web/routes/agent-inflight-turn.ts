@@ -10,7 +10,7 @@ import { denyForeignAgent } from '../fleet-agent-identity.js'
 import { isRegisteredLedgerAgent } from './conversation-ledger.js'
 import type { RouteContext } from './types.js'
 
-// /api/agent-inflight-turn - the "turn in flight" journal behind the interrupted-turn hooks (5aa63510 W3).
+// /api/agent-inflight-turn - the "turn in flight" journal behind the interrupted-turn hooks.
 //  POST /api/agent-inflight-turn/:agent/begin    <- UserPromptSubmit hook: {prompt_head, prompt_hash}
 //  POST /api/agent-inflight-turn/:agent/end      <- Stop hook: the turn finished, drop the row
 //  GET  /api/agent-inflight-turn/:agent/replay   <- SessionStart hook: ?source=startup|resume|clear, does NOT consume
