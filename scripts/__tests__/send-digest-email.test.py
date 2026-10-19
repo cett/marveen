@@ -16,6 +16,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from email import message_from_bytes
 from email.header import decode_header, make_header
@@ -358,14 +359,27 @@ class TestExceptionStillWorks(unittest.TestCase):
 NOTIFY = "notify-recipient@example.invalid"   # fixture stand-in for the pinned address (the pin is patched to its hash)
 
 
+SIGNATURE = "\n\n--\nFixtureBot, Fixture Owner AI asszisztense"
+TASK = "Task fixture"
+
+
+def _done_at():
+    """A plausible 'done' time: a minute ago, as epoch seconds."""
+    return int(time.time()) - 60
+
+
 def _redirect_done_log(case):
-    """Point the done-notice log at a temp file for one test case (never the repository's store/)."""
+    """Point the done-notice log and the send-rate state at a temp dir for one test case (never the repository's
+    store/), and pin the signature so the template is deterministic."""
     tmp = tempfile.TemporaryDirectory()
     case.addCleanup(tmp.cleanup)
     case.log_path = os.path.join(tmp.name, "done-notice.log")
-    patcher = patch.object(mod, "DONE_NOTICE_LOG", case.log_path)
-    patcher.start()
-    case.addCleanup(patcher.stop)
+    case.state_path = os.path.join(tmp.name, "done-notice-state.json")
+    for patcher in (patch.object(mod, "DONE_NOTICE_LOG", case.log_path),
+                    patch.object(mod, "DONE_NOTICE_STATE", case.state_path),
+                    patch.dict(os.environ, {"BOT_NAME": "FixtureBot", "OWNER_NAME": "Fixture Owner"})):
+        patcher.start()
+        case.addCleanup(patcher.stop)
 
 
 def _pin(address):
@@ -379,11 +393,12 @@ class TestDoneNotificationEntryPoint(unittest.TestCase):
     def setUp(self):
         _redirect_done_log(self)
 
-    def _send(self, recipient, subject="Done card", body="Fixture body", google=None):
+    def _send(self, recipient, task_name=TASK, status="done", done_at=None, google=None):
         google = google or _FakeGoogle()
         with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
             try:
-                result = mod.send_done_notification("fixture-token", recipient, subject, body)
+                result = mod.send_done_notification("fixture-token", recipient, task_name, status,
+                                                    _done_at() if done_at is None else done_at)
             except mod.SelfSendOnly as exc:
                 return exc, google
         return result, google
@@ -415,15 +430,21 @@ class TestDoneNotificationEntryPoint(unittest.TestCase):
                 self.assertEqual(google.sent, [])
                 self.assertEqual(google.urls, [], "refused before any request")
 
-    def test_a_smuggled_header_in_the_subject_is_refused(self):
-        for subject in ("Done\r\nBcc: %s" % OTHER, "Done\nCc: %s" % OTHER, "Done\r\nTo: %s" % OTHER):
-            with self.subTest(subject=subject):
-                try:
-                    result, google = self._send(NOTIFY, subject=subject)
-                except Exception:
-                    continue   # the builder itself refused: fine
-                self.assertIsInstance(result, mod.SelfSendOnly)
-                self.assertEqual(google.sent, [])
+    def test_a_header_smuggled_through_the_task_name_does_not_reach_the_message(self):
+        # the name never reaches a header (the subject is fixed), and its newlines are flattened, so it cannot start a
+        # line of its own in the body either
+        for name in ("Done\r\nBcc: %s" % OTHER, "Done\nCc: %s" % OTHER, "Done\r\nTo: %s" % OTHER):
+            with self.subTest(name=name):
+                result, google = self._send(NOTIFY, task_name=name)
+                self.assertEqual(result, {"id": "msg-fixture-id"})
+                raw = base64.urlsafe_b64decode(google.sent[0]["raw"].encode("ascii"))
+                msg = message_from_bytes(raw)
+                self.assertEqual(msg.get_all("To"), [NOTIFY])
+                for header in ("Cc", "Bcc", "Resent-To", "Reply-To", "From"):
+                    self.assertIsNone(msg[header])
+                self.assertEqual(sorted(k.lower() for k in msg.keys()),
+                                 ["content-transfer-encoding", "content-type", "mime-version", "subject", "to"])
+                self.assertNotIn(OTHER, raw.decode("utf-8", "replace"), "the injected address is gone from the message")
 
     def test_the_pinned_address_does_not_become_an_address_the_self_send_accepts(self):
         # send_via_gmail stays self-only: a message to the pinned outside address is not "own" unless the profile says so
@@ -444,14 +465,15 @@ class TestDoneNotificationEntryPoint(unittest.TestCase):
 
     def test_nothing_outside_the_code_moves_the_pin(self):
         import inspect
-        self.assertEqual(list(inspect.signature(mod.send_done_notification).parameters), ["access_token", "recipient", "subject", "body"])
+        self.assertEqual(list(inspect.signature(mod.send_done_notification).parameters),
+                         ["access_token", "recipient", "task_name", "status", "done_at"])
         keys = ("DONE_NOTIFY_RECIPIENT", "DONE_NOTIFY_TO", "NOTIFY_RECIPIENT", "RECIPIENT", "DIGEST_TO", "MARVEEN_NOTIFY_TO")
         before = mod._DONE_NOTIFY_RECIPIENT_SHA256
         google = _FakeGoogle()
         with patch.dict(os.environ, {k: OTHER for k in keys}, clear=False), patch.object(mod.urllib.request, "urlopen", google), \
              patch.object(mod.sys, "argv", ["send-digest-email.py", "--recipient", OTHER, OTHER]):
             with self.assertRaises(mod.SelfSendOnly):
-                mod.send_done_notification("fixture-token", OTHER, "Done card", "Body")
+                mod.send_done_notification("fixture-token", OTHER, TASK, "done", _done_at())
         self.assertEqual(mod._DONE_NOTIFY_RECIPIENT_SHA256, before)
         self.assertEqual(google.sent, [])
 
@@ -470,12 +492,12 @@ class TestDoneNotificationEntryPoint(unittest.TestCase):
 
 
 class TestDoneNoticeLimits(unittest.TestCase):
-    """What the fixed recipient still lets through: size-capped, plain text, and one log line per send."""
+    """What the fixed recipient still lets through: a fixed template, plain text, and one log line per send."""
 
     def setUp(self):
         _redirect_done_log(self)
 
-    def _send(self, subject="Done card", body="Fixture body", build=None):
+    def _send(self, task_name=TASK, status="done", done_at=None, build=None):
         google = _FakeGoogle()
         patches = [_pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google)]
         if build is not None:
@@ -483,10 +505,19 @@ class TestDoneNoticeLimits(unittest.TestCase):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
+        if os.path.exists(self.state_path):
+            os.unlink(self.state_path)   # the rate limit has its own class; here every send starts with a clean window
         try:
-            return mod.send_done_notification("fixture-token", NOTIFY, subject, body), google
+            return mod.send_done_notification("fixture-token", NOTIFY, task_name, status,
+                                              _done_at() if done_at is None else done_at), google
         except mod.SelfSendOnly as exc:
             return exc, google
+
+    def _sent_message(self, google):
+        """(subject, body) of the one message that went out, decoded."""
+        self.assertEqual(len(google.sent), 1)
+        msg = message_from_bytes(base64.urlsafe_b64decode(google.sent[0]["raw"].encode("ascii")))
+        return str(make_header(decode_header(msg["Subject"]))), msg.get_payload(decode=True).decode("utf-8")
 
     def _log_lines(self):
         if not os.path.exists(self.log_path):
@@ -494,39 +525,162 @@ class TestDoneNoticeLimits(unittest.TestCase):
         with open(self.log_path, encoding="utf-8") as fh:
             return fh.read().splitlines()
 
-    def test_the_body_cap_is_4096_bytes_and_the_edge_passes(self):
-        result, google = self._send(body="a" * 4096)
+    def test_the_message_is_exactly_the_template(self):
+        when = 1_790_000_000
+        result, google = self._send(task_name="Quarterly report", status="done", done_at=when)
         self.assertEqual(result, {"id": "msg-fixture-id"})
-        self.assertEqual(len(google.sent), 1)
+        subject, body = self._sent_message(google)
+        stamp = mod.datetime.fromtimestamp(when).strftime("%Y-%m-%d %H:%M")
+        self.assertEqual(subject, "Feladat st\u00e1tusz: K\u00e9sz")
+        self.assertEqual(body, "Feladat-\u00e9rtes\u00edt\u00e9s\n\nFeladat: Quarterly report\nSt\u00e1tusz: K\u00e9sz\nId\u0151pont: %s%s" % (stamp, SIGNATURE))
 
-    def test_one_byte_more_is_refused_and_nothing_is_sent_or_logged(self):
-        result, google = self._send(body="a" * 4097)
-        self.assertIsInstance(result, mod.SelfSendOnly)
-        self.assertEqual(google.sent, [])
-        self.assertEqual(google.urls, [], "refused before any request")
-        self.assertEqual(self._log_lines(), [])
+    def test_each_allowed_status_has_its_fixed_label(self):
+        labels = {"planned": "Tervezett", "in_progress": "Folyamatban", "waiting": "V\u00e1rakozik", "done": "K\u00e9sz"}
+        for status, label in labels.items():
+            with self.subTest(status=status):
+                result, google = self._send(status=status)
+                self.assertEqual(result, {"id": "msg-fixture-id"})
+                subject, body = self._sent_message(google)
+                self.assertEqual(subject, "Feladat st\u00e1tusz: %s" % label)
+                self.assertIn("St\u00e1tusz: %s\n" % label, body)
 
-    def test_the_body_cap_counts_bytes_not_characters(self):
-        # 2049 two-byte characters are 4098 bytes: under 4096 characters, over 4096 bytes
-        result, google = self._send(body="\u00e9" * 2049)
-        self.assertIsInstance(result, mod.SelfSendOnly)
-        self.assertEqual(google.sent, [])
-        result, google = self._send(body="\u00e9" * 2048)
-        self.assertEqual(result, {"id": "msg-fixture-id"})
-
-    def test_the_subject_cap_is_200_characters(self):
-        result, google = self._send(subject="s" * 200)
-        self.assertEqual(result, {"id": "msg-fixture-id"})
-        result, google = self._send(subject="s" * 201)
-        self.assertIsInstance(result, mod.SelfSendOnly)
-        self.assertEqual(google.sent, [])
-
-    def test_a_subject_or_body_that_is_not_text_is_refused(self):
-        for subject, body in ((None, "b"), ("s", None), (5, "b"), ("s", b"bytes"), (["s"], "b")):
-            with self.subTest(subject=subject, body=body):
-                result, google = self._send(subject=subject, body=body)
+    def test_any_other_status_is_refused_before_anything_is_sent_logged_or_counted(self):
+        for status in ("", "DONE", "done ", "archived", "done\r\nBcc: x", None, 5, ["done"], b"done"):
+            with self.subTest(status=status):
+                result, google = self._send(status=status)
                 self.assertIsInstance(result, mod.SelfSendOnly)
-                self.assertEqual(google.sent, [])
+                self.assertEqual(google.urls, [], "refused before any request")
+        self.assertEqual(self._log_lines(), [])
+        self.assertFalse(os.path.exists(self.state_path), "a refused notice takes no place in the rate window")
+
+    def test_the_time_must_be_a_plausible_epoch_number(self):
+        now = time.time()
+        for bad in ("1800000000", True, False, float("nan"), float("inf"), float("-inf"), -1, 0, 946684799,
+                    now + 86400 + 120, [1], b"1"):
+            with self.subTest(done_at=bad):
+                result, google = self._send(done_at=bad)
+                self.assertIsInstance(result, mod.SelfSendOnly)
+                self.assertEqual(google.urls, [])
+        google = _FakeGoogle()
+        with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
+            with self.assertRaises(mod.SelfSendOnly):
+                mod.send_done_notification("fixture-token", NOTIFY, TASK, "done", None)
+        self.assertEqual(google.urls, [])
+        for good in (946684800, int(now), now - 5.5, now + 3600):
+            with self.subTest(done_at=good):
+                result, _ = self._send(done_at=good)
+                self.assertEqual(result, {"id": "msg-fixture-id"})
+
+    def test_the_task_name_is_reduced_to_letters_digits_spaces_and_a_few_separators(self):
+        cases = {
+            "see https://evil.example/pay?x=1 now": "see https evil example pay x 1 now",
+            "mail me at a@b.example": "mail me at a b example",
+            "<b>bold</b> & <script>": "b bold b script",
+            "Fix: (v2) - a_b, c+d": "Fix (v2) - a_b, c+d",
+            "line1\r\nBcc: x\nline3": "line1 Bcc x line3",
+            "tab\tand   spaces": "tab and spaces",
+            "\u00c1rv\u00edzt\u0171r\u0151 t\u00fck\u00f6rf\u00far\u00f3g\u00e9p 42": "\u00c1rv\u00edzt\u0171r\u0151 t\u00fck\u00f6rf\u00far\u00f3g\u00e9p 42",
+            "100% $5 #7 [x] {y} 'q' \"w\" ~ ^ | ; ! * = \\ /": "100 5 7 x y q w",
+        }
+        for given, expected in cases.items():
+            with self.subTest(given=given):
+                result, google = self._send(task_name=given)
+                self.assertEqual(result, {"id": "msg-fixture-id"})
+                _, body = self._sent_message(google)
+                self.assertEqual(body.splitlines()[2], "Feladat: %s" % expected)
+                for ch in ".:/@?=%&<>\\\r\t":
+                    self.assertNotIn(ch, body.splitlines()[2][len("Feladat: "):], "%r cannot survive in the name" % ch)
+
+    def test_the_task_name_is_cut_at_80_characters(self):
+        result, google = self._send(task_name="n" * 80)
+        _, body = self._sent_message(google)
+        self.assertEqual(body.splitlines()[2], "Feladat: " + "n" * 80)
+        result, google = self._send(task_name="n" * 81)
+        _, body = self._sent_message(google)
+        self.assertEqual(body.splitlines()[2], "Feladat: " + "n" * 80)
+        result, google = self._send(task_name="\u00e9" * 500)
+        _, body = self._sent_message(google)
+        self.assertEqual(body.splitlines()[2], "Feladat: " + "\u00e9" * 80)
+
+    def test_a_long_message_cannot_be_pushed_through_the_name(self):
+        result, google = self._send(task_name=("word " * 5000))
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+        subject, body = self._sent_message(google)
+        self.assertLessEqual(len(body.encode("utf-8")), 400)
+        self.assertLessEqual(len(subject), 40)
+
+    def test_a_name_with_nothing_usable_left_gets_the_untitled_placeholder(self):
+        for given in ("", "   ", "...", "://@", "\r\n"):
+            with self.subTest(given=given):
+                result, google = self._send(task_name=given)
+                self.assertEqual(result, {"id": "msg-fixture-id"})
+                _, body = self._sent_message(google)
+                self.assertEqual(body.splitlines()[2], "Feladat: (n\u00e9vtelen feladat)")
+
+    def _signature_of(self, env, dotenv=None):
+        """The signature line the mail carries when BOT_NAME / OWNER_NAME (and .env) are `env` / `dotenv`."""
+        with patch.dict(os.environ, env, clear=False), patch.object(mod, "_load_dotenv", return_value=dotenv or {}):
+            for key in ("BOT_NAME", "OWNER_NAME"):
+                if key not in env:
+                    os.environ.pop(key, None)
+            result, google = self._send()
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+        _, body = self._sent_message(google)
+        return body
+
+    def test_the_signature_names_are_reduced_like_the_task_name(self):
+        hostile = {"BOT_NAME": "Bot https://e.io/x?y=1\r\nBcc: a@b.io", "OWNER_NAME": "own<script>er"}
+        body = self._signature_of(hostile)
+        self.assertTrue(body.endswith("\n\n--\nBot https e io x y 1 Bcc a b io, own script er AI asszisztense"), body)
+        for ch in ".:/@?=%&<>\\\r\t":
+            self.assertNotIn(ch, body.split("--\n")[-1], "%r cannot survive in the signature" % ch)
+
+    def test_the_signature_names_come_from_dotenv_through_the_same_reduction(self):
+        body = self._signature_of({}, {"BOT_NAME": "Dotenv https://x.example", "OWNER_NAME": "Dot env"})
+        self.assertTrue(body.endswith("\n\n--\nDotenv https x example, Dot env AI asszisztense"), body)
+
+    def test_a_long_signature_name_is_cut_and_the_body_stays_small(self):
+        body = self._signature_of({"BOT_NAME": "b" * 5000, "OWNER_NAME": "é" * 5000})
+        self.assertTrue(body.endswith("\n\n--\n%s, %s AI asszisztense" % ("b" * 40, "é" * 40)), body)
+        self.assertLessEqual(len(body.encode("utf-8")), mod._DONE_NOTICE_MAX_BODY_BYTES)
+
+    def test_a_signature_name_with_nothing_usable_left_falls_back_to_the_generic_one(self):
+        body = self._signature_of({"BOT_NAME": "...://", "OWNER_NAME": "\r\n"})
+        self.assertTrue(body.endswith("\n\n--\nMarveen, Owner AI asszisztense"), body)
+
+    def test_the_worst_case_message_fits_the_body_cap(self):
+        # every variable part at its cap, in the widest characters
+        body = self._signature_of({"BOT_NAME": "\U0001d4d0" * 100, "OWNER_NAME": "\U0001d4d1" * 100})
+        self.assertLessEqual(len(body.encode("utf-8")), mod._DONE_NOTICE_MAX_BODY_BYTES)
+        result, google = self._send(task_name="é" * 500)
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+
+    def test_the_body_cap_is_a_backstop_that_refuses_and_counts_nothing(self):
+        with patch.object(mod, "_DONE_NOTICE_MAX_BODY_BYTES", 60):
+            result, google = self._send()
+        self.assertIsInstance(result, mod.SelfSendOnly)
+        self.assertEqual(google.urls, [])
+        self.assertEqual(self._log_lines(), [])
+        self.assertFalse(os.path.exists(self.state_path))
+
+    def test_a_name_that_is_not_text_is_refused(self):
+        for given in (None, 5, b"bytes", ["x"], {"a": 1}):
+            with self.subTest(given=given):
+                result, google = self._send(task_name=given)
+                self.assertIsInstance(result, mod.SelfSendOnly)
+                self.assertEqual(google.urls, [])
+
+    def test_the_caller_cannot_hand_over_a_message_text(self):
+        # no subject / body parameter exists; the old four-argument call shape is a TypeError, not a mail
+        google = _FakeGoogle()
+        with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
+            with self.assertRaises(TypeError):
+                mod.send_done_notification("fixture-token", NOTIFY, "Subject text", "Body text")
+            with self.assertRaises(TypeError):
+                mod.send_done_notification("fixture-token", NOTIFY, TASK, "done", _done_at(), "extra body")
+            with self.assertRaises(TypeError):
+                mod.send_done_notification("fixture-token", NOTIFY, TASK, "done", _done_at(), body="extra body")
+        self.assertEqual(google.sent, [])
 
     def test_only_plain_text_goes_out(self):
         from email.mime.multipart import MIMEMultipart
@@ -549,17 +703,16 @@ class TestDoneNoticeLimits(unittest.TestCase):
 
     def test_one_line_per_send_with_time_pin_prefix_and_length_but_no_text(self):
         import re
-        body = "Secret-looking fixture body \u00e9"
-        subject = "Subject fixture words"
-        result, _ = self._send(subject=subject, body=body)
+        result, google = self._send(task_name="Secret-looking fixture name \u00e9")
         self.assertEqual(result, {"id": "msg-fixture-id"})
+        subject, body = self._sent_message(google)
         lines = self._log_lines()
         self.assertEqual(len(lines), 1)
         time_part, pin8, length = lines[0].split(" ")
         self.assertRegex(time_part, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
         self.assertEqual(pin8, mod._DONE_NOTIFY_RECIPIENT_SHA256[:8])
         self.assertEqual(int(length), len(body.encode("utf-8")))
-        for forbidden in (body, subject, NOTIFY, "Secret", "fixture"):
+        for forbidden in (body, subject, NOTIFY, "Secret", "fixture", "name"):
             self.assertNotIn(forbidden, lines[0])
         self._send()
         self.assertEqual(len(self._log_lines()), 2, "appended, one line per send")
@@ -568,8 +721,9 @@ class TestDoneNoticeLimits(unittest.TestCase):
         google = _FakeGoogle()
         with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
             with self.assertRaises(mod.SelfSendOnly):
-                mod.send_done_notification("fixture-token", OTHER, "Done card", "Body")
+                mod.send_done_notification("fixture-token", OTHER, TASK, "done", _done_at())
         self.assertEqual(self._log_lines(), [])
+        self.assertFalse(os.path.exists(self.state_path), "a refused recipient takes no place in the rate window")
 
     def test_if_the_trace_cannot_be_written_nothing_is_sent(self):
         # fail closed: no trace, no mail
@@ -577,7 +731,7 @@ class TestDoneNoticeLimits(unittest.TestCase):
             result, google = None, _FakeGoogle()
             with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
                 with self.assertRaises(OSError):
-                    mod.send_done_notification("fixture-token", NOTIFY, "Done card", "Body")
+                    mod.send_done_notification("fixture-token", NOTIFY, TASK, "done", _done_at())
         self.assertEqual(google.sent, [])
 
     def test_the_pin_is_checked_on_the_to_header_the_message_really_carries(self):
@@ -589,6 +743,302 @@ class TestDoneNoticeLimits(unittest.TestCase):
         self.assertEqual(google.sent, [])
 
 
+class TestDoneNoticeRateLimit(unittest.TestCase):
+    """At most 6 notices per rolling hour, state under store/, fail closed when the state cannot be trusted."""
+
+    def setUp(self):
+        _redirect_done_log(self)
+        self.google = _FakeGoogle()
+        for p in (_pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", self.google)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _send(self, name=TASK, status="done"):
+        return mod.send_done_notification("fixture-token", NOTIFY, name, status, _done_at())
+
+    def _at(self, now):
+        """Run the clock at `now` (epoch seconds) for the module under test."""
+        return patch.object(mod.time, "time", return_value=now)
+
+    def _log_lines(self):
+        if not os.path.exists(self.log_path):
+            return []
+        with open(self.log_path, encoding="utf-8") as fh:
+            return fh.read().splitlines()
+
+    def _state(self):
+        with open(self.state_path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _write_state(self, text):
+        with open(self.state_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    # --- the limit -----------------------------------------------------------------------------------------------
+
+    def test_six_notices_go_out_and_the_seventh_is_refused(self):
+        for _ in range(6):
+            self.assertEqual(self._send(), {"id": "msg-fixture-id"})
+        with self.assertRaises(mod.DoneNoticeRateLimited):
+            self._send()
+        self.assertEqual(len(self.google.sent), 6, "the seventh never reached the network")
+        self.assertEqual(len(self._log_lines()), 6, "a refused notice leaves no log line")
+        self.assertEqual(len(self._state()["sent"]), 6, "a refused notice takes no place")
+
+    def test_the_limit_is_not_per_task_or_per_status(self):
+        for i in range(6):
+            self._send(name="Task %d" % i, status=("done", "waiting", "planned")[i % 3])
+        with self.assertRaises(mod.DoneNoticeRateLimited):
+            self._send(name="Task 7", status="in_progress")
+        self.assertEqual(len(self.google.sent), 6)
+
+    def test_the_refusal_is_a_self_send_only_so_nothing_is_sent_under_the_old_handlers_too(self):
+        self.assertTrue(issubclass(mod.DoneNoticeRateLimited, mod.SelfSendOnly))
+        self.assertTrue(issubclass(mod.DoneNoticeStateError, mod.SelfSendOnly))
+
+    def test_the_window_rolls_and_its_edge_is_exact(self):
+        base = time.time()
+        with self._at(base):
+            for _ in range(3):
+                self._send()
+        with self._at(base + 1800):
+            for _ in range(3):
+                self._send()
+            with self.assertRaises(mod.DoneNoticeRateLimited):
+                self._send()
+        with self._at(base + 3599):
+            with self.assertRaises(mod.DoneNoticeRateLimited):
+                self._send()                       # the first three are still inside the hour
+        with self._at(base + 3600):
+            for _ in range(3):
+                self._send()                       # exactly one hour old: aged out
+            with self.assertRaises(mod.DoneNoticeRateLimited):
+                self._send()                       # the 4th: the 3 from base+1800 plus the 3 just sent
+        self.assertEqual(len(self.google.sent), 9)
+
+    def test_after_a_quiet_hour_the_full_allowance_is_back(self):
+        base = time.time()
+        with self._at(base):
+            for _ in range(6):
+                self._send()
+        with self._at(base + 7200):
+            for _ in range(6):
+                self._send()
+            with self.assertRaises(mod.DoneNoticeRateLimited):
+                self._send()
+        self.assertEqual(len(self.google.sent), 12)
+
+    def test_the_place_is_spent_by_the_attempt_not_by_its_success(self):
+        # a POST that fails (or times out after delivery) still used its place: a retry loop cannot exceed the limit
+        failing = MagicMock(side_effect=mod.urllib.error.URLError("fixture network down"))
+        with patch.object(mod.urllib.request, "urlopen", failing):
+            for _ in range(6):
+                with self.assertRaises(mod.urllib.error.URLError):
+                    self._send()
+            with self.assertRaises(mod.DoneNoticeRateLimited):
+                self._send()
+        self.assertEqual(failing.call_count, 6)
+
+    def test_old_entries_are_dropped_when_the_state_is_rewritten(self):
+        now = time.time()
+        self._write_state(json.dumps({"sent": [now - 9999 - i for i in range(100)]}))
+        self._send()
+        self.assertEqual(len(self._state()["sent"]), 1)
+
+    def test_a_missing_state_file_is_a_first_use_and_the_file_is_private_and_atomic(self):
+        self.assertFalse(os.path.exists(self.state_path))
+        self._send()
+        self.assertEqual(oct(os.stat(self.state_path).st_mode & 0o777), oct(0o600))
+        leftovers = [n for n in os.listdir(os.path.dirname(self.state_path)) if ".tmp." in n]
+        self.assertEqual(leftovers, [])
+        data = self._state()
+        self.assertEqual(list(data), ["sent"])
+        self.assertEqual(len(data["sent"]), 1)
+
+    # --- fail closed ---------------------------------------------------------------------------------------------
+
+    def test_an_untrustworthy_state_file_stops_every_send_and_is_left_as_found(self):
+        broken = ("", "   ", "not json", "{", "[]", "null", "5", '"sent"', "{}", '{"sent": "x"}', '{"sent": null}',
+                  '{"sent": [true]}', '{"sent": ["a"]}', '{"sent": [null]}', '{"sent": [NaN]}', '{"sent": [Infinity]}',
+                  '{"sent": [[1]]}', '{"sent": {"a": 1}}')
+        for text in broken:
+            with self.subTest(state=text):
+                self._write_state(text)
+                with self.assertRaises(mod.DoneNoticeStateError):
+                    self._send()
+                with open(self.state_path, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), text, "an unreadable state is not overwritten")
+        self.assertEqual(self.google.sent, [])
+        self.assertEqual(self._log_lines(), [])
+
+    def test_a_state_file_with_invalid_utf8_stops_the_send(self):
+        with open(self.state_path, "wb") as fh:
+            fh.write(b'{"sent": [\xff\xfe]}')
+        with self.assertRaises(mod.DoneNoticeStateError):
+            self._send()
+        self.assertEqual(self.google.sent, [])
+
+    def test_a_state_path_that_is_a_directory_stops_the_send(self):
+        os.mkdir(self.state_path)
+        with self.assertRaises(mod.DoneNoticeStateError):
+            self._send()
+        self.assertEqual(self.google.sent, [])
+
+    def test_a_missing_store_directory_stops_the_send(self):
+        gone = os.path.join(os.path.dirname(self.state_path), "no-such-dir", "done-notice-state.json")
+        with patch.object(mod, "DONE_NOTICE_STATE", gone):
+            with self.assertRaises(mod.DoneNoticeStateError):
+                self._send()
+        self.assertEqual(self.google.sent, [])
+        self.assertEqual(self._log_lines(), [])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores directory permissions")
+    def test_a_store_directory_that_cannot_be_written_stops_the_send(self):
+        directory = os.path.dirname(self.state_path)
+        os.chmod(directory, 0o500)
+        self.addCleanup(os.chmod, directory, 0o700)
+        with self.assertRaises(mod.DoneNoticeStateError):
+            self._send()
+        self.assertEqual(self.google.sent, [])
+
+    def test_a_state_that_cannot_be_replaced_stops_the_send_and_leaves_no_temp_file(self):
+        with patch.object(mod.os, "replace", side_effect=OSError("fixture: rename refused")):
+            with self.assertRaises(mod.DoneNoticeStateError):
+                self._send()
+        self.assertEqual(self.google.sent, [])
+        self.assertEqual(self._log_lines(), [])
+        self.assertEqual([n for n in os.listdir(os.path.dirname(self.state_path)) if ".tmp." in n], [])
+
+    def test_a_state_that_cannot_be_written_at_all_stops_the_send(self):
+        with patch.object(mod.os, "fsync", side_effect=OSError("fixture: disk full")):
+            with self.assertRaises(mod.DoneNoticeStateError):
+                self._send()
+        self.assertEqual(self.google.sent, [])
+        self.assertFalse(os.path.exists(self.state_path), "no half-written state is left behind")
+
+    def test_a_busy_lock_stops_the_send_instead_of_skipping_the_count(self):
+        import fcntl
+        lock = os.open(self.state_path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with patch.object(mod, "_DONE_NOTICE_LOCK_WAIT_SECONDS", 0.2):
+            with self.assertRaises(mod.DoneNoticeStateError):
+                self._send()
+        self.assertEqual(self.google.sent, [])
+        self.assertFalse(os.path.exists(self.state_path))
+
+    def test_a_lock_that_is_released_in_time_lets_the_send_through(self):
+        import fcntl
+        import threading
+        lock = os.open(self.state_path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        timer = threading.Timer(0.3, lambda: os.close(lock))   # closing releases the lock
+        timer.start()
+        self.addCleanup(timer.cancel)
+        self.assertEqual(self._send(), {"id": "msg-fixture-id"})
+        timer.join()
+
+    def test_without_file_locking_the_notifier_fails_closed(self):
+        with patch.object(mod, "fcntl", None):
+            with self.assertRaises(mod.DoneNoticeStateError):
+                self._send()
+        self.assertEqual(self.google.sent, [])
+
+    def test_two_runs_at_once_cannot_both_take_the_last_place(self):
+        import threading
+        outcomes = []
+        barrier = threading.Barrier(12)
+
+        def worker():
+            barrier.wait()
+            try:
+                mod._reserve_done_notice_slot()
+                outcomes.append("ok")
+            except mod.DoneNoticeRateLimited:
+                outcomes.append("limited")
+            except Exception as exc:  # pragma: no cover - would fail the assertion below
+                outcomes.append(repr(exc))
+
+        threads = [threading.Thread(target=worker) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(outcomes), ["limited"] * 6 + ["ok"] * 6)
+        self.assertEqual(len(self._state()["sent"]), 6)
+
+    # --- planted files -------------------------------------------------------------------------------------------
+
+    def _victim(self):
+        path = os.path.join(os.path.dirname(self.state_path), "victim.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("victim-original")
+        return path
+
+    def _victim_text(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_a_lock_file_that_is_a_symlink_is_refused_and_not_followed(self):
+        victim = self._victim()
+        os.symlink(victim, self.state_path + ".lock")
+        with self.assertRaises(mod.DoneNoticeStateError):
+            self._send()
+        self.assertEqual(self._victim_text(victim), "victim-original")
+        self.assertEqual(self.google.sent, [])
+
+    def test_a_planted_temp_file_or_symlink_is_never_written_through(self):
+        victim = self._victim()
+        fixed = b"\x00\x01\x02\x03"
+        with patch.object(mod.os, "urandom", return_value=fixed):
+            planted = "%s.tmp.%d.%s" % (self.state_path, os.getpid(), fixed.hex())
+            os.symlink(victim, planted)
+            with self.assertRaises(mod.DoneNoticeStateError):
+                self._send()
+        self.assertEqual(self._victim_text(victim), "victim-original")
+        self.assertEqual(self.google.sent, [])
+
+    def test_the_temp_name_is_unpredictable(self):
+        names = []
+        real_open = os.open
+
+        def spy(path, *args, **kwargs):
+            if ".tmp." in str(path):
+                names.append(str(path))
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(mod.os, "open", side_effect=spy):
+            self._send()
+            self._send()
+        self.assertEqual(len(names), 2)
+        self.assertNotEqual(names[0], names[1], "a fresh random suffix per write")
+
+    def test_a_stale_temp_file_does_not_block_later_sends(self):
+        stale = "%s.tmp.%d.leftover" % (self.state_path, os.getpid())
+        with open(stale, "w", encoding="utf-8") as fh:
+            fh.write("stale")
+        self.assertEqual(self._send(), {"id": "msg-fixture-id"})
+
+    def test_a_state_path_that_is_a_symlink_is_replaced_not_written_through(self):
+        victim = self._victim()
+        os.symlink(victim, self.state_path)
+        with self.assertRaises(mod.DoneNoticeStateError):
+            self._send()      # its content is not the shape we write: fail closed, and nothing is written to the target
+        self.assertEqual(self._victim_text(victim), "victim-original")
+        self.assertEqual(self.google.sent, [])
+
+    # --- a clock that is wrong ----------------------------------------------------------------------------------
+
+    def test_entries_from_the_future_count_as_just_sent_and_do_not_block_for_good(self):
+        base = time.time()
+        self._write_state(json.dumps({"sent": [base + 10 * 365 * 86400] * 6}))
+        with self._at(base):
+            with self.assertRaises(mod.DoneNoticeRateLimited):
+                self._send()                       # they count: a future stamp is no way past the limit
+        with self._at(base + 3601):
+            self.assertEqual(self._send(), {"id": "msg-fixture-id"})   # but they age out like any other
+
+
 class TestDoneNotificationDefenceInDepth(unittest.TestCase):
     def setUp(self):
         _redirect_done_log(self)
@@ -598,7 +1048,7 @@ class TestDoneNotificationDefenceInDepth(unittest.TestCase):
         google = _FakeGoogle()
         with _pin(NOTIFY), patch.object(mod, "build_raw_mime", return_value=evil), patch.object(mod.urllib.request, "urlopen", google):
             with self.assertRaises(mod.SelfSendOnly):
-                mod.send_done_notification("fixture-token", NOTIFY, "Done card", "Body")
+                mod.send_done_notification("fixture-token", NOTIFY, TASK, "done", _done_at())
         self.assertEqual(google.sent, [])
 
     def test_a_freshly_loaded_module_takes_its_pin_from_the_code_not_from_the_environment(self):
@@ -613,7 +1063,7 @@ class TestDoneNotificationDefenceInDepth(unittest.TestCase):
         google = _FakeGoogle()
         with patch.object(fresh.urllib.request, "urlopen", google):
             with self.assertRaises(fresh.SelfSendOnly):
-                fresh.send_done_notification("fixture-token", OTHER, "Done card", "Body")
+                fresh.send_done_notification("fixture-token", OTHER, TASK, "done", _done_at())
         self.assertEqual(google.sent, [])
 
 

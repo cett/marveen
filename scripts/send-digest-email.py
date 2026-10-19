@@ -22,7 +22,11 @@ One more, named entry point exists for ONE other recipient: send_done_notificati
 automatic done-card notifier (a heartbeat task outside this repository). It accepts exactly one fixed outside
 address, pinned below as a SHA-256 constant (so no personal address lives in this public file), with the same strict
 header check; any other address is refused. It takes no configuration from the environment, argv or a file, and a
-new address can only enter through a code change and review.
+new address can only enter through a code change and review. The caller does not write the message: it hands over a
+task name, a status (one of a fixed set) and a time, and the text comes from a template in this file (the name is
+reduced to letters, digits, spaces and a few separators, so no link or free-form sentence fits through it). It is also
+rate-limited (at most 6 notices per rolling hour, state under store/) and fails closed: if that state cannot be read
+or written, nothing is sent.
 
 The refresh_token / access_token are never printed; only one of the fixed
 outcome strings below goes to stdout.
@@ -39,8 +43,11 @@ import email.policy
 import hashlib
 import hmac
 import json
+import math
 import os
+import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -50,6 +57,11 @@ import agent_token  # noqa: E402
 from datetime import datetime
 from email.header import Header
 from email.mime.text import MIMEText
+
+try:
+    import fcntl  # POSIX only: the done-notice rate limit needs it; without it the notifier fails closed
+except ImportError:  # pragma: no cover - not reachable on macOS / Linux
+    fcntl = None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -216,14 +228,44 @@ def send_via_gmail(access_token, raw_mime):
 _DONE_NOTIFY_RECIPIENT_SHA256 = "bf6d1ab3e7185314bfca9ecaf9a3785f9b26401a95bd6a9d383209ab82754bf3"
 
 
-# Size limits of a done notice: the recipient is fixed, so what is left to bound is how much a (possibly injected) caller
-# can push out through it. The body is counted in UTF-8 bytes, the subject in characters.
-_DONE_NOTICE_MAX_BODY_BYTES = 4096
-_DONE_NOTICE_MAX_SUBJECT_CHARS = 200
+# The recipient is fixed, so what is left to bound is how much a (possibly injected) caller can push out through it.
+# The caller never supplies the text: the message is this template, filled from three values. The status is one of a
+# fixed set (the label is ours), the time is a number we format, and the task name is reduced to the characters below.
+# No "." ":" "/" "@" "?" "=" "%" "&" or "<>" survives, so a link, an address or markup cannot be written with it, and
+# no newline survives, so it cannot add a header or a line of its own.
+_DONE_NOTICE_STATUS_LABELS = {
+    "planned": "Tervezett",
+    "in_progress": "Folyamatban",
+    "waiting": "Várakozik",
+    "done": "Kész",
+}
+_DONE_NOTICE_MAX_NAME_CHARS = 80
+_DONE_NOTICE_MAX_SIGNATURE_NAME_CHARS = 40
+_DONE_NOTICE_MAX_BODY_BYTES = 1024   # the template with every part at its cap is well under this (UTF-8 bytes)
+_DONE_NOTICE_NAME_UNTITLED = "(névtelen feladat)"
+_DONE_NOTICE_NAME_DISALLOWED = re.compile(r"[^\w \-(),+]")   # \w: Unicode letters, digits and "_"
+_DONE_NOTICE_MIN_EPOCH = 946684800                            # 2000-01-01; anything earlier is not a done time
+_DONE_NOTICE_FUTURE_SLACK_SECONDS = 86400
+
+# Send-rate limit: at most this many notices in any rolling window. The state is a module attribute (not an
+# environment variable) so a test can point it elsewhere; the lock file sits next to it.
+_DONE_NOTICE_MAX_PER_WINDOW = 6
+_DONE_NOTICE_WINDOW_SECONDS = 3600
+_DONE_NOTICE_LOCK_WAIT_SECONDS = 5
+DONE_NOTICE_STATE = os.path.join(REPO_ROOT, "store", "done-notice-state.json")
 
 # One line per attempt that passed every check and is about to be sent: time, first 8 hex characters of the pin hash,
 # body length. Never the text. A module attribute (not an environment variable) so a test can point it elsewhere.
 DONE_NOTICE_LOG = os.path.join(REPO_ROOT, "store", "done-notice.log")
+
+
+class DoneNoticeRateLimited(SelfSendOnly):
+    """The window already holds the maximum number of notices; nothing was sent. Retry after the oldest ages out."""
+
+
+class DoneNoticeStateError(SelfSendOnly):
+    """The send-rate state could not be read, written or locked (or is not what we wrote); nothing was sent.
+    Fail closed: without a trustworthy count there is no limit, so there is no mail."""
 
 
 def _parsed_to(raw_mime):
@@ -243,16 +285,139 @@ def _log_done_notice(body_len):
         fh.write(line)
 
 
-def send_done_notification(access_token, recipient, subject, body):
-    """The named entry point of the done-card notifier: mail `recipient`, which must be the one pinned address, and only
-    it. Builds the message itself, applies the same strict header check as the self-send (exactly one To equal to the
-    recipient, no other recipient-bearing header), then checks the pin against the To value that is actually going into
-    the message. Plain text only, body and subject length-capped, one log line per send. Raises SelfSendOnly (nothing
-    sent) for any other address or an oversized / non-plain message."""
-    if not isinstance(subject, str) or not isinstance(body, str):
-        raise SelfSendOnly("subject and body must be text")
-    if len(subject) > _DONE_NOTICE_MAX_SUBJECT_CHARS or len(body.encode("utf-8")) > _DONE_NOTICE_MAX_BODY_BYTES:
+def _compose_done_notice(task_name, status, done_at):
+    """(subject, body) of a done notice from the fixed template. Raises SelfSendOnly if a value is not usable. The only
+    caller-controlled text is the task name, and only after it has been reduced to _DONE_NOTICE_NAME_DISALLOWED's
+    complement, collapsed to single spaces and cut to _DONE_NOTICE_MAX_NAME_CHARS characters."""
+    if not isinstance(task_name, str):
+        raise SelfSendOnly("the task name must be text")
+    if not isinstance(status, str) or status not in _DONE_NOTICE_STATUS_LABELS:
+        raise SelfSendOnly("the status is not one of the allowed values")
+    if (isinstance(done_at, bool) or not isinstance(done_at, (int, float)) or not math.isfinite(done_at)
+            or done_at < _DONE_NOTICE_MIN_EPOCH or done_at > time.time() + _DONE_NOTICE_FUTURE_SLACK_SECONDS):
+        raise SelfSendOnly("the time must be a plausible epoch timestamp")
+    name = _reduce_notice_text(task_name, _DONE_NOTICE_MAX_NAME_CHARS)
+    label = _DONE_NOTICE_STATUS_LABELS[status]
+    stamp = datetime.fromtimestamp(done_at).strftime("%Y-%m-%d %H:%M")
+    body = "Feladat-értesítés\n\nFeladat: %s\nStátusz: %s\nIdőpont: %s%s" % (
+        name or _DONE_NOTICE_NAME_UNTITLED, label, stamp, _done_notice_signature())
+    # Backstop: every part is already bounded, so this only trips if a bound above is ever loosened by mistake.
+    if len(body.encode("utf-8")) > _DONE_NOTICE_MAX_BODY_BYTES:
         raise SelfSendOnly("the notice is over the size limit")
+    return "Feladat státusz: %s" % label, body
+
+
+def _reduce_notice_text(text, max_chars):
+    """`text` reduced to the characters a done notice may carry (see _DONE_NOTICE_NAME_DISALLOWED), runs of blanks
+    collapsed to one space, cut to `max_chars`."""
+    return " ".join(_DONE_NOTICE_NAME_DISALLOWED.sub(" ", text).split())[:max_chars].strip()
+
+
+def _done_notice_signature():
+    """The signature of a done notice. Same source as build_signature() (BOT_NAME / OWNER_NAME from the environment, then
+    .env, then the generic fallback), but both names go through the same reduction as the task name and a short cap, so
+    neither the environment nor .env can put a link, an address, markup, a line break or a long text into a mail to the
+    fixed outside recipient."""
+    dotenv = _load_dotenv()
+    bot = _reduce_notice_text(os.environ.get("BOT_NAME") or dotenv.get("BOT_NAME") or "Marveen",
+                              _DONE_NOTICE_MAX_SIGNATURE_NAME_CHARS) or "Marveen"
+    owner = _reduce_notice_text(os.environ.get("OWNER_NAME") or dotenv.get("OWNER_NAME") or "Owner",
+                                _DONE_NOTICE_MAX_SIGNATURE_NAME_CHARS) or "Owner"
+    return f"\n\n--\n{bot}, {owner} AI asszisztense"
+
+
+def _read_notice_state(now):
+    """(send times, clamped) from DONE_NOTICE_STATE. Times are clamped to `now`: a time in the future counts as just
+    sent, so it cannot be a way past the limit; `clamped` says one was, so the caller persists the clamped value and the
+    entry ages from now on (otherwise a clock that was set forward and back would block for as long as the stamp lies
+    ahead). A missing file is a first use; a file that exists but is unreadable, empty or not the shape we write is
+    DoneNoticeStateError."""
+    try:
+        with open(DONE_NOTICE_STATE, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        # First use. Known limit, documented in SECURITY.md: the counter is a file, so whoever can delete it as this user
+        # resets it; that user can equally edit this script, so a file cannot be stronger than its permissions. What a
+        # reset buys is bounded anyway: 6 fixed-template notices to the one pinned recipient per window.
+        return [], False
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DoneNoticeStateError("the send-rate state cannot be read") from exc
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise DoneNoticeStateError("the send-rate state is not valid JSON") from exc
+    sent = data.get("sent") if isinstance(data, dict) else None
+    if not isinstance(sent, list) or any(
+            isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) for t in sent):
+        raise DoneNoticeStateError("the send-rate state has an unexpected shape")
+    return [min(float(t), now) for t in sent], any(t > now for t in sent)
+
+
+def _write_notice_state(sent):
+    """Replace DONE_NOTICE_STATE atomically (temp file in the same directory, fsync, rename), 0600."""
+    # O_EXCL on an unpredictable name: a planted file or symlink at the temp path is refused, never written through.
+    tmp = "%s.tmp.%d.%s" % (DONE_NOTICE_STATE, os.getpid(), os.urandom(4).hex())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            os.write(fd, json.dumps({"sent": sent}).encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, DONE_NOTICE_STATE)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise DoneNoticeStateError("the send-rate state cannot be written") from exc
+
+
+def _reserve_done_notice_slot():
+    """Take one place in the rolling window, or raise. Under an exclusive lock (two runs cannot both take the last
+    place): read the state, drop what is older than the window, refuse if the maximum is already in it, else record now
+    and persist BEFORE returning. The place is spent by the attempt, not by its success: a POST that timed out may
+    still have been delivered, so giving the place back could mean a duplicate. Fails closed on any state problem."""
+    if fcntl is None:
+        raise DoneNoticeStateError("no file locking on this platform")
+    try:
+        lock_fd = os.open(DONE_NOTICE_STATE + ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        raise DoneNoticeStateError("the send-rate lock cannot be opened") from exc
+    try:
+        give_up = time.monotonic() + _DONE_NOTICE_LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if time.monotonic() >= give_up:
+                    raise DoneNoticeStateError("the send-rate lock is busy") from exc
+                time.sleep(0.05)
+        now = time.time()
+        sent, clamped = _read_notice_state(now)
+        recent = [t for t in sent if now - t < _DONE_NOTICE_WINDOW_SECONDS]
+        if len(recent) >= _DONE_NOTICE_MAX_PER_WINDOW:
+            if clamped:
+                _write_notice_state(recent)   # pin the clamped stamps so they age out from now, not from the future
+            raise DoneNoticeRateLimited("the done-notice rate limit is reached")
+        recent.append(now)
+        _write_notice_state(recent)
+    finally:
+        os.close(lock_fd)   # closing the descriptor releases the lock
+
+
+def send_done_notification(access_token, recipient, task_name, status, done_at):
+    """The named entry point of the done-card notifier: mail `recipient`, which must be the one pinned address, and only
+    it. The caller supplies no message text: subject and body come from a fixed template filled with the task name
+    (reduced, see _compose_done_notice), the status (one of _DONE_NOTICE_STATUS_LABELS) and the time (epoch seconds).
+    Applies the same strict header check as the self-send (exactly one To equal to the recipient, no other
+    recipient-bearing header), then checks the pin against the To value that is actually going into the message. Plain
+    text only, at most 6 notices per rolling hour (the place is taken only once every check has passed, and the
+    attempt spends it), one log line per send. Raises SelfSendOnly (nothing sent) for any other address, an unusable
+    value or a non-plain message; DoneNoticeRateLimited at the limit; DoneNoticeStateError (both are SelfSendOnly) when
+    the rate state cannot be trusted."""
+    subject, body = _compose_done_notice(task_name, status, done_at)
     given = str(recipient).strip().casefold() if isinstance(recipient, str) else ""
     if not given:
         raise SelfSendOnly("the recipient is not the one address the done-card notifier may mail")
@@ -266,6 +431,7 @@ def send_done_notification(access_token, recipient, subject, body):
     raw = base64.urlsafe_b64decode(raw_mime.encode("ascii") + b"=" * (-len(raw_mime) % 4))
     if email.message_from_bytes(raw, policy=email.policy.default).get_content_type() != "text/plain":
         raise SelfSendOnly("the notice is not plain text")
+    _reserve_done_notice_slot()
     _log_done_notice(len(body.encode("utf-8")))
     return _post_to_gmail(access_token, raw_mime)
 
