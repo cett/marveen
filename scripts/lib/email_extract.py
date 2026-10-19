@@ -1212,6 +1212,10 @@ class _Send:
         self.tainted = tainted
 
 
+# The only commands that may run before the official sender without taking its mark away: they neither change the
+# shell's variables, functions and aliases nor start anything that reads them. Anything else is "not judged".
+_SAFE_BEFORE_SENDER = frozenset(('cd', 'pushd', 'popd', 'echo', 'true', 'false', ':', 'pwd', 'date', 'sleep', 'test', '[', 'ls', 'cat'))
+
 # Commands whose whole job is to change the environment or run other text in this shell.
 _ENV_SETTERS = frozenset(('export', 'declare', 'typeset', 'unset', 'readonly', 'source', '.', 'eval', 'env',
                           # these change what a bare command name runs without touching a variable
@@ -1230,9 +1234,15 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
     sends: List[_Send] = []
     cd_seen = cd_seen_in
     tainted = tainted_in
+    unsafe_before = False
     for cmd in cmds:
         ws = cmd.words
         k = 0
+        # Positive rule instead of a list of shell builtins that change state: once a command that is NOT in
+        # _SAFE_BEFORE_SENDER has run, every later send of this call is tainted (that covers read, printf -v, let,
+        # mapfile, getopts, function definitions, loops ... without having to name them).
+        if unsafe_before:
+            tainted = True
         # assignments, reserved words, simple pass-through wrappers
         while k < len(ws):
             w = ws[k]
@@ -1240,6 +1250,8 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                 tainted = True
                 k += 1
             elif w.text in _RESERVED and not w.quoted:
+                if w.text not in ('!', 'time', '{', '}'):
+                    tainted = True    # if / for / while / case / ...: they run or bind things the reader does not follow
                 k += 1
             elif _basename(w.text) in _PASS_THROUGH and not w.dynamic:
                 if _basename(w.text) == 'env':
@@ -1259,6 +1271,7 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
         if head.dynamic:
             raise UnreadableDynamicExec('the name of a command is not literal')
         name = _basename(head.text)
+        unsafe_before = unsafe_before or name not in _SAFE_BEFORE_SENDER
         if name in ('cd', 'pushd', 'popd'):
             cd_seen = True
             continue
@@ -1894,7 +1907,7 @@ def _interpreter_is_trusted(interp: str) -> bool:
 
 
 # name() { ... } or name() ( ... ): the empty parentheses followed by a body. A bare "fn()" in a mail body is not one.
-_FUNCTION_DEFINITION = re.compile(r'[^\s;&|()<>]\s*\(\s*\)\s*[{(]')
+_FUNCTION_DEFINITION = re.compile(r'[^\s;&|()<>]\s*\(\s*\)\s*(?:[{(]|\[\[|(?:if|while|until|for|case|select)\b)')
 
 
 def command_is_official_sender(command: Any, cwd: Optional[str] = None, official_path: Optional[str] = None) -> bool:

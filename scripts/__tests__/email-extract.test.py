@@ -881,6 +881,37 @@ class OfficialSenderIntent(unittest.TestCase):
                 self.assertFalse(E.command_is_official_sender(cmd))
         self.assertTrue(E.command_is_official_sender(s), "control: the same call with the caller's own PATH")
 
+    def test_only_a_short_list_of_harmless_commands_may_run_before_the_sender(self):
+        # a positive rule: anything not on the list takes the mark away, so the ways to rebind a name or PATH
+        # (read, printf -v, let, mapfile, getopts, loops, function bodies ...) need not be named one by one
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("read PATH <<< /agent/bin; " + s, "printf -v PATH %s /agent/bin; " + s, "let PATH=1; " + s,
+                    "mapfile -t PATH < f; " + s, "getopts a PATH; " + s, "for PATH in /agent/bin; do :; done; " + s,
+                    "while false; do :; done; " + s, "if true; then PATH=/agent/bin; fi; " + s,
+                    "case x in x) PATH=/agent/bin;; esac; " + s, "select PATH in a; do break; done; " + s,
+                    "python3() if true; then /agent/run; fi; " + s, "python3() for i in 1; do :; done; " + s,
+                    "python3() [[ -n x ]]; " + s, "python3 other.py; " + s, "source ./x.sh; " + s,
+                    "bash -c 'read PATH <<< x; " + s + "'", "bash -c 'for p in a; do :; done; " + s + "'",
+                    "other-tool --flag; " + s, "git status && " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        for cmd in ("cd /x && " + s, "echo hi; " + s, "true && " + s, "pwd; date; " + s, "cat f | " + s,
+                    "cd /x && echo start && " + s + " && echo done", "sleep 1; " + s, "test -f x && " + s,
+                    "bash -c 'cd /x && " + s + "'"):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd, os.path.dirname(self.S_DIR)))
+
+    def test_the_function_definition_pattern_on_its_own(self):
+        # the second line of defence (the short list above already refuses these calls): the pattern itself
+        for text in ("f() { :; }", "f () { :; }", "f()\n{ :; }", "f() ( : )", "f() if true; then :; fi", "f() for i in 1; do :; done",
+                     "f() while false; do :; done", "f() until true; do :; done", "f() case x in x) :;; esac", "f() select i in a; do :; done",
+                     "f() [[ -n x ]]", "bash -c 'f() { :; }'"):
+            with self.subTest(text=text):
+                self.assertIsNotNone(E._FUNCTION_DEFINITION.search(text))
+        for text in ("call fn() now (see below)", "(cd x; ls)", "echo $(( 1 + 1 ))", "f(x)", "a ( b )"):
+            with self.subTest(text=text, ok=True):
+                self.assertIsNone(E._FUNCTION_DEFINITION.search(text))
+
     def test_an_interpreter_path_is_trusted_as_typed_never_through_a_symlink(self):
         # a venv-style bin/python3 that points at the real interpreter still starts python with the venv's own
         # site-packages (pyvenv.cfg is found from the path it was started by), so a link in a directory the agent can
