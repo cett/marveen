@@ -2143,6 +2143,15 @@ paths:
       tags: [kanban]
       operationId: moveKanbanCard
       summary: Move a kanban card to a new status
+      description: >-
+        With `expected_status` the move is a compare-and-set: the card moves
+        only if it is still in that status. If it is not, nothing is written
+        (no status change, no history entry, no wake-up message, no parent
+        update, no renumbering of the target column) and the answer is a 409
+        `status_conflict` with `current_status` and `expected_status`. Without
+        it the move is unconditional. A body key that is not listed below is a
+        400 (`invalid_value`, `field` = the key), so a misspelt
+        `expectedStatus` cannot silently turn the guard off.
       requestBody:
         required: true
         content:
@@ -2150,16 +2159,36 @@ paths:
             schema:
               type: object
               required: [status, actor]
+              additionalProperties: false
               properties:
                 status:
                   type: string
-                  enum: [planned, in_progress, waiting, done]
+                  enum: [planned, in_progress, waiting, testing, done]
                 actor:
                   type: string
                   description: Agent id of the mover (required for dispatch logic)
+                sort_order:
+                  type: integer
+                  description: Position in the target column (default 0); ignored when `orderedIds` is sent
+                orderedIds:
+                  type: array
+                  items:
+                    type: string
+                  description: >-
+                    The whole target column in its new order. Every listed card
+                    gets its sort_order rewritten; for a non-admin caller the
+                    list is cut down to cards of its own tenant.
+                expected_status:
+                  type: string
+                  nullable: true
+                  enum: [planned, in_progress, waiting, testing, done]
+                  description: >-
+                    Move only if the card is still in this status (409
+                    `status_conflict` otherwise). Absent or null = unconditional.
             example:
               status: "done"
               actor: "agent-b"
+              expected_status: "in_progress"
       responses:
         "200":
           description: Moved
@@ -2167,8 +2196,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: >-
+            `expected_status` is not a known status, the body is not a JSON
+            object, or it carries a key this endpoint does not know
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
-          description: Card not found
+          description: >-
+            Card not found, or it belongs to another tenant (indistinguishable
+            from a missing id)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            `expected_status` was sent and the card is in another status.
+            Body: `error: status_conflict`, `current_status`,
+            `expected_status`, `hint`. Nothing was changed.
           content:
             application/json:
               schema:

@@ -94,6 +94,12 @@ A kártya részlet-panelén az **Auto-bontás** gomb az AI alfeladatokra osztja 
 
 ---
 
+## Kártya mozgatása API-ból
+
+A `POST /api/kanban/<id>/move` a `status` mezőt várja (opcionálisan `actor`, `sort_order`, `orderedIds`). Az az ágens, amely egy korábbi olvasás alapján dönt, megadhatja az `expected_status` mezőt: a kártya csak akkor mozdul, ha még abban a státuszban van. Ha közben más átrakta (például a tulajdonos visszatette Waiting-be), a hívás `409` választ ad `status_conflict` tokennel, a `current_status` és az `expected_status` mezővel, és semmi sem változik: nincs státuszváltás, nincs előzmény-bejegyzés, nincs ébresztő üzenet, nincs szülő-frissítés. Döntés előtt olvasd újra a kártyát. `expected_status` nélkül a mozgatás feltétel nélküli, mint eddig; a táblán a húzás nem küldi. Az ismeretlen kulcs (például egy elgépelt `expectedStatus`) `400`, így egy elírás nem kapcsolhatja ki csendben az őrt.
+
+---
+
 ## Archiválás és törlés
 
 - **Archiválás** - a kártya eltűnik a táblán, de az adatbázisban megmarad.

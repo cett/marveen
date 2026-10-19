@@ -351,17 +351,29 @@ export function propagateStatus(cardId: string): void {
   propagateStatusForParent(card.parent_id)
 }
 
+// opts.expectedStatus turns the move into a compare-and-set: the UPDATE only matches a card that is
+// still in that status, so a caller that decided from a stale read (an agent finishing a card the owner
+// parked in the meantime) does not overwrite the newer state. false = no row matched, i.e. the card does
+// not exist OR is not in the expected status; the route tells the two apart with a re-read.
 export function moveKanbanCard(
   id: string,
   status: KanbanCard['status'],
   sortOrder: number,
   actor?: string,
-  orderedIds?: string[]
+  orderedIds?: string[],
+  opts?: { expectedStatus?: KanbanCard['status'] }
 ): boolean {
   const now = Math.floor(Date.now() / 1000)
+  const expected = opts?.expectedStatus
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
   const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+  // With a CAS the UPDATE below is what proves the card was in `expected`, while `prev` was read a moment
+  // earlier and can be stale: the audit event names the status the CAS proved.
+  const from = expected ?? prev
+  const sql = expected !== undefined
+    ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=? AND status=?'
+    : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
 
   if (orderedIds && orderedIds.length > 0) {
     // Transactional renumber: status update + full column sort_order renumber in
@@ -369,13 +381,16 @@ export function moveKanbanCard(
     // Only the moved card's updated_at changes (sort_order is presentation-only).
     let changed = false
     db.transaction(() => {
-      changed = db.prepare(
-        'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-      ).run(status, orderedIds.indexOf(id), now, id).changes > 0
-      if (changed && prev !== undefined && prev !== status) {
+      const params: unknown[] = [status, orderedIds.indexOf(id), now, id]
+      if (expected !== undefined) params.push(expected)
+      changed = db.prepare(sql).run(...params).changes > 0
+      // A refused move (no such card, or not in the expected status) must not renumber the column: the
+      // other cards' sort_order would change for a move that never happened.
+      if (!changed) return
+      if (from !== undefined && from !== status) {
         db.prepare(
           'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-        ).run(id, prev, status, actor ?? null, now)
+        ).run(id, from, status, actor ?? null, now)
       }
       const updateOrder = db.prepare('UPDATE kanban_cards SET sort_order=? WHERE id=?')
       orderedIds.forEach((cardId, i) => updateOrder.run(i, cardId))
@@ -385,13 +400,13 @@ export function moveKanbanCard(
 
   // Legacy path: single-card sort_order update (used by schedule-runner and
   // callers that don't supply the full column order).
-  const changed = db.prepare(
-    'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-  ).run(status, sortOrder, now, id).changes > 0
-  if (changed && prev !== undefined && prev !== status) {
+  const params: unknown[] = [status, sortOrder, now, id]
+  if (expected !== undefined) params.push(expected)
+  const changed = db.prepare(sql).run(...params).changes > 0
+  if (changed && from !== undefined && from !== status) {
     db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now)
+    ).run(id, from, status, actor ?? null, now)
   }
   return changed
 }
