@@ -130,6 +130,10 @@ export interface Approval {
   consumed_at?: number | null
   consumed_by?: string | null
   consumed_ref?: string | null
+  /** Epoch seconds the official sender sealed the effect (migration 0084); NULL = reserved only, or not used. */
+  used_at?: number | null
+  /** The sender's own reference of that use; the same ref again inside the replay window is a retry. */
+  used_ref?: string | null
 }
 
 export function createApproval(params: {
@@ -213,7 +217,7 @@ export type ApprovalResolvedVia = 'dashboard_session' | 'bearer'
  * The kinds of approval_events rows. The table has no CHECK on `event` (widening one needs a table
  * rebuild, see migration 0081), so this union is what keeps the writers honest.
  */
-export type ApprovalEventKind = 'consumed' | 'consume_refused' | 'bearer_denied' | 'owner_unreached' | 'created_deduplicated' | 'notify_suppressed'
+export type ApprovalEventKind = 'consumed' | 'used' | 'consume_refused' | 'bearer_denied' | 'owner_unreached' | 'created_deduplicated' | 'notify_suppressed'
 
 /**
  * Append one row to the approval journal. The journal is for diagnosis: nothing branches on it, and a
@@ -281,14 +285,14 @@ export type ConsumeRefusal =
   | 'not_human_decided'
 
 /** Why a claim by hash found nothing to use. `pending` and `none` mean there is nothing decided yet. */
-export type ClaimRefusal = 'wrong_category' | 'hash_mismatch' | 'pending' | 'none' | 'rejected' | 'expired' | 'already_consumed' | 'not_human_decided'
+export type ClaimRefusal = 'wrong_category' | 'hash_mismatch' | 'pending' | 'none' | 'rejected' | 'expired' | 'already_consumed' | 'already_used' | 'not_human_decided'
 
 export type ConsumeOutcome =
   | { ok: true; replayed: boolean; approval: Approval }
   | { ok: false; reason: ConsumeRefusal; approval?: Approval }
 
 export type ClaimOutcome =
-  | { ok: true; replayed: boolean; approval: Approval }
+  | { ok: true; replayed: boolean; approval: Approval; /** mode 'send' only: the sender took over the gate's reservation */ adopted?: boolean }
   | { ok: false; reason: ClaimRefusal; approval?: Approval }
 
 interface ConsumeParams {
@@ -334,10 +338,12 @@ function journalConsumeRefusal(approval: Approval, reason: string, principal: st
 // a single statement: of two callers racing for the same row exactly one changes it. The category list is
 // spliced in as bound parameters. A consumable approval is always decided by a person's dashboard
 // session, whatever the human_only snapshot of the row says.
-function consumeStatement(): string {
+// With `seal`, the same write also stamps the effect (used_at / used_ref): the official sender, when no gate
+// reserved the approval before it, reserves and seals in one step.
+function consumeStatement(seal = false): string {
   const marks = CONSUMABLE_APPROVAL_CATEGORIES.map(() => '?').join(', ')
   return `
-    UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+    UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?${seal ? ', used_at = ?, used_ref = ?' : ''}
     WHERE id = ? AND category IN (${marks}) AND status = 'approved' AND consumed_at IS NULL
       AND content_hash = ? AND tenant_id = ? AND agent_id = ?
       AND resolved_at >= ? AND resolved_via = 'dashboard_session'
@@ -345,11 +351,26 @@ function consumeStatement(): string {
 }
 
 /** Run the guarded write for one row. True when this call is the one that used the approval up. */
-function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null): boolean {
-  return db.prepare(consumeStatement()).run(
-    now, p.principal, ref, id, ...CONSUMABLE_APPROVAL_CATEGORIES, p.content_hash, p.tenant_id, p.principal, now - p.window_s,
+function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null, seal = false): boolean {
+  return db.prepare(consumeStatement(seal)).run(
+    now, p.principal, ref, ...(seal ? [now, ref] : []), id, ...CONSUMABLE_APPROVAL_CATEGORIES, p.content_hash, p.tenant_id, p.principal, now - p.window_s,
   ).changes > 0
 }
+
+// The sender's write: it takes over the reservation the gate made for this very mail and seals it. Every
+// condition is in the WHERE (not read from a snapshot), so of two senders racing for one reservation exactly one
+// changes the row. Nothing here creates, decides or re-opens an approval: it only stamps a row a person decided in
+// a dashboard session and the SAME agent's gate already reserved, inside the window, and not sealed yet.
+const ADOPT_STATEMENT = `
+  UPDATE approvals SET used_at = ?, used_ref = ?
+  WHERE id = ? AND category = ? AND status = 'approved' AND content_hash = ? AND tenant_id = ? AND agent_id = ?
+    AND resolved_via = 'dashboard_session'
+    AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-%'
+    AND used_at IS NULL
+`
+
+/** Who takes the approval: the send gate reserves it (no mode), the official sender seals it (`send`). */
+export type ClaimMode = 'send'
 
 /** The same principal consuming the same hash with the same ref a moment ago: a retry of a lost answer. */
 function isReplay(row: Approval, p: ConsumeParams, now: number): boolean {
@@ -407,14 +428,41 @@ export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutco
  * the latest-decision lookup only names the reason once nothing is usable), so the id only has to make
  * the pick deterministic; it does not need to be the insertion order.
  */
-export function claimApproval(p: ConsumeParams & { category: string }): ClaimOutcome {
+export function claimApproval(p: ConsumeParams & { category: string; mode?: ClaimMode }): ClaimOutcome {
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
+  const send = p.mode === 'send'
   if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(p.category)) return { ok: false, reason: 'wrong_category' }
   if (!isContentHash(p.content_hash)) return { ok: false, reason: 'hash_mismatch' }
+  // The sender seals under its own reference: without one there would be nothing to retry or audit with.
+  if (send && ref === null) throw new Error("claimApproval: mode 'send' needs a ref")
   const outcome = db.transaction((): ClaimOutcome => {
     const scope = [p.principal, p.tenant_id, p.category, p.content_hash]
-    if (typeof p.ref === 'string' && p.ref !== '') {
+    if (send) {
+      // A retry of the sender's own lost answer: the row it sealed under this ref a moment ago.
+      const sealed = db.prepare(`
+        SELECT * FROM approvals
+        WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+          AND used_ref = ? AND used_at >= ?
+        ORDER BY used_at DESC, id DESC LIMIT 1
+      `).get(...scope, ref, now - CONSUME_REPLAY_WINDOW_S) as Approval | undefined
+      if (sealed) return { ok: true, replayed: true, adopted: sealed.consumed_ref !== sealed.used_ref, approval: sealed }
+      // The gate reserved this very mail a moment ago: take that reservation over instead of asking for a second approval.
+      const reserved = db.prepare(`
+        SELECT id FROM approvals
+        WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+          AND status = 'approved' AND resolved_via = 'dashboard_session'
+          AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-%' AND used_at IS NULL
+        ORDER BY consumed_at DESC, id DESC LIMIT 1
+      `).get(...scope, now - p.window_s, p.principal) as { id: string } | undefined
+      if (reserved && db.prepare(ADOPT_STATEMENT).run(
+        now, ref, reserved.id, p.category, p.content_hash, p.tenant_id, p.principal, now - p.window_s, p.principal,
+      ).changes > 0) {
+        const approval = getApproval(reserved.id) as Approval
+        recordApprovalEvent({ approval_id: reserved.id, tenant_id: approval.tenant_id, event: 'used', reason: 'adopted_gate_reservation', actor: p.principal, ref })
+        return { ok: true, replayed: false, adopted: true, approval }
+      }
+    } else if (typeof p.ref === 'string' && p.ref !== '') {
       const again = db.prepare(`
         SELECT * FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
@@ -429,10 +477,11 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
         AND status = 'approved' AND consumed_at IS NULL AND resolved_at >= ? AND resolved_via = 'dashboard_session'
       ORDER BY resolved_at DESC, id DESC LIMIT 1
     `).get(...scope, now - p.window_s) as { id: string } | undefined
-    if (usable && useUpApproval(usable.id, p, now, ref)) {
+    if (usable && useUpApproval(usable.id, p, now, ref, send)) {
       const approval = getApproval(usable.id) as Approval
       recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
-      return { ok: true, replayed: false, approval }
+      if (send) recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'used', reason: 'reserved_and_sealed', actor: p.principal, ref })
+      return send ? { ok: true, replayed: false, adopted: false, approval } : { ok: true, replayed: false, approval }
     }
     // A request still open (its deadline not passed, even if the sweeper has not marked it yet) beats any old decision.
     const open = db.prepare(`
@@ -452,7 +501,8 @@ export function claimApproval(p: ConsumeParams & { category: string }): ClaimOut
     if (last.status === 'rejected') return { ok: false, reason: 'rejected', approval: last }
     // A request that timed out unanswered leaves nothing to use: the caller starts over.
     if (last.status !== 'approved') return { ok: false, reason: 'none', approval: last }
-    if (last.consumed_at != null) return { ok: false, reason: 'already_consumed', approval: last }
+    // Only the sender is told apart "reserved" from "sealed"; the gate keeps seeing the one reason it always did.
+    if (last.consumed_at != null) return { ok: false, reason: send && last.used_at != null ? 'already_used' : 'already_consumed', approval: last }
     if (last.resolved_at != null && last.resolved_at < now - p.window_s) return { ok: false, reason: 'expired', approval: last }
     return { ok: false, reason: 'not_human_decided', approval: last }
   })()
