@@ -20,7 +20,8 @@ set -uo pipefail
 # base dir = the parent of this script's dir (scripts/..), so it works from any CWD / any install
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The call goes through scripts/agent-api.sh: the sender's OWN token (the dashboard takes the sender
-# identity from it), the shared token only when that file is missing; never on a command line.
+# identity from it); a missing own token is an error from the wrapper, never the shared token;
+# never on a command line.
 API="$BASE/scripts/agent-api.sh"
 LOG="$BASE/store/agent-msg-failures.log"
 

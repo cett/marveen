@@ -35,13 +35,13 @@ BIN="$SANDBOX/bin"; mkdir -p "$BIN"
 
 # The helper derives its repo root (token file, failure log, default checker)
 # from its OWN location, so the suite runs a COPY of it inside a throwaway repo
-# layout: the real helper and the real checker files, a fake token, and no
+# layout: the real helper and the real checker files, the sender's fake own token, and no
 # dependence on the working tree's store/. HELPER keeps pointing at the copy.
 FAKE="$SANDBOX/repo"
-mkdir -p "$FAKE/scripts/lib" "$FAKE/store"
+mkdir -p "$FAKE/scripts/lib" "$FAKE/store" "$FAKE/agents/igor"
 cp "$HELPER" "$FAKE/scripts/agent-msg.sh"; cp "$ROOT/scripts/agent-api.sh" "$FAKE/scripts/agent-api.sh"
 cp "$ROOT"/scripts/lib/homoglyph.py "$ROOT"/scripts/lib/mixed_script.py "$FAKE/scripts/lib/"
-printf 'test-token\n' > "$FAKE/store/.dashboard-token"
+printf 'test-token\n' > "$FAKE/agents/igor/.agent-token"   # the sender's own token
 HELPER="$FAKE/scripts/agent-msg.sh"
 
 # curl stub: nothing leaves the machine, and the call is RECORDED -- that record
