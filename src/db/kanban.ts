@@ -190,6 +190,17 @@ export interface KanbanAuditActor {
   source: 'token' | 'session' | 'self_declared'
 }
 
+/**
+ * The once-only dispatch guard (dispatched_at) belongs to ONE stay in in_progress. Any write that leaves
+ * in_progress clears it, so the next entry into in_progress wakes the assignee again; a write that stays in
+ * (or enters) in_progress keeps whatever stamp is there. Only the POST /move route wakes an agent: this
+ * rule only ever clears. The same rule for every writer of a card's status (move, full-card update,
+ * parent auto-status, tenant-scoped update), so no path can leave a stale stamp behind.
+ */
+export function kanbanWriteClearsDispatch(nextStatus: string): boolean {
+  return nextStatus !== 'in_progress'
+}
+
 export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: KanbanAuditActor): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
@@ -217,11 +228,14 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
 
   const f = { ...card, ...fields, depth: newDepth, updated_at: now }
   const ok = db.prepare(
-    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?
+    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?,
+     dispatched_at=CASE WHEN ? THEN NULL ELSE dispatched_at END
      WHERE id=?`
   ).run(
     f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
     f.blocked_by, f.blocked_reason, f.waiting_for, f.resolved_by,
+    // In SQL and not as a value read earlier: a stamp set between the read and the write must not be overwritten.
+    kanbanWriteClearsDispatch(f.status) ? 1 : 0,
     id,
   ).changes > 0
 
@@ -332,7 +346,7 @@ function propagateStatusForParent(parentId: string): void {
   const allDone = children.every(c => c.status === 'done')
   if (allDone && parent.status !== 'done') {
     const prev = parent.status
-    db.prepare("UPDATE kanban_cards SET status='done', updated_at=? WHERE id=?").run(now, parent.id)
+    db.prepare("UPDATE kanban_cards SET status='done', dispatched_at=NULL, updated_at=? WHERE id=?").run(now, parent.id)
     db.prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, 'done', 'auto', ?)").run(parent.id, prev, now)
     if (parent.parent_id) propagateStatusForParent(parent.parent_id)
   } else if (!allDone && parent.status === 'done') {
@@ -371,9 +385,12 @@ export function moveKanbanCard(
   // With a CAS the UPDATE below is what proves the card was in `expected`, while `prev` was read a moment
   // earlier and can be stale: the audit event names the status the CAS proved.
   const from = expected ?? prev
+  // Leaving in_progress ends the stay the dispatch guard belongs to (kanbanWriteClearsDispatch). It is cleared
+  // whatever the previous status was, so a card that is already stuck with a stale stamp heals on its next write.
+  const clear = kanbanWriteClearsDispatch(status) ? ', dispatched_at=NULL' : ''
   const sql = expected !== undefined
-    ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=? AND status=?'
-    : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+    ? `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?${clear} WHERE id=? AND status=?`
+    : `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?${clear} WHERE id=?`
 
   if (orderedIds && orderedIds.length > 0) {
     // Transactional renumber: status update + full column sort_order renumber in

@@ -10,7 +10,7 @@
 
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
-import { KANBAN_SEQ_COLUMN } from './kanban.js'
+import { KANBAN_SEQ_COLUMN, kanbanWriteClearsDispatch } from './kanban.js'
 import { db } from './connection.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { assertNoReservedMarker } from '../server-markers.js'
@@ -180,7 +180,11 @@ export function updateTenantKanbanCard(tenantId: string, id: string, patch: { ti
   const fields: string[] = []
   const params: unknown[] = []
   if (patch.title !== undefined) { fields.push('title = ?'); params.push(patch.title) }
-  if (patch.status !== undefined) { fields.push('status = ?'); params.push(patch.status) }
+  if (patch.status !== undefined) {
+    fields.push('status = ?'); params.push(patch.status)
+    // Leaving in_progress ends the stay the dispatch guard belongs to (see kanbanWriteClearsDispatch).
+    if (kanbanWriteClearsDispatch(patch.status)) fields.push('dispatched_at = NULL')
+  }
   if (fields.length === 0) return false
   params.push(tenantId, id)
   const result = db.prepare(`UPDATE kanban_cards SET ${fields.join(', ')} WHERE tenant_id = ? AND id = ?`).run(...params)
