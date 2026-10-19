@@ -82,14 +82,17 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        token = os.path.join(self.tmp.name, ".dashboard-token")
+        token = os.path.join(self.tmp.name, "main-token")
         with open(token, "w", encoding="utf-8") as f:
             f.write("test-token\n")
         self.dash = StubDashboard()
         self.addCleanup(self.dash.close)
+        # The registry is admin:all: the caller is the main agent, signing with its own token file
+        # (the resolver's explicit-file seam). No shared token file exists anywhere here.
         for p in (
-            patch.object(mod, "TOKEN_FILE", mod.Path(token)),
-            patch.dict(os.environ, {"MARVEEN_DASHBOARD_BASE": self.dash.base}),
+            patch.dict(os.environ, {"MARVEEN_DASHBOARD_BASE": self.dash.base,
+                                    "MAIN_AGENT_ID": "zz-main", "MARVEEN_AGENT_ID": "zz-main",
+                                    "MARVEEN_AGENT_TOKEN_FILE": token}),
         ):
             p.start()
             self.addCleanup(p.stop)
@@ -225,10 +228,19 @@ class CliTest(unittest.TestCase):
         self.dash.server.server_close = lambda: None  # type: ignore[method-assign]
 
     def test_missing_token_exits_one(self):
-        with patch.object(mod, "TOKEN_FILE", mod.Path(self.tmp.name) / "absent"):
+        absent = os.path.join(self.tmp.name, "absent")
+        with patch.dict(os.environ, {"MARVEEN_AGENT_TOKEN_FILE": absent}):
             code, _, err = self.run_cli("dump")
         self.assertEqual(code, 1)
         self.assertIn("token", err)
+        self.assertEqual(self.dash.requests, [])
+
+    def test_a_non_main_agent_is_told_to_ask_the_main_agent_and_sends_nothing(self):
+        # a scratch cwd names nobody, so the spawner's MARVEEN_AGENT_ID decides who the caller is
+        with patch.dict(os.environ, {"MARVEEN_AGENT_ID": "zz-other"}), patch("os.getcwd", return_value=self.tmp.name):
+            code, _, err = self.run_cli("dump")
+        self.assertEqual(code, 1)
+        self.assertIn("main agent", err)
         self.assertEqual(self.dash.requests, [])
 
 
