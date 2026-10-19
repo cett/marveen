@@ -28,14 +28,16 @@ LAST_AUDIT=$((NOW - 4 * 3600))
 BEFORE_AUDIT=$((NOW - 6 * 3600))
 AFTER_AUDIT=$((NOW - 1 * 3600))
 
-# Case dir layout: store/ (the shared token), scripts/agent-api.sh (the real wrapper),
+# Case dir layout: agents/testbot/.agent-token (the agent's own token) and store/ (a shared token
+# file that must never be read), scripts/agent-api.sh (the real wrapper),
 # bin/curl (stub), pre-check.sh (rendered).
 # The stub serves $CASE/kanban.json for /api/kanban and, for the agent-state
 # URL, the status in $CASE/state.code with the body in $CASE/state.json.
 make_case() { # name -> echoes the case dir
   local d="$TMPDIR_BASE/$1"
-  mkdir -p "$d/store" "$d/bin" "$d/scripts"
-  echo "test-token" > "$d/store/.dashboard-token"
+  mkdir -p "$d/store" "$d/bin" "$d/scripts" "$d/agents/testbot"
+  echo "test-token" > "$d/agents/testbot/.agent-token"
+  echo "shared-token" > "$d/store/.dashboard-token"
   cp "$INSTALL_DIR/scripts/agent-api.sh" "$d/scripts/agent-api.sh"
   sed -e "s|{{INSTALL_DIR}}|$d|g" -e "s/{{WEB_PORT}}/3420/g" -e "s/{{MAIN_AGENT_ID}}/testbot/g" "$SEED" > "$d/pre-check.sh"
   cat > "$d/bin/curl" <<'STUB'
@@ -130,9 +132,9 @@ run_check "$D"
 [ "$RC" -ne 0 ] && pass "state request fails -> non-zero" || fail "state request fails -> non-zero"
 D=$(make_case notoken)
 echo "[]" > "$D/kanban.json"; echo 200 > "$D/state.code"; echo '{"value":1}' > "$D/state.json"
-find "$D/store" -name .dashboard-token -delete
+rm "$D/agents/testbot/.agent-token"   # the shared token file stays: it is no fallback
 run_check "$D"
-[ "$RC" -ne 0 ] && pass "missing token -> non-zero" || fail "missing token -> non-zero"
+[ "$RC" -ne 0 ] && pass "missing own token (shared file present) -> non-zero" || fail "missing own token (shared file present) -> non-zero"
 
 echo ""
 echo "(g) The script no longer touches the database file"
