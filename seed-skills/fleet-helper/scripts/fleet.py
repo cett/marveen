@@ -13,7 +13,7 @@ Importable as a module or used from the CLI. See README.md for usage.
 Config (no hardcoded paths or secrets):
   CLAW_DIR  - project root (the dir containing `store/`). If unset, the project
               root is auto-detected by walking up from the current directory
-              until a `store/.dashboard-token` is found.
+              until a `store/` next to `scripts/agent-api.sh` is found.
   CLAW_BASE - dashboard base url (default http://localhost:<port>; the port is MARVEEN_WEB_PORT,
               WEB_PORT, WEB_PORT in the install's .env, then 3420).
 """
@@ -33,7 +33,8 @@ def project_dir():
         return env
     d = os.getcwd()
     while True:
-        if os.path.isfile(os.path.join(d, "store", ".dashboard-token")):
+        # the install root: the wrapper sits next to store/ (the shared token file is no marker any more)
+        if os.path.isdir(os.path.join(d, "store")) and os.path.isfile(os.path.join(d, "scripts", "agent-api.sh")):
             return d
         parent = os.path.dirname(d)
         if parent == d:

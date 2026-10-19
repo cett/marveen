@@ -250,6 +250,13 @@ class FleetAuthHeaders(unittest.TestCase):
         self.assertNotIn("Authorization", h)
         self.assertNotIn("shared-tok", repr(h))
 
+    def test_finds_the_install_root_without_a_shared_token_file(self):
+        os.remove(os.path.join(self.tmp, "store", ".dashboard-token"))
+        with open(os.path.join(self.tmp, "scripts", "agent-api.sh"), "w") as f:
+            f.write("#!/bin/sh\n")
+        os.environ.pop("CLAW_DIR", None)
+        self.assertEqual(self.fleet.project_dir(), self.tmp)
+
     def test_refuses_to_run_a_resolver_that_others_can_write(self):
         marker = os.path.join(self.tmp, "ran")
         with open(self.module_path, "a") as f:
