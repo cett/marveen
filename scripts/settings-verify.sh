@@ -16,8 +16,8 @@ MODE="${1:-before}"
 OUTPUT="settings-${MODE}.txt"
 PORT="${WEB_PORT:-3420}"
 
-if [[ ! -f store/.operator-token && ! -f store/.dashboard-token ]]; then
-  echo "Nincs dashboard token (store/.operator-token vagy store/.dashboard-token)" >&2
+if [[ ! -f store/.operator-token ]]; then
+  echo "Nincs operator token (store/.operator-token; npm run agent-tokens -- issue-operator)" >&2
   exit 1
 fi
 

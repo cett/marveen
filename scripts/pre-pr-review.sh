@@ -11,8 +11,8 @@ set -euo pipefail
 BASE="${1:-upstream/main}"
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [ ! -f "$INSTALL_DIR/store/.operator-token" ] && [ ! -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-  echo "[pre-pr-review] Dashboard token not found, skipping cross-review." >&2
+if [ ! -f "$INSTALL_DIR/store/.operator-token" ]; then
+  echo "[pre-pr-review] Operator token not found, skipping cross-review." >&2
   exit 0
 fi
 # Dashboard port: env WEB_PORT, else the install .env, else 3420.
