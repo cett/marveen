@@ -163,6 +163,12 @@ Korlátok (best-effort): futásidőben összeállított útvonal, `bash -c "..."
 
 ---
 
+## Mit tehet egy PreToolUse hook
+
+Egy PreToolUse hook csak **tilthat** (`permissionDecision: "deny"` vagy 2-es kilépési kód) vagy **kontextust adhat**. A hívás bemenetét nem írhatja át, és nem engedélyezhet, nem kérdezhet, nem halaszthat. Az ok a kimenő levél: az `scripts/hooks/email-approval-gate.py` a hívásból kiolvasott levél hash-ére foglal jóváhagyást, és az MCP-úton ez a hash az egyetlen kötés (az MCP-szerver nem ellenőrzi újra). Egy második hook, amely ugyanannak a hívásnak a bemenetét átírná, azt eredményezhetné, hogy a kimenő levél eltér a jóváhagyottól. Az email-kapu ezért az egyetlen PreToolUse hook, amely bármit eldönt egy küldésről; a többi csak elutasíthat. Az `updatedToolOutput` (az eszköz EREDMÉNYÉT cseréli, nem a bemenetet) csak a ratchet által felsorolt fájlokban engedett (ma a browser content notice).
+
+A `scripts/__tests__/hook-input-rewrite.test.py` (a CI Python lépése futtatja) elbukik minden hook-szkripten, kapun vagy forrásfájlon, amely a bemenet-átíró kulcsot használja, a `permissionDecision` értékét `deny`-tól eltérőre állítja, vagy az `updatedToolOutput`-ot az engedélylistán kívül használja. Ha átírás vagy engedélyezés tényleg kell, az email-hash-t a hatásnál újra ellenőrizni kell (a küldő a saját maga számolta hash-re foglal), és az engedélylista kap egy átnézett bejegyzést az indoklással. A repo saját hookjai és a telepített plugin-ek közül ma egyik sem csinál ilyet, ezért a szabály most semmibe sem kerül.
+
 ## Tenant skill-kapu
 
 A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk kéréseihez kötik. Két hook végzi (mindkettő a dashboard indításakor kerül be minden sub-ágens `settings.json`-jába; a főágens nincs kapu alatt; a futó sessionök újraindítás után veszik fel):

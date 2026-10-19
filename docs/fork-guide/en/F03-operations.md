@@ -163,6 +163,12 @@ Limits (best effort): a path built at run time, a command inside `bash -c "..."`
 
 ---
 
+## What a PreToolUse hook may do
+
+A PreToolUse hook may only **deny** a call (`permissionDecision: "deny"` or exit code 2) or **add context**. It may not rewrite the call's input, and it may not allow, ask or defer. The reason is the outgoing mail: `scripts/hooks/email-approval-gate.py` claims an approval for the hash of the mail it reads from the call, and for the MCP route that hash is the only binding (the MCP server does not check it again). A second hook that rewrote the input of the same call could make the mail that leaves differ from the mail that was approved. The email gate is therefore the only PreToolUse hook that decides anything about a send; the others can only refuse. `updatedToolOutput` (it replaces a tool result, not the input) is allowed only in the files the ratchet lists (today the browser content notice).
+
+`scripts/__tests__/hook-input-rewrite.test.py` (run by the CI Python step) fails on any hook script, gate or source file that uses the input-rewrite key, sets `permissionDecision` to anything but `deny`, or uses `updatedToolOutput` outside its allowlist. If a rewrite or an allow is really needed, the email hash must be re-checked at the point of effect (the sender claims for the hash it computed itself) and the allowlist gets a reviewed entry with the reason. Nothing in the repo's own hooks or the installed plugins does any of this today, so the rule costs nothing now.
+
 ## Tenant skill gate
 
 Agents that serve several tenants keep each tenant's skills inside that tenant's requests. Two hooks do it (both wired at dashboard start into every sub-agent's `settings.json`; the main agent is not gated; running sessions pick them up after a restart):
