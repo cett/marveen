@@ -48,8 +48,11 @@ class TestRolloutCheck(unittest.TestCase):
         for n in ("tenant-context.py", "tenant-skill-gate.py", "tenant_context_lib.py"):
             open(os.path.join(self.root, "scripts", "hooks", n), "w").close()
         os.makedirs(os.path.join(self.root, "store"))
-        with open(os.path.join(self.root, "store", ".dashboard-token"), "w") as f:
+        with open(os.path.join(self.root, "store", ".operator-token"), "w") as f:
             f.write("test-token\n")
+        # a shared token file that must never be read: it carries a different value
+        with open(os.path.join(self.root, "store", ".dashboard-token"), "w") as f:
+            f.write("shared-token\n")
 
         self.status = healthy_status()
         self.status_code = 200
@@ -208,10 +211,10 @@ class TestRolloutCheck(unittest.TestCase):
         code, out = self.run_check(base="http://127.0.0.1:1")
         self.assertEqual(code, 1)
         self.assertIn("FAIL", self.levels(out, "dashboard"))
-        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "store"))), [".dashboard-token"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "store"))), [".dashboard-token", ".operator-token"])
 
     def test_missing_token_fails(self):
-        os.remove(os.path.join(self.root, "store", ".dashboard-token"))
+        os.remove(os.path.join(self.root, "store", ".operator-token"))   # the shared file stays: no fallback
         code, out = self.run_check()
         self.assertEqual(code, 1)
         self.assertIn("token", [r["message"] for r in out["results"] if r["subject"] == "dashboard"][0])
