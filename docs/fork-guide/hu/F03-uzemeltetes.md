@@ -169,6 +169,26 @@ Egy PreToolUse hook csak **tilthat** (`permissionDecision: "deny"` vagy 2-es kil
 
 A `scripts/__tests__/hook-input-rewrite.test.py` (a CI Python lépése futtatja) elbukik minden hook-szkripten, kapun vagy forrásfájlon, amely a bemenet-átíró kulcsot használja, a `permissionDecision` értékét `deny`-tól eltérőre állítja, vagy az `updatedToolOutput`-ot az engedélylistán kívül használja. Ha átírás vagy engedélyezés tényleg kell, az email-hash-t a hatásnál újra ellenőrizni kell (a küldő a saját maga számolta hash-re foglal), és az engedélylista kap egy átnézett bejegyzést az indoklással. A repo saját hookjai és a telepített plugin-ek közül ma egyik sem csinál ilyet, ezért a szabály most semmibe sem kerül.
 
+## Megszakadt turn jelzése
+
+Az a session, amely egy turn közepén hal meg (összeomlás, watchdog-respawn, gép-újraindulás), eddig vakon hagyta az utódját: a Claude Code nem futtatja újra a megszakadt turnt, és a halál előtt beinjektált ágensek közötti üzenet vagy csatorna-prompt nyomtalanul eltűnt. A `scripts/hooks/inflight-turn.py` ezt a rést zárja ágensenként egy sorral az `agent_inflight_turns` táblában (0085-ös migráció, API: `/api/agent-inflight-turn/:agent/{begin,end,replay,consume}`):
+
+- `UserPromptSubmit` az `inflight-turn.py begin`-t futtatja: feljegyzi a forrást (csatorna, ágens-üzenet, ütemezett feladat, közvetlen prompt), a `msg_id:N`-t ha a prompt megnevez egyet, egy 200 karakteres előnézetet és egy hash-t. Semmit nem ír ki.
+- `Stop` az `inflight-turn.py end`-et futtatja: a turn befejeződött, a feljegyzés törlődik.
+- `SessionStart` (`startup`, `resume`, `clear`; soha nem `compact`, mert az egy ép turn közben is tüzel) az `inflight-turn.py replay`-t futtatja: a még meglévő, 6 óránál fiatalabb, még fel nem ajánlott feljegyzésből `additionalContext` jelzés lesz, majd felajánlottnak jelölődik. A második indulás már semmit nem ajánl.
+
+A jelzés tanács, soha nem újrafuttatás: megnevezi a forrást, az üzenetazonosítót és az indulás idejét, az előnézetet idézett adatként közli, és azt kéri az ágenstől, hogy döntse el, kell-e újra elvégezni a munkát, és ismétlés előtt ellenőrizze a mellékhatásokat (levél, push, törlés, delegálás, kártya-mozgatás). A két vagy több tenantot kiszolgáló ágens a jelzést előnézet nélkül kapja, és a prompt szövegét nem is tároljuk (az ellenőrzés replay-kor újra lefut, így a később második tenantra engedélyezett ágens is védett).
+
+Ismert hamis pozitív: a felhasználói megszakítás (Esc) nem futtat `Stop` hookot, így a feljegyzés megmarad, és a következő újraindításnál egy fölösleges jelzés jöhet; a TTL és az egyszeri felajánlás korlátozza.
+
+A hookok sosem blokkolnak: minden út 0-s kilépéssel ér véget, a leállt dashboard csendes no-op, és az ágens saját token-fájlja nélkül nem hívnak semmit. Bekötés (hookonként egy parancs, matcher csak a `SessionStart`-on kell):
+
+```json
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py begin", "timeout": 10 }] }],
+"Stop":             [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py end", "timeout": 10 }] }],
+"SessionStart":     [{ "matcher": "startup|resume|clear", "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py replay", "timeout": 15 }] }]
+```
+
 ## Tenant skill-kapu
 
 A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk kéréseihez kötik. Két hook végzi (mindkettő a dashboard indításakor kerül be minden sub-ágens `settings.json`-jába; a főágens nincs kapu alatt; a futó sessionök újraindítás után veszik fel):

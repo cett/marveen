@@ -169,6 +169,26 @@ A PreToolUse hook may only **deny** a call (`permissionDecision: "deny"` or exit
 
 `scripts/__tests__/hook-input-rewrite.test.py` (run by the CI Python step) fails on any hook script, gate or source file that uses the input-rewrite key, sets `permissionDecision` to anything but `deny`, or uses `updatedToolOutput` outside its allowlist. If a rewrite or an allow is really needed, the email hash must be re-checked at the point of effect (the sender claims for the hash it computed itself) and the allowlist gets a reviewed entry with the reason. Nothing in the repo's own hooks or the installed plugins does any of this today, so the rule costs nothing now.
 
+## Interrupted-turn hint
+
+A session that dies in the middle of a turn (crash, watchdog respawn, host restart) used to leave its successor blind: Claude Code does not re-run a cut-off turn, and an inter-agent message or channel prompt injected just before the death vanished without a trace. `scripts/hooks/inflight-turn.py` closes that gap with one row per agent in `agent_inflight_turns` (migration 0085, API `/api/agent-inflight-turn/:agent/{begin,end,replay,consume}`):
+
+- `UserPromptSubmit` runs `inflight-turn.py begin`: notes the source (channel, agent message, scheduled task, direct prompt), the `msg_id:N` if the prompt names one, a 200-character preview and a hash. It prints nothing.
+- `Stop` runs `inflight-turn.py end`: the turn finished, the note is dropped.
+- `SessionStart` (`startup`, `resume`, `clear`; never `compact`, which fires inside a healthy turn) runs `inflight-turn.py replay`: a note that is still there, under 6 hours old and not offered before becomes an `additionalContext` hint, then it is marked offered. A second start offers nothing.
+
+The hint is advice, never a re-run: it names the source, message id and start time, quotes the preview as data, and tells the agent to decide whether the work needs doing again and to check for side effects (mail, push, delete, delegation, card moves) before repeating anything. An agent served by two or more tenants gets the hint without the preview, and its prompt text is not kept (the check is made again at replay, so an agent enabled for a second tenant later is covered too).
+
+Known false positive: a user interrupt (Esc) runs no `Stop` hook, so the note survives and one needless hint can follow the next restart; the TTL and the single offer bound it.
+
+The hooks never block: every path ends in exit 0, a dashboard that is down is a silent no-op, and without the agent's own token file no call is made. Wiring (one hook command each; a matcher is needed only on `SessionStart`):
+
+```json
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py begin", "timeout": 10 }] }],
+"Stop":             [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py end", "timeout": 10 }] }],
+"SessionStart":     [{ "matcher": "startup|resume|clear", "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py replay", "timeout": 15 }] }]
+```
+
 ## Tenant skill gate
 
 Agents that serve several tenants keep each tenant's skills inside that tenant's requests. Two hooks do it (both wired at dashboard start into every sub-agent's `settings.json`; the main agent is not gated; running sessions pick them up after a restart):
