@@ -53,6 +53,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from typing import Any, Dict, List, Optional, Tuple
@@ -854,13 +855,14 @@ class _Word:
 
 
 class _Cmd:
-    __slots__ = ('words', 'stdin', 'piped', 'redirect_dynamic')
+    __slots__ = ('words', 'stdin', 'piped', 'redirect_dynamic', 'redirected')
 
     def __init__(self) -> None:
         self.words: List[_Word] = []
         self.stdin: Optional[Tuple[str, Any]] = None  # ('file', _Word) | ('text', str) | ('pipe', None)
         self.piped = False
         self.redirect_dynamic = False
+        self.redirected = False   # any redirection at all (>, >>, >|, &>, 2>, <, <<, <<<), whatever its target
 
 
 _WS = ' \t'
@@ -885,8 +887,8 @@ class _Lexer:
     def _end_cmd(self, piped_next: bool = False) -> None:
         if self.redirect is not None:
             raise Unreadable('a redirection has no target')
-        if self.cur.words or self.cur.stdin is not None:
-            self.cmds.append(self.cur)
+        if self.cur.words or self.cur.stdin is not None or self.cur.redirected:
+            self.cmds.append(self.cur)   # a bare `> file` has no words but still writes a file
         self.cur = _Cmd()
         self.cur.piped = piped_next
 
@@ -1114,6 +1116,7 @@ class _Lexer:
     def _redirect_operator(self) -> None:
         s, n = self.s, self.n
         c = s[self.i]
+        self.cur.redirected = True
         if self.redirect is not None:
             raise Unreadable('two redirections in a row')
         if s.startswith('<(', self.i) or s.startswith('>(', self.i):
@@ -1193,20 +1196,40 @@ def _basename(p: str) -> str:
 
 
 class _Send:
-    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool, script: str = '', tainted: bool = False) -> None:
+    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool, script: str = '', tainted: bool = False,
+                 interp: str = '', between: Optional[List[str]] = None) -> None:
         self.kind = kind
         self.args = args
         self.cmd = cmd
         self.cd_seen = cd_seen
         self.script = script   # the literal word that names the program (path as typed); '' when not known
+        # How the script was started: `interp` is the interpreter word as typed ('' when the script is run directly,
+        # its own shebang deciding), `between` the words the reader skipped between that interpreter and the script
+        # (options, or further interpreter-like words such as `python3 python3 x.py`).
+        self.interp = interp
+        self.between = list(between or [])
         # True when the call, before this command, assigned a variable, went through `env`, or ran a command that sets
         # the shell's environment (export, source, eval ...): the environment the program starts with is then not the
         # one it was judged in (PYTHONPATH, PATH ...). Only the official-sender intent looks at it.
         self.tainted = tainted
 
 
+# The only commands that may run before the official sender without taking its mark away: they neither change the
+# shell's variables, functions and aliases nor start anything that reads them. Anything else is "not judged".
+_SAFE_BEFORE_SENDER = frozenset(('cd', 'pushd', 'popd', 'echo', 'true', 'false', ':', 'pwd', 'date', 'sleep', 'test', '[', 'ls', 'cat'))
+
 # Commands whose whole job is to change the environment or run other text in this shell.
-_ENV_SETTERS = frozenset(('export', 'declare', 'typeset', 'unset', 'readonly', 'source', '.', 'eval', 'env'))
+_ENV_SETTERS = frozenset(('export', 'declare', 'typeset', 'unset', 'readonly', 'source', '.', 'eval', 'env',
+                          # these change what a bare command name runs without touching a variable
+                          'hash', 'alias', 'unalias', 'enable', 'function', 'shopt'))
+
+
+def _shell_option_reads_rc(opt: str) -> bool:
+    """True for the shell options that make it read start-up files: -l / --login, -i / --interactive (also inside a
+    cluster such as -lc, -ic, -il) and --rcfile / --init-file."""
+    if opt in ('--login', '--interactive', '--rcfile', '--init-file') or opt.startswith(('--rcfile=', '--init-file=')):
+        return True
+    return opt.startswith('-') and not opt.startswith('--') and any(c in opt[1:] for c in 'li')
 
 
 def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: bool = False) -> List[_Send]:
@@ -1221,9 +1244,20 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
     sends: List[_Send] = []
     cd_seen = cd_seen_in
     tainted = tainted_in
+    unsafe_before = False
     for cmd in cmds:
         ws = cmd.words
         k = 0
+        # Positive rule instead of a list of shell builtins that change state: once a command that is NOT in
+        # _SAFE_BEFORE_SENDER has run, every later send of this call is tainted (that covers read, printf -v, let,
+        # mapfile, getopts, function definitions, loops ... without having to name them).
+        if unsafe_before:
+            tainted = True
+        # A redirection on ANY command (also a bare `> file`) can write a file the sender or its interpreter then reads
+        # (`echo x > scripts/gmail-send.py; python3 scripts/gmail-send.py`): it counts as unsafe for the sends after it.
+        # The sender's own redirection (`python3 scripts/gmail-send.py ... > out.log`) only affects what follows it.
+        if cmd.redirected:
+            unsafe_before = True
         # assignments, reserved words, simple pass-through wrappers
         while k < len(ws):
             w = ws[k]
@@ -1231,6 +1265,8 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                 tainted = True
                 k += 1
             elif w.text in _RESERVED and not w.quoted:
+                if w.text not in ('!', 'time', '{', '}'):
+                    tainted = True    # if / for / while / case / ...: they run or bind things the reader does not follow
                 k += 1
             elif _basename(w.text) in _PASS_THROUGH and not w.dynamic:
                 if _basename(w.text) == 'env':
@@ -1239,6 +1275,9 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                 while k < len(ws) and (ws[k].text.startswith('-') or _ASSIGN_RE.match(ws[k].text)):
                     if ws[k].dynamic:
                         raise Unreadable('a wrapper option is not literal')
+                    # exec -a NAME / -c / -l, env/command/builtin options, an assignment word: each changes how or in what
+                    # environment the program starts (a '-' argv[0] makes a login shell). Any of them: not judged.
+                    tainted = True
                     if ws[k].text in ('-u', '-C', '-S'):
                         k += 1  # takes a value
                     k += 1
@@ -1250,6 +1289,7 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
         if head.dynamic:
             raise UnreadableDynamicExec('the name of a command is not literal')
         name = _basename(head.text)
+        unsafe_before = unsafe_before or name not in _SAFE_BEFORE_SENDER
         if name in ('cd', 'pushd', 'popd'):
             cd_seen = True
             continue
@@ -1279,13 +1319,19 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                 raise Unreadable('the script name is not literal')
             kind = _kind_of(_basename(script.text))
             if kind:
-                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen, script.text, tainted))
+                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen, script.text, tainted, head.text, [w.text for w in ws[k + 1:j]]))
             continue
         if name in _SHELLS:
             j = k + 1
             code = None
+            # A shell that is not plain bash / sh, or one started as a login / interactive shell or with an rc file, runs
+            # start-up files (~/.zshenv, ~/.bash_profile ...) BEFORE the code it was given: whatever the code sends is
+            # then not judged in the environment the reader saw.
+            rc_before_code = name not in ('bash', 'sh')
             while j < len(ws):
                 a = ws[j]
+                if _shell_option_reads_rc(a.text):
+                    rc_before_code = True
                 if re.fullmatch(r'-[A-Za-z]*c[A-Za-z]*', a.text) and j + 1 < len(ws):   # -c, -lc, -ec, -xc ...
                     if ws[j + 1].dynamic:
                         raise UnreadableDynamicExec('the code of a shell -c is not literal')
@@ -1296,7 +1342,7 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                     continue
                 break
             if code is not None:
-                sends.extend(_find_sends(code, depth + 1, cd_seen, tainted))
+                sends.extend(_find_sends(code, depth + 1, cd_seen, tainted or rc_before_code))
             continue
         kind = _kind_of(name)
         if kind:
@@ -1853,6 +1899,41 @@ def _script_realpath(script: str, cd_seen: bool, cwd: Optional[str]) -> Optional
     return os.path.realpath(path)
 
 
+# What may stand between the interpreter and the script of the official sender. Everything else the reader skips
+# (an option it merely understands, a second interpreter word) changes what runs, so it is not the official sender.
+_OFFICIAL_INTERP_FLAGS = frozenset(('-I', '-u'))
+_OFFICIAL_INTERP_BARE = frozenset(('python3', 'python'))
+# Absolute paths a python interpreter may be named by (resolved, so a symlink to one of them counts).
+_OFFICIAL_INTERP_PATHS = ('/usr/bin/python3', '/usr/local/bin/python3', '/opt/homebrew/bin/python3')
+
+
+def _trusted_interpreters() -> frozenset:
+    """The interpreter paths as they may be TYPED: the standard locations, and the running interpreter by the path it
+    reports and by its real path. Compared as strings, never resolved: a symlink in a directory the agent can write
+    (a venv's bin/python3 pointing at a system python) starts python with that venv's site-packages, so resolving it
+    would turn the agent's own environment into a trusted one."""
+    paths = set(_OFFICIAL_INTERP_PATHS)
+    if sys.executable:
+        paths.add(sys.executable)
+        paths.add(os.path.realpath(sys.executable))
+    return frozenset(paths)
+
+
+def _interpreter_is_trusted(interp: str) -> bool:
+    """'' (the script runs itself), a bare `python3` / `python` (looked up on PATH; every place the call could change
+    PATH or the meaning of the name taints it), or exactly one of the absolute interpreter paths above, character for
+    character. A relative path, a path through a symlink or any other absolute path is the agent's own interpreter."""
+    if interp == '':
+        return True
+    if interp in _OFFICIAL_INTERP_BARE:
+        return True
+    return interp in _trusted_interpreters()
+
+
+# name() { ... } or name() ( ... ): the empty parentheses followed by a body. A bare "fn()" in a mail body is not one.
+_FUNCTION_DEFINITION = re.compile(r'[^\s;&|()<>]\s*\(\s*\)\s*(?:[{(]|\[\[|(?:if|while|until|for|case|select)\b)')
+
+
 def command_is_official_sender(command: Any, cwd: Optional[str] = None, official_path: Optional[str] = None) -> bool:
     """True only when a Bash command runs exactly ONE mail command and it is THE installation's gmail-send.py.
 
@@ -1865,9 +1946,15 @@ def command_is_official_sender(command: Any, cwd: Optional[str] = None, official
     """
     if not isinstance(command, str):
         return False
+    # A function definition (`python3() { ...; }`, `python3 () {...}`, also inside a `bash -c '...'` string) makes a bare
+    # command name run the agent's own code. The reader splits such a line apart, so it is caught on the text.
+    if _FUNCTION_DEFINITION.search(command):
+        return False
     try:
         sends = _find_sends(command, 0)
         if len(sends) != 1 or sends[0].kind != 'gmailsend' or sends[0].tainted:
+            return False
+        if not _interpreter_is_trusted(sends[0].interp) or any(w not in _OFFICIAL_INTERP_FLAGS for w in sends[0].between):
             return False
         got = _script_realpath(sends[0].script, sends[0].cd_seen, cwd)
         return got is not None and got == os.path.realpath(official_path or OFFICIAL_SENDER_PATH)

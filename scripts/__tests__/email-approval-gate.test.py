@@ -579,6 +579,25 @@ class ClaimIntent(GateCase):
         with self.subTest(via='the real one by absolute path'):
             self.assertRegex(self._ref_of('Bash', {'command': 'python3 ' + official + args}), r'^gate-send-[0-9a-f]{32}$')
 
+    def test_the_agents_own_interpreter_running_the_official_file_earns_no_intent(self):
+        # the script path is the installation's own; the PROGRAM that runs it is the agent's: plain `gate-` reference
+        args = " --to ann@example.test --subject 'Weekly notes' --body 'Here are the notes from this week.'"
+        official = os.path.join(self.root, 'scripts', 'gmail-send.py')
+        os.makedirs(os.path.join(self.root, 'bin'))
+        for label, cmd in (('relative interpreter', './python3 ' + official + args),
+                           ('interpreter in an agent directory', os.path.join(self.root, 'bin', 'python3') + ' ' + official + args),
+                           ('a second interpreter word', 'python3 python3 ' + official + args),
+                           ('a skipped option', 'python3 -E ' + official + args)):
+            with self.subTest(via=label):
+                self.dash.requests.clear()
+                rc, out, err = self.run_gate('Bash', {'command': cmd})
+                claims = [r for r in self.dash.requests if r[1] == '/api/approvals/claim']
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(len(claims), 1)
+                self.assertRegex(claims[0][2]['ref'], r'^gate-[0-9a-f]{32}$')
+        with self.subTest(via='bare python3 and -I -u are fine'):
+            self.assertRegex(self._ref_of('Bash', {'command': 'python3 -I -u ' + official + args}), r'^gate-send-[0-9a-f]{32}$')
+
     def test_the_gate_still_reserves_when_it_reads_the_call_as_the_sender_and_the_approval_is_gone(self):
         # no way around the gate: with nothing to reserve the sender's command is refused like any other send
         self.dash.claim = _conflict('none')

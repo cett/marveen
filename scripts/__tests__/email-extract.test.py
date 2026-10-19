@@ -853,6 +853,202 @@ class OfficialSenderIntent(unittest.TestCase):
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assertFalse(E.command_is_official_sender(cmd, cwd))
 
+    def test_the_interpreter_must_be_a_trusted_one(self):
+        # the SCRIPT is the official file in every case below; what differs is the program that runs it
+        a = " " + self.S + self.ARGS
+        root = os.path.dirname(self.S_DIR)
+        for interp in ("python3", "python", "/usr/bin/python3", os.path.realpath(sys.executable)):
+            if interp.startswith("/") and not os.path.exists(interp):
+                continue
+            with self.subTest(interp=interp, ok=True):
+                self.assertTrue(E.command_is_official_sender(interp + a))
+        for interp in ("./python3", "../bin/python3", "/tmp/python3", "bin/python3", "/nowhere/bin/python3",
+                       "~/python3", "python3.11", "pypy3", "node", "bun", "tsx", "python3x"):
+            with self.subTest(interp=interp, ok=False):
+                self.assertFalse(E.command_is_official_sender(interp + a, root))
+
+    def test_a_bare_interpreter_name_is_looked_up_on_the_callers_path_so_a_path_change_takes_the_intent_away(self):
+        # `python3` alone resolves through the caller's PATH; the reader cannot see that PATH, but it does see every
+        # place the call could change it, and any such change means "not judged"
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("PATH=/agent/bin:$PATH " + s, "PATH=/agent/bin " + s, "PATH=. " + s,
+                    "env PATH=/agent/bin " + s, "env -i PATH=/agent/bin " + s,
+                    "export PATH=/agent/bin:$PATH && " + s, "export PATH=/agent/bin; " + s,
+                    "PATH=/agent/bin; " + s, "declare -x PATH=/agent/bin; " + s,
+                    "bash -c 'PATH=/agent/bin " + s + "'", "bash -c 'export PATH=/agent/bin; " + s + "'",
+                    "export PATH=/agent/bin && bash -c '" + s + "'"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        self.assertTrue(E.command_is_official_sender(s), "control: the same call with the caller's own PATH")
+
+    def test_only_a_short_list_of_harmless_commands_may_run_before_the_sender(self):
+        # a positive rule: anything not on the list takes the mark away, so the ways to rebind a name or PATH
+        # (read, printf -v, let, mapfile, getopts, loops, function bodies ...) need not be named one by one
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("read PATH <<< /agent/bin; " + s, "printf -v PATH %s /agent/bin; " + s, "let PATH=1; " + s,
+                    "mapfile -t PATH < f; " + s, "getopts a PATH; " + s, "for PATH in /agent/bin; do :; done; " + s,
+                    "while false; do :; done; " + s, "if true; then PATH=/agent/bin; fi; " + s,
+                    "case x in x) PATH=/agent/bin;; esac; " + s, "select PATH in a; do break; done; " + s,
+                    "python3() if true; then /agent/run; fi; " + s, "python3() for i in 1; do :; done; " + s,
+                    "python3() [[ -n x ]]; " + s, "python3 other.py; " + s, "source ./x.sh; " + s,
+                    "bash -c 'read PATH <<< x; " + s + "'", "bash -c 'for p in a; do :; done; " + s + "'",
+                    "other-tool --flag; " + s, "git status && " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        for cmd in ("cd /x && " + s, "echo hi; " + s, "true && " + s, "pwd; date; " + s, "cat f | " + s,
+                    "cd /x && echo start && " + s + " && echo done", "sleep 1; " + s, "test -f x && " + s,
+                    "bash -c 'cd /x && " + s + "'"):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd, os.path.dirname(self.S_DIR)))
+
+    def test_any_option_on_a_pass_through_wrapper_takes_the_intent_away(self):
+        # exec -a NAME / -c / -l, command -p, nohup with options ...: they change how the program starts (a name that begins
+        # with '-' makes a login shell, which reads ~/.bash_profile); only the bare wrapper keeps the mark
+        s = "python3 " + self.S + self.ARGS
+        shell = "bash -c '%s'" % s
+        for cmd in ("exec -a x " + s, "exec -a -bash " + shell, "exec -l " + shell, "exec -c " + s, "exec -cl " + shell,
+                    "command -p " + s, "command -v " + s, "nohup -- " + s, "nohup -p " + s, "builtin -x " + s,
+                    "exec -a x exec " + s, "exec exec -a x " + s, "bash -c 'exec -a x " + s + "'", "bash -c 'exec -l " + shell + "'",
+                    "cd /x && exec -a x " + s, "exec -a x -- " + s,
+                    # an assignment-shaped word after the wrapper: a shell would not run it as an assignment, but the
+                    # reader cannot tell what the program then sees, so it is "not judged" as well
+                    "nohup PYTHONPATH=/x " + s, "exec X=1 " + s, "command X=1 " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        for cmd in ("exec " + s, "command " + s, "nohup " + s, "builtin " + s, "exec " + self.S + self.ARGS,
+                    "nohup " + self.S + self.ARGS, "exec " + shell, "bash -c 'exec " + s + "'"):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_a_redirection_on_a_command_before_the_sender_takes_the_intent_away(self):
+        # echo / cat / true ... are on the short list, but `echo x > scripts/gmail-send.py` writes the very file about to
+        # run: any redirection (output, input, here-document / here-string, descriptor copy) on an earlier command counts
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("echo x > f; " + s, "echo x >> f; " + s, "echo x >| f; " + s, "echo x &> f; " + s, "echo x &>> f; " + s,
+                    "echo x 2> f; " + s, "echo x 1> f; " + s, "echo x > " + self.S + " && " + s, "echo x >> " + self.S + "; " + s,
+                    "> f; " + s, ": > " + self.S + "; " + s, "true 2>&1; " + s, "echo x >&2; " + s, "cat < f; " + s,
+                    "cat <<< x; " + s, "cat <<EOF\nx\nEOF\n" + s, "cd /x > f && " + s, "pwd > f && cd /x && " + s,
+                    "bash -c 'echo x > f; " + s + "'", "echo x > f | " + s, "(echo x > f); " + s, "{ echo x > f; }; " + s,
+                    "echo x > f\n" + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        # the sender's OWN redirection, and any redirection after it, change nothing it can read
+        for cmd in (s + " > out.log", s + " >> out.log 2>&1", s + " 2>&1", s + " < in.txt", s + " > out.log && echo x > f",
+                    "cd /x && " + s + " > out.log", "echo hi; " + s + " 2>/dev/null"):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_the_shell_start_up_file_variables_in_the_command_take_the_intent_away(self):
+        # BASH_ENV (bash -c) and ENV (sh) name a file the shell runs before its code; any assignment or export is "not judged"
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("BASH_ENV=/agent/rc bash -c '%s'" % s, "ENV=/agent/rc sh -c '%s'" % s, "env BASH_ENV=/agent/rc bash -c '%s'" % s,
+                    "env -i BASH_ENV=/agent/rc bash -c '%s'" % s, "export BASH_ENV=/agent/rc; bash -c '%s'" % s,
+                    "export ENV=/agent/rc && sh -c '%s'" % s, "bash -c 'BASH_ENV=/agent/rc " + s + "'", "declare -x BASH_ENV=/agent/rc; " + s,
+                    "BASH_ENV=/agent/rc; bash -c '%s'" % s, "exec env BASH_ENV=/agent/rc " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_a_nested_shell_that_reads_start_up_files_takes_the_intent_away(self):
+        # zsh always reads ~/.zshenv; bash -l / -i read ~/.bash_profile / ~/.bashrc: code the agent may have written there
+        # runs before the sender. Plain `bash -c` / `sh -c` read nothing and stay official.
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("zsh -c '%s'" % s, "zsh -lc '%s'" % s, "dash -c '%s'" % s, "ksh -c '%s'" % s,
+                    "bash -lc '%s'" % s, "bash -l -c '%s'" % s, "bash -ic '%s'" % s, "bash -i -c '%s'" % s,
+                    "bash --login -c '%s'" % s, "bash --interactive -c '%s'" % s, "bash --rcfile /agent/rc -c '%s'" % s,
+                    "bash --init-file /agent/rc -c '%s'" % s, "bash --rcfile=/agent/rc -c '%s'" % s,
+                    "sh -lc '%s'" % s, "sh -ic '%s'" % s, "bash -il -c '%s'" % s, "bash -cl '%s'" % s,
+                    "cd /x && zsh -c '%s'" % s, "bash -c \"zsh -c '%s'\"" % s, "bash -c \"bash -lc '%s'\"" % s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd, os.path.dirname(self.S_DIR)))
+        for cmd in ("bash -c '%s'" % s, "sh -c '%s'" % s, "bash -e -c '%s'" % s, "bash -ec '%s'" % s, "bash -xc '%s'" % s,
+                    "cd /x && bash -c '%s'" % s, "bash -c \"bash -c '%s'\"" % s):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
+    def test_the_function_definition_pattern_on_its_own(self):
+        # the second line of defence (the short list above already refuses these calls): the pattern itself
+        for text in ("f() { :; }", "f () { :; }", "f()\n{ :; }", "f() ( : )", "f() if true; then :; fi", "f() for i in 1; do :; done",
+                     "f() while false; do :; done", "f() until true; do :; done", "f() case x in x) :;; esac", "f() select i in a; do :; done",
+                     "f() [[ -n x ]]", "bash -c 'f() { :; }'"):
+            with self.subTest(text=text):
+                self.assertIsNotNone(E._FUNCTION_DEFINITION.search(text))
+        for text in ("call fn() now (see below)", "(cd x; ls)", "echo $(( 1 + 1 ))", "f(x)", "a ( b )"):
+            with self.subTest(text=text, ok=True):
+                self.assertIsNone(E._FUNCTION_DEFINITION.search(text))
+
+    def test_an_interpreter_path_is_trusted_as_typed_never_through_a_symlink(self):
+        # a venv-style bin/python3 that points at the real interpreter still starts python with the venv's own
+        # site-packages (pyvenv.cfg is found from the path it was started by), so a link in a directory the agent can
+        # write must not count as the system python. (Named python3: the reader only treats python-like names as one.)
+        a = " " + self.S + self.ARGS
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as d2:
+            link = os.path.join(d, "python3")
+            os.symlink(os.path.realpath(sys.executable), link)
+            link_to_trusted = os.path.join(d2, "python3")
+            os.symlink("/usr/bin/python3", link_to_trusted)
+            plain = os.path.join(d2, "python3-copy", "python3")
+            os.makedirs(os.path.dirname(plain))
+            with open(plain, "w") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(plain, 0o755)
+            for path in (link, link_to_trusted, plain):
+                with self.subTest(path=path):
+                    self.assertFalse(E.command_is_official_sender(path + a))
+        # control: the same real interpreter, typed as exactly the path it reports
+        self.assertTrue(E.command_is_official_sender(sys.executable + a))
+        self.assertTrue(E.command_is_official_sender(os.path.realpath(sys.executable) + a))
+
+    def test_a_path_that_only_normalises_to_a_trusted_one_is_not_trusted(self):
+        a = " " + self.S + self.ARGS
+        for interp in ("/usr/bin/../bin/python3", "/usr/bin/./python3", "//usr/bin/python3", "/usr/bin//python3",
+                       "/usr/bin/python3/", "/USR/BIN/python3"):
+            with self.subTest(interp=interp):
+                self.assertFalse(E.command_is_official_sender(interp + a))
+        if os.path.exists("/usr/bin/python3"):
+            self.assertTrue(E.command_is_official_sender("/usr/bin/python3" + a))
+
+    def test_whatever_changes_what_a_bare_python3_runs_takes_the_intent_away(self):
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("hash -p /agent/python3 python3; " + s, "alias python3=/agent/python3; " + s,
+                    "shopt -s expand_aliases; alias python3=/agent/python3; " + s, "unalias python3; " + s,
+                    "enable -n cd; " + s, "function python3 { /agent/run; }; " + s,
+                    "python3() { /agent/run; }; " + s, "python3 () { /agent/run; }; " + s, "python3()\n{ /agent/run; }\n" + s,
+                    "python3() ( /agent/run ); " + s, "f() { :; }; " + s,
+                    "bash -c 'python3() { :; }; " + s + "'", "bash -c 'hash -p /agent/python3 python3; " + s + "'",
+                    "bash -c 'alias python3=/agent/python3; " + s + "'", "{ python3() { :; }; }; " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        # a mail body that merely mentions parentheses is not a function definition
+        self.assertTrue(E.command_is_official_sender("python3 " + self.S + " --to a@example.test --subject S --body 'call fn() now (see below)'"))
+
+    def test_nothing_may_sit_between_the_interpreter_and_the_script_but_a_few_flags(self):
+        s = self.S + self.ARGS
+        for between in ("-I", "-u", "-I -u"):
+            with self.subTest(between=between, ok=True):
+                self.assertTrue(E.command_is_official_sender("python3 " + between + " " + s))
+        for between in ("python3", "python3 python3", "/tmp/python3", "./python3", "node", "npx", "bun",
+                        "-E", "-B", "-S", "-s", "-O", "-OO", "-q", "-b", "-bb", "-y", "--yes", "--quiet", "--", "-I python3", "python3 -I"):
+            with self.subTest(between=between, ok=False):
+                self.assertFalse(E.command_is_official_sender("python3 " + between + " " + s))
+
+    def test_an_interpreter_running_code_or_a_module_is_not_the_sender(self):
+        s = self.S + self.ARGS
+        for cmd in ("python3 -c 'import os' " + s, "python3 -m gmail-send " + s, "python3 -c \"exec(open('x').read())\" " + s,
+                    "python3 -S -c 'pass' " + s, "python3 - " + s, "python3 -W ignore " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_the_script_run_directly_keeps_working_as_before(self):
+        self.assertTrue(E.command_is_official_sender(self.S + self.ARGS))
+        self.assertTrue(E.command_is_official_sender("nohup " + self.S + self.ARGS))
+
+    def test_a_nested_shell_keeps_the_interpreter_rule(self):
+        s = self.S + self.ARGS
+        self.assertTrue(E.command_is_official_sender("bash -c 'python3 " + s + "'"))
+        for inner in ("./python3 " + s, "python3 python3 " + s, "/tmp/python3 " + s):
+            with self.subTest(inner=inner):
+                self.assertFalse(E.command_is_official_sender("bash -c '" + inner + "'", os.path.dirname(self.S_DIR)))
+
     def test_a_nested_shell_keeps_what_the_outer_call_already_did(self):
         # `cd` before `bash -c`: the relative path inside is not the hook's cwd any more
         root = os.path.dirname(self.S_DIR)
