@@ -1222,6 +1222,14 @@ _ENV_SETTERS = frozenset(('export', 'declare', 'typeset', 'unset', 'readonly', '
                           'hash', 'alias', 'unalias', 'enable', 'function', 'shopt'))
 
 
+def _shell_option_reads_rc(opt: str) -> bool:
+    """True for the shell options that make it read start-up files: -l / --login, -i / --interactive (also inside a
+    cluster such as -lc, -ic, -il) and --rcfile / --init-file."""
+    if opt in ('--login', '--interactive', '--rcfile', '--init-file') or opt.startswith(('--rcfile=', '--init-file=')):
+        return True
+    return opt.startswith('-') and not opt.startswith('--') and any(c in opt[1:] for c in 'li')
+
+
 def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: bool = False) -> List[_Send]:
     # cd_seen_in / tainted_in: what the call did BEFORE this text ran (a nested `bash -c` starts where the outer call
     # stands: after a `cd` its relative paths are not the hook's cwd, and an exported variable is still set).
@@ -1306,8 +1314,14 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
         if name in _SHELLS:
             j = k + 1
             code = None
+            # A shell that is not plain bash / sh, or one started as a login / interactive shell or with an rc file, runs
+            # start-up files (~/.zshenv, ~/.bash_profile ...) BEFORE the code it was given: whatever the code sends is
+            # then not judged in the environment the reader saw.
+            rc_before_code = name not in ('bash', 'sh')
             while j < len(ws):
                 a = ws[j]
+                if _shell_option_reads_rc(a.text):
+                    rc_before_code = True
                 if re.fullmatch(r'-[A-Za-z]*c[A-Za-z]*', a.text) and j + 1 < len(ws):   # -c, -lc, -ec, -xc ...
                     if ws[j + 1].dynamic:
                         raise UnreadableDynamicExec('the code of a shell -c is not literal')
@@ -1318,7 +1332,7 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                     continue
                 break
             if code is not None:
-                sends.extend(_find_sends(code, depth + 1, cd_seen, tainted))
+                sends.extend(_find_sends(code, depth + 1, cd_seen, tainted or rc_before_code))
             continue
         kind = _kind_of(name)
         if kind:

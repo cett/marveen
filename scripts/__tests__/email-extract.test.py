@@ -901,6 +901,23 @@ class OfficialSenderIntent(unittest.TestCase):
             with self.subTest(cmd=cmd, ok=True):
                 self.assertTrue(E.command_is_official_sender(cmd, os.path.dirname(self.S_DIR)))
 
+    def test_a_nested_shell_that_reads_start_up_files_takes_the_intent_away(self):
+        # zsh always reads ~/.zshenv; bash -l / -i read ~/.bash_profile / ~/.bashrc: code the agent may have written there
+        # runs before the sender. Plain `bash -c` / `sh -c` read nothing and stay official.
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("zsh -c '%s'" % s, "zsh -lc '%s'" % s, "dash -c '%s'" % s, "ksh -c '%s'" % s,
+                    "bash -lc '%s'" % s, "bash -l -c '%s'" % s, "bash -ic '%s'" % s, "bash -i -c '%s'" % s,
+                    "bash --login -c '%s'" % s, "bash --interactive -c '%s'" % s, "bash --rcfile /agent/rc -c '%s'" % s,
+                    "bash --init-file /agent/rc -c '%s'" % s, "bash --rcfile=/agent/rc -c '%s'" % s,
+                    "sh -lc '%s'" % s, "sh -ic '%s'" % s, "bash -il -c '%s'" % s, "bash -cl '%s'" % s,
+                    "cd /x && zsh -c '%s'" % s, "bash -c \"zsh -c '%s'\"" % s, "bash -c \"bash -lc '%s'\"" % s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd, os.path.dirname(self.S_DIR)))
+        for cmd in ("bash -c '%s'" % s, "sh -c '%s'" % s, "bash -e -c '%s'" % s, "bash -ec '%s'" % s, "bash -xc '%s'" % s,
+                    "cd /x && bash -c '%s'" % s, "bash -c \"bash -c '%s'\"" % s):
+            with self.subTest(cmd=cmd, ok=True):
+                self.assertTrue(E.command_is_official_sender(cmd))
+
     def test_the_function_definition_pattern_on_its_own(self):
         # the second line of defence (the short list above already refuses these calls): the pattern itself
         for text in ("f() { :; }", "f () { :; }", "f()\n{ :; }", "f() ( : )", "f() if true; then :; fi", "f() for i in 1; do :; done",
