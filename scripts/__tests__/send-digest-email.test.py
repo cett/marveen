@@ -104,27 +104,33 @@ class TestBuildSignature(unittest.TestCase):
 
 
 class TestFetchDigestContent(unittest.TestCase):
-    def test_returns_content_of_first_item(self):
-        payload = json.dumps({"items": [{"content": "digest body"}]}).encode()
+    def _fetch(self, payload, token_text="fixture-own-token"):
+        """Run fetch_digest_content with the coordinator's own token file (the resolver's explicit-file
+        seam) and return (result, the urlopen mock)."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".token") as tok:
-            tok.write("fixture-dashboard-token")
+            tok.write(token_text)
             tok.flush()
-            with patch.object(mod, "DASHBOARD_TOKEN_FILE", tok.name), patch.object(
+            with patch.dict(os.environ, {"MARVEEN_AGENT_TOKEN_FILE": tok.name}), patch.object(
                 mod.urllib.request, "urlopen", return_value=_fake_response(payload)
-            ):
-                result = mod.fetch_digest_content("2026-01-01")
+            ) as opened:
+                return mod.fetch_digest_content("2026-01-01"), opened
+
+    def test_returns_content_of_first_item(self):
+        result, opened = self._fetch(json.dumps({"items": [{"content": "digest body"}]}).encode())
         self.assertEqual(result, "digest body")
+        self.assertEqual(opened.call_args[0][0].get_header("Authorization"), "Bearer fixture-own-token")
 
     def test_returns_none_when_items_empty(self):
-        payload = json.dumps({"items": []}).encode()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".token") as tok:
-            tok.write("fixture-dashboard-token")
-            tok.flush()
-            with patch.object(mod, "DASHBOARD_TOKEN_FILE", tok.name), patch.object(
-                mod.urllib.request, "urlopen", return_value=_fake_response(payload)
-            ):
-                result = mod.fetch_digest_content("2026-01-01")
+        result, _ = self._fetch(json.dumps({"items": []}).encode())
         self.assertIsNone(result)
+
+    def test_a_missing_own_token_raises_the_named_fix_and_makes_no_request(self):
+        with tempfile.TemporaryDirectory() as empty, patch.dict(
+            os.environ, {"MARVEEN_AGENT_TOKEN_FILE": os.path.join(empty, "absent")}
+        ), patch.object(mod.urllib.request, "urlopen") as opened:
+            with self.assertRaises(OSError):
+                mod.fetch_digest_content("2026-01-01")
+        opened.assert_not_called()
 
 
 class TestFetchOwnEmailAddress(unittest.TestCase):
