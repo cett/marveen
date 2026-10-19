@@ -24,7 +24,7 @@ cp templates/.mcp.json.tpl agents/<name>/.mcp.json
 
 ### Ágens API tokenek és az API wrapper
 
-Minden ágens a saját tokenjével hívja a dashboard API-t (`agents/<id>/.agent-token`; a fő ágensé a projekt gyökerében van), nem a közös `store/.dashboard-token`-nel. Az üzemeltetőnek is van sajátja (`store/.operator-token`). Kezelésük a telepítést futtató gépen megy, a dashboard állhat:
+Minden ágens a saját tokenjével hívja a dashboard API-t (`agents/<id>/.agent-token`; a fő ágensé a projekt gyökerében van), nem a közös `store/.dashboard-token`-nel, amelyet már egyetlen script, wrapper vagy hook sem olvas. Az üzemeltetőnek is van sajátja (`store/.operator-token`). Kezelésük a telepítést futtató gépen megy, a dashboard állhat:
 
 ```bash
 npm run agent-tokens -- issue [--rotate] [--dry-run] [<ágens>...]   # alapból a fő ágens és minden ágens
@@ -32,25 +32,26 @@ npm run agent-tokens -- issue-operator [--rotate]
 npm run agent-tokens -- check [<ágens>...]   # csak olvas: minden token-fájl egyezik-e egy aktív tokennel? 1-es kilépés, ha nem
 npm run agent-tokens -- list
 npm run agent-tokens -- revoke <ágens>
+npm run agent-tokens -- rotate-shared   # mindig új közös tokent állít elő, a régi sort visszavonja; nem fut, amíg a DASHBOARD_TOKEN be van állítva
 ```
 
-A fájlok `0600` jogúak, a parancs a fájlt írja ki, tokent soha, a mentés szándékosan kihagyja őket. Visszaállítás után kövesd az F03 "Visszaállítás után: API tokenek" lépéseit (a `doctor.sh` és az `agent-tokens check` jelzi a hiányzó vagy elavult fájlt).
+A fájlok `0600` jogúak, a parancs a fájlt írja ki, tokent soha, a mentés szándékosan kihagyja őket (a közös token fájlját is). Visszaállítás után kövesd az F03 "Visszaállítás után: API tokenek" lépéseit (a `doctor.sh` és az `agent-tokens check` jelzi a hiányzó vagy elavult fájlt).
 
 A dashboardot megnyitó ember sem a közös tokent használja: az `npm run dashboard-url` (operátor-aláírású, a dashboardnak futnia kell) `<origin>/?enroll=<egyszer használható kód>` linket ír ki, amit a böngésző a saját, nevesített, visszavonható admin tokenjére cserél (`POST /api/auth/enroll-browser`; a kódot a `POST /api/admin/browser-enroll-codes` adja, csak globális admin, egyszer használható, 10 perc, memóriában él). A telepítők a végén ilyen linket írnak ki.
 
 A receptek, hookok és scriptek az API-t a `scripts/agent-api.sh`-n át hívják: az választja ki a megfelelő tokent és stdin-en adja a curl-nek, így nem látszik se a folyamatlistában, se a transzkriptben:
 
 ```bash
-bash scripts/agent-api.sh [--agent ID] [--token agent|operator|shared|admin|main] METHOD /api/... [BODY | - | @fájl]
+bash scripts/agent-api.sh [--agent ID] [--token agent|operator|admin|main] METHOD /api/... [BODY | - | @fájl]
 ```
 
 - `agent` (alapértelmezett) a hívó ágens saját tokenje; az ágens a `--agent`, a `MARVEEN_AGENT_ID` vagy a munkakönyvtár (`agents/<id>/`, a projekt gyökere a fő ágens) alapján dől el.
-- `operator` az üzemeltető tokenje. `admin` az olyan hívásra való, amihez admin szerep kell bárki hívja: a fő ágens a sajátját használja, mindenki más a közöset. `shared` szándékosan a közös token. `main` a fő ágensként lép fel (rendszerscriptek).
-- Azokra a végpontokra, ahol egy sima ágens-tokent elutasítanak (ágens start/stop/restart, vault, egress-engedélyezőlista írás, globális skill írás), az érvényesítésig a közös token marad: használj `--token admin` vagy `--token operator` kapcsolót.
-- A hiányzó vagy üres token-fájl a közös tokenre esik vissza, és a kérés viszi az `X-Agent-Id`-t, így a `GET /api/token-shadow` mutatja, ki esett vissza. Ha a token megvan, de elutasítják (visszavont, elavult), nincs újrapróba a közösön: az elfedné a hibát.
-- Kilépési kód: 0 2xx-nél, 22 bármilyen más HTTP státusznál (a státusz stderr-re megy, a törzs továbbra is kiíródik).
+- `operator` az üzemeltető tokenje. `admin` az olyan hívásra való, amihez admin szerep kell bárki hívja: a fő ágens a sajátját használja, mindenki más elutasítást kap (3-as kilépés), és a fő ágenstől kér az `/api/messages` végponton. `main` a fő ágensként lép fel (rendszerscriptek).
+- Azokra a végpontokra, ahol egy sima ágens-tokent elutasítanak (ágens start/stop/restart, vault, egress-engedélyezőlista írás, globális skill írás), a fő ágens vagy az üzemeltető jogosult: használj `--token admin` (fő ágens) vagy `--token operator` kapcsolót. A saját skilljét (`agent/<id>/<név>`) az ágens a saját tokenjével is írhatja; a globális skillhez admin kell.
+- Közös-token fajta és arra való visszaesés nincs. A `--token shared` használati hiba (2-es kilépés). Az ágens hiányzó vagy üres token-fájlja 3-as kilépés, és **kérés nem megy ki**; ugyanez igaz a `scripts/hooks/agent_token.py`-ra (`none` forrás hibával) és a `scripts/agent-api.mjs`-re. Ha a token megvan, de elutasítják (visszavont, elavult), nincs újrapróba másik tokenen: az elfedné a hibát.
+- Kilépési kód: 0 2xx-nél, 22 bármilyen más HTTP státusznál (a státusz stderr-re megy, a törzs továbbra is kiíródik), 2 használati hibánál, 3 ha nincs token, amit küldeni lehetne.
 
-Alapból nincs érvényesítés: a közös token mindenhol tovább működik.
+A dashboard a közös tokent a rotálásig még elfogadja (`agent-tokens rotate-shared`); utána a régi érték 401-et kap, amit a shadow-számláló `shared_token_refused` néven számol, így látszik a lemaradó, a régi tokent még birtokló folyamat.
 
 #### Identitás-érvényesítés (`TOKEN_IDENTITY_MODE`)
 
@@ -62,8 +63,9 @@ Hogy mi számít ágens megnevezésének, a jogosultsági mátrixot követi (`WA
 
 A `python3 scripts/token-shadow-gate.py --window-start <ÉÉÉÉ-HH-NN>` egy mérési ablakon olvassa a shadow-számlálót, és PASS (0), FAIL (1) vagy INCONCLUSIVE (2) választ ad. A közös token rotálása PASS-ra vár. Az ablak az utolsó, hívási utat érintő deploy utáni első 00:00 UTC-kor indul (maga a deploy-nap a deploy előtti és utáni hívásokat keveri), és 7 teljes UTC napot plusz a mai napot kéri.
 
-- **FAIL**: olyan közös-token használat, amit semmi nem menti (kivétel csak a főágens saját, bejelentett használata, a hívó nélküli böngészőoldal és a kapu saját canary hívása, mindegyik indoklással és lejárattal a scriptben), vagy bármilyen `agent_id_mismatch`, `foreign_row_access`, `missing_tenant_context`, `shared_agent_memories_no_tenant` sor. A jelentés kilistázza a sorokat és az utolsó találatot; az ablak utána újraindul. Minden hívási utat módosító deploy újraindítja az órát.
+- **FAIL**: bármely hívó közös-token használata (kivétel csak a kapu saját canary hívása: a főágensnek és a dashboard saját oldalának már saját tokenje van, ezért a korábbi kivételeik megszűntek), vagy bármilyen `agent_id_mismatch`, `foreign_row_access`, `missing_tenant_context`, `shared_agent_memories_no_tenant` sor. A jelentés kilistázza a sorokat és az utolsó találatot; az ablak utána újraindul. Minden hívási utat módosító deploy újraindítja az órát.
 - **INCONCLUSIVE** (soha nem PASS): az ablak túl rövid; egy legfeljebb heti ütemezés nem futott az ablakban; egy havi vagy ritkább ütemezésnek nincs kézi futása az ablakban vagy tiszta recept-dry-runja (`--manual-run NÉV`, `--dry-run-clean NÉV` igazolja); a dashboard üzemideje nincs megerősítve (`--uptime-confirmed`: egyetlen ablak-napon sem állhatott több mint 24 órát); a canary nem mozdította a számlálót; egy lekérdezés elérte a sorlimitet, vagy a számláló `_overflow` / `_invalid` sort tartalmaz. A nulla csak akkor számít, ha a számláló bizonyítottan él: a kapu egy közös-token hívást tesz `gate-canary` néven, és a számnak nőnie kell.
+- Jelentett, de soha nem blokkoló: `fleet_skill_write_denied`, `unscoped_read` és `shared_token_refused` (a rotálás után: melyik folyamat kopog még a régi tokennel, a 7 napos utóellenőrzéshez).
 - A kapu az operátor saját tokenjével olvas, és megtagadja az olvasást a közös tokenen át (az olvasásai abba a számlálóba esnének, amit épp elbírál). Az `.env`-ben a `TOKEN_SHADOW_WINDOW_START=ÉÉÉÉ-HH-NN` beállítással a `doctor.sh` tájékoztató sorban kiírja a kapu állapotát.
 
 ### Ágens indítása és leállítása
