@@ -867,17 +867,64 @@ class OfficialSenderIntent(unittest.TestCase):
             with self.subTest(interp=interp, ok=False):
                 self.assertFalse(E.command_is_official_sender(interp + a, root))
 
-    def test_a_trusted_interpreter_named_by_a_symlink_is_judged_by_where_it_points(self):
-        # (named python3 in its own directory: the reader only treats python-like names as interpreters at all)
+    def test_a_bare_interpreter_name_is_looked_up_on_the_callers_path_so_a_path_change_takes_the_intent_away(self):
+        # `python3` alone resolves through the caller's PATH; the reader cannot see that PATH, but it does see every
+        # place the call could change it, and any such change means "not judged"
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("PATH=/agent/bin:$PATH " + s, "PATH=/agent/bin " + s, "PATH=. " + s,
+                    "env PATH=/agent/bin " + s, "env -i PATH=/agent/bin " + s,
+                    "export PATH=/agent/bin:$PATH && " + s, "export PATH=/agent/bin; " + s,
+                    "PATH=/agent/bin; " + s, "declare -x PATH=/agent/bin; " + s,
+                    "bash -c 'PATH=/agent/bin " + s + "'", "bash -c 'export PATH=/agent/bin; " + s + "'",
+                    "export PATH=/agent/bin && bash -c '" + s + "'"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        self.assertTrue(E.command_is_official_sender(s), "control: the same call with the caller's own PATH")
+
+    def test_an_interpreter_path_is_trusted_as_typed_never_through_a_symlink(self):
+        # a venv-style bin/python3 that points at the real interpreter still starts python with the venv's own
+        # site-packages (pyvenv.cfg is found from the path it was started by), so a link in a directory the agent can
+        # write must not count as the system python. (Named python3: the reader only treats python-like names as one.)
+        a = " " + self.S + self.ARGS
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as d2:
-            good = os.path.join(d, "python3")
-            os.symlink(os.path.realpath(sys.executable), good)
-            bad = os.path.join(d2, "python3")
-            with open(bad, "w") as fh:
+            link = os.path.join(d, "python3")
+            os.symlink(os.path.realpath(sys.executable), link)
+            link_to_trusted = os.path.join(d2, "python3")
+            os.symlink("/usr/bin/python3", link_to_trusted)
+            plain = os.path.join(d2, "python3-copy", "python3")
+            os.makedirs(os.path.dirname(plain))
+            with open(plain, "w") as fh:
                 fh.write("#!/bin/sh\n")
-            os.chmod(bad, 0o755)
-            self.assertTrue(E.command_is_official_sender(good + " " + self.S + self.ARGS))
-            self.assertFalse(E.command_is_official_sender(bad + " " + self.S + self.ARGS))
+            os.chmod(plain, 0o755)
+            for path in (link, link_to_trusted, plain):
+                with self.subTest(path=path):
+                    self.assertFalse(E.command_is_official_sender(path + a))
+        # control: the same real interpreter, typed as exactly the path it reports
+        self.assertTrue(E.command_is_official_sender(sys.executable + a))
+        self.assertTrue(E.command_is_official_sender(os.path.realpath(sys.executable) + a))
+
+    def test_a_path_that_only_normalises_to_a_trusted_one_is_not_trusted(self):
+        a = " " + self.S + self.ARGS
+        for interp in ("/usr/bin/../bin/python3", "/usr/bin/./python3", "//usr/bin/python3", "/usr/bin//python3",
+                       "/usr/bin/python3/", "/USR/BIN/python3"):
+            with self.subTest(interp=interp):
+                self.assertFalse(E.command_is_official_sender(interp + a))
+        if os.path.exists("/usr/bin/python3"):
+            self.assertTrue(E.command_is_official_sender("/usr/bin/python3" + a))
+
+    def test_whatever_changes_what_a_bare_python3_runs_takes_the_intent_away(self):
+        s = "python3 " + self.S + self.ARGS
+        for cmd in ("hash -p /agent/python3 python3; " + s, "alias python3=/agent/python3; " + s,
+                    "shopt -s expand_aliases; alias python3=/agent/python3; " + s, "unalias python3; " + s,
+                    "enable -n cd; " + s, "function python3 { /agent/run; }; " + s,
+                    "python3() { /agent/run; }; " + s, "python3 () { /agent/run; }; " + s, "python3()\n{ /agent/run; }\n" + s,
+                    "python3() ( /agent/run ); " + s, "f() { :; }; " + s,
+                    "bash -c 'python3() { :; }; " + s + "'", "bash -c 'hash -p /agent/python3 python3; " + s + "'",
+                    "bash -c 'alias python3=/agent/python3; " + s + "'", "{ python3() { :; }; }; " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+        # a mail body that merely mentions parentheses is not a function definition
+        self.assertTrue(E.command_is_official_sender("python3 " + self.S + " --to a@example.test --subject S --body 'call fn() now (see below)'"))
 
     def test_nothing_may_sit_between_the_interpreter_and_the_script_but_a_few_flags(self):
         s = self.S + self.ARGS

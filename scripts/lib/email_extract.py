@@ -1213,7 +1213,9 @@ class _Send:
 
 
 # Commands whose whole job is to change the environment or run other text in this shell.
-_ENV_SETTERS = frozenset(('export', 'declare', 'typeset', 'unset', 'readonly', 'source', '.', 'eval', 'env'))
+_ENV_SETTERS = frozenset(('export', 'declare', 'typeset', 'unset', 'readonly', 'source', '.', 'eval', 'env',
+                          # these change what a bare command name runs without touching a variable
+                          'hash', 'alias', 'unalias', 'enable', 'function', 'shopt'))
 
 
 def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: bool = False) -> List[_Send]:
@@ -1869,23 +1871,30 @@ _OFFICIAL_INTERP_PATHS = ('/usr/bin/python3', '/usr/local/bin/python3', '/opt/ho
 
 
 def _trusted_interpreters() -> frozenset:
-    paths = {os.path.realpath(p) for p in _OFFICIAL_INTERP_PATHS if os.path.exists(p)}
+    """The interpreter paths as they may be TYPED: the standard locations, and the running interpreter by the path it
+    reports and by its real path. Compared as strings, never resolved: a symlink in a directory the agent can write
+    (a venv's bin/python3 pointing at a system python) starts python with that venv's site-packages, so resolving it
+    would turn the agent's own environment into a trusted one."""
+    paths = set(_OFFICIAL_INTERP_PATHS)
     if sys.executable:
+        paths.add(sys.executable)
         paths.add(os.path.realpath(sys.executable))
     return frozenset(paths)
 
 
 def _interpreter_is_trusted(interp: str) -> bool:
-    """'' (the script runs itself), a bare `python3` / `python` (looked up on PATH, which an assignment would have
-    tainted), or an ABSOLUTE path whose real path is the running interpreter or one of the standard python3 locations.
-    A relative path (./python3, ../bin/python3) or any other absolute path is the agent's own interpreter."""
+    """'' (the script runs itself), a bare `python3` / `python` (looked up on PATH; every place the call could change
+    PATH or the meaning of the name taints it), or exactly one of the absolute interpreter paths above, character for
+    character. A relative path, a path through a symlink or any other absolute path is the agent's own interpreter."""
     if interp == '':
         return True
     if interp in _OFFICIAL_INTERP_BARE:
         return True
-    if not os.path.isabs(interp):
-        return False
-    return os.path.realpath(interp) in _trusted_interpreters()
+    return interp in _trusted_interpreters()
+
+
+# name() { ... } or name() ( ... ): the empty parentheses followed by a body. A bare "fn()" in a mail body is not one.
+_FUNCTION_DEFINITION = re.compile(r'[^\s;&|()<>]\s*\(\s*\)\s*[{(]')
 
 
 def command_is_official_sender(command: Any, cwd: Optional[str] = None, official_path: Optional[str] = None) -> bool:
@@ -1899,6 +1908,10 @@ def command_is_official_sender(command: Any, cwd: Optional[str] = None, official
     `cd` in the same call. Fail closed: any doubt is False.
     """
     if not isinstance(command, str):
+        return False
+    # A function definition (`python3() { ...; }`, `python3 () {...}`, also inside a `bash -c '...'` string) makes a bare
+    # command name run the agent's own code. The reader splits such a line apart, so it is caught on the text.
+    if _FUNCTION_DEFINITION.search(command):
         return False
     try:
         sends = _find_sends(command, 0)
