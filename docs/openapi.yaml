@@ -275,6 +275,7 @@ components:
             - tenant_required
             - unknown_query_parameter
             - stale_revision
+            - status_conflict
         hint:
           type: string
           description: >-

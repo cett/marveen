@@ -46,6 +46,14 @@ describe('api-error-catalog invariants', () => {
     expect(checkErrorResponse('forbidden', 400)).toMatch(/not allowed with HTTP 400/)
   })
 
+  it('status_conflict is a 409-only token', () => {
+    expect(checkErrorResponse('status_conflict', 409)).toBeNull()
+    // A compare-and-set miss is a state conflict: never a 400 (malformed), 404 (missing) or 500.
+    expect(checkErrorResponse('status_conflict', 400)).toMatch(/not allowed with HTTP 400/)
+    expect(checkErrorResponse('status_conflict', 404)).toMatch(/not allowed with HTTP 404/)
+    expect(checkErrorResponse('status_conflict', 500)).toMatch(/not allowed with HTTP 500/)
+  })
+
   it('returns null for unconstrained status (e.g. 200 with no error field check needed)', () => {
     // Statuses not in ALLOWED_STATUS_TOKENS are unconstrained -- any valid token passes.
     expect(checkErrorResponse('not_found', 200)).toBeNull()

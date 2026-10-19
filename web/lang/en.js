@@ -2183,6 +2183,7 @@ window._i18n.en = {
   'errors.disabled':                 'Feature disabled',
   'errors.not_live':                 'This task is not live yet -- an admin must activate it',
   'errors.stale_revision':           'The task changed after you opened it -- review the current version and activate again',
+  'errors.status_conflict':          'The status changed in the meantime -- reload and check the current state',
   'errors.managed_settings_missing': 'Managed settings missing',
   'errors.upstream_error':           'Upstream service unavailable',
   'errors.sender_not_in_allowlist':  'Sender is not in the allowlist',
