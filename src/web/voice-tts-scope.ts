@@ -6,7 +6,7 @@
 // fleet_agent may name only a state dir that is ITS OWN channel, and only a chat the owner paired on
 // that channel (access.json allowFrom). Both checks fail closed.
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -53,12 +53,15 @@ export function agentOwnsStateDir(agentId: string, stateDir: string, bases: Chan
 }
 
 /**
- * The same question asked of the real filesystem: the directory as named AND where it really
- * points (a symlink from an agent's own channel path to another agent's directory is the one way
- * the name check alone is fooled). Fails closed when the path cannot be resolved.
+ * The same question asked of the real filesystem. Returns the directory's REAL path when it is the
+ * agent's own channel, else null: the name as given AND where it really points (a symlink from an
+ * agent's own channel path to another agent's directory is the one way the name check alone is
+ * fooled), and neither `.env` nor `access.json` may itself be a symlink. The caller must use the
+ * returned path from then on, not the string the request carried, so the directory cannot be swapped
+ * between this check and its use. Fails closed when anything cannot be resolved.
  */
-export function agentOwnsStateDirOnDisk(agentId: string, stateDir: string, bases: ChannelBases = defaultBases()): boolean {
-  if (!agentOwnsStateDir(agentId, stateDir, bases)) return false
+export function resolveOwnStateDir(agentId: string, stateDir: string, bases: ChannelBases = defaultBases()): string | null {
+  if (!agentOwnsStateDir(agentId, stateDir, bases)) return null
   try {
     const real = realpathSync(stateDir)
     const realBases: ChannelBases = {
@@ -66,9 +69,18 @@ export function agentOwnsStateDirOnDisk(agentId: string, stateDir: string, bases
       channelsBase: realpathSync(bases.channelsBase),
       mainAgentId: bases.mainAgentId,
     }
-    return agentOwnsStateDir(agentId, real, realBases)
+    if (!agentOwnsStateDir(agentId, real, realBases)) return null
+    for (const name of ['.env', 'access.json']) {
+      try {
+        if (lstatSync(join(real, name)).isSymbolicLink()) return null
+      } catch (err) {
+        // access.json may be absent (the chat check then fails closed); .env is checked by the route
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return null
+      }
+    }
+    return real
   } catch {
-    return false
+    return null
   }
 }
 

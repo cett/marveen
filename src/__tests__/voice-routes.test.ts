@@ -56,7 +56,7 @@ vi.mock('node:child_process', () => ({
 
 // The fleet_agent scope checks are tested on their own (voice-tts-scope.test.ts); here only the wiring.
 vi.mock('../web/voice-tts-scope.js', () => ({
-  agentOwnsStateDirOnDisk: vi.fn().mockReturnValue(false),
+  resolveOwnStateDir: vi.fn().mockReturnValue(null),
   chatIsPaired: vi.fn().mockReturnValue(false),
 }))
 
@@ -65,7 +65,7 @@ import { spawn } from 'node:child_process'
 import { logger } from '../logger.js'
 import { buildTtsDirective, inboundIsAudio } from '../web/voice-directive.js'
 import { readAgentVoiceConfig } from '../web/agent-config.js'
-import { agentOwnsStateDirOnDisk, chatIsPaired } from '../web/voice-tts-scope.js'
+import { resolveOwnStateDir, chatIsPaired } from '../web/voice-tts-scope.js'
 
 // A fake ChildProcess good enough for runProc(): stdout/stderr emitters plus
 // a 'close' event carrying the exit code, fired on the next tick so runProc's
@@ -356,6 +356,8 @@ describe('POST /api/voice/tts', () => {
 
 describe('POST /api/voice/tts as a fleet_agent', () => {
   const OWN_DIR = '/tmp/mock-agents/zed/.claude/channels/telegram'
+  // what the scope check hands back: the resolved real path, which is what must be checked AND spoken on
+  const RESOLVED_DIR = '/real/mock-agents/zed/.claude/channels/telegram'
   const body = { text: 'hi', chat_id: '4242', state_dir: OWN_DIR, voice_model: 'en_US-test-voice' }
   const asFleetAgent = (b: object = body, tokenAgentId = 'zed') => {
     mockExistingOnnx.add(require('node:path').join(require('node:os').homedir(), '.local', 'share', 'marveen-voice', 'voices', 'en_US-test-voice.onnx'))
@@ -365,28 +367,28 @@ describe('POST /api/voice/tts as a fleet_agent', () => {
   }
 
   it('is refused on a state_dir that is not its own channel, and nothing is spawned', async () => {
-    vi.mocked(agentOwnsStateDirOnDisk).mockReturnValue(false)
+    vi.mocked(resolveOwnStateDir).mockReturnValue(null)
     const { ctx, out } = asFleetAgent({ ...body, state_dir: '/tmp/mock-agents/other/.claude/channels/telegram' })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(403)
     expect(out.body.field).toBe('state_dir')
     expect(spawn).not.toHaveBeenCalled()
-    expect(agentOwnsStateDirOnDisk).toHaveBeenCalledWith('zed', '/tmp/mock-agents/other/.claude/channels/telegram')
+    expect(resolveOwnStateDir).toHaveBeenCalledWith('zed', '/tmp/mock-agents/other/.claude/channels/telegram')
   })
 
   it('is refused on a chat that is not paired on its own channel, and nothing is spawned', async () => {
-    vi.mocked(agentOwnsStateDirOnDisk).mockReturnValue(true)
+    vi.mocked(resolveOwnStateDir).mockReturnValue(RESOLVED_DIR)
     vi.mocked(chatIsPaired).mockReturnValue(false)
     const { ctx, out } = asFleetAgent()
     await tryHandleVoice(ctx)
     expect(out.status).toBe(403)
     expect(out.body.field).toBe('chat_id')
     expect(spawn).not.toHaveBeenCalled()
-    expect(chatIsPaired).toHaveBeenCalledWith(OWN_DIR, '4242')
+    expect(chatIsPaired).toHaveBeenCalledWith(RESOLVED_DIR, '4242')
   })
 
   it('is refused when its token names no agent', async () => {
-    vi.mocked(agentOwnsStateDirOnDisk).mockReturnValue(true)
+    vi.mocked(resolveOwnStateDir).mockReturnValue(RESOLVED_DIR)
     vi.mocked(chatIsPaired).mockReturnValue(true)
     const { ctx, out } = asFleetAgent(body, '')
     await tryHandleVoice(ctx)
@@ -395,14 +397,17 @@ describe('POST /api/voice/tts as a fleet_agent', () => {
   })
 
   it('speaks on its own channel to a paired chat', async () => {
-    vi.mocked(agentOwnsStateDirOnDisk).mockReturnValue(true)
+    vi.mocked(resolveOwnStateDir).mockReturnValue(RESOLVED_DIR)
     vi.mocked(chatIsPaired).mockReturnValue(true)
     queueSpawn({ stdout: 'ok=True id=77\n', code: 0 })
     const { ctx, out } = asFleetAgent()
     await tryHandleVoice(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, message_id: 77 })
-    expect(vi.mocked(spawn).mock.calls[0][1]).toEqual(expect.arrayContaining([OWN_DIR, '4242']))
+    const args = vi.mocked(spawn).mock.calls[0][1] as string[]
+    expect(args).toEqual(expect.arrayContaining([RESOLVED_DIR, '4242']))
+    // the request's own spelling of the dir is not what is spoken on (no swap between check and use)
+    expect(args).not.toContain(OWN_DIR)
   })
 
   it('negative control: an admin principal is not held to the scope (the helpers are never asked)', async () => {
@@ -412,7 +417,7 @@ describe('POST /api/voice/tts as a fleet_agent', () => {
     Object.assign(ctx, { role: 'admin' })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(200)
-    expect(agentOwnsStateDirOnDisk).not.toHaveBeenCalled()
+    expect(resolveOwnStateDir).not.toHaveBeenCalled()
     expect(chatIsPaired).not.toHaveBeenCalled()
   })
 })

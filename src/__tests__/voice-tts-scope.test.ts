@@ -9,7 +9,7 @@ import { join } from 'node:path'
 vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'mn' }))
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/unused-in-these-tests' }))
 
-import { agentOwnsStateDir, agentOwnsStateDirOnDisk, chatIsPaired, type ChannelBases } from '../web/voice-tts-scope.js'
+import { agentOwnsStateDir, resolveOwnStateDir, chatIsPaired, type ChannelBases } from '../web/voice-tts-scope.js'
 
 let root: string
 let bases: ChannelBases
@@ -60,10 +60,10 @@ describe('agentOwnsStateDir (names only)', () => {
   })
 })
 
-describe('agentOwnsStateDirOnDisk (names and where they really point)', () => {
-  it('accepts a real directory of its own', () => {
+describe('resolveOwnStateDir (names, where they really point, and what is handed back)', () => {
+  it('hands back the real path of a directory of its own', () => {
     mkdirSync(own('zed'), { recursive: true })
-    expect(agentOwnsStateDirOnDisk('zed', own('zed'), bases)).toBe(true)
+    expect(resolveOwnStateDir('zed', own('zed'), bases)).toBe(own('zed'))
   })
 
   it('refuses an own-named path that is a symlink to another agent\'s channel', () => {
@@ -72,11 +72,29 @@ describe('agentOwnsStateDirOnDisk (names and where they really point)', () => {
     symlinkSync(own('ydd'), own('zed'))
     // the name alone is fooled, the real path is not
     expect(agentOwnsStateDir('zed', own('zed'), bases)).toBe(true)
-    expect(agentOwnsStateDirOnDisk('zed', own('zed'), bases)).toBe(false)
+    expect(resolveOwnStateDir('zed', own('zed'), bases)).toBeNull()
   })
 
   it('refuses a path that does not exist', () => {
-    expect(agentOwnsStateDirOnDisk('zed', own('zed'), bases)).toBe(false)
+    expect(resolveOwnStateDir('zed', own('zed'), bases)).toBeNull()
+  })
+
+  it('refuses a directory whose .env or access.json is itself a symlink', () => {
+    for (const name of ['.env', 'access.json']) {
+      mkdirSync(own('zed'), { recursive: true })
+      const elsewhere = join(root, 'elsewhere-' + name.replace('.', ''))
+      writeFileSync(elsewhere, '{}')
+      symlinkSync(elsewhere, join(own('zed'), name))
+      expect(resolveOwnStateDir('zed', own('zed'), bases), name).toBeNull()
+      rmSync(own('zed'), { recursive: true, force: true })
+    }
+  })
+
+  it('accepts a directory without an access.json (the chat check then refuses everything)', () => {
+    mkdirSync(own('zed'), { recursive: true })
+    writeFileSync(join(own('zed'), '.env'), 'X=1')
+    expect(resolveOwnStateDir('zed', own('zed'), bases)).toBe(own('zed'))
+    expect(chatIsPaired(own('zed'), '4242')).toBe(false)
   })
 })
 
