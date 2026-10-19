@@ -92,6 +92,19 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel('claude-sonnet-4-6[1m]')).toBe(1_000_000)
   })
 
+  // The minor digit is closed by a word boundary: sonnet-5-50 is not Sonnet 5.5, it is a model nobody has
+  // measured, so it keeps the conservative 200k. The ids that carry something after the digit still match.
+  it('the Sonnet 5.5 pattern is closed at the minor version: sonnet-5-50 is not 5.5, a provider suffix still is', () => {
+    expect(contextLimitForModel('claude-sonnet-5-50')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-5-55')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-5-99')).toBe(200_000)
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5-v1:0')).toBe(1_000_000) // Bedrock
+    expect(contextLimitForModel('us.anthropic.claude-sonnet-5-5-v1:0')).toBe(1_000_000) // Bedrock, region prefix
+    expect(contextLimitForModel('claude-sonnet-5-5@20261001')).toBe(1_000_000) // Vertex
+    expect(contextLimitForModel('claude-sonnet-5-5-20261001')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-sonnet-5-7')).toBe(1_000_000)
+  })
+
   it('the other Sonnets and Haiku stay at 200k', () => {
     expect(contextLimitForModel('claude-sonnet-5-1')).toBe(200_000)
     expect(contextLimitForModel('claude-sonnet-5-4')).toBe(200_000)

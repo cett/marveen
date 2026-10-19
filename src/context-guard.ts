@@ -181,7 +181,9 @@ export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
  * instructions).
  *
  * Sonnet 5.5 and later (sonnet-5-5 .. sonnet-5-9, with or without a provider
- * prefix or a version suffix) have the 1M window as well. Measured 2026-10-19
+ * prefix or a version suffix) have the 1M window as well. The minor digit is closed by a word boundary,
+ * so a two-digit minor such as sonnet-5-50 is NOT Sonnet 5.5; Bedrock's anthropic.claude-sonnet-5-5-v1:0
+ * and Vertex's claude-sonnet-5-5@<date> still match. Measured 2026-10-19
  * from this host's transcripts (input + cache_read + cache_creation of a
  * request, last 8 days, claude-sonnet-5-5 sessions): 783171, 648222, 454611,
  * 376393 and 228276 tokens, with hundreds of requests above 200k in a single
@@ -197,7 +199,7 @@ export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
  * live evidence, and over-estimating would blind the proactive tiers, while
  * under-estimating is loud and self-correcting.
  */
-const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/, /sonnet-5-[5-9]/]
+const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/, /sonnet-5-[5-9]\b/]
 
 export function contextLimitForModel(model: string | null | undefined): number {
   if (typeof model !== 'string') return 200_000
