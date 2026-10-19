@@ -53,6 +53,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from typing import Any, Dict, List, Optional, Tuple
@@ -1193,12 +1194,18 @@ def _basename(p: str) -> str:
 
 
 class _Send:
-    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool, script: str = '', tainted: bool = False) -> None:
+    def __init__(self, kind: str, args: List[_Word], cmd: _Cmd, cd_seen: bool, script: str = '', tainted: bool = False,
+                 interp: str = '', between: Optional[List[str]] = None) -> None:
         self.kind = kind
         self.args = args
         self.cmd = cmd
         self.cd_seen = cd_seen
         self.script = script   # the literal word that names the program (path as typed); '' when not known
+        # How the script was started: `interp` is the interpreter word as typed ('' when the script is run directly,
+        # its own shebang deciding), `between` the words the reader skipped between that interpreter and the script
+        # (options, or further interpreter-like words such as `python3 python3 x.py`).
+        self.interp = interp
+        self.between = list(between or [])
         # True when the call, before this command, assigned a variable, went through `env`, or ran a command that sets
         # the shell's environment (export, source, eval ...): the environment the program starts with is then not the
         # one it was judged in (PYTHONPATH, PATH ...). Only the official-sender intent looks at it.
@@ -1279,7 +1286,7 @@ def _find_sends(text: str, depth: int, cd_seen_in: bool = False, tainted_in: boo
                 raise Unreadable('the script name is not literal')
             kind = _kind_of(_basename(script.text))
             if kind:
-                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen, script.text, tainted))
+                sends.append(_Send(kind, ws[j + 1:], cmd, cd_seen, script.text, tainted, head.text, [w.text for w in ws[k + 1:j]]))
             continue
         if name in _SHELLS:
             j = k + 1
@@ -1853,6 +1860,34 @@ def _script_realpath(script: str, cd_seen: bool, cwd: Optional[str]) -> Optional
     return os.path.realpath(path)
 
 
+# What may stand between the interpreter and the script of the official sender. Everything else the reader skips
+# (an option it merely understands, a second interpreter word) changes what runs, so it is not the official sender.
+_OFFICIAL_INTERP_FLAGS = frozenset(('-I', '-u'))
+_OFFICIAL_INTERP_BARE = frozenset(('python3', 'python'))
+# Absolute paths a python interpreter may be named by (resolved, so a symlink to one of them counts).
+_OFFICIAL_INTERP_PATHS = ('/usr/bin/python3', '/usr/local/bin/python3', '/opt/homebrew/bin/python3')
+
+
+def _trusted_interpreters() -> frozenset:
+    paths = {os.path.realpath(p) for p in _OFFICIAL_INTERP_PATHS if os.path.exists(p)}
+    if sys.executable:
+        paths.add(os.path.realpath(sys.executable))
+    return frozenset(paths)
+
+
+def _interpreter_is_trusted(interp: str) -> bool:
+    """'' (the script runs itself), a bare `python3` / `python` (looked up on PATH, which an assignment would have
+    tainted), or an ABSOLUTE path whose real path is the running interpreter or one of the standard python3 locations.
+    A relative path (./python3, ../bin/python3) or any other absolute path is the agent's own interpreter."""
+    if interp == '':
+        return True
+    if interp in _OFFICIAL_INTERP_BARE:
+        return True
+    if not os.path.isabs(interp):
+        return False
+    return os.path.realpath(interp) in _trusted_interpreters()
+
+
 def command_is_official_sender(command: Any, cwd: Optional[str] = None, official_path: Optional[str] = None) -> bool:
     """True only when a Bash command runs exactly ONE mail command and it is THE installation's gmail-send.py.
 
@@ -1868,6 +1903,8 @@ def command_is_official_sender(command: Any, cwd: Optional[str] = None, official
     try:
         sends = _find_sends(command, 0)
         if len(sends) != 1 or sends[0].kind != 'gmailsend' or sends[0].tainted:
+            return False
+        if not _interpreter_is_trusted(sends[0].interp) or any(w not in _OFFICIAL_INTERP_FLAGS for w in sends[0].between):
             return False
         got = _script_realpath(sends[0].script, sends[0].cd_seen, cwd)
         return got is not None and got == os.path.realpath(official_path or OFFICIAL_SENDER_PATH)

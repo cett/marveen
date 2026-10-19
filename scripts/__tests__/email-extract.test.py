@@ -853,6 +853,60 @@ class OfficialSenderIntent(unittest.TestCase):
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assertFalse(E.command_is_official_sender(cmd, cwd))
 
+    def test_the_interpreter_must_be_a_trusted_one(self):
+        # the SCRIPT is the official file in every case below; what differs is the program that runs it
+        a = " " + self.S + self.ARGS
+        root = os.path.dirname(self.S_DIR)
+        for interp in ("python3", "python", "/usr/bin/python3", os.path.realpath(sys.executable)):
+            if interp.startswith("/") and not os.path.exists(interp):
+                continue
+            with self.subTest(interp=interp, ok=True):
+                self.assertTrue(E.command_is_official_sender(interp + a))
+        for interp in ("./python3", "../bin/python3", "/tmp/python3", "bin/python3", "/nowhere/bin/python3",
+                       "~/python3", "python3.11", "pypy3", "node", "bun", "tsx", "python3x"):
+            with self.subTest(interp=interp, ok=False):
+                self.assertFalse(E.command_is_official_sender(interp + a, root))
+
+    def test_a_trusted_interpreter_named_by_a_symlink_is_judged_by_where_it_points(self):
+        # (named python3 in its own directory: the reader only treats python-like names as interpreters at all)
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as d2:
+            good = os.path.join(d, "python3")
+            os.symlink(os.path.realpath(sys.executable), good)
+            bad = os.path.join(d2, "python3")
+            with open(bad, "w") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(bad, 0o755)
+            self.assertTrue(E.command_is_official_sender(good + " " + self.S + self.ARGS))
+            self.assertFalse(E.command_is_official_sender(bad + " " + self.S + self.ARGS))
+
+    def test_nothing_may_sit_between_the_interpreter_and_the_script_but_a_few_flags(self):
+        s = self.S + self.ARGS
+        for between in ("-I", "-u", "-I -u"):
+            with self.subTest(between=between, ok=True):
+                self.assertTrue(E.command_is_official_sender("python3 " + between + " " + s))
+        for between in ("python3", "python3 python3", "/tmp/python3", "./python3", "node", "npx", "bun",
+                        "-E", "-B", "-S", "-s", "-O", "-OO", "-q", "-b", "-bb", "-y", "--yes", "--quiet", "--", "-I python3", "python3 -I"):
+            with self.subTest(between=between, ok=False):
+                self.assertFalse(E.command_is_official_sender("python3 " + between + " " + s))
+
+    def test_an_interpreter_running_code_or_a_module_is_not_the_sender(self):
+        s = self.S + self.ARGS
+        for cmd in ("python3 -c 'import os' " + s, "python3 -m gmail-send " + s, "python3 -c \"exec(open('x').read())\" " + s,
+                    "python3 -S -c 'pass' " + s, "python3 - " + s, "python3 -W ignore " + s):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(E.command_is_official_sender(cmd))
+
+    def test_the_script_run_directly_keeps_working_as_before(self):
+        self.assertTrue(E.command_is_official_sender(self.S + self.ARGS))
+        self.assertTrue(E.command_is_official_sender("nohup " + self.S + self.ARGS))
+
+    def test_a_nested_shell_keeps_the_interpreter_rule(self):
+        s = self.S + self.ARGS
+        self.assertTrue(E.command_is_official_sender("bash -c 'python3 " + s + "'"))
+        for inner in ("./python3 " + s, "python3 python3 " + s, "/tmp/python3 " + s):
+            with self.subTest(inner=inner):
+                self.assertFalse(E.command_is_official_sender("bash -c '" + inner + "'", os.path.dirname(self.S_DIR)))
+
     def test_a_nested_shell_keeps_what_the_outer_call_already_did(self):
         # `cd` before `bash -c`: the relative path inside is not the hook's cwd any more
         root = os.path.dirname(self.S_DIR)
