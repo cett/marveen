@@ -13,17 +13,22 @@ What it does, in this order (the first failure ends the run, and nothing before 
      (scripts/hooks/email-approval-gate.py) uses for this command, so the sha256 of the canonical envelope
      computed here is the hash the gate computes for the same command line.
   2. Refreshes the Gmail OAuth access token. FIRST, so a broken login does not burn an approval.
-  3. Spends the owner's approval for that hash: POST /api/approvals/claim with the MAIN agent's own token
-     (a shared-token fallback is refused). The dashboard address is built exactly like the gate builds it:
-     WEB_PORT / WEB_HOST from <install>/.env only (never the environment), WEB_HOST must be an IP address,
-     never the name localhost, no proxy, no redirect, short timeouts, capped answers.
-  4. Only on a 200 whose approval names THIS hash, category, agent, status and use AND that is signed by the
-     dashboard (`sig` = HMAC-SHA256 of v1|hash|category|agent_id|ref|consumed_at under the key in
-     <install>/store/.claim-signing-key, read from this script's own install path; a missing or wrong sig, a
-     missing or unreadable key, a missing consumed_at: REFUSED claim_unsigned, nothing is sent), it re-reads each
-     attachment, checks sha256 and size against the envelope (a file that changed after the hash is NOT
-     sent: the approval is already spent) and sends exactly the approved fields and the verified bytes
-     with users.messages.send. Prints `SENT id=<id>`.
+  3. Spends the owner's approval for that hash: POST /api/approvals/claim with mode "send" and the MAIN agent's own
+     token (a shared-token fallback is refused). The send gate has usually reserved the approval a moment
+     before (under a `gate-send-` ref, because it read this command as the sender); mode "send" adopts that
+     reservation and seals the use, or, with no gate in front, reserves and seals in one step. The seal comes
+     BEFORE Gmail is called: an approval is at most once one mail. The dashboard address is built exactly like
+     the gate builds it: WEB_PORT / WEB_HOST from <install>/.env only (never the environment), WEB_HOST must be
+     an IP address, never the name localhost, no proxy, no redirect, short timeouts, capped answers.
+  4. Only on a 200 whose approval names THIS hash, category, agent, status and THIS run's seal (used_ref), a
+     boolean `adopted` consistent with consumed_ref, AND that is signed by the dashboard (`sig` = HMAC-SHA256 of
+     v2|hash|category|agent_id|used_ref|consumed_at|used_at under the key in <install>/store/.claim-signing-key,
+     read from this script's own install path; the gate's v1 answer is NOT accepted; a missing or wrong sig, a
+     missing or unreadable key, a missing consumed_at or used_at: REFUSED claim_unsigned, nothing is sent), it
+     re-reads each attachment, checks sha256 and size against the envelope (a file that changed after the hash
+     is NOT sent: the approval is already spent) and sends exactly the approved fields and the verified bytes
+     with users.messages.send. Prints `SENT id=<id>`. A send that fails after the seal says so plainly: the
+     approval is spent and a new one is needed.
   5. With no usable approval it opens a request for the owner (POST /api/approvals) and exits 3: the owner
      decides on the dashboard, then the SAME command is run again. Any change to the mail needs a new
      approval; an approval is used once and only inside its window.

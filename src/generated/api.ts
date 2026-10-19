@@ -242,6 +242,10 @@ export interface Approval {
   consumed_by?: string | null;
   /** The caller's own label for the use (for example the id of the send); the same label repeated by the same agent shortly after is a retry, not a second use. */
   consumed_ref?: string | null;
+  /** When the official sender sealed the use (unix seconds), second phase of using an approval up (see `POST /approvals/claim`, `mode` `send`). Null while the approval is unused or only reserved by the send gate. */
+  used_at?: number | null;
+  /** The sender's own label of that seal; the same label repeated by the same agent shortly after is a retry. */
+  used_ref?: string | null;
   timeout_at?: number | null;
   created_at: number;
   resolved_at?: number | null;
@@ -265,10 +269,12 @@ export interface ApprovalUsed {
   ok: boolean;
   /** True when this call repeated an earlier use by the same agent with the same `ref` (a retry of a lost answer); nothing was used up a second time. */
   replayed: boolean;
+  /** Only with `mode` `send`. True when the sender took over the send gate's reservation, false when it reserved and sealed in one step (no gate in front). */
+  adopted?: boolean;
   /** The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision. */
   window_s: number;
   approval: Approval;
-  /** HMAC-SHA256, lowercase hex, of the text `v1|content_hash|category|agent_id|ref|consumed_at` built from the `approval` row (`ref` is its `consumed_ref`, empty when there is none; `consumed_at` is the integer seconds). The key is the 32 random bytes held as 64 hex characters in `store/.claim-signing-key`, which the server creates (mode 0600) and no route returns. The send gate and the official sender recompute it and refuse an answer without a matching `sig`, so a listener that only mirrors the request cannot pass for the dashboard. A replay of the same use carries the same `sig`.
+  /** HMAC-SHA256, lowercase hex, of the text `v1|content_hash|category|agent_id|ref|consumed_at` built from the `approval` row (`ref` is its `consumed_ref`, empty when there is none; `consumed_at` is the integer seconds). The key is the 32 random bytes held as 64 hex characters in `store/.claim-signing-key`, which the server creates (mode 0600) and no route returns. The send gate and the official sender recompute it and refuse an answer without a matching `sig`, so a listener that only mirrors the request cannot pass for the dashboard. A replay of the same use carries the same `sig`. With `mode` `send` the text is `v2|content_hash|category|agent_id|used_ref|consumed_at|used_at` instead (`used_ref` is the sender's own `ref`, `used_at` the integer seconds of the seal): a gate's `v1` answer is not valid where the sender expects `v2`, nor the other way round.
  */
   sig: string;
 }
@@ -278,9 +284,10 @@ export interface ApprovalRefusal {
   error: 'conflict';
   /** Why nothing was used up. `already_consumed`, `not_approved`, `hash_mismatch`, `expired` (decided longer ago than `window_s`),
 `not_human_decided` (approved, but not by a person in a dashboard session) and `wrong_category` (the category has no hash binding)
-apply to both calls. The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash).
+apply to both calls. The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash),
+and, with `mode` `send` only, `already_used` (the approval was reserved and the use already sealed by a sender run; the gate keeps seeing `already_consumed`).
  */
-  reason: 'already_consumed' | 'not_approved' | 'hash_mismatch' | 'expired' | 'not_human_decided' | 'wrong_category' | 'pending' | 'rejected' | 'none';
+  reason: 'already_consumed' | 'already_used' | 'not_approved' | 'hash_mismatch' | 'expired' | 'not_human_decided' | 'wrong_category' | 'pending' | 'rejected' | 'none';
   window_s: number;
   /** With `reason` `pending` (claim only): the open request, so the caller does not open a second one. */
   approval_id?: string;
