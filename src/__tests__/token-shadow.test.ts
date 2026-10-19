@@ -668,7 +668,7 @@ describe('GET /api/token-shadow', () => {
   it('lists every category the observer can write', () => {
     expect([...TOKEN_SHADOW_CATEGORIES].sort()).toEqual([
       'agent_id_mismatch', 'fleet_skill_write_denied', 'foreign_row_access', 'missing_tenant_context',
-      'shared_agent_memories_no_tenant', 'shared_token_use', 'unscoped_read',
+      'shared_agent_memories_no_tenant', 'shared_token_refused', 'shared_token_use', 'unscoped_read',
     ])
   })
 })
