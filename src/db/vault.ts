@@ -360,14 +360,25 @@ function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | 
 // The sender's write: it takes over the reservation the gate made for this very mail and seals it. Every
 // condition is in the WHERE (not read from a snapshot), so of two senders racing for one reservation exactly one
 // changes the row. Nothing here creates, decides or re-opens an approval: it only stamps a row a person decided in
-// a dashboard session and the SAME agent's gate already reserved, inside the window, and not sealed yet.
+// a dashboard session and the SAME agent's gate already reserved FOR THE OFFICIAL SENDER (a `gate-send-` ref: the
+// gate only writes that prefix when it read the call as gmail-send.py), a moment ago, and not sealed yet.
 const ADOPT_STATEMENT = `
   UPDATE approvals SET used_at = ?, used_ref = ?
   WHERE id = ? AND category = ? AND status = 'approved' AND content_hash = ? AND tenant_id = ? AND agent_id = ?
     AND resolved_via = 'dashboard_session'
-    AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-%'
+    AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%'
     AND used_at IS NULL
 `
+
+/** The ref prefix by which the gate marks a reservation made for the official sender (the intent the sender may adopt). */
+export const GATE_SEND_REF_PREFIX = 'gate-send-'
+
+/**
+ * How long after the gate's reservation the sender may still adopt it. The gate allows the call and the sender
+ * starts a moment later, so seconds are enough; a reservation older than this is not "the call the gate just
+ * allowed" and must not become a mail. Shorter than the use window on purpose (the window is minutes).
+ */
+export const SEND_ADOPT_WINDOW_S = 120
 
 /** Who takes the approval: the send gate reserves it (no mode), the official sender seals it (`send`). */
 export type ClaimMode = 'send'
@@ -432,6 +443,8 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
   const send = p.mode === 'send'
+  // Adoption looks only a moment back (and never past the use window itself).
+  const adoptSince = now - Math.min(p.window_s, SEND_ADOPT_WINDOW_S)
   if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(p.category)) return { ok: false, reason: 'wrong_category' }
   if (!isContentHash(p.content_hash)) return { ok: false, reason: 'hash_mismatch' }
   // The sender seals under its own reference: without one there would be nothing to retry or audit with.
@@ -452,11 +465,11 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
         SELECT id FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND status = 'approved' AND resolved_via = 'dashboard_session'
-          AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-%' AND used_at IS NULL
+          AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%' AND used_at IS NULL
         ORDER BY consumed_at DESC, id DESC LIMIT 1
-      `).get(...scope, now - p.window_s, p.principal) as { id: string } | undefined
+      `).get(...scope, adoptSince, p.principal) as { id: string } | undefined
       if (reserved && db.prepare(ADOPT_STATEMENT).run(
-        now, ref, reserved.id, p.category, p.content_hash, p.tenant_id, p.principal, now - p.window_s, p.principal,
+        now, ref, reserved.id, p.category, p.content_hash, p.tenant_id, p.principal, adoptSince, p.principal,
       ).changes > 0) {
         const approval = getApproval(reserved.id) as Approval
         recordApprovalEvent({ approval_id: reserved.id, tenant_id: approval.tenant_id, event: 'used', reason: 'adopted_gate_reservation', actor: p.principal, ref })

@@ -460,7 +460,12 @@ def decide(raw: str, log: Dict[str, Any]) -> str:
         raise Deny('unreadable', _deny_text('a level cimzettje vagy torzse ures, egy ures level nem jovahagyhato.', env, h12))
 
     # 10-13. spend an approval
-    claim_body = {'category': CATEGORY, 'content_hash': content_hash, 'consumer': CONSUMER, 'ref': 'gate-' + uuid.uuid4().hex}
+    # The ref prefix is the gate's intent: 'gate-send-' only when the call is the official sender (gmail-send.py,
+    # alone), which then adopts this reservation instead of asking for a second approval. A mail sent any other way
+    # (a Gmail tool, curl, send.py) reserves under plain 'gate-' and nothing can adopt that.
+    official = tool == 'Bash' and bool(extract.command_is_official_sender(tool_input.get('command')))
+    claim_body = {'category': CATEGORY, 'content_hash': content_hash, 'consumer': CONSUMER,
+                  'ref': ('gate-send-' if official else 'gate-') + uuid.uuid4().hex}
     try:
         status, got = _http('POST', '/api/approvals/claim', claim_body, headers, deadline)
     except Unavailable as exc:
