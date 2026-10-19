@@ -56,6 +56,12 @@ The message is placed in the agent's incoming message queue and appears in its d
 
 ---
 
+## Closing a delegated message
+
+An agent that finished (or declined) a delegated task closes the message once; the delegator gets one `[Eredmény]` completion notice. If the same agent closes it a second time (for example a retry after a timeout), the second close is refused with a `409` and nothing changes: the first result stays and no second notice is sent.
+
+---
+
 ## Tenant filter
 
 A tenant selector at the top of the view lets you filter messages to a specific tenant's agents.

@@ -32,6 +32,13 @@ Detection (per pending placeholder, keyed by its session state file):
     WEDGED_SEC -> fire (blunt backstop for genuinely stuck turns; generous so
     long legit tasks aren't cut short).
 
+Sleep (the same lesson as scripts/channel-watchdog.sh): a placeholder's age is measured on the wall clock, and a
+machine that slept for an hour makes every live placeholder look an hour old. The timers that were due during the
+sleep then fire right after the wake, so this sentry would rewrite the placeholder of a perfectly healthy turn
+into the error text. kern.waketime (also moved by a DarkWake) fixes it two ways: for WAKE_GRACE_SEC after a wake the
+run does nothing, and afterwards an age is counted from the later of the file's mtime and the wake. Unknown wake
+time (not macOS, no sysctl, unreadable, or a wake time in the future) is the behaviour without this gate.
+
 Standalone: scans every agent's per-agent telegram state dir. No marveen src
 dependency; only Python stdlib + the `tmux` binary. Bot API base is overridable
 via TELEGRAM_API_BASE (tests point it at a local stub).
@@ -73,6 +80,7 @@ SCAN_GLOBS = [
     os.path.join(FLEET_ROOT, "agents", "*", ".claude", "channels", "telegram", "progress"),
     os.path.expanduser("~/.claude/channels/telegram/progress"),
 ]
+WAKE_GRACE_SEC = 600        # after the machine woke from sleep, do nothing for this long (see the docstring)
 DOWN_GRACE_SEC = 120        # agent down + placeholder older than this -> fire
 WEDGED_SEC = 15 * 60        # agent up, no hung-reply signal, this old -> fire (backstop)
 # agent up + a HUNG reply detected + placeholder older than this -> fire FAST.
@@ -97,6 +105,31 @@ def _env_int(name, default):
 
 def wedged_up_sec():
     return _env_int("TELEGRAM_WATCHDOG_WEDGED_UP_SEC", DEFAULT_WEDGED_UP_SEC)
+
+
+def last_wake_epoch():
+    """When the machine last woke from sleep, epoch seconds, or None when that is unknown.
+
+    Asks the shared portable_wake_epoch helper of scripts/lib/portable.sh (the channel watchdog uses the same one),
+    so there is one parser of kern.waketime and one test seam (PORTABLE_SYSCTL_BIN). Any failure is None: a missing
+    library (a stray copy of this file), no bash, a timeout, anything but plain digits."""
+    lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "portable.sh")
+    if not os.path.isfile(lib):
+        return None
+    try:
+        r = subprocess.run(["bash", "-c", '. "$1" && portable_wake_epoch', "_", lib],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    out = r.stdout.strip()
+    if r.returncode != 0 or not out.isdigit():
+        return None
+    return int(out)
+
+
+def usable_wake(wake, now):
+    """The wake time when it can be believed: a wake time in the future (clock set back) is no evidence."""
+    return wake if wake is not None and wake <= now else None
 
 
 def token(state_dir):
@@ -239,15 +272,26 @@ def deliver(tok, chat_id, message_id, answer, progress_dir):
     return "generic-error"
 
 
-def handle_dir(progress_dir):
+def handle_dir(progress_dir, wake=None):
     state_dir = os.path.dirname(progress_dir)           # .../telegram
     name = agent_name_from(progress_dir)
     agent_up = tmux_session_alive(f"agent-{name}") if name else True
     now = time.time()
+    wake = usable_wake(wake, now)
+    # The machine just woke: the file ages below still contain the sleep, and the tmux/transcript state is
+    # not settled either. Do nothing this run; the next ticks count from the wake.
+    if wake is not None and now - wake < WAKE_GRACE_SEC:
+        log(progress_dir, f"recently woken ({int(now - wake)}s ago, grace {WAKE_GRACE_SEC}s) -- skipping this run")
+        return
+
+    def age_of(mtime):
+        # a file cannot be older than the last wake as far as a wedge is concerned: count from the later one
+        return now - (max(mtime, wake) if wake is not None else mtime)
+
     # Sweep orphan dedup markers (normally removed by the Stop hook).
     for m in glob.glob(os.path.join(progress_dir, "seen-*.marker")):
         try:
-            if now - os.path.getmtime(m) > 3600:
+            if age_of(os.path.getmtime(m)) > 3600:
                 os.remove(m)
         except Exception:
             pass
@@ -255,7 +299,7 @@ def handle_dir(progress_dir):
     up_sec = wedged_up_sec()
     for path in glob.glob(os.path.join(progress_dir, "*.json")):
         try:
-            age = now - os.path.getmtime(path)
+            age = age_of(os.path.getmtime(path))
         except Exception:
             continue
         try:
@@ -312,9 +356,10 @@ def main():
     dirs = []
     for g in SCAN_GLOBS:
         dirs.extend(glob.glob(g))
+    wake = last_wake_epoch()
     for d in dirs:
         if os.path.isdir(d):
-            handle_dir(d)
+            handle_dir(d, wake)
 
 
 if __name__ == "__main__":

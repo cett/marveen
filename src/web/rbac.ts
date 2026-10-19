@@ -254,6 +254,8 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'GET', pathPattern: '/api/agent-taskstate', prefix: true, permission: 'agent-state:read' },
   { method: 'POST', pathPattern: '/api/agent-taskstate', prefix: true, permission: 'agent-state:write' },
   { method: 'DELETE', pathPattern: '/api/agent-taskstate', prefix: true, permission: 'agent-state:write' },
+  { method: 'GET', pathPattern: '/api/agent-inflight-turn', prefix: true, permission: 'agent-state:read' },
+  { method: 'POST', pathPattern: '/api/agent-inflight-turn', prefix: true, permission: 'agent-state:write' },
   { method: 'GET', pathPattern: '/api/daily-log', prefix: true, permission: 'daily-log:read' },
   { method: 'POST', pathPattern: '/api/daily-log', prefix: false, permission: 'daily-log:write' },
   { method: 'POST', pathPattern: '/api/hook-audit', prefix: false, permission: 'telemetry:write' },

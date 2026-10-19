@@ -2,7 +2,7 @@ import {
   createAgentMessage, getPendingMessages, listAgentMessages,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
-  markMessageDone, markMessageFailed, markMessageRefused, getAgentMessage,
+  closeOpenMessage, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
   COMPLETION_REPORT_PREFIX,
@@ -501,15 +501,29 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Compare-and-set close: an explicit outcome is final. 'refused' is persisted as status='failed' +
+    // refused_reason (closeOpenMessage), so `newStatus` stays 'refused' only for the closeOtelSpan /
+    // notification branches below -- the stored row's status is 'failed' like any other terminal failure.
+    // A message that is already done/failed is NOT closed again: a client retry after a timeout used to
+    // overwrite the first result and send the sender a second [Eredmény] under the executor's name.
     let ok = false
-    if (newStatus === 'done') ok = markMessageDone(id, result)
-    else if (newStatus === 'failed') ok = markMessageFailed(id, result)
-    // An explicit executor refusal. Persisted as
-    // status='failed' + refused_reason (markMessageRefused), so `newStatus`
-    // here stays 'refused' only for the closeOtelSpan/notification branches
-    // below -- the stored row's status is 'failed' like any other terminal
-    // failure once getAgentMessage(id) re-reads it.
-    else if (newStatus === 'refused') ok = markMessageRefused(id, result)
+    if (newStatus === 'done' || newStatus === 'failed' || newStatus === 'refused') {
+      ok = closeOpenMessage(id, newStatus, result)
+      if (!ok) {
+        const current = getAgentMessage(id)
+        if (current && (current.status === 'done' || current.status === 'failed')) {
+          // Tenant (404) and recipient (403) were checked above, so this answer never reveals the status
+          // of a message the caller may not touch. Logged: it is the signal of a deliberate re-close.
+          logger.info({ id, caller: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', previous: current.status }, 'message close refused: already closed')
+          json(res, {
+            error: 'status_conflict',
+            current_status: current.status,
+            hint: 'the first close already took effect; nothing was changed and no completion report was sent',
+          }, 409)
+          return true
+        }
+      }
+    }
 
     if (ok) {
       // Same row as the tenant pre-check above: nothing the notification needs

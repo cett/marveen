@@ -56,6 +56,12 @@ Az üzenet az ágens bejövő üzenetsorába kerül, és a kijelölt munkamenetb
 
 ---
 
+## Kiosztott üzenet lezárása
+
+A kiosztott feladatot befejező (vagy elutasító) ágens egyszer zárja le az üzenetet; a delegáló egy `[Eredmény]` teljesítési értesítőt kap. Ha ugyanaz az ágens másodszor is lezárja (például időtúllépés utáni újrapróbálás), a második lezárást a rendszer `409`-cel elutasítja és semmi sem változik: az első eredmény marad, második értesítő nem megy.
+
+---
+
 ## Bérlő-szűrő
 
 A nézet tetején bérlő-szelektor érhető el, amellyel egy adott bérlő ágenseinek üzenetei szűrhetők.

@@ -20,6 +20,23 @@ portable_mtime() {
   printf '%s\n' "$out"
 }
 
+# portable_wake_epoch: when the machine last woke from sleep, in epoch seconds (macOS only).
+# `kern.waketime` is `{ sec = N, usec = M } <date>` and also moves on a DarkWake (a maintenance wake), which is the
+# case that matters: the timers that were due during the sleep all fire right after the wake, in no fixed order,
+# so a "file is N minutes old" check that runs first sees the age of the SLEEP, not of a wedge. Absolute path:
+# /usr/sbin is not on the PATH of a launchd job. Not macOS, no sysctl, or an answer that is not `sec = <digits>`:
+# no output and status 1, and the caller keeps its behaviour without wake information.
+# PORTABLE_SYSCTL_BIN replaces the sysctl binary (tests only; launchd does not set it).
+portable_wake_epoch() {
+  local out sec
+  out="$("${PORTABLE_SYSCTL_BIN:-/usr/sbin/sysctl}" -n kern.waketime 2>/dev/null)" || return 1
+  case "$out" in *"sec = "*) ;; *) return 1 ;; esac
+  sec="${out#*sec = }"
+  sec="${sec%%,*}"
+  case "$sec" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$sec"
+}
+
 # portable_sha256 [FILE]: the SHA-256 of FILE, or of standard input without an argument, as 64 hex characters.
 # sha256sum (Linux), shasum -a 256 (macOS, perl), openssl dgst -sha256 (last resort). A tool that is present but
 # answers with anything other than 64 hex characters is skipped for the next one; reading standard input can be

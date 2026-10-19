@@ -23,6 +23,7 @@ export const ERROR_TOKENS = [
   'tenant_required', // a schedule create could not tell which tenant owns the task (send tenant_id or X-Agent-Id)
   'unknown_query_parameter', // not invalid_value: parameter NAME unknown (remove/rename), vs VALUE wrong (fix value)
   'stale_revision', // not conflict: the schedule exists and is fine, but changed after the caller loaded it (reload and review again)
+  'status_conflict', // not conflict: the entity exists but its status is not what the caller expected (re-read it, do not retry blindly); carries current_status
 ] as const
 
 export type ErrorToken = typeof ERROR_TOKENS[number]
@@ -46,8 +47,10 @@ export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = 
   // distinct from disabled -- the fix is activation by an admin, not re-enabling);
   // managed_settings_missing = precondition unmet (entity exists, external config missing);
   // stale_revision = optimistic-lock miss on an activation (content changed since it was loaded);
-  // all four are state conflicts, not malformed requests.
-  409: ['conflict', 'disabled', 'not_live', 'stale_revision', 'managed_settings_missing'],
+  // status_conflict = compare-and-set miss on a status (a message that is already closed, a kanban
+  // card that is no longer in the status the caller expected);
+  // all five are state conflicts, not malformed requests.
+  409: ['conflict', 'disabled', 'not_live', 'stale_revision', 'status_conflict', 'managed_settings_missing'],
   429: ['limit_exceeded'],
   500: ['internal_error'],
   502: ['upstream_error'],

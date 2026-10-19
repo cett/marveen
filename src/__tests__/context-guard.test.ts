@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizeContextGuardConfig,
   contextLimitForModel,
+  sleepGapMs,
+  shiftGuardStateForSleep,
   calibrateLimit,
   CALIBRATION_OVERSHOOT_TOLERANCE,
   decideGuard,
@@ -77,6 +79,47 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel('claude-fable-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-sonnet-5')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
+  })
+
+  // Sonnet 5.5 runs the 1M window (sessions measured at 228k-783k tokens, 2026-10-19). With the 200k
+  // default a guard switched on for such an agent would have read 228k as 114% and restarted it.
+  it('Sonnet 5.5 and later is a 1M window, with or without a provider prefix or version suffix', () => {
+    expect(contextLimitForModel('claude-sonnet-5-5')).toBe(1_000_000)
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5')).toBe(1_000_000)
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5-v1:0')).toBe(1_000_000)
+    expect(contextLimitForModel('CLAUDE-SONNET-5-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-sonnet-5-9')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-sonnet-4-6[1m]')).toBe(1_000_000)
+  })
+
+  // The minor digit is closed by a word boundary: sonnet-5-50 is not Sonnet 5.5, it is a model nobody has
+  // measured, so it keeps the conservative 200k. The ids that carry something after the digit still match.
+  it('the Sonnet 5.5 pattern is closed at the minor version: sonnet-5-50 is not 5.5, a provider suffix still is', () => {
+    expect(contextLimitForModel('claude-sonnet-5-50')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-5-55')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-5-99')).toBe(200_000)
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5-v1:0')).toBe(1_000_000) // Bedrock
+    expect(contextLimitForModel('us.anthropic.claude-sonnet-5-5-v1:0')).toBe(1_000_000) // Bedrock, region prefix
+    expect(contextLimitForModel('claude-sonnet-5-5@20261001')).toBe(1_000_000) // Vertex
+    expect(contextLimitForModel('claude-sonnet-5-5-20261001')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-sonnet-5-7')).toBe(1_000_000)
+  })
+
+  it('the other Sonnets and Haiku stay at 200k', () => {
+    expect(contextLimitForModel('claude-sonnet-5-1')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-5-4')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-4-6')).toBe(200_000)
+    expect(contextLimitForModel('claude-sonnet-4-5-20250929')).toBe(200_000)
+    expect(contextLimitForModel('claude-haiku-5-5')).toBe(200_000)
+    expect(contextLimitForModel('claude-3-5-sonnet-20241022')).toBe(200_000)
+  })
+
+  it('a 228k session of a Sonnet 5.5 agent is no longer over the act threshold', () => {
+    // 228276 tokens is a real measured Sonnet 5.5 session. Against 200k it is 114% (past hardPct 0.97);
+    // against the 1M window it is 23%.
+    const used = 228_276
+    expect(used / 200_000).toBeGreaterThan(DEFAULT_CONTEXT_GUARD.hardPct)
+    expect(used / contextLimitForModel('claude-sonnet-5-5')).toBeLessThan(DEFAULT_CONTEXT_GUARD.actPct)
   })
 
   it('steps the limit up when the observation disproves the base', () => {
@@ -770,5 +813,38 @@ describe('normalizeContextGuardConfig -- daily-handoff fields', () => {
     expect(normalizeContextGuardConfig({ dailyHandoffTime: '24:00' }).dailyHandoffTime).toBeNull()
     expect(normalizeContextGuardConfig({ dailyHandoffTime: 'nope' }).dailyHandoffTime).toBeNull()
     expect(normalizeContextGuardConfig({ dailyHandoffTime: 4 }).dailyHandoffTime).toBeNull()
+  })
+})
+
+describe('sleepGapMs / shiftGuardStateForSleep', () => {
+  const MIN = 60_000
+  it('no previous sweep, a regular and a late sweep are no sleep', () => {
+    expect(sleepGapMs(null, 1_000_000, 5 * MIN)).toBe(0)
+    expect(sleepGapMs(0, 5 * MIN, 5 * MIN)).toBe(0)
+    expect(sleepGapMs(0, 15 * MIN, 5 * MIN)).toBe(0)
+  })
+  it('beyond three intervals the excess over one interval is the sleep', () => {
+    expect(sleepGapMs(0, 15 * MIN + 1, 5 * MIN)).toBe(10 * MIN + 1)
+    expect(sleepGapMs(0, 120 * MIN, 5 * MIN)).toBe(115 * MIN)
+  })
+  it('a clock set back (negative elapsed) is no sleep', () => {
+    expect(sleepGapMs(10 * MIN, 5 * MIN, 5 * MIN)).toBe(0)
+  })
+  it('moves running deadlines, leaves unset ones unset, and a zero gap returns the same state', () => {
+    const running = { ...INITIAL_GUARD_STATE, phase: 'await-handoff' as const, deadlineMs: 1000, cooldownUntilMs: 0 }
+    expect(shiftGuardStateForSleep(running, 500)).toMatchObject({ deadlineMs: 1500, cooldownUntilMs: 0 })
+    expect(shiftGuardStateForSleep(INITIAL_GUARD_STATE, 500)).toMatchObject({ deadlineMs: 0, cooldownUntilMs: 0 })
+    expect(shiftGuardStateForSleep(running, 0)).toBe(running)
+  })
+  it('end to end: without the shift a handoff wait is "timed out" on wake and force-restarts; with it the agent waits on', () => {
+    const requestedAt = NOW
+    const state = { ...INITIAL_GUARD_STATE, phase: 'await-handoff' as const, deadlineMs: requestedAt + 20 * MIN }
+    const wake = requestedAt + 120 * MIN
+    const atWake = inputs({ nowMs: wake, pct: 0.5 })
+    expect(decideGuard(state, atWake, CFG).action).toBe('restart') // the bug being fixed
+    const shifted = shiftGuardStateForSleep(state, sleepGapMs(requestedAt + 5 * MIN, wake, 5 * MIN))
+    expect(decideGuard(shifted, atWake, CFG).action).toBe('none')
+    // the shift only buys the time that was slept: 20 minutes after the wake the wait does end
+    expect(decideGuard(shifted, inputs({ nowMs: wake + 20 * MIN + 1, pct: 0.5 }), CFG).action).toBe('restart')
   })
 })

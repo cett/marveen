@@ -95,7 +95,10 @@ count() { grep -c "^$1 " "$REQLOG" 2>/dev/null; }
 body_has() { grep -q "$1" "$REQLOG" && echo yes || echo no; }
 run_wd() { # force_up wedged_up_sec
     : > "$REQLOG"
+    # PORTABLE_SYSCTL_BIN points at nothing: no wake information, so the host's real kern.waketime (a wake a few
+    # minutes ago would make the watchdog skip the run) cannot flip these cases. The wake gate has its own test.
     HOME="$TMP" MARVEEN_ROOT="$TMP/root" TELEGRAM_API_BASE="$API_BASE" \
+      PORTABLE_SYSCTL_BIN="$TMP/no-such-sysctl" \
       TELEGRAM_WATCHDOG_FORCE_AGENT_UP="$1" TELEGRAM_WATCHDOG_WEDGED_UP_SEC="$2" \
       python3 "$WATCHDOG"
 }

@@ -163,6 +163,32 @@ Korlátok (best-effort): futásidőben összeállított útvonal, `bash -c "..."
 
 ---
 
+## Mit tehet egy PreToolUse hook
+
+Egy PreToolUse hook csak **tilthat** (`permissionDecision: "deny"` vagy 2-es kilépési kód) vagy **kontextust adhat**. A hívás bemenetét nem írhatja át, és nem engedélyezhet, nem kérdezhet, nem halaszthat. Az ok a kimenő levél: az `scripts/hooks/email-approval-gate.py` a hívásból kiolvasott levél hash-ére foglal jóváhagyást, és az MCP-úton ez a hash az egyetlen kötés (az MCP-szerver nem ellenőrzi újra). Egy második hook, amely ugyanannak a hívásnak a bemenetét átírná, azt eredményezhetné, hogy a kimenő levél eltér a jóváhagyottól. Az email-kapu ezért az egyetlen PreToolUse hook, amely bármit eldönt egy küldésről; a többi csak elutasíthat. Az `updatedToolOutput` (az eszköz EREDMÉNYÉT cseréli, nem a bemenetet) csak a ratchet által felsorolt fájlokban engedett (ma a browser content notice).
+
+A `scripts/__tests__/hook-input-rewrite.test.py` (a CI Python lépése futtatja) elbukik minden hook-szkripten, kapun vagy forrásfájlon, amely a bemenet-átíró kulcsot használja, a `permissionDecision` értékét `deny`-tól eltérőre állítja, vagy az `updatedToolOutput`-ot az engedélylistán kívül használja. Ha átírás vagy engedélyezés tényleg kell, az email-hash-t a hatásnál újra ellenőrizni kell (a küldő a saját maga számolta hash-re foglal), és az engedélylista kap egy átnézett bejegyzést az indoklással. A repo saját hookjai és a telepített plugin-ek közül ma egyik sem csinál ilyet, ezért a szabály most semmibe sem kerül.
+
+## Megszakadt turn jelzése
+
+Az a session, amely egy turn közepén hal meg (összeomlás, watchdog-respawn, gép-újraindulás), eddig vakon hagyta az utódját: a Claude Code nem futtatja újra a megszakadt turnt, és a halál előtt beinjektált ágensek közötti üzenet vagy csatorna-prompt nyomtalanul eltűnt. A `scripts/hooks/inflight-turn.py` ezt a rést zárja ágensenként egy sorral az `agent_inflight_turns` táblában (0085-ös migráció, API: `/api/agent-inflight-turn/:agent/{begin,end,replay,consume}`):
+
+- `UserPromptSubmit` az `inflight-turn.py begin`-t futtatja: feljegyzi a forrást (csatorna, ágens-üzenet, ütemezett feladat, közvetlen prompt), a `msg_id:N`-t ha a prompt megnevez egyet, egy 200 karakteres előnézetet és egy hash-t. Semmit nem ír ki.
+- `Stop` az `inflight-turn.py end`-et futtatja: a turn befejeződött, a feljegyzés törlődik.
+- `SessionStart` (`startup`, `resume`, `clear`; soha nem `compact`, mert az egy ép turn közben is tüzel) az `inflight-turn.py replay`-t futtatja: a még meglévő, 6 óránál fiatalabb, még fel nem ajánlott feljegyzésből `additionalContext` jelzés lesz, majd felajánlottnak jelölődik. A második indulás már semmit nem ajánl.
+
+A jelzés tanács, soha nem újrafuttatás: megnevezi a forrást, az üzenetazonosítót és az indulás idejét, az előnézetet idézett adatként közli, és azt kéri az ágenstől, hogy döntse el, kell-e újra elvégezni a munkát, és ismétlés előtt ellenőrizze a mellékhatásokat (levél, push, törlés, delegálás, kártya-mozgatás). A két vagy több tenantot kiszolgáló ágens a jelzést előnézet nélkül kapja, és a prompt szövegét nem is tároljuk (az ellenőrzés replay-kor újra lefut, így a később második tenantra engedélyezett ágens is védett).
+
+Ismert hamis pozitív: a felhasználói megszakítás (Esc) nem futtat `Stop` hookot, így a feljegyzés megmarad, és a következő újraindításnál egy fölösleges jelzés jöhet; a TTL és az egyszeri felajánlás korlátozza.
+
+A hookok sosem blokkolnak: minden út 0-s kilépéssel ér véget, a leállt dashboard csendes no-op, és az ágens saját token-fájlja nélkül nem hívnak semmit. Bekötés (hookonként egy parancs, matcher csak a `SessionStart`-on kell):
+
+```json
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py begin", "timeout": 10 }] }],
+"Stop":             [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py end", "timeout": 10 }] }],
+"SessionStart":     [{ "matcher": "startup|resume|clear", "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py replay", "timeout": 15 }] }]
+```
+
 ## Tenant skill-kapu
 
 A több tenantot kiszolgáló ágensek a tenantok skilljeit a saját tenantjuk kéréseihez kötik. Két hook végzi (mindkettő a dashboard indításakor kerül be minden sub-ágens `settings.json`-jába; a főágens nincs kapu alatt; a futó sessionök újraindítás után veszik fel):
@@ -219,6 +245,17 @@ Két érzékelési jel:
 | AUTHDEAD | A futó munkamenetben Claude bejelentkezési hibaüzenet (pl. "Please run /login", 401) -- csak a dashboard nélküli esetekre: ha a dashboard fut, az saját reauth-folyamata kezeli előbb |
 
 A watchdog türelmes: csak `AUTH_DEAD_THRESHOLD_TICKS` egymást követő negatív jelzés után avatkozik be (kb. 10-15 perc), hogy ne indítson felesleges újraindítást egy rövid hálózatkimaradás után.
+
+### Alvás és ébredés (macOS)
+
+Az alvó Mac nem futtat időzítőt: a keepalive-próba és a watchdog is leáll, az elmaradt tickek ébredés után azonnal, megállapított sorrend nélkül lőnek. Védelem nélkül a watchdog érhetett oda előbb, az alvás korú keepalive-fájlt látta, és újraindított egy egészséges főágens-munkamenetet (két nap alatt kétszer, mindkétszer elveszett egy élő beszélgetés). Ezért a watchdog kiolvassa az utolsó ébredés idejét (`sysctl -n kern.waketime`, ez DarkWake-re, azaz karbantartó ébredésre is lép), és az ébredés után `WAKE_GRACE_SECONDS` (600) másodpercig:
+
+- ebben a tickben nem tesz semmit, és ezt naplózza: `recently woken (<n>s ago, grace 600s) -- skipping this tick`; a halott-token ág is vár, mert a hálózat ilyenkor gyakran még nincs vissza;
+- utána a keepalive életkorát legkorábban az ébredéstől számolja, így egy alvás előtti fájl addig sem "elavult", amíg a keepalive-próba le nem futott a tickjeivel.
+
+Ez csak késleltet: az ébredés után is halott munkamenetet egy későbbi tick újraindítja. Ha az ébredés ideje nem olvasható (nem macOS, nincs `sysctl`), a watchdog a régi módon működik. Akkun, 15 percenként ébredő gépen (Maintenance Sleep) a watchdog emiatt többnyire szünetel; a gép ilyenkor nem szolgál ki semmit, és az első teljes ébredés 10 perc türelmi időt kap. A `pmset -c sleep 0` csak hálózaton tartja ébren a gépet; akkun az ébredés-kapu védi a munkamenetet. A context-guardnak ugyanez a gondja a handoff-határidőivel: ha egy sweep az előzőt több mint három intervallummal korábban látja, a többletet alvásnak veszi, és a futó határidőket ennyivel tolja (`context-guard: the machine slept between sweeps, running deadlines moved`).
+
+A Telegram progress-őrszem (`scripts/hooks/telegram_progress_watchdog.py`, a "Dolgozom rajta" placeholder watchdogja) ugyanezt a kaput kapta: a placeholder korát a falióráról méri, ezért alvás után minden élő placeholdert öregnek látott, és egy egészséges turn placeholderét átírta a hibaszövegre. Az ébredés idejét ugyanazzal a `portable_wake_epoch` segédfüggvénnyel olvassa, ébredés után 600 másodpercig nem csinál semmit (`recently woken (<n>s ago, grace 600s) -- skipping this run` a progress könyvtár `debug.log`-jában), utána pedig a placeholder korát és a takarított dedup-jelölők korát a fájl módosítási ideje és az ébredés közül a későbbitől számolja. Ismeretlen ébredési idő (nem macOS, nincs `sysctl`, a szkript kóbor másolata `scripts/lib/portable.sh` nélkül, jövőbeli ébredési idő) esetén a viselkedés a régi. A `scripts/__tests__/telegram-watchdog-wake.test.sh` fedi.
 
 ## Modell-fallback használati limitnél
 

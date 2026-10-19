@@ -27,6 +27,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 // whether a missing-file hook entry is OURS (prunable) or foreign (kept).
 export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'taskstate-replay.py',
+  'inflight-turn.py',
   'voice-reply-directive.py',
   'staleness-guard.py',
   'email-send-gate.mjs',

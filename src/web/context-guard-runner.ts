@@ -30,6 +30,8 @@ import {
   DAILY_HANDOFF_REASON_PREFIX,
   INITIAL_GUARD_STATE,
   STALE_REFRESH_REASON_PREFIX,
+  sleepGapMs,
+  shiftGuardStateForSleep,
   type GuardState,
   type HandoffStaleness,
   type GuardInputs,
@@ -55,6 +57,25 @@ const INTERVAL_MS = 300_000
 // request, and cooldown prevents restart loops within a run.
 const guardStates = new Map<string, GuardState>()
 const remoteSkipLogged = new Set<string>()
+
+/** The guard's per-agent state, for tests only. */
+export function guardStatesForTesting(): Map<string, GuardState> { return guardStates }
+
+// When the previous sweep ran (ms, null before the first). The phase deadlines are wall-clock stamps; a machine
+// that slept between two sweeps would find every running deadline "expired" on wake and force-restart an agent
+// that never had the time to write its handoff. noteGuardSweep() moves the deadlines by the sleep.
+let lastSweepAt: number | null = null
+
+/** Called at the start of every sweep; returns the sleep gap (ms) it moved the running deadlines by, 0 if none. */
+export function noteGuardSweep(nowMs: number): number {
+  const gap = sleepGapMs(lastSweepAt, nowMs, INTERVAL_MS)
+  lastSweepAt = nowMs
+  if (gap > 0) {
+    for (const [name, st] of guardStates) guardStates.set(name, shiftGuardStateForSleep(st, gap))
+    logger.info({ gapMs: gap, agents: guardStates.size }, 'context-guard: the machine slept between sweeps, running deadlines moved')
+  }
+  return gap
+}
 
 // Per-agent "daily-handoff already fired today" timestamp (ms), in-memory. A
 // dashboard restart re-arms every agent at "never fired today", which is
@@ -577,6 +598,7 @@ export function getHardGuardPhase(name: string): string {
 export function startContextGuardRunner(): NodeJS.Timeout {
   async function sweep() {
     const now = Date.now()
+    noteGuardSweep(now)
     try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
     for (const name of listAgentNames()) {
       try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }

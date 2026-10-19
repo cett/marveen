@@ -469,6 +469,8 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 // later migration is a red test until someone decides where it belongs.
 export const TENANT_PURGE_SIMPLE_TABLES = [
   'conversation_log',
+  // The interrupted-turn journal keeps a preview of a prompt (migration 0085): tenant data.
+  'agent_inflight_turns',
   'cost_budgets',
   'egress_allowlist',
   'idea_box',

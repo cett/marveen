@@ -281,6 +281,7 @@ const NONE: ReadonlySet<string> = new Set()
 const WATCHED: readonly WatchSpec[] = [
   { prefix: '/api/conversation-ledger', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/agent-state', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
+  { prefix: '/api/agent-inflight-turn', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/agent-taskstate', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/daily-log', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any', omittedMain: { who: 'shared', on: 'any', bodyKey: 'agent_id', queryKey: 'agent' } },
   { prefix: '/api/spans', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },

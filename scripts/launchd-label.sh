@@ -60,3 +60,39 @@ retire_legacy_helper_label() {
   rm -f "$_rhl_plist"
   echo "  Régi, közös launchd-címke kivezetve: $_rhl_old (ennek a telepítésnek most: $3)"
 }
+
+# retire_foreign_service_plists <own_label> <name> <project_dir> <plist_dir> <legacy_script>
+# Retires com.<other-id>.<name> jobs that are leftovers of THIS install, e.g.
+# after the main agent was renamed (old id -> new id) and the installer was
+# re-run: the new com.<new-id>.<name> job is written, but nothing removed the
+# old-id one, so the daemon ran twice with no lock between the two copies.
+# (retire_legacy_helper_label above only knows the literal com.marveen.<name>.)
+#
+# A foreign-id plist is retired ONLY when it demonstrably is ours, i.e. it
+# references this install's tree (<project_dir>, as an exact value or a path
+# prefix, so /x/marveen never matches /x/marveen-2) or the per-user legacy
+# script copy <legacy_script> (which every pre-#1305 install shared). A job
+# that points into another install's tree is left alone and reported.
+# The own label is never touched. Pure glob + grep, bash 3.2 / POSIX sh safe.
+retire_foreign_service_plists() {
+  _rfp_own="$1"; _rfp_name="$2"; _rfp_dir="$3"; _rfp_pdir="$4"; _rfp_legacy="$5"
+  for _rfp_plist in "$_rfp_pdir"/com.*."$_rfp_name".plist; do
+    [ -f "$_rfp_plist" ] || continue
+    _rfp_label="$(basename "$_rfp_plist" .plist)"
+    [ "$_rfp_label" = "$_rfp_own" ] && continue
+    if grep -qF "<string>$_rfp_dir</string>" "$_rfp_plist" \
+       || grep -qF "<string>$_rfp_dir/" "$_rfp_plist" \
+       || grep -qF "<string>$_rfp_legacy</string>" "$_rfp_plist"; then
+      launchctl bootout "gui/$(id -u)/$_rfp_label" >/dev/null 2>&1 \
+        || launchctl unload "$_rfp_plist" >/dev/null 2>&1 \
+        || true
+      if rm -f "$_rfp_plist"; then
+        echo "  Retired stale launchd job: $_rfp_label (this install is now: $_rfp_own)"
+      else
+        echo "WARN: could not remove $_rfp_plist" >&2
+      fi
+    else
+      echo "  Left alone: $_rfp_label (does not point at this install; own: $_rfp_own)"
+    fi
+  done
+}

@@ -50,6 +50,15 @@ HOOKS = {
     "taskstate": ("taskstate-replay.py",
                   lambda cwd: {"source": "compact", "cwd": cwd},
                   "/api/agent-taskstate/agent-a/replay", "agent-a"),
+    "inflight-begin": ("inflight-turn.py begin",
+                       lambda cwd: {"prompt": "hi", "cwd": cwd},
+                       "/api/agent-inflight-turn/agent-a/begin", "agent-a"),
+    "inflight-end": ("inflight-turn.py end",
+                     lambda cwd: {"cwd": cwd},
+                     "/api/agent-inflight-turn/agent-a/end", "agent-a"),
+    "inflight-replay": ("inflight-turn.py replay",
+                        lambda cwd: {"source": "startup", "cwd": cwd},
+                        "/api/agent-inflight-turn/agent-a/replay", "agent-a"),
     "inbox-drain": ("inbox-drain.py",
                     lambda cwd: {"cwd": cwd},
                     "/api/agents/main-x/drain-inbox", "main-x"),
@@ -100,7 +109,7 @@ class TestHooksAgentToken(unittest.TestCase):
         env.pop("MAIN_AGENT_ID", None)
         env.pop("MARVEEN_AGENT_TOKEN_FILE", None)
         return subprocess.run(
-            [sys.executable, os.path.join(self.root, "scripts", "hooks", script)],
+            [sys.executable, os.path.join(self.root, "scripts", "hooks", script.split()[0])] + script.split()[1:],
             input=json.dumps(payload(cwd)).encode(), env=env, cwd=cwd, timeout=30, capture_output=True)
 
     def own_token_file(self, who):

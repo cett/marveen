@@ -94,6 +94,12 @@ The **Auto-breakdown** button in the card detail panel lets the AI suggest subta
 
 ---
 
+## Moving a card from the API
+
+`POST /api/kanban/<id>/move` takes `status` (and optionally `actor`, `sort_order`, `orderedIds`). An agent that decides from an earlier read can add `expected_status`: the card is moved only if it is still in that status. If someone else moved it in the meantime (for example the owner put it back to Waiting), the call answers `409` with `status_conflict`, the `current_status` and the `expected_status`, and nothing changes: no status change, no history entry, no wake-up message, no parent update. Read the card again before deciding. Without `expected_status` the move is unconditional, as before; dragging on the board does not send it. A key the endpoint does not know (a misspelt `expectedStatus`, say) is a `400`, so a typo cannot silently turn the guard off.
+
+---
+
 ## Archiving and deletion
 
 - **Archive** - removes the card from the board view but keeps it in the database.

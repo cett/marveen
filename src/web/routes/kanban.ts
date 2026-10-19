@@ -43,6 +43,9 @@ function kanbanAuditActor(ctx: RouteContext): KanbanAuditActor | undefined {
 
 const KANBAN_STATUSES = new Set<KanbanCard['status']>(['planned', 'in_progress', 'waiting', 'testing', 'done'])
 
+// The body keys of POST /api/kanban/:id/move; anything else is a 400.
+const KANBAN_MOVE_KEYS = new Set(['status', 'sort_order', 'actor', 'orderedIds', 'expected_status'])
+
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
 // comment -- so the finished task's result lands on its OWN card, visible in the
@@ -498,7 +501,28 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
-    const { status, sort_order, actor, orderedIds } = JSON.parse(body.toString())
+    const move = JSON.parse(body.toString())
+    if (move === null || typeof move !== 'object' || Array.isArray(move)) {
+      json(res, { error: 'invalid_value', field: 'body', hint: 'The body must be a JSON object' }, 400)
+      return true
+    }
+    // A misspelt key must not silently switch a guard off: an `expectedStatus` typo would turn the
+    // compare-and-set into an unconditional move. Every key the callers send is listed here.
+    const unknownKey = Object.keys(move).find((k) => !KANBAN_MOVE_KEYS.has(k))
+    if (unknownKey !== undefined) {
+      json(res, { error: 'invalid_value', field: unknownKey, hint: `Unknown key. Allowed: ${[...KANBAN_MOVE_KEYS].join(', ')}` }, 400)
+      return true
+    }
+    const { status, sort_order, actor, orderedIds, expected_status } = move
+    // Optional guard: move only if the card is still in this status. Absent/null = the plain move.
+    let expectedStatus: KanbanCard['status'] | undefined
+    if (expected_status !== undefined && expected_status !== null) {
+      if (typeof expected_status !== 'string' || !KANBAN_STATUSES.has(expected_status as KanbanCard['status'])) {
+        json(res, { error: 'invalid_value', field: 'expected_status', hint: `Allowed: ${[...KANBAN_STATUSES].join(', ')}` }, 400)
+        return true
+      }
+      expectedStatus = expected_status as KanbanCard['status']
+    }
     // orderedIds is the whole target column, and every entry has its sort_order rewritten: a non-admin
     // caller's list is cut down to cards of its own tenant (a foreign or missing id is dropped, so
     // there is no oracle and no cross-tenant write).
@@ -507,13 +531,28 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const own = scopeToTenant(effectiveTenantId).kanban
       ordered = ordered.filter((cardId) => typeof cardId === 'string' && own.get(cardId))
     }
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor, ordered)) {
+    if (moveKanbanCard(id, status, sort_order ?? 0, actor, ordered, { expectedStatus })) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       if (status === 'in_progress') fireKanbanDispatch(id, actor)
       propagateStatus(id)
       json(res, { ok: true })
       return true
+    }
+    // The guard refused the move: the card exists but is not in the expected status. Nothing was
+    // written, so no dispatch and no parent update. The path-id tenant gate above already ran, so
+    // current_status is only ever shown to a caller that may read the card.
+    if (expectedStatus !== undefined) {
+      const current = getKanbanCard(id)
+      if (current) {
+        json(res, {
+          error: 'status_conflict',
+          current_status: current.status,
+          expected_status: expectedStatus,
+          hint: 'the card is not in the expected status; nothing was moved. Re-read the card before deciding again',
+        }, 409)
+        return true
+      }
     }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true

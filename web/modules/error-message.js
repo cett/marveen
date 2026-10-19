@@ -15,6 +15,7 @@ const ERROR_I18N = {
   disabled:                 'errors.disabled',
   not_live:                 'errors.not_live',
   stale_revision:           'errors.stale_revision',
+  status_conflict:          'errors.status_conflict',
   managed_settings_missing: 'errors.managed_settings_missing',
   upstream_error:           'errors.upstream_error',
   sender_not_in_allowlist:  'errors.sender_not_in_allowlist',

@@ -39,6 +39,29 @@ in_isolation() {
   env -i PATH="$1" /bin/bash -c ". '$LIB'; $2" 2>/dev/null
 }
 
+echo "portable_wake_epoch"
+# env -i drops the variable, so it is handed to the shell inside the snippet: wake_isolated <sysctl stub> <bin-dir> <snippet>
+wake_isolated() { env -i PATH="$2" /bin/bash -c "PORTABLE_SYSCTL_BIN='$1'; export PORTABLE_SYSCTL_BIN; . '$LIB'; $3" 2>/dev/null; }
+B="$TMP/wake-ok"
+stub "$B" sysctl 'echo "{ sec = 1792390725, usec = 413529 } Mon Oct 19 08:18:45 2026"'
+assert_eq "the sec of kern.waketime" "1792390725" "$(wake_isolated "$B/sysctl" "$B" "portable_wake_epoch")"
+B2="$TMP/wake-args"
+stub "$B2" sysctl 'echo "$*" > "'"$TMP"'/wake-args.txt"; echo "{ sec = 5, usec = 1 }"'
+wake_isolated "$B2/sysctl" "$B2" "portable_wake_epoch" >/dev/null
+assert_eq "asks sysctl for -n kern.waketime" "-n kern.waketime" "$(cat "$TMP/wake-args.txt" 2>/dev/null)"
+B="$TMP/wake-bad"
+stub "$B" sysctl 'echo "not a waketime"'
+assert_eq "an answer without 'sec =': no output, status 1" "rc=1" "$(wake_isolated "$B/sysctl" "$B" "portable_wake_epoch; echo rc=\$?")"
+stub "$B" sysctl 'echo "{ sec = abc, usec = 1 }"'
+assert_eq "a non-numeric sec: no output, status 1" "rc=1" "$(wake_isolated "$B/sysctl" "$B" "portable_wake_epoch; echo rc=\$?")"
+stub "$B" sysctl 'exit 1'
+assert_eq "sysctl failing: no output, status 1" "rc=1" "$(wake_isolated "$B/sysctl" "$B" "portable_wake_epoch; echo rc=\$?")"
+assert_eq "sysctl binary missing: no output, status 1" "rc=1" "$(wake_isolated "$TMP/does-not-exist" "$B" "portable_wake_epoch; echo rc=\$?")"
+if [ "$(uname -s)" = "Darwin" ]; then
+  host_wake="$(env -u PORTABLE_SYSCTL_BIN /bin/bash -c ". '$LIB'; portable_wake_epoch" 2>/dev/null)"
+  case "$host_wake" in ''|*[!0-9]*) fail "this Mac: the real kern.waketime is read as epoch seconds ('$host_wake')" ;; *) pass "this Mac: the real kern.waketime is read as epoch seconds" ;; esac
+fi
+
 echo "portable_sha256"
 B="$TMP/only-shasum"
 stub "$B" shasum "[ \"\$1\" = -a ] && [ \"\$2\" = 256 ] || exit 1; shift 2

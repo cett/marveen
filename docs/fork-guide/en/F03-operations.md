@@ -163,6 +163,32 @@ Limits (best effort): a path built at run time, a command inside `bash -c "..."`
 
 ---
 
+## What a PreToolUse hook may do
+
+A PreToolUse hook may only **deny** a call (`permissionDecision: "deny"` or exit code 2) or **add context**. It may not rewrite the call's input, and it may not allow, ask or defer. The reason is the outgoing mail: `scripts/hooks/email-approval-gate.py` claims an approval for the hash of the mail it reads from the call, and for the MCP route that hash is the only binding (the MCP server does not check it again). A second hook that rewrote the input of the same call could make the mail that leaves differ from the mail that was approved. The email gate is therefore the only PreToolUse hook that decides anything about a send; the others can only refuse. `updatedToolOutput` (it replaces a tool result, not the input) is allowed only in the files the ratchet lists (today the browser content notice).
+
+`scripts/__tests__/hook-input-rewrite.test.py` (run by the CI Python step) fails on any hook script, gate or source file that uses the input-rewrite key, sets `permissionDecision` to anything but `deny`, or uses `updatedToolOutput` outside its allowlist. If a rewrite or an allow is really needed, the email hash must be re-checked at the point of effect (the sender claims for the hash it computed itself) and the allowlist gets a reviewed entry with the reason. Nothing in the repo's own hooks or the installed plugins does any of this today, so the rule costs nothing now.
+
+## Interrupted-turn hint
+
+A session that dies in the middle of a turn (crash, watchdog respawn, host restart) used to leave its successor blind: Claude Code does not re-run a cut-off turn, and an inter-agent message or channel prompt injected just before the death vanished without a trace. `scripts/hooks/inflight-turn.py` closes that gap with one row per agent in `agent_inflight_turns` (migration 0085, API `/api/agent-inflight-turn/:agent/{begin,end,replay,consume}`):
+
+- `UserPromptSubmit` runs `inflight-turn.py begin`: notes the source (channel, agent message, scheduled task, direct prompt), the `msg_id:N` if the prompt names one, a 200-character preview and a hash. It prints nothing.
+- `Stop` runs `inflight-turn.py end`: the turn finished, the note is dropped.
+- `SessionStart` (`startup`, `resume`, `clear`; never `compact`, which fires inside a healthy turn) runs `inflight-turn.py replay`: a note that is still there, under 6 hours old and not offered before becomes an `additionalContext` hint, then it is marked offered. A second start offers nothing.
+
+The hint is advice, never a re-run: it names the source, message id and start time, quotes the preview as data, and tells the agent to decide whether the work needs doing again and to check for side effects (mail, push, delete, delegation, card moves) before repeating anything. An agent served by two or more tenants gets the hint without the preview, and its prompt text is not kept (the check is made again at replay, so an agent enabled for a second tenant later is covered too).
+
+Known false positive: a user interrupt (Esc) runs no `Stop` hook, so the note survives and one needless hint can follow the next restart; the TTL and the single offer bound it.
+
+The hooks never block: every path ends in exit 0, a dashboard that is down is a silent no-op, and without the agent's own token file no call is made. Wiring (one hook command each; a matcher is needed only on `SessionStart`):
+
+```json
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py begin", "timeout": 10 }] }],
+"Stop":             [{ "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py end", "timeout": 10 }] }],
+"SessionStart":     [{ "matcher": "startup|resume|clear", "hooks": [{ "type": "command", "command": "python3 <install>/scripts/hooks/inflight-turn.py replay", "timeout": 15 }] }]
+```
+
 ## Tenant skill gate
 
 Agents that serve several tenants keep each tenant's skills inside that tenant's requests. Two hooks do it (both wired at dashboard start into every sub-agent's `settings.json`; the main agent is not gated; running sessions pick them up after a restart):
@@ -219,6 +245,17 @@ Two detection signals:
 | AUTHDEAD | Claude login error in the live session pane (e.g. "Please run /login", 401) — fallback path for when the dashboard is down; when the dashboard is running, its own reauth handler acts first |
 
 The watchdog is patient: it only intervenes after `AUTH_DEAD_THRESHOLD_TICKS` consecutive negative signals (approximately 10–15 minutes), so a brief network blip does not trigger an unnecessary restart.
+
+### Sleep and wake (macOS)
+
+A sleeping Mac runs no timer: the keepalive probe and the watchdog both stop, and the overdue ticks fire right after the wake in no fixed order. Without a guard the watchdog came first, saw a keepalive file as old as the sleep and respawned a healthy main session (twice in two days, each time throwing away a live conversation). So the watchdog reads the last wake time (`sysctl -n kern.waketime`, which also moves on a DarkWake, a maintenance wake) and, for `WAKE_GRACE_SECONDS` (600) after it:
+
+- does nothing in that tick and logs `recently woken (<n>s ago, grace 600s) -- skipping this tick`; the dead-token arm waits too, because the network is often not back yet;
+- afterwards measures the keepalive age from the wake at the earliest, so a file that predates the sleep is never "stale" before the keepalive probe has had its ticks.
+
+It only delays: a session that is still dead after the grace is respawned by a later tick. Where the wake time cannot be read (not macOS, `sysctl` missing) the watchdog behaves as before. On a machine that wakes every 15 minutes on battery (Maintenance Sleep) the watchdog is therefore mostly paused; that machine serves nothing then, and the first full wake gets the 10-minute grace. `pmset -c sleep 0` keeps a machine awake on AC only; on battery the wake gate is what protects the session. The context guard has the same problem with its handoff deadlines: a sweep that finds the previous one more than three intervals ago treats the excess as sleep and moves the running deadlines by it (`context-guard: the machine slept between sweeps, running deadlines moved`).
+
+The Telegram progress sentry (`scripts/hooks/telegram_progress_watchdog.py`, the "working on it" placeholder watchdog) has the same gate: it ages a placeholder on the wall clock, so after a sleep it saw every live placeholder as old and rewrote the placeholder of a healthy turn into the error text. It reads the wake time through the same `portable_wake_epoch` helper, does nothing for 600 seconds after a wake (`recently woken (<n>s ago, grace 600s) -- skipping this run` in the progress directory's `debug.log`), and afterwards counts a placeholder's age, and the age of the dedup markers it sweeps, from the later of the file's modification time and the wake. An unknown wake time (not macOS, no `sysctl`, a stray copy of the script without `scripts/lib/portable.sh`, a wake time in the future) behaves as before. `scripts/__tests__/telegram-watchdog-wake.test.sh` covers it.
 
 ## Model fallback on usage limit
 
