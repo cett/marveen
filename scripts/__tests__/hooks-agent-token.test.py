@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase T3, wave 1: the logging / replay / directive hooks sign their dashboard calls with the
-calling agent's own token, fall back to the shared one only when the own file is MISSING (and then
-name themselves in X-Agent-Id), and stay silent without any token. Each hook runs as a subprocess
+calling agent's own token and never fall back to the shared one (Phase T4-5): with the own file
+MISSING they make no call at all, and they stay silent without any token. Each hook runs as a subprocess
 in a throwaway install layout against a local recording server.
 
 Privacy: neutral fixture data (agent ids agent-a / main-x, made-up tokens), temp directories.
@@ -118,20 +118,18 @@ class TestHooksAgentToken(unittest.TestCase):
                 self.assertTrue(calls, "no call to %s; saw %r" % (path, Rec.seen))
                 self.assertEqual({c["auth"] for c in calls}, {"Bearer own-%s" % who})
 
-    def test_every_hook_falls_back_to_the_shared_token_and_names_itself_when_the_own_file_is_missing(self):
-        for key, (_s, _p, path, who) in HOOKS.items():
+    def test_a_missing_own_token_makes_no_call_and_the_shared_token_never_leaves_the_machine(self):
+        for key, (_s, _p, _path, who) in HOOKS.items():
             with self.subTest(hook=key):
                 Rec.seen = []
                 self.put("store/.dashboard-token", "shared\n")
-                for rel in (self.own_token_file(who),):
-                    try:
-                        os.remove(os.path.join(self.root, rel))
-                    except FileNotFoundError:
-                        pass
-                self.assertEqual(self.run_hook(key).returncode, 0)
-                calls = [c for c in Rec.seen if c["path"] == path]
-                self.assertTrue(calls)
-                self.assertEqual({(c["auth"], c["agent"]) for c in calls}, {("Bearer shared", who)})
+                try:
+                    os.remove(os.path.join(self.root, self.own_token_file(who)))
+                except FileNotFoundError:
+                    pass
+                r = self.run_hook(key)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(Rec.seen, [])
 
     def test_every_hook_is_silent_and_exits_zero_without_any_token(self):
         for key in HOOKS:
@@ -193,11 +191,11 @@ class TestAutoSkillifyNotify(unittest.TestCase):
         self.mod._notify_main_agent("zz-agent", "/d", "r")
         self.assertEqual([c["auth"] for c in Rec.seen], ["Bearer own-zz"])
 
-    def test_missing_own_token_falls_back_and_names_the_sender(self):
+    def test_missing_own_token_sends_nothing_even_with_a_shared_token_file(self):
         with open(os.path.join(self.store, ".dashboard-token"), "w") as f:
             f.write("shared\n")
         self.mod._notify_main_agent("zz-agent", "/d", "r")
-        self.assertEqual([(c["auth"], c["agent"]) for c in Rec.seen], [("Bearer shared", "zz-agent")])
+        self.assertEqual(Rec.seen, [])
 
     def test_no_token_sends_nothing(self):
         self.mod._notify_main_agent("zz-agent", "/d", "r")
