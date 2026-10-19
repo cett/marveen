@@ -18,6 +18,12 @@ this module and calling build_raw_mime()/send_via_gmail() with another recipient
 anyone else goes through scripts/gmail-send.py, which has the gate. A ratchet (scripts/gmail-send-route-ratchet.py)
 keeps the send route literal out of every other file.
 
+One more, named entry point exists for ONE other recipient: send_done_notification(), used by the owner-approved,
+automatic done-card notifier (a heartbeat task outside this repository). It accepts exactly one fixed outside
+address, pinned below as a SHA-256 constant (so no personal address lives in this public file), with the same strict
+header check; any other address is refused. It takes no configuration from the environment, argv or a file, and a
+new address can only enter through a code change and review.
+
 The refresh_token / access_token are never printed; only one of the fixed
 outcome strings below goes to stdout.
 
@@ -30,6 +36,8 @@ import base64
 import binascii
 import email
 import email.policy
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -179,10 +187,9 @@ def assert_self_addressed(raw_mime, own_address):
         raise SelfSendOnly("the message has no recipient")
 
 
-def send_via_gmail(access_token, raw_mime):
-    """The ONLY place of this module that calls the Gmail send route. The own address is read from the account's
-    profile HERE (not taken from the caller), so a caller cannot pass in the recipient it wants to be treated as own."""
-    assert_self_addressed(raw_mime, fetch_own_email_address(access_token))
+def _post_to_gmail(access_token, raw_mime):
+    """The raw POST to the Gmail send route. PRIVATE: reached only through send_via_gmail() or send_done_notification(),
+    each of which has already checked the recipient. Nothing else in this module may call it."""
     req = urllib.request.Request(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
         data=json.dumps({"raw": raw_mime}).encode(),
@@ -194,6 +201,32 @@ def send_via_gmail(access_token, raw_mime):
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.load(resp)
+
+
+def send_via_gmail(access_token, raw_mime):
+    """Mail the token account's OWN mailbox. The own address is read from the account's profile HERE (not taken from the
+    caller), so a caller cannot pass in the recipient it wants to be treated as own."""
+    assert_self_addressed(raw_mime, fetch_own_email_address(access_token))
+    return _post_to_gmail(access_token, raw_mime)
+
+
+# SHA-256 of the lower-cased address of the ONE outside recipient of the automatic done-card notifier (owner decision
+# 2026-10-19). A hash, not the address: this file is public. It is a constant on purpose: not read from the environment,
+# argv or any file; changing it is a code change that goes through review (SECURITY.md).
+_DONE_NOTIFY_RECIPIENT_SHA256 = "bf6d1ab3e7185314bfca9ecaf9a3785f9b26401a95bd6a9d383209ab82754bf3"
+
+
+def send_done_notification(access_token, recipient, subject, body):
+    """The named entry point of the done-card notifier: mail `recipient`, which must be the one pinned address, and only
+    it. Builds the message itself and applies the same strict header check as the self-send (exactly one To equal to the
+    recipient, no other recipient-bearing header). Raises SelfSendOnly (nothing sent) for any other address."""
+    given = str(recipient).strip().casefold() if isinstance(recipient, str) else ""
+    digest = hashlib.sha256(given.encode("utf-8")).hexdigest()
+    if not given or not hmac.compare_digest(digest, _DONE_NOTIFY_RECIPIENT_SHA256):
+        raise SelfSendOnly("the recipient is not the one address the done-card notifier may mail")
+    raw_mime = build_raw_mime(given, subject, body)
+    assert_self_addressed(raw_mime, given)
+    return _post_to_gmail(access_token, raw_mime)
 
 
 def main(argv):

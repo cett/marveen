@@ -355,6 +355,132 @@ class TestExceptionStillWorks(unittest.TestCase):
         self.assertEqual(google.sent, [])
 
 
+NOTIFY = "notify-recipient@example.invalid"   # fixture stand-in for the pinned address (the pin is patched to its hash)
+
+
+def _pin(address):
+    import hashlib
+    return patch.object(mod, "_DONE_NOTIFY_RECIPIENT_SHA256", hashlib.sha256(address.strip().casefold().encode()).hexdigest())
+
+
+class TestDoneNotificationEntryPoint(unittest.TestCase):
+    """send_done_notification(): the one named exception for an outside recipient, pinned by hash, same strict header check."""
+
+    def _send(self, recipient, subject="Done card", body="Fixture body", google=None):
+        google = google or _FakeGoogle()
+        with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
+            try:
+                result = mod.send_done_notification("fixture-token", recipient, subject, body)
+            except mod.SelfSendOnly as exc:
+                return exc, google
+        return result, google
+
+    def test_the_pinned_address_goes_through_as_a_single_strict_message(self):
+        result, google = self._send(NOTIFY)
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+        self.assertEqual(len(google.sent), 1)
+        raw = base64.urlsafe_b64decode(google.sent[0]["raw"].encode("ascii"))
+        msg = message_from_bytes(raw)
+        self.assertEqual(msg.get_all("To"), [NOTIFY])
+        for name in ("Cc", "Bcc", "Resent-To", "Reply-To", "From"):
+            self.assertIsNone(msg[name])
+
+    def test_spelling_variants_of_the_pinned_address_still_mail_only_that_address(self):
+        for variant in (NOTIFY.upper(), "  " + NOTIFY + "  "):
+            with self.subTest(variant=variant):
+                result, google = self._send(variant)
+                self.assertEqual(result, {"id": "msg-fixture-id"})
+                raw = base64.urlsafe_b64decode(google.sent[0]["raw"].encode("ascii"))
+                self.assertEqual(message_from_bytes(raw).get_all("To"), [NOTIFY.casefold()])
+
+    def test_every_other_address_is_refused_and_nothing_is_sent(self):
+        for other in (OTHER, OWN, "x" + NOTIFY, NOTIFY + "x", "%s, %s" % (NOTIFY, OTHER), "%s,%s" % (OTHER, NOTIFY),
+                      "Name <%s>" % NOTIFY, "<%s>" % NOTIFY, "", " ", None, 5, [NOTIFY], b"notify"):
+            with self.subTest(other=other):
+                result, google = self._send(other)
+                self.assertIsInstance(result, mod.SelfSendOnly)
+                self.assertEqual(google.sent, [])
+                self.assertEqual(google.urls, [], "refused before any request")
+
+    def test_a_smuggled_header_in_the_subject_is_refused(self):
+        for subject in ("Done\r\nBcc: %s" % OTHER, "Done\nCc: %s" % OTHER, "Done\r\nTo: %s" % OTHER):
+            with self.subTest(subject=subject):
+                try:
+                    result, google = self._send(NOTIFY, subject=subject)
+                except Exception:
+                    continue   # the builder itself refused: fine
+                self.assertIsInstance(result, mod.SelfSendOnly)
+                self.assertEqual(google.sent, [])
+
+    def test_the_pinned_address_does_not_become_an_address_the_self_send_accepts(self):
+        # send_via_gmail stays self-only: a message to the pinned outside address is not "own" unless the profile says so
+        google = _FakeGoogle(own=OWN)
+        with _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google):
+            with self.assertRaises(mod.SelfSendOnly):
+                mod.send_via_gmail("fixture-token", mod.build_raw_mime(NOTIFY, "Done card", "Body"))
+        self.assertEqual(google.sent, [])
+
+    def test_the_pin_is_a_sha256_constant_and_no_address(self):
+        import re
+        pin = mod._DONE_NOTIFY_RECIPIENT_SHA256
+        self.assertRegex(pin, r"^[0-9a-f]{64}$")
+        with open(_SCRIPT_PATH, encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertEqual(len(re.findall(r"[A-Za-z0-9._%+-]+@(?!example\.)[A-Za-z0-9-]+\.[A-Za-z]{2,}", source)), 0,
+                         "the public file names no personal address")
+
+    def test_nothing_outside_the_code_moves_the_pin(self):
+        import inspect
+        self.assertEqual(list(inspect.signature(mod.send_done_notification).parameters), ["access_token", "recipient", "subject", "body"])
+        keys = ("DONE_NOTIFY_RECIPIENT", "DONE_NOTIFY_TO", "NOTIFY_RECIPIENT", "RECIPIENT", "DIGEST_TO", "MARVEEN_NOTIFY_TO")
+        before = mod._DONE_NOTIFY_RECIPIENT_SHA256
+        google = _FakeGoogle()
+        with patch.dict(os.environ, {k: OTHER for k in keys}, clear=False), patch.object(mod.urllib.request, "urlopen", google), \
+             patch.object(mod.sys, "argv", ["send-digest-email.py", "--recipient", OTHER, OTHER]):
+            with self.assertRaises(mod.SelfSendOnly):
+                mod.send_done_notification("fixture-token", OTHER, "Done card", "Body")
+        self.assertEqual(mod._DONE_NOTIFY_RECIPIENT_SHA256, before)
+        self.assertEqual(google.sent, [])
+
+    def test_main_does_not_use_the_exception(self):
+        # the scheduled digest still mails only the own mailbox, whatever it is told
+        google = _FakeGoogle()
+        with tempfile.NamedTemporaryFile() as tok, tempfile.NamedTemporaryFile() as cred:
+            with patch.object(mod, "TOKEN_FILE", tok.name), patch.object(mod, "CREDENTIALS_FILE", cred.name), \
+                 patch.object(mod, "refresh_access_token", return_value="fixture-token"), \
+                 patch.object(mod, "fetch_digest_content", return_value="Digest body text"), \
+                 _pin(NOTIFY), patch.object(mod.urllib.request, "urlopen", google), patch("sys.stdout", new_callable=io.StringIO):
+                code = mod.main(["--to", NOTIFY])
+        self.assertEqual(code, 0)
+        raw = base64.urlsafe_b64decode(google.sent[0]["raw"].encode("ascii"))
+        self.assertEqual(message_from_bytes(raw).get_all("To"), [OWN])
+
+
+class TestDoneNotificationDefenceInDepth(unittest.TestCase):
+    def test_the_header_check_runs_even_if_the_builder_were_to_produce_extra_recipients(self):
+        evil = _msg(_BASE + [("To", NOTIFY), ("Bcc", OTHER)])
+        google = _FakeGoogle()
+        with _pin(NOTIFY), patch.object(mod, "build_raw_mime", return_value=evil), patch.object(mod.urllib.request, "urlopen", google):
+            with self.assertRaises(mod.SelfSendOnly):
+                mod.send_done_notification("fixture-token", NOTIFY, "Done card", "Body")
+        self.assertEqual(google.sent, [])
+
+    def test_a_freshly_loaded_module_takes_its_pin_from_the_code_not_from_the_environment(self):
+        import hashlib
+        names = ("DONE_NOTIFY_RECIPIENT", "DONE_NOTIFY_RECIPIENT_SHA256", "NOTIFY_RECIPIENT", "RECIPIENT", "DIGEST_TO", "MARVEEN_NOTIFY_TO")
+        forged = hashlib.sha256(OTHER.encode()).hexdigest()
+        with patch.dict(os.environ, {k: v for k in names for v in (forged,)}, clear=False):
+            spec = importlib.util.spec_from_file_location("digest_loaded_with_env", _SCRIPT_PATH)
+            fresh = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fresh)
+        self.assertEqual(fresh._DONE_NOTIFY_RECIPIENT_SHA256, mod._DONE_NOTIFY_RECIPIENT_SHA256)
+        google = _FakeGoogle()
+        with patch.object(fresh.urllib.request, "urlopen", google):
+            with self.assertRaises(fresh.SelfSendOnly):
+                fresh.send_done_notification("fixture-token", OTHER, "Done card", "Body")
+        self.assertEqual(google.sent, [])
+
+
 class TestMainBranches(unittest.TestCase):
     def _run_main(self, argv=None):
         argv = argv or []
