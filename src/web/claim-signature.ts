@@ -11,7 +11,8 @@ import { STORE_DIR } from '../config.js'
 // sign: the key lives in store/.claim-signing-key, which the server creates and the gate and the sender read.
 // The key is never logged and never returned by any route.
 //
-// Signed text: v1|content_hash|category|agent_id|ref|consumed_at   (HMAC-SHA256, lowercase hex).
+// Signed text: v1|content_hash|category|agent_id|ref|consumed_at   (HMAC-SHA256, lowercase hex), the gate's
+// answer; the sender's answer (claim mode `send`) signs v2|...|consumed_at|used_at, see useSignatureInput.
 // The key is the 32 random bytes the file holds as 64 hex characters.
 
 export const CLAIM_SIGNING_KEY_FILE = '.claim-signing-key'
@@ -80,4 +81,28 @@ export function claimSignatureInput(c: SignedClaim): string {
 
 export function signClaim(c: SignedClaim, key: Buffer): string {
   return createHmac('sha256', key).update(claimSignatureInput(c), 'utf8').digest('hex')
+}
+
+/** What the sender's answer signs (claim mode `send`): the effect is sealed, and under whose reference. */
+export interface SignedUse {
+  content_hash: string
+  category: string
+  agent_id: string
+  /** The SENDER's reference (used_ref), not the gate's: a v2 answer is bound to one run of the sender. */
+  ref: string
+  consumed_at: number
+  used_at: number
+}
+
+/**
+ * Signed text of a sealed use: v2|content_hash|category|agent_id|ref|consumed_at|used_at. The version prefix
+ * and the extra field keep the two answers apart: a gate's v1 answer is never valid where the sender
+ * expects v2, and a v2 answer is never valid at the gate.
+ */
+export function useSignatureInput(c: SignedUse): string {
+  return ['v2', c.content_hash, c.category, c.agent_id, c.ref, String(c.consumed_at), String(c.used_at)].join('|')
+}
+
+export function signUse(c: SignedUse, key: Buffer): string {
+  return createHmac('sha256', key).update(useSignatureInput(c), 'utf8').digest('hex')
 }

@@ -584,6 +584,12 @@ components:
         consumed_ref:
           type: [string, "null"]
           description: The caller's own label for the use (for example the id of the send); the same label repeated by the same agent shortly after is a retry, not a second use.
+        used_at:
+          type: [integer, "null"]
+          description: When the official sender sealed the use (unix seconds), second phase of using an approval up (see `POST /approvals/claim`, `mode` `send`). Null while the approval is unused or only reserved by the send gate.
+        used_ref:
+          type: [string, "null"]
+          description: The sender's own label of that seal; the same label repeated by the same agent shortly after is a retry.
         timeout_at:
           type: [integer, "null"]
         created_at:
@@ -638,6 +644,9 @@ components:
         replayed:
           type: boolean
           description: True when this call repeated an earlier use by the same agent with the same `ref` (a retry of a lost answer); nothing was used up a second time.
+        adopted:
+          type: boolean
+          description: "Only with `mode` `send`. True when the sender took over the send gate's reservation, false when it reserved and sealed in one step (no gate in front)."
         window_s:
           type: integer
           description: The length of the use window in seconds (`APPROVAL_CONSUME_WINDOW_S`, default 1800, 60 to 86400), counted from the decision.
@@ -647,7 +656,7 @@ components:
           type: string
           pattern: "^[0-9a-f]{64}$"
           description: |
-            HMAC-SHA256, lowercase hex, of the text `v1|content_hash|category|agent_id|ref|consumed_at` built from the `approval` row (`ref` is its `consumed_ref`, empty when there is none; `consumed_at` is the integer seconds). The key is the 32 random bytes held as 64 hex characters in `store/.claim-signing-key`, which the server creates (mode 0600) and no route returns. The send gate and the official sender recompute it and refuse an answer without a matching `sig`, so a listener that only mirrors the request cannot pass for the dashboard. A replay of the same use carries the same `sig`.
+            HMAC-SHA256, lowercase hex, of the text `v1|content_hash|category|agent_id|ref|consumed_at` built from the `approval` row (`ref` is its `consumed_ref`, empty when there is none; `consumed_at` is the integer seconds). The key is the 32 random bytes held as 64 hex characters in `store/.claim-signing-key`, which the server creates (mode 0600) and no route returns. The send gate and the official sender recompute it and refuse an answer without a matching `sig`, so a listener that only mirrors the request cannot pass for the dashboard. A replay of the same use carries the same `sig`. With `mode` `send` the text is `v2|content_hash|category|agent_id|used_ref|consumed_at|used_at` instead (`used_ref` is the sender's own `ref`, `used_at` the integer seconds of the seal): a gate's `v1` answer is not valid where the sender expects `v2`, nor the other way round.
 
     ApprovalRefusal:
       type: object
@@ -662,8 +671,9 @@ components:
           description: |
             Why nothing was used up. `already_consumed`, `not_approved`, `hash_mismatch`, `expired` (decided longer ago than `window_s`),
             `not_human_decided` (approved, but not by a person in a dashboard session) and `wrong_category` (the category has no hash binding)
-            apply to both calls. The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash).
-          enum: [already_consumed, not_approved, hash_mismatch, expired, not_human_decided, wrong_category, pending, rejected, none]
+            apply to both calls. The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash),
+            and, with `mode` `send` only, `already_used` (the approval was reserved and the use already sealed by a sender run; the gate keeps seeing `already_consumed`).
+          enum: [already_consumed, already_used, not_approved, hash_mismatch, expired, not_human_decided, wrong_category, pending, rejected, none]
         window_s:
           type: integer
         approval_id:
@@ -2567,6 +2577,8 @@ paths:
         The caller is the agent its token names; a shared token, a session or a device is `403` `agent_identity_required`. The approval must have been requested by that same agent. Only `email_send` is bound to a hash; any other category is `409` `wrong_category`.
 
         A repeat with the same `ref` from the same agent a moment after a successful use answers `200` with `replayed: true` and uses nothing else up, so a lost answer cannot burn a second approval. Every call, refused ones included, is journaled in `approval_events` and the audit log.
+
+        **Two phases, one approval.** The send gate calls this without `mode`: it reserves the approval (`consumed_at`) before the mail command runs. When it read the call as the official sender (`scripts/gmail-send.py`, alone in the call) it reserves under a `ref` starting `gate-send-`; for any other way of sending it uses a plain `gate-` ref. The official sender then calls it with `mode: "send"` and its own `ref`: if the same agent holds a reservation for exactly this mail whose `ref` starts `gate-send-`, made no more than 120 seconds ago and not sealed yet, the call adopts it and seals the use (`used_at`, `used_ref`) in one guarded statement, so of two senders exactly one wins; with no such reservation (a scheduled run, no gate) it reserves and seals in one step. The sender calls Gmail only after a `200`, so an approval is at most once one mail. Adoption never creates, decides or re-opens an approval and still needs a decision a person made in a dashboard session. A sealed approval answers `409` `already_used` to the sender (the gate keeps seeing `already_consumed`). The `mode: "send"` answer is signed with the versioned text described under `ApprovalUsed.sig`.
       requestBody:
         required: true
         content:
@@ -2575,6 +2587,10 @@ paths:
               type: object
               required: [category, content_hash]
               properties:
+                mode:
+                  type: string
+                  enum: [send]
+                  description: Only the official sender sends it. Needs `ref` (`400` `required` without) and is not accepted on `POST /approvals/{id}/consume` (`400` `invalid_value`).
                 category:
                   type: string
                   description: The approval category; `email_send` is the one bound to a hash.
