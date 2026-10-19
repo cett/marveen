@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `16c7d1e3` vs fork `29704f7a`, 2026-10-19
+> Állapot: upstream `16c7d1e3` vs fork `56f6497c`, 2026-10-19
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -44,6 +44,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 - **Védett kapu- és konfigfájlok:** az al-ágens nem szerkesztheti a kapu-, hook- és allowlist-fájlokat, sem a saját beállításfájljait (kerülő útvonalak és rekurzív másolás ellen is). Az allowlist-változásokról alapvonal, teljes másolat és rendszerüzenet készül. Minden profil flotta-szintű tiltási alapot kap, ágensenként bővíthető eszköz-tiltólistával.
 - **Titkok (vault):** a titkok env-változóként, fájlként (opcionális visszaírással) vagy HTTP-MCP fejlécként injektálódnak, soha nem kerülnek logba vagy parancssorba. A vault-olvasás naplózott, a hozzáférési lista audit-módban működik, az SSH-kulcs titkok nem adhatók ki az általános útvonalakon, a visszavont eszközkulcs az SSH-bejegyzést is törli.
 - **Szöveg-higiénia:** a tartós írási utak és az inter-agent üzenetek homoglifa-figyelmeztetést kapnak (üzenetküldésnél blokkol, a közvetlen adatbázis-írásokat trigger naplózza). Az inter-agent üzenetsoron PII-szűrő fut, a bypass csak admin session-ből fogadható el és auditált. Az ágensek önazonosító fejléce csak jelzés, sosem jogosultság.
+- **Hook nem írhatja át a jóváhagyott hívást:** egy repo-szintű ratchet-teszt megbuktat minden olyan PreToolUse hookot, amely átírná a tool bemenetét vagy engedélyezne egy hívást; hook csak tilthat vagy kontextust adhat. Így a levélkapu jóváhagyott tartalom-hash-e és a ténylegesen kiküldött levél nem térhet el egy későbbi hook miatt.
 - **Közvetlen Gmail-küldés:** a napi összefoglaló-küldő csak a token fiókjának saját címére küld (a kész `To` fejléc szigorú ellenőrzésével, minden más címzett megtagadva). Egyetlen dokumentált kivétel van, egy külső címzett, amelyet a forrásban hash-ként rögzítettek, így konfigurációból, környezetből vagy paraméterből nem írható át; a kivételes küldésre hossz-plafon, kizárólag sima szöveg és napló vonatkozik. Egy ratchet-teszt biztosítja, hogy közvetlen Gmail-küldés csak a jóváhagyott küldőben és ebben a két útban lehessen.
 - **Függőségek:** az ismert sérülékenységű npm-csomagok (lekérdezés- és ZIP-feldolgozás) felülbírálva, az Excel-import sérülékenység-mentes könyvtárral fut.
 - **Tenant-izoláció:** a memória, a vektoros keresés, az üzenet-szálak, az áttekintő, a naplók, az ötletláda, a trace-ek, a jóváhagyások és a munkadokumentumok SQL-szinten tenantra szűrtek; az admin globális képet lát és tenantra szűkíthet. Az idegen tenant erőforrása pontosan úgy válaszol, mint a nem létező. A tenant törlése minden hozzá kulcsolt adatot visz, a több tenantot kiszolgáló ágens beállításai megmaradnak, és teszt őrzi, hogy új tenant-tábla ne maradhasson besorolás nélkül.
@@ -68,11 +69,11 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 **Üzemeltetési megbízhatóság**
 
-- **Automatikus helyreállás:** újraindítás vagy crash után az ágensek 60 másodpercen belül visszaállnak, a lefagyott sessiont is beleértve.
+- **Automatikus helyreállás:** újraindítás vagy crash után az ágensek 60 másodpercen belül visszaállnak, a lefagyott sessiont is beleértve. A csatorna-őrkutya és a Telegram-folyamatjelző figyelő alvás-tudatos: az ébredés utáni türelmi idő alatt a gép alvása nem számít elakadt sessionnek, így egy élő session nem indul újra tévesen. A folyamatjelző telepítője átnevezés után a régi azonosítójú, azonos feladatot futtató indítási feladatot is kivezeti, és a driftelt globális hook-másolatot frissíti.
 - **Központi Claude Code frissítés:** a beépített automatikus frissítő minden sessionben ki van kapcsolva (egyszerre induló sessionök korábban ugyanazt a közös telepítést írták egyszerre, és a bináris futó session alatt cserélődött). Helyette egy hetente futó, zárolt feladat frissít egyszer, megőrzi a rögzített verziót és az AVX nélküli gépek tartását, majd a futó sessionöket csak idle állapotban, egyenként, a fő-agenst utoljára indítja újra; az állapot a Frissítések nézetben látszik.
 - **Hibák láthatósága és a leletek megkülönböztetése:** az Áttekintés "N hiba az elmúlt 4 órában" figyelmeztetése kinyitja a hibás futások listáját (mikor, mi, melyik ágens), a hibás JSON-törzsű kérés 400-at kap a 500 helyett (így nem számít szerverhibának), és az a parancs típusú ütemezett feladat, amely a dedikált lelet-kilépési kóddal (42) ér véget, nem futási hiba: egy riasztást küld a lelet kezdetén, a hibaszámlálót nem növeli.
 - **Modell-fallback:** limit esetén konfigurálható lánc lép életbe (pl. opus, sonnet, haiku). A lefokozás tartós, az operátor beállítását nem írja felül, a visszaállás az ágens saját modelljére történik, újraindítás után is. A limit-észlelés szűk, hogy a pane-ben idézett szöveg ne váltson ki cserét.
-- **Kontextus-védelem:** a proaktív watchdog hook minden tool-hívásnál figyeli a kontextus telítettségét, közvetlenül frissíti a token-használati adatot, és küszöbnél rolling HANDOFF-összefoglalót injektál. A fail-closed restart-kapu csak élő munkát jelző jelzésekre blokkol (aktív gyermekfolyamat, kézbesítetlen kimenet, megválaszolatlan kérdés), az elavult jelek elévülnek.
+- **Kontextus-védelem:** a proaktív watchdog hook minden tool-hívásnál figyeli a kontextus telítettségét, közvetlenül frissíti a token-használati adatot, és küszöbnél rolling HANDOFF-összefoglalót injektál. A fail-closed restart-kapu csak élő munkát jelző jelzésekre blokkol (aktív gyermekfolyamat, kézbesítetlen kimenet, megválaszolatlan kérdés), az elavult jelek elévülnek. A Sonnet 5.5 modell 1M kontextus-ablakkal számol (a mért sessionök 228k-783k token közöttiek), így bekapcsolt védelem mellett sem indul újra korán.
 - **Ágens-futtatás:** a provider-dispatch (Claude/Ollama/Deepseek/OpenRouter) háttér-workerben fut (így a kanban AI-bontás helyi modellen is futhat), a session végén az auto-skillify hook skill-vázlatot generál.
 - **Audit:** a flotta-műveletek, a kapuk elutasításai és a hook-események egységes "Teljes audit trail" oldalon böngészhetők (szűrés, lapozás, részlet-nézet, JSON-export).
 - **Lapozás:** a közös lapozó komponens és a szerver-oldali lapozás a listanézeteken is él (kanban oszloponként, jóváhagyások, artifactok, ötletláda, memóriák, importált emlékek, munkadokumentumok).
@@ -85,17 +86,18 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 **Fleet koordináció és láthatóság**
 
 - **Blackboard:** ágensenként egy élő sor (aktív, kész, blokkolt) előzményekkel, elavulás-jelzéssel és a delegált, de fel nem vett feladatok követésével. Az üzenet a küldő sorát a befejezéssel egy hívásban zárhatja, a blokkolt állapotok okuk szerint követettek.
-- **Inter-agent üzenetek:** opcionális strukturált handoff-boríték, tenant-helyes eredmény-értesítés a delegálónak, tenant-ellenőrzés az üzenetek lezárásakor.
+- **Inter-agent üzenetek:** opcionális strukturált handoff-boríték, tenant-helyes eredmény-értesítés a delegálónak, tenant-ellenőrzés az üzenetek lezárásakor. Egy már lezárt (kész vagy sikertelen) üzenet nem zárható újra: a második lezárás compare-and-set alapon 409-et kap, nem írja felül az eredményt és nem küld második eredmény-értesítést.
+- **Megszakított turn jelzése:** egy ágens aktuális turnjét egy napló követi (indításkor rögzíti, a turn végén törli); ha a session közben meghal, az utódja induláskor megkapja, hogy az előző turn megszakadt, és maga dönti el, kell-e újra végrehajtani. Automatikus újrajátszás nincs.
 - **Overview:** admin-only kvóta-csík az 5 órás és heti keretről, az ablak-arányos felhasználási referencia-vonallal (upstream ötlet alapján), Szolgáltatások rács, skill-használati jelvények, a várakozó jóváhagyások számlálója.
 - **Ágens-nézetek:** tenant főügynök-jelvény és (admin-only) tenant-chip az ágens-kártyákon és a szervezeti ábrán.
-- **Kanban:** egységes kereső az aktív és archivált kártyák között (sorszám- és hash-keresés), oszloponkénti lapozott betöltés.
+- **Kanban:** egységes kereső az aktív és archivált kártyák között (sorszám- és hash-keresés), oszloponkénti lapozott betöltés. A kártya-mozgatás opcionális `expected_status`-t fogad (compare-and-set): elavult státusznál 409, a kártya és az oszlop sorrendje változatlan marad. Az in_progress-ből kilépő kártya kiosztási őre törlődik, így a visszahúzott kártya újra felébreszti a felelőst (egy in_progress szakaszban egyszer).
 - **Flotta-szabály:** a sub-ágens sablon rögzíti, hogy feladat-delegálást és QA-t kizárólag a koordinátor ad ki.
 
 **API és integrációs szerződés**
 
 - **OpenAPI és SDK:** az API-felület egyetlen referenciája egy OpenAPI 3.1 spec (70+ végpont, három részletességi szinttel), a generált kliens szinkronját és az inkompatibilis változások kiszűrését CI-lépések őrzik.
 - **Verziózás:** a kanonikus útvonalak verziózottak (v1), a régi aliasok Deprecation és Sunset fejlécekkel élnek a minimum 6 hónapos ablak végéig.
-- **Egységes hibaszerződés:** minden API-hiba gépi-olvasható, kanonikus hibakóddal, magyar leírással és a hibás mező nevével érkezik (az upstream nem tartalmazza).
+- **Egységes hibaszerződés:** minden API-hiba gépi-olvasható, kanonikus hibakóddal, magyar leírással és a hibás mező nevével érkezik (az upstream nem tartalmazza). Az "elavult státusz" ütközés külön kódot (`status_conflict`, 409) kap az üzenet-lezárásnál és a kanban-mozgatásnál, a mai állapottal a válaszban.
 - **Megfigyelhetőség:** OpenTelemetry trace-waterfall az inter-agent üzenetekhez, Tempo/Jaeger kompatibilis JSON-export és push-alapú OTLP-export trace-ekkel és token-metrikákkal.
 
 **Fejlesztői alapinfrastruktúra**
@@ -107,7 +109,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, #1880, #1882, #927, #1881, #1883, #1863, #1797, #1796, #1879, #1795, #1794, #1789,
 
-Állapot: upstream `16c7d1e3` vs fork `29704f7a`, 2026-10-19
+Állapot: upstream `16c7d1e3` vs fork `56f6497c`, 2026-10-19
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (fejlesztő -> koordinátor) frissítsd ezt a szakaszt
      a friss git log alapján:
