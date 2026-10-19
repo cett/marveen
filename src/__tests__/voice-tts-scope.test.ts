@@ -79,6 +79,23 @@ describe('resolveOwnStateDir (names, where they really point, and what is handed
     expect(resolveOwnStateDir('zed', own('zed'), bases)).toBeNull()
   })
 
+  it('still resolves a sub-agent channel when the global channels base does not exist', () => {
+    // an install whose channels all live under the agents dir has no ~/.claude/channels at all
+    rmSync(bases.channelsBase, { recursive: true, force: true })
+    mkdirSync(own('zed'), { recursive: true })
+    expect(resolveOwnStateDir('zed', own('zed'), bases)).toBe(own('zed'))
+    // the main agent's global dir is not there either: nothing to speak on
+    expect(resolveOwnStateDir('mn', join(bases.channelsBase, 'telegram'), bases)).toBeNull()
+  })
+
+  it('still refuses a symlink to another agent when the global channels base does not exist', () => {
+    rmSync(bases.channelsBase, { recursive: true, force: true })
+    mkdirSync(own('ydd'), { recursive: true })
+    mkdirSync(join(bases.agentsBase, 'zed', '.claude', 'channels'), { recursive: true })
+    symlinkSync(own('ydd'), own('zed'))
+    expect(resolveOwnStateDir('zed', own('zed'), bases)).toBeNull()
+  })
+
   it('refuses a directory whose .env or access.json is itself a symlink', () => {
     for (const name of ['.env', 'access.json']) {
       mkdirSync(own('zed'), { recursive: true })

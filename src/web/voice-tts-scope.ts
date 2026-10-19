@@ -72,9 +72,19 @@ export function resolveOwnStateDir(agentId: string, stateDir: string, bases: Cha
   if (!agentOwnsStateDir(agentId, stateDir, bases)) return null
   try {
     const real = realpathSync(stateDir)
+    // A base that does not exist (no ~/.claude/channels on an install whose channels all live under the
+    // agents dir) cannot hold the directory, so it is compared as given; any other failure fails closed.
+    const realBase = (p: string): string => {
+      try {
+        return realpathSync(p)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return p
+        throw err
+      }
+    }
     const realBases: ChannelBases = {
-      agentsBase: realpathSync(bases.agentsBase),
-      channelsBase: realpathSync(bases.channelsBase),
+      agentsBase: realBase(bases.agentsBase),
+      channelsBase: realBase(bases.channelsBase),
       mainAgentId: bases.mainAgentId,
     }
     if (!agentOwnsStateDir(agentId, real, realBases)) return null
