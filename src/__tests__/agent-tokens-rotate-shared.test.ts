@@ -141,5 +141,14 @@ describe('after the rotation the auth gate refuses the old value everywhere', ()
     const path = '/api/agents/alpha/pane/stream'
     const sse = resolveAuth(req({}), url(`${path}?token=old-shared-value`), path, 'GET', 'old-shared-value', true)
     expect(sse.kind).toBe('none')
+    // a padded variant hashes differently but the Bearer comparison trims it: it must not slip past either
+    const padded = resolveAuth(req({}), url(`${path}?token=%20old-shared-value%20`), path, 'GET', 'old-shared-value', true)
+    expect(padded.kind).toBe('none')
+  })
+
+  it('SSE ?token=: a shared token that was NOT rotated still opens the stream', () => {
+    enrollDashboardApiToken(sha('current-shared'), NOW() - 5)
+    const path = '/api/agents/alpha/pane/stream'
+    expect(resolveAuth(req({}), url(`${path}?token=current-shared`), path, 'GET', 'current-shared', true).kind).toBe('token')
   })
 })
