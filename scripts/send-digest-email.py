@@ -240,6 +240,8 @@ _DONE_NOTICE_STATUS_LABELS = {
     "done": "Kész",
 }
 _DONE_NOTICE_MAX_NAME_CHARS = 80
+_DONE_NOTICE_MAX_SIGNATURE_NAME_CHARS = 40
+_DONE_NOTICE_MAX_BODY_BYTES = 1024   # the template with every part at its cap is well under this (UTF-8 bytes)
 _DONE_NOTICE_NAME_UNTITLED = "(névtelen feladat)"
 _DONE_NOTICE_NAME_DISALLOWED = re.compile(r"[^\w \-(),+]")   # \w: Unicode letters, digits and "_"
 _DONE_NOTICE_MIN_EPOCH = 946684800                            # 2000-01-01; anything earlier is not a done time
@@ -294,12 +296,34 @@ def _compose_done_notice(task_name, status, done_at):
     if (isinstance(done_at, bool) or not isinstance(done_at, (int, float)) or not math.isfinite(done_at)
             or done_at < _DONE_NOTICE_MIN_EPOCH or done_at > time.time() + _DONE_NOTICE_FUTURE_SLACK_SECONDS):
         raise SelfSendOnly("the time must be a plausible epoch timestamp")
-    name = " ".join(_DONE_NOTICE_NAME_DISALLOWED.sub(" ", task_name).split())[:_DONE_NOTICE_MAX_NAME_CHARS].strip()
+    name = _reduce_notice_text(task_name, _DONE_NOTICE_MAX_NAME_CHARS)
     label = _DONE_NOTICE_STATUS_LABELS[status]
     stamp = datetime.fromtimestamp(done_at).strftime("%Y-%m-%d %H:%M")
     body = "Feladat-értesítés\n\nFeladat: %s\nStátusz: %s\nIdőpont: %s%s" % (
-        name or _DONE_NOTICE_NAME_UNTITLED, label, stamp, build_signature())
+        name or _DONE_NOTICE_NAME_UNTITLED, label, stamp, _done_notice_signature())
+    # Backstop: every part is already bounded, so this only trips if a bound above is ever loosened by mistake.
+    if len(body.encode("utf-8")) > _DONE_NOTICE_MAX_BODY_BYTES:
+        raise SelfSendOnly("the notice is over the size limit")
     return "Feladat státusz: %s" % label, body
+
+
+def _reduce_notice_text(text, max_chars):
+    """`text` reduced to the characters a done notice may carry (see _DONE_NOTICE_NAME_DISALLOWED), runs of blanks
+    collapsed to one space, cut to `max_chars`."""
+    return " ".join(_DONE_NOTICE_NAME_DISALLOWED.sub(" ", text).split())[:max_chars].strip()
+
+
+def _done_notice_signature():
+    """The signature of a done notice. Same source as build_signature() (BOT_NAME / OWNER_NAME from the environment, then
+    .env, then the generic fallback), but both names go through the same reduction as the task name and a short cap, so
+    neither the environment nor .env can put a link, an address, markup, a line break or a long text into a mail to the
+    fixed outside recipient."""
+    dotenv = _load_dotenv()
+    bot = _reduce_notice_text(os.environ.get("BOT_NAME") or dotenv.get("BOT_NAME") or "Marveen",
+                              _DONE_NOTICE_MAX_SIGNATURE_NAME_CHARS) or "Marveen"
+    owner = _reduce_notice_text(os.environ.get("OWNER_NAME") or dotenv.get("OWNER_NAME") or "Owner",
+                                _DONE_NOTICE_MAX_SIGNATURE_NAME_CHARS) or "Owner"
+    return f"\n\n--\n{bot}, {owner} AI asszisztense"
 
 
 def _read_notice_state(now):
@@ -312,6 +336,9 @@ def _read_notice_state(now):
         with open(DONE_NOTICE_STATE, "r", encoding="utf-8") as fh:
             raw = fh.read()
     except FileNotFoundError:
+        # First use. Known limit, documented in SECURITY.md: the counter is a file, so whoever can delete it as this user
+        # resets it; that user can equally edit this script, so a file cannot be stronger than its permissions. What a
+        # reset buys is bounded anyway: 6 fixed-template notices to the one pinned recipient per window.
         return [], False
     except (OSError, UnicodeDecodeError) as exc:
         raise DoneNoticeStateError("the send-rate state cannot be read") from exc
@@ -328,9 +355,10 @@ def _read_notice_state(now):
 
 def _write_notice_state(sent):
     """Replace DONE_NOTICE_STATE atomically (temp file in the same directory, fsync, rename), 0600."""
-    tmp = "%s.tmp.%d" % (DONE_NOTICE_STATE, os.getpid())
+    # O_EXCL on an unpredictable name: a planted file or symlink at the temp path is refused, never written through.
+    tmp = "%s.tmp.%d.%s" % (DONE_NOTICE_STATE, os.getpid(), os.urandom(4).hex())
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             os.write(fd, json.dumps({"sent": sent}).encode("utf-8"))
             os.fsync(fd)
@@ -353,7 +381,7 @@ def _reserve_done_notice_slot():
     if fcntl is None:
         raise DoneNoticeStateError("no file locking on this platform")
     try:
-        lock_fd = os.open(DONE_NOTICE_STATE + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        lock_fd = os.open(DONE_NOTICE_STATE + ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
         raise DoneNoticeStateError("the send-rate lock cannot be opened") from exc
     try:

@@ -377,7 +377,7 @@ def _redirect_done_log(case):
     case.state_path = os.path.join(tmp.name, "done-notice-state.json")
     for patcher in (patch.object(mod, "DONE_NOTICE_LOG", case.log_path),
                     patch.object(mod, "DONE_NOTICE_STATE", case.state_path),
-                    patch.object(mod, "build_signature", return_value=SIGNATURE)):
+                    patch.dict(os.environ, {"BOT_NAME": "FixtureBot", "OWNER_NAME": "Fixture Owner"})):
         patcher.start()
         case.addCleanup(patcher.stop)
 
@@ -616,6 +616,52 @@ class TestDoneNoticeLimits(unittest.TestCase):
                 self.assertEqual(result, {"id": "msg-fixture-id"})
                 _, body = self._sent_message(google)
                 self.assertEqual(body.splitlines()[2], "Feladat: (n\u00e9vtelen feladat)")
+
+    def _signature_of(self, env, dotenv=None):
+        """The signature line the mail carries when BOT_NAME / OWNER_NAME (and .env) are `env` / `dotenv`."""
+        with patch.dict(os.environ, env, clear=False), patch.object(mod, "_load_dotenv", return_value=dotenv or {}):
+            for key in ("BOT_NAME", "OWNER_NAME"):
+                if key not in env:
+                    os.environ.pop(key, None)
+            result, google = self._send()
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+        _, body = self._sent_message(google)
+        return body
+
+    def test_the_signature_names_are_reduced_like_the_task_name(self):
+        hostile = {"BOT_NAME": "Bot https://e.io/x?y=1\r\nBcc: a@b.io", "OWNER_NAME": "own<script>er"}
+        body = self._signature_of(hostile)
+        self.assertTrue(body.endswith("\n\n--\nBot https e io x y 1 Bcc a b io, own script er AI asszisztense"), body)
+        for ch in ".:/@?=%&<>\\\r\t":
+            self.assertNotIn(ch, body.split("--\n")[-1], "%r cannot survive in the signature" % ch)
+
+    def test_the_signature_names_come_from_dotenv_through_the_same_reduction(self):
+        body = self._signature_of({}, {"BOT_NAME": "Dotenv https://x.example", "OWNER_NAME": "Dot env"})
+        self.assertTrue(body.endswith("\n\n--\nDotenv https x example, Dot env AI asszisztense"), body)
+
+    def test_a_long_signature_name_is_cut_and_the_body_stays_small(self):
+        body = self._signature_of({"BOT_NAME": "b" * 5000, "OWNER_NAME": "é" * 5000})
+        self.assertTrue(body.endswith("\n\n--\n%s, %s AI asszisztense" % ("b" * 40, "é" * 40)), body)
+        self.assertLessEqual(len(body.encode("utf-8")), mod._DONE_NOTICE_MAX_BODY_BYTES)
+
+    def test_a_signature_name_with_nothing_usable_left_falls_back_to_the_generic_one(self):
+        body = self._signature_of({"BOT_NAME": "...://", "OWNER_NAME": "\r\n"})
+        self.assertTrue(body.endswith("\n\n--\nMarveen, Owner AI asszisztense"), body)
+
+    def test_the_worst_case_message_fits_the_body_cap(self):
+        # every variable part at its cap, in the widest characters
+        body = self._signature_of({"BOT_NAME": "\U0001d4d0" * 100, "OWNER_NAME": "\U0001d4d1" * 100})
+        self.assertLessEqual(len(body.encode("utf-8")), mod._DONE_NOTICE_MAX_BODY_BYTES)
+        result, google = self._send(task_name="é" * 500)
+        self.assertEqual(result, {"id": "msg-fixture-id"})
+
+    def test_the_body_cap_is_a_backstop_that_refuses_and_counts_nothing(self):
+        with patch.object(mod, "_DONE_NOTICE_MAX_BODY_BYTES", 60):
+            result, google = self._send()
+        self.assertIsInstance(result, mod.SelfSendOnly)
+        self.assertEqual(google.urls, [])
+        self.assertEqual(self._log_lines(), [])
+        self.assertFalse(os.path.exists(self.state_path))
 
     def test_a_name_that_is_not_text_is_refused(self):
         for given in (None, 5, b"bytes", ["x"], {"a": 1}):
@@ -920,6 +966,66 @@ class TestDoneNoticeRateLimit(unittest.TestCase):
             t.join()
         self.assertEqual(sorted(outcomes), ["limited"] * 6 + ["ok"] * 6)
         self.assertEqual(len(self._state()["sent"]), 6)
+
+    # --- planted files -------------------------------------------------------------------------------------------
+
+    def _victim(self):
+        path = os.path.join(os.path.dirname(self.state_path), "victim.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("victim-original")
+        return path
+
+    def _victim_text(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_a_lock_file_that_is_a_symlink_is_refused_and_not_followed(self):
+        victim = self._victim()
+        os.symlink(victim, self.state_path + ".lock")
+        with self.assertRaises(mod.DoneNoticeStateError):
+            self._send()
+        self.assertEqual(self._victim_text(victim), "victim-original")
+        self.assertEqual(self.google.sent, [])
+
+    def test_a_planted_temp_file_or_symlink_is_never_written_through(self):
+        victim = self._victim()
+        fixed = b"\x00\x01\x02\x03"
+        with patch.object(mod.os, "urandom", return_value=fixed):
+            planted = "%s.tmp.%d.%s" % (self.state_path, os.getpid(), fixed.hex())
+            os.symlink(victim, planted)
+            with self.assertRaises(mod.DoneNoticeStateError):
+                self._send()
+        self.assertEqual(self._victim_text(victim), "victim-original")
+        self.assertEqual(self.google.sent, [])
+
+    def test_the_temp_name_is_unpredictable(self):
+        names = []
+        real_open = os.open
+
+        def spy(path, *args, **kwargs):
+            if ".tmp." in str(path):
+                names.append(str(path))
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(mod.os, "open", side_effect=spy):
+            self._send()
+            self._send()
+        self.assertEqual(len(names), 2)
+        self.assertNotEqual(names[0], names[1], "a fresh random suffix per write")
+
+    def test_a_stale_temp_file_does_not_block_later_sends(self):
+        stale = "%s.tmp.%d.leftover" % (self.state_path, os.getpid())
+        with open(stale, "w", encoding="utf-8") as fh:
+            fh.write("stale")
+        self.assertEqual(self._send(), {"id": "msg-fixture-id"})
+
+    def test_a_state_path_that_is_a_symlink_is_replaced_not_written_through(self):
+        victim = self._victim()
+        os.symlink(victim, self.state_path)
+        with self.assertRaises(mod.DoneNoticeStateError):
+            self._send()      # its content is not the shape we write: fail closed, and nothing is written to the target
+        self.assertEqual(self._victim_text(victim), "victim-original")
+        self.assertEqual(self.google.sent, [])
 
     # --- a clock that is wrong ----------------------------------------------------------------------------------
 
