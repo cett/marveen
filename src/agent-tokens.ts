@@ -117,6 +117,51 @@ export function issueOperatorToken(opts: { rotate?: boolean; now?: number } = {}
   return issue({ subject: 'operator', name: 'operator', role: 'admin', agentId: null, path: operatorTokenPath() }, opts)
 }
 
+export interface RotateSharedResult {
+  /** `rotated` when an active `dashboard` row was replaced, `issued` when there was none. */
+  status: 'rotated' | 'issued'
+  /** Where the new token file is. The token itself is never part of a result. */
+  path: string
+  tokenId: number
+}
+
+/** Thrown when the shared token lives in DASHBOARD_TOKEN (env or .env): that value overrides the file. */
+export class SharedTokenInEnvError extends Error {
+  constructor() {
+    super('DASHBOARD_TOKEN is set in the environment or .env: it overrides store/.dashboard-token, so a rotation of the file would change nothing. Remove it first.')
+    this.name = 'SharedTokenInEnvError'
+  }
+}
+
+/**
+ * T4-5: rotates the shared dashboard token. Always mints a new one (there is no `kept`): after a restore
+ * nobody can tell whether the archive predates a rotation, so a rotation that sometimes does nothing
+ * would be the wrong default. The active `dashboard` row is revoked WITH its hash (rotateApiToken keeps
+ * the row), which is what lets the auth gate recognise the old value as "the shared token, rotated away"
+ * (shared_token_refused) instead of an unknown bearer. The new value goes into store/.dashboard-token
+ * (0600) BEFORE the row is written, as issue() does: a failure in between leaves a file nothing
+ * recognises, which the next dashboard start enrols (and which revokes the old row), never a valid token
+ * nobody holds. Works with the dashboard stopped (direct database). Refuses when DASHBOARD_TOKEN is set.
+ */
+export function rotateSharedToken(opts: { now?: number } = {}): RotateSharedResult {
+  const inEnv = (readEnvFile(['DASHBOARD_TOKEN']).DASHBOARD_TOKEN ?? '').trim() !== '' || (process.env.DASHBOARD_TOKEN ?? '').trim() !== ''
+  if (inEnv) throw new SharedTokenInEnvError()
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const path = dashboardTokenFilePath(STORE_DIR)
+  const raw = randomBytes(32).toString('hex')
+  atomicWriteFileSync(path, raw, { mode: 0o600 })
+  const hash = sha256(raw)
+
+  const active = listActiveApiTokensByName('dashboard', now)
+  const row = getDb().transaction(() => {
+    const [first, ...others] = active
+    for (const stale of others) revokeApiToken(stale.id, now)
+    if (first) return rotateApiToken(first, hash, now, null)
+    return insertApiToken({ tokenHash: hash, name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: now, expiresAt: null, agentId: null })
+  })()
+  return { status: active.length > 0 ? 'rotated' : 'issued', path, tokenId: row.id }
+}
+
 export type ArchiveSharedAge = 'predates' | 'current' | 'unknown'
 
 /**

@@ -219,7 +219,11 @@ export function resolveAuth(
   //    and returns the session identity; this step handles token-only clients.
   if (isSsePaneStream(path, method)) {
     const qtoken = url.searchParams.get('token') ?? ''
-    if (checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
+    // A token that is registered but revoked (the shared one after rotate-shared) is refused here as
+    // in step 1; the in-memory dashboardToken may still hold the old value until the next restart.
+    const qresult = dbLookups && qtoken !== '' ? resolveApiToken(qtoken) : null
+    const revoked = qresult !== null && !qresult.found && qresult.registeredButInvalid
+    if (!revoked && checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
     const dk = resolveDeviceKey(qtoken)
     if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
   }
