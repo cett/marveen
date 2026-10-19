@@ -9,6 +9,21 @@ and the result is emailed to the Gmail account the OAuth token belongs to
 (read from that account's own profile at send time -- never hardcoded, so no
 personal address lives in this file).
 
+This script is a documented EXCEPTION to the email send gate: it runs unattended from a schedule, so it cannot
+wait for an owner's approval, and it is allowed to do so only because it can mail ONE place, the owner's own
+mailbox. The guarantee is in code, not only in SECURITY.md: send_via_gmail() is the only function of this module
+that calls the Gmail send route, and it refuses (SelfSendOnly, nothing sent) any raw message whose headers are not
+exactly one `To:` equal to the token account's own profile address, with no other recipient-bearing header. Importing
+this module and calling build_raw_mime()/send_via_gmail() with another recipient therefore does not work; mail to
+anyone else goes through scripts/gmail-send.py, which has the gate. A ratchet (scripts/gmail-send-route-ratchet.py)
+keeps the send route literal out of every other file.
+
+One more, named entry point exists for ONE other recipient: send_done_notification(), used by the owner-approved,
+automatic done-card notifier (a heartbeat task outside this repository). It accepts exactly one fixed outside
+address, pinned below as a SHA-256 constant (so no personal address lives in this public file), with the same strict
+header check; any other address is refused. It takes no configuration from the environment, argv or a file, and a
+new address can only enter through a code change and review.
+
 The refresh_token / access_token are never printed; only one of the fixed
 outcome strings below goes to stdout.
 
@@ -18,6 +33,11 @@ Usage:
 Exit codes: 0 for SENT and SKIP_NO_DIGEST, non-zero for a real failure.
 """
 import base64
+import binascii
+import email
+import email.policy
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -132,7 +152,44 @@ def build_raw_mime(recipient, subject, body):
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
 
 
-def send_via_gmail(access_token, raw_mime):
+class SelfSendOnly(RuntimeError):
+    """The message is not addressed to the token account's own mailbox alone; nothing was sent."""
+
+
+# The only headers build_raw_mime() writes. Anything else (Cc, Bcc, Resent-*, Reply-To, From, a second To) is refused:
+# Gmail sends to every address it finds in the headers, and a stricter list than the parser needs is the safe side.
+_ALLOWED_HEADERS = frozenset(("mime-version", "content-type", "content-transfer-encoding", "to", "subject"))
+
+
+def assert_self_addressed(raw_mime, own_address):
+    """Raise SelfSendOnly unless the base64url message has exactly one To header whose whole value is `own_address`
+    (case-insensitive, no display name, no list, no comment) and no header outside _ALLOWED_HEADERS."""
+    if not isinstance(own_address, str) or not own_address.strip() or any(c in own_address for c in ' <>",;()\r\n\t'):
+        raise SelfSendOnly("the account's own address is not usable")
+    try:
+        raw = base64.urlsafe_b64decode(str(raw_mime).encode("ascii") + b"=" * (-len(str(raw_mime)) % 4))
+    except (UnicodeEncodeError, binascii.Error, ValueError):
+        raise SelfSendOnly("the message is not base64url")
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    if msg.defects:
+        raise SelfSendOnly("the message headers are malformed")
+    seen = {}
+    for name, value in msg.raw_items():
+        key = name.strip().lower()
+        if key not in _ALLOWED_HEADERS:
+            raise SelfSendOnly("header %r is not allowed" % name[:40])
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            raise SelfSendOnly("header %r is repeated" % name[:40])
+        if key == "to" and str(value).strip().casefold() != own_address.strip().casefold():
+            raise SelfSendOnly("the recipient is not the account's own address")
+    if "to" not in seen:
+        raise SelfSendOnly("the message has no recipient")
+
+
+def _post_to_gmail(access_token, raw_mime):
+    """The raw POST to the Gmail send route. PRIVATE: reached only through send_via_gmail() or send_done_notification(),
+    each of which has already checked the recipient. Nothing else in this module may call it."""
     req = urllib.request.Request(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
         data=json.dumps({"raw": raw_mime}).encode(),
@@ -144,6 +201,73 @@ def send_via_gmail(access_token, raw_mime):
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.load(resp)
+
+
+def send_via_gmail(access_token, raw_mime):
+    """Mail the token account's OWN mailbox. The own address is read from the account's profile HERE (not taken from the
+    caller), so a caller cannot pass in the recipient it wants to be treated as own."""
+    assert_self_addressed(raw_mime, fetch_own_email_address(access_token))
+    return _post_to_gmail(access_token, raw_mime)
+
+
+# SHA-256 of the lower-cased address of the ONE outside recipient of the automatic done-card notifier (owner decision
+# 2026-10-19). A hash, not the address: this file is public. It is a constant on purpose: not read from the environment,
+# argv or any file; changing it is a code change that goes through review (SECURITY.md).
+_DONE_NOTIFY_RECIPIENT_SHA256 = "bf6d1ab3e7185314bfca9ecaf9a3785f9b26401a95bd6a9d383209ab82754bf3"
+
+
+# Size limits of a done notice: the recipient is fixed, so what is left to bound is how much a (possibly injected) caller
+# can push out through it. The body is counted in UTF-8 bytes, the subject in characters.
+_DONE_NOTICE_MAX_BODY_BYTES = 4096
+_DONE_NOTICE_MAX_SUBJECT_CHARS = 200
+
+# One line per attempt that passed every check and is about to be sent: time, first 8 hex characters of the pin hash,
+# body length. Never the text. A module attribute (not an environment variable) so a test can point it elsewhere.
+DONE_NOTICE_LOG = os.path.join(REPO_ROOT, "store", "done-notice.log")
+
+
+def _parsed_to(raw_mime):
+    """The one `To` value of the base64url message as the parser sees it (what Gmail will mail), or None if there is not
+    exactly one."""
+    raw = base64.urlsafe_b64decode(str(raw_mime).encode("ascii") + b"=" * (-len(str(raw_mime)) % 4))
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    values = [str(v).strip() for k, v in msg.raw_items() if k.strip().lower() == "to"]
+    return values[0] if len(values) == 1 else None
+
+
+def _log_done_notice(body_len):
+    """Append the one-line trace. Fails closed: if the trace cannot be written the notice is not sent (OSError)."""
+    line = "%s %s %d\n" % (datetime.now().astimezone().isoformat(timespec="seconds"),
+                           _DONE_NOTIFY_RECIPIENT_SHA256[:8], body_len)
+    with open(DONE_NOTICE_LOG, "a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
+def send_done_notification(access_token, recipient, subject, body):
+    """The named entry point of the done-card notifier: mail `recipient`, which must be the one pinned address, and only
+    it. Builds the message itself, applies the same strict header check as the self-send (exactly one To equal to the
+    recipient, no other recipient-bearing header), then checks the pin against the To value that is actually going into
+    the message. Plain text only, body and subject length-capped, one log line per send. Raises SelfSendOnly (nothing
+    sent) for any other address or an oversized / non-plain message."""
+    if not isinstance(subject, str) or not isinstance(body, str):
+        raise SelfSendOnly("subject and body must be text")
+    if len(subject) > _DONE_NOTICE_MAX_SUBJECT_CHARS or len(body.encode("utf-8")) > _DONE_NOTICE_MAX_BODY_BYTES:
+        raise SelfSendOnly("the notice is over the size limit")
+    given = str(recipient).strip().casefold() if isinstance(recipient, str) else ""
+    if not given:
+        raise SelfSendOnly("the recipient is not the one address the done-card notifier may mail")
+    raw_mime = build_raw_mime(given, subject, body)
+    assert_self_addressed(raw_mime, given)
+    # The pin runs LAST and on the parsed To header of the finished message, not on the raw input.
+    actual = _parsed_to(raw_mime)
+    if actual is None or not hmac.compare_digest(hashlib.sha256(actual.casefold().encode("utf-8")).hexdigest(),
+                                                 _DONE_NOTIFY_RECIPIENT_SHA256):
+        raise SelfSendOnly("the recipient is not the one address the done-card notifier may mail")
+    raw = base64.urlsafe_b64decode(raw_mime.encode("ascii") + b"=" * (-len(raw_mime) % 4))
+    if email.message_from_bytes(raw, policy=email.policy.default).get_content_type() != "text/plain":
+        raise SelfSendOnly("the notice is not plain text")
+    _log_done_notice(len(body.encode("utf-8")))
+    return _post_to_gmail(access_token, raw_mime)
 
 
 def main(argv):
@@ -182,6 +306,9 @@ def main(argv):
         recipient = fetch_own_email_address(access_token)
         raw_mime = build_raw_mime(recipient, subject, body)
         result = send_via_gmail(access_token, raw_mime)
+    except SelfSendOnly:
+        print("SEND_REFUSED_NOT_SELF")
+        return 1
     except Exception:
         print("SEND_FAIL")
         return 1
