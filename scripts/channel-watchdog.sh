@@ -40,6 +40,8 @@
 # no longer catastrophic, but respawn-pane stays preferred: it recovers only the
 # wedged pane without disturbing any sibling session.)
 #
+# Sleep: the tick is skipped for WAKE_GRACE_SECONDS after a wake (gate 1b below).
+#
 # Safety: a respawn-grace stamp prevents storming; a consecutive-respawn cap
 # stops a useless respawn loop when the keepalive is disabled or the problem is
 # systemic (it then alerts via the log and backs off instead).
@@ -58,6 +60,7 @@ STALE_SECONDS=$(( 15 * 60 ))    # keepalive older than this => wedged/deaf
 GRACE_SECONDS=$(( 15 * 60 ))    # don't respawn again within this window
 MAX_CONSECUTIVE=3               # after this many respawns w/o recovery, back off + alert
 AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/tick) before acting
+WAKE_GRACE_SECONDS=600          # after the machine woke from sleep, give the 3-min keepalive probe at least 3 ticks
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
@@ -107,6 +110,26 @@ if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
   exit 0
 fi
 
+# --- gate 1b: the machine woke from sleep a moment ago ---
+# A sleeping Mac runs no timer: the keepalive probe (every 3 min) and this watchdog (every 5 min) both stop, and
+# on wake the overdue ticks fire in no fixed order. If this one comes first, the keepalive file is as old as the
+# sleep, and a healthy session that merely slept looked wedged: two needless respawns of the main session were
+# measured (2026-10-17 and 2026-10-18, 64 s after a DarkWake), each throwing away a live conversation. So for
+# WAKE_GRACE_SECONDS after a wake the tick does nothing, and the keepalive age below counts from the wake at the
+# earliest. Unknown wake time (not macOS, sysctl missing, unreadable) = the behaviour without this gate. It only
+# delays: a session still dead once the grace is over is respawned by a later tick.
+wake=""
+if wake="$(portable_wake_epoch 2>/dev/null)"; then
+  # a wake time in the future (clock set back) is no evidence of a recent wake
+  if [ "$wake" -le "$now" ] && [ $(( now - wake )) -lt "$WAKE_GRACE_SECONDS" ]; then
+    log "recently woken ($(( now - wake ))s ago, grace ${WAKE_GRACE_SECONDS}s) -- skipping this tick"
+    exit 0
+  fi
+  [ "$wake" -le "$now" ] || wake=""
+else
+  wake=""
+fi
+
 # --- signal 1: STALE (keepalive mtime) -- computed independently, no early exit ---
 STALE=false
 age=0
@@ -118,6 +141,8 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
   if ka_mtime="$(portable_mtime "$KEEPALIVE_FILE")"; then
+    # the file cannot be fresher than the last wake: measure from the later of the two
+    [ -n "$wake" ] && [ "$wake" -gt "$ka_mtime" ] && ka_mtime="$wake"
     age=$(( now - ka_mtime ))
     [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
   else

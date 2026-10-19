@@ -220,6 +220,15 @@ Két érzékelési jel:
 
 A watchdog türelmes: csak `AUTH_DEAD_THRESHOLD_TICKS` egymást követő negatív jelzés után avatkozik be (kb. 10-15 perc), hogy ne indítson felesleges újraindítást egy rövid hálózatkimaradás után.
 
+### Alvás és ébredés (macOS)
+
+Az alvó Mac nem futtat időzítőt: a keepalive-próba és a watchdog is leáll, az elmaradt tickek ébredés után azonnal, megállapított sorrend nélkül lőnek. Védelem nélkül a watchdog érhetett oda előbb, az alvás korú keepalive-fájlt látta, és újraindított egy egészséges főágens-munkamenetet (két nap alatt kétszer, mindkétszer elveszett egy élő beszélgetés). Ezért a watchdog kiolvassa az utolsó ébredés idejét (`sysctl -n kern.waketime`, ez DarkWake-re, azaz karbantartó ébredésre is lép), és az ébredés után `WAKE_GRACE_SECONDS` (600) másodpercig:
+
+- ebben a tickben nem tesz semmit, és ezt naplózza: `recently woken (<n>s ago, grace 600s) -- skipping this tick`; a halott-token ág is vár, mert a hálózat ilyenkor gyakran még nincs vissza;
+- utána a keepalive életkorát legkorábban az ébredéstől számolja, így egy alvás előtti fájl addig sem "elavult", amíg a keepalive-próba le nem futott a tickjeivel.
+
+Ez csak késleltet: az ébredés után is halott munkamenetet egy későbbi tick újraindítja. Ha az ébredés ideje nem olvasható (nem macOS, nincs `sysctl`), a watchdog a régi módon működik. Akkun, 15 percenként ébredő gépen (Maintenance Sleep) a watchdog emiatt többnyire szünetel; a gép ilyenkor nem szolgál ki semmit, és az első teljes ébredés 10 perc türelmi időt kap. A `pmset -c sleep 0` csak hálózaton tartja ébren a gépet; akkun az ébredés-kapu védi a munkamenetet. A context-guardnak ugyanez a gondja a handoff-határidőivel: ha egy sweep az előzőt több mint három intervallummal korábban látja, a többletet alvásnak veszi, és a futó határidőket ennyivel tolja (`context-guard: the machine slept between sweeps, running deadlines moved`).
+
 ## Modell-fallback használati limitnél
 
 Ha egy ágens eléri a csomag használati limitjét, vagy a modellje elérhetetlenné válik, a model-fallback futtató egy beállítható láncon (például opus, majd sonnet, majd haiku) lejjebb léptetheti, később pedig visszaléptetheti. Alapból ki van kapcsolva. Adminként a Beállítások "Modell fallback" fülén, vagy a `GET` / `PUT /api/model-fallback` végponttal állítható (`enabled`, `chain`, `revertAfterMinutes`; az alapértelmezett visszaállási idő 330 perc, a `DEFAULT_REVERT_AFTER_MINUTES`-szel felülírható). A konfiguráció az adatbázisban van (`system_config`).

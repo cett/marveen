@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizeContextGuardConfig,
   contextLimitForModel,
+  sleepGapMs,
+  shiftGuardStateForSleep,
   calibrateLimit,
   CALIBRATION_OVERSHOOT_TOLERANCE,
   decideGuard,
@@ -798,5 +800,38 @@ describe('normalizeContextGuardConfig -- daily-handoff fields', () => {
     expect(normalizeContextGuardConfig({ dailyHandoffTime: '24:00' }).dailyHandoffTime).toBeNull()
     expect(normalizeContextGuardConfig({ dailyHandoffTime: 'nope' }).dailyHandoffTime).toBeNull()
     expect(normalizeContextGuardConfig({ dailyHandoffTime: 4 }).dailyHandoffTime).toBeNull()
+  })
+})
+
+describe('sleepGapMs / shiftGuardStateForSleep', () => {
+  const MIN = 60_000
+  it('no previous sweep, a regular and a late sweep are no sleep', () => {
+    expect(sleepGapMs(null, 1_000_000, 5 * MIN)).toBe(0)
+    expect(sleepGapMs(0, 5 * MIN, 5 * MIN)).toBe(0)
+    expect(sleepGapMs(0, 15 * MIN, 5 * MIN)).toBe(0)
+  })
+  it('beyond three intervals the excess over one interval is the sleep', () => {
+    expect(sleepGapMs(0, 15 * MIN + 1, 5 * MIN)).toBe(10 * MIN + 1)
+    expect(sleepGapMs(0, 120 * MIN, 5 * MIN)).toBe(115 * MIN)
+  })
+  it('a clock set back (negative elapsed) is no sleep', () => {
+    expect(sleepGapMs(10 * MIN, 5 * MIN, 5 * MIN)).toBe(0)
+  })
+  it('moves running deadlines, leaves unset ones unset, and a zero gap returns the same state', () => {
+    const running = { ...INITIAL_GUARD_STATE, phase: 'await-handoff' as const, deadlineMs: 1000, cooldownUntilMs: 0 }
+    expect(shiftGuardStateForSleep(running, 500)).toMatchObject({ deadlineMs: 1500, cooldownUntilMs: 0 })
+    expect(shiftGuardStateForSleep(INITIAL_GUARD_STATE, 500)).toMatchObject({ deadlineMs: 0, cooldownUntilMs: 0 })
+    expect(shiftGuardStateForSleep(running, 0)).toBe(running)
+  })
+  it('end to end: without the shift a handoff wait is "timed out" on wake and force-restarts; with it the agent waits on', () => {
+    const requestedAt = NOW
+    const state = { ...INITIAL_GUARD_STATE, phase: 'await-handoff' as const, deadlineMs: requestedAt + 20 * MIN }
+    const wake = requestedAt + 120 * MIN
+    const atWake = inputs({ nowMs: wake, pct: 0.5 })
+    expect(decideGuard(state, atWake, CFG).action).toBe('restart') // the bug being fixed
+    const shifted = shiftGuardStateForSleep(state, sleepGapMs(requestedAt + 5 * MIN, wake, 5 * MIN))
+    expect(decideGuard(shifted, atWake, CFG).action).toBe('none')
+    // the shift only buys the time that was slept: 20 minutes after the wake the wait does end
+    expect(decideGuard(shifted, inputs({ nowMs: wake + 20 * MIN + 1, pct: 0.5 }), CFG).action).toBe('restart')
   })
 })

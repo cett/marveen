@@ -289,6 +289,35 @@ export const INITIAL_GUARD_STATE: GuardState = {
   handoffStaleMinutes: null,
 }
 
+/**
+ * The time a machine slept between two guard sweeps, or 0.
+ *
+ * The phase deadlines (`deadlineMs`, `cooldownUntilMs`) are wall-clock stamps, and a sleeping machine runs no
+ * runner: a sweep that finds the previous one more than `SLEEP_GAP_SWEEPS` intervals ago was not late, the
+ * machine was asleep. Without the correction a handoff requested at minute 0 of its 20 would be found "timed
+ * out" on wake and the agent force-restarted without the handoff it was just asked to write (a session that was
+ * frozen along with the machine had no time to answer). The excess over one regular interval is the sleep.
+ * Three intervals of slack keep an ordinary late sweep (a busy event loop) from counting.
+ */
+export const SLEEP_GAP_SWEEPS = 3
+
+export function sleepGapMs(lastSweepMs: number | null, nowMs: number, intervalMs: number): number {
+  if (lastSweepMs === null) return 0
+  const elapsed = nowMs - lastSweepMs
+  if (elapsed <= intervalMs * SLEEP_GAP_SWEEPS) return 0
+  return elapsed - intervalMs
+}
+
+/** The state with its running deadlines moved by the time the machine slept; an unset (0) stamp stays unset. */
+export function shiftGuardStateForSleep(state: GuardState, gapMs: number): GuardState {
+  if (gapMs <= 0) return state
+  return {
+    ...state,
+    deadlineMs: state.deadlineMs > 0 ? state.deadlineMs + gapMs : 0,
+    cooldownUntilMs: state.cooldownUntilMs > 0 ? state.cooldownUntilMs + gapMs : 0,
+  }
+}
+
 /** Idle-phase sweeps that must agree the pane is saturated before the net
  *  restarts (one sweep apart, so ~one runner interval of extra latency). A
  *  genuinely saturated pane stays saturated forever; anything transient --

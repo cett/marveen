@@ -9,7 +9,7 @@
 // filesystem -- mirroring the model-fallback-runner.test.ts pattern for the
 // sibling runner this module was modeled on.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -87,6 +87,9 @@ import {
   dailyHandoffPrompt,
   resumePrompt,
   guardSweepAgentNames,
+  noteGuardSweep,
+  guardStatesForTesting,
+  startContextGuardRunner,
 } from '../web/context-guard-runner.js'
 
 describe('handoffPrompt', () => {
@@ -200,5 +203,84 @@ describe('guardSweepAgentNames', () => {
   it('returns just the main agent when there are no other agent directories', () => {
     mockListAllAgentNames.mockReturnValue([])
     expect(guardSweepAgentNames()).toEqual([MAIN_AGENT_ID])
+  })
+})
+
+// A machine that sleeps between two sweeps must not find every running deadline expired on wake: a handoff
+// requested at minute 0 of its 20 would be "timed out" and the agent force-restarted without the handoff.
+describe('noteGuardSweep (sleep between sweeps)', () => {
+  const MIN = 60_000
+  const T0 = 1_800_000_000_000
+  const awaiting = (deadlineMs: number) => ({
+    phase: 'await-handoff' as const, handoffMtimeAtRequest: null, deadlineMs, cooldownUntilMs: 0, saturatedStreak: 0, handoffStaleMinutes: null,
+  })
+
+  beforeEach(() => {
+    guardStatesForTesting().clear()
+    noteGuardSweep(T0 - 10 * 60 * MIN) // an old sweep, then the first one of the test starts fresh below
+    noteGuardSweep(T0)
+  })
+
+  it('a regular sweep (one interval later) moves nothing', () => {
+    guardStatesForTesting().set('agent-a', awaiting(T0 + 20 * MIN))
+    expect(noteGuardSweep(T0 + 5 * MIN)).toBe(0)
+    expect(guardStatesForTesting().get('agent-a')?.deadlineMs).toBe(T0 + 20 * MIN)
+  })
+
+  it('a late sweep within three intervals is not a sleep', () => {
+    guardStatesForTesting().set('agent-a', awaiting(T0 + 20 * MIN))
+    expect(noteGuardSweep(T0 + 15 * MIN)).toBe(0)
+    expect(guardStatesForTesting().get('agent-a')?.deadlineMs).toBe(T0 + 20 * MIN)
+  })
+
+  it('after a 2 h sleep the deadline of every agent in a running phase moves by the sleep (the excess over one interval)', () => {
+    guardStatesForTesting().set('agent-a', awaiting(T0 + 20 * MIN))
+    guardStatesForTesting().set('agent-b', { ...awaiting(0), phase: 'cooldown', cooldownUntilMs: T0 + 30 * MIN })
+    guardStatesForTesting().set('agent-c', awaiting(0)) // idle-like: nothing running, nothing to move
+    const gap = noteGuardSweep(T0 + 120 * MIN)
+    expect(gap).toBe(115 * MIN)
+    expect(guardStatesForTesting().get('agent-a')?.deadlineMs).toBe(T0 + 20 * MIN + 115 * MIN)
+    expect(guardStatesForTesting().get('agent-b')?.cooldownUntilMs).toBe(T0 + 30 * MIN + 115 * MIN)
+    expect(guardStatesForTesting().get('agent-c')?.deadlineMs).toBe(0)
+    expect(guardStatesForTesting().get('agent-c')?.cooldownUntilMs).toBe(0)
+  })
+
+  it('the deadline is still in the future relative to the wake, so the agent gets its time', () => {
+    guardStatesForTesting().set('agent-a', awaiting(T0 + 20 * MIN))
+    const wake = T0 + 120 * MIN
+    noteGuardSweep(wake)
+    expect(guardStatesForTesting().get('agent-a')!.deadlineMs).toBeGreaterThan(wake)
+  })
+
+  it('a second sweep right after the wake moves nothing again', () => {
+    guardStatesForTesting().set('agent-a', awaiting(T0 + 20 * MIN))
+    noteGuardSweep(T0 + 120 * MIN)
+    const once = guardStatesForTesting().get('agent-a')!.deadlineMs
+    expect(noteGuardSweep(T0 + 125 * MIN)).toBe(0)
+    expect(guardStatesForTesting().get('agent-a')!.deadlineMs).toBe(once)
+  })
+})
+
+// The sweep itself must call noteGuardSweep first, or the correction above never runs in production.
+describe('startContextGuardRunner (the sweep applies the sleep correction)', () => {
+  const MIN = 60_000
+  beforeEach(() => { vi.useFakeTimers(); guardStatesForTesting().clear() })
+  afterEach(() => { vi.useRealTimers(); guardStatesForTesting().clear() })
+
+  it('the sweep after a 2 h sleep moves the running deadline of an agent', async () => {
+    mockListAllAgentNames.mockReturnValue([])
+    const timer = startContextGuardRunner()
+    try {
+      await vi.advanceTimersByTimeAsync(270_000) // first sweep: just notes the time
+      const deadline = Date.now() + 20 * MIN
+      guardStatesForTesting().set('agent-sleeper', {
+        phase: 'await-handoff', handoffMtimeAtRequest: null, deadlineMs: deadline, cooldownUntilMs: 0, saturatedStreak: 0, handoffStaleMinutes: null,
+      })
+      vi.setSystemTime(Date.now() + 120 * MIN) // the machine slept: the wall clock jumped, the timers did not run
+      await vi.advanceTimersByTimeAsync(300_000) // the next regular sweep
+      expect(guardStatesForTesting().get('agent-sleeper')!.deadlineMs).toBeGreaterThan(deadline + 100 * MIN)
+    } finally {
+      clearInterval(timer)
+    }
   })
 })

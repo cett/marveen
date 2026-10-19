@@ -220,6 +220,15 @@ Two detection signals:
 
 The watchdog is patient: it only intervenes after `AUTH_DEAD_THRESHOLD_TICKS` consecutive negative signals (approximately 10–15 minutes), so a brief network blip does not trigger an unnecessary restart.
 
+### Sleep and wake (macOS)
+
+A sleeping Mac runs no timer: the keepalive probe and the watchdog both stop, and the overdue ticks fire right after the wake in no fixed order. Without a guard the watchdog came first, saw a keepalive file as old as the sleep and respawned a healthy main session (twice in two days, each time throwing away a live conversation). So the watchdog reads the last wake time (`sysctl -n kern.waketime`, which also moves on a DarkWake, a maintenance wake) and, for `WAKE_GRACE_SECONDS` (600) after it:
+
+- does nothing in that tick and logs `recently woken (<n>s ago, grace 600s) -- skipping this tick`; the dead-token arm waits too, because the network is often not back yet;
+- afterwards measures the keepalive age from the wake at the earliest, so a file that predates the sleep is never "stale" before the keepalive probe has had its ticks.
+
+It only delays: a session that is still dead after the grace is respawned by a later tick. Where the wake time cannot be read (not macOS, `sysctl` missing) the watchdog behaves as before. On a machine that wakes every 15 minutes on battery (Maintenance Sleep) the watchdog is therefore mostly paused; that machine serves nothing then, and the first full wake gets the 10-minute grace. `pmset -c sleep 0` keeps a machine awake on AC only; on battery the wake gate is what protects the session. The context guard has the same problem with its handoff deadlines: a sweep that finds the previous one more than three intervals ago treats the excess as sleep and moves the running deadlines by it (`context-guard: the machine slept between sweeps, running deadlines moved`).
+
 ## Model fallback on usage limit
 
 When an agent hits the plan's usage limit, or its model becomes unavailable, the model-fallback runner can move it down a configurable chain (for example opus, then sonnet, then haiku) and later climb back. It is off by default. Admins configure it in Settings, "Model fallback", or with `GET` / `PUT /api/model-fallback` (`enabled`, `chain`, `revertAfterMinutes`; the default revert window is 330 minutes, overridable with `DEFAULT_REVERT_AFTER_MINUTES`). The configuration is stored in the database (`system_config`).
