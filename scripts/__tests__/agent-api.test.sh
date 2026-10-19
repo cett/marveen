@@ -45,24 +45,24 @@ check "own token: never in argv" bash -c "! grep -q 'own-a' '$T/argv'"
 check "own token: shared token not sent" bash -c "! grep -q 'shared' '$T/stdin'"
 check "own token: no -H Authorization in argv" bash -c "! grep -qi 'authorization' '$T/argv'"
 
-# 2 missing own token falls back, and says who
+# 2 missing own token: NO fallback to the shared token, NO request, exit 3, the fix is named
 reset; echo shared > "$INSTALL/store/.dashboard-token"
-AGENT_API_VERBOSE=1 bash "$W" --agent a GET /api/agents >"$T/out" 2>"$T/err"
-check "fallback: shared token on stdin" grep -q 'Bearer shared' "$T/stdin"
-check "fallback: X-Agent-Id names the caller" grep -qx 'X-Agent-Id: a' "$T/argv"
-check "fallback: source is reported" grep -q 'source=shared-fallback' "$T/err"
-check "fallback: shared token not in argv" bash -c "! grep -q 'shared' '$T/argv'"
+bash "$W" --agent a GET /api/agents >"$T/out" 2>"$T/err"; RC=$?
+check "missing own token: exit 3" test "$RC" -eq 3
+check "missing own token: no request made at all (no shared_token_use for the server to count)" test ! -e "$T/calls"
+check "missing own token: the shared token is not sent" bash -c "! grep -q 'shared' '$T/stdin' 2>/dev/null"
+check "missing own token: the message names the fix" grep -q 'agent-tokens -- issue a' "$T/err"
+check "missing own token: no response body" test ! -s "$T/out"
 
-# 3 empty own token file is a miss
+# 3 empty own token file is a miss, same outcome
 reset; : > "$INSTALL/agents/a/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
-bash "$W" --agent a GET /api/agents >/dev/null 2>&1
-check "empty own token file: falls back" grep -q 'Bearer shared' "$T/stdin"
+bash "$W" --agent a GET /api/agents >/dev/null 2>&1; RC=$?
+check "empty own token file: exit 3, no request" bash -c "test $RC -eq 3 && test ! -e '$T/calls'"
 
-# 4 nothing at all: no auth config, still a request (same as a hook with no token file today)
+# 4 nothing at all: no token and no shared file either, same outcome
 reset
 bash "$W" --agent a GET /api/agents >/dev/null 2>&1; RC=$?
-check "no token anywhere: request still made, exit 0" test "$RC" -eq 0 -a "$(cat "$T/calls")" = 1
-check "no token anywhere: no -K config" bash -c "! grep -qx -- '-K' '$T/argv'"
+check "no token anywhere: exit 3, no request" bash -c "test $RC -eq 3 && test ! -e '$T/calls'"
 
 # 5 a REFUSED own token is not retried on the shared one
 reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
@@ -72,26 +72,29 @@ check "401: exactly one request, no shared retry" test "$(cat "$T/calls")" = 1
 check "401: status on stderr" grep -q 'HTTP 401' "$T/err"
 check "401: body still printed" grep -q '"ok"' "$T/out"
 
-# 6 --token shared uses the shared token even when an own token exists
+# 6 --token shared is gone: a usage error, no request, whatever tokens exist
 reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
-bash "$W" --agent a --token shared POST /api/agents/x/restart >/dev/null 2>&1
-check "--token shared: shared token sent" grep -q 'Bearer shared' "$T/stdin"
-check "--token shared: still names the caller" grep -qx 'X-Agent-Id: a' "$T/argv"
+bash "$W" --agent a --token shared POST /api/agents/x/restart >/dev/null 2>"$T/err"; RC=$?
+check "--token shared: exit 2 (usage), no request" bash -c "test $RC -eq 2 && test ! -e '$T/calls'"
+check "--token shared: says it no longer exists" grep -q 'no longer exists' "$T/err"
 
 # 7 operator token
 reset; echo op > "$INSTALL/store/.operator-token"; echo shared > "$INSTALL/store/.dashboard-token"
 bash "$W" --token operator GET /api/agents >/dev/null 2>&1
 check "--token operator: operator token sent" grep -q 'Bearer op' "$T/stdin"
 reset; echo shared > "$INSTALL/store/.dashboard-token"
-bash "$W" --token operator GET /api/agents >/dev/null 2>&1
-check "--token operator: missing file falls back" grep -q 'Bearer shared' "$T/stdin"
+bash "$W" --token operator GET /api/agents >"$T/out" 2>"$T/err"; RC=$?
+check "--token operator: missing file is exit 3, not the shared token" bash -c "test $RC -eq 3 && test ! -e '$T/calls'"
+check "--token operator: the message names issue-operator" grep -q 'issue-operator' "$T/err"
 
-# 7b admin kind: main agent own token, everyone else shared
+# 7b admin kind: the main agent's own token; every other agent is refused (exit 3), no request
 reset; echo own-m > "$INSTALL/.agent-token"; echo own-a > "$INSTALL/agents/a/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
 bash "$W" --agent m --token admin POST /api/agents/x/restart >/dev/null 2>&1
 check "--token admin: main agent sends its own token" grep -q 'Bearer own-m' "$T/stdin"
-bash "$W" --agent a --token admin POST /api/agents/x/restart >/dev/null 2>&1
-check "--token admin: any other agent sends the shared token" grep -q 'Bearer shared' "$T/stdin"
+rm -f "$T/calls" "$T/stdin"
+bash "$W" --agent a --token admin POST /api/agents/x/restart >/dev/null 2>"$T/err"; RC=$?
+check "--token admin: any other agent is refused, exit 3, no request" bash -c "test $RC -eq 3 && test ! -e '$T/calls'"
+check "--token admin: the refusal names the way (ask the main agent)" grep -q 'ask the main agent' "$T/err"
 
 # 7c main kind: the main agent's token whoever runs it
 reset; echo own-m > "$INSTALL/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
@@ -107,8 +110,8 @@ reset; echo own-a > "$INSTALL/agents/a/.agent-token"
 ( cd "$INSTALL/agents/a" && bash "$W" GET /api/agents >/dev/null 2>&1 )
 check "sub-agent: token from the cwd" grep -q 'Bearer own-a' "$T/stdin"
 reset; echo shared > "$INSTALL/store/.dashboard-token"
-( cd "$T" && bash "$W" GET /api/agents >/dev/null 2>&1 )
-check "unknown cwd: shared token, no caller header" bash -c "grep -q 'Bearer shared' '$T/stdin' && ! grep -q 'X-Agent-Id' '$T/argv'"
+( cd "$T" && bash "$W" GET /api/agents >/dev/null 2>"$T/err" ); RC=$?
+check "unknown cwd and no identity: exit 3, no request, the shared token is not a way out" bash -c "test ! -e '$T/calls' && grep -q 'unknown agent' '$T/err'"
 
 # 8b a cwd that names nobody: the launch's config dir does
 reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo shared > "$INSTALL/store/.dashboard-token"
@@ -122,9 +125,9 @@ reset; echo own-m > "$INSTALL/.agent-token"; echo shared > "$INSTALL/store/.dash
 check "scratch cwd + main channels config dir: the main agent's token" grep -q 'Bearer own-m' "$T/stdin"
 reset; echo shared > "$INSTALL/store/.dashboard-token"
 ( cd "$T" && CLAUDE_CONFIG_DIR="$INSTALL/agents/a/notes" bash "$W" GET /api/agents >/dev/null 2>&1 )
-check "an agent directory that is not a config dir names nobody" bash -c "grep -q 'Bearer shared' '$T/stdin' && ! grep -q 'X-Agent-Id' '$T/argv'"
+check "an agent directory that is not a config dir names nobody: no request" test ! -e "$T/calls"
 ( cd "$T" && CLAUDE_CONFIG_DIR="$T/other/agents/a/.claude-config" bash "$W" GET /api/agents >/dev/null 2>&1 )
-check "another install's config dir names nobody" bash -c "! grep -q 'X-Agent-Id' '$T/argv'"
+check "another install's config dir names nobody: no request" test ! -e "$T/calls"
 reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
 ( cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/a/.claude-config" bash "$W" GET /api/agents >/dev/null 2>&1 )
 check "the working directory still wins over the config dir" grep -q 'Bearer own-m' "$T/stdin"
@@ -149,21 +152,22 @@ bash "$W" --agent a FETCH /api/x >/dev/null 2>&1; check "bad method: exit 2" tes
 bash "$W" --agent a GET /x >/dev/null 2>&1; check "bad path: exit 2" test $? -eq 2
 bash "$W" --token nope GET /api/x >/dev/null 2>&1; check "bad --token: exit 2" test $? -eq 2
 
-# 11b max-time
-reset; bash "$W" --max-time 5 GET /api/x >/dev/null 2>&1
+# 11b max-time (these need a token to get as far as curl)
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; export MARVEEN_AGENT_ID=a
+bash "$W" --max-time 5 GET /api/x >/dev/null 2>&1
 check "--max-time passed to curl" grep -qx -- '--max-time' "$T/argv"
 bash "$W" --max-time abc GET /api/x >/dev/null 2>&1; check "bad --max-time: exit 2" test $? -eq 2
 
 # 11c with-status
-reset; OUT="$(bash "$W" --with-status GET /api/x 2>/dev/null)"
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; OUT="$(bash "$W" --with-status GET /api/x 2>/dev/null)"
 check "--with-status: body then status line" test "$OUT" = "$(printf '{"ok":true}\n200')"
 OUT="$(STUB_CODE=201 bash "$W" --with-status POST /api/x '{}' 2>/dev/null)"
 check "--with-status: the exact 2xx code is reported" test "${OUT##*$'\n'}" = 201
 
 # 12 base url
-reset; DASHBOARD_BASE_URL=http://example.invalid:9 bash "$W" GET /api/x >/dev/null 2>&1
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; DASHBOARD_BASE_URL=http://example.invalid:9 bash "$W" GET /api/x >/dev/null 2>&1
 check "DASHBOARD_BASE_URL honoured" grep -qx 'http://example.invalid:9/api/x' "$T/argv"
-reset; WEB_PORT=4999 bash "$W" GET /api/x >/dev/null 2>&1
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; WEB_PORT=4999 bash "$W" GET /api/x >/dev/null 2>&1
 check "WEB_PORT honoured" grep -qx 'http://localhost:4999/api/x' "$T/argv"
 
 echo ""
