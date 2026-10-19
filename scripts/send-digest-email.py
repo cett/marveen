@@ -9,6 +9,15 @@ and the result is emailed to the Gmail account the OAuth token belongs to
 (read from that account's own profile at send time -- never hardcoded, so no
 personal address lives in this file).
 
+This script is a documented EXCEPTION to the email send gate: it runs unattended from a schedule, so it cannot
+wait for an owner's approval, and it is allowed to do so only because it can mail ONE place, the owner's own
+mailbox. The guarantee is in code, not only in SECURITY.md: send_via_gmail() is the only function of this module
+that calls the Gmail send route, and it refuses (SelfSendOnly, nothing sent) any raw message whose headers are not
+exactly one `To:` equal to the token account's own profile address, with no other recipient-bearing header. Importing
+this module and calling build_raw_mime()/send_via_gmail() with another recipient therefore does not work; mail to
+anyone else goes through scripts/gmail-send.py, which has the gate. A ratchet (scripts/gmail-send-route-ratchet.py)
+keeps the send route literal out of every other file.
+
 The refresh_token / access_token are never printed; only one of the fixed
 outcome strings below goes to stdout.
 
@@ -18,6 +27,9 @@ Usage:
 Exit codes: 0 for SENT and SKIP_NO_DIGEST, non-zero for a real failure.
 """
 import base64
+import binascii
+import email
+import email.policy
 import json
 import os
 import sys
@@ -132,7 +144,45 @@ def build_raw_mime(recipient, subject, body):
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
 
 
+class SelfSendOnly(RuntimeError):
+    """The message is not addressed to the token account's own mailbox alone; nothing was sent."""
+
+
+# The only headers build_raw_mime() writes. Anything else (Cc, Bcc, Resent-*, Reply-To, From, a second To) is refused:
+# Gmail sends to every address it finds in the headers, and a stricter list than the parser needs is the safe side.
+_ALLOWED_HEADERS = frozenset(("mime-version", "content-type", "content-transfer-encoding", "to", "subject"))
+
+
+def assert_self_addressed(raw_mime, own_address):
+    """Raise SelfSendOnly unless the base64url message has exactly one To header whose whole value is `own_address`
+    (case-insensitive, no display name, no list, no comment) and no header outside _ALLOWED_HEADERS."""
+    if not isinstance(own_address, str) or not own_address.strip() or any(c in own_address for c in ' <>",;()\r\n\t'):
+        raise SelfSendOnly("the account's own address is not usable")
+    try:
+        raw = base64.urlsafe_b64decode(str(raw_mime).encode("ascii") + b"=" * (-len(str(raw_mime)) % 4))
+    except (UnicodeEncodeError, binascii.Error, ValueError):
+        raise SelfSendOnly("the message is not base64url")
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    if msg.defects:
+        raise SelfSendOnly("the message headers are malformed")
+    seen = {}
+    for name, value in msg.raw_items():
+        key = name.strip().lower()
+        if key not in _ALLOWED_HEADERS:
+            raise SelfSendOnly("header %r is not allowed" % name[:40])
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            raise SelfSendOnly("header %r is repeated" % name[:40])
+        if key == "to" and str(value).strip().casefold() != own_address.strip().casefold():
+            raise SelfSendOnly("the recipient is not the account's own address")
+    if "to" not in seen:
+        raise SelfSendOnly("the message has no recipient")
+
+
 def send_via_gmail(access_token, raw_mime):
+    """The ONLY place of this module that calls the Gmail send route. The own address is read from the account's
+    profile HERE (not taken from the caller), so a caller cannot pass in the recipient it wants to be treated as own."""
+    assert_self_addressed(raw_mime, fetch_own_email_address(access_token))
     req = urllib.request.Request(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
         data=json.dumps({"raw": raw_mime}).encode(),
@@ -182,6 +232,9 @@ def main(argv):
         recipient = fetch_own_email_address(access_token)
         raw_mime = build_raw_mime(recipient, subject, body)
         result = send_via_gmail(access_token, raw_mime)
+    except SelfSendOnly:
+        print("SEND_REFUSED_NOT_SELF")
+        return 1
     except Exception:
         print("SEND_FAIL")
         return 1

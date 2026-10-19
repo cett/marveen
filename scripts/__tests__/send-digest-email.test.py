@@ -143,14 +143,216 @@ class TestFetchOwnEmailAddress(unittest.TestCase):
         self.assertEqual(result, "recipient@example.invalid")
 
 
-class TestSendViaGmail(unittest.TestCase):
-    def test_returns_parsed_json_response(self):
-        payload = json.dumps({"id": "msg-fixture-id"}).encode()
-        with patch.object(
-            mod.urllib.request, "urlopen", return_value=_fake_response(payload)
+OWN = "own-mailbox@example.invalid"
+OTHER = "someone-else@example.invalid"
+
+
+def _b64(raw_bytes):
+    return base64.urlsafe_b64encode(raw_bytes).decode("ascii")
+
+
+def _msg(headers, body="Body text"):
+    """A hand-assembled raw message (so a test can write headers build_raw_mime() never would)."""
+    head = "".join("%s: %s\r\n" % (k, v) for k, v in headers)
+    return _b64((head + "\r\n" + body + "\r\n").encode("utf-8"))
+
+
+_BASE = [("MIME-Version", "1.0"), ("Content-Type", 'text/plain; charset="utf-8"'), ("Subject", "Digest")]
+
+
+class _FakeGoogle:
+    """urlopen stand-in: the profile answers `own`, the send route records what it was given."""
+
+    def __init__(self, own=OWN, send_id="msg-fixture-id"):
+        self.own = own
+        self.send_id = send_id
+        self.urls = []
+        self.sent = []
+
+    def __call__(self, req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        self.urls.append(url)
+        if url.endswith("/users/me/profile"):
+            return _fake_response(json.dumps({"emailAddress": self.own}).encode())
+        if url.endswith("/users/me/messages/send"):
+            self.sent.append(json.loads(req.data.decode()))
+            return _fake_response(json.dumps({"id": self.send_id}).encode())
+        raise AssertionError("unexpected request to " + url)
+
+
+class TestSelfSendGuard(unittest.TestCase):
+    """assert_self_addressed(): the digest sender may mail the account's own mailbox and nothing else."""
+
+    def test_the_built_message_for_the_own_address_passes_and_case_does_not_matter(self):
+        mod.assert_self_addressed(mod.build_raw_mime(OWN, "Digest", "Body"), OWN)
+        mod.assert_self_addressed(mod.build_raw_mime(OWN.upper(), "Digest", "Body"), OWN)
+        mod.assert_self_addressed(mod.build_raw_mime(OWN, "Árvíztűrő", "Body"), OWN)
+
+    def test_another_recipient_is_refused(self):
+        with self.assertRaises(mod.SelfSendOnly):
+            mod.assert_self_addressed(mod.build_raw_mime(OTHER, "Digest", "Body"), OWN)
+
+    def test_the_own_address_with_anything_around_it_is_refused(self):
+        for value in (
+            "%s, %s" % (OWN, OTHER),          # a list
+            "%s, %s" % (OTHER, OWN),
+            "Owner <%s>" % OWN,              # a display name: the reader of a different parser could differ
+            "<%s>" % OWN,
+            '"%s"' % OWN,
+            "%s (%s)" % (OWN, OTHER),        # a comment
+            "undisclosed-recipients:;",
+            "",
         ):
-            result = mod.send_via_gmail("fake-access-token", "fixture-raw-mime")
-        self.assertEqual(result, {"id": "msg-fixture-id"})
+            with self.subTest(to=value):
+                with self.assertRaises(mod.SelfSendOnly):
+                    mod.assert_self_addressed(_msg(_BASE + [("To", value)]), OWN)
+
+    def test_a_header_that_adds_a_recipient_is_refused(self):
+        for name in ("Cc", "Bcc", "Resent-To", "Resent-Cc", "Resent-Bcc", "Reply-To", "From", "Sender", "X-Forward-To"):
+            with self.subTest(header=name):
+                with self.assertRaises(mod.SelfSendOnly):
+                    mod.assert_self_addressed(_msg(_BASE + [("To", OWN), (name, OTHER)]), OWN)
+
+    def test_a_repeated_to_header_is_refused_whichever_comes_first(self):
+        with self.assertRaises(mod.SelfSendOnly):
+            mod.assert_self_addressed(_msg(_BASE + [("To", OWN), ("To", OTHER)]), OWN)
+        with self.assertRaises(mod.SelfSendOnly):
+            mod.assert_self_addressed(_msg(_BASE + [("To", OTHER), ("To", OWN)]), OWN)
+
+    def test_two_identical_to_headers_are_refused_too(self):
+        # both equal the own address, but a second To is one more thing Gmail and this parser might read differently
+        with self.assertRaises(mod.SelfSendOnly):
+            mod.assert_self_addressed(_msg(_BASE + [("To", OWN), ("To", OWN)]), OWN)
+
+    def test_a_malformed_header_block_is_refused(self):
+        # a line with no colon in the header block: the parser stops reading headers there, Gmail may not
+        raw = _b64(("MIME-Version: 1.0\r\ngarbage line\r\nTo: %s\r\n\r\nBody\r\n" % OWN).encode())
+        with self.assertRaises(mod.SelfSendOnly):
+            mod.assert_self_addressed(raw, OWN)
+
+    def test_a_message_without_a_recipient_is_refused(self):
+        with self.assertRaises(mod.SelfSendOnly):
+            mod.assert_self_addressed(_msg(_BASE), OWN)
+
+    def test_a_header_smuggled_through_the_subject_is_refused(self):
+        # build_raw_mime() puts the subject in as it is; a line break in it must not become a header
+        for subject in ("Digest\r\nBcc: %s" % OTHER, "Digest\nBcc: %s" % OTHER, "Digest\r\nTo: %s" % OTHER):
+            with self.subTest(subject=subject):
+                try:
+                    raw = mod.build_raw_mime(OWN, subject, "Body")
+                except Exception:
+                    continue   # the builder itself refused: fine
+                with self.assertRaises(mod.SelfSendOnly):
+                    mod.assert_self_addressed(raw, OWN)
+
+    def test_a_recipient_line_in_the_body_is_only_text(self):
+        mod.assert_self_addressed(mod.build_raw_mime(OWN, "Digest", "To: %s\nBcc: %s" % (OTHER, OTHER)), OWN)
+
+    def test_what_is_not_a_message_is_refused(self):
+        for raw in ("", "not base64 !!!", "ä", None, 5):
+            with self.subTest(raw=raw):
+                with self.assertRaises(mod.SelfSendOnly):
+                    mod.assert_self_addressed(raw, OWN)
+
+    def test_an_unusable_own_address_refuses_everything(self):
+        raw = mod.build_raw_mime(OWN, "Digest", "Body")
+        for own in (None, "", "  ", "a@b.invalid, c@d.invalid", "Name <a@b.invalid>", "a@b.invalid\r\n", 5):
+            with self.subTest(own=own):
+                with self.assertRaises(mod.SelfSendOnly):
+                    mod.assert_self_addressed(raw, own)
+
+
+class TestSendRouteIsGuarded(unittest.TestCase):
+    """send_via_gmail() is the only way this module reaches the Gmail send route."""
+
+    def test_the_own_mailbox_is_sent_to_after_the_profile_was_read(self):
+        google = _FakeGoogle()
+        raw = mod.build_raw_mime(OWN, "Digest", "Body")
+        with patch.object(mod.urllib.request, "urlopen", google):
+            self.assertEqual(mod.send_via_gmail("fixture-token", raw), {"id": "msg-fixture-id"})
+        self.assertEqual(len(google.sent), 1)
+        self.assertTrue(google.urls[0].endswith("/users/me/profile"), "the profile is read before anything is sent")
+
+    def test_another_recipient_sends_nothing(self):
+        google = _FakeGoogle()
+        with patch.object(mod.urllib.request, "urlopen", google):
+            with self.assertRaises(mod.SelfSendOnly):
+                mod.send_via_gmail("fixture-token", mod.build_raw_mime(OTHER, "Digest", "Body"))
+        self.assertEqual(google.sent, [])
+        self.assertFalse(any(u.endswith("/messages/send") for u in google.urls))
+
+    def test_the_importlib_pattern_does_not_reach_a_foreign_recipient(self):
+        # the pattern some skills describe: load the file and call its functions with any address
+        spec = importlib.util.spec_from_file_location("digest_loaded_elsewhere", _SCRIPT_PATH)
+        other = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other)
+        google = _FakeGoogle()
+        with patch.object(other.urllib.request, "urlopen", google):
+            with self.assertRaises(other.SelfSendOnly):
+                other.send_via_gmail("fixture-token", other.build_raw_mime(OTHER, "Anything", "An outside letter"))
+        self.assertEqual(google.sent, [])
+
+    def test_the_caller_cannot_say_what_the_own_address_is(self):
+        import inspect
+        self.assertEqual(list(inspect.signature(mod.send_via_gmail).parameters), ["access_token", "raw_mime"])
+
+    def test_a_profile_that_is_not_the_recipient_sends_nothing_even_if_the_message_looks_fine(self):
+        google = _FakeGoogle(own=OTHER)
+        with patch.object(mod.urllib.request, "urlopen", google):
+            with self.assertRaises(mod.SelfSendOnly):
+                mod.send_via_gmail("fixture-token", mod.build_raw_mime(OWN, "Digest", "Body"))
+        self.assertEqual(google.sent, [])
+
+    def test_a_failing_profile_read_sends_nothing(self):
+        def boom(req, timeout=None):
+            raise OSError("fixture network failure")
+        with patch.object(mod.urllib.request, "urlopen", boom):
+            with self.assertRaises(OSError):
+                mod.send_via_gmail("fixture-token", mod.build_raw_mime(OWN, "Digest", "Body"))
+
+
+class TestExceptionStillWorks(unittest.TestCase):
+    """The reason for the exception: the morning schedule mails the owner's own mailbox with no approval, and keeps doing so."""
+
+    def _run(self, argv=None, env=None, google=None):
+        google = google or _FakeGoogle()
+        with tempfile.NamedTemporaryFile() as tok, tempfile.NamedTemporaryFile() as cred:
+            with patch.object(mod, "TOKEN_FILE", tok.name), patch.object(mod, "CREDENTIALS_FILE", cred.name), \
+                 patch.object(mod, "refresh_access_token", return_value="fixture-token"), \
+                 patch.object(mod, "fetch_digest_content", return_value="Digest body text"), \
+                 patch.dict(os.environ, env or {}, clear=False), \
+                 patch.object(mod.urllib.request, "urlopen", google), \
+                 patch("sys.stdout", new_callable=io.StringIO) as out:
+                code = mod.main(argv or [])
+        return code, out.getvalue().strip(), google
+
+    def test_the_self_send_runs_with_no_approval_and_only_talks_to_google(self):
+        code, out, google = self._run()
+        self.assertEqual((code, out), (0, "SENT id=msg-fixture-id"))
+        self.assertEqual(len(google.sent), 1)
+        for url in google.urls:
+            self.assertTrue(url.startswith("https://gmail.googleapis.com/"), url)
+            self.assertNotIn("/api/approvals", url)
+
+    def test_main_takes_no_recipient_from_argv_or_the_environment(self):
+        argv = ["--to", OTHER, "--bcc", OTHER, "--cc=" + OTHER, "--recipient", OTHER, OTHER]
+        env = {k: OTHER for k in ("TO", "RECIPIENT", "DIGEST_TO", "DIGEST_RECIPIENT", "MAIL_TO", "GMAIL_TO", "EMAIL_TO", "MARVEEN_DIGEST_TO")}
+        code, out, google = self._run(argv, env)
+        self.assertEqual((code, out), (0, "SENT id=msg-fixture-id"))
+        raw = base64.urlsafe_b64decode(google.sent[0]["raw"].encode("ascii"))
+        msg = message_from_bytes(raw)
+        self.assertEqual(msg.get_all("To"), [OWN])
+        for name in ("Cc", "Bcc", "Resent-To", "Reply-To"):
+            self.assertIsNone(msg[name])
+        self.assertNotIn(OTHER.encode(), raw)
+
+    def test_if_the_message_ever_stops_being_self_addressed_the_run_refuses_and_sends_nothing(self):
+        # the first profile read (main builds the mail for it) says one address, the guard's own read says another
+        google = _FakeGoogle()
+        with patch.object(mod, "fetch_own_email_address", side_effect=[OTHER, OWN]):
+            code, out, google = self._run(google=google)
+        self.assertEqual((code, out), (1, "SEND_REFUSED_NOT_SELF"))
+        self.assertEqual(google.sent, [])
 
 
 class TestMainBranches(unittest.TestCase):
