@@ -15,7 +15,7 @@ import { recordHttpServerRequest } from './otel-signals.js'
 
 // First path segment after /api: the resources of the dashboard.
 const RESOURCES: ReadonlySet<string> = new Set([
-  'activity', 'admin', 'agent-availability', 'agents', 'agent-state', 'agent-taskstate', 'approvals', 'artifacts', 'audit',
+  'activity', 'admin', 'agent-availability', 'agents', 'agent-inflight-turn', 'agent-state', 'agent-taskstate', 'approvals', 'artifacts', 'audit',
   'auth', 'autonomy', 'backups', 'blackboard', 'bridge-enroll', 'browser-enroll-codes', 'budgets', 'channel-bindings',
   'claude-auth', 'claude-plans', 'config', 'conversation-ledger', 'daily-log', 'dashboard-users', 'decisions', 'device-keys',
   'docs', 'egress-allowlist', 'federation', 'fleet', 'github-repos', 'hook-audit', 'identity', 'import', 'kanban', 'labels',
