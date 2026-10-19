@@ -5,6 +5,14 @@
 // any other agent's bot, to any chat (a tenant-boundary crossing and an impersonation). So a
 // fleet_agent may name only a state dir that is ITS OWN channel, and only a chat the owner paired on
 // that channel (access.json allowFrom). Both checks fail closed.
+//
+// What this is and is not: an API-level scope. It stops a fleet_agent token from naming another
+// agent's channel or a chat nobody paired, including through a symlink or hard link to it. It is not
+// an OS boundary: the channel dir (the bot token in .env, the pairing in access.json) is written by the
+// agent's own OS user, and the speak subprocess reads it by path, so an agent that rewrites its own
+// files, or swaps them between this check and the subprocess's read, is beyond what a path check can
+// close. The real fix is to resolve the bot token and the pairing server-side from a source the agent
+// cannot write, keyed by the token's agent id; that is a follow-up, not part of this scope check.
 
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -72,7 +80,9 @@ export function resolveOwnStateDir(agentId: string, stateDir: string, bases: Cha
     if (!agentOwnsStateDir(agentId, real, realBases)) return null
     for (const name of ['.env', 'access.json']) {
       try {
-        if (lstatSync(join(real, name)).isSymbolicLink()) return null
+        const st = lstatSync(join(real, name))
+        // a symlink or a hard link (nlink > 1) is how another agent's file would be named as one's own
+        if (st.isSymbolicLink() || st.nlink > 1) return null
       } catch (err) {
         // access.json may be absent (the chat check then fails closed); .env is checked by the route
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return null

@@ -2,7 +2,7 @@
 // Real temp directories, neutral fixture ids (agents zed / ydd, main agent mn, chats 4242 / 9999).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -85,6 +85,17 @@ describe('resolveOwnStateDir (names, where they really point, and what is handed
       const elsewhere = join(root, 'elsewhere-' + name.replace('.', ''))
       writeFileSync(elsewhere, '{}')
       symlinkSync(elsewhere, join(own('zed'), name))
+      expect(resolveOwnStateDir('zed', own('zed'), bases), name).toBeNull()
+      rmSync(own('zed'), { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a directory whose .env or access.json is a hard link to another file', () => {
+    for (const name of ['.env', 'access.json']) {
+      mkdirSync(own('zed'), { recursive: true })
+      const elsewhere = join(root, 'other-' + name.replace('.', ''))
+      writeFileSync(elsewhere, '{}')
+      linkSync(elsewhere, join(own('zed'), name))
       expect(resolveOwnStateDir('zed', own('zed'), bases), name).toBeNull()
       rmSync(own('zed'), { recursive: true, force: true })
     }
