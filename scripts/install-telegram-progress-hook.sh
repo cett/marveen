@@ -20,7 +20,14 @@
 #
 # Idempotent: safe to re-run (e.g. from sync-hooks.sh on every update).
 # Cleanup of the old ~/.claude/hooks copies and stale user-global settings
-# entries belongs to the global-prune round, not here.
+# entries belongs to the global-prune round, not here. Two re-install hazards
+# ARE handled here, because they bit a renamed install (old id -> new id):
+#   - a launchd job com.<OLD-id>.telegram-progress-watchdog left over from
+#     before the rename kept running next to the new one (two daemons, no
+#     lock); it is retired when it demonstrably belongs to this install;
+#   - a pre-#1305 ~/.claude/hooks copy that a leftover job still runs drifted
+#     from the repo; an EXISTING copy is refreshed (a missing one is never
+#     created -- the #1305 contract stands).
 #
 # Usage:
 #   bash ~/ClaudeClaw/scripts/install-telegram-progress-hook.sh
@@ -70,14 +77,36 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 
+# --- Refresh pre-#1305 global hook copies that still exist -------------------
+# Never creates a copy: only a file that is already there (and is not a
+# symlink, which someone wired on purpose) is brought to the repo version, via
+# a temp file + mv so a running reader never sees a half-written script.
+GLOBAL_HOOKS="$HOME/.claude/hooks"
+for f in telegram_progress.py telegram_progress_clear.py \
+         telegram_progress_reply_clear.py telegram_progress_watchdog.py; do
+  dst="$GLOBAL_HOOKS/$f"
+  [ -f "$dst" ] && [ ! -L "$dst" ] && [ -f "$SRC_DIR/$f" ] || continue
+  cmp -s "$SRC_DIR/$f" "$dst" && continue
+  if cp "$SRC_DIR/$f" "$dst.new.$$" && mv "$dst.new.$$" "$dst"; then
+    echo "✓ Refreshed stale global hook copy: $dst"
+  else
+    echo "WARN: could not refresh $dst" >&2
+  fi
+done
+
 # --- Install the watchdog daemon -------------------------------------------
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
+  . "$(dirname "$0")/launchd-label.sh"
   PLIST_DIR="$HOME/Library/LaunchAgents"
   LABEL="com.${SERVICE_ID}.telegram-progress-watchdog"
   PLIST="$PLIST_DIR/$LABEL.plist"
   LOG="$HOME/.claude/channels/telegram-progress-watchdog.log"
   mkdir -p "$PLIST_DIR" "$HOME/.claude/channels"
+  # A renamed install leaves com.<old-id>.telegram-progress-watchdog behind:
+  # retire it (only if it points at this install or the shared legacy copy).
+  retire_foreign_service_plists "$LABEL" telegram-progress-watchdog \
+    "$INSTALL_DIR" "$PLIST_DIR" "$GLOBAL_HOOKS/telegram_progress_watchdog.py"
   cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
