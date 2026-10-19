@@ -38,33 +38,45 @@ import email_extract as E  # noqa: E402
 
 TOKEN = 'tok-main-0123456789abcdef'
 ACCESS = 'ya29.access-token-fixture'
-MAIN = 'jarvis'
+MAIN = 'agent-a'
 BODY = 'Here are the notes from this week.'
 MAIL_ARGS = ['--to', 'ann@example.test', '--subject', 'Weekly notes', '--body', BODY]
 CLAIM_KEY = 'a1' * 32          # the dashboard's claim signing key, as the file holds it (64 hex characters)
 OTHER_KEY = 'b2' * 32          # a key some other listener made up
 CONSUMED_AT = 1760000000
+USED_AT = CONSUMED_AT + 5
+GATE_REF = 'gate-send-' + 'ab' * 16      # the ref the send gate reserves under when it read the call as this sender
 
 
 def sign_claim(key_hex, content_hash, category, agent_id, ref, consumed_at):
-    """What the dashboard signs: HMAC-SHA256 of v1|hash|category|agent|ref|consumed_at, the key being the bytes of the hex."""
+    """The GATE's answer: HMAC-SHA256 of v1|hash|category|agent|ref|consumed_at. The sender must NOT accept it."""
     text = 'v1|%s|%s|%s|%s|%s' % (content_hash, category, agent_id, ref if ref is not None else '', consumed_at)
     return hmac.new(bytes.fromhex(key_hex), text.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
-def _claim_ok(aid='appr-1', sig_key=CLAIM_KEY, sig_fields=None, sig='auto', **override):
-    """The dashboard's 200: the approval row and its signature. sig_key=None answers with no `sig` (a mirror that
-    has no key), sig_fields overrides what is signed (not what is shown), sig='...' sends that value as it is."""
+def sign_use(key_hex, content_hash, category, agent_id, used_ref, consumed_at, used_at):
+    """The SENDER's answer (claim mode send): HMAC-SHA256 of v2|hash|category|agent|used_ref|consumed_at|used_at."""
+    text = 'v2|%s|%s|%s|%s|%s|%s' % (content_hash, category, agent_id, used_ref if used_ref is not None else '', consumed_at, used_at)
+    return hmac.new(bytes.fromhex(key_hex), text.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def _claim_ok(aid='appr-1', sig_key=CLAIM_KEY, sig_fields=None, sig='auto', adopted=True, body_extra=None, **override):
+    """The dashboard's 200 to a mode-send claim: the approval row and its v2 signature. adopted=True: the sender took
+    over the gate's reservation (consumed_ref is the gate's); adopted=False: it reserved and sealed in one step.
+    sig_key=None answers with no `sig` (a mirror that has no key), sig_fields overrides what is signed (not what is
+    shown), sig='...' sends that value as it is, body_extra overrides top-level fields of the answer."""
     def answer(request):
         row = {'id': aid, 'agent_id': MAIN, 'category': request['category'], 'content_hash': request['content_hash'],
-               'status': 'approved', 'consumed_by': MAIN, 'consumed_ref': request['ref'], 'consumed_at': CONSUMED_AT, 'action_payload': '{}'}
+               'status': 'approved', 'consumed_by': MAIN, 'consumed_ref': GATE_REF if adopted else request['ref'],
+               'consumed_at': CONSUMED_AT, 'used_at': USED_AT, 'used_ref': request['ref'], 'action_payload': '{}'}
         row.update(override)
-        body = {'ok': True, 'replayed': False, 'window_s': 1800, 'approval': {k: v for k, v in row.items() if v is not None}}
+        body = {'ok': True, 'replayed': False, 'adopted': adopted, 'window_s': 1800, 'approval': {k: v for k, v in row.items() if v is not None}}
+        body.update(body_extra or {})
         signed = dict(row, **(sig_fields or {}))
         if sig != 'auto':
             body['sig'] = sig
         elif sig_key is not None:
-            body['sig'] = sign_claim(sig_key, signed['content_hash'], signed['category'], signed['agent_id'], signed['consumed_ref'], signed['consumed_at'])
+            body['sig'] = sign_use(sig_key, signed['content_hash'], signed['category'], signed['agent_id'], signed['used_ref'], signed['consumed_at'], signed['used_at'])
         return 200, body
     return answer
 
@@ -280,7 +292,8 @@ class HappyPath(SenderCase):
         self.assertEqual(body['content_hash'], want)
         self.assertEqual(body['consumer'], 'gmail-send')
         self.assertRegex(body['ref'], r'^send-[0-9a-f]{32}$')
-        self.assertEqual(set(body), {'category', 'content_hash', 'consumer', 'ref'})
+        self.assertEqual(set(body), {'category', 'content_hash', 'consumer', 'mode', 'ref'})
+        self.assertEqual(body['mode'], 'send', 'the sender asks to adopt the gate reservation and seal the use')
         self.assertEqual(headers.get('Authorization'), 'Bearer ' + TOKEN)
         self.assertEqual(headers.get('X-Agent-Id'), MAIN)
         self.assertEqual(self.dash.paths(), [('POST', '/api/approvals/claim')], 'no request is opened for an approved mail')
@@ -350,7 +363,7 @@ class HappyPath(SenderCase):
 class Refusals(SenderCase):
     def test_no_usable_approval_opens_a_request_and_sends_nothing(self):
         want, canon = self.expected_hash()
-        for reason in ('none', 'expired', 'already_consumed', 'rejected', 'not_human_decided'):
+        for reason in ('none', 'expired', 'already_consumed', 'already_used', 'rejected', 'not_human_decided'):
             with self.subTest(reason=reason):
                 self.dash.requests.clear()
                 self.dash.claim = _conflict(reason)
@@ -441,7 +454,7 @@ class Refusals(SenderCase):
 
     def test_a_claim_answer_about_another_mail_agent_or_use_is_not_a_yes(self):
         for field, wrong in [('content_hash', 'f' * 64), ('category', 'other'), ('agent_id', 'someone-else'), ('status', 'pending'),
-                             ('consumed_by', 'someone-else'), ('consumed_ref', 'send-0'), ('consumed_ref', None), ('content_hash', None),
+                             ('consumed_by', 'someone-else'), ('used_ref', 'send-0'), ('used_ref', None), ('content_hash', None),
                              ('agent_id', None), ('category', None), ('status', None), ('consumed_by', None)]:
             with self.subTest(field=field, wrong=wrong):
                 self.dash.requests.clear()
@@ -468,6 +481,112 @@ class Refusals(SenderCase):
                 res = self.run_sender(MAIL_ARGS)
                 self.assert_nothing_sent(res, 3)
                 self.assertIn('claim_bad_answer', res.err)
+
+
+class TwoPhaseClaim(SenderCase):
+    """The sender asks for mode send: it adopts the gate's reservation (or reserves and seals when no gate ran) and
+    accepts only the dashboard's v2 answer about ITS OWN run. One approval is one mail, and a failed send does not
+    get a second try on the same approval."""
+
+    def _refused(self, claim, needle):
+        self.dash.claim = claim
+        self.google.requests.clear()
+        self.google.raw_messages.clear()
+        self.dash.requests.clear()
+        res = self.run_sender(MAIL_ARGS)
+        self.assert_nothing_sent(res, 3)
+        self.assertIn(needle, res.err)
+        self.assertNotIn(('POST', '/api/approvals'), self.dash.paths(), 'a bad answer opens no request')
+        return res
+
+    def test_an_adopted_reservation_sends_exactly_one_mail_with_one_claim(self):
+        self.dash.claim = _claim_ok(adopted=True)
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual((res.rc, res.out.strip()), (0, 'SENT id=msg-1'), res.text)
+        self.assertEqual(self.events, ['token', 'claim', 'send'])
+        self.assertEqual(len(self.claims()), 1, 'the sender asks once; the gate already reserved')
+        self.assertEqual(len(self.google.sent_calls()), 1)
+
+    def test_the_gate_reservation_is_only_adopted_when_the_sender_asks_for_it(self):
+        # the original failure, as a dashboard: a claim WITHOUT mode send meets the gate's reservation and is refused
+        ok = _claim_ok(adopted=True)
+        self.dash.claim = lambda request: ok(request) if request.get('mode') == 'send' else _conflict('already_consumed')
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual((res.rc, res.out.strip()), (0, 'SENT id=msg-1'), res.text)
+        self.assertNotIn(('POST', '/api/approvals'), self.dash.paths())
+
+    def test_a_run_with_no_gate_in_front_reserves_and_seals_itself(self):
+        self.dash.claim = _claim_ok(adopted=False)
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual((res.rc, res.out.strip()), (0, 'SENT id=msg-1'), res.text)
+        self.assertEqual(len(self.google.sent_calls()), 1)
+
+    def test_the_gates_v1_signature_is_not_the_senders_v2(self):
+        # a gate answer for the same mail: genuinely signed, but with the v1 text and without a seal
+        def gate_answer(request):
+            status, body = _claim_ok(adopted=True)(request)
+            a = body['approval']
+            body['sig'] = sign_claim(CLAIM_KEY, a['content_hash'], a['category'], a['agent_id'], a['used_ref'], a['consumed_at'])
+            return status, body
+        self._refused(gate_answer, 'REFUSED claim_unsigned')
+
+        def gate_answer_gate_ref(request):
+            status, body = _claim_ok(adopted=True)(request)
+            a = body['approval']
+            body['sig'] = sign_claim(CLAIM_KEY, a['content_hash'], a['category'], a['agent_id'], a['consumed_ref'], a['consumed_at'])
+            return status, body
+        self._refused(gate_answer_gate_ref, 'REFUSED claim_unsigned')
+
+    def test_the_seal_is_part_of_the_answer_and_of_the_signature(self):
+        for bad in (None, '1760000005', 1760000005.0, True, 0, -5, [1], {}):
+            with self.subTest(used_at=bad):
+                self._refused(_claim_ok(used_at=bad, sig_fields={'used_at': bad}), 'REFUSED claim_unsigned')
+        # shown seal differs from the signed one
+        self._refused(_claim_ok(sig_fields={'used_at': USED_AT + 1}), 'REFUSED claim_unsigned')
+
+    def test_an_answer_about_another_run_of_the_sender_is_not_a_yes(self):
+        # an old answer replayed by something that is not the dashboard: another run's used_ref, even if it is signed
+        self._refused(_claim_ok(used_ref='send-' + '0' * 32), 'claim_mismatch')
+        self._refused(_claim_ok(used_ref=None), 'claim_mismatch')
+
+    def test_the_reservation_must_be_what_the_answer_says_it_is(self):
+        # adopted: the reservation is the gate's, made for the official sender
+        for bad in ('gate-' + 'ab' * 16, 'send-' + 'ab' * 16, '', None, 'gate-sen'):
+            with self.subTest(adopted=True, consumed_ref=bad):
+                self._refused(_claim_ok(adopted=True, consumed_ref=bad, sig_fields={'consumed_ref': bad}), 'consumed_ref')
+        # not adopted: the run made the reservation itself, under its own ref
+        self._refused(_claim_ok(adopted=False, consumed_ref=GATE_REF), 'consumed_ref')
+
+    def test_adopted_must_be_a_plain_boolean(self):
+        for bad in (None, 'true', 1, 0, 'adopted', [True]):
+            with self.subTest(adopted=bad):
+                self._refused(_claim_ok(body_extra={'adopted': bad}), 'adopted')
+
+    def test_an_already_used_approval_sends_nothing_and_asks_the_owner_again(self):
+        # the approval was spent by a run that already mailed: this is NOT a second mail, a new request is the only way on
+        want, canon = self.expected_hash()
+        self.dash.claim = _conflict('already_used')
+        res = self.run_sender(MAIL_ARGS)
+        self.assert_nothing_sent(res, 3)
+        self.assertIn('REFUSED needs_approval', res.err)
+        self.assertIn('previous state: already_used', res.err)
+        opened = [r for r in self.dash.requests if r[:2] == ('POST', '/api/approvals')]
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0][2], {'agent_id': MAIN, 'category': 'email_send', 'content_hash': want, 'action_payload': canon})
+
+    def test_a_send_that_fails_after_the_seal_is_not_retried_on_the_same_approval(self):
+        self.google.send = (500, {'error': 'backend'})
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual(res.rc, 1, res.text)
+        self.assertIn('SPENT', res.err)
+        self.assertIn('ask for a new approval', res.err)
+        self.assertEqual(self.events, ['token', 'claim', 'send'], 'one claim, one Gmail attempt, no loop')
+
+    def test_the_seal_comes_before_gmail_is_called(self):
+        # at most once: a run killed between Gmail and the end must not leave an approval that can still send
+        res = self.run_sender(MAIL_ARGS)
+        self.assertEqual(res.rc, 0, res.text)
+        self.assertLess(self.events.index('claim'), self.events.index('send'))
 
 
 class ClaimSignature(SenderCase):
@@ -500,7 +619,7 @@ class ClaimSignature(SenderCase):
 
     def test_a_signature_over_another_value_is_refused(self):
         for field, other in [('content_hash', 'f' * 64), ('category', 'other'), ('agent_id', 'someone-else'),
-                             ('consumed_ref', 'send-0'), ('consumed_ref', None), ('consumed_at', CONSUMED_AT + 1)]:
+                             ('used_ref', 'send-0'), ('used_ref', None), ('consumed_at', CONSUMED_AT + 1), ('used_at', USED_AT + 1)]:
             with self.subTest(field=field):
                 self._refused(_claim_ok(sig_fields={field: other}))
 

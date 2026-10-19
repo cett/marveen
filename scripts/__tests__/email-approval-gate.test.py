@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(SCRIPTS, 'lib'))
 import email_extract as E  # noqa: E402
 
 TOKEN = 'tok-main-0123456789abcdef'
-MAIN = 'jarvis'
+MAIN = 'agent-a'
 CLAIM_KEY = 'a1' * 32          # the dashboard's claim signing key, as the file holds it (64 hex characters)
 OTHER_KEY = 'b2' * 32          # a key some other listener made up
 CONSUMED_AT = 1760000000

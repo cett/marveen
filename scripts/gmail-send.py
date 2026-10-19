@@ -109,7 +109,7 @@ USAGE = ('usage: gmail-send.py --to ADDR [--cc ADDR] [--bcc ADDR] --subject TEXT
          '[--attach PATH] [--from ADDR] [--reply-to ADDR] [--in-reply-to ID]  (plain text only, no --html)')
 
 # Claim answers (HTTP 409 `reason`) after which a new request is opened for the owner.
-OPEN_REQUEST_REASONS = frozenset(('none', 'expired', 'already_consumed', 'rejected', 'not_human_decided'))
+OPEN_REQUEST_REASONS = frozenset(('none', 'expired', 'already_consumed', 'already_used', 'rejected', 'not_human_decided'))
 
 _CONTROL = re.compile(r'[\x00-\x1f\x7f  ]+')
 
@@ -408,7 +408,9 @@ def _bad_signature(why: str) -> Stop:
 
 def _check_claim_signature(got: Dict[str, Any], approval: Dict[str, Any], expect: Dict[str, Any], ref: str) -> None:
     """Stop unless `got['sig']` is the dashboard's HMAC of this claim. The signed text is built from the values
-    this run EXPECTS (already compared with the answer) plus consumed_at, which only the answer can supply."""
+    this run EXPECTS (already compared with the answer) plus what only the answer can supply: consumed_at and,
+    for the sender's answer (mode send), used_at. The sender accepts ONLY the v2 text -- a v1 answer is the gate's
+    and must not stand in for it."""
     try:
         with open(CLAIM_KEY_PATH, encoding='ascii') as fh:
             key_text = fh.read(256).strip()
@@ -422,7 +424,10 @@ def _check_claim_signature(got: Dict[str, Any], approval: Dict[str, Any], expect
     sig = got.get('sig')
     if not isinstance(sig, str) or not sig:
         raise _bad_signature('sig is missing')
-    text = 'v1|%s|%s|%s|%s|%d' % (expect['content_hash'], expect['category'], expect['agent_id'], ref, consumed_at)
+    used_at = approval.get('used_at')
+    if not isinstance(used_at, int) or isinstance(used_at, bool) or used_at <= 0:
+        raise _bad_signature('used_at is missing')
+    text = 'v2|%s|%s|%s|%s|%d|%d' % (expect['content_hash'], expect['category'], expect['agent_id'], ref, consumed_at, used_at)
     want = hmac.new(bytes.fromhex(key_text), text.encode('utf-8'), 'sha256').hexdigest()
     try:
         same = hmac.compare_digest(sig.encode('ascii'), want.encode('ascii'))
@@ -436,7 +441,9 @@ def _claim(content_hash: str, h12: str, resolved: Any, canon: str, base: str) ->
     """Spend the owner's approval for this mail. Returns the approval id; raises Stop for every other end."""
     headers = resolved.headers({'Content-Type': 'application/json'})
     deadline = time.monotonic() + TOTAL_BUDGET_S
-    claim_body = {'category': CATEGORY, 'content_hash': content_hash, 'consumer': CONSUMER, 'ref': 'send-' + uuid.uuid4().hex}
+    # mode 'send': the sender adopts the reservation the gate made for this very mail (or reserves and seals in one
+    # step when no gate ran, e.g. a scheduled run) and seals the use BEFORE Gmail is called: at most once.
+    claim_body = {'category': CATEGORY, 'content_hash': content_hash, 'consumer': CONSUMER, 'mode': 'send', 'ref': 'send-' + uuid.uuid4().hex}
     tail = ' Nothing was sent.'
     try:
         status, got = _dash('POST', '/api/approvals/claim', claim_body, headers, deadline, base)
@@ -448,9 +455,19 @@ def _claim(content_hash: str, h12: str, resolved: Any, canon: str, base: str) ->
             raise Stop(EXIT_REFUSED, 'REFUSED claim_bad_answer: the approval service answered nonsense; fail-closed.' + tail)
         # The answer must be about THIS mail, this agent and this use: a listener that is not the dashboard
         # can say 200, it cannot know the hash and the reference made up a moment ago.
+        # consumed_ref is the GATE's reference when the reservation was adopted, so it is not compared here; the seal's
+        # own reference (used_ref) must be this run's, and `adopted` must be a plain boolean.
         expect = {'content_hash': content_hash, 'category': CATEGORY, 'agent_id': resolved.agent_id, 'status': 'approved',
-                  'consumed_by': resolved.agent_id, 'consumed_ref': claim_body['ref']}
+                  'consumed_by': resolved.agent_id, 'used_ref': claim_body['ref']}
         wrong = [k for k, v in expect.items() if approval.get(k) != v]
+        adopted = got.get('adopted')
+        if not isinstance(adopted, bool):
+            wrong.append('adopted')
+        else:
+            held_ref = approval.get('consumed_ref')
+            # adopted: the reservation is the gate's, made for the official sender; otherwise this run made it itself
+            if not (isinstance(held_ref, str) and (held_ref.startswith('gate-send-') if adopted else held_ref == claim_body['ref'])):
+                wrong.append('consumed_ref')
         if wrong:
             raise Stop(EXIT_REFUSED, 'REFUSED claim_mismatch: the approval service answered for another mail, agent or use (%s); fail-closed.%s' % (', '.join(wrong), tail))
         _check_claim_signature(got, approval, expect, claim_body['ref'])
