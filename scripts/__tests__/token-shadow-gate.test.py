@@ -283,11 +283,13 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("could not read the dashboard", err)
 
-    def test_the_reader_refuses_the_shared_token_fallback(self):
-        fallback = gate.agent_token.Resolved("tok", gate.agent_token.SOURCE_FALLBACK, "x")
-        with patch.object(gate.agent_token, "resolve", lambda **kw: fallback):
-            with self.assertRaises(OSError):
-                gate.reader_headers()
+    def test_the_reader_refuses_a_token_that_is_not_an_own_admin_token(self):
+        for source in (gate.agent_token.SOURCE_NONE, "shared-canary"):
+            with self.subTest(source=source):
+                other = gate.agent_token.Resolved("tok", source, "x")
+                with patch.object(gate.agent_token, "resolve", lambda **kw: other):
+                    with self.assertRaises(OSError):
+                        gate.reader_headers()
 
     def test_the_reader_takes_the_operator_token(self):
         own = gate.agent_token.Resolved("tok", gate.agent_token.SOURCE_OPERATOR, None)
@@ -331,16 +333,19 @@ class Gather(unittest.TestCase):
 
 class Canary(unittest.TestCase):
     def test_the_canary_is_made_as_the_gate_canary_caller_through_the_shared_token(self):
-        seen = {}
+        # the shared token reaches the canary through its one dedicated reader, never through resolve()
+        def no_resolve(**kw):
+            raise AssertionError("resolve() must not be the way to the shared token")
 
-        def fake_resolve(**kw):
-            seen.update(kw)
-            return gate.agent_token.Resolved("shared-tok", gate.agent_token.SOURCE_SHARED, kw.get("agent_id"))
-
-        with patch.object(gate.agent_token, "resolve", fake_resolve):
+        with patch.object(gate.agent_token, "canary_shared_token", lambda **kw: "shared-tok"), \
+             patch.object(gate.agent_token, "resolve", no_resolve):
             headers = gate.canary_headers()
-        self.assertEqual(seen["kind"], gate.agent_token.KIND_SHARED)
+        self.assertEqual(headers["Authorization"], "Bearer shared-tok")
         self.assertEqual(headers["X-Agent-Id"], gate.CANARY)
+
+    def test_there_is_no_canary_when_the_shared_token_is_gone_after_a_rotation(self):
+        with patch.object(gate.agent_token, "canary_shared_token", lambda **kw: ""):
+            self.assertIsNone(gate.canary_headers())
 
     def test_run_canary_is_true_only_when_the_counter_moved(self):
         totals = iter([3, 3, 4])  # before, one poll with no change, one poll after the bump
