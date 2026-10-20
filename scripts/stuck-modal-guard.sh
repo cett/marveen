@@ -38,6 +38,7 @@
 set -u
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/curl-tok.sh" 2>/dev/null || true  # curl_tok_url: the bot token goes to curl on stdin, not argv
 STORE="${STUCK_MODAL_STATE_DIR:-$INSTALL_DIR/store}"
 FIRSTSEEN_STAMP="$STORE/.stuck-modal-firstseen"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"           # SHARED with channel-watchdog.sh
@@ -128,7 +129,7 @@ alert_owner() {
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured): $msg"; return 1
   fi
-  curl -s -m 10 -o /dev/null "https://api.telegram.org/bot${token}/sendMessage" \
+  curl_tok_url "$token" 'https://api.telegram.org/bot@TOKEN@/sendMessage' -s -m 10 -o /dev/null \
     --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}" \
     && log "owner alerted via direct Bot API" || log "ALERT sendMessage FAILED: $msg"
 }

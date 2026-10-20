@@ -49,6 +49,7 @@ else
 fi
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/curl-tok.sh" 2>/dev/null || true  # curl_tok_url: the bot token goes to curl on stdin, not argv
 SCRATCH_DIR="${DISK_GUARD_SCRATCH_DIR:-/tmp}"
 STATE_DIR="${DISK_GUARD_STATE_DIR:-$INSTALL_DIR/store}"
 ALERT_STAMP="$STATE_DIR/.disk-guard-alerted"
@@ -126,7 +127,7 @@ alert_owner() {
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured, could not Telegram): $msg"; return 1
   fi
-  curl -s -m 10 -o /dev/null "https://api.telegram.org/bot${token}/sendMessage" \
+  curl_tok_url "$token" 'https://api.telegram.org/bot@TOKEN@/sendMessage' -s -m 10 -o /dev/null \
     --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}" \
     && log "owner alerted via direct Bot API" || log "ALERT sendMessage FAILED: $msg"
 }
