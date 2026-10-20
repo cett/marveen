@@ -7,9 +7,10 @@
 //
 // The endpoints that call these helpers today: the conversation ledger, agent state and task state,
 // the daily log, spans and the sender of an inter-agent message. Endpoints a fleet_agent can reach
-// but that do not call them yet (memories, workspace, kanban, blackboard, hook-audit, skill-usage,
-// tool-log) are reachable by permission only; their per-agent scoping is the follow-up that the
-// shadow counter of the next phase measures.
+// but that do not call them (memories, workspace, kanban, blackboard, recall) are reachable by
+// permission only; the token counter watches them and, with TOKEN_IDENTITY_MODE=enforce, the gate in
+// web.ts (token-shadow.ts) refuses the requests that name another agent. The one thing the routes
+// themselves do under enforce is enforcedSelfScope below.
 
 import { json } from './http-helpers.js'
 import type { RouteContext } from './routes/types.js'
