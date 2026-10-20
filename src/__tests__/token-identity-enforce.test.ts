@@ -11,9 +11,9 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type http from 'node:http'
-import { initDatabase, insertApiToken } from '../db.js'
+import { initDatabase, insertApiToken, saveAgentMemory, getDb } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
-import { identityRefusal, inspectBodyAgents, observeTokenUsage, resetTokenShadowForTests } from '../web/token-shadow.js'
+import { answerIdentityRefusal, identityRefusal, inspectBodyAgents, observeTokenUsage, resetTokenShadowForTests } from '../web/token-shadow.js'
 import { readBody, RequestBodyTooLargeError } from '../web/http-helpers.js'
 
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))
@@ -213,9 +213,34 @@ describe('enforce: a route that acts as the main agent when no agent is named', 
 })
 
 describe('enforce: which endpoints refuse what (T0 matrix)', () => {
-  it('memories and workspace: a write naming another agent is refused, a read is not', async () => {
-    expect((await send('alpha', 'GET', '/api/memories?agent=beta')).refusal).toBeNull()
+  it('memories: naming another agent is refused on a read too, except for the shared tier', async () => {
+    expect((await send('alpha', 'GET', '/api/memories?agent=beta')).refusal?.target).toBe('beta')
+    expect((await send('alpha', 'GET', '/api/memories?agent_id=beta&category=warm')).refusal?.target).toBe('beta')
+    expect((await send('alpha', 'GET', '/api/memories?agent=beta&category=shared')).refusal).toBeNull()
+    expect((await send('alpha', 'GET', '/api/memories?agent=beta&tier=shared')).refusal).toBeNull()
+    expect((await send('alpha', 'GET', '/api/memories?agent=alpha')).refusal).toBeNull()
     expect((await send('alpha', 'POST', '/api/memories', { agent_id: 'beta', content: 'x' })).refusal?.target).toBe('beta')
+    // the shared tier is read-only for another agent: a write is refused whatever it says
+    expect((await send('alpha', 'POST', '/api/memories?category=shared', { agent_id: 'beta', content: 'x' })).refusal?.target).toBe('beta')
+  })
+
+  it('memories: a shared row by id is readable, another agent\'s private row and its sub-routes are not', async () => {
+    const shared = saveAgentMemory('beta', 'for all', 'shared').id
+    const priv = saveAgentMemory('beta', 'private', 'warm').id
+    expect((await send('alpha', 'GET', `/api/memories/${shared}`)).refusal).toBeNull()
+    expect((await send('alpha', 'GET', `/api/memories/${priv}`)).refusal?.target).toBe('beta')
+    expect((await send('alpha', 'GET', `/api/memories/${shared}/detail`)).refusal?.target).toBe('beta')
+    expect((await send('alpha', 'GET', '/api/memories/graph?agent=beta&category=shared')).refusal?.target).toBe('beta')
+    expect((await send('alpha', 'DELETE', `/api/memories/${shared}`)).refusal?.target).toBe('beta')
+  })
+
+  it('recall: naming another agent is refused', async () => {
+    expect((await send('alpha', 'GET', '/api/recall?agent=beta&q=x')).refusal?.target).toBe('beta')
+    expect((await send('alpha', 'GET', '/api/recall?agent=alpha&q=x')).refusal).toBeNull()
+    expect((await send('alpha', 'GET', '/api/recall?q=x')).refusal).toBeNull() // names nobody: the route scopes it to alpha
+  })
+
+  it('workspace: a write naming another agent is refused, a read is not', async () => {
     expect((await send('alpha', 'GET', '/api/workspace?agent=beta')).refusal).toBeNull()
     expect((await send('alpha', 'POST', '/api/workspace', { agent_id: 'beta', doc_key: 'k' })).refusal?.target).toBe('beta')
   })
@@ -235,6 +260,51 @@ describe('enforce: which endpoints refuse what (T0 matrix)', () => {
   })
 })
 
+describe('identity_refused: every refusal is counted', () => {
+  async function answered(path: string, method = 'GET', body?: unknown): Promise<{ refused: boolean; status: number }> {
+    const buf = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body))
+    const req = new EventEmitter() as unknown as http.IncomingMessage
+    req.method = method
+    req.headers = { authorization: 'Bearer tok-alpha', 'user-agent': 'curl/8' }
+    ;(req as unknown as { destroy: () => void }).destroy = () => {}
+    setImmediate(() => { req.emit('data', buf); req.emit('end') })
+    const url = new URL(`http://localhost:3420${path}`)
+    observeTokenUsage(req, resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
+    const out = { status: 0 }
+    const res = { writeHead(code: number) { out.status = code }, setHeader() {}, end() {} } as unknown as http.ServerResponse
+    return { refused: await answerIdentityRefusal(req, res), status: out.status }
+  }
+  const refusedRows = () => (getDb().prepare("SELECT method, route, caller, caller_source, client, target, count FROM token_usage_shadow WHERE category = 'identity_refused' ORDER BY route, method").all() as
+    Array<{ method: string; route: string; caller: string; caller_source: string; client: string; target: string; count: number }>)
+
+  it('a refusal decided from the path or query is 403 and one identity_refused row', async () => {
+    expect(await answered('/api/daily-log?agent=beta')).toEqual({ refused: true, status: 403 })
+    expect(refusedRows()).toEqual([{ method: 'GET', route: '/api/daily-log', caller: 'alpha', caller_source: 'token', client: 'curl', target: 'beta', count: 1 }])
+  })
+
+  it('a refusal decided from the body (read by the gate) is counted with the same shape', async () => {
+    expect(await answered('/api/memories', 'POST', { agent_id: 'beta', content: 'x' })).toEqual({ refused: true, status: 403 })
+    expect(refusedRows()).toEqual([{ method: 'POST', route: '/api/memories', caller: 'alpha', caller_source: 'token', client: 'curl', target: 'beta', count: 1 }])
+  })
+
+  it('a request that is let through leaves no identity_refused row', async () => {
+    expect(await answered('/api/daily-log?agent=alpha')).toEqual({ refused: false, status: 0 })
+    expect(await answered('/api/memories?agent=beta&category=shared')).toEqual({ refused: false, status: 0 })
+    expect(await answered('/api/workspace?agent=beta')).toEqual({ refused: false, status: 0 })
+    expect(refusedRows()).toEqual([])
+  })
+
+  it('what enforce lets through is foreign_row_read, what it refuses is foreign_row_access', async () => {
+    await answered('/api/workspace?agent=beta')
+    await answered('/api/memories?agent=beta')
+    const cats = getDb().prepare("SELECT category, route FROM token_usage_shadow WHERE category IN ('foreign_row_read', 'foreign_row_access') ORDER BY category").all()
+    expect(cats).toEqual([
+      { category: 'foreign_row_access', route: '/api/memories' },
+      { category: 'foreign_row_read', route: '/api/workspace' },
+    ])
+  })
+})
+
 describe('the switch and its wiring', () => {
   const WEB_SRC = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
   const CONFIG_SRC = readFileSync(join(__dirname, '..', 'config.ts'), 'utf-8')
@@ -247,12 +317,16 @@ describe('the switch and its wiring', () => {
   it('web.ts runs the identity gate only in enforce mode, after the counter and before dispatch', () => {
     expect(WEB_SRC.match(/\banswerIdentityRefusal\(/g)?.length).toBe(1)
     const observeAt = WEB_SRC.indexOf('observeTokenUsage(req, auth, method, path, url)')
-    const guardAt = WEB_SRC.indexOf("TOKEN_IDENTITY_MODE === 'enforce'")
+    const guardAt = WEB_SRC.indexOf("if (TOKEN_IDENTITY_MODE === 'enforce' && requiresAuth(path, method))")
     const refuseAt = WEB_SRC.indexOf('answerIdentityRefusal(req, res)')
     const dispatchAt = WEB_SRC.indexOf('await dispatcher.dispatch(routeCtx)')
     expect(observeAt).toBeGreaterThan(-1)
     expect(guardAt).toBeGreaterThan(observeAt)
     expect(refuseAt).toBeGreaterThan(guardAt)
     expect(dispatchAt).toBeGreaterThan(refuseAt)
+  })
+
+  it('web.ts hands the switch to the routes through the context, the only way a route learns of it', () => {
+    expect(WEB_SRC).toContain("identityEnforced: TOKEN_IDENTITY_MODE === 'enforce'")
   })
 })

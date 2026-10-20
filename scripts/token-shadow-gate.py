@@ -18,8 +18,11 @@ after). The window is that day .. today, and needs 7 FULL days plus today (8 day
 Blocking (FAIL):
   G1  shared_token_use rows that no exception below explains
   G2  agent_id_mismatch / foreign_row_access / missing_tenant_context / shared_agent_memories_no_tenant
-      rows of any kind (no exceptions: the main agent is by construction never their caller)
-Reported but not blocking: fleet_skill_write_denied (each row to be explained: a delegation that was
+      rows of any kind (no exceptions: the main agent is by construction never their caller).
+      foreign_row_access counts only a request the enforce mode WOULD refuse; a foreign read it lets
+      through is foreign_row_read (informational)
+Reported but not blocking: foreign_row_read, identity_refused (after the switch, each row explained),
+fleet_skill_write_denied (each row to be explained: a delegation that was
 skipped), unscoped_read (informational: the RLS context is a different topic), shared_token_refused
 (after the rotation: a process that still holds the old token; its 401 is unchanged, the rows name the
 straggler for the 7-day follow-up).
@@ -79,8 +82,10 @@ BLOCKING_ALWAYS = (
 )
 EXPLAIN = "fleet_skill_write_denied"
 INFO = "unscoped_read"
+FOREIGN_READ = "foreign_row_read"  # enforce mode lets these through (shared memories, a workspace doc / kanban card by id)
+IDENTITY_REFUSED = "identity_refused"  # enforce mode answered 403: each row is a bug or an attempt, explained in the follow-up
 REFUSED = "shared_token_refused"  # the old shared token knocked AFTER the rotation; reported for the 7-day follow-up
-CATEGORIES = (SHARED,) + BLOCKING_ALWAYS + (EXPLAIN, INFO, REFUSED)
+CATEGORIES = (SHARED,) + BLOCKING_ALWAYS + (EXPLAIN, INFO, FOREIGN_READ, IDENTITY_REFUSED, REFUSED)
 MARKERS = ("_overflow", "_invalid")
 
 
@@ -209,6 +214,8 @@ def evaluate(rows_by_category, truncated, canary, schedules, args, today, main_a
         "excused": excused,
         "explain": rows_by_category.get(EXPLAIN, []),
         "info": rows_by_category.get(INFO, []),
+        "foreign_read": rows_by_category.get(FOREIGN_READ, []),
+        "identity_refused": rows_by_category.get(IDENTITY_REFUSED, []),
         "refused": rows_by_category.get(REFUSED, []),
         "reasons": reasons,
     }
@@ -333,6 +340,13 @@ def render(result):
     if result["info"]:
         out.append("")
         out.append("unscoped_read (informational, not part of this gate): %d row(s)" % len(result["info"]))
+    if result.get("foreign_read"):
+        out.append("")
+        out.append("foreign_row_read (informational: the enforce mode lets these through): %d row(s)" % len(result["foreign_read"]))
+    if result.get("identity_refused"):
+        out.append("")
+        out.append("identity_refused (after the switch: each row is a bug or an attempt and needs an explanation):")
+        out.extend(_row_line(r) for r in result["identity_refused"])
     if result["refused"]:
         out.append("")
         out.append("shared_token_refused (reported, not blocking: a straggler still holds the rotated-away token): %d row(s)" % len(result["refused"]))

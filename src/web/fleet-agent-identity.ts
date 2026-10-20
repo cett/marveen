@@ -49,3 +49,15 @@ export function actingAgentId(ctx: Pick<RouteContext, 'role' | 'tokenAgentId'>, 
   if (named) return named
   return ctx.role === 'fleet_agent' && ctx.tokenAgentId ? ctx.tokenAgentId : fallback
 }
+
+/**
+ * The agent a fleet_agent's request is scoped to when it names none, under TOKEN_IDENTITY_MODE=enforce:
+ * its own. A listing, search or graph without an agent filter reads across every agent of the tenant
+ * for any other principal; the fleet_agent reads its own rows (and the shared tier, which the agent-scoped
+ * queries add) instead. null = no scoping: shadow mode (the default, nothing changes), or a principal that
+ * is not a fleet_agent.
+ */
+export function enforcedSelfScope(ctx: Pick<RouteContext, 'role' | 'tokenAgentId' | 'identityEnforced'>): string | null {
+  if (!ctx.identityEnforced) return null
+  return ctx.role === 'fleet_agent' && ctx.tokenAgentId ? ctx.tokenAgentId : null
+}

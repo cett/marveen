@@ -1,6 +1,7 @@
 import { recallByDateRange, recallSearch, getDailyLogDates } from '../../db.js'
 import { MAIN_AGENT_ID, APP_TZ } from '../../config.js'
 import { json } from '../http-helpers.js'
+import { enforcedSelfScope } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 const TZ = APP_TZ  // install zone (config.APP_TZ); was hardcoded Europe/Budapest
@@ -186,7 +187,9 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/recall' && method === 'GET') {
     const dateExpr = url.searchParams.get('date') || ''
     const query = url.searchParams.get('q') || ''
-    const agent = url.searchParams.get('agent') || undefined
+    // Enforce mode: a fleet_agent that names no agent recalls its own logs and memories (plus the shared
+    // tier), not every agent's.
+    const agent = url.searchParams.get('agent') || enforcedSelfScope(ctx) || undefined
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const isAdmin = ctx.role === 'admin'
     const tenantParam = isAdmin ? (url.searchParams.get('tenant') ?? null) : null
@@ -219,7 +222,7 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/recall/dates' && method === 'GET') {
-    const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
+    const agent = url.searchParams.get('agent') || enforcedSelfScope(ctx) || MAIN_AGENT_ID
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '90', 10), 365)
     json(res, getDailyLogDates(agent, limit))
     return true

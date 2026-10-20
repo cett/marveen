@@ -344,7 +344,7 @@ export function startWebServer(port = 3420): http.Server {
       const tokenAgentId = auth.kind === 'token' ? auth.agentId : undefined
       // A fleet_agent's identity is its token, whatever the header claims.
       const agentId = role === 'fleet_agent' && tokenAgentId ? tokenAgentId : resolveAgentIdHeader(req)
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion, role, tenantId, agentId, tokenAgentId }
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion, role, tenantId, agentId, tokenAgentId, identityEnforced: TOKEN_IDENTITY_MODE === 'enforce' }
 
       // Phase T2 shadow counter: measures the shared token and per-agent token use. Counts only; it
       // never throws, never reads the body here and never changes the outcome of the request.

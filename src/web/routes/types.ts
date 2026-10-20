@@ -54,6 +54,9 @@ export interface RouteContext {
    *  from the credential, not from the caller's own claim. For a fleet_agent token `agentId` above is
    *  set to the same value, so the owner-mismatch warnings compare against the real identity. */
   tokenAgentId?: string
+  /** TOKEN_IDENTITY_MODE=enforce is on (set by web.ts, so a route reads the switch from its context and
+   *  not from the config module). Absent = shadow, the default: no route behaves differently. */
+  identityEnforced?: boolean
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

@@ -19,7 +19,7 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
-import { actingAgentId } from '../fleet-agent-identity.js'
+import { actingAgentId, enforcedSelfScope } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -116,6 +116,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       logger.warn({ agent_id: agentIdAlias }, '[DEPRECATED] GET /api/memories: use "agent" instead of "agent_id"')
     }
     const agentId = url.searchParams.get('agent') || agentIdAlias || ''
+    // Enforce mode: a fleet_agent that names no agent reads its own rows plus the shared tier (the
+    // agent-scoped queries below, filtered and counted in SQL), not every agent of the tenant. The
+    // is_stale annotation and the docs fold-in keep the agent the caller actually named.
+    const queryAgentId = agentId || enforcedSelfScope(ctx) || ''
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'hybrid'
@@ -156,18 +160,18 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     let total: number | undefined
     const recallTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
     if (q && mode === 'hybrid') {
-      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, recallTenantId)
-    } else if (q && agentId) {
-      results = searchAgentMemories(agentId, q, limit, recallTenantId)
-      if (results.length === 0) results = searchMemoriesLikeForAgent(agentId, q, limit, recallTenantId)
+      results = await hybridSearch(queryAgentId || MAIN_AGENT_ID, q, limit, recallTenantId)
+    } else if (q && queryAgentId) {
+      results = searchAgentMemories(queryAgentId, q, limit, recallTenantId)
+      if (results.length === 0) results = searchMemoriesLikeForAgent(queryAgentId, q, limit, recallTenantId)
     } else if (q) {
       results = searchMemories(q, ALLOWED_CHAT_ID, limit, recallTenantId)
       if (results.length === 0) results = searchMemoriesLike(q, limit, recallTenantId)
-    } else if (agentId) {
+    } else if (queryAgentId) {
       // Tenant filtering pushed into SQL (before LIMIT) to avoid the post-filter
       // accuracy bug: getAgentMemories enforces tenantId in the WHERE clause.
-      results = getAgentMemories(agentId, limit, sqlCategory, recallTenantId, offset)
-      if (tier !== 'import') total = countAgentMemories(agentId, sqlCategory, recallTenantId)
+      results = getAgentMemories(queryAgentId, limit, sqlCategory, recallTenantId, offset)
+      if (tier !== 'import') total = countAgentMemories(queryAgentId, sqlCategory, recallTenantId)
     } else {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, recallTenantId, sqlCategory, offset)
       if (tier !== 'import') total = countMemoriesForChat(ALLOWED_CHAT_ID, recallTenantId, sqlCategory)
@@ -503,7 +507,7 @@ Respond ONLY with JSON, nothing else:
     const timelineTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
 
     // Nodes created within the requested window (agent-filtered if provided)
-    const nodeRows = listMemoryGraphNodesInWindow(fromTs, toTs, agentParam || undefined, timelineTenantId)
+    const nodeRows = listMemoryGraphNodesInWindow(fromTs, toTs, agentParam || enforcedSelfScope(ctx) || undefined, timelineTenantId)
 
     const nodeIdSet    = new Set(nodeRows.map(r => r.id))
     const nodeIds      = nodeRows.map(r => r.id)
@@ -581,7 +585,7 @@ Respond ONLY with JSON, nothing else:
     // the whole graph payload.
     const graphTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
 
-    const nodeRows = listMemoryGraphNodes(limit, agentParam || undefined, graphTenantId)
+    const nodeRows = listMemoryGraphNodes(limit, agentParam || enforcedSelfScope(ctx) || undefined, graphTenantId)
 
     const nodeIdSet = new Set(nodeRows.map(r => r.id))
     const nodeIds = nodeRows.map(r => r.id)
