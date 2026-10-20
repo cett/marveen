@@ -157,22 +157,25 @@ function readChannelFile(path: string): string {
  * channels dir, .claude, the agent dir itself) can point it into another agent's directory, and the
  * files read from there would be that agent's bot. The real path has to stay inside the real path of
  * the container (the agent's own directory; for the main agent the channels base), and a sub-agent's
- * directory has to be the one that carries its name. Throws when it does not.
+ * directory has to be the one that carries its name. Returns the real path (the one to read through);
+ * throws when the directory does not belong to the agent.
  */
-function assertDirBelongsToAgent(agentId: string, dir: string): void {
+function resolveOwnChannelDir(agentId: string, dir: string): string {
   const isMain = agentId === MAIN_AGENT_ID
   const container = realpathSync(isMain ? dirname(dir) : agentDir(agentId))
   const real = realpathSync(dir)
   if (!real.startsWith(container + sep)) throw new Error('channel directory leaves its owner')
   if (!isMain && basename(container) !== agentId) throw new Error('agent directory is not the agent\'s own')
+  return real
 }
 
 /** Reads the channel's files. Throws when a file cannot be read or access.json is not JSON. */
 function readChannelFiles(agentId: string): ChannelFiles {
   const dir = channelDirForAgent(agentId)
-  assertDirBelongsToAgent(agentId, dir)
-  const token = parseEnvBotToken(readChannelFile(join(dir, '.env')))
-  const access = JSON.parse(readChannelFile(join(dir, 'access.json'))) as unknown
+  // Read through the RESOLVED path, so a link swapped in after the check is not followed.
+  const real = resolveOwnChannelDir(agentId, dir)
+  const token = parseEnvBotToken(readChannelFile(join(real, '.env')))
+  const access = JSON.parse(readChannelFile(join(real, 'access.json'))) as unknown
   return { token, chats: chatsFromAccessConfig(access), entries: accessEntries(access) }
 }
 
