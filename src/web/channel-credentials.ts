@@ -15,8 +15,8 @@
 // the channel taken over by a coordinator) and a separate decision.
 
 import { createHash } from 'node:crypto'
-import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readSync } from 'node:fs'
-import { join } from 'node:path'
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readSync, realpathSync } from 'node:fs'
+import { basename, dirname, join, sep } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import {
@@ -136,6 +136,8 @@ function readChannelFile(path: string): string {
   try {
     const st = fstatSync(fd)
     if (!st.isFile()) throw new Error('not a regular file')
+    // a second name for the file is how another agent's .env is made to look like one's own
+    if (st.nlink > 1) throw new Error('file has more than one link')
     if (st.size > MAX_CHANNEL_FILE_BYTES) throw new Error('file too large')
     const buf = Buffer.alloc(st.size)
     let off = 0
@@ -150,9 +152,25 @@ function readChannelFile(path: string): string {
   }
 }
 
+/**
+ * The channel directory must really be inside its owner's tree. A symlink anywhere on the way (the
+ * channels dir, .claude, the agent dir itself) can point it into another agent's directory, and the
+ * files read from there would be that agent's bot. The real path has to stay inside the real path of
+ * the container (the agent's own directory; for the main agent the channels base), and a sub-agent's
+ * directory has to be the one that carries its name. Throws when it does not.
+ */
+function assertDirBelongsToAgent(agentId: string, dir: string): void {
+  const isMain = agentId === MAIN_AGENT_ID
+  const container = realpathSync(isMain ? dirname(dir) : agentDir(agentId))
+  const real = realpathSync(dir)
+  if (!real.startsWith(container + sep)) throw new Error('channel directory leaves its owner')
+  if (!isMain && basename(container) !== agentId) throw new Error('agent directory is not the agent\'s own')
+}
+
 /** Reads the channel's files. Throws when a file cannot be read or access.json is not JSON. */
 function readChannelFiles(agentId: string): ChannelFiles {
   const dir = channelDirForAgent(agentId)
+  assertDirBelongsToAgent(agentId, dir)
   const token = parseEnvBotToken(readChannelFile(join(dir, '.env')))
   const access = JSON.parse(readChannelFile(join(dir, 'access.json'))) as unknown
   return { token, chats: chatsFromAccessConfig(access), entries: accessEntries(access) }
@@ -188,7 +206,7 @@ export function hasAdoption(agentId: string): boolean {
 // ── adopt ───────────────────────────────────────────────────────────────────
 
 export type AdoptResult =
-  | { ok: true; agentId: string; chats: string[]; replacedToken: boolean }
+  | { ok: true; agentId: string; chats: string[]; replacedToken: boolean; botId: string }
   | { ok: false; reason: 'invalid_agent' | 'unreadable' | 'no_token' | 'token_in_use' }
 
 /**
@@ -223,7 +241,7 @@ export function adoptChannel(agentId: string, adoptedBy: string): AdoptResult {
     allowSha256: chatsHash(files.entries),
     adoptedBy,
   })
-  return { ok: true, agentId, chats: files.chats, replacedToken: previous !== null && previous !== files.token }
+  return { ok: true, agentId, chats: files.chats, replacedToken: previous !== null && previous !== files.token, botId: files.token.split(':')[0] }
 }
 
 /**

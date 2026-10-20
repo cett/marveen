@@ -5,10 +5,10 @@
 // The negative controls are the point: each "does not widen" test fails on the code before this change,
 // where the server read .env / access.json at send time.
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, linkSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 
 const TMP = vi.hoisted(() => ({ dir: '' }))
 const vault = vi.hoisted(() => new Map<string, string>())
@@ -22,12 +22,13 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../channel-provider.js')>()
   return {
     ...actual,
-    channelStateDir: (_provider: string, agentDir?: string) => join(TMP.dir, agentDir ? basename(agentDir) : 'MAIN-AGENT', 'telegram'),
+    // the real layout: a sub-agent's channel lives inside its own directory, the main agent's under a channels base
+    channelStateDir: (_provider: string, agentDir?: string) => (agentDir ? join(agentDir, '.claude', 'channels', 'telegram') : join(TMP.dir, 'MAIN-AGENT', 'channels', 'telegram')),
   }
 })
 vi.mock('../web/agent-config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/agent-config.js')>()
-  return { ...actual, agentDir: (name: string) => `/agents/${name}`, listAgentNames: () => ['zed', 'amy'] }
+  return { ...actual, agentDir: (name: string) => join(TMP.dir, name), listAgentNames: () => ['zed', 'amy'] }
 })
 
 import { initDatabase, getDb, listAdoptedChats, getChannelCredentialBaseline } from '../db.js'
@@ -55,7 +56,7 @@ const TOKEN_AMY = '222222222:AMY-token-bbbbbbbbbbbbbbbbbbbbbbbbbbb'
 const FOREIGN = '999999999:FOREIGN-token-ccccccccccccccccccccccc'
 
 function chanDir(agent: string): string {
-  return join(TMP.dir, agent === MAIN_AGENT_ID ? 'MAIN-AGENT' : agent, 'telegram')
+  return agent === MAIN_AGENT_ID ? join(TMP.dir, 'MAIN-AGENT', 'channels', 'telegram') : join(TMP.dir, agent, '.claude', 'channels', 'telegram')
 }
 function writeChannel(agent: string, token: string, access: object): void {
   mkdirSync(chanDir(agent), { recursive: true })
@@ -136,7 +137,7 @@ describe('adoptChannel', () => {
   it('records the token in the vault, the chats and the baseline', () => {
     writeChannel('zed', TOKEN_ZED, { allowFrom: ['42', '7'], groups: { '-100999': {} } })
     const r = adoptChannel('zed', 'owner')
-    expect(r).toEqual({ ok: true, agentId: 'zed', chats: ['42', '7', '-100999'], replacedToken: false })
+    expect(r).toEqual({ ok: true, agentId: 'zed', chats: ['42', '7', '-100999'], replacedToken: false, botId: '111111111' })
     expect(vault.get(channelTokenSecretId('zed'))).toBe(TOKEN_ZED)
     expect(getChannelBotToken('zed')).toBe(TOKEN_ZED)
     expect(listAdoptedChats('zed', 'telegram')).toEqual(['42', '7', '-100999'])
@@ -191,6 +192,34 @@ describe('adoptChannel', () => {
     expect(vault.size).toBe(0)
   })
 
+  it('refuses a channel directory that is a symlink into another agent\'s tree, and a hard-linked .env', () => {
+    writeChannel('amy', TOKEN_AMY, { allowFrom: ['43'] })
+    // zed's channel dir is a link to amy's: reading it would adopt amy's bot as zed's
+    mkdirSync(join(TMP.dir, 'zed', '.claude', 'channels'), { recursive: true })
+    symlinkSync(chanDir('amy'), chanDir('zed'))
+    expect(adoptChannel('zed', 'owner')).toEqual({ ok: false, reason: 'unreadable' })
+    expect(vault.size).toBe(0)
+
+    // same for a link higher up (zed's .claude dir)
+    rmSync(join(TMP.dir, 'zed'), { recursive: true })
+    mkdirSync(join(TMP.dir, 'zed'), { recursive: true })
+    symlinkSync(join(TMP.dir, 'amy', '.claude'), join(TMP.dir, 'zed', '.claude'))
+    expect(adoptChannel('zed', 'owner')).toEqual({ ok: false, reason: 'unreadable' })
+
+    // a second name for amy's .env inside zed's own directory
+    rmSync(join(TMP.dir, 'zed'), { recursive: true })
+    writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
+    rmSync(join(chanDir('zed'), '.env'))
+    linkSync(join(chanDir('amy'), '.env'), join(chanDir('zed'), '.env'))
+    expect(adoptChannel('zed', 'owner')).toEqual({ ok: false, reason: 'unreadable' })
+    expect(vault.size).toBe(0)
+  })
+
+  it('returns the bot id (the public part of the token) so the owner can see whose bot was adopted', () => {
+    writeChannel('zed', TOKEN_ZED, { allowFrom: [] })
+    expect(adoptChannel('zed', 'owner')).toMatchObject({ ok: true, botId: '111111111' })
+  })
+
   it('refuses an oversized access.json and a FIFO in its place, without blocking', () => {
     writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
     writeFileSync(join(chanDir('zed'), 'access.json'), JSON.stringify({ allowFrom: ['42'], pad: 'x'.repeat(100_000) }))
@@ -240,7 +269,7 @@ describe('negative control: the files an agent can write do not move what the se
 
 describe('checkChannelDrift', () => {
   it('is quiet while nothing differs and for an agent with no record', async () => {
-    const send = vi.fn(async () => true)
+    const send = vi.fn(async (_text: string) => true)
     writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
     adoptChannel('zed', 'owner')
     expect(await checkChannelDrift('zed', nowSec(), send)).toBe('ok')
@@ -256,7 +285,7 @@ describe('checkChannelDrift', () => {
   })
 
   it('alarms once per episode: the owner is told and the shadow counter moves, a repeat is silent', async () => {
-    const send = vi.fn(async () => true)
+    const send = vi.fn(async (_text: string) => true)
     writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
     adoptChannel('zed', 'owner')
     writeChannel('zed', FOREIGN, { allowFrom: ['42'] })
@@ -282,7 +311,7 @@ describe('checkChannelDrift', () => {
   })
 
   it('an alarm that cannot be delivered does not throw and is not retried every sweep', async () => {
-    const send = vi.fn(async () => { throw new Error('channel down') })
+    const send = vi.fn(async (_text: string): Promise<boolean> => { throw new Error('channel down') })
     writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
     adoptChannel('zed', 'owner')
     writeChannel('zed', TOKEN_ZED, { allowFrom: [] })

@@ -4,12 +4,15 @@
 // expects a refusal or the vault token would have been a send on the forged value.
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
 
-const TMP = vi.hoisted(() => ({ dir: '' }))
+// The directory is a real agents base: the old route accepted only a state_dir under AGENTS_BASE_DIR,
+// so the same layout lets this file run against the old code as a negative control.
+const TMP = vi.hoisted(() => ({
+  dir: (require('node:fs') as typeof import('node:fs')).mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'voice-forged-')),
+}))
 const vault = vi.hoisted(() => new Map<string, string>())
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
@@ -20,11 +23,11 @@ vi.mock('../web/vault.js', () => ({
 }))
 vi.mock('../channel-provider.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../channel-provider.js')>()
-  return { ...actual, channelStateDir: (_p: string, agentDir?: string) => join(TMP.dir, agentDir ? basename(agentDir) : 'MAIN-AGENT', 'telegram') }
+  return { ...actual, channelStateDir: (_p: string, agentDir?: string) => (agentDir ? join(agentDir, '.claude', 'channels', 'telegram') : join(TMP.dir, 'MAIN-AGENT', 'channels', 'telegram')) }
 })
 vi.mock('../web/agent-config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/agent-config.js')>()
-  return { ...actual, agentDir: (name: string) => `/agents/${name}`, listAgentNames: () => ['zed'] }
+  return { ...actual, AGENTS_BASE_DIR: TMP.dir, agentDir: (name: string) => join(TMP.dir, name), listAgentNames: () => ['zed'] }
 })
 // The toolkit is "installed" and the voice model exists; everything else is the real filesystem.
 vi.mock('node:fs', async (importOriginal) => {
@@ -33,7 +36,7 @@ vi.mock('node:fs', async (importOriginal) => {
     ...actual,
     existsSync: (p: unknown) => {
       const s = String(p)
-      return s.includes('venv/bin/python') || s.endsWith('.onnx') ? true : actual.existsSync(p as string)
+      return s.includes('venv/bin/python') || s.endsWith('_vtools.py') || s.endsWith('.onnx') ? true : actual.existsSync(p as string)
     },
   }
 })
@@ -47,7 +50,7 @@ import { adoptChannel } from '../web/channel-credentials.js'
 const TOKEN_ZED = '111111111:ZED-token-aaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const FOREIGN = '999999999:FOREIGN-token-ccccccccccccccccccccccc'
 
-function chanDir(): string { return join(TMP.dir, 'zed', 'telegram') }
+function chanDir(): string { return join(TMP.dir, 'zed', '.claude', 'channels', 'telegram') }
 function writeChannel(token: string, access: object): void {
   mkdirSync(chanDir(), { recursive: true })
   writeFileSync(join(chanDir(), '.env'), `TELEGRAM_BOT_TOKEN=${token}\n`)
@@ -84,7 +87,6 @@ const spoken = () => vi.mocked(spawn).mock.calls.map((c) => ({ args: c[1] as str
 
 beforeAll(() => {
   initDatabase(':memory:')
-  TMP.dir = mkdtempSync(join(tmpdir(), 'voice-forged-'))
 })
 afterAll(() => { rmSync(TMP.dir, { recursive: true, force: true }) })
 beforeEach(() => {
@@ -117,7 +119,7 @@ describe('POST /api/voice/tts with forged channel files', () => {
     adoptChannel('zed', 'owner')
     writeChannel(FOREIGN, { allowFrom: ['42'] })
 
-    const out = await tts({ text: 'hi', chat_id: '42' })
+    const out = await tts({ text: 'hi', chat_id: '42', state_dir: chanDir() })
     expect(out.status).toBe(200)
     const [call] = spoken()
     expect(call.env.MARVEEN_CHANNEL_BOT_TOKEN).toBe(TOKEN_ZED)

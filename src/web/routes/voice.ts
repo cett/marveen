@@ -143,6 +143,12 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     const fileParam = ctx.url.searchParams.get('file') ?? ''
     if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) { json(res, { error: 'invalid_value', field: 'agent', hint: 'Invalid agent' }, 400); return true }
     if (!chatId || !/^\d+$/.test(chatId)) { json(res, { error: 'invalid_value', field: 'chat_id', hint: 'Invalid chat_id' }, 400); return true }
+    // The directive path transcribes with the named agent's bot token (server-side record), so a
+    // fleet_agent token may name only itself.
+    if (ctx.role === 'fleet_agent' && agentId !== ctx.tokenAgentId) {
+      json(res, { error: 'forbidden', field: 'agent', hint: 'A fleet agent token may only ask for its own voice directive' }, 403)
+      return true
+    }
     const voiceCfg = readAgentVoiceConfig(agentId)
     const kindParam = ctx.url.searchParams.get('kind') ?? ''
     const fileIdOk = !!fileParam && SAFE_FILE_ID_RE.test(fileParam)

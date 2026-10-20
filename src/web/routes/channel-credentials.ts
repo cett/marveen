@@ -83,7 +83,7 @@ export async function tryHandleChannelCredentials(ctx: RouteContext): Promise<bo
       json(res, { error: 'not_found', field: 'agent_id', hint }, 404)
       return true
     }
-    json(res, { ok: true, agent_id: agentId, chats: result.chats, replaced_token: result.replacedToken })
+    json(res, { ok: true, agent_id: agentId, chats: result.chats, replaced_token: result.replacedToken, bot_id: result.botId })
     return true
   }
 

@@ -171,6 +171,9 @@ describe('tryHandleAgentsChannels (extended)', () => {
     expect(out.body.ok).toBe(true)
     expect(out.body.botName).toBe('BotName')
     expect(out.body.wasRunning).toBe(false)
+    // the new token goes to the server-side record, which drops the adoption of the previous setup
+    const cc = await import('../web/channel-credentials.js')
+    expect(cc.resetChannelAfterSetup).toHaveBeenCalledWith('test-agent', 'bot123:abc')
   })
 
   it('POST channel setup (slack) returns 409 when managed-settings not ready', async () => {
@@ -249,3 +252,10 @@ describe('tryHandleAgentsChannels (extended)', () => {
     expect(out.body.hint).toMatch(/not running/i)
   })
 })
+
+// The server-side channel record has its own tests (channel-credentials.test.ts); here only that the routes keep it in step.
+vi.mock('../web/channel-credentials.js', () => ({
+  CHANNEL_PROVIDER: 'telegram',
+  forgetChannel: vi.fn(),
+  resetChannelAfterSetup: vi.fn(),
+}))
