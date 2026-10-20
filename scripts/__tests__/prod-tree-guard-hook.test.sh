@@ -114,5 +114,42 @@ mv "$G_HOOK" "$G_HOOK.moved"
 run_doctor "$ROOT"
 case "$DOC_OUT" in *"WARN"*"NOT installed"*) pass "a missing hook is a WARN" ;; *) fail "missing hook: $DOC_OUT" ;; esac
 
+echo "doctor: stale global hook copies (content drift, not name equality)"
+STALE_SECTION="$TMP/doctor-stale-section.sh"
+awk '/^# --- Stale global hook copies/{f=1; next} /^# --- /{f=0} f' "$SRC_DIR/doctor.sh" > "$STALE_SECTION"
+if [ -s "$STALE_SECTION" ]; then pass "the stale-copy section is found in doctor.sh"; else fail "the stale-copy section is missing from doctor.sh"; fi
+# run_stale <name> <global-dir: yes|no>: a fake checkout with two repo hooks and a fake HOME
+run_stale() {
+  local name="$1" has_global="$2" dir="$TMP/stale-$1"
+  mkdir -p "$dir/scripts/hooks" "$dir/home"
+  printf 'repo version A\n' > "$dir/scripts/hooks/synced.py"
+  printf 'repo version B\n' > "$dir/scripts/hooks/drifted.py"
+  [ "$has_global" = "yes" ] && mkdir -p "$dir/home/.claude/hooks"
+  STALE_DIR="$dir"
+}
+exec_stale() { DOC_OUT="$(cd "$STALE_DIR" && HOME="$STALE_DIR/home"; ok() { echo "OK $1"; }; warn() { echo "WARN $1"; }; fail() { echo "FAIL $1"; }; . "$STALE_SECTION" 2>&1)"; }
+run_stale s1 yes
+cp "$STALE_DIR/scripts/hooks/synced.py" "$STALE_DIR/home/.claude/hooks/synced.py"
+exec_stale
+case "$DOC_OUT" in OK*"no global hook copy has drifted"*) pass "an identical synced copy is not a finding" ;; *) fail "identical copy: $DOC_OUT" ;; esac
+run_stale s2 yes
+cp "$STALE_DIR/scripts/hooks/synced.py" "$STALE_DIR/home/.claude/hooks/synced.py"
+printf 'OLD version\n' > "$STALE_DIR/home/.claude/hooks/drifted.py"
+exec_stale
+case "$DOC_OUT" in *"FAIL stale global copy: "*"drifted.py has drifted from scripts/hooks/drifted.py"*) pass "a same-name copy with other content is a FAIL naming both files" ;; *) fail "drifted copy: $DOC_OUT" ;; esac
+case "$DOC_OUT" in *"synced.py"*) fail "the identical copy was reported too: $DOC_OUT" ;; *) pass "only the drifted copy is reported" ;; esac
+case "$DOC_OUT" in *"OK no global hook copy"*) fail "OK printed next to a FAIL: $DOC_OUT" ;; *) pass "no OK line next to a finding" ;; esac
+run_stale s3 yes
+printf 'unrelated\n' > "$STALE_DIR/home/.claude/hooks/only-global.py"
+exec_stale
+case "$DOC_OUT" in OK*) pass "a global file without a repo counterpart is ignored" ;; *) fail "global-only file: $DOC_OUT" ;; esac
+run_stale s4 no
+exec_stale
+assert_eq "no ~/.claude/hooks directory: nothing printed" "" "$DOC_OUT"
+run_stale s5 yes
+printf 'repo version A \n' > "$STALE_DIR/home/.claude/hooks/synced.py"
+exec_stale
+case "$DOC_OUT" in *"FAIL stale global copy"*"synced.py"*) pass "a one-byte difference is drift" ;; *) fail "one-byte drift: $DOC_OUT" ;; esac
+
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

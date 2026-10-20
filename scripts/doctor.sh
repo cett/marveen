@@ -253,6 +253,27 @@ for f in scripts/hooks/ledger-capture.py scripts/hooks/ledger-outbound.py script
   if [ -f "$f" ]; then ok "$f"; else fail "$f missing"; fi
 done
 
+# --- Stale global hook copies ---
+# Some hooks are deliberately installed as a synced copy under ~/.claude/hooks/ (the install-*-hook.sh scripts
+# refresh these on every deploy, so repo and global copy stay byte-identical -- that is fine). A STALE copy is
+# different: it was copy-pasted once, the repo version was later fixed (e.g. the shared-token retirement in
+# auto-skillify.py), and the global copy kept running the old code because nothing re-synced it. Flag only a
+# same-name file whose CONTENT has drifted from the repo version; an identical synced copy is not a finding.
+GLOBAL_HOOKS_DIR="${HOME}/.claude/hooks"
+if [ -d "$GLOBAL_HOOKS_DIR" ]; then
+  DUP_FOUND=0
+  for repo_hook in scripts/hooks/*.py; do
+    [ -f "$repo_hook" ] || continue
+    base="$(basename "$repo_hook")"
+    global_copy="$GLOBAL_HOOKS_DIR/$base"
+    if [ -f "$global_copy" ] && ! diff -q "$repo_hook" "$global_copy" >/dev/null 2>&1; then
+      fail "stale global copy: $global_copy has drifted from $repo_hook -- point the hook command at the repo path and rename the copy to .stale"
+      DUP_FOUND=1
+    fi
+  done
+  [ "$DUP_FOUND" -eq 0 ] && ok "no global hook copy has drifted from its repo counterpart (scripts/hooks/*)"
+fi
+
 # --- Agent tokens ---
 # Each agent signs its dashboard calls with its own token file (agents/<id>/.agent-token, the main
 # agent's in the project root) and the operator scripts use store/.operator-token. They are not in the
