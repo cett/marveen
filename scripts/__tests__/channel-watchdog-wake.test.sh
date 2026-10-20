@@ -70,6 +70,8 @@ run_case() {
     fresh) touch "$root/store/.channel-keepalive" ;;
     old) touch -t 202001010000 "$root/store/.channel-keepalive" ;;
   esac
+  # the keepalive probe is running (fresh stamp): the keepalive age counts as evidence, as these cases assume
+  touch "$root/store/.channel-keepalive-probe"
   : > "$root/tmux.log"
   if [ "${AUTHDEAD:-}" = "1" ]; then
     # the auth-dead arm: a node that always says "dead token" (exit 1), the dist marker the arm looks for, and two

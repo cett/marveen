@@ -59,6 +59,7 @@ const {
   mockWriteFileSync,
   mockLoggerInfo,
   mockLoggerWarn,
+  mockLoggerError,
   mockLoggerDebug,
 } = vi.hoisted(() => {
   const DEFAULT_CFG = {
@@ -120,6 +121,7 @@ const {
     mockWriteFileSync: vi.fn(),
     mockLoggerInfo: vi.fn(),
     mockLoggerWarn: vi.fn(),
+    mockLoggerError: vi.fn(),
     mockLoggerDebug: vi.fn(),
   }
 })
@@ -131,7 +133,7 @@ vi.mock('node:fs', () => ({
 }))
 
 vi.mock('../logger.js', () => ({
-  logger: { info: mockLoggerInfo, warn: mockLoggerWarn, debug: mockLoggerDebug },
+  logger: { info: mockLoggerInfo, warn: mockLoggerWarn, error: mockLoggerError, debug: mockLoggerDebug },
 }))
 
 vi.mock('../web/channel-monitor.js', () => ({
@@ -309,6 +311,7 @@ beforeEach(async () => {
   mockWriteFileSync.mockReset()
   mockLoggerInfo.mockReset()
   mockLoggerWarn.mockReset()
+  mockLoggerError.mockReset()
   mockLoggerDebug.mockReset()
 
   // Main is armed running+idle by default; tests that need otherwise override it.
@@ -545,13 +548,15 @@ describe('checkAgent: main-agent restart path', () => {
     await runNextSweep()
     await runNextSweep()
     expect(mockCreateAgentMessage).not.toHaveBeenCalled()
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.objectContaining({ name: MAIN_AGENT_ID, action: 'restart' }),
-      'context-guard: action failed',
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ name: MAIN_AGENT_ID }),
+      expect.stringContaining('restart FAILED'),
     )
-    // Guard state still advanced to await-ready even though the I/O failed --
-    // decideGuard's nextState is committed before the action is attempted.
-    expect(getHardGuardPhase(MAIN_AGENT_ID)).toBe('await-ready')
+    // decideGuard's nextState is committed before the action is attempted, so a
+    // failed restart must put the previous state back: staying in await-ready
+    // would wait for a session that never started and push the resume prompt
+    // into the old pane. The first (confirming) sweep left the streak at 1, in 'idle'.
+    expect(getHardGuardPhase(MAIN_AGENT_ID)).toBe('idle')
   })
 
   it('defers the restart within the post-respawn grace window, leaving the previous state intact', async () => {

@@ -34,6 +34,18 @@ LOG_TAG="channel-keepalive-probe"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# --- the probe's own stamp: written FIRST, whatever the probe finds below ---
+# channel-watchdog.sh reads the keepalive age as evidence of a wedge only while
+# this stamp is fresh. Without it the keepalive file ages on a quiet session
+# even when the probe never runs at all (the launchd agent does not start
+# without a GUI login), and the watchdog would respawn a healthy idle session.
+# Atomic (tmp + mv) so the watchdog never reads a half-written stamp.
+PROBE_STAMP="$STORE/.channel-keepalive-probe"
+mkdir -p "$STORE" 2>/dev/null
+if date +%s > "$PROBE_STAMP.$$.tmp" 2>/dev/null; then
+  mv -f "$PROBE_STAMP.$$.tmp" "$PROBE_STAMP" 2>/dev/null || rm -f "$PROBE_STAMP.$$.tmp"
+fi
+
 # --- resolve the channels session (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"

@@ -145,6 +145,26 @@ else
   fail "channel-keepalive: file missing"
 fi
 
+# The keepalive probe stamps store/.channel-keepalive-probe at the start of every run (180s). Without a fresh stamp
+# the probe is not running (on macOS: the launchd agent starts only while the user is logged in at the console), the
+# keepalive file ages on a quiet session, and channel-watchdog.sh ignores its age after 600s.
+PROBE_STAMP="store/.channel-keepalive-probe"
+if [ -f "$PROBE_STAMP" ]; then
+  if [ "$(uname -s)" = "Darwin" ]; then
+    PROBE_MTIME=$(stat -f "%m" "$PROBE_STAMP")
+  else
+    PROBE_MTIME=$(stat -c "%Y" "$PROBE_STAMP")
+  fi
+  PROBE_AGE=$(( $(date +%s) - PROBE_MTIME ))
+  if [ "$PROBE_AGE" -lt 600 ]; then
+    ok "channel-keepalive-probe: ran ${PROBE_AGE}s ago"
+  else
+    warn "channel-keepalive-probe: NOT RUNNING (last run ${PROBE_AGE}s ago) -- the watchdog ignores the keepalive age meanwhile. Fix: bash scripts/install-channel-keepalive-probe.sh --load (macOS: a console login is needed, then launchctl bootstrap gui/\$(id -u) <plist>)"
+  fi
+else
+  warn "channel-keepalive-probe: NOT RUNNING (no store/.channel-keepalive-probe) -- the watchdog ignores the keepalive age meanwhile. Fix: bash scripts/install-channel-keepalive-probe.sh --load (macOS: a console login is needed)"
+fi
+
 # --- Settings ---
 echo -e "\n${BOLD}Configuration${RESET}"
 if [ -f ".claude/settings.json" ]; then

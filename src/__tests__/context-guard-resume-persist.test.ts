@@ -57,6 +57,8 @@ const h = vi.hoisted(() => ({
   sendOutcome: 'sent' as 'sent' | 'aborted-busy' | 'skipped-locked',
   sendThrows: false,
   guardOff: false,
+  notifyChannel: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<void>>,
+  createAgentMessage: null as unknown as import('vitest').Mock<(...a: unknown[]) => { id: number }>,
   sendPromptToSession: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<string>>,
   restartAgentProcess: null as unknown as import('vitest').Mock<(...a: unknown[]) => void>,
 }))
@@ -116,8 +118,17 @@ vi.mock('../web/context-guard-store.js', async () => {
   }
 })
 vi.mock('../web/claude-plan-handoff-marker.js', () => ({ appendActivePlanMarkerToHandoff: () => {} }))
+vi.mock('../notify.js', async () => {
+  const { vi } = await import('vitest')
+  h.notifyChannel = vi.fn(async () => {})
+  return { notifyChannel: (...a: unknown[]) => h.notifyChannel(...a) }
+})
 vi.mock('../db/workspace.js', () => ({ getWorkspaceDocUpdatedAtMs: () => null }))
-vi.mock('../db.js', () => ({ createAgentMessage: () => ({ id: 1 }) }))
+vi.mock('../db.js', async () => {
+  const { vi } = await import('vitest')
+  h.createAgentMessage = vi.fn(() => ({ id: 1 }))
+  return { createAgentMessage: (...a: unknown[]) => h.createAgentMessage(...a) }
+})
 
 const INITIAL_DELAY_MS = 270_000
 const INTERVAL_MS = 300_000
@@ -168,6 +179,8 @@ afterEach(() => {
   vi.useRealTimers()
   h.sendPromptToSession?.mockClear()
   h.restartAgentProcess?.mockClear()
+  h.createAgentMessage?.mockClear()
+  h.notifyChannel?.mockClear()
 })
 
 afterAll(() => {
@@ -303,6 +316,119 @@ describe('context-guard resume obligation across a dashboard restart', () => {
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
     expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
     expect(existsSync(PENDING) ? readPending() : {}).toEqual({})
+  })
+
+  // The state machine steps to await-ready BEFORE the restart runs. A restart
+  // that throws must not leave it there: the guard would wait for a session it
+  // never started and push the resume prompt into the old, saturated pane.
+  describe('a restart that throws is rolled back', () => {
+    it('does not stay in await-ready, sends no resume, claims no restart on the queue', async () => {
+      h.pane = SATURATED_PANE
+      h.restartOk = false
+      const runner = await bootDashboard()
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
+      expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+      expect(runner.getHardGuardPhase('boni')).not.toBe('await-ready')
+
+      // The session reports ready: with the old behaviour this delivered the
+      // resume prompt into the pane that was never restarted.
+      h.sessionReady = true
+      await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+      expect(resumeCalls()).toHaveLength(0)
+      expect(h.createAgentMessage).not.toHaveBeenCalled()
+    })
+
+    it('decides again on the next sweep and recovers once the restart works', async () => {
+      h.pane = SATURATED_PANE
+      h.restartOk = false
+      const runner = await bootDashboard()
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
+      expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+
+      h.restartOk = true
+      await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+      expect(h.restartAgentProcess).toHaveBeenCalledTimes(2)
+      expect(runner.getHardGuardPhase('boni')).toBe('await-ready')
+      expect(Object.keys(readPending())).toEqual(['boni'])
+      expect(h.createAgentMessage).toHaveBeenCalledTimes(1)
+    })
+  })
+})
+
+// A restart that keeps throwing is retried every sweep; the operator hears of it once per series.
+describe('consecutive restart failures raise one message', () => {
+  const alertCalls = (): unknown[][] => h.createAgentMessage.mock.calls.filter((c) => String(c[2]).includes('egymas utani'))
+  const boom = new Error('launchctl kickstart failed at /opt/svc/LaunchAgents/a.plist')
+
+  it('2 failures: none; the 3rd: exactly one; the 4th and 5th: no more', async () => {
+    const runner = await bootDashboard()
+    runner.noteRestartFailure('boni', boom)
+    runner.noteRestartFailure('boni', boom)
+    expect(alertCalls()).toHaveLength(0)
+    runner.noteRestartFailure('boni', boom)
+    expect(alertCalls()).toHaveLength(1)
+    runner.noteRestartFailure('boni', boom)
+    runner.noteRestartFailure('boni', boom)
+    expect(alertCalls()).toHaveLength(1)
+  })
+
+  it('the message names the agent, the count and a short path-free reason, to the main agent', async () => {
+    const runner = await bootDashboard()
+    for (let i = 0; i < 3; i++) runner.noteRestartFailure('boni', boom)
+    const [from, to, text] = alertCalls()[0] as [string, string, string]
+    expect(from).toBe('boni')
+    expect(to).toBe('marveen')
+    expect(text).toContain('"boni"')
+    expect(text).toContain('3.')
+    expect(text).toContain('launchctl kickstart failed')
+    expect(text).not.toContain('/opt/svc')
+    expect(text.length).toBeLessThan(400)
+  })
+
+  it('a success resets the series: three more failures alert again', async () => {
+    const runner = await bootDashboard()
+    for (let i = 0; i < 3; i++) runner.noteRestartFailure('boni', boom)
+    runner.clearRestartFailures('boni')
+    runner.noteRestartFailure('boni', boom)
+    runner.noteRestartFailure('boni', boom)
+    expect(alertCalls()).toHaveLength(1)
+    runner.noteRestartFailure('boni', boom)
+    expect(alertCalls()).toHaveLength(2)
+  })
+
+  it('agents count separately', async () => {
+    const runner = await bootDashboard()
+    runner.noteRestartFailure('boni', boom)
+    runner.noteRestartFailure('boni', boom)
+    runner.noteRestartFailure('other', boom)
+    expect(alertCalls()).toHaveLength(0)
+  })
+
+  it('the main agent is told on the channel, not in its own queue', async () => {
+    const runner = await bootDashboard()
+    for (let i = 0; i < 3; i++) runner.noteRestartFailure('marveen', boom)
+    expect(h.notifyChannel).toHaveBeenCalledTimes(1)
+    expect(alertCalls()).toHaveLength(0)
+  })
+
+  it('the runner clears the series right after a restart that did not throw (source pin: the guard cooldown keeps a second series out of reach of an end-to-end test)', () => {
+    const src = readFileSync(join(process.cwd(), 'src', 'web', 'context-guard-runner.ts'), 'utf-8')
+    const failed = src.indexOf('noteRestartFailure(name, err)\n          break\n        }')
+    const cleared = src.indexOf('        clearRestartFailures(name)\n')
+    expect(failed).toBeGreaterThan(0)
+    expect(cleared).toBeGreaterThan(failed)
+    expect(src.slice(failed, cleared).split('\n').length).toBeLessThan(6)
+    expect(src.match(/clearRestartFailures\(name\)/g)).toHaveLength(1 + 0 + 0)
+  })
+
+  it('end to end: a restart that throws every sweep alerts once, on the third failure', async () => {
+    h.pane = SATURATED_PANE
+    h.restartOk = false
+    await bootDashboard()
+    // sweep 1 confirms, sweeps 2..6 each try (and fail) the restart
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 5 * INTERVAL_MS)
+    expect(h.restartAgentProcess.mock.calls.length).toBeGreaterThanOrEqual(5)
+    expect(alertCalls()).toHaveLength(1)
   })
 })
 

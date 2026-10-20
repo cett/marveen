@@ -92,6 +92,32 @@ if [ "$LOAD" = "1" ]; then
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
   echo "Loaded $LABEL (every 180s + at load). It only ever TOUCHES store/.channel-keepalive after proving the telegram poller alive from the process tree -- a dead native is never masked."
+  # Loading a LaunchAgent is not running it: the agent lives in the user's gui domain, which exists only while that
+  # user is logged in at the console. Without it launchctl may even accept the load, yet nothing ever runs, the
+  # keepalive file ages on a quiet session, and channel-watchdog.sh then ignores its age (no probe stamp). The probe
+  # stamps store/.channel-keepalive-probe at the start of every run (RunAtLoad makes the first one immediate), so
+  # wait for a stamp newer than this install and say so when it does not come.
+  STAMP="$PROJECT_DIR/store/.channel-keepalive-probe"
+  WAIT_SECONDS="${KEEPALIVE_PROBE_WAIT_SECONDS:-240}"
+  INSTALLED_AT="$(date +%s)"
+  waited=0
+  seen=0
+  while :; do
+    stamp_val="$(cat "$STAMP" 2>/dev/null || true)"
+    case "$stamp_val" in ''|*[!0-9]*) stamp_val=0 ;; esac
+    if [ "$stamp_val" -ge "$INSTALLED_AT" ]; then seen=1; break; fi
+    [ "$waited" -ge "$WAIT_SECONDS" ] && break
+    sleep 5
+    waited=$(( waited + 5 ))
+  done
+  if [ "$seen" = "1" ]; then
+    echo "OK: the probe ran (store/.channel-keepalive-probe is fresh)."
+  else
+    echo "WARNING: the probe has not run within ${WAIT_SECONDS}s (no fresh store/.channel-keepalive-probe)." >&2
+    echo "  A LaunchAgent starts only in the gui domain, i.e. while $(id -un) is logged in at the Mac's console." >&2
+    echo "  Log in on the desktop, then: launchctl bootstrap gui/$(id -u) $PLIST" >&2
+    echo "  Until the probe runs, channel-watchdog.sh ignores the age of the keepalive file (no respawn for a quiet session)." >&2
+  fi
 else
   echo "Installed but NOT loaded. To start: launchctl load $PLIST"
 fi

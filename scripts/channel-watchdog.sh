@@ -61,6 +61,10 @@ GRACE_SECONDS=$(( 15 * 60 ))    # don't respawn again within this window
 MAX_CONSECUTIVE=3               # after this many respawns w/o recovery, back off + alert
 AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/tick) before acting
 WAKE_GRACE_SECONDS=600          # after the machine woke from sleep, give the 3-min keepalive probe at least 3 ticks
+PROBE_STAMP_FILE="$STORE/.channel-keepalive-probe"           # written by channel-keepalive-probe.sh at the start of EVERY run
+PROBE_WARN_STAMP="$STORE/.channel-watchdog-probe-warned"     # last time the "probe not running" line was logged
+PROBE_STALE_SECONDS=600         # a probe stamp older than this => the probe is not running (it runs every 180s: ~3.3 runs)
+PROBE_WARN_INTERVAL_SECONDS=86400
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
@@ -130,6 +134,29 @@ else
   wake=""
 fi
 
+# The keepalive file's age is evidence of a wedge only while the keepalive probe RUNS: a quiet session ages the
+# file just the same when the probe never starts (the launchd agent does not start without a GUI login), and
+# respawning then throws the conversation away for nothing. The probe stamps store/.channel-keepalive-probe at the
+# start of every run; no readable, fresh stamp = the keepalive age says nothing. Returns 0 when the probe is running.
+# Logs why not, at most once a day, so a permanently absent probe does not fill the log every 5 minutes.
+probe_is_running() {
+  local reason="" stamp_mtime warned
+  if [ ! -f "$PROBE_STAMP_FILE" ]; then
+    reason="no probe stamp ($PROBE_STAMP_FILE)"
+  elif ! stamp_mtime="$(portable_mtime "$PROBE_STAMP_FILE")"; then
+    reason="cannot read the mtime of $PROBE_STAMP_FILE"
+  elif [ $(( now - stamp_mtime )) -ge "$PROBE_STALE_SECONDS" ]; then
+    reason="probe stamp is $(( now - stamp_mtime ))s old (limit ${PROBE_STALE_SECONDS}s)"
+  fi
+  [ -z "$reason" ] && return 0
+  if [ -f "$PROBE_WARN_STAMP" ] && warned="$(portable_mtime "$PROBE_WARN_STAMP")" && [ $(( now - warned )) -lt "$PROBE_WARN_INTERVAL_SECONDS" ]; then
+    return 1
+  fi
+  log "keepalive-probe not running: $reason -- STALE signal disabled (the keepalive age proves nothing without the probe; see scripts/install-channel-keepalive-probe.sh, GUI login needed on macOS)"
+  : > "$PROBE_WARN_STAMP" 2>/dev/null
+  return 1
+}
+
 # --- signal 1: STALE (keepalive mtime) -- computed independently, no early exit ---
 STALE=false
 age=0
@@ -144,7 +171,9 @@ else
     # the file cannot be fresher than the last wake: measure from the later of the two
     [ -n "$wake" ] && [ "$wake" -gt "$ka_mtime" ] && ka_mtime="$wake"
     age=$(( now - ka_mtime ))
-    [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
+    if [ "$age" -ge "$STALE_SECONDS" ] && probe_is_running; then
+      STALE=true
+    fi
   else
     # An mtime that cannot be read is not a stale file: reading it as 0 made every tick look wedged and
     # respawned the main session every 15 minutes.
