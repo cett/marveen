@@ -42,7 +42,6 @@ export const appLogHooks: pino.LoggerOptions['hooks'] = {
 //    leaks; the line is less detailed.
 //  - The object walk stops at 10 levels: an object nested deeper is logged as the marker "[MaxDepth]" instead of its
 //    content (a secret there cannot leak, but the content is not logged either).
-//  - Bindings added later with setBindings() are not masked (child() bindings are).
 //  - A secret split across several log calls, or hidden in an encoding other than plain text, is not recognised.
 //  - Only the process log (this logger) is covered. Other writers (hook logs, scripts, tmux output) are not.
 
@@ -321,14 +320,18 @@ export const LOG_HOOKS: NonNullable<pino.LoggerOptions['hooks']> = {
   },
 }
 
-// pino resets the `bindings` formatter for a child logger, so child bindings would reach the log unmasked. The root
-// logger gets a `child` that masks the bindings first; every child inherits it (a child is Object.create(parent)), so
-// grandchildren are covered too.
+// pino resets the `bindings` formatter for a child logger, so child bindings would reach the log unmasked, and so would
+// bindings added to a child later with setBindings(). The root logger gets a `child` and a `setBindings` that mask the
+// bindings first; every child inherits them (a child is Object.create(parent)), so grandchildren are covered too.
 function withMaskedBindings(root: pino.Logger): pino.Logger {
   const originalChild = root.child as unknown as (this: unknown, bindings: pino.Bindings, options?: pino.ChildLoggerOptions) => pino.Logger
   root.child = function (this: unknown, bindings: pino.Bindings, options?: pino.ChildLoggerOptions) {
     return originalChild.call(this, redactObject(bindings), options)
   } as unknown as typeof root.child
+  const originalSetBindings = root.setBindings as unknown as (this: unknown, bindings: pino.Bindings) => void
+  root.setBindings = function (this: unknown, bindings: pino.Bindings) {
+    originalSetBindings.call(this, redactObject(bindings))
+  } as unknown as typeof root.setBindings
   return root
 }
 

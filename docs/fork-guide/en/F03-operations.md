@@ -449,6 +449,21 @@ journalctl --user -u marveen-channels --since "1 hour ago"
 journalctl --user -u marveen-dashboard -f
 ```
 
+### Secrets in the process log
+
+The dashboard's own log (`src/logger.ts`) masks credentials before a line is written: field names such as `token`, `apiKey`, `authorization`, `password` and this install's own names (`agent_token`, `dashboard_token`, `session_token`, `device_key`, `bot_token`, ...) at any depth of a logged object, a child logger's bindings (also those added later with `setBindings()`) and an `Error` (message, stack, cause); and in free text `Bearer <token>`, `name=value` and `"name":"value"` for the same names, plus known token shapes (device key `mvdk_`, `sk-ant-`, OpenAI `sk-`, GitHub, Slack, Google API key, Telegram bot token, JWT, `vault:<id>`). A masked value reads `[REDACTED]`. The OTLP log export still receives every call.
+
+A redactor is a safety net, not a guarantee; keep secrets out of log calls. Known limits:
+
+- A fleet agent token is 64 hex characters, indistinguishable from a SHA-256, so it is masked next to its name or `Bearer`, never bare.
+- Other token shapes (cloud access keys, Stripe, npm) and other `Authorization` schemes (Digest, Negotiate, AWS4-HMAC) are not recognised; `Basic` only in the `Authorization: Basic <base64>` shape.
+- A `name=value` value stops at whitespace, `&`, `#`, quotes, brackets, comma and semicolon.
+- Class instances inside a logged object (`URL`, `Map`, `Set`) are left to pino; a secret inside one is not found. An object nested deeper than 10 levels is logged as `[MaxDepth]`, and a `%j` argument that cannot be stringified as `[Circular]` (nothing leaks, the line is less detailed).
+- A secret split across several log calls, or in an encoding other than plain text, is not recognised.
+- Only this process log is covered, not hook logs, scripts or tmux output.
+
+Cost, measured on one development machine (macOS, Node 22, null destination, median of 7 runs of 100,000 calls): a plain message goes from about 0.4 to 1.6 microseconds per call, an object with a message from about 1.0 to 8.6 (nested three levels: 1.5 to 12.2), a logged `Error` from about 31 to 49, and a call below the log level is unchanged (about 20 nanoseconds). Of the 10.8 microsecond increase on the nested object, the field-name redaction is about 4.0, the message hook 0.8 and the object walk 5.5. A thousand object lines per second is about one percent of a core.
+
 ### Update log
 
 ```bash

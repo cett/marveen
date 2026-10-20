@@ -11,7 +11,7 @@ vi.mock('../otel-app-logs.js', () => ({
   captureLogCall: (level: number, args: unknown[]) => { captured.push({ level, args }) },
 }))
 
-const { createLogger, redactLogMessage, redactObject, SECRET_NAMES, REDACTED } = await import('../logger.js')
+const { createLogger, redactLogMessage, redactObject, maskError, SECRET_NAMES, REDACTED } = await import('../logger.js')
 
 function capture() {
   const lines: string[] = []
@@ -111,6 +111,78 @@ describe('the OTLP capture still sees every call', () => {
     logger.error('plain error')
     expect(captured.map((c) => c.level)).toEqual([40, 50])
     expect(captured[0]!.args).toEqual([{ k: 1 }, 'warn template %s', 'x'])
+  })
+})
+
+describe('pinned name list', () => {
+  // The it.each above iterates SECRET_NAMES itself, so deleting a name from the list would also delete its test. This
+  // literal copy is what keeps a deletion visible. Adding a name is fine (add it here too); removing one must be deliberate.
+  const PINNED = [
+    'token', 'access_token', 'refresh_token', 'id_token', 'api_key', 'apikey', 'password', 'secret', 'client_secret',
+    'authorization', 'agent_token', 'fleet_token', 'dashboard_token', 'session_token', 'invite_token', 'enroll_code',
+    'device_key', 'bot_token', 'telegram_bot_token', 'slack_bot_token', 'oauth_token', 'claude_code_oauth_token',
+    'anthropic_api_key', 'openai_api_key', 'gemini_api_key', 'google_api_key', 'github_token', 'gh_token',
+  ]
+  it('SECRET_NAMES still holds every pinned name', () => {
+    expect(PINNED.filter((n) => !(SECRET_NAMES as readonly string[]).includes(n))).toEqual([])
+  })
+  it.each(PINNED)('%s is masked as name=value (a value of no known shape), as a JSON field and as a field name', (name) => {
+    const plain = 'plainvalue0123456789'
+    expect(redactLogMessage(`${name}=${plain} x`)).toBe(`${name}=${REDACTED} x`)
+    expect(redactLogMessage(`{"${name}":"${plain}"}`)).not.toContain(plain)
+    expect((redactObject({ [name]: plain }) as Record<string, string>)[name]).toBe(REDACTED)
+  })
+})
+
+describe('edges of the masking', () => {
+  it('the replacement marker is the literal [REDACTED] (log greps and dashboards look for it)', () => {
+    expect(REDACTED).toBe('[REDACTED]')
+  })
+
+  it('a JSON field name is matched in any letter case', () => {
+    expect(redactLogMessage('{"Token":"plainvalue0123"}')).not.toContain('plainvalue0123')
+    expect(redactLogMessage('{"API_KEY":"plainvalue0123"}')).not.toContain('plainvalue0123')
+  })
+
+  it('a short sk-ant key is masked by its own prefix rule (the OpenAI rule needs 32 characters)', () => {
+    expect(redactLogMessage('key sk-ant-abc12345 used')).not.toContain('abc12345')
+  })
+
+  it('a secret-named field with no value stays null / undefined, it is not turned into the marker', () => {
+    const out = redactObject({ token: null, apiKey: undefined }) as Record<string, unknown>
+    expect(out.token).toBeNull()
+    expect(out.apiKey).toBeUndefined()
+  })
+
+  it('an object nested past the depth limit is replaced by [MaxDepth] and the secret in it cannot leak', () => {
+    let o: Record<string, unknown> = { leaf: { password: 'plainvalue0123', note: `Bearer ${HEX64}` } }
+    for (let i = 0; i < 12; i++) o = { child: o }
+    const out = JSON.stringify(redactObject(o))
+    expect(out).toContain('[MaxDepth]')
+    expect(out).not.toContain('plainvalue0123')
+    expect(out).not.toContain(HEX64)
+  })
+
+  it('maskError copies message and stack as non-enumerable (as an Error has them) and keeps extra own fields enumerable', () => {
+    const plain = maskError(new Error('x'))
+    expect(Object.keys(plain)).toEqual([])
+    expect(JSON.stringify(plain)).toBe('{}')
+    const withCode = maskError(Object.assign(new Error('x'), { code: 'E1', token: 'plainvalue0123' }))
+    expect(Object.keys(withCode)).toEqual(['code', 'token'])
+    expect((withCode as Error & { token: string }).token).toBe(REDACTED)
+  })
+})
+
+describe('bindings added after creation', () => {
+  it('setBindings on the root and on a child is masked, like child() bindings', () => {
+    const { logger, lines } = capture()
+    logger.setBindings({ agent_token: 'rootvalue0123456789', who: 'root' })
+    const child = logger.child({ who: 'c' })
+    child.setBindings({ agent_token: 'childvalue0123456789', link: `https://example.invalid/?token=queryvalue0123` })
+    child.info('after setBindings')
+    const all = lines.join('')
+    for (const secret of ['rootvalue0123456789', 'childvalue0123456789', 'queryvalue0123']) expect(all).not.toContain(secret)
+    expect(all).toContain('"who":"c"')
   })
 })
 

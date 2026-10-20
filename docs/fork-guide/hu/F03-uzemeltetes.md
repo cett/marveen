@@ -449,6 +449,21 @@ journalctl --user -u marveen-channels --since "1 hour ago"
 journalctl --user -u marveen-dashboard -f
 ```
 
+### Titkok a folyamat-naplóban
+
+A dashboard saját naplója (`src/logger.ts`) a sor kiírása előtt maszkolja a hitelesítő adatokat: a `token`, `apiKey`, `authorization`, `password` és a telepítés saját nevei (`agent_token`, `dashboard_token`, `session_token`, `device_key`, `bot_token`, ...) mezőneveket a naplózott objektum bármely mélységében, a child logger bindingjait (a később `setBindings()`-szel hozzáadottakat is) és az `Error`-t (üzenet, stack, cause); szabad szövegben a `Bearer <token>`, a `name=value` és a `"name":"value"` alakot ugyanezekre a nevekre, valamint az ismert token-alakokat (eszközkulcs `mvdk_`, `sk-ant-`, OpenAI `sk-`, GitHub, Slack, Google API-kulcs, Telegram bot token, JWT, `vault:<id>`). A maszkolt érték `[REDACTED]`. Az OTLP naplóexport továbbra is minden hívást megkap.
+
+A maszkoló biztonsági háló, nem garancia; titkot ne tegyél naplóhívásba. Ismert korlátok:
+
+- A flotta ágens-tokenje 64 hex karakter, megkülönböztethetetlen egy SHA-256-tól, ezért csak a neve vagy a `Bearer` mellett maszkolódik, önmagában soha.
+- Más token-alakok (felhő hozzáférési kulcsok, Stripe, npm) és más `Authorization` sémák (Digest, Negotiate, AWS4-HMAC) nem ismerhetők fel; a `Basic` csak az `Authorization: Basic <base64>` alakban.
+- A `name=value` érték szóközig, `&`, `#`, idézőjelig, zárójelig, vesszőig és pontosvesszőig tart.
+- A naplózott objektumban lévő osztálypéldányokat (`URL`, `Map`, `Set`) a pino kezeli; az ezekben lévő titkot nem találja meg. A 10 szintnél mélyebb objektum `[MaxDepth]`-ként kerül a naplóba, a nem szövegesíthető `%j` argumentum `[Circular]`-ként (semmi nem szivárog, a sor kevésbé részletes).
+- Több naplóhívásra szétvágott vagy sima szövegtől eltérő kódolású titkot nem ismer fel.
+- Csak ez a folyamat-napló van lefedve, a hook-naplók, a szkriptek és a tmux-kimenet nem.
+
+Költség, egy fejlesztői gépen mérve (macOS, Node 22, null célfolyamat, 7 futás mediánja, futásonként 100 000 hívás): az egyszerű üzenet hívásonként kb. 0,4 mikroszekundumról 1,6-ra, az objektum üzenettel kb. 1,0-ról 8,6-ra (három szint mélyen: 1,5-ről 12,2-re), a naplózott `Error` kb. 31-ről 49-re nő, a naplószint alatti hívás változatlan (kb. 20 nanoszekundum). A beágyazott objektum 10,8 mikroszekundumos növekedéséből a mezőnév-maszkolás kb. 4,0, az üzenet-hook 0,8, az objektum-bejárás 5,5. Másodpercenként ezer objektumos sor kb. egy százalék egy magból.
+
 ### Dashboard update log
 
 A frissítések eredménye:
