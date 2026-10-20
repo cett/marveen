@@ -565,7 +565,19 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         // launch (see claude-plan-handoff-marker.ts). Must run before
         // performRestart, while the DB row this reads still exists.
         appendActivePlanMarkerToHandoff(name)
-        performRestart(name)
+        try {
+          performRestart(name)
+        } catch (err) {
+          // guardStates was advanced to the post-restart phase BEFORE this
+          // switch, so a failed restart would otherwise be filed as a completed
+          // one: the guard would wait for a session it never started, inject a
+          // resume prompt into the old pane and then sit out its cooldown. Put
+          // the previous state back so the next sweep decides again, and never
+          // claim the restart on the message queue.
+          guardStates.set(name, state)
+          logger.error({ err, name, reason: decision.reason }, 'context-guard: restart FAILED -- state rolled back for retry')
+          break
+        }
         // Persisted only AFTER the restart succeeded (a throw above skips this),
         // so a failed rescue never leaves an obligation that would send
         // "continue from your handoff" into the OLD pane.

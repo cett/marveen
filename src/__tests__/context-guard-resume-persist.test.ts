@@ -57,6 +57,7 @@ const h = vi.hoisted(() => ({
   sendOutcome: 'sent' as 'sent' | 'aborted-busy' | 'skipped-locked',
   sendThrows: false,
   guardOff: false,
+  createAgentMessage: null as unknown as import('vitest').Mock<(...a: unknown[]) => { id: number }>,
   sendPromptToSession: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<string>>,
   restartAgentProcess: null as unknown as import('vitest').Mock<(...a: unknown[]) => void>,
 }))
@@ -117,7 +118,11 @@ vi.mock('../web/context-guard-store.js', async () => {
 })
 vi.mock('../web/claude-plan-handoff-marker.js', () => ({ appendActivePlanMarkerToHandoff: () => {} }))
 vi.mock('../db/workspace.js', () => ({ getWorkspaceDocUpdatedAtMs: () => null }))
-vi.mock('../db.js', () => ({ createAgentMessage: () => ({ id: 1 }) }))
+vi.mock('../db.js', async () => {
+  const { vi } = await import('vitest')
+  h.createAgentMessage = vi.fn(() => ({ id: 1 }))
+  return { createAgentMessage: (...a: unknown[]) => h.createAgentMessage(...a) }
+})
 
 const INITIAL_DELAY_MS = 270_000
 const INTERVAL_MS = 300_000
@@ -168,6 +173,7 @@ afterEach(() => {
   vi.useRealTimers()
   h.sendPromptToSession?.mockClear()
   h.restartAgentProcess?.mockClear()
+  h.createAgentMessage?.mockClear()
 })
 
 afterAll(() => {
@@ -303,6 +309,42 @@ describe('context-guard resume obligation across a dashboard restart', () => {
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
     expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
     expect(existsSync(PENDING) ? readPending() : {}).toEqual({})
+  })
+
+  // The state machine steps to await-ready BEFORE the restart runs. A restart
+  // that throws must not leave it there: the guard would wait for a session it
+  // never started and push the resume prompt into the old, saturated pane.
+  describe('a restart that throws is rolled back', () => {
+    it('does not stay in await-ready, sends no resume, claims no restart on the queue', async () => {
+      h.pane = SATURATED_PANE
+      h.restartOk = false
+      const runner = await bootDashboard()
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
+      expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+      expect(runner.getHardGuardPhase('boni')).not.toBe('await-ready')
+
+      // The session reports ready: with the old behaviour this delivered the
+      // resume prompt into the pane that was never restarted.
+      h.sessionReady = true
+      await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+      expect(resumeCalls()).toHaveLength(0)
+      expect(h.createAgentMessage).not.toHaveBeenCalled()
+    })
+
+    it('decides again on the next sweep and recovers once the restart works', async () => {
+      h.pane = SATURATED_PANE
+      h.restartOk = false
+      const runner = await bootDashboard()
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
+      expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+
+      h.restartOk = true
+      await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+      expect(h.restartAgentProcess).toHaveBeenCalledTimes(2)
+      expect(runner.getHardGuardPhase('boni')).toBe('await-ready')
+      expect(Object.keys(readPending())).toEqual(['boni'])
+      expect(h.createAgentMessage).toHaveBeenCalledTimes(1)
+    })
   })
 })
 
