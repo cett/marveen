@@ -25,7 +25,9 @@ export type ActivityState = 'stopped' | 'dead' | 'working' | 'idle' | 'unknown' 
 const SHELL_COMMANDS = new Set(['bash', 'zsh', 'sh', 'fish', 'ksh', 'dash', 'tcsh', 'csh', 'login'])
 
 export function classifyPaneLiveness(paneCommand: string | null): PaneLiveness {
-  const name = (paneCommand ?? '').trim().toLowerCase().replace(/^-/, '')
+  // A value that is not a string (the callers pass string | null, but the reading must never throw) is no reading.
+  if (typeof paneCommand !== 'string') return 'unknown'
+  const name = paneCommand.trim().toLowerCase().replace(/^-/, '')
   if (!name) return 'unknown'
   return SHELL_COMMANDS.has(name) ? 'dead-shell' : 'alive'
 }

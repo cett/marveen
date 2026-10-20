@@ -43,6 +43,12 @@ describe('classifyPaneLiveness', () => {
     expect(classifyPaneLiveness('bashful')).toBe('alive') // a prefix of a shell name is not a shell
   })
 
+  it('reports unknown, and does not throw, for a value that is not a string', () => {
+    for (const bad of [undefined, 42, {}, ['zsh'], true]) {
+      expect(classifyPaneLiveness(bad as unknown as string)).toBe('unknown')
+    }
+  })
+
   it('reports unknown when tmux gave nothing', () => {
     expect(classifyPaneLiveness(null)).toBe('unknown')
     expect(classifyPaneLiveness('')).toBe('unknown')
