@@ -368,6 +368,11 @@ const WATCHED: readonly WatchSpec[] = [
   },
 ]
 
+/** The path prefixes the counter / the enforce gate watch (read-only view of WATCHED, for the route inventory guard). */
+export function watchedPrefixes(): string[] {
+  return WATCHED.map((s) => s.prefix)
+}
+
 function matchesPrefix(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`)
 }
