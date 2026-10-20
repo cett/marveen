@@ -100,7 +100,7 @@ export function noteRestartFailure(name: string, err: unknown): void {
   entry.alerted = true
   const text =
     `[CONTEXT-GUARD] A(z) "${name}" agent ujrainditasa ${entry.count}. egymas utani alkalommal hibazott, a guard 5 percenkent ujraprobalja. ` +
-    `Utolso hiba: ${shortFailureReason(err)}. Kezi ellenorzes kell (launchctl / tmux).`
+    `Utolso hiba: ${shortFailureReason(err)}. Kezi ellenorzes kell (a csatorna-session inditoja / tmux).`
   try {
     if (name === MAIN_AGENT_ID) {
       // The patient's own queue is no alert sink (main-agent delivery is pull-based): use the channel.
