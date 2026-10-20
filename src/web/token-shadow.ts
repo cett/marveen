@@ -79,6 +79,7 @@ export const TOKEN_SHADOW_CATEGORIES = [
   'shared_agent_memories_no_tenant',
   'fleet_skill_write_denied',
   'shared_token_refused',
+  'channel_credential_drift',
 ] as const
 export type TokenShadowCategory = (typeof TOKEN_SHADOW_CATEGORIES)[number]
 

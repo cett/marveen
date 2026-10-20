@@ -107,6 +107,7 @@ import { tryHandleTenantGateStatus } from './web/routes/tenant-gate-status.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
+import { tryHandleChannelCredentials } from './web/routes/channel-credentials.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
@@ -183,6 +184,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleEgressAllowlist)
   .add(tryHandleModelFallback)
   .add(tryHandleVoice)
+  .add(tryHandleChannelCredentials)
   .add(tryHandleVaultSshKeys)
   .add(tryHandleVaultSsh)
   .add(tryHandleAuditLog)
