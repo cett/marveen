@@ -120,8 +120,8 @@ describe('toolDescendants', () => {
     P(103, 102, 'R', 0, '/usr/bin/git'),
     P(104, 103, 'S', 0, '-bash'),
     P(105, 104, 'S', 0, '/usr/bin/make'),
-    P(150, 100, 'S', 0, '/Users/x/.bun/bin/bun'),        // MCP / channel plugin: direct non-shell child of the pane leader
-    P(151, 150, 'R', 0, '/Users/x/.bun/bin/bun'),        // its poller
+    P(150, 100, 'S', 0, '/opt/homebrew/bin/bun'),        // MCP / channel plugin: direct non-shell child of the pane leader
+    P(151, 150, 'R', 0, '/opt/homebrew/bin/bun'),        // its poller
     P(160, 100, 'S', 0, '/usr/bin/caffeinate'),
     P(200, 1, 'R', 0, '/usr/bin/python3'),
   ]
