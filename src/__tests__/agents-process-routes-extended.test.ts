@@ -12,6 +12,10 @@ vi.mock('../web/agent-process.js', () => ({
   restartAgentProcess: vi.fn().mockReturnValue({ ok: true }),
   getAgentProcessInfo: vi.fn().mockReturnValue({ running: false, pid: null }),
 }))
+vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/manual-restart-gate.js')>()),
+  gateManualRestart: vi.fn().mockResolvedValue({ allow: true, reason: 'idle' }),
+}))
 vi.mock('../web/auto-restart-store.js', () => ({
   readAutoRestartConfig: vi.fn().mockReturnValue({ enabled: false }),
   writeAutoRestartConfig: vi.fn().mockReturnValue({ enabled: true, maxRestarts: 3 }),
@@ -68,7 +72,10 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
 import { addDesiredAgent } from '../web/agent-desired-state.js'
-import { startAgentProcess, stopAgentProcess } from '../web/agent-process.js'
+import { startAgentProcess, stopAgentProcess, restartAgentProcess } from '../web/agent-process.js'
+import { gateManualRestart } from '../web/manual-restart-gate.js'
+import { hardRestartMarveenChannels } from '../web/channel-monitor.js'
+import { logger } from '../logger.js'
 
 function makeCtx(opts: { method: string; path: string; body?: string; headers?: Record<string, string> }): {
   ctx: RouteContext; statusCode: () => number; responseBody: () => unknown
@@ -327,6 +334,73 @@ describe('agents-process routes -- extended coverage', () => {
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
+    })
+  })
+
+  describe('POST /api/agents/:name/restart busy gate', () => {
+    beforeEach(() => {
+      vi.mocked(gateManualRestart).mockClear()
+      vi.mocked(restartAgentProcess).mockClear()
+      vi.mocked(hardRestartMarveenChannels).mockClear()
+    })
+
+    it('main agent: a busy pane answers 409 conflict/busy, nothing restarted', async () => {
+      vi.mocked(gateManualRestart).mockResolvedValueOnce({ allow: false, reason: 'busy' })
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/marveen/restart' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(409)
+      expect(responseBody()).toMatchObject({ error: 'conflict', reason: 'busy' })
+      expect((responseBody() as any).hint).toContain('POST /api/agents/marveen/restart')
+      expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+    })
+
+    it('main agent: {"force": true} skips the gate and is logged', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+      const { ctx, statusCode } = makeCtx({ method: 'POST', path: '/api/agents/marveen/restart', body: '{"force":true}' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(200)
+      expect(gateManualRestart).not.toHaveBeenCalled()
+      expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ agent: 'marveen' }), expect.stringContaining('forced'))
+      warn.mockRestore()
+    })
+
+    it('sub-agent: a busy pane answers 409 conflict/busy on ITS session, nothing restarted', async () => {
+      vi.mocked(gateManualRestart).mockResolvedValueOnce({ allow: false, reason: 'busy' })
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/agent-d/restart', body: '{}' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(409)
+      expect(responseBody()).toMatchObject({ error: 'conflict', reason: 'busy' })
+      expect(gateManualRestart).toHaveBeenCalledWith('agent-agent-d')
+      expect(restartAgentProcess).not.toHaveBeenCalled()
+    })
+
+    it('sub-agent: an unreadable pane answers 409 conflict/no_pane', async () => {
+      vi.mocked(gateManualRestart).mockResolvedValueOnce({ allow: false, reason: 'no_pane' })
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/agent-d/restart' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(409)
+      expect(responseBody()).toMatchObject({ error: 'conflict', reason: 'no_pane' })
+      expect(restartAgentProcess).not.toHaveBeenCalled()
+    })
+
+    it('sub-agent: force skips the gate, keeps the fresh flag from the same body, and is logged', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+      const { ctx, statusCode } = makeCtx({ method: 'POST', path: '/api/agents/agent-d/restart', body: '{"force":true,"fresh":true}' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(200)
+      expect(gateManualRestart).not.toHaveBeenCalled()
+      expect(restartAgentProcess).toHaveBeenCalledWith('agent-d', { fresh: true })
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ agent: 'agent-d' }), expect.stringContaining('forced'))
+      warn.mockRestore()
+    })
+
+    it('sub-agent: fresh without force is still gated, and an allowed gate restarts with fresh', async () => {
+      const { ctx, statusCode } = makeCtx({ method: 'POST', path: '/api/agents/agent-d/restart', body: '{"fresh":true}' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(200)
+      expect(gateManualRestart).toHaveBeenCalledTimes(1)
+      expect(restartAgentProcess).toHaveBeenCalledWith('agent-d', { fresh: true })
     })
   })
 

@@ -9,6 +9,7 @@ import {
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, readMarveenGooglechatConfig, readMarveenTeamsConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { gateManualRestart, restartRefusal, wantsForceRestart } from '../manual-restart-gate.js'
 import { readFileOr } from '../agent-config.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
@@ -152,6 +153,14 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   }
 
   if (path === '/api/marveen/restart' && method === 'POST') {
+    // A manual restart does not cut a running turn. A stuck main agent can read busy for good, so only an
+    // explicit {"force": true} body skips the gate (logged); the dashboard button sends no body.
+    if (wantsForceRestart(await readBody(req))) {
+      logger.warn({ route: path }, 'manual main restart forced past the pane gate')
+    } else {
+      const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
+      if (!gate.allow) { json(res, restartRefusal(gate, path), 409); return true }
+    }
     const result = hardRestartMarveenChannels()
     if (!result.ok) {
       logger.error({ err: result.error }, 'Marveen restart failed')

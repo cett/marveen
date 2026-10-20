@@ -29,6 +29,10 @@ vi.mock('../web/agent-process.js', () => ({
   restartAgentProcess: vi.fn().mockReturnValue({ ok: true }),
   getAgentProcessInfo: vi.fn().mockReturnValue(null),
 }))
+vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/manual-restart-gate.js')>()),
+  gateManualRestart: vi.fn().mockResolvedValue({ allow: true, reason: 'idle' }),
+}))
 vi.mock('../web/auto-restart-store.js', () => ({
   readAutoRestartConfig: vi.fn().mockReturnValue({ enabled: false }),
   writeAutoRestartConfig: vi.fn().mockReturnValue({ enabled: false }),
