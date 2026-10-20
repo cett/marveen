@@ -234,6 +234,20 @@ describe('enforce: which endpoints refuse what (T0 matrix)', () => {
     expect((await send('alpha', 'DELETE', `/api/memories/${shared}`)).refusal?.target).toBe('beta')
   })
 
+  it('the agent resources addressed by name: another agent is refused, the list and the own name are not', async () => {
+    for (const p of ['/api/agents/beta', '/api/agents/beta/security', '/api/agents/beta/conversation', '/api/agents/beta/team',
+      '/api/agents/beta/channels/telegram/allowed', '/api/agents/beta/channels/telegram/pending', '/api/agents/beta/channels/telegram/invites']) {
+      expect((await send('alpha', 'GET', p)).refusal?.target, p).toBe('beta')
+    }
+    expect((await send('alpha', 'PUT', '/api/agents/beta/team', { role: 'member' })).refusal?.target).toBe('beta')
+    expect((await send('alpha', 'GET', '/api/agents')).refusal).toBeNull()
+    expect((await send('alpha', 'GET', '/api/agents/activity')).refusal).toBeNull()
+    expect((await send('alpha', 'GET', '/api/agents/alpha')).refusal).toBeNull()
+    expect((await send('alpha', 'GET', '/api/agents/alpha/channels/telegram/allowed')).refusal).toBeNull()
+    expect((await send('alpha', 'GET', '/api/agents/Beta/status')).refusal?.target).toBe('beta')
+    expect((await send('main', 'GET', '/api/agents/beta/security')).refusal).toBeNull()
+  })
+
   it('recall: naming another agent is refused', async () => {
     expect((await send('alpha', 'GET', '/api/recall?agent=beta&q=x')).refusal?.target).toBe('beta')
     expect((await send('alpha', 'GET', '/api/recall?agent=alpha&q=x')).refusal).toBeNull()

@@ -333,6 +333,14 @@ const WATCHED: readonly WatchSpec[] = [
   { prefix: '/api/artifacts', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/approvals', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/messages', kind: 'own', queryKeys: [], bodyKeys: ['from'], enforce: 'any' },
+  // The agent resources addressed by name (profile, security, team, conversation, channel access list,
+  // pairing codes, ...): a fleet agent reads and acts on its own, never on another's. The list
+  // (GET /api/agents) names nobody and stays open; the literal sub-routes are not an agent name.
+  {
+    prefix: '/api/agents', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true,
+    paramLiterals: new Set(['activity', 'export-all', 'import', 'model-suggest']),
+    queryKeys: [], bodyKeys: [], enforce: 'any',
+  },
   // Recall reads an agent's daily logs and memories: the agent filter is the agent whose logs come back.
   { prefix: '/api/recall', kind: 'own', queryKeys: ['agent'], bodyKeys: [], listsAcrossAgents: true, enforce: 'any' },
   {

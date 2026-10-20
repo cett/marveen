@@ -26,15 +26,6 @@ const BODY_INPUT = /\b(?:data|body|parsed|payload|b|input)\??\.(agent_id|agent|a
 // An agent addressed in the path: a capture group right after /api/agents/ (regex route) or the helper that builds those routes.
 const PATH_AGENT = /\^\\\/api\\\/agents\\\/\(|matchChannelRoute\(/
 
-/**
- * The /api/agents/:name/* family: a fleet_agent token reaches other agents' profile, channel access list,
- * pairing codes and conversation by name (agents:read), and none of the recorded decisions covers it.
- * Waiting for the coordinator's decision (watch the whole family / only its sensitive sub-routes / leave it
- * out of this change). When it is decided, WATCHED gets the row and this list becomes empty: delete it
- * and the test then asserts [] like any other route.
- */
-const PENDING_DECISION: string[] = ['agent-conversation.ts', 'agent-terminal.ts', 'agents-channels.ts', 'agents-crud.ts', 'agents-process.ts', 'agents-skills.ts']
-
 interface Entry { file: string; reachable: string[]; inputs: string[]; watched: boolean; held: boolean }
 
 interface PathHit { path: string; methods: Set<string> | null }
@@ -102,7 +93,11 @@ function inventory(): Entry[] {
     for (const m of src.matchAll(BODY_INPUT)) inputs.add(`body:${m[1]}`)
     if (PATH_AGENT.test(src)) inputs.add('path:agent')
     if (inputs.size === 0) continue
-    const prefixes = new Set([...reachable].map((r) => prefixOf(r.split(' ')[1]!)))
+    // A file whose only identity input is an agent in the path is judged on the routes that carry one:
+    // an aggregate that names nobody (the team graph) is not an agent resource.
+    const onlyPath = inputs.size === 1 && inputs.has('path:agent')
+    const judged = [...reachable].filter((r) => !onlyPath || r.split(' ')[1]!.startsWith('/api/agents'))
+    const prefixes = new Set(judged.map((r) => prefixOf(r.split(' ')[1]!)))
     entries.push({
       file,
       reachable: [...reachable].sort(),
@@ -126,7 +121,7 @@ describe('route inventory: agent identity inputs reachable by a fleet_agent toke
 
   it('every such route file is watched by the counter or holds the caller to its own agent', () => {
     const uncovered = entries.filter((e) => !e.watched && !e.held).map((e) => e.file)
-    expect(uncovered).toEqual(PENDING_DECISION)
+    expect(uncovered).toEqual([])
   })
 
   it('writes the inventory table when asked', () => {

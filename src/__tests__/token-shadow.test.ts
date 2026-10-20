@@ -421,6 +421,18 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     expect(total('foreign_row_read')).toBe(0)
     expect(rows('foreign_row_access').map((r) => [r.method, r.target])).toEqual([['DELETE', 'agent-b'], ['PUT', 'agent-b']])
   })
+  it('agents: a path naming another agent is counted per route template, the list and literals are not', () => {
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b/conversation')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-a/security')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/activity')
+    expect(rows('agent_id_mismatch').map((r) => [r.route, r.target])).toEqual([
+      ['/api/agents/:agent', 'agent-b'],
+      ['/api/agents/:agent/conversation', 'agent-b'],
+    ])
+    expect(normalizeRoute('/api/agents/export-all')).toBe('/api/agents/export-all')
+  })
   it('kanban: the card assignee and the assignee filter', () => {
     createKanbanCard({ id: 'card-own', title: 't', assignee: 'agent-a' })
     createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
