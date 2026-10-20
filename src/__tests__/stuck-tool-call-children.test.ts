@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
   panePid: '100\n',
   pane: '',
   procs: '' as string | null,   // null = the ps call fails
+  cpu: '1.8\n',                 // the pane leader's %cpu
+  lastRespawn: 0,               // lastMainRespawnAt(): epoch ms, 0 = none
   times: [] as number[],
   t0: 0,
   resume: vi.fn(async () => { h.times.push(Date.now() - h.t0); return true }),
@@ -19,7 +21,7 @@ const h = vi.hoisted(() => ({
 vi.mock('node:child_process', () => ({
   execFileSync: (file: string, args: string[]) => {
     if (args[0] === 'list-panes') return h.panePid
-    if (args.includes('%cpu=')) return '1.8\n'
+    if (args.includes('%cpu=')) return h.cpu
     if (args.includes('pid=,ppid=,stat=,cputime=,comm=')) {
       if (h.procs === null) throw new Error('ps failed')
       return h.procs
@@ -35,7 +37,7 @@ vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'main-test' }))
 vi.mock('../web/channel-monitor.js', () => ({
   resumeMarveenSession: h.resume,
   sendAlert: vi.fn(),
-  lastMainRespawnAt: () => 0,
+  lastMainRespawnAt: () => h.lastRespawn,
   MARVEEN_POST_RESPAWN_GRACE_MS: 120_000,
 }))
 
@@ -201,6 +203,8 @@ describe('checkSession end to end: tool child check', () => {
     h.pane = FROZEN_PANE
     h.resume.mockClear()
     h.panePid = '100\n'
+    h.cpu = '1.8\n'
+    h.lastRespawn = 0
     h.times.length = 0
     h.info.mockClear()
     h.warn.mockClear()
@@ -221,6 +225,44 @@ describe('checkSession end to end: tool child check', () => {
     expect(h.resume).not.toHaveBeenCalled()
     const logged = h.info.mock.calls.map(c => String(c[1]))
     expect(logged.some(m => m.includes('a tool child process is active'))).toBe(true)
+  })
+
+  // A deferred verdict is asked again on the next poll (deferVerdict). decideStuckToolCallRecovery stores attempts=1
+  // with every verdict and holds for the rest of the spell once attempts >= 1, so a deferral that did not reset it
+  // stood the watcher down for good. Each deferral path is driven alone: the condition holds for the first 9 polls
+  // (long enough for the verdict to fire and be deferred), then ends, and the watcher must still recover on the very
+  // next poll. `deferralsLogged` proves the deferral really happened (the test is not vacuous).
+  // The condition is cleared right after the drive step that ends at 35 s + 8 x 30 s: no recovery may come before it.
+  const CLEARED_AT = 35_000 + 8 * 30_000
+  const deferralsLogged = (needle: string) => h.info.mock.calls.some(c => String(c[1]).includes(needle))
+
+  it('the post-respawn grace defers, and the spell is asked again once the grace has passed -> recovery', async () => {
+    await drive(14, i => {
+      h.lastRespawn = i < 9 ? Date.now() : 0   // a respawn stamp refreshed every poll, then none
+      return snapshot([claude, bun, zsh])
+    })
+    expect(deferralsLogged('recent respawn within grace')).toBe(true)
+    expect(h.resume).toHaveBeenCalledTimes(1)
+    expect(h.times[0]).toBeGreaterThan(CLEARED_AT)
+  })
+
+  it('the CPU guard defers, and the spell is asked again once claude is idle again -> recovery', async () => {
+    await drive(14, i => {
+      h.cpu = i < 9 ? '85.0\n' : '1.8\n'        // busy for the first 9 polls, then the idle wedge profile
+      return snapshot([claude, bun, zsh])
+    })
+    expect(deferralsLogged('CPU-active')).toBe(true)
+    expect(h.resume).toHaveBeenCalledTimes(1)
+    expect(h.times[0]).toBeGreaterThan(CLEARED_AT)
+  })
+
+  it('the tool-child guard defers, and the spell is asked again once the tool call has ended -> recovery', async () => {
+    await drive(14, i => snapshot(i < 9
+      ? [claude, bun, zsh, [102, 101, 'R', '0:05.00', '/usr/bin/python3']]   // a running tool child
+      : [claude, bun, zsh]))                                                  // the tool call ended
+    expect(deferralsLogged('a tool child process is active')).toBe(true)
+    expect(h.resume).toHaveBeenCalledTimes(1)
+    expect(h.times[0]).toBeGreaterThan(CLEARED_AT)
   })
 
   it('real wedge: same frozen counter, only an idle MCP poller below claude -> respawn stays', async () => {

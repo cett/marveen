@@ -184,6 +184,15 @@ export function shouldDeferForRecentRespawn(
   return lastRespawnMs > 0 && nowMs - lastRespawnMs < graceMs
 }
 
+// A deferred verdict must be asked again on the next poll. decideStuckToolCallRecovery() stores attempts=1 with every
+// verdict and holds for the rest of the spell once attempts >= 1, so a deferral that returned without resetting it
+// (the post-respawn grace, the CPU guard, the tool-child guard) stood the watcher down for the whole spell: one
+// CPU-busy sample, then a frozen counter at 1.8% CPU for half an hour, gave zero recoveries. The deferrals call this
+// instead; the idle-prompt guard needs no reset, it drops the spell's state altogether.
+function deferVerdict(session: string, next: StuckToolCallState): void {
+  watchState.set(session, { ...next, attempts: 0 })
+}
+
 async function checkSession(label: string, session: string): Promise<void> {
   const pane = capturePane(session)
   const sig = pane == null ? null : stuckToolCallSignature(pane)
@@ -243,6 +252,7 @@ async function checkSession(label: string, session: string): Promise<void> {
         { label, session, sinceRespawnMs: lastRespawn ? Date.now() - lastRespawn : null, graceMs: MARVEEN_POST_RESPAWN_GRACE_MS },
         'stuck-tool-call-watcher: recent respawn within grace, deferring recovery (avoid double-respawn / boot churn)',
       )
+      deferVerdict(session, next)
       return
     }
     // CPU-profile guard (#248): the genuine wedge is a render loop blocked on
@@ -256,6 +266,7 @@ async function checkSession(label: string, session: string): Promise<void> {
         { label, session, cpuPercent, maxCpuPercent: WEDGE_MAX_CPU_PERCENT, seconds: next.lastSeconds },
         'stuck-tool-call-watcher: counter stagnant but claude is CPU-active (not the idle wedge profile) -- deferring recovery',
       )
+      deferVerdict(session, next)
       return
     }
     // A live tool child (running, or CPU burned within the last polls) means a long foreground tool call, not the
@@ -269,7 +280,7 @@ async function checkSession(label: string, session: string): Promise<void> {
           { label, session, cpuPercent, seconds: next.lastSeconds, stagnantPolls: next.stagnantPolls },
           'stuck-tool-call-watcher: counter stagnant but a tool child process is active (long foreground tool call, not a wedge) -- deferring recovery',
         )
-        watchState.set(session, { ...next, attempts: 0 })
+        deferVerdict(session, next)
         return
       }
       logger.warn(
