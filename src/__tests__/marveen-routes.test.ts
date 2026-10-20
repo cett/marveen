@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -33,6 +33,10 @@ vi.mock('../web/telegram.js', () => ({
 vi.mock('../web/channel-monitor.js', () => ({
   hardRestartMarveenChannels: vi.fn().mockReturnValue({ ok: true }),
 }))
+vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/manual-restart-gate.js')>()),
+  gateManualRestart: vi.fn().mockResolvedValue({ allow: true, reason: 'idle' }),
+}))
 vi.mock('../web/agent-config.js', async (importOriginal) => {
   const actual = await importOriginal<any>()
   return { ...actual, readFileOr: vi.fn().mockReturnValue('') }
@@ -54,6 +58,9 @@ vi.mock('../web/auto-restart-store.js', () => ({
 }))
 
 import { tryHandleMarveen } from '../web/routes/marveen.js'
+import { gateManualRestart } from '../web/manual-restart-gate.js'
+import { hardRestartMarveenChannels } from '../web/channel-monitor.js'
+import { logger } from '../logger.js'
 
 function makeCtx(method: string, path: string, body?: object, headers?: Record<string, string>): {
   ctx: RouteContext; out: { status: number; body: any }
@@ -96,6 +103,67 @@ describe('tryHandleMarveen', () => {
     expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
     expect(out.status).toBe(200)
     expect(out.body.ok).toBe(true)
+  })
+
+  describe('POST /api/marveen/restart busy gate', () => {
+    beforeEach(() => {
+      vi.mocked(gateManualRestart).mockClear()
+      vi.mocked(hardRestartMarveenChannels).mockClear()
+    })
+
+    it('a busy pane answers 409 conflict/busy and nothing is restarted', async () => {
+      vi.mocked(gateManualRestart).mockResolvedValueOnce({ allow: false, reason: 'busy' })
+      const { ctx, out } = makeCtx('POST', '/api/marveen/restart')
+      expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
+      expect(out.status).toBe(409)
+      expect(out.body.error).toBe('conflict')
+      expect(out.body.reason).toBe('busy')
+      expect(out.body.hint).toContain('{"force": true}')
+      expect(gateManualRestart).toHaveBeenCalledWith('marveen-channels')
+      expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+    })
+
+    it('an unreadable pane answers 409 conflict/no_pane and nothing is restarted', async () => {
+      vi.mocked(gateManualRestart).mockResolvedValueOnce({ allow: false, reason: 'no_pane' })
+      const { ctx, out } = makeCtx('POST', '/api/marveen/restart')
+      expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
+      expect(out.status).toBe(409)
+      expect(out.body.reason).toBe('no_pane')
+      expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+    })
+
+    it('the dashboard button sends no body and is still gated', async () => {
+      const { ctx, out } = makeCtx('POST', '/api/marveen/restart')
+      expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
+      expect(gateManualRestart).toHaveBeenCalledTimes(1)
+      expect(out.status).toBe(200)
+      expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+    })
+
+    it('{"force": true} skips the gate, restarts, and is logged', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+      const { ctx, out } = makeCtx('POST', '/api/marveen/restart', { force: true })
+      expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
+      expect(gateManualRestart).not.toHaveBeenCalled()
+      expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+      expect(out.status).toBe(200)
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ route: '/api/marveen/restart' }), expect.stringContaining('forced'))
+      warn.mockRestore()
+    })
+
+    it('a body that is not an explicit force (string true, {}, garbage) stays gated', async () => {
+      for (const raw of ['{"force":"true"}', '{}', 'not json']) {
+        vi.mocked(gateManualRestart).mockClear()
+        vi.mocked(gateManualRestart).mockResolvedValueOnce({ allow: false, reason: 'busy' })
+        const { ctx, out } = makeCtx('POST', '/api/marveen/restart')
+        ;(ctx.req as any).removeAllListeners('data')
+        ;(ctx.req as any).removeAllListeners('end')
+        setImmediate(() => { (ctx.req as any).emit('data', Buffer.from(raw)); (ctx.req as any).emit('end') })
+        expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
+        expect(out.status).toBe(409)
+        expect(gateManualRestart).toHaveBeenCalledTimes(1)
+      }
+    })
   })
 
   it('POST /api/marveen/restart returns 500 when restart fails', async () => {

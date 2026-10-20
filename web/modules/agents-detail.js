@@ -10,6 +10,7 @@ import { showToast } from './toast.js'
 import { escapeHtml, mainAgentId } from './util.js'
 import { getErrorMessage } from './error-message.js'
 import { selectorModelFor, fallbackModelOf, isNoopModelSave } from './agent-model-selection.js'
+import { postGatedRestart } from './restart-gate.js'
 import {
   AVATARS, _closeModal, _loadSkills, _openModal, _renderTeamEditor,
   agentDetailOverlay, agentName, agents, applyMarveenReadonlyMode,
@@ -358,12 +359,13 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
-    const res = await fetch('/api/marveen/restart', { method: 'POST' })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
-      throw Object.assign(new Error('api call failed'), { apiData: err })
+    const { res, data, cancelled } = await postGatedRestart('/api/marveen/restart', { fetchFn: fetch, confirmFn: confirm, tFn: t })
+    if (cancelled) {
+      showToast(t('agents.toast.restart_cancelled'))
+      return
     }
+    // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+    if (!res.ok) throw Object.assign(new Error('api call failed'), { apiData: data })
     showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
     showToast(getErrorMessage(err.apiData, t('agents.toast.restart_failed')))
@@ -820,7 +822,8 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     if (!restartRes.ok) {
       document.getElementById('agentDetailModelRestarting').hidden = true
       if (currentAgent) updateProcessControl(currentAgent)
-      showToast(t('agents.restart_failed'))
+      // The saved model applies at the next start; a busy agent is not cut for it.
+      showToast(t(restartRes.status === 409 ? 'agents.toast.model_restart_busy' : 'agents.restart_failed'))
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)

@@ -2,6 +2,7 @@ import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
+import { postGatedRestart } from './restart-gate.js'
 import { getFederatedPeerStatus, setFederatedPeerStatus } from './agents.js'
 import { getChatSelectedAgent, setChatSelectedAgent } from './messages.js'
 
@@ -209,10 +210,8 @@ async function fedDeletePeer(peerId) {
 async function fedApplyToMainAgent() {
   if (!confirm(t('federation.confirm.apply'))) return
   try {
-    const res = await fetch('/api/federation/apply', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-    })
-    const data = await res.json().catch(() => ({}))
+    const { res, data, cancelled } = await postGatedRestart('/api/federation/apply', { fetchFn: fetch, confirmFn: confirm, tFn: t, plainBody: '{}' })
+    if (cancelled) { showToast(t('agents.toast.restart_cancelled')); return }
     if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
     showToast(t('federation.toast.applied'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }

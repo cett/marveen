@@ -12,9 +12,11 @@ import {
   restartAgentProcess,
   getAgentProcessInfo,
 } from '../agent-process.js'
+import { agentSessionName } from '../agent-process-session.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
-import { isMainChannelsAgent } from '../main-agent.js'
+import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { gateManualRestart, restartRefusal, wantsForceRestart } from '../manual-restart-gate.js'
 import { checkConfigPutFields } from '../agent-put-fields.js'
 import { DEFAULT_AUTO_RESTART } from '../../auto-restart.js'
 import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
@@ -213,16 +215,33 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     // the agent-process path would spawn a rogue duplicate session and fire
     // `/remote-control` (needs a full-scope login token the agent lacks). Mirror
     // the precedent in the channels-config handler above. Sub-agents unchanged.
+    // A manual restart does not cut a running turn (main or sub-agent). A stuck agent can read busy for good, so
+    // only an explicit {"force": true} body skips the gate (logged); the dashboard button sends no body. The gate
+    // is route-only: context-guard, watchdog and auto-restart call the restart helpers directly.
+    const body = await readBody(req)
+    const force = wantsForceRestart(body)
     if (isMainChannelsAgent(name)) {
+      if (force) {
+        logger.warn({ route: path, agent: name }, 'manual main restart forced past the pane gate')
+      } else {
+        const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
+        if (!gate.allow) { json(res, restartRefusal(gate, path), 409); return true }
+      }
       const r = hardRestartMarveenChannels()
       if (r.ok) { json(res, { ok: true }); return true }
       json(res, { error: 'internal_error', hint: r.error || 'Restart failed' }, 500)
       return true
     }
     if (!assertAgentExists(name, res)) return true
+    if (force) {
+      logger.warn({ route: path, agent: name }, 'manual agent restart forced past the pane gate')
+    } else {
+      const gate = await gateManualRestart(agentSessionName(name))
+      if (!gate.allow) { json(res, restartRefusal(gate, path), 409); return true }
+    }
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     let restartFresh = false
-    try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
+    try { restartFresh = JSON.parse(body.toString() || '{}').fresh === true } catch {}
     const result = restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)

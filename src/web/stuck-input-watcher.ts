@@ -235,7 +235,7 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts
     ) {
       logger.warn({ label, session }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts, alerting for manual restart')
-      sendAlert(`⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki. Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`)
+      sendAlert(`⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki. Valószínűleg kézi restart kell: a beragadt bemenet foglaltnak látszik, ezért a POST /api/agents/${label}/restart csak {"force": true} törzzsel megy át (409 busy nélküle).`)
     }
   }
 }

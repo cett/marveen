@@ -102,7 +102,8 @@ describe('federation UI wiring', () => {
     expect(fn).toContain("confirm(t('federation.confirm.apply'))")
     // Server-side apply endpoint -- NOT the client-agent-id-dependent restart
     // (which 404'd when window._marveen was not loaded on the federation page).
-    expect(fn).toMatch(/fetch\('\/api\/federation\/apply'/)
+    // The post goes through the shared busy-gate helper (asks a second time on a busy / unreadable-pane refusal).
+    expect(fn).toMatch(/postGatedRestart\('\/api\/federation\/apply'/)
     expect(fn).not.toMatch(/fetch\(`\/api\/agents\//)
     // Status auto-refreshes after config mutations (enable, peer add) instead
     // of a manual refresh button.

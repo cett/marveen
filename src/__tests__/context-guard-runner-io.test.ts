@@ -195,6 +195,11 @@ vi.mock('../web/claude-plan-handoff-marker.js', () => ({
   appendActivePlanMarkerToHandoff: mockAppendActivePlanMarkerToHandoff,
 }))
 
+// The manual-restart busy gate belongs to the HTTP routes only. It is wired here as a gate that always refuses, so a
+// guard restart that consulted it would stall and the tests below would fail.
+const mockManualRestartGate = vi.hoisted(() => vi.fn().mockResolvedValue({ allow: false, reason: 'busy' }))
+vi.mock('../web/manual-restart-gate.js', () => ({ gateManualRestart: mockManualRestartGate }))
+
 // ../auto-restart.js and ../context-guard.js are pure/dependency-free, and
 // ../config.js only reads env constants -- all three used for real (same
 // rationale as layer 1).
@@ -537,6 +542,17 @@ describe('checkAgent: main-agent restart path', () => {
     expect(mockHardRestartMarveenChannels).toHaveBeenCalled()
     expect(mockRestartAgentProcess).not.toHaveBeenCalled()
     expect(getHardGuardPhase(MAIN_AGENT_ID)).toBe('await-ready')
+  })
+
+  it('restarts main past a busy pane: the route-only busy gate is never consulted', async () => {
+    setCfg(MAIN_AGENT_ID, { saturationRestart: true })
+    armSession(mainSession(), { saturated: true })
+    const { startContextGuardRunner } = await loadRunner()
+    handle = startContextGuardRunner()
+    await runNextSweep()
+    await runNextSweep()
+    expect(mockHardRestartMarveenChannels).toHaveBeenCalled()
+    expect(mockManualRestartGate).not.toHaveBeenCalled()
   })
 
   it('a failed hard restart (ok:false) is caught, logged, and never reaches the restart-notice message', async () => {
