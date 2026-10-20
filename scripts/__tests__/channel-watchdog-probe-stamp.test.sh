@@ -91,8 +91,9 @@ run_watchdog b-fresh-stamp 4000 30
 assert_eq "(b) fresh probe stamp + old keepalive: respawn (today's behaviour)" "1" "$RESPAWNS"
 if has "keepalive stale"; then pass "(b) the respawn reason is the stale keepalive"; else fail "(b) reason missing ($OUT)"; fi
 
-run_watchdog c-599 4000 599
-assert_eq "(c) stamp 599 s old: still counts, respawn" "1" "$RESPAWNS"
+# 590, not 599: the script runs a moment after the stamp is aged, so a stamp set to 599 s can read 600 s old
+run_watchdog c-590 4000 590
+assert_eq "(c) stamp 590 s old: still counts, respawn" "1" "$RESPAWNS"
 run_watchdog c-600 4000 600
 assert_eq "(c) stamp exactly 600 s old: the probe is not running, no respawn" "0" "$RESPAWNS"
 run_watchdog c-601 4000 601
@@ -157,7 +158,7 @@ echo "doctor: the probe stamp line"
 # The doctor is one long script that talks to launchd and the dashboard, so only its probe-stamp section runs here,
 # cut out between its own marker comment and the next section heading, in a throw-away working directory.
 DOCTOR_SECTION="$TMP/doctor-section.sh"
-awk '/^# The keepalive probe stamps/{f=1} /^# --- [S]ettings ---/{f=0} f' "$SRC_DIR/doctor.sh" > "$DOCTOR_SECTION"
+awk '/^# The keepalive probe stamps/{f=1} /^# --- /{f=0} f' "$SRC_DIR/doctor.sh" > "$DOCTOR_SECTION"
 if [ -s "$DOCTOR_SECTION" ]; then pass "(f) the probe-stamp section is found in doctor.sh"; else fail "(f) the probe-stamp section is missing from doctor.sh"; fi
 run_doctor() {
   local name="$1" age="$2" dir="$TMP/doctor-$1"
