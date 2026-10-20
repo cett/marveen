@@ -464,6 +464,21 @@ A maszkoló biztonsági háló, nem garancia; titkot ne tegyél naplóhívásba.
 
 Költség, egy fejlesztői gépen mérve (macOS, Node 22, null célfolyamat, 7 futás mediánja, futásonként 100 000 hívás): az egyszerű üzenet hívásonként kb. 0,4 mikroszekundumról 1,6-ra, az objektum üzenettel kb. 1,0-ról 8,6-ra (három szint mélyen: 1,5-ről 12,2-re), a naplózott `Error` kb. 31-ről 49-re nő, a naplószint alatti hívás változatlan (kb. 20 nanoszekundum). A beágyazott objektum 10,8 mikroszekundumos növekedéséből a mezőnév-maszkolás kb. 4,0, az üzenet-hook 0,8, az objektum-bejárás 5,5. Másodpercenként ezer objektumos sor kb. egy százalék egy magból.
 
+### Titkok a parancssorban
+
+Egy futó folyamat argumentumait minden helyi felhasználó olvashatja (`ps -ww`). Az a szkript, amely külső API-t hív, ezért a titkot a curlnek stdin-en, konfigként adja át, a `scripts/lib/curl-tok.sh` segédeivel (source-olni kell, telepítési lépés nincs):
+
+```bash
+. "$INSTALL_DIR/scripts/lib/curl-tok.sh"
+curl_tok "$TOKEN" -s "$URL"                                        # Authorization: Bearer <token>
+curl_hdr 'x-goog-api-key' "$KEY" -s "$URL"                          # bármely egy titkos fejléc
+curl_tok_url "$BOT" 'https://api.telegram.org/bot@TOKEN@/getMe' -s  # a titok az URL része
+```
+
+A törzs `-d "$text"` (nem titok) vagy `--data-binary @fájl` lehet, mert az stdin a konfigé. A dupla idézőjelet, backslasht vagy sortörést tartalmazó értéket a segéd visszautasítja (visszatérési kód 2, semmi nem megy ki). A `scripts/set-bot-menu.sh`, a `scripts/smoke-test-slack-channel.sh` és a `scripts/pre-pr-review.sh` ezeket használja. A `scripts/__tests__/curl-tok.test.sh` (a CI Shell tests lépésében) élő `ps`-próbával bizonyítja, hogy a titok nincs a folyamatlistában, és ratchetet tart: shell szkript nem építhet Bearer fejlécet, `bot<token>` URL-t vagy `?key=` lekérdezést a parancssorba, kivéve a tesztben felsorolt örökölt sorokat, amelyek csak csökkenhetnek. Nincs lefedve: más nyelvű szkriptek és az örökölt sorok (a Telegram-értesítők és a telepítők még az URL-ben küldik a bot tokent).
+
+A `scripts/pre-pr-review.sh` a diffet a ChatGPT-nek és a Gemininek küldi, ezért a diff előbb átmegy a titokkapun (`scripts/secret-gate.ts --outbound <base>...<head>`, a pre-commit hook és a CI detektorai, minden módosított fájl diff-szövegén, az eltávolított sorokat is beleértve). Titok-alak, tiltott útvonal (evidence vagy transcript könyvtár) vagy csatornaanyag megállítja: semmi nem megy ki, a szkript 1-gyel lép ki. A kapu azt írja ki, hol van a találat, azt soha, hogy mi.
+
 ### Dashboard update log
 
 A frissítések eredménye:

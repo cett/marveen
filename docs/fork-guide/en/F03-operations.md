@@ -464,6 +464,21 @@ A redactor is a safety net, not a guarantee; keep secrets out of log calls. Know
 
 Cost, measured on one development machine (macOS, Node 22, null destination, median of 7 runs of 100,000 calls): a plain message goes from about 0.4 to 1.6 microseconds per call, an object with a message from about 1.0 to 8.6 (nested three levels: 1.5 to 12.2), a logged `Error` from about 31 to 49, and a call below the log level is unchanged (about 20 nanoseconds). Of the 10.8 microsecond increase on the nested object, the field-name redaction is about 4.0, the message hook 0.8 and the object walk 5.5. A thousand object lines per second is about one percent of a core.
 
+### Secrets on a command line
+
+An argument of a running process is readable by every local user (`ps -ww`). A script that calls an outside API therefore hands the secret to curl as a config on stdin, with the helpers in `scripts/lib/curl-tok.sh` (source it, no install step):
+
+```bash
+. "$INSTALL_DIR/scripts/lib/curl-tok.sh"
+curl_tok "$TOKEN" -s "$URL"                                        # Authorization: Bearer <token>
+curl_hdr 'x-goog-api-key' "$KEY" -s "$URL"                          # any one secret header
+curl_tok_url "$BOT" 'https://api.telegram.org/bot@TOKEN@/getMe' -s  # the secret is part of the URL
+```
+
+A body must come from `-d "$text"` (not secret) or `--data-binary @file`, because stdin belongs to the config. A value with a double quote, a backslash or a line break is refused (return code 2, nothing sent). `scripts/set-bot-menu.sh`, `scripts/smoke-test-slack-channel.sh` and `scripts/pre-pr-review.sh` use them. `scripts/__tests__/curl-tok.test.sh` (Shell tests in CI) proves with a live `ps` probe that the secret is not in the process list, and holds a ratchet: no shell script may build a Bearer header, a `bot<token>` URL or a `?key=` query on the command line, except the legacy rows listed in the test, which can only be lowered. Not covered: scripts in other languages, and the legacy rows (the Telegram notifiers and the installers still send the bot token in the URL).
+
+`scripts/pre-pr-review.sh` sends the diff to ChatGPT and Gemini, so the diff goes through the secret gate first (`scripts/secret-gate.ts --outbound <base>...<head>`, the detectors of the pre-commit hook and CI, run over the diff text of every changed file, removed lines included). A secret shape, a denied path (evidence or transcript directories) or channel material stops it: nothing is sent and the script exits 1. The gate prints where, never what.
+
 ### Update log
 
 ```bash

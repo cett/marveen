@@ -28,6 +28,9 @@ fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
 pass() { log "OK: $*"; PASS=$((PASS + 1)); }
 redact() { sed 's/xoxb-[A-Za-z0-9_-]*/xoxb-REDACTED/g; s/xapp-[A-Za-z0-9_-]*/xapp-REDACTED/g'; }
 
+# The bot token goes to curl as a config on stdin, not on the command line (ps shows argv).
+. "$INSTALL_DIR/scripts/lib/curl-tok.sh"
+
 # Safety gate
 if [ "${SLACK_SMOKE_TEST_ALLOWED:-}" != "true" ]; then
   log "SLACK_SMOKE_TEST_ALLOWED != true. Állítsd be a .env-ben a teszteléshez."
@@ -63,8 +66,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "[DRY-RUN] conversations.open user=$USER_ID"
   DM_CHANNEL="DRY_RUN_CHANNEL"
 else
-  OPEN_RESP="$(curl -sf -X POST 'https://slack.com/api/conversations.open' \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  OPEN_RESP="$(curl_tok "$SLACK_BOT_TOKEN" -sf -X POST 'https://slack.com/api/conversations.open' \
     -H 'Content-Type: application/json' \
     -d "{\"users\":\"$USER_ID\"}" 2>/dev/null || true)"
   DM_OK="$(echo "$OPEN_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"
@@ -96,8 +98,7 @@ RANDOM_ID="smoke-$(date +%s)-$$"
 if [ "$DRY_RUN" = "1" ]; then
   log "[DRY-RUN] chat.postMessage channel=$DM_CHANNEL text=$RANDOM_ID"
 else
-  MSG_RESP="$(curl -sf -X POST 'https://slack.com/api/chat.postMessage' \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  MSG_RESP="$(curl_tok "$SLACK_BOT_TOKEN" -sf -X POST 'https://slack.com/api/chat.postMessage' \
     -H 'Content-Type: application/json' \
     -d "{\"channel\":\"$DM_CHANNEL\",\"text\":\"$RANDOM_ID\"}" 2>/dev/null || true)"
   MSG_OK="$(echo "$MSG_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"
@@ -127,7 +128,7 @@ for line in sys.stdin:
         entry = json.loads(line)
         if entry.get('kind') == 'gate.inbound.deliver':
             sys.exit(0)
-    except: pass
+    except Exception: pass
 sys.exit(1)
 " 2>/dev/null; then
         POLL_HIT=1
