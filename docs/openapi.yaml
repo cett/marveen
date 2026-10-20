@@ -3357,6 +3357,50 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /agents/activity:
+    get:
+      tags: [agents]
+      operationId: listAgentActivity
+      summary: Live per-agent activity (what each tmux session is doing right now)
+      description: |
+        Read-only, polled by the dashboard every 3 seconds. One entry per agent the caller may see (a non-admin
+        caller gets only its tenant's agents and never the main agent's channels session, whose tail is live pane
+        output). `state` is derived from the pane text and, for a LOCAL session, the pane's foreground command:
+        `dead` means the tmux session exists but no Claude CLI runs in it (the pane fell back to a shell prompt),
+        which is not the same as `idle`. A pane that still shows work in progress is `working` whatever its foreground
+        command is. A remote (ssh) agent is never `dead`: its foreground command is not read (an extra ssh round trip
+        per poll), so it keeps the pane-text label, or `unreachable` when its host does not answer.
+      responses:
+        "200":
+          description: Activity entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [name, isMain, running, state, mode, tail]
+                  properties:
+                    name:
+                      type: string
+                    isMain:
+                      type: boolean
+                    running:
+                      type: boolean
+                      description: The tmux session exists (true for a `dead` session too).
+                    state:
+                      type: string
+                      enum: [stopped, dead, working, idle, unknown, error, unreachable]
+                    mode:
+                      type: string
+                      nullable: true
+                      description: The permission mode the agent is sitting in, as read from the pane; null when not running.
+                    tail:
+                      type: array
+                      items:
+                        type: string
+                      description: The last few non-empty output lines of the pane.
+
   /agents/{name}:
     parameters:
       - name: name

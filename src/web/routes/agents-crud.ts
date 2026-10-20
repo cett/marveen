@@ -56,10 +56,11 @@ import {
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
-import { isAgentRunning, agentSessionName, capturePane, stopAgentProcess } from '../agent-process.js'
+import { isAgentRunning, agentSessionName, capturePane, paneCurrentCommand, stopAgentProcess } from '../agent-process.js'
+import { activityState, type ActivityState } from '../pane-liveness.js'
 import { removeDesiredAgent } from '../agent-desired-state.js'
 import { readContextTokensFromProjectDir } from '../active-model.js'
-import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { loadProfileTemplate, resolveProfilePlaceholders } from '../profiles.js'
 import { sanitizeAgentName } from '../sanitize.js'
@@ -178,14 +179,13 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   // fleet, not just sub-agents. Restored after #226 dropped this route while the
   // frontend kept calling /api/agents/activity (which then 404'd the panel).
   if (path === '/api/agents/activity' && method === 'GET') {
-    const label = (running: boolean, pane: string | null): string => {
-      if (!running) return 'stopped'
-      if (pane === null) return 'unknown'
-      const s = detectPaneState(pane)
-      if (s === 'busy' || s === 'typing') return 'working'
-      if (s === 'idle') return 'idle'
-      return s // 'unknown' | 'error'
-    }
+    // A session that still exists is not an agent that still answers: when the CLI exits, tmux leaves a bare shell in
+    // the pane, which the pane text alone would read as a healthy 'idle'. activityState pairs the pane text with the
+    // pane's foreground command so that leftover is named 'dead' (see pane-liveness.ts). The command is read for
+    // LOCAL sessions only: a remote agent would need another ssh round trip on every 3s poll, so it keeps the
+    // previous behaviour (no command, never 'dead').
+    const label = (running: boolean, pane: string | null, paneCommand: string | null = null): ActivityState =>
+      activityState({ running, pane, paneCommand })
     const tailOf = (pane: string | null): string[] =>
       pane === null
         ? []
@@ -213,11 +213,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (visible === null) {
       const mainPane = capturePane(MAIN_CHANNELS_SESSION)
       const running = mainPane !== null
+      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
       entries.push({
         name: MAIN_AGENT_ID,
         isMain: true,
         running,
-        state: label(running, mainPane),
+        state: label(running, mainPane, mainPaneCommand),
         mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
@@ -236,7 +237,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
           ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
           : capturePane(agentSessionName(name))
       }
-      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
+      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane, paneCommand)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 

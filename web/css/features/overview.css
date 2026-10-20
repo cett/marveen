@@ -147,6 +147,7 @@
 .activity-card.act-error   { border-left-color: var(--danger); }
 .activity-card.act-unknown { border-left-color: var(--warning); }
 .activity-card.act-stopped { border-left-color: var(--color-stone-500); opacity: 0.7; }
+.activity-card.act-dead    { border-left-color: var(--danger); }
 .activity-card.act-clickable { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
 .activity-card.act-clickable:hover { background: var(--bg-card-hover, var(--bg-card)); box-shadow: 0 0 0 2px var(--accent); }
 .act-term-icon { color: var(--text-muted); flex-shrink: 0; opacity: 0.6; }
@@ -173,6 +174,7 @@
 .activity-badge.act-error   { background: var(--danger-soft); color: var(--danger); }
 .activity-badge.act-unknown { background: var(--warning-soft); color: var(--color-amber-600); }
 .activity-badge.act-stopped { background: var(--neutral-soft); color: var(--color-stone-500); }
+.activity-badge.act-dead    { background: var(--danger-soft); color: var(--danger); font-weight: 700; }
 
 /* Green "breathing" glow for the working badge: saturates the pill and pulses a
    soft halo at peak, then settles. */

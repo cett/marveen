@@ -596,6 +596,18 @@ export type ListAgentsResponse = {
   running?: boolean;
 }[]
 
+export type ListAgentActivityResponse = {
+  name: string;
+  isMain: boolean;
+  /** The tmux session exists (true for a `dead` session too). */
+  running: boolean;
+  state: 'stopped' | 'dead' | 'working' | 'idle' | 'unknown' | 'error' | 'unreachable';
+  /** The permission mode the agent is sitting in, as read from the pane; null when not running. */
+  mode: string;
+  /** The last few non-empty output lines of the pane. */
+  tail: string[];
+}[]
+
 export type UpdateAgentConfigResponse = OkResponse
 
 export type DeleteAgentResponse = OkResponse
