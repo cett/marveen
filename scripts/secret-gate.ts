@@ -5,6 +5,8 @@
  *   scripts/secret-gate.ts --staged            (pre-commit hook: what is about to be committed)
  *   scripts/secret-gate.ts --range <base>..<head>   (CI: what the PR adds)
  *   scripts/secret-gate.ts --all               (audit: every tracked file)
+ *   scripts/secret-gate.ts --outbound <base>...<head>   (before a diff leaves the machine: scans the DIFF TEXT of each
+ *                                              changed file, so a secret on a removed or context line counts too)
  *
  * The hook is the fast lane and can be skipped with `git commit --no-verify`.
  * The CI run is the actual gate. That is stated here and in the PR template so
@@ -33,7 +35,25 @@ function fileList(mode: string, range?: string): string[] {
     return git(['diff', '--name-only', '--diff-filter=ACMR', range]).split('\n').filter(Boolean);
   }
   if (mode === '--all') return git(['ls-files']).split('\n').filter(Boolean);
+  if (mode === '--outbound') {
+    if (!range || !range.includes('..')) throw new Error(`--outbound needs <base>...<head>, got: ${range ?? '(nothing)'}`);
+    // -z: a path with a space or a quote is not mangled; every changed path counts (a deleted file's diff is sent too).
+    return git(['diff', '--name-only', '-z', range]).split('\0').filter(Boolean);
+  }
   throw new Error(`unknown mode: ${mode}`);
+}
+
+/** The diff text of one file, as it would be sent. Read as latin1 like the file scan, so no byte is lost to decoding. */
+function readDiffForScan(path: string, range: string): ScanInput {
+  try {
+    const text = execFileSync('git', ['diff', range, '--', path], { encoding: 'latin1', maxBuffer: MAX_BYTES });
+    // Drop the one-character diff marker (+, -, space) so a line-start rule (a quoted transcript header) still sees the
+    // line start; the line count is unchanged, so a reported line is a line of the diff.
+    return { path, content: text.split('\n').map((l) => (/^[-+ ]/.test(l) ? l.slice(1) : l)).join('\n') };
+  } catch (e) {
+    // Includes the diff being larger than the scan limit (maxBuffer): not scanned, therefore not cleared.
+    return { path, unreadable: { reason: `diff read failed or above the ${MAX_BYTES / 1048576} MB scan limit (${(e as Error).message.split('\n')[0]})` } };
+  }
 }
 
 /** Binary sniff: a NUL byte in the first 8k. Binary files are still scanned as
@@ -117,7 +137,7 @@ function main(): void {
     process.exit(0);
   }
 
-  const result = runGate(files.map(readForScan));
+  const result = runGate(files.map((f) => (mode === '--outbound' ? readDiffForScan(f, range as string) : readForScan(f))));
   report(result, mode, files);
   process.exit(result.ok ? 0 : 1);
 }

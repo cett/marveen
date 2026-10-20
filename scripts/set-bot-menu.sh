@@ -33,7 +33,9 @@ fi
 # Wait for plugin to set its commands first
 sleep 15
 
-curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setMyCommands" \
+# The bot token is part of the URL: it goes to curl as a config on stdin, not on the command line (ps shows argv).
+. "$INSTALL_DIR/scripts/lib/curl-tok.sh"
+curl_tok_url "$BOT_TOKEN" 'https://api.telegram.org/bot@TOKEN@/setMyCommands' -s -X POST \
   -H "Content-Type: application/json" \
   -d '{
     "commands": [

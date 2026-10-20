@@ -449,6 +449,36 @@ journalctl --user -u marveen-channels --since "1 hour ago"
 journalctl --user -u marveen-dashboard -f
 ```
 
+### Secrets in the process log
+
+The dashboard's own log (`src/logger.ts`) masks credentials before a line is written: field names such as `token`, `apiKey`, `authorization`, `password` and this install's own names (`agent_token`, `dashboard_token`, `session_token`, `device_key`, `bot_token`, ...) at any depth of a logged object, a child logger's bindings (also those added later with `setBindings()`) and an `Error` (message, stack, cause); and in free text `Bearer <token>`, `name=value` and `"name":"value"` for the same names, plus known token shapes (device key `mvdk_`, `sk-ant-`, OpenAI `sk-`, GitHub, Slack, Google API key, Telegram bot token, JWT, `vault:<id>`). A masked value reads `[REDACTED]`. The OTLP log export still receives every call.
+
+A redactor is a safety net, not a guarantee; keep secrets out of log calls. Known limits:
+
+- A fleet agent token is 64 hex characters, indistinguishable from a SHA-256, so it is masked next to its name or `Bearer`, never bare.
+- Other token shapes (cloud access keys, Stripe, npm) and other `Authorization` schemes (Digest, Negotiate, AWS4-HMAC) are not recognised; `Basic` only in the `Authorization: Basic <base64>` shape.
+- A `name=value` value stops at whitespace, `&`, `#`, quotes, brackets, comma and semicolon.
+- Class instances inside a logged object (`URL`, `Map`, `Set`) are left to pino; a secret inside one is not found. An object nested deeper than 10 levels is logged as `[MaxDepth]`, and a `%j` argument that cannot be stringified as `[Circular]` (nothing leaks, the line is less detailed).
+- A secret split across several log calls, or in an encoding other than plain text, is not recognised.
+- Only this process log is covered, not hook logs, scripts or tmux output.
+
+Cost, measured on one development machine (macOS, Node 22, null destination, median of 7 runs of 100,000 calls): a plain message goes from about 0.4 to 1.6 microseconds per call, an object with a message from about 1.0 to 8.6 (nested three levels: 1.5 to 12.2), a logged `Error` from about 31 to 49, and a call below the log level is unchanged (about 20 nanoseconds). Of the 10.8 microsecond increase on the nested object, the field-name redaction is about 4.0, the message hook 0.8 and the object walk 5.5. A thousand object lines per second is about one percent of a core.
+
+### Secrets on a command line
+
+An argument of a running process is readable by every local user (`ps -ww`). A script that calls an outside API therefore hands the secret to curl as a config on stdin, with the helpers in `scripts/lib/curl-tok.sh` (source it, no install step):
+
+```bash
+. "$INSTALL_DIR/scripts/lib/curl-tok.sh"
+curl_tok "$TOKEN" -s "$URL"                                        # Authorization: Bearer <token>
+curl_hdr 'x-goog-api-key' "$KEY" -s "$URL"                          # any one secret header
+curl_tok_url "$BOT" 'https://api.telegram.org/bot@TOKEN@/getMe' -s  # the secret is part of the URL
+```
+
+A body must come from `-d "$text"` (not secret) or `--data-binary @file`, because stdin belongs to the config. A value with a double quote, a backslash or a line break is refused (return code 2, nothing sent). `scripts/set-bot-menu.sh`, `scripts/smoke-test-slack-channel.sh` and `scripts/pre-pr-review.sh` use them. `scripts/__tests__/curl-tok.test.sh` (Shell tests in CI) proves with a live `ps` probe that the secret is not in the process list, and holds a ratchet: no shell script may build a Bearer header, a `bot<token>` URL or a `?key=` query on the command line, except the legacy rows listed in the test, which can only be lowered. Not covered: scripts in other languages, and the legacy rows (the Telegram notifiers and the installers still send the bot token in the URL).
+
+`scripts/pre-pr-review.sh` sends the diff to ChatGPT and Gemini, so the diff goes through the secret gate first (`scripts/secret-gate.ts --outbound <base>...<head>`, the detectors of the pre-commit hook and CI, run over the diff text of every changed file, removed lines included). A secret shape, a denied path (evidence or transcript directories) or channel material stops it: nothing is sent and the script exits 1. The gate prints where, never what.
+
 ### Update log
 
 ```bash
