@@ -27,7 +27,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOOK_DIR="$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)" && pwd)/hooks"
+# --git-common-dir is relative to the repo ("`.git`"), so resolve it from inside ROOT, not from the caller's cwd.
+HOOK_DIR="$(cd "$ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd)/hooks"
 DISPATCH="$HOOK_DIR/pre-commit"
 GUARD="$HOOK_DIR/pre-commit.d/05-prod-tree-guard"
 DISPATCH_MARK="marveen-pre-commit-dispatcher"
@@ -164,8 +165,14 @@ API_WRAPPER="$PROD_ROOT/scripts/agent-api.sh"
 # from a scratch root is word-for-word identical to a real one, and the
 # reader starts an investigation (cost one wasted round on 2026-08-22).
 ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
-ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-marveen}"
-printf '%s' "{\"from\":\"marveen\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" \
+# The sender and the default recipient are the install's own main agent (MAIN_AGENT_ID in the .env of the guarded
+# tree, read here at alert time, never baked in), not a fixed "marveen": on an install whose main agent has another
+# id the API rejects an unknown sender and the alert vanished into `|| true`. No .env or no id = the stock "marveen".
+MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+MAIN_ID="${MAIN_ID//[^a-zA-Z0-9_-]/}"
+MAIN_ID="${MAIN_ID:-marveen}"
+ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-$MAIN_ID}"
+printf '%s' "{\"from\":\"$MAIN_ID\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" \
   | DASHBOARD_BASE_URL="$ORIGIN" bash "$API_WRAPPER" --token main --max-time 5 POST /api/messages - >/dev/null 2>&1 || true
 exit 0
 EOF
