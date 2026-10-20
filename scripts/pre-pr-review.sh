@@ -21,10 +21,9 @@ if [ ! -f "$INSTALL_DIR/store/.operator-token" ]; then
   exit 0
 fi
 # Dashboard port: env WEB_PORT, else the install .env, else 3420.
-if [ -z "${WEB_PORT:-}" ] && [ -f "$INSTALL_DIR/.env" ]; then
-  # `|| true`: no WEB_PORT line makes grep fail, and under pipefail that would end the script before it did anything.
-  WEB_PORT="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d ' "' || true)"
-fi
+# One line at the start of the line, like doctor.sh: port-chain-no-hardcode.test.ts runs exactly these lines.
+# The `|| true` inside: a missing .env (or no WEB_PORT line) makes grep fail, and under pipefail that would end the script.
+WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "' || true)}"
 WEB_PORT="${WEB_PORT:-3420}"
 # The vault read is admin:all: the operator's token, through the wrapper (never on a command line).
 
