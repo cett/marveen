@@ -10,6 +10,7 @@
 # Best-effort and always exits 0 so it never itself enters `failed`.
 
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/curl-tok.sh" 2>/dev/null || true  # curl_tok_url: the bot token goes to curl on stdin, not argv
 
 UNIT="${1:-unknown.unit}"
 ENV_FILE="${TELEGRAM_ENV:-$HOME/.claude/channels/telegram/.env}"
@@ -27,8 +28,7 @@ if [[ -f "$ENV_FILE" ]]; then
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
 fi
 if [[ -n "$token" && -n "$CHAT_ID" ]]; then
-  curl -s --max-time 15 \
-    "https://api.telegram.org/bot${token}/sendMessage" \
+  curl_tok_url "$token" 'https://api.telegram.org/bot@TOKEN@/sendMessage' -s --max-time 15 \
     --data-urlencode "chat_id=${CHAT_ID}" \
     --data-urlencode "text=${msg}" >/dev/null 2>&1 || true
 else

@@ -4,6 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/curl-tok.sh" 2>/dev/null || true  # curl_tok_url: the bot token goes to curl on stdin, not argv
 ENV_FILE="$PROJECT_DIR/.env"
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -59,7 +60,7 @@ if [ -n "$SENDER" ] && [ "$SENDER" != "$MAIN_AGENT_ID" ]; then
 ${MESSAGE}"
 fi
 
-curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+curl_tok_url "$TOKEN" 'https://api.telegram.org/bot@TOKEN@/sendMessage' -s -X POST \
   -d "chat_id=${CHAT_ID}" \
   -d "text=${MESSAGE}" \
   -d "parse_mode=HTML" > /dev/null

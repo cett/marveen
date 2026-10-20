@@ -6,6 +6,9 @@ set -u
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$INSTALL_DIR"
 
+# portable_mtime / portable_age (GNU and BSD stat). A checkout without the file reads as "cannot read", not a crash.
+. "$INSTALL_DIR/scripts/lib/portable.sh" 2>/dev/null || true
+
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; BOLD='\033[1m'; RESET='\033[0m'
 ok()   { echo -e "  ${GREEN}✓${RESET} $1"; }
 warn() { echo -e "  ${YELLOW}⚠${RESET} $1"; }
@@ -127,14 +130,14 @@ fi
 echo -e "\n${BOLD}Keepalive${RESET}"
 KA_FILE="store/.channel-keepalive"
 if [ -f "$KA_FILE" ]; then
-  # GNU stat uses -c "%Y", BSD/macOS stat uses -f "%m"
-  if [ "$(uname -s)" = "Darwin" ]; then
-    KA_MTIME=$(stat -f "%m" "$KA_FILE")
-  else
-    KA_MTIME=$(stat -c "%Y" "$KA_FILE")
-  fi
-  KA_AGE=$(( $(date +%s) - KA_MTIME ))
-  if [ "$KA_AGE" -lt 600 ]; then
+  # portable_age: GNU and BSD stat, and a future mtime (clock set back) is "unknown", not a negative age
+  KA_RC=0
+  KA_AGE="$(portable_age "$KA_FILE")" || KA_RC=$?
+  if [ "$KA_RC" -eq 2 ]; then
+    warn "channel-keepalive: the file's mtime is in the future (clock set back?) -- the watchdog cannot judge its age until the clock catches up"
+  elif [ "$KA_RC" -ne 0 ]; then
+    warn "channel-keepalive: the file's mtime cannot be read"
+  elif [ "$KA_AGE" -lt 600 ]; then
     ok "channel-keepalive: refreshed ${KA_AGE}s ago"
   elif [ "$KA_AGE" -lt 1200 ]; then
     warn "channel-keepalive: ${KA_AGE}s ago (watch out, restart after 18 min)"
@@ -150,13 +153,13 @@ fi
 # keepalive file ages on a quiet session, and channel-watchdog.sh ignores its age after 600s.
 PROBE_STAMP="store/.channel-keepalive-probe"
 if [ -f "$PROBE_STAMP" ]; then
-  if [ "$(uname -s)" = "Darwin" ]; then
-    PROBE_MTIME=$(stat -f "%m" "$PROBE_STAMP")
-  else
-    PROBE_MTIME=$(stat -c "%Y" "$PROBE_STAMP")
-  fi
-  PROBE_AGE=$(( $(date +%s) - PROBE_MTIME ))
-  if [ "$PROBE_AGE" -lt 600 ]; then
+  PROBE_RC=0
+  PROBE_AGE="$(portable_age "$PROBE_STAMP")" || PROBE_RC=$?
+  if [ "$PROBE_RC" -eq 2 ]; then
+    warn "channel-keepalive-probe: the stamp's mtime is in the future (clock set back?) -- the watchdog treats the probe as not running until the clock catches up"
+  elif [ "$PROBE_RC" -ne 0 ]; then
+    warn "channel-keepalive-probe: the stamp's mtime cannot be read"
+  elif [ "$PROBE_AGE" -lt 600 ]; then
     ok "channel-keepalive-probe: ran ${PROBE_AGE}s ago"
   else
     warn "channel-keepalive-probe: NOT RUNNING (last run ${PROBE_AGE}s ago) -- the watchdog ignores the keepalive age meanwhile. Fix: bash scripts/install-channel-keepalive-probe.sh --load (macOS: a console login is needed, then launchctl bootstrap gui/\$(id -u) <plist>)"
