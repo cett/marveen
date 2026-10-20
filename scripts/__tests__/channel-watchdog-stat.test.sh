@@ -93,6 +93,8 @@ run_case() {
     fresh) touch "$root/store/.channel-keepalive" ;;
     old) touch -t 202001010000 "$root/store/.channel-keepalive" ;;
   esac
+  # the keepalive probe is running (fresh stamp): the keepalive age counts as evidence, as these cases assume
+  touch "$root/store/.channel-keepalive-probe"
   case "$stamp" in
     fresh) touch "$root/store/.channel-last-respawn" ;;
     old) touch -t 202001010000 "$root/store/.channel-last-respawn" ;;
