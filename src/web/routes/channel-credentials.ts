@@ -73,8 +73,12 @@ export async function tryHandleChannelCredentials(ctx: RouteContext): Promise<bo
     const adoptedBy = ctx.auth?.user ?? ctx.auth?.tokenName ?? 'admin'
     const result = adoptChannel(agentId, adoptedBy)
     if (!result.ok) {
+      if (result.reason === 'token_in_use') {
+        json(res, { error: 'conflict', field: 'agent_id', hint: 'This bot token is already recorded for another agent' }, 409)
+        return true
+      }
       const hint = result.reason === 'no_token'
-        ? 'No bot token in the agent\'s channel .env'
+        ? 'No single bot token in the agent\'s channel .env'
         : 'The agent\'s channel files (.env, access.json) could not be read'
       json(res, { error: 'not_found', field: 'agent_id', hint }, 404)
       return true

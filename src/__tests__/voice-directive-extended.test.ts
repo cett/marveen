@@ -69,14 +69,13 @@ describe('resolveAgentChannelStateDir', () => {
 // ── buildTtsDirective ─────────────────────────────────────────────────────────
 
 describe('buildTtsDirective', () => {
-  const BASE_OPTS = { chatId: '123456', stateDir: '/mock/state/dir', voiceModel: 'hu_HU-imre-medium', agentId: 'alpha' }
+  const BASE_OPTS = { chatId: '123456', voiceModel: 'hu_HU-imre-medium', agentId: 'alpha' }
 
   it('builds the directive with chatId, voiceModel, port and the API wrapper call', () => {
     const result = buildTtsDirective(BASE_OPTS)
     expect(result).not.toBeNull()
     expect(result).toContain('"chat_id":"123456"')
     expect(result).toContain('"voice_model":"hu_HU-imre-medium"')
-    expect(result).toContain('"state_dir":"/mock/state/dir"')
     expect(result).toContain("DASHBOARD_BASE_URL=http://localhost:4242 bash '/mock/install/scripts/agent-api.sh' --agent alpha POST /api/voice/tts -")
   })
 
@@ -87,13 +86,9 @@ describe('buildTtsDirective', () => {
     expect(mockExistsSync).not.toHaveBeenCalled()
   })
 
-  it('escapes a single quote in stateDir for safe embedding in the jq arg', () => {
-    const dirWithQuote = "/mock/state/it's/here"
-    const result = buildTtsDirective({ ...BASE_OPTS, stateDir: dirWithQuote })
-    const expectedEscaped = dirWithQuote.replace(/'/g, "'\\''")
-    expect(result).toContain(`"state_dir":"${expectedEscaped}"`)
-    // sanity: the raw unescaped quote form should NOT appear verbatim
-    expect(result).not.toContain(`"state_dir":"${dirWithQuote}"`)
+  it('carries no state_dir: the server derives the channel from the token, the caller names no directory', () => {
+    const result = buildTtsDirective(BASE_OPTS) as string
+    expect(result).not.toContain('state_dir')
   })
 
   it('returns null for an agent id that is not a plain name (it goes onto a command line)', () => {

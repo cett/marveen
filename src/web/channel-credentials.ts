@@ -15,7 +15,7 @@
 // the channel taken over by a coordinator) and a separate decision.
 
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -68,6 +68,9 @@ const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex
 
 /** TELEGRAM_BOT_TOKEN from the text of a channel .env, or null. */
 export function parseEnvBotToken(envText: string): string | null {
+  // Exactly one assignment: with two, which one the plugin ends up with depends on its parser, so
+  // the file is not trusted as a source for either.
+  if ((envText.match(/^TELEGRAM_BOT_TOKEN=/gm) ?? []).length !== 1) return null
   const m = /^TELEGRAM_BOT_TOKEN=(.+)$/m.exec(envText)
   if (!m) return null
   const token = m[1].trim().replace(/^["']|["']$/g, '')
@@ -92,24 +95,67 @@ export function chatsFromAccessConfig(raw: unknown): string[] {
   return out
 }
 
-/** Hash of the chat set. Order does not matter: the plugin may append or reorder without changing who is paired. */
-export function chatsHash(chats: readonly string[]): string {
-  return sha256(JSON.stringify([...chats].sort()))
+/**
+ * Pure: every entry an access.json names, valid or not, tagged by where it stands (DM list or
+ * group). This is what the drift hash covers, so an entry that chatsFromAccessConfig drops (a malformed
+ * id) still counts: adding or removing one is a change of the file even though it widens nothing.
+ */
+export function accessEntries(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object') return []
+  const o = raw as Record<string, unknown>
+  const out: string[] = []
+  if (Array.isArray(o.allowFrom)) for (const v of o.allowFrom) out.push(`allow:${typeof v}:${String(v)}`)
+  if (o.groups && typeof o.groups === 'object' && !Array.isArray(o.groups)) for (const k of Object.keys(o.groups as Record<string, unknown>)) out.push(`group:${k}`)
+  return out
+}
+
+/** Hash of the access entries. Order does not matter: the plugin may append or reorder without changing who is paired. */
+export function chatsHash(entries: readonly string[]): string {
+  return sha256(JSON.stringify([...entries].sort()))
 }
 
 export const tokenHash = sha256
 
 interface ChannelFiles {
   token: string | null
+  /** The valid chat ids, in file order (what gets adopted). */
   chats: string[]
+  /** Every entry of the file, valid or not (what the drift hash covers). */
+  entries: string[]
+}
+
+const MAX_CHANNEL_FILE_BYTES = 64 * 1024
+
+/**
+ * Reads a small regular file the agent can write, without following a symlink and without trusting its
+ * size: a link to another file, a device or a FIFO is refused instead of read (a FIFO would block the
+ * server), and anything over MAX_CHANNEL_FILE_BYTES is refused.
+ */
+function readChannelFile(path: string): string {
+  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) throw new Error('not a regular file')
+    if (st.size > MAX_CHANNEL_FILE_BYTES) throw new Error('file too large')
+    const buf = Buffer.alloc(st.size)
+    let off = 0
+    while (off < st.size) {
+      const n = readSync(fd, buf, off, st.size - off, off)
+      if (n === 0) break
+      off += n
+    }
+    return buf.toString('utf8', 0, off)
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /** Reads the channel's files. Throws when a file cannot be read or access.json is not JSON. */
 function readChannelFiles(agentId: string): ChannelFiles {
   const dir = channelDirForAgent(agentId)
-  const token = parseEnvBotToken(readFileSync(join(dir, '.env'), 'utf8'))
-  const chats = chatsFromAccessConfig(JSON.parse(readFileSync(join(dir, 'access.json'), 'utf8')) as unknown)
-  return { token, chats }
+  const token = parseEnvBotToken(readChannelFile(join(dir, '.env')))
+  const access = JSON.parse(readChannelFile(join(dir, 'access.json'))) as unknown
+  return { token, chats: chatsFromAccessConfig(access), entries: accessEntries(access) }
 }
 
 // ── what the server uses ────────────────────────────────────────────────────
@@ -143,7 +189,7 @@ export function hasAdoption(agentId: string): boolean {
 
 export type AdoptResult =
   | { ok: true; agentId: string; chats: string[]; replacedToken: boolean }
-  | { ok: false; reason: 'invalid_agent' | 'unreadable' | 'no_token' }
+  | { ok: false; reason: 'invalid_agent' | 'unreadable' | 'no_token' | 'token_in_use' }
 
 /**
  * The owner's act: record the channel as it stands now. The token goes into the vault, the chat list
@@ -160,14 +206,21 @@ export function adoptChannel(agentId: string, adoptedBy: string): AdoptResult {
     return { ok: false, reason: 'unreadable' }
   }
   if (!files.token) return { ok: false, reason: 'no_token' }
+  // One bot, one agent: a token already recorded for another agent means this agent's .env points at
+  // someone else's bot (a copied or linked file), and adopting it would let this agent's server sends
+  // go out on that bot.
+  const hash = tokenHash(files.token)
+  if (listChannelCredentialBaselines().some((b) => b.agent_id !== agentId && b.token_sha256 === hash)) {
+    return { ok: false, reason: 'token_in_use' }
+  }
   const previous = getChannelBotToken(agentId)
   setSecret(channelTokenSecretId(agentId), `Channel bot token (${CHANNEL_PROVIDER}) of ${agentId}`, files.token)
   adoptChannelCredential({
     agentId,
     provider: CHANNEL_PROVIDER,
     chatIds: files.chats,
-    tokenSha256: tokenHash(files.token),
-    allowSha256: chatsHash(files.chats),
+    tokenSha256: hash,
+    allowSha256: chatsHash(files.entries),
     adoptedBy,
   })
   return { ok: true, agentId, chats: files.chats, replacedToken: previous !== null && previous !== files.token }
@@ -201,10 +254,10 @@ export function forgetChannel(agentId: string): void {
 /** Pure: which part of the files differs from the record. */
 export function classifyDrift(
   baseline: { token_sha256: string; allow_sha256: string },
-  files: { token: string | null; chats: readonly string[] },
+  files: { token: string | null; entries: readonly string[] },
 ): ChannelDriftState {
   const tokenDiffers = files.token === null || tokenHash(files.token) !== baseline.token_sha256
-  const accessDiffers = chatsHash(files.chats) !== baseline.allow_sha256
+  const accessDiffers = chatsHash(files.entries) !== baseline.allow_sha256
   if (tokenDiffers && accessDiffers) return 'both'
   if (tokenDiffers) return 'token'
   if (accessDiffers) return 'access'
@@ -276,10 +329,38 @@ export function listUnadoptedChannelAgents(): string[] {
   const out: string[] = []
   for (const name of [MAIN_AGENT_ID, ...listAgentNames()]) {
     if (out.includes(name) || hasAdoption(name)) continue
-    try {
-      readFileSync(join(channelDirForAgent(name), '.env'), 'utf8')
-      out.push(name)
-    } catch { /* no channel */ }
+    if (existsSync(join(channelDirForAgent(name), '.env'))) out.push(name)
   }
   return out
+}
+
+// ── the periodic check ──────────────────────────────────────────────────────
+
+/** Same cadence as the blackboard stale sweeper it runs beside. */
+const DRIFT_SWEEP_INTERVAL_MS = 5 * 60_000
+/** First check shortly after start, once the server is up, instead of waiting a whole interval. */
+const DRIFT_FIRST_CHECK_DELAY_MS = 10_000
+
+/**
+ * Starts the drift check: once soon after boot and then every sweep interval. Also logs, once at
+ * start, the agents that have a channel on disk but no adoption: the server cannot send for them
+ * until the owner adopts. The returned timer is the interval (the caller clears it on shutdown).
+ */
+export function startChannelCredentialDriftSweeper(): NodeJS.Timeout {
+  const run = (): void => {
+    checkAllChannelDrift().catch((err) => logger.warn({ err }, 'channel-credentials: drift sweep failed'))
+  }
+  const first = setTimeout(() => {
+    run()
+    try {
+      const unadopted = listUnadoptedChannelAgents()
+      if (unadopted.length > 0) {
+        logger.warn({ agents: unadopted }, 'channel-credentials: channels without an adopted record, server voice sends are refused for them until POST /api/channel-credentials/adopt')
+      }
+    } catch (err) {
+      logger.warn({ err }, 'channel-credentials: unadopted listing failed')
+    }
+  }, DRIFT_FIRST_CHECK_DELAY_MS)
+  first.unref()
+  return setInterval(run, DRIFT_SWEEP_INTERVAL_MS)
 }

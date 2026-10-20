@@ -20,8 +20,12 @@ Subcommands:
       and exits 0 on pass / 1 on fail. Temp wav is always deleted -- never
       touches the live Telegram-facing stt.sh/tts.sh state or sends anything.
 
-The bot token is read from the caller's OWN state dir at call time, never
-hardcoded -- so each agent speaks/listens on its own bot.
+Where the bot token comes from:
+  * MARVEEN_CHANNEL_BOT_TOKEN, when set. The dashboard server sets it per call
+    from its own record (the vault) and passes "-" in the state_dir slot: the
+    server path never reads a channel directory an agent can write.
+  * otherwise <state_dir>/.env, for a hand-run of stt.sh / tts.sh by the agent
+    on its own bot (the token is never hardcoded).
 """
 import os
 import re
@@ -33,10 +37,15 @@ import urllib.request
 import urllib.parse
 
 # Resolved relative to this file so PREFIX-based installs work correctly.
-VENV_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
+# The server runs this script from the repo and names the venv through VOICE_VENV_PY.
+VENV_PY = os.environ.get("VOICE_VENV_PY") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
 
 
 def _token(state_dir):
+    from_env = os.environ.get("MARVEEN_CHANNEL_BOT_TOKEN", "").strip()
+    if from_env:
+        return from_env
     env = open(os.path.join(state_dir, ".env")).read()
     m = re.search(r"^TELEGRAM_BOT_TOKEN=(.+)$", env, re.M)
     if not m:

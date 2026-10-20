@@ -12,7 +12,9 @@
 //   - voiceModel is whitelisted against KNOWN_VOICE_MODELS (no path traversal)
 //   - spawn uses arg-array, shell:false (no shell injection)
 //   - file_id validated to Telegram's safe character set before use
-//   - state_dir resolved only to known agent channel dirs, never raw user paths
+//   - the bot token is the server-side record (vault, keyed by the agent id), never a file the
+//     caller can name or write; the chat a TTS goes to must be on the owner-adopted list
+//     (channel-credentials.ts). No state_dir crosses this API.
 
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
@@ -20,16 +22,24 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
+import { KNOWN_VOICE_MODELS, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
-import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio } from '../voice-directive.js'
-import { resolveOwnStateDir, chatIsPaired } from '../voice-tts-scope.js'
+import { buildTtsDirective, inboundIsAudio } from '../voice-directive.js'
+import { getChannelBotToken, isValidChannelAgentId, serverMaySendTo } from '../channel-credentials.js'
 import { PROJECT_ROOT } from '../../config.js'
 import type { RouteContext } from './types.js'
 
 const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
-const VTOOLS_PY = join(VOICE_DIR, '_vtools.py')
+// The toolkit script runs from the repo, not from the copy install-voice.sh left in VOICE_DIR: the
+// server and the script change together (the script takes its token from the environment), and a stale
+// installed copy would otherwise stay in use after an update. The venv still lives in VOICE_DIR.
+const VTOOLS_PY = join(PROJECT_ROOT, 'scripts', 'voice', '_vtools.py')
 const VENV_PY = join(VOICE_DIR, 'venv', 'bin', 'python')
+// Where _vtools.py finds the bot token. The server sets it per spawn; the toolkit never looks in a
+// channel directory when it is set.
+const TOKEN_ENV = 'MARVEEN_CHANNEL_BOT_TOKEN'
+// _vtools.py's positional state_dir slot, unused on the server path (the token comes from TOKEN_ENV).
+const NO_STATE_DIR = '-'
 
 /**
  * Pure: the manual step that installs the system packages the voice toolkit
@@ -52,25 +62,6 @@ export function voiceSystemDepsHint(platform: NodeJS.Platform = process.platform
 // Telegram file_ids are base64url + some punctuation; reject anything else.
 const SAFE_FILE_ID_RE = /^[A-Za-z0-9_\-]{10,200}$/
 
-// Known agent channel dirs -- only these are accepted as state_dir.
-// The channel plugin stores its .env (bot token) here.
-const CHANNELS_BASE = join(homedir(), '.claude', 'channels')
-
-// Safe paths: ~/.claude/channels/<provider>/  OR  <AGENTS_BASE_DIR>/<name>/.claude/channels/<provider>/
-// Both must contain a .env file. '..' traversal always rejected.
-function isSafeStateDir(dir: string): boolean {
-  const resolved = dir.replace(/\/$/, '')
-  if (resolved.includes('..')) return false
-  if (!existsSync(join(resolved, '.env'))) return false
-  if (resolved.startsWith(CHANNELS_BASE + '/') || resolved === CHANNELS_BASE) return true
-  if (resolved.startsWith(AGENTS_BASE_DIR + '/')) {
-    // Must match: <AGENTS_BASE_DIR>/<agentName>/.claude/channels/<provider>
-    const rel = resolved.slice(AGENTS_BASE_DIR.length + 1)
-    return /^[a-zA-Z0-9_-]+\/\.claude\/channels\/[a-zA-Z0-9_-]+$/.test(rel)
-  }
-  return false
-}
-
 function voiceOnnxPath(model: string): string | null {
   if (!KNOWN_VOICE_MODELS.has(model)) return null
   const p = join(VOICE_DIR, 'voices', `${model}.onnx`)
@@ -84,10 +75,10 @@ function isVoiceInstalled(): boolean {
 function runProc(
   cmd: string,
   args: string[],
-  opts: { stdinData?: string; timeoutMs?: number } = {},
+  opts: { stdinData?: string; timeoutMs?: number; env?: Record<string, string> } = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, args, { shell: false })
+    const proc = spawn(cmd, args, { shell: false, ...(opts.env ? { env: { ...process.env, ...opts.env, VOICE_VENV_PY: VENV_PY } } : {}) })
     let stdout = ''
     let stderr = ''
     const timer = opts.timeoutMs
@@ -115,11 +106,16 @@ let _installInProgress = false
 // timeout). Returns the transcript, or null on any failure (toolkit missing,
 // invalid input, whisper non-zero). The whisper subprocess keeps its own 60s
 // timeout inside runProc, so a slow transcription can never hang the caller.
-export async function transcribeVoiceFile(fileId: string, stateDir: string): Promise<string | null> {
+export async function transcribeVoiceFile(fileId: string, agentId: string): Promise<string | null> {
   if (!isVoiceInstalled()) return null
   if (!SAFE_FILE_ID_RE.test(fileId)) return null
-  if (!isSafeStateDir(stateDir)) return null
-  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: 60_000 })
+  if (!isValidChannelAgentId(agentId)) return null
+  const token = getChannelBotToken(agentId)
+  if (!token) {
+    logger.warn({ agent: agentId }, 'transcribeVoiceFile: channel not adopted (no server-side bot token)')
+    return null
+  }
+  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, NO_STATE_DIR], { timeoutMs: 60_000, env: { [TOKEN_ENV]: token } })
   if (result.code !== 0) {
     logger.warn({ fileId, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: whisper failed')
     return null
@@ -148,13 +144,12 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) { json(res, { error: 'invalid_value', field: 'agent', hint: 'Invalid agent' }, 400); return true }
     if (!chatId || !/^\d+$/.test(chatId)) { json(res, { error: 'invalid_value', field: 'chat_id', hint: 'Invalid chat_id' }, 400); return true }
     const voiceCfg = readAgentVoiceConfig(agentId)
-    const stateDir = resolveAgentChannelStateDir(agentId, 'telegram')
     const kindParam = ctx.url.searchParams.get('kind') ?? ''
     const fileIdOk = !!fileParam && SAFE_FILE_ID_RE.test(fileParam)
     // Audio is decided by the declared attachment kind, never by the mere
     // presence of a file id -- a document attachment is not a voice message.
     const inboundWasAudio = fileIdOk && inboundIsAudio(kindParam, fileParam)
-    const ttsParams = { chatId, stateDir, voiceModel: voiceCfg.voiceModel ?? 'hu_HU-imre-medium', agentId }
+    const ttsParams = { chatId, voiceModel: voiceCfg.voiceModel ?? 'hu_HU-imre-medium', agentId }
     const directive = voiceCfg.responseMode === 'text' ? null
       : voiceCfg.responseMode === 'voice' ? buildTtsDirective(ttsParams)
       : inboundWasAudio ? buildTtsDirective(ttsParams)  // auto: only when inbound was audio
@@ -162,12 +157,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
 
     let transcript: string | null = null
     if (inboundWasAudio && isVoiceInstalled()) {
-      const sttResult = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: 60_000 })
-      if (sttResult.code === 0) {
-        transcript = sttResult.stdout.trim() || null
-      } else {
-        logger.warn({ fileParam, stderr: sttResult.stderr }, '/api/voice/directive: STT failed (non-fatal)')
-      }
+      transcript = (await transcribeVoiceFile(fileParam, agentId)) || null
     }
 
     json(res, { directive, transcript })
@@ -215,19 +205,20 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   }
 
   // POST /api/voice/stt
-  // Body: { file_id: string, state_dir: string }
+  // Body: { file_id: string, agent_id: string }  (the agent whose bot the file belongs to)
   // Returns: { transcript: string }
   if (path === '/api/voice/stt' && method === 'POST') {
     if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 400); return true }
     const body = await readBody(req)
-    let data: { file_id?: string; state_dir?: string }
+    let data: { file_id?: string; agent_id?: string }
     try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     const fileId = data.file_id?.trim() ?? ''
-    const stateDir = data.state_dir?.trim() ?? ''
+    const agentId = data.agent_id?.trim() ?? ''
     if (!SAFE_FILE_ID_RE.test(fileId)) { json(res, { error: 'invalid_value', field: 'file_id', hint: 'Invalid file_id' }, 400); return true }
-    if (!isSafeStateDir(stateDir)) { json(res, { error: 'invalid_value', field: 'state_dir', hint: 'Invalid state_dir' }, 400); return true }
+    if (!isValidChannelAgentId(agentId)) { json(res, { error: 'invalid_value', field: 'agent_id', hint: 'Invalid agent_id' }, 400); return true }
+    if (!getChannelBotToken(agentId)) { json(res, { error: 'conflict', field: 'agent_id', hint: 'Channel not adopted: the owner records it with POST /api/channel-credentials/adopt' }, 409); return true }
 
-    const transcript = await transcribeVoiceFile(fileId, stateDir)
+    const transcript = await transcribeVoiceFile(fileId, agentId)
     if (transcript === null) {
       logger.warn({ fileId }, '/api/voice/stt: whisper failed')
       json(res, { error: 'internal_error', hint: 'STT failed' }, 500)
@@ -238,36 +229,46 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   }
 
   // POST /api/voice/tts
-  // Body: { text: string, voice_model: string, chat_id: string, state_dir: string }
+  // Body: { text: string, voice_model: string, chat_id: string, agent_id?: string }
+  // A fleet_agent token speaks as ITSELF (agent_id, when given, must be its own); an admin names the agent.
   // Returns: { ok: boolean, message_id?: number }
   if (path === '/api/voice/tts' && method === 'POST') {
     if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 400); return true }
     const body = await readBody(req)
-    let data: { text?: string; voice_model?: string; chat_id?: string | number; state_dir?: string }
+    let data: { text?: string; voice_model?: string; chat_id?: string | number; agent_id?: string }
     try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     const text = data.text?.trim() ?? ''
     const voiceModel = data.voice_model?.trim() ?? 'hu_HU-imre-medium'
     const chatId = String(data.chat_id ?? '').trim()
-    let stateDir = data.state_dir?.trim() ?? ''
+    const claimedAgent = data.agent_id?.trim() ?? ''
 
     if (!text) { json(res, { error: 'required', field: 'text', hint: 'text required' }, 400); return true }
     if (!/^\d+$/.test(chatId)) { json(res, { error: 'invalid_value', field: 'chat_id', hint: 'Invalid chat_id' }, 400); return true }
-    if (!isSafeStateDir(stateDir)) { json(res, { error: 'invalid_value', field: 'state_dir', hint: 'Invalid state_dir' }, 400); return true }
 
-    // A fleet_agent token speaks only on its OWN channel and only to a chat paired on it. The body
-    // names both, so without this any agent could send voice through another agent's bot to any chat.
+    // Whose bot speaks. A fleet_agent token speaks only as the agent the token belongs to; the body
+    // cannot name another one. The caller never names a directory or a token.
+    let agentId: string
     if (ctx.role === 'fleet_agent') {
-      // From here on the RESOLVED path is the state dir: the check and the use see the same directory.
-      const ownDir = ctx.tokenAgentId ? resolveOwnStateDir(ctx.tokenAgentId, stateDir) : null
-      if (!ownDir) {
-        json(res, { error: 'forbidden', field: 'state_dir', hint: 'A fleet agent token may only speak on its own channel' }, 403)
+      agentId = ctx.tokenAgentId ?? ''
+      if (!agentId || (claimedAgent && claimedAgent !== agentId)) {
+        json(res, { error: 'forbidden', field: 'agent_id', hint: 'A fleet agent token may only speak on its own channel' }, 403)
         return true
       }
-      stateDir = ownDir
-      if (!chatIsPaired(stateDir, chatId)) {
-        json(res, { error: 'forbidden', field: 'chat_id', hint: 'chat_id is not paired on this agent\'s channel' }, 403)
-        return true
-      }
+    } else {
+      agentId = claimedAgent
+    }
+    if (!isValidChannelAgentId(agentId)) { json(res, { error: 'invalid_value', field: 'agent_id', hint: 'Invalid agent_id' }, 400); return true }
+
+    // The bot token and the paired chats are the server-side record (vault / DB), written only by the
+    // owner's adopt. A forged access.json or a foreign token in .env changes neither.
+    const botToken = getChannelBotToken(agentId)
+    if (!botToken) {
+      json(res, { error: 'conflict', field: 'agent_id', hint: 'Channel not adopted: the owner records it with POST /api/channel-credentials/adopt' }, 409)
+      return true
+    }
+    if (!serverMaySendTo(agentId, chatId)) {
+      json(res, { error: 'forbidden', field: 'chat_id', hint: 'chat_id is not on this agent\'s adopted chat list' }, 403)
+      return true
     }
 
     const onnxPath = voiceOnnxPath(voiceModel)
@@ -278,8 +279,8 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
 
     const result = await runProc(
       VENV_PY,
-      [VTOOLS_PY, 'speak', onnxPath, stateDir, chatId, text],
-      { timeoutMs: 90_000 },
+      [VTOOLS_PY, 'speak', onnxPath, NO_STATE_DIR, chatId, text],
+      { timeoutMs: 90_000, env: { [TOKEN_ENV]: botToken } },
     )
     if (result.code !== 0) {
       logger.warn({ voiceModel, chatId, stderr: result.stderr }, '/api/voice/tts: piper/sendVoice failed')

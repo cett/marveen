@@ -46,21 +46,18 @@ export function inboundIsAudio(kind: string | null | undefined, fileId: string |
 // Returns null if the directive cannot be built.
 export function buildTtsDirective(opts: {
   chatId: string
-  stateDir: string
   voiceModel: string
   agentId: string
 }): string | null {
   try {
-    const { chatId, stateDir, voiceModel, agentId } = opts
+    const { chatId, voiceModel, agentId } = opts
     if (!/^[a-zA-Z0-9_-]+$/.test(agentId)) return null
-    // Escape stateDir for embedding in a jq string argument
-    const escapedStateDir = stateDir.replace(/'/g, "'\\''")
     const wrapper = join(PROJECT_ROOT, 'scripts', 'agent-api.sh').replace(/'/g, "'\\''")
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
       `\`\`\`bash\n` +
-      `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
+      `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","voice_model":"${voiceModel}"}' | ` +
       `DASHBOARD_BASE_URL=http://localhost:${WEB_PORT} bash '${wrapper}' --agent ${agentId} POST /api/voice/tts -\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti parancsot futtasd le a hangküldéshez.`

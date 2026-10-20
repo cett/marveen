@@ -47,6 +47,13 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }))
 
+// The server-side record has its own tests (channel-credentials.test.ts).
+vi.mock('../web/channel-credentials.js', () => ({
+  getChannelBotToken: vi.fn().mockReturnValue('123456:TEST-TOKEN-dddddddddddddddd'),
+  serverMaySendTo: vi.fn().mockReturnValue(true),
+  isValidChannelAgentId: (id: string) => /^[a-zA-Z0-9_-]+$/.test(id),
+}))
+
 // ── makeCtx ───────────────────────────────────────────────────────────────────
 
 function makeCtx(method: string, path: string, bodyOrRaw?: object | string | null): {
@@ -156,7 +163,7 @@ describe('POST /api/voice/stt -- error shapes', () => {
     mockVoiceInstalled = true
     const { ctx, out } = makeCtx('POST', '/api/voice/stt', {
       file_id: '../../etc/passwd',
-      state_dir: '/tmp/valid-state',
+      agent_id: 'alpha',
     })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
@@ -165,22 +172,22 @@ describe('POST /api/voice/stt -- error shapes', () => {
     expect(String(out.body.error)).toMatch(/^[a-z_]+$/)
   })
 
-  it('returns invalid_value + state_dir + 400 for unsafe state_dir (voice installed)', async () => {
+  it('returns invalid_value + agent_id + 400 for an agent id that is not a plain name (voice installed)', async () => {
     mockVoiceInstalled = true
     const { ctx, out } = makeCtx('POST', '/api/voice/stt', {
       file_id: 'AgACAgQAAxkBAAI',   // matches SAFE_FILE_ID_RE
-      state_dir: '/etc/something/bad',
+      agent_id: '../etc/bad',
     })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('invalid_value')
-    expect(out.body.field).toBe('state_dir')
+    expect(out.body.field).toBe('agent_id')
     expect(String(out.body.error)).toMatch(/^[a-z_]+$/)
   })
 
   it('returns not_supported + 400 when voice toolkit is not installed', async () => {
     mockVoiceInstalled = false
-    const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', state_dir: '/tmp/st' })
+    const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', agent_id: 'alpha' })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('not_supported')

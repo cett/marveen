@@ -72,7 +72,7 @@ export const FLEET_AGENT_PERMISSIONS = [
   'fleet-config:read',
   'approvals:consume',
   // POST /api/voice/tts. Narrower than the others: the route holds a fleet_agent to its own channel
-  // and to the chats paired on it (voice-tts-scope.ts), so this permission alone is not "speak as anyone".
+  // and to the chats the owner adopted for it (channel-credentials.ts), so this permission alone is not "speak as anyone".
   'voice:speak',
 ] as const
 

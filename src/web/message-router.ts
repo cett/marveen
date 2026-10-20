@@ -2,7 +2,6 @@ import { recordMessageDelivered, countMessageFailed } from '../otel-signals.js'
 import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
   markMessageDelivered,
@@ -837,16 +836,10 @@ function injectTranscript(content: string, transcript: string): string {
 // never hang the tick beyond that. Returns the transcript, or null on failure.
 async function callVoiceSTT(fileId: string, agentId: string): Promise<string | null> {
   try {
-    const { existsSync } = await import('node:fs')
-    const { join } = await import('node:path')
-
-    // Resolve the agent's channel state_dir using the canonical helper so
-    // sub-agents (whose .env lives under AGENTS_BASE_DIR) are found correctly.
-    const resolvedDir = resolveAgentChannelStateDir(agentId, 'telegram')
-    if (!existsSync(join(resolvedDir, '.env'))) return null
-
+    // The bot token comes from the server-side record (vault), keyed by the agent id; the agent's
+    // own channel files are not read here (see channel-credentials.ts).
     const { transcribeVoiceFile } = await import('./routes/voice.js')
-    return await transcribeVoiceFile(fileId, resolvedDir)
+    return await transcribeVoiceFile(fileId, agentId)
   } catch (err) {
     logger.warn({ err }, 'message-router: callVoiceSTT error')
     return null

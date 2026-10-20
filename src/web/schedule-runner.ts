@@ -29,6 +29,7 @@ import {
   getSystemConfig,
   setSystemConfig,
   listChannelBindings,
+  listAdoptedChats,
 } from '../db.js'
 import { toPendingRetryView, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -55,6 +56,7 @@ import { sendTelegramMessage } from './telegram.js'
 import { listAgentNames, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { channelStateDir } from '../channel-provider.js'
+import { CHANNEL_PROVIDER, hasAdoption } from './channel-credentials.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -765,8 +767,22 @@ export function resolveBoundChatId(agentName: string): string | null {
   return chosen
 }
 
-/** The agent's telegram access.json (the file the plugin enforces), or null when missing/unparsable. */
+/** The agent's pairing, as an access.json-shaped object, or null when there is none to read.
+ *  Once the owner has adopted the channel (channel-credentials.ts) the DB list is the answer and the
+ *  agent-writable access.json is not read at all, so a forged allowFrom cannot redirect a task's
+ *  result. Until then (a channel nobody has adopted yet) the file is the legacy source: the plugin
+ *  enforces it on the agent's own sends either way. */
 function readTelegramAccessJson(agentName: string): Record<string, unknown> | null {
+  try {
+    if (hasAdoption(agentName)) return { allowFrom: listAdoptedChats(agentName, CHANNEL_PROVIDER) }
+  } catch (err) {
+    logger.warn({ err, agent: agentName }, 'schedule-runner: adopted chat list unavailable, reading access.json')
+  }
+  return readTelegramAccessFile(agentName)
+}
+
+/** The agent's telegram access.json (the file the plugin enforces), or null when missing/unparsable. */
+function readTelegramAccessFile(agentName: string): Record<string, unknown> | null {
   const dir = agentName === MAIN_AGENT_ID
     ? channelStateDir('telegram')
     : channelStateDir('telegram', agentDir(agentName))
