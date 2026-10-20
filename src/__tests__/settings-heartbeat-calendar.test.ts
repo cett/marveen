@@ -56,6 +56,17 @@ describe('heartbeat calendar settings', () => {
     expect(calIdIdx).toBeGreaterThan(accountIdx)
   })
 
+  it('HEARTBEAT_AGENT_ENABLED defaults to off, the way the runtime reads an unset value', () => {
+    // src/config.ts treats an empty/unset HEARTBEAT_AGENT_ENABLED as OFF. The registry default is what
+    // /api/settings reports and what the doctor reads, so a default of '1' made both say "on" for an
+    // agent that never starts.
+    const def = getSettingDefinition('HEARTBEAT_AGENT_ENABLED')!
+    expect(def.default).toBe('0')
+    expect(['1', 'true', 'yes', 'on']).not.toContain(String(def.default).trim().toLowerCase())
+    const configSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'config.ts'), 'utf-8')
+    expect(configSrc).toMatch(/HEARTBEAT_AGENT_ENABLED =\s*\n?\s*\['1', 'true', 'yes', 'on'\]\.includes\(\(cfg\('HEARTBEAT_AGENT_ENABLED'\) \?\? ''\)/)
+  })
+
   it('neither calendar key is marked secret (UI must be able to show them)', () => {
     const calKeys = ['HEARTBEAT_CALENDAR_ACCOUNT', 'HEARTBEAT_CALENDAR_ID']
     for (const key of calKeys) {

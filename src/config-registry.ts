@@ -301,9 +301,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'HEARTBEAT_AGENT_ENABLED',
     type: 'string',
-    default: '1',
+    default: '0',
     valueSet: ['0', '1'],
-    description: 'Heartbeat sub-ágens engedélyezése. 1 = bekapcsolva (újraindítás után lép életbe).',
+    description: 'Heartbeat sub-ágens engedélyezése. 1 = bekapcsolva, 0 = kikapcsolva (alapértelmezés: a futásidő is kikapcsolva olvassa, ha nincs beállítva; újraindítás után lép életbe).',
     module: 'heartbeat',
     secret: false,
     requiresRestart: true,

@@ -44,6 +44,7 @@ import {
 } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
+import { restartLaunchdJob, type LaunchdExec } from './launchd-job-restart.js'
 import { notifyChannel } from '../notify.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
@@ -1212,6 +1213,17 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
   logger.info({ delayMs: POST_RESUME_GUARD_DELAY_MS }, 'Post-resume plugin guard scheduled after --continue resume')
 }
 
+// An unregistered channels job stays down until somebody bootstraps it by hand, so every restart that finds it
+// so is announced, at most once per UNREGISTERED_ALERT_COOLDOWN_MS (the callers retry every few minutes).
+const UNREGISTERED_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+let lastUnregisteredAlertAt = 0
+function alertLaunchdJobUnregistered(label: string, error: string): void {
+  const now = Date.now()
+  if (now - lastUnregisteredAlertAt < UNREGISTERED_ALERT_COOLDOWN_MS) return
+  lastUnregisteredAlertAt = now
+  sendAlert(`⛔ A ${label} launchd job NINCS regisztralva az ujraindítási kisérlet után (${error}). Magától nem indul el. Kézzel: launchctl bootstrap gui/$(id -u) ${MAIN_CHANNELS_PLIST}`)
+}
+
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string; hint?: string } {
   // FABLEFALL1: the restarted session boots from the main/worker shared config
   // roots, which the per-agent spawn-time stamp never covers -- stamp them now
@@ -1225,32 +1237,30 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string; hin
   // accepts a non-existent plist with exit 0, leaving the session untouched.
   if (process.platform !== 'linux' && existsSync(MAIN_CHANNELS_PLIST)) {
     const label = `com.${SERVICE_ID}.channels`
-    // Probe: is the job actually registered in the launchd bootstrap, or did
-    // the plist survive on disk while launchd itself lost track of it
-    // (orphaned)? `launchctl list <label>` exits 0 only
-    // when registered (running or stopped); non-destructive, sub-second.
-    let isRegistered = false
-    try {
-      execFileSync('/bin/launchctl', ['list', label], { timeout: 2000 })
-      isRegistered = true
-    } catch { /* orphaned -- not found in the launchd bootstrap */ }
-
-    if (isRegistered) {
-      try {
-        execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-        execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
-        execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-        logger.warn({ label }, 'Hard restart: launchctl reload')
-        marveenLastHardRestart = Date.now()
-        writeRespawnStamp() // coordinate with the systemd-timer watchdog
-        return { ok: true }
-      } catch (err) {
-        // Registered but the reload itself failed (e.g. ETIMEDOUT) -- fall
-        // through to respawn-pane below instead of giving up.
-        logger.warn({ err }, 'Hard restart: launchctl reload failed -- falling back to respawn-pane')
-      }
+    // One kickstart -k (or a bootstrap from the plist when the job is an orphan), never unload + load: the
+    // unload waits for the job's TERM trap, its 5 s timeout fired, the load never ran and the job stayed
+    // unregistered (2026-10-20). The registration is checked afterwards; see launchd-job-restart.ts.
+    const launchctl: LaunchdExec = (args, timeoutMs) => { execFileSync('/bin/launchctl', args, { timeout: timeoutMs, stdio: 'pipe' }) }
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+    const r = restartLaunchdJob({ label, plist: MAIN_CHANNELS_PLIST, uid, exec: launchctl })
+    if (r.ok) {
+      logger.warn({ label, via: r.via }, 'Hard restart: launchctl kickstart or bootstrap')
+      marveenLastHardRestart = Date.now()
+      writeRespawnStamp() // coordinate with the systemd-timer watchdog
+      return { ok: true }
+    }
+    if (!r.registered) {
+      // Not registered with launchd: nothing will ever start the job again, so this is loud, not a log line.
+      logger.error({ label, via: r.via, err: r.error }, 'Hard restart: the launchd job is NOT registered after the restart attempt')
+      alertLaunchdJobUnregistered(label, r.error)
+    } else if (r.timedOut) {
+      // kickstart -k was accepted but did not return in time (slow TERM trap): the job is still registered, so
+      // launchd finishes the restart itself. A respawn-pane now would race it; report the failure and let the
+      // caller's retry kick it again.
+      logger.warn({ label, err: r.error }, 'Hard restart: launchctl kickstart timed out with the job still registered -- leaving the restart to launchd')
+      return { ok: false, error: 'internal_error', hint: 'hard restart pending: launchctl kickstart timed out, the job is still registered' }
     } else {
-      logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd service orphaned (plist exists but not registered in the bootstrap) -- skipping launchctl, respawn-pane directly')
+      logger.warn({ label, err: r.error }, 'Hard restart: launchctl restart failed -- falling back to respawn-pane')
     }
   } else if (process.platform !== 'linux') {
     logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd channels plist absent -- falling back to respawn-pane')
