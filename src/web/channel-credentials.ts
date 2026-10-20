@@ -176,6 +176,9 @@ function readChannelFiles(agentId: string): ChannelFiles {
   const real = resolveOwnChannelDir(agentId, dir)
   const token = parseEnvBotToken(readChannelFile(join(real, '.env')))
   const access = JSON.parse(readChannelFile(join(real, 'access.json'))) as unknown
+  // The directory chain must still resolve to the same place after the reads: a link swapped in
+  // between the check and the opens shows up here and the read is discarded.
+  if (realpathSync(dir) !== real) throw new Error('channel directory changed while it was read')
   return { token, chats: chatsFromAccessConfig(access), entries: accessEntries(access) }
 }
 
@@ -231,7 +234,9 @@ export function adoptChannel(agentId: string, adoptedBy: string): AdoptResult {
   // someone else's bot (a copied or linked file), and adopting it would let this agent's server sends
   // go out on that bot.
   const hash = tokenHash(files.token)
-  if (listChannelCredentialBaselines().some((b) => b.agent_id !== agentId && b.token_sha256 === hash)) {
+  const heldByOther = listChannelCredentialBaselines().some((b) => b.agent_id !== agentId && b.token_sha256 === hash)
+    || [MAIN_AGENT_ID, ...listAgentNames()].some((n) => n !== agentId && (getChannelBotToken(n) ?? '') !== '' && tokenHash(getChannelBotToken(n) as string) === hash)
+  if (heldByOther) {
     return { ok: false, reason: 'token_in_use' }
   }
   const previous = getChannelBotToken(agentId)
