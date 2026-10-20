@@ -380,7 +380,7 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
     const privateRow = saveAgentMemory('agent-b', 'mine alone', 'warm').id
     observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=shared')
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&tier=SHARED')
+    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&tier=shared&category=shared')
     observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
     observe(fleetAuth('agent-a'), 'GET', `/api/memories/${privateRow}`)
     observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=warm')
@@ -396,6 +396,23 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
       ['/api/memories/:id/detail', 'agent-b', 1],
       ['/api/memories/graph', 'agent-b', 1],
     ])
+  })
+  it('memories: the exemption reads the tier the way the route does, so a second value cannot widen it', () => {
+    for (const q of [
+      'category=shared&tier=warm', 'tier=warm&category=shared', 'category=shared&category=warm', 'tier=shared&tier=hot',
+      'category=SHARED', 'tier=%20shared', 'category=', 'tier=&category=',
+    ]) observe(fleetAuth('agent-a'), 'GET', `/api/memories?agent=agent-b&${q}`)
+    expect(total('foreign_row_read')).toBe(0)
+    expect(total('foreign_row_access')).toBe(8)
+  })
+  it('memories: a shared row by id is exempt only as a plain read, not with its history or on behalf of an agent', () => {
+    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?include=versions`)
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent_id=agent-c`)
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent=agent-c`)
+    expect(total('foreign_row_read')).toBe(1)
+    expect(total('foreign_row_access')).toBe(5) // include=versions: the owner; agent_id / agent: the owner and the named agent
   })
   it('memories: a write is never exempt, even when it says category=shared', async () => {
     const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id

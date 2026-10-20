@@ -297,16 +297,24 @@ const NONE: ReadonlySet<string> = new Set()
 
 /**
  * The one read of another agent's memories that is allowed: the `shared` tier, which is for the other
- * agents. A listing asked for category=shared (the agent filter is then only a spelling: the shared
+ * agents. A listing asked for the shared category (the agent filter is then only a spelling: the shared
  * rows belong to everyone), or one shared row by id. Any other sub-route (graph, links, detail) is not
  * exempt: it does not filter by category.
+ *
+ * The listing route filters by `tier || category` (first value of each). The exemption must agree with
+ * the route on what is asked for, so it reads EVERY tier / category value and exempts only when all of
+ * them are exactly 'shared': `category=shared&tier=warm` (the route filters by warm) is not exempt. A
+ * row by id is exempt only when it carries no parameter that changes what comes back (`include=versions`
+ * adds the row's history, `agent` / `agent_id` records a read for the named agent).
  */
 function sharedMemoryRead(r: { method: string; path: string; param: string | undefined; query: URLSearchParams }): boolean {
   if (r.method !== 'GET') return false
   if (r.path === '/api/memories') {
-    return (r.query.get('category') ?? r.query.get('tier') ?? '').trim().toLowerCase() === 'shared'
+    const asked = [...r.query.getAll('tier'), ...r.query.getAll('category')].filter((v) => v !== '')
+    return asked.length > 0 && asked.every((v) => v === 'shared')
   }
   if (r.param !== undefined && /^\d+$/.test(r.param) && r.path === `/api/memories/${r.param}`) {
+    if (['include', 'agent', 'agent_id'].some((k) => r.query.has(k))) return false
     return getMemoryOwnerRow(Number(r.param))?.category === 'shared'
   }
   return false
