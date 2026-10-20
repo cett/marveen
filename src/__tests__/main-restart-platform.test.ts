@@ -105,9 +105,24 @@ describe('main-session restart is platform-correct (2026-07-26 launchctl ENOENT)
     // mac leg: non-linux AND the channels plist is actually registered.
     expect(monitor).toMatch(/process\.platform !== 'linux' && existsSync\(MAIN_CHANNELS_PLIST\)/)
     // ...and it still drives launchd, rather than having been stripped to a
-    // Linux-only respawn.
-    expect(monitor).toMatch(/execFileSync\('\/bin\/launchctl', \['unload', MAIN_CHANNELS_PLIST\]/)
-    expect(monitor).toMatch(/execFileSync\('\/bin\/launchctl', \['load', MAIN_CHANNELS_PLIST\]/)
+    // Linux-only respawn: the job is restarted through restartLaunchdJob, whose
+    // exec is /bin/launchctl, with the channels plist.
+    expect(monitor).toMatch(/execFileSync\('\/bin\/launchctl', args/)
+    expect(monitor).toMatch(/restartLaunchdJob\(\{[^}]*plist: MAIN_CHANNELS_PLIST/)
+    // ...and the helper itself is the one that calls it, inside the mac leg.
+    const from = monitor.indexOf('export function hardRestartMarveenChannels')
+    const helper = monitor.slice(from, monitor.indexOf('channels plist absent', from))
+    expect(helper).toMatch(/restartLaunchdJob\(/)
+  })
+
+  it('the launchd leg restarts with one kickstart -k (or a bootstrap of an orphan), never unload + load', () => {
+    // The unload waited for the job's TERM trap, its timeout fired, the load never ran and the job stayed
+    // unregistered. The restart helper must keep the single-call shape.
+    const monitor = read('web/channel-monitor.ts')
+    expect(stripComments(monitor)).not.toMatch(/\['unload', MAIN_CHANNELS_PLIST\]|\['load', MAIN_CHANNELS_PLIST\]/)
+    const restart = read('web/launchd-job-restart.ts')
+    expect(restart).toMatch(/\['kickstart', '-k',/)
+    expect(restart).toMatch(/\['bootstrap', domain, plist\]/)
   })
 
   it('the helper falls through to the pane respawn when the plist is absent', () => {
