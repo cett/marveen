@@ -103,7 +103,7 @@ const {
     mockAgentSessionName: vi.fn((name: string) => `session-${name}`),
     mockRestartAgentProcess: vi.fn(),
     mockCapturePane: vi.fn((session: string) => (paneBySession.has(session) ? paneBySession.get(session)! : `PANE:${session}`)),
-    mockSendPromptToSession: vi.fn(async (_session: string, _prompt: string) => {}),
+    mockSendPromptToSession: vi.fn(async (_session: string, _prompt: string) => 'sent' as const),
     mockIsSessionReadyForPrompt: vi.fn(async (session: string) => sessionReadyBySession.get(session) ?? false),
     mockReadAgentRemoteHost: vi.fn((name: string) => remoteHostByAgent.get(name) ?? null),
     mockDetectPaneState: vi.fn((pane: string) => paneStateByPane.get(pane) ?? 'unknown'),
@@ -292,7 +292,7 @@ beforeEach(async () => {
   mockAgentSessionName.mockImplementation((name: string) => `session-${name}`)
   mockRestartAgentProcess.mockReset()
   mockCapturePane.mockImplementation((session: string) => (paneBySession.has(session) ? paneBySession.get(session)! : `PANE:${session}`))
-  mockSendPromptToSession.mockReset().mockResolvedValue(undefined)
+  mockSendPromptToSession.mockReset().mockResolvedValue('sent')
   mockIsSessionReadyForPrompt.mockImplementation(async (session: string) => sessionReadyBySession.get(session) ?? false)
   mockReadAgentRemoteHost.mockImplementation((name: string) => remoteHostByAgent.get(name) ?? null)
   mockDetectPaneState.mockImplementation((pane: string) => paneStateByPane.get(pane) ?? 'unknown')

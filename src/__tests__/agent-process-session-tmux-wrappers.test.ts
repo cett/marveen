@@ -30,6 +30,7 @@ import {
   waitForPaneIdle,
   isSessionReadyForPrompt,
   clearInputBuffer,
+  paneCurrentCommand,
 } from '../web/agent-process-session.js'
 
 const SEP = '─'.repeat(80)
@@ -49,6 +50,27 @@ function setExecHandler(handler: ExecHandler) {
 
 beforeEach(() => {
   mockExecFileSync.mockReset()
+})
+
+describe('paneCurrentCommand', () => {
+  it('asks list-panes of that session for the pane foreground command and returns the first non-empty line', () => {
+    const seen: string[][] = []
+    setExecHandler((_file, args) => { seen.push(args); return '\n  claude.exe \nnode\n' })
+    expect(paneCurrentCommand('agent-boni')).toBe('claude.exe')
+    expect(seen[0]).toEqual(expect.arrayContaining(['list-panes', '-t', 'agent-boni', '-F', '#{pane_current_command}']))
+  })
+
+  it('returns the shell name of a session whose CLI has exited', () => {
+    setExecHandler(() => '-zsh\n')
+    expect(paneCurrentCommand('agent-boni')).toBe('-zsh')
+  })
+
+  it('is null on an empty answer and on any failure: an unreadable pane is never a death sentence', () => {
+    setExecHandler(() => '\n  \n')
+    expect(paneCurrentCommand('agent-boni')).toBeNull()
+    setExecHandler(() => { throw new Error("can't find session: agent-boni") })
+    expect(paneCurrentCommand('agent-boni')).toBeNull()
+  })
 })
 
 describe('sessionExistsOnHost', () => {

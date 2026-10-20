@@ -44,6 +44,15 @@ import { capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import {
+  childDeferExpired,
+  MAX_CHILD_DEFER_MS,
+  observeToolChildren,
+  parseProcSnapshot,
+  resolveToolRoot,
+  toolChildRecentlyActive,
+  type ChildActivity,
+} from './stuck-tool-children.js'
+import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
   detectPaneState,
@@ -83,6 +92,40 @@ function sampleMainClaudeCpuPercent(session: string): number | null {
     return Number.isFinite(cpu) ? cpu : null
   } catch {
     return null
+  }
+}
+
+// Tool-child tracker (see stuck-tool-children.ts): the pane leader's live tool children, sampled for as long as the
+// counter is stagnant so the CPU baseline exists when the verdict fires. Any failure keeps the last-activity stamp
+// and zeroes the baseline (fail-open for recovery).
+const toolChildState = new Map<string, ChildActivity>()
+const shellLeaderWarned = new Set<string>()
+
+function sampleToolChildren(session: string, nowMs: number): void {
+  const prev = toolChildState.get(session) ?? { cpuMs: null, lastActiveAt: null }
+  try {
+    const panePid = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
+      .split('\n')[0]?.trim()
+    if (!panePid || !/^\d+$/.test(panePid)) throw new Error('no pane pid')
+    const out = execFileSync('/bin/ps', ['-axww', '-o', 'pid=,ppid=,stat=,cputime=,comm='], { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    const procs = parseProcSnapshot(out)
+    const { root, viaShell } = resolveToolRoot(procs, Number(panePid))
+    if (root === null) {
+      if (!shellLeaderWarned.has(session)) {
+        shellLeaderWarned.add(session)
+        logger.warn({ session, panePid }, 'stuck-tool-call-watcher: the pane leader is a shell/wrapper with no identifiable claude child -- tool-child deferral is inactive for this session')
+      }
+      toolChildState.set(session, { cpuMs: null, lastActiveAt: prev.lastActiveAt })
+      return
+    }
+    if (viaShell && !shellLeaderWarned.has(session)) {
+      shellLeaderWarned.add(session)
+      logger.info({ session, panePid, claudePid: root }, 'stuck-tool-call-watcher: the pane leader is a shell/wrapper -- tool children are scoped under its claude child')
+    }
+    toolChildState.set(session, observeToolChildren(prev, procs, root, nowMs))
+  } catch (err) {
+    logger.warn({ err, session }, 'stuck-tool-call-watcher: tmux list-panes / ps failed while sampling tool children')
+    toolChildState.set(session, { cpuMs: null, lastActiveAt: prev.lastActiveAt })
   }
 }
 
@@ -141,6 +184,15 @@ export function shouldDeferForRecentRespawn(
   return lastRespawnMs > 0 && nowMs - lastRespawnMs < graceMs
 }
 
+// A deferred verdict must be asked again on the next poll. decideStuckToolCallRecovery() stores attempts=1 with every
+// verdict and holds for the rest of the spell once attempts >= 1, so a deferral that returned without resetting it
+// (the post-respawn grace, the CPU guard, the tool-child guard) stood the watcher down for the whole spell: one
+// CPU-busy sample, then a frozen counter at 1.8% CPU for half an hour, gave zero recoveries. The deferrals call this
+// instead; the idle-prompt guard needs no reset, it drops the spell's state altogether.
+function deferVerdict(session: string, next: StuckToolCallState): void {
+  watchState.set(session, { ...next, attempts: 0 })
+}
+
 async function checkSession(label: string, session: string): Promise<void> {
   const pane = capturePane(session)
   const sig = pane == null ? null : stuckToolCallSignature(pane)
@@ -152,6 +204,14 @@ async function checkSession(label: string, session: string): Promise<void> {
     watchState.delete(session)
   } else {
     watchState.set(session, next)
+  }
+
+  // Watch the pane leader's tool children for as long as the counter is stagnant, so the CPU baseline exists when the
+  // verdict fires.
+  if (next.tag !== null && next.stagnantPolls >= 1) {
+    sampleToolChildren(session, Date.now())
+  } else {
+    toolChildState.delete(session)
   }
 
   if (recover) {
@@ -192,6 +252,7 @@ async function checkSession(label: string, session: string): Promise<void> {
         { label, session, sinceRespawnMs: lastRespawn ? Date.now() - lastRespawn : null, graceMs: MARVEEN_POST_RESPAWN_GRACE_MS },
         'stuck-tool-call-watcher: recent respawn within grace, deferring recovery (avoid double-respawn / boot churn)',
       )
+      deferVerdict(session, next)
       return
     }
     // CPU-profile guard (#248): the genuine wedge is a render loop blocked on
@@ -205,7 +266,27 @@ async function checkSession(label: string, session: string): Promise<void> {
         { label, session, cpuPercent, maxCpuPercent: WEDGE_MAX_CPU_PERCENT, seconds: next.lastSeconds },
         'stuck-tool-call-watcher: counter stagnant but claude is CPU-active (not the idle wedge profile) -- deferring recovery',
       )
+      deferVerdict(session, next)
       return
+    }
+    // A live tool child (running, or CPU burned within the last polls) means a long foreground tool call, not the
+    // stdio wedge: the pane leader's own ~2% CPU says nothing about it. Bounded by MAX_CHILD_DEFER_MS from the start
+    // of the stagnation. The deferral resets `attempts`: the state stored above already counts this verdict, so
+    // without the reset the first deferral would hold the spell for good and a real wedge arriving after the tool
+    // call ended would never recover.
+    if (toolChildRecentlyActive(toolChildState.get(session), Date.now())) {
+      if (!childDeferExpired(next.stagnantSince, Date.now())) {
+        logger.info(
+          { label, session, cpuPercent, seconds: next.lastSeconds, stagnantPolls: next.stagnantPolls },
+          'stuck-tool-call-watcher: counter stagnant but a tool child process is active (long foreground tool call, not a wedge) -- deferring recovery',
+        )
+        deferVerdict(session, next)
+        return
+      }
+      logger.warn(
+        { label, session, stagnantMs: Date.now() - (next.stagnantSince ?? Date.now()), maxChildDeferMs: MAX_CHILD_DEFER_MS, seconds: next.lastSeconds },
+        'stuck-tool-call-watcher: tool child still active but the counter has been frozen past the hard cap -- proceeding with recovery',
+      )
     }
     // Audit log requested by Marveen 2026-06-02: every respawn this watcher
     // decides on must record the input that led to it, so a regression

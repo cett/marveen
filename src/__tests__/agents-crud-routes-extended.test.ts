@@ -76,6 +76,7 @@ vi.mock('../web/agent-process.js', () => ({
   isAgentRunning: vi.fn().mockReturnValue(false),
   agentSessionName: vi.fn().mockImplementation((n: string) => `agent-${n}`),
   capturePane: vi.fn().mockReturnValue(null),
+  paneCurrentCommand: vi.fn().mockReturnValue('claude.exe'),
 }))
 vi.mock('../web/model-suggest.js', () => ({
   suggestForAgent: vi.fn().mockReturnValue({ model: 'claude-haiku-4-5', reason: 'low-traffic' }),
@@ -703,6 +704,60 @@ describe('agents-crud routes (extended)', () => {
     expect(statusCode()).toBe(200)
     const body = responseBody() as any
     expect(body[0].state).toBe('error')
+  })
+
+  // A session that exists is not an agent that answers: a pane that fell back to a shell prompt is 'dead', not 'idle'.
+  describe('GET /api/agents/activity: a session whose CLI exited is dead', () => {
+    it('the main agent with a shell in the pane and an idle pane is dead', async () => {
+      const { capturePane, paneCurrentCommand } = await import('../web/agent-process.js')
+      vi.mocked(capturePane).mockReturnValueOnce('user@host ~ %')
+      vi.mocked(paneCurrentCommand).mockReturnValueOnce('zsh')
+      const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      expect((responseBody() as any)[0].state).toBe('dead')
+    })
+
+    it('a local sub-agent with a shell in the pane is dead, and its own session is the one asked', async () => {
+      const agentConfig = await import('../web/agent-config.js')
+      const helpers = await import('../web/routes/agents-helpers.js')
+      const { capturePane, paneCurrentCommand } = await import('../web/agent-process.js')
+      vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
+      vi.mocked(helpers.agentRunStateCached).mockReturnValueOnce('running')
+      vi.mocked(capturePane).mockReturnValueOnce(null).mockReturnValueOnce('user@host ~ %')
+      vi.mocked(paneCurrentCommand).mockClear()
+      vi.mocked(paneCurrentCommand).mockReturnValueOnce('-zsh')
+      const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      expect((responseBody() as any).find((e: any) => e.name === 'test-agent').state).toBe('dead')
+      expect(vi.mocked(paneCurrentCommand)).toHaveBeenCalledWith('agent-test-agent')
+    })
+
+    it('a pane that still shows work is working even when the foreground command is a shell', async () => {
+      const { capturePane, paneCurrentCommand } = await import('../web/agent-process.js')
+      const { detectPaneState } = await import('../pane-state.js')
+      vi.mocked(capturePane).mockReturnValueOnce('esc to interrupt')
+      vi.mocked(detectPaneState).mockReturnValueOnce('busy')
+      vi.mocked(paneCurrentCommand).mockReturnValueOnce('zsh')
+      const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      expect((responseBody() as any)[0].state).toBe('working')
+    })
+
+    it('a remote sub-agent never has its command asked (an extra ssh round trip per poll) and is never dead', async () => {
+      const agentConfig = await import('../web/agent-config.js')
+      const helpers = await import('../web/routes/agents-helpers.js')
+      const { paneCurrentCommand } = await import('../web/agent-process.js')
+      vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
+      vi.mocked(agentConfig.readAgentRemoteHost).mockReturnValueOnce('laptop.example.invalid')
+      vi.mocked(helpers.agentRunStateCached).mockReturnValueOnce('running')
+      vi.mocked(helpers.remotePaneCache.getOrRefresh).mockReturnValueOnce('user@host ~ %')
+      vi.mocked(paneCurrentCommand).mockClear()
+      const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity', role: 'admin' })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      const sub = (responseBody() as any).find((e: any) => e.name === 'test-agent')
+      expect(sub.state).not.toBe('dead')
+      expect(vi.mocked(paneCurrentCommand)).not.toHaveBeenCalled()
+    })
   })
 
   // Regression guard: PUT /api/agents/:name error codes must be stable machine
