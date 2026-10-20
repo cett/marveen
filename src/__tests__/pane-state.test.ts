@@ -2168,3 +2168,51 @@ describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
     expect(parkedPasteSignature(auraShape)).not.toBeNull()
   })
 })
+
+// The spinner's turn timer is "52s" for the first minute, then "3m 7s", and in
+// principle "1h 2m 3s". A pattern that knew only seconds read every turn longer
+// than a minute as idle whenever the footer had not yet grown its
+// "· esc to interrupt" suffix (the frame gap).
+describe('busy spinner: turn elapsed time formats', () => {
+  // The idle-looking footer (no "esc to interrupt"), so only the spinner line can say busy.
+  const withSpinner = (line: string): string => [
+    line,
+    '',
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  it.each([
+    ['seconds', '✢ Combobulating… (52s · ↓ 2.6k tokens · thinking some more)'],
+    ['minutes and seconds', '✢ Combobulating… (3m 7s · ↓ 6.1k tokens · thinking some more)'],
+    ['whole minutes written with seconds', '✢ Combobulating… (12m 0s · ↓ 40.2k tokens)'],
+    ['hours, minutes and seconds', '✢ Combobulating… (1h 2m 3s · ↓ 190.4k tokens)'],
+    ['no spinner label, minutes', '✶ (3m 7s · ↓ 120 tokens)'],
+    ['no spinner label, hours', '✶ (1h 2m 3s · ↓ 120 tokens)'],
+  ])('reads %s as busy even without the footer suffix', (_name, line) => {
+    expect(detectPaneState(withSpinner(line))).toBe('busy')
+  })
+
+  it('a known label with a minutes timer is busy only with the token tail', () => {
+    expect(detectPaneState(withSpinner('✢ Thinking… (3m 7s · ↓ 6.1k tokens)'))).toBe('busy')
+    expect(detectPaneState(withSpinner('✢ Thinking… (3m 7s)'))).toBe('idle')
+  })
+
+  it.each([
+    ['a duration in prose', 'A teszt 3m 7s alatt futott le (3m 7s), minden zöld.'],
+    ['a timer without the token chrome', '(3m 7s · done)'],
+    ['an arrow without a number', '(3m 7s · ↓ tokens)'],
+    ['a bare time range', 'Elapsed 3m 7s · ↓ later'],
+    ['minutes only, no seconds segment', '✢ Combobulating… (3m · ↓ 6.1k tokens)'],
+  ])('does not read %s as busy', (_name, line) => {
+    expect(detectPaneState(withSpinner(line))).not.toBe('busy')
+  })
+
+  it('a stale spinner far above the box (scrollback) stays idle, as before', () => {
+    const stale = ['✢ Combobulating… (3m 8s · ↓ 9.3k tokens)', ...Array(15).fill('  tool output'), '',
+      SEP, '❯ ', SEP, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n')
+    expect(detectPaneState(stale)).toBe('idle')
+  })
+})

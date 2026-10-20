@@ -103,6 +103,17 @@ const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| �
 // prevent prose-quoting false positives. A future Claude Code release
 // that renames the spinner labels will miss the label regex but still
 // be caught by the tokens pattern.
+// The turn timer of the spinner line. Claude Code renders the elapsed time as
+// seconds ("52s"), minutes and seconds ("3m 7s") and, past an hour, hours too
+// ("1h 2m 3s"); a pattern that knew only seconds read every turn longer than a
+// minute as idle whenever the footer was not in the frame. The hour segment is
+// defensive, not measured. It widens nothing dangerous: every use still
+// requires the `· ↓N` chrome tail that prose cannot produce.
+//
+// One fragment, one definition: both patterns below read the same shape, so
+// the next rendering change is a one-line edit rather than a hunt for copies.
+const TURN_ELAPSED = String.raw`(?:\d+h\s*)?(?:\d+m\s*)?\d+s`
+
 const BUSY_INDICATORS: RegExp[] = [
   // NOTE: /\besc to interrupt\b/ is NOT in this list.
   // It is checked separately via BUSY_ESC_TO_INTERRUPT_RX scoped to the
@@ -121,12 +132,14 @@ const BUSY_INDICATORS: RegExp[] = [
   // box during a real turn, so the bottom-region scope still catches it.
   //
   // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ..."
-  /\(\s*\d+s\s*·\s*↓\s*\d/,
+  new RegExp(String.raw`\(\s*${TURN_ELAPSED}\s*·\s*↓\s*\d`),
   // Known spinner labels paired with the turn-scoped `(Ns · ↓` tail on
   // the same line. The tail requirement kills the "Thinking…" prose
   // false positive. Non-exhaustive by design; the bare tokens pattern
   // above is the authoritative fallback.
-  /\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*\d+s\s*·\s*↓/,
+  new RegExp(
+    String.raw`\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*${TURN_ELAPSED}\s*·\s*↓`,
+  ),
 ]
 
 // `esc to interrupt` is a footer-region-only busy signal: Claude Code
