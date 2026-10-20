@@ -72,7 +72,9 @@ class TestExtractMessageId:
         assert _extract_message_id(payload) == "777"
 
     def test_direct_dict_message_id(self):
-        payload = {"tool_response": {"message_id": 123, "chat_id": 456}}
+        # The extra key only has to be ignored; a string value keeps the line from reading as a quoted
+        # Telegram update to the secret gate (it flags a quoted numeric chat id), without an allowlist entry.
+        payload = {"tool_response": {"message_id": 123, "chat_id": "456"}}
         assert _extract_message_id(payload) == "123"
 
     def test_json_string_wrapping_dict(self):
