@@ -25,6 +25,7 @@ import {
   type PendingResumeMap,
 } from './context-guard-resume-store.js'
 import { createAgentMessage } from '../db.js'
+import { notifyChannel } from '../notify.js'
 import { getWorkspaceDocUpdatedAtMs } from '../db/workspace.js'
 import { appendActivePlanMarkerToHandoff } from './claude-plan-handoff-marker.js'
 import { parseHHMM, dailyDueAtMs, restartDue } from '../auto-restart.js'
@@ -71,6 +72,46 @@ const INTERVAL_MS = 300_000
 // the runner starts.
 const guardStates = new Map<string, GuardState>()
 const remoteSkipLogged = new Set<string>()
+
+// Consecutive failed restarts per agent (memory only). A restart that keeps
+// throwing (a broken launchctl or tmux) is retried every sweep and, rolled
+// back each time, would otherwise leave nothing but a log line: the operator
+// has to hear about it once. Reset by a successful restart.
+export const RESTART_FAILURE_ALERT_AT = 3
+const restartFailures = new Map<string, { count: number; alerted: boolean }>()
+
+/** Short, path-free reason for the operator message: no file paths, no multi-line stacks. */
+function shortFailureReason(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg.replace(/\/[^\s'"]+/g, '<path>').replace(/\s+/g, ' ').trim().slice(0, 120) || 'ismeretlen hiba'
+}
+
+/** A restart succeeded: the series is over, a later series alerts again. */
+export function clearRestartFailures(name: string): void {
+  restartFailures.delete(name)
+}
+
+/** Count one failed restart; the third in a row raises exactly one message, further ones stay quiet until a success resets the series. */
+export function noteRestartFailure(name: string, err: unknown): void {
+  const entry = restartFailures.get(name) ?? { count: 0, alerted: false }
+  entry.count += 1
+  restartFailures.set(name, entry)
+  if (entry.count < RESTART_FAILURE_ALERT_AT || entry.alerted) return
+  entry.alerted = true
+  const text =
+    `[CONTEXT-GUARD] A(z) "${name}" agent ujrainditasa ${entry.count}. egymas utani alkalommal hibazott, a guard 5 percenkent ujraprobalja. ` +
+    `Utolso hiba: ${shortFailureReason(err)}. Kezi ellenorzes kell (launchctl / tmux).`
+  try {
+    if (name === MAIN_AGENT_ID) {
+      // The patient's own queue is no alert sink (main-agent delivery is pull-based): use the channel.
+      notifyChannel(text).catch(() => {})
+    } else {
+      createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard restart failure alert')
+    }
+  } catch (alertErr) {
+    logger.warn({ err: alertErr, name }, 'context-guard: restart-failure alert could not be raised')
+  }
+}
 
 // Write-through mirror of the persisted resume obligations. Held in memory so
 // the per-sweep "drop if present" checks cost no I/O; the file is written only
@@ -576,8 +617,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // claim the restart on the message queue.
           guardStates.set(name, state)
           logger.error({ err, name, reason: decision.reason }, 'context-guard: restart FAILED -- state rolled back for retry')
+          noteRestartFailure(name, err)
           break
         }
+        clearRestartFailures(name)
         // Persisted only AFTER the restart succeeded (a throw above skips this),
         // so a failed rescue never leaves an obligation that would send
         // "continue from your handoff" into the OLD pane.
