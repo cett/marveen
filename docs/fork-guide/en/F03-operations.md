@@ -470,7 +470,7 @@ An argument of a running process is readable by every local user (`ps -ww`). A s
 
 ```bash
 . "$INSTALL_DIR/scripts/lib/curl-tok.sh"
-curl_tok "$TOKEN" -s "$URL"                                        # Authorization: Bearer <token>
+curl_tok "$TOKEN" -s "$URL"                                        # the token as a Bearer header, on stdin
 curl_hdr 'x-goog-api-key' "$KEY" -s "$URL"                          # any one secret header
 curl_tok_url "$BOT" 'https://api.telegram.org/bot@TOKEN@/getMe' -s  # the secret is part of the URL
 ```

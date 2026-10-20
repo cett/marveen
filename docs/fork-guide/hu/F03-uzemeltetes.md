@@ -470,7 +470,7 @@ Egy futó folyamat argumentumait minden helyi felhasználó olvashatja (`ps -ww`
 
 ```bash
 . "$INSTALL_DIR/scripts/lib/curl-tok.sh"
-curl_tok "$TOKEN" -s "$URL"                                        # Authorization: Bearer <token>
+curl_tok "$TOKEN" -s "$URL"                                        # a token Bearer fejlécként, stdin-en
 curl_hdr 'x-goog-api-key' "$KEY" -s "$URL"                          # bármely egy titkos fejléc
 curl_tok_url "$BOT" 'https://api.telegram.org/bot@TOKEN@/getMe' -s  # a titok az URL része
 ```
