@@ -44,8 +44,8 @@ fi
 OPENAI_KEY="$(get_secret OPENAI_API_KEY)"
 GEMINI_KEY="$(get_secret GEMINI_API_KEY)"
 if [ -z "$OPENAI_KEY" ] && [ -z "$GEMINI_KEY" ]; then
-  echo "[pre-pr-review] OPENAI_API_KEY not set in vault — ChatGPT review skipped."
-  echo "[pre-pr-review] GEMINI_API_KEY not set in vault — Gemini review skipped."
+  echo "[pre-pr-review] OPENAI_API_KEY not set in vault: ChatGPT review skipped."
+  echo "[pre-pr-review] GEMINI_API_KEY not set in vault: Gemini review skipped."
   exit 0
 fi
 
@@ -77,7 +77,7 @@ print(json.dumps({'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': pr
     --data-binary "@$TMP/openai.json" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'])"
 else
-  echo "[pre-pr-review] OPENAI_API_KEY not set in vault — ChatGPT review skipped."
+  echo "[pre-pr-review] OPENAI_API_KEY not set in vault: ChatGPT review skipped."
 fi
 
 # --- Gemini ---
@@ -95,5 +95,5 @@ print(json.dumps({'contents': [{'parts': [{'text': prompt}]}]}))
     --data-binary "@$TMP/gemini.json" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['candidates'][0]['content']['parts'][0]['text'])"
 else
-  echo "[pre-pr-review] GEMINI_API_KEY not set in vault — Gemini review skipped."
+  echo "[pre-pr-review] GEMINI_API_KEY not set in vault: Gemini review skipped."
 fi
