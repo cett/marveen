@@ -655,9 +655,9 @@ export function getMemoryById(id: number): Memory | undefined {
 }
 
 // Owner and tenant of a memory, for the route's tenant gate.
-export function getMemoryOwnerRow(id: number): { agent_id: string | null; tenant_id: string } | undefined {
-  return db.prepare('SELECT agent_id, tenant_id FROM memories WHERE id = ?').get(id) as
-    { agent_id: string | null; tenant_id: string } | undefined
+export function getMemoryOwnerRow(id: number): { agent_id: string | null; tenant_id: string; category: string } | undefined {
+  return db.prepare('SELECT agent_id, tenant_id, category FROM memories WHERE id = ?').get(id) as
+    { agent_id: string | null; tenant_id: string; category: string } | undefined
 }
 
 // Raw row delete; the route owns the vec/cache/audit side effects.

@@ -52,6 +52,30 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
 // Frozen at module load, like the config constant it derives from.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 
+// Senders the platform itself writes as. An agent-bound admin token (the main agent's) that posts as one
+// of these is the usual case, not an impersonation signal.
+const BUILTIN_SYSTEM_FROM = new Set(['scheduler', 'system'])
+
+/**
+ * The `from` an agent-bound admin token (`main-agent:<id>`: role admin, a token that names an agent)
+ * declared when it differs from the agent the token names; null otherwise. The admin keeps the right to
+ * post as any registered sender, so this does not refuse anything: it names the claim so the audit row
+ * carries it (`declared_from`, the way an approval carries `declared_resolved_by`). Not recorded: the
+ * platform senders (scheduler, system, the configured system senders), a fleet_agent (its `from` is
+ * pinned to its token above), and every principal that is not an agent-bound token (the operator's
+ * token, a dashboard session, the shared token).
+ */
+export function declaredFromOfAgentBoundAdmin(
+  ctx: Pick<RouteContext, 'role' | 'auth' | 'tokenAgentId'>,
+  from: string,
+): string | null {
+  if (ctx.role !== 'admin' || ctx.auth?.kind !== 'token' || !ctx.tokenAgentId) return null
+  const declared = sanitizeAgentIdent(from)
+  if (!declared || declared === sanitizeAgentIdent(ctx.tokenAgentId)) return null
+  if (BUILTIN_SYSTEM_FROM.has(declared) || SYSTEM_SENDERS.has(declared)) return null
+  return from.trim()
+}
+
 // Review-gate for the no_pii_scrub bypass flag below: the shared fleet
 // dashboard-token bearer resolves to ctx.role === 'admin' for every agent
 // (src/web/authz.ts backward-compat), so role alone cannot tell "a human
@@ -334,6 +358,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     } else if (ctx.auth?.kind === 'session' && ctx.auth.user) {
       try {
         writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'message', action: 'create', entity_id: msg.id })
+      } catch { /* audit failure must not abort message creation */ }
+    }
+    const declaredFrom = declaredFromOfAgentBoundAdmin(ctx, from)
+    if (declaredFrom !== null) {
+      try {
+        writeAgentAuditLog({ agent_id: ctx.tokenAgentId ?? 'unknown', entity: 'message', action: 'create', entity_id: msg.id,
+          detail: { declared_from: declaredFrom, to: storedTo, principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
     if (piiScrubBypassed) {

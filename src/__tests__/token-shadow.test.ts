@@ -105,7 +105,9 @@ describe('pure helpers', () => {
     expect(normalizeRoute('/api/agent-state/agent-a/some-key')).toBe('/api/agent-state/:agent/some-key')
     expect(normalizeRoute('/api/agent-taskstate/agent-a/replay?source=x')).toBe('/api/agent-taskstate/:agent/replay')
     expect(normalizeRoute('/api/memories/12345')).toBe('/api/memories/:id')
-    expect(normalizeRoute('/api/memories/stale')).toBe('/api/memories/:id') // a watched param position; the id-ness is not judged for memories
+    expect(normalizeRoute('/api/memories/stale')).toBe('/api/memories/stale') // a literal sub-route, not a row id
+    expect(normalizeRoute('/api/memories/graph/timeline')).toBe('/api/memories/graph/timeline')
+    expect(normalizeRoute('/api/memories/some-name')).toBe('/api/memories/:id') // any other segment at the param position
     expect(normalizeRoute('/api/kanban/242e55bc')).toBe('/api/kanban/:id')
     expect(normalizeRoute('/api/kanban/labels')).toBe('/api/kanban/labels')
     expect(normalizeRoute('/api/kanban/242e55bc/comments')).toBe('/api/kanban/:id/comments')
@@ -170,6 +172,11 @@ describe('identityHits', () => {
   it('own endpoints are agent_id_mismatch, unscoped ones foreign_row_access', () => {
     expect(identityHits({ ...base, kind: 'own', targets: ['agent-b'] })).toEqual([{ category: 'agent_id_mismatch', target: 'agent-b' }])
     expect(identityHits({ ...base, kind: 'unscoped', targets: ['agent-b'] })).toEqual([{ category: 'foreign_row_access', target: 'agent-b' }])
+    expect(identityHits({ ...base, kind: 'unscoped', targets: ['agent-b'], refusable: true })).toEqual([{ category: 'foreign_row_access', target: 'agent-b' }])
+  })
+  it('an unscoped hit on a request enforce lets through is foreign_row_read; an own endpoint is never downgraded', () => {
+    expect(identityHits({ ...base, kind: 'unscoped', targets: ['agent-b'], refusable: false })).toEqual([{ category: 'foreign_row_read', target: 'agent-b' }])
+    expect(identityHits({ ...base, kind: 'own', targets: ['agent-b'], refusable: false })).toEqual([{ category: 'agent_id_mismatch', target: 'agent-b' }])
   })
   it('the caller\'s own id (any case), blanks and repeats are not hits', () => {
     expect(identityHits({ ...base, kind: 'own', targets: ['agent-a', 'AGENT-A', '', ' ', 'agent-b', 'Agent-B'] })).toEqual([{ category: 'agent_id_mismatch', target: 'agent-b' }])
@@ -350,6 +357,9 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     expect(rows('foreign_row_access').map((r) => [r.method, r.route, r.target, r.count])).toEqual([
       ['POST', '/api/blackboard', 'agent-b', 1],
       ['PATCH', '/api/blackboard/:id', 'agent-b', 1],
+    ])
+    // the read of another agent's row is allowed in enforce mode: informational, not a blocker
+    expect(rows('foreign_row_read').map((r) => [r.method, r.route, r.target, r.count])).toEqual([
       ['GET', '/api/blackboard/history', 'agent-b', 1],
     ])
   })
@@ -366,6 +376,63 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
       ['PUT', '/api/memories/:id', 'agent-b', 1],
     ])
   })
+  it('memories: only the shared tier is readable across agents, nothing else of another agent is', () => {
+    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
+    const privateRow = saveAgentMemory('agent-b', 'mine alone', 'warm').id
+    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=shared')
+    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&tier=shared&category=shared')
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${privateRow}`)
+    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=warm')
+    observe(fleetAuth('agent-a'), 'GET', '/api/memories/graph?agent=agent-b&category=shared')
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}/detail`)
+    expect(rows('foreign_row_read').map((r) => [r.route, r.target, r.count])).toEqual([
+      ['/api/memories', 'agent-b', 2],
+      ['/api/memories/:id', 'agent-b', 1],
+    ])
+    expect(rows('foreign_row_access').map((r) => [r.route, r.target, r.count])).toEqual([
+      ['/api/memories', 'agent-b', 1],
+      ['/api/memories/:id', 'agent-b', 1],
+      ['/api/memories/:id/detail', 'agent-b', 1],
+      ['/api/memories/graph', 'agent-b', 1],
+    ])
+  })
+  it('memories: the exemption reads the tier the way the route does, so a second value cannot widen it', () => {
+    for (const q of [
+      'category=shared&tier=warm', 'tier=warm&category=shared', 'category=shared&category=warm', 'tier=shared&tier=hot',
+      'category=SHARED', 'tier=%20shared', 'category=', 'tier=&category=',
+    ]) observe(fleetAuth('agent-a'), 'GET', `/api/memories?agent=agent-b&${q}`)
+    expect(total('foreign_row_read')).toBe(0)
+    expect(total('foreign_row_access')).toBe(8)
+  })
+  it('memories: a shared row by id is exempt only as a plain read, not with its history or on behalf of an agent', () => {
+    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?include=versions`)
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent_id=agent-c`)
+    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent=agent-c`)
+    expect(total('foreign_row_read')).toBe(1)
+    expect(total('foreign_row_access')).toBe(5) // include=versions: the owner; agent_id / agent: the owner and the named agent
+  })
+  it('memories: a write is never exempt, even when it says category=shared', async () => {
+    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
+    observe(fleetAuth('agent-a'), 'PUT', `/api/memories/${sharedRow}?category=shared`)
+    observe(fleetAuth('agent-a'), 'DELETE', `/api/memories/${sharedRow}`)
+    expect(total('foreign_row_read')).toBe(0)
+    expect(rows('foreign_row_access').map((r) => [r.method, r.target])).toEqual([['DELETE', 'agent-b'], ['PUT', 'agent-b']])
+  })
+  it('agents: a path naming another agent is counted per route template, the list and literals are not', () => {
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b/conversation')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-a/security')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents')
+    observe(fleetAuth('agent-a'), 'GET', '/api/agents/activity')
+    expect(rows('agent_id_mismatch').map((r) => [r.route, r.target])).toEqual([
+      ['/api/agents/:agent', 'agent-b'],
+      ['/api/agents/:agent/conversation', 'agent-b'],
+    ])
+    expect(normalizeRoute('/api/agents/export-all')).toBe('/api/agents/export-all')
+  })
   it('kanban: the card assignee and the assignee filter', () => {
     createKanbanCard({ id: 'card-own', title: 't', assignee: 'agent-a' })
     createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
@@ -373,7 +440,9 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-foreign')
     observe(fleetAuth('agent-a'), 'GET', '/api/kanban?assignee=agent-b')
     observe(fleetAuth('agent-a'), 'GET', '/api/kanban/labels')
-    expect(rows('foreign_row_access').map((r) => [r.method, r.route, r.target])).toEqual([
+    // kanban is scoped by tenant, enforce never refuses it: every hit is informational
+    expect(rows('foreign_row_access')).toEqual([])
+    expect(rows('foreign_row_read').map((r) => [r.method, r.route, r.target])).toEqual([
       ['GET', '/api/kanban', 'agent-b'],
       ['PATCH', '/api/kanban/:id', 'agent-b'],
     ])
@@ -394,7 +463,7 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
   it('a shared-token request is held to the same rule, by its self-declared caller', () => {
     createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
     observe(sharedAuth, 'PATCH', '/api/kanban/card-foreign', { 'x-agent-id': 'agent-a' })
-    expect(rows('foreign_row_access').map((r) => [r.caller, r.caller_source, r.target])).toEqual([['agent-a', 'self_declared', 'agent-b']])
+    expect(rows('foreign_row_read').map((r) => [r.caller, r.caller_source, r.target])).toEqual([['agent-a', 'self_declared', 'agent-b']])
   })
   it('a row that does not exist, or has no owner, is not a hit', () => {
     createKanbanCard({ id: 'card-nobody', title: 't' })
@@ -667,8 +736,9 @@ describe('GET /api/token-shadow', () => {
 
   it('lists every category the observer can write', () => {
     expect([...TOKEN_SHADOW_CATEGORIES].sort()).toEqual([
-      'agent_id_mismatch', 'channel_credential_drift', 'fleet_skill_write_denied', 'foreign_row_access', 'missing_tenant_context',
-      'shared_agent_memories_no_tenant', 'shared_token_refused', 'shared_token_use', 'unscoped_read',
+      'agent_id_mismatch', 'channel_credential_drift', 'fleet_skill_write_denied', 'foreign_row_access', 'foreign_row_read',
+      'identity_refused', 'missing_tenant_context', 'shared_agent_memories_no_tenant', 'shared_token_refused',
+      'shared_token_use', 'unscoped_read',
     ])
   })
 })

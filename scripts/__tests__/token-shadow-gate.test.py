@@ -147,6 +147,30 @@ class Categories(unittest.TestCase):
         self.assertEqual(r["state"], "PASS")
         self.assertEqual(len(r["info"]), 1)
 
+    def test_foreign_row_read_is_informational_and_a_queried_category(self):
+        self.assertIn("foreign_row_read", gate.CATEGORIES)
+        self.assertNotIn("foreign_row_read", gate.BLOCKING_ALWAYS)
+        r = decide([row(category="foreign_row_read", caller="alpha", source="token", target="beta")])
+        self.assertEqual((r["state"], r["exit_code"]), ("PASS", 0))
+        self.assertEqual(len(r["foreign_read"]), 1)
+        self.assertEqual(r["blocking"], [])
+        self.assertIn("foreign_row_read", gate.render(r))
+
+    def test_identity_refused_is_reported_not_blocking_and_a_queried_category(self):
+        self.assertIn("identity_refused", gate.CATEGORIES)
+        self.assertNotIn("identity_refused", gate.BLOCKING_ALWAYS)
+        r = decide([row(category="identity_refused", caller="alpha", source="token", target="beta")])
+        self.assertEqual((r["state"], r["exit_code"]), ("PASS", 0))
+        self.assertEqual(len(r["identity_refused"]), 1)
+        self.assertIn("identity_refused", gate.render(r))
+
+    def test_a_refusable_foreign_row_access_still_blocks_beside_a_foreign_read(self):
+        r = decide([row(category="foreign_row_read", caller="alpha", source="token", target="beta"),
+                    row(category="foreign_row_access", caller="alpha", source="token", target="gamma")])
+        self.assertEqual(r["state"], "FAIL")
+        self.assertEqual(len(r["blocking"]), 1)
+        self.assertEqual(len(r["foreign_read"]), 1)
+
 
 class Conclusiveness(unittest.TestCase):
     def test_zero_rows_but_the_canary_did_not_grow_is_inconclusive_not_a_pass(self):

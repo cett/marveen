@@ -184,10 +184,11 @@ describe('single-row helpers', () => {
     expect(getMemoryById(a + 100)).toBeUndefined()
   })
 
-  it('owner row exposes agent and tenant; delete removes exactly that row', () => {
+  it('owner row exposes agent, tenant and category; delete removes exactly that row', () => {
     const a = seed('a', 'agent-a', 'tenant-a')
-    const b = seed('b', 'agent-b', 'tenant-b')
-    expect(getMemoryOwnerRow(a)).toEqual({ agent_id: 'agent-a', tenant_id: 'tenant-a' })
+    const b = seed('b', 'agent-b', 'tenant-b', { category: 'shared' })
+    expect(getMemoryOwnerRow(a)).toEqual({ agent_id: 'agent-a', tenant_id: 'tenant-a', category: 'warm' })
+    expect(getMemoryOwnerRow(b)).toEqual({ agent_id: 'agent-b', tenant_id: 'tenant-b', category: 'shared' })
     expect(getMemoryOwnerRow(a + 100)).toBeUndefined()
     expect(deleteMemoryRow(a)).toBe(1)
     expect(deleteMemoryRow(a)).toBe(0)

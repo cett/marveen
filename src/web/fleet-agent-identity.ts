@@ -7,9 +7,10 @@
 //
 // The endpoints that call these helpers today: the conversation ledger, agent state and task state,
 // the daily log, spans and the sender of an inter-agent message. Endpoints a fleet_agent can reach
-// but that do not call them yet (memories, workspace, kanban, blackboard, hook-audit, skill-usage,
-// tool-log) are reachable by permission only; their per-agent scoping is the follow-up that the
-// shadow counter of the next phase measures.
+// but that do not call them (memories, workspace, kanban, blackboard, recall) are reachable by
+// permission only; the token counter watches them and, with TOKEN_IDENTITY_MODE=enforce, the gate in
+// web.ts (token-shadow.ts) refuses the requests that name another agent. The one thing the routes
+// themselves do under enforce is enforcedSelfScope below.
 
 import { json } from './http-helpers.js'
 import type { RouteContext } from './routes/types.js'
@@ -48,4 +49,16 @@ export function actingAgentId(ctx: Pick<RouteContext, 'role' | 'tokenAgentId'>, 
   const named = claimed?.trim()
   if (named) return named
   return ctx.role === 'fleet_agent' && ctx.tokenAgentId ? ctx.tokenAgentId : fallback
+}
+
+/**
+ * The agent a fleet_agent's request is scoped to when it names none, under TOKEN_IDENTITY_MODE=enforce:
+ * its own. A listing, search or graph without an agent filter reads across every agent of the tenant
+ * for any other principal; the fleet_agent reads its own rows (and the shared tier, which the agent-scoped
+ * queries add) instead. null = no scoping: shadow mode (the default, nothing changes), or a principal that
+ * is not a fleet_agent.
+ */
+export function enforcedSelfScope(ctx: Pick<RouteContext, 'role' | 'tokenAgentId' | 'identityEnforced'>): string | null {
+  if (!ctx.identityEnforced) return null
+  return ctx.role === 'fleet_agent' && ctx.tokenAgentId ? ctx.tokenAgentId : null
 }
