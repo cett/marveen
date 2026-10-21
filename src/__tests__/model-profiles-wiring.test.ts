@@ -46,7 +46,7 @@ beforeAll(async () => {
   const dbMod = await import('../db.js');
   dbMod.initDatabase(':memory:');
   for (const [profileId, modelId] of Object.entries(MAP)) {
-    dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
+    await dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
   }
 
   const agentConfigMod = await import('../web/agent-config.js');
@@ -112,9 +112,9 @@ describe('fail-safe: DB miss never silently changes an agent already on an expli
       expect(r.source).toBe('default');
       expect(r.error).toBe('model_profile_map_missing');
     } finally {
+      const dbMod = await import('../db.js');
       for (const [profileId, modelId] of Object.entries(MAP)) {
-        const dbMod = await import('../db.js');
-        dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
+        await dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
       }
       invalidateModelProfileMapCache();
     }

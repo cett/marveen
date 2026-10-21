@@ -19,6 +19,7 @@ export * from './autonomy.js'
 export * from './claude-plans.js'
 export * from './channel-credentials.js'
 export { reloadSystemConfigCache, clearSystemConfigCache } from './config-cache.js'
+export { reloadModelProfileMapCache, clearModelProfileMapCache } from './model-profile-map-cache.js'
 export * from './context.js'
 export * from './conversation-ledger.js'
 export * from './cost-budgets.js'
@@ -60,6 +61,7 @@ import { migrateCostBudgetsFromFile } from './cost-budgets.js'
 import { migrateVaultBindingsFromFile } from './vault-bindings.js'
 import { migrateFederationConfigFromFile } from './federation.js'
 import { loadSystemConfigCache } from './config-cache.js'
+import { loadModelProfileMapCache } from './model-profile-map-cache.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -167,6 +169,10 @@ export function initDatabase(dbPathOverride?: string): void {
   // Last step, after every migrator that writes system_config: fill the synchronous write-through cache the
   // configuration readers are served from (config-cache.ts). Runs again on every re-initialisation.
   loadSystemConfigCache()
+
+  // model_profile_map has no file migrator (migration 0054 seeds it directly) -- just the equivalent
+  // synchronous write-through cache load (model-profile-map-cache.ts), for the same reason.
+  loadModelProfileMapCache()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring

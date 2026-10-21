@@ -18,7 +18,7 @@ import {
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames, invalidateModelProfileMapCache } from './agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -1393,10 +1393,10 @@ export async function importFleet(
     if (Array.isArray(s.autonomy)) {
       for (const row of s.autonomy) await upsertAutonomyCategory(row)
     }
-    // Same upsert-not-replace rationale as autonomy above.
+    // Same upsert-not-replace rationale as autonomy above. upsertModelProfileMapEntry
+    // is write-through (db/model-profile-map-cache.ts), no separate cache invalidation needed.
     if (Array.isArray(s.modelProfileMap)) {
-      for (const row of s.modelProfileMap) upsertModelProfileMapEntry(row)
-      invalidateModelProfileMapCache()
+      for (const row of s.modelProfileMap) await upsertModelProfileMapEntry(row)
     }
     // DB-backed (agent_settings) -- upsert per agent, same
     // rationale as autonomy/modelProfileMap above, not a file write.
