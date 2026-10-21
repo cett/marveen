@@ -34,6 +34,11 @@ jobs:
       - name: Security audit
         run: npm audit --audit-level=high
 
+      - name: Security audit (tools/eslint lint toolchain, advisory)
+        # The isolated lint toolchain has its own lock, so the root audit does not see it. A high advisory
+        # there is shown as a warning annotation and does not fail the build or block the (report-mode) lint.
+        run: npm audit --prefix tools/eslint --audit-level=high || echo "::warning title=tools/eslint audit::npm audit found high advisories in the lint toolchain lock"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
