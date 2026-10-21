@@ -82,11 +82,11 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const running = subAgents.filter(n => isAgentRunning(n)).length + 1
     const total = subAgents.length + 1
 
-    const memCount = countOverviewMemories(effectiveTenantId)
-    const memCatCount = countOverviewMemoryCategories(effectiveTenantId)
+    const memCount = await countOverviewMemories(effectiveTenantId)
+    const memCatCount = await countOverviewMemoryCategories(effectiveTenantId)
     let artifactCount = 0
     try {
-      artifactCount = countOverviewArtifacts(effectiveTenantId)
+      artifactCount = await countOverviewArtifacts(effectiveTenantId)
     } catch { /* artifacts table absent on fresh installs before migration */ }
 
     const nowMs = Date.now()
@@ -141,7 +141,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // Per-agent last-active timestamp from token_usage (ms epoch)
     const lastActiveMap = new Map<string, number>()
     try {
-      for (const r of listOverviewLastActive()) lastActiveMap.set(r.agent, r.last_active)
+      for (const r of await listOverviewLastActive()) lastActiveMap.set(r.agent, r.last_active)
     } catch { /* ignore */ }
 
     // Daily token count and estimated USD cost from token_usage.
@@ -152,32 +152,32 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     let tokensToday = 0
     try {
       const startSec = Math.floor(startTs / 1000)
-      tokensToday = sumOverviewTokensSince(startSec, effectiveTenantId)
+      tokensToday = await sumOverviewTokensSince(startSec, effectiveTenantId)
     } catch { /* ignore */ }
 
     // Pending approvals count
     let pendingApprovals = 0
     try {
-      pendingApprovals = countOverviewPendingApprovals(effectiveTenantId)
+      pendingApprovals = await countOverviewPendingApprovals(effectiveTenantId)
     } catch { /* ignore */ }
 
     // Error/timeout spans in last 4h (start_ms is in milliseconds)
     let errors4h = 0
     try {
-      errors4h = countOverviewErrorSpansSince(fourHoursAgo)
+      errors4h = await countOverviewErrorSpansSince(fourHoursAgo)
     } catch { /* ignore */ }
     // The newest of those spans, so the Overview warning can show what failed instead of a bare count.
-    let errorSpans: ReturnType<typeof listOverviewErrorSpansSince> = []
+    let errorSpans: Awaited<ReturnType<typeof listOverviewErrorSpansSince>> = []
     if (isAdmin && errors4h > 0) {
       try {
-        errorSpans = listOverviewErrorSpansSince(fourHoursAgo, ERROR_SPANS_SHOWN)
+        errorSpans = await listOverviewErrorSpansSince(fourHoursAgo, ERROR_SPANS_SHOWN)
       } catch { /* ignore */ }
     }
 
     // Undelivered inter-agent messages (pending = not yet delivered to recipient session)
     let unreadMessages = 0
     try {
-      unreadMessages = countOverviewPendingMessages(effectiveTenantId)
+      unreadMessages = await countOverviewPendingMessages(effectiveTenantId)
     } catch { /* ignore */ }
 
     // Stuck scheduled tasks: active tasks whose next_run was more than 10 minutes ago.
@@ -191,14 +191,14 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     let stuckTasks = 0
     try {
       const tenMinAgo = Math.floor((nowMs - 10 * 60 * 1000) / 1000)
-      stuckTasks = countOverviewStuckScheduledTasks(tenMinAgo)
+      stuckTasks = await countOverviewStuckScheduledTasks(tenMinAgo)
     } catch { /* ignore */ }
 
     // Activity feed: last 4h, include agent_id for frontend filtering
     const activity: Array<{ icon: string; text: string; at: number; agent: string }> = []
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
-      for (const r of listOverviewRecentMemories(fourHAgoSec, effectiveTenantId)) {
+      for (const r of await listOverviewRecentMemories(fourHAgoSec, effectiveTenantId)) {
         activity.push({
           icon: 'memory',
           text: `${r.content.slice(0, 80)}${r.content.length > 80 ? '…' : ''}`,
@@ -209,7 +209,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     } catch { /* ignore */ }
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
-      for (const r of listOverviewRecentMessages(fourHAgoSec, effectiveTenantId)) {
+      for (const r of await listOverviewRecentMessages(fourHAgoSec, effectiveTenantId)) {
         activity.push({
           icon: 'delegate',
           text: `→ ${r.to_agent}: ${r.content.slice(0, 60)}${r.content.length > 60 ? '…' : ''}`,
@@ -220,7 +220,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     } catch { /* ignore */ }
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
-      for (const r of listOverviewRecentApprovals(fourHAgoSec, effectiveTenantId)) {
+      for (const r of await listOverviewRecentApprovals(fourHAgoSec, effectiveTenantId)) {
         activity.push({
           icon: 'approval',
           text: `[${r.status}] ${r.action_description.slice(0, 60)}${r.action_description.length > 60 ? '…' : ''}`,
