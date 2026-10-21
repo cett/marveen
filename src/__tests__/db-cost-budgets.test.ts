@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync as readFileSyncFs, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 // Per-test STORE_DIR isolation (same pattern as db-system-config.test.ts):
 // each test gets its own module instance since STORE_DIR is a module-level
@@ -27,46 +28,46 @@ function costopsPath(): string {
 }
 
 describe('listCostBudgets / replaceCostBudgets', () => {
-  it('returns an empty array when nothing was ever set', () => {
-    expect(dbMod.listCostBudgets('default')).toEqual([])
+  it('returns an empty array when nothing was ever set', async () => {
+    expect(await dbMod.listCostBudgets('default')).toEqual([])
   })
 
-  it('replaceCostBudgets persists a full set, readable via listCostBudgets', () => {
-    dbMod.replaceCostBudgets('default', [
+  it('replaceCostBudgets persists a full set, readable via listCostBudgets', async () => {
+    await dbMod.replaceCostBudgets('default', [
       { id: 'a', name: 'A', scope: 'global', amount: 100, currency: 'HUF', warning_threshold: 0.8, hard_threshold: 1.0, block_on_hard: false },
       { id: 'b', name: 'B', scope: 'agent', scope_ref: 'agent-x', amount: 200, currency: 'HUF', warning_threshold: 0.5, hard_threshold: 0.9, block_on_hard: true },
     ])
-    const rows = dbMod.listCostBudgets('default')
+    const rows = await dbMod.listCostBudgets('default')
     expect(rows).toHaveLength(2)
     expect(rows.find(r => r.id === 'b')).toMatchObject({ scope: 'agent', scope_ref: 'agent-x', block_on_hard: true })
   })
 
-  it('is a whole-value replace: a budget dropped from the new set disappears, not just left un-upserted', () => {
-    dbMod.replaceCostBudgets('default', [
+  it('is a whole-value replace: a budget dropped from the new set disappears, not just left un-upserted', async () => {
+    await dbMod.replaceCostBudgets('default', [
       { id: 'a', amount: 100 },
       { id: 'b', amount: 200 },
     ])
-    dbMod.replaceCostBudgets('default', [{ id: 'a', amount: 999 }])
-    const rows = dbMod.listCostBudgets('default')
+    await dbMod.replaceCostBudgets('default', [{ id: 'a', amount: 999 }])
+    const rows = await dbMod.listCostBudgets('default')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ id: 'a', amount: 999 })
   })
 
-  it('scopes reads/writes by tenant_id', () => {
-    dbMod.replaceCostBudgets('default', [{ id: 'a', amount: 100 }])
-    dbMod.replaceCostBudgets('other-tenant', [{ id: 'a', amount: 500 }])
-    expect(dbMod.listCostBudgets('default')[0].amount).toBe(100)
-    expect(dbMod.listCostBudgets('other-tenant')[0].amount).toBe(500)
+  it('scopes reads/writes by tenant_id', async () => {
+    await dbMod.replaceCostBudgets('default', [{ id: 'a', amount: 100 }])
+    await dbMod.replaceCostBudgets('other-tenant', [{ id: 'a', amount: 500 }])
+    expect((await dbMod.listCostBudgets('default'))[0].amount).toBe(100)
+    expect((await dbMod.listCostBudgets('other-tenant'))[0].amount).toBe(500)
   })
 })
 
 describe('migrateCostBudgetsFromFile', () => {
-  it('returns 0 and writes nothing when the file does not exist', () => {
+  it('returns 0 and writes nothing when the file does not exist', async () => {
     expect(dbMod.migrateCostBudgetsFromFile()).toBe(0)
-    expect(dbMod.listCostBudgets('default')).toEqual([])
+    expect(await dbMod.listCostBudgets('default')).toEqual([])
   })
 
-  it('backfills every budget from an existing file with source tenant=default', () => {
+  it('backfills every budget from an existing file with source tenant=default', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(costopsPath(), JSON.stringify({
       version: 1, currency: 'HUF', fixed_costs: [],
@@ -79,12 +80,12 @@ describe('migrateCostBudgetsFromFile', () => {
     const migrated = dbMod.migrateCostBudgetsFromFile()
 
     expect(migrated).toBe(2)
-    const rows = dbMod.listCostBudgets('default')
+    const rows = await dbMod.listCostBudgets('default')
     expect(rows).toHaveLength(2)
     expect(rows.find(r => r.id === 'agent-budget')).toMatchObject({ scope_ref: 'agent-x', block_on_hard: true })
   })
 
-  it('is idempotent: a second run does not overwrite an operator-set row', () => {
+  it('is idempotent: a second run does not overwrite an operator-set row', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(costopsPath(), JSON.stringify({
       version: 1, currency: 'HUF', fixed_costs: [],
@@ -92,11 +93,11 @@ describe('migrateCostBudgetsFromFile', () => {
     }))
     dbMod.migrateCostBudgetsFromFile()
 
-    dbMod.replaceCostBudgets('default', [{ id: 'global-monthly', amount: 999 }])
+    await dbMod.replaceCostBudgets('default', [{ id: 'global-monthly', amount: 999 }])
     const secondRun = dbMod.migrateCostBudgetsFromFile()
 
     expect(secondRun).toBe(0)
-    expect(dbMod.listCostBudgets('default')[0].amount).toBe(999)
+    expect((await dbMod.listCostBudgets('default'))[0].amount).toBe(999)
   })
 
   it('skips a corrupt JSON file without throwing', () => {
@@ -106,7 +107,7 @@ describe('migrateCostBudgetsFromFile', () => {
     expect(dbMod.migrateCostBudgetsFromFile()).toBe(0)
   })
 
-  it('skips a budgets entry with a missing id or invalid amount, keeps the rest', () => {
+  it('skips a budgets entry with a missing id or invalid amount, keeps the rest', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(costopsPath(), JSON.stringify({
       version: 1, currency: 'HUF', fixed_costs: [],
@@ -117,12 +118,35 @@ describe('migrateCostBudgetsFromFile', () => {
       ],
     }))
     expect(dbMod.migrateCostBudgetsFromFile()).toBe(1)
-    expect(dbMod.listCostBudgets('default')).toHaveLength(1)
+    expect(await dbMod.listCostBudgets('default')).toHaveLength(1)
   })
 
   it('returns 0 when the file has no budgets array (version/currency/fixed_costs only)', () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(costopsPath(), JSON.stringify({ version: 1, currency: 'HUF', fixed_costs: [] }))
     expect(dbMod.migrateCostBudgetsFromFile()).toBe(0)
+  })
+
+  it('only the boot chain (db/index.ts) calls migrateCostBudgetsFromFile', () => {
+    const srcDir = fileURLToPath(new URL('..', import.meta.url))
+    // Strip comments first: several files mention the function name in a
+    // doc comment (cross-reference), which is not a call.
+    const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    const offenders: string[] = []
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name)
+        if (statSync(full).isDirectory()) {
+          if (name === '__tests__') continue
+          walk(full)
+        } else if (name.endsWith('.ts')) {
+          const rel = full.slice(srcDir.length)
+          if (rel === 'db/cost-budgets.ts' || rel === 'db/index.ts') continue
+          if (/\bmigrateCostBudgetsFromFile\s*\(/.test(stripComments(readFileSyncFs(full, 'utf8')))) offenders.push(rel)
+        }
+      }
+    }
+    walk(srcDir)
+    expect(offenders).toEqual([])
   })
 })

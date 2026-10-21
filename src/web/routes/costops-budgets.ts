@@ -76,11 +76,11 @@ export async function tryHandleCostopsBudgets(ctx: RouteContext): Promise<boolea
   }
 
   if (path === '/api/costops/budgets' && method === 'GET') {
-    const { config } = loadCostopsConfig()
+    const { config } = await loadCostopsConfig()
     // Enriched with live status (spent/ratio/level/blocked) so this one
     // response serves both the Settings CRUD table and the read-only
     // budget-status widget on the token-usage page -- no separate endpoint.
-    const statuses = evaluateBudgets(config, Date.now())
+    const statuses = await evaluateBudgets(config, Date.now())
     const budgets = statuses.map((s) => ({ ...s.budget, spent: s.spent, ratio: s.ratio, level: s.level, blocked: s.blocked }))
     json(res, { budgets })
     return true
@@ -93,7 +93,7 @@ export async function tryHandleCostopsBudgets(ctx: RouteContext): Promise<boolea
         json(res, { error: 'invalid_value', field: 'id', hint: 'id must be lowercase letters/digits/-/_, max 63 chars' }, 400)
         return true
       }
-      const { config } = loadCostopsConfig()
+      const { config } = await loadCostopsConfig()
       if (config.budgets.some((b) => b.id === body.id)) {
         json(res, { error: 'conflict', hint: `Budget "${body.id}" already exists` }, 409)
         return true
@@ -104,7 +104,7 @@ export async function tryHandleCostopsBudgets(ctx: RouteContext): Promise<boolea
         return true
       }
       config.budgets.push(result.value)
-      const saved = saveCostopsConfig(config)
+      const saved = await saveCostopsConfig(config)
       logger.info({ id: result.value.id }, 'CostOps budget created')
       json(res, { ok: true, budget: result.value, errors: saved.errors }, 201)
     } catch (err) {
@@ -117,7 +117,7 @@ export async function tryHandleCostopsBudgets(ctx: RouteContext): Promise<boolea
   const idMatch = path.match(/^\/api\/costops\/budgets\/([^/]+)$/)
   if (idMatch) {
     const id = decodeURIComponent(idMatch[1])
-    const { config } = loadCostopsConfig()
+    const { config } = await loadCostopsConfig()
     const idx = config.budgets.findIndex((b) => b.id === id)
     if (idx === -1) {
       json(res, { error: 'not_found', hint: `Budget "${id}" not found` }, 404)
@@ -133,7 +133,7 @@ export async function tryHandleCostopsBudgets(ctx: RouteContext): Promise<boolea
           return true
         }
         config.budgets[idx] = result.value
-        const saved = saveCostopsConfig(config)
+        const saved = await saveCostopsConfig(config)
         logger.info({ id }, 'CostOps budget updated')
         json(res, { ok: true, budget: result.value, errors: saved.errors })
       } catch (err) {
@@ -145,7 +145,7 @@ export async function tryHandleCostopsBudgets(ctx: RouteContext): Promise<boolea
 
     if (method === 'DELETE') {
       config.budgets.splice(idx, 1)
-      saveCostopsConfig(config)
+      await saveCostopsConfig(config)
       logger.info({ id }, 'CostOps budget deleted')
       json(res, { ok: true })
       return true

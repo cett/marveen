@@ -724,7 +724,7 @@ async function exportDashboardSettings(): Promise<DashboardSettingsExport> {
     modelFallback: readModelFallbackFieldsRaw(),
     federation: readFederationConfigObjectRaw(),
     costopsConfig: read('costops-config.json'),
-    costBudgets: listCostBudgets('default'),
+    costBudgets: await listCostBudgets('default'),
     egressAllowlist: await listEgressAllowlistRows(null),
     terminalInputEnabled: readTerminalInputEnabledRaw(),
   }
@@ -1481,7 +1481,7 @@ export async function importFleet(
       // exactly that case, still wiping the target for reasons the source
       // never actually asked for (nothing it sent survived validation).
       if (deduped.length > 0) {
-        replaceCostBudgets('default', deduped)
+        await replaceCostBudgets('default', deduped)
       }
       if (budgetErrors.length > 0) {
         applyWarnings.push(
