@@ -92,6 +92,6 @@ describe('shared_token_refused', () => {
     await enrollDashboardApiToken(sha('old-shared'), NOW - 100)
     await enrollDashboardApiToken(sha('new-shared'), NOW)
     getDb().exec('DROP TABLE token_usage_shadow')
-    expect(() => observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')).not.toThrow()
+    await expect(observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')).resolves.toBeUndefined()
   })
 })

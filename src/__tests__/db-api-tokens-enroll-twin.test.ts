@@ -7,15 +7,18 @@ import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
-interface Snapshot { token_hash: string; revoked_at: number | null }
+interface Snapshot { token_hash: string; role: string; revoked_at: number | null }
 
 const snapshot = (): Snapshot[] =>
-  getDb().prepare("SELECT token_hash, revoked_at FROM api_tokens WHERE name = 'dashboard' ORDER BY token_hash").all() as Snapshot[]
+  getDb().prepare("SELECT token_hash, role, revoked_at FROM api_tokens WHERE name = 'dashboard' ORDER BY token_hash").all() as Snapshot[]
 
 type Enroll = (hash: string, now: number) => Promise<number> | number
 
 // A -> B -> A: the restore of an older token file. Returns what each call answered and the rows after each.
 async function scenario(enroll: Enroll): Promise<{ answers: number[]; rows: Snapshot[][] }> {
+  // A dashboard row that was revoked on purpose long ago: an enrollment must leave its revoke time alone (a revoke
+  // without `AND revoked_at IS NULL` would move it, and only a pre-revoked row shows that).
+  await dbx.run("INSERT INTO api_tokens (token_hash, name, role, created_at, revoked_at) VALUES ('hash-z', 'dashboard', 'admin', 10, 50)")
   const answers: number[] = []
   const rows: Snapshot[][] = []
   for (const [hash, now] of [['hash-a', 100], ['hash-a', 101], ['hash-b', 200], ['hash-a', 300]] as const) {
@@ -36,8 +39,16 @@ describe('enrollDashboardApiToken and its boot-synchronous twin', () => {
   it('both revoke the earlier dashboard row and keep a restored token revoked (the scenario is not vacuous)', async () => {
     const { answers, rows } = await scenario(enrollDashboardApiTokenSync)
     expect(answers).toEqual([1, 0, 1, 0])
-    expect(rows[2]).toEqual([{ token_hash: 'hash-a', revoked_at: 200 }, { token_hash: 'hash-b', revoked_at: null }])
+    expect(rows[2]).toEqual([
+      { token_hash: 'hash-a', role: 'admin', revoked_at: 200 },
+      { token_hash: 'hash-b', role: 'admin', revoked_at: null },
+      { token_hash: 'hash-z', role: 'admin', revoked_at: 50 },
+    ])
     // A is enrolled again: B goes, A stays revoked (a row revoked on purpose is never un-revoked).
-    expect(rows[3]).toEqual([{ token_hash: 'hash-a', revoked_at: 200 }, { token_hash: 'hash-b', revoked_at: 300 }])
+    expect(rows[3]).toEqual([
+      { token_hash: 'hash-a', role: 'admin', revoked_at: 200 },
+      { token_hash: 'hash-b', role: 'admin', revoked_at: 300 },
+      { token_hash: 'hash-z', role: 'admin', revoked_at: 50 },
+    ])
   })
 })

@@ -314,11 +314,6 @@ describe('auth path: revocation is immediate, a database failure fails closed', 
     await expect(ask(FILE_TOKEN)).rejects.toThrow('database unavailable')
   })
 
-  it('a database failure on a device-key bearer rejects too', async () => {
-    vi.spyOn(dbx, 'get').mockRejectedValue(new Error('database unavailable'))
-    await expect(ask('mvdk_not-a-real-key')).rejects.toThrow('database unavailable')
-  })
-
   it('the legacy fallback still answers for the file token while the database is healthy (the control)', async () => {
     expect(await ask(FILE_TOKEN)).toEqual({ kind: 'token' })
   })

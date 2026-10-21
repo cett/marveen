@@ -91,8 +91,9 @@ it cannot read the database: the rejection reaches the request handler (a 500), 
 "no such token, carry on" that would reach the legacy file-token fallback and grant admin. Nothing on this path
 catches a database error and continues. When such a function becomes asynchronous, every call site `await`s it:
 a Promise that is not awaited is truthy, so a forgotten `await` would let every request through. The lint
-(`no-floating-promises`, `no-misused-promises`) and the tests in `auth-gate.test.ts` (database failure, revoke on the
-very next request) are the guard.
+(`no-floating-promises`, `no-misused-promises`) and the tests in `auth-gate.test.ts` (token lane, revoke on the very next request) and
+`auth-path-failure-modes.test.ts` (device-key lane, a single failed statement, the attempt cap, the `await` in
+`web.ts`) are the guard.
 
 Revocation of an API token is immediate because its lookup has no cache: each request reads `api_tokens`. A device
 key keeps an in-process cache (`auth-device-keys.ts`). A revoke made through the dashboard process clears the row

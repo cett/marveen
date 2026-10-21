@@ -36,7 +36,7 @@ describe('on an empty table', () => {
     expect(await deleteAllDeviceKeys()).toBe(0)
     expect(await deleteExpiredDeviceKeys(100)).toBe(0)
     expect(await setDeviceKeyTenant(1, 'acme')).toBe(0)
-    expect(() => deleteDeviceKeyByHash('h')).not.toThrow()
+    await expect(deleteDeviceKeyByHash('h')).resolves.toBeUndefined()
   })
 })
 
