@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, 'feature/pg-p1-*']
   pull_request:
-    branches: [develop]
+    branches: [develop, 'feature/pg-p1-*']
 
 # A new push to a pull request supersedes the run still going on its previous
 # head: cancel that one. A push to develop/main gets a group of its own (its
@@ -305,7 +305,7 @@ jobs:
           exit $fail
 
       - name: Vitest on the changed files
-        # The full suite runs on push to develop (Coverage below). A pull request
+        # The full suite runs on push to develop and to feature/pg-p1-* (Coverage below). A pull request
         # runs `vitest related` on the TypeScript it changed, so a stale or broken
         # test fails the PR, not the develop that merged it. See the script for the
         # skip and whole-suite fallback rules.
@@ -316,9 +316,9 @@ jobs:
 
       - name: Coverage
         # #894/B: the full vitest suite (with coverage instrumentation) now
-        # only runs on push to develop. PR pass/fail already comes from
-        # build-checks (build + typecheck); the coverage gate itself is a
-        # develop-branch concern.
+        # only runs on push to develop and to feature/pg-p1-*. PR pass/fail already
+        # comes from build-checks (build + typecheck); the coverage gate itself is a
+        # concern of those pushes.
         if: github.event_name == 'push'
         run: npm run coverage
 
