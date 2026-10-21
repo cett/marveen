@@ -117,9 +117,14 @@ describe('launcher wiring', () => {
     // explicit, a registered plan's dir for rotated -- design 6.5/4) --
     // exporting the fleet token for either would silently authenticate the
     // bot as the fleet identity instead.
-    const branch = CHANNELS.match(/if \[ "\$_cfg_mode" = "explicit" \] \|\| \[ "\$_cfg_mode" = "rotated" \]; then\n([\s\S]*?)\n\s*else/)
+    // The prefix is built by main_cfg_env; the explicit / rotated branch exports the dir and may only UNSET the
+    // token (the shell exports the fleet token before this point, and it would override the dir's login).
+    const branch = CHANNELS.match(/main_cfg_env\(\) \{[\s\S]*?if \[ "\$_mode" = "explicit" \] \|\| \[ "\$_mode" = "rotated" \]; then\n([\s\S]*?)\n\s*else/)
     expect(branch).not.toBeNull()
-    expect(branch?.[1]).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(branch?.[1]).not.toMatch(/export CLAUDE_CODE_OAUTH_TOKEN/)
     expect(branch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
+    expect(branch?.[1]).toMatch(/unset CLAUDE_CODE_OAUTH_TOKEN/)
+    // the launch path uses the function for the mode the helper printed
+    expect(CHANNELS).toMatch(/CFG_ENV="\$\(main_cfg_env "\$_cfg_mode" "\$_cfg_dir"\)"/)
   })
 })

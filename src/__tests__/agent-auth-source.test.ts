@@ -1,5 +1,5 @@
 // T4-7 W6: which credential an agent session authenticates with. The classifiers describe the launch
-// behaviour without changing it, so two things are pinned: the decision table itself, and the launcher
+// behaviour, so two things are pinned: the decision table itself, and the launcher
 // source lines the table is derived from (a change to the precedence in agent-process-spawn.ts or
 // scripts/channels.sh must come with a change to the classifier, not drift past it).
 //
@@ -34,13 +34,18 @@ describe('classifySubAgentAuth', () => {
     expect(sub({ authMode: 'api', hasAgentApiKey: true })).toEqual({ winner: 'api-key-env', configDir: 'shared', shadowed: [] })
   })
 
-  it('an authMode api agent loses its key to the fleet token the launcher exports for every dir-less agent', () => {
+  it('an authMode api agent keeps its key: the launcher never exports the fleet token to it', () => {
+    // the pin used to say the opposite (the key lost to the token); that recorded the defect this fixes
     const r = sub({ authMode: 'api', hasAgentApiKey: true, hasFleetToken: true })
-    expect(r.winner).toBe('oauth-env')
-    expect(r.shadowed).toEqual(['ANTHROPIC_API_KEY'])
-    // not isolated: an api agent without a channel keeps the shared root, only the env token differs
-    expect(r.configDir).toBe('shared')
-    expect(sub({ authMode: 'api', hasAgentApiKey: true, hasFleetToken: true, hasChannel: true }).configDir).toBe('isolated')
+    expect(r).toEqual({ winner: 'api-key-env', configDir: 'shared', shadowed: [] })
+    // not isolated: an api agent without a channel keeps the shared root
+    expect(sub({ authMode: 'api', hasAgentApiKey: true, hasFleetToken: true, hasChannel: true }))
+      .toEqual({ winner: 'api-key-env', configDir: 'isolated', shadowed: [] })
+  })
+
+  it('an authMode api agent with no vault key does not fall back to the fleet token either', () => {
+    expect(sub({ authMode: 'api', hasAgentApiKey: false, hasFleetToken: true }))
+      .toEqual({ winner: 'shared-login', configDir: 'shared', shadowed: [] })
   })
 
   it('an authMode api agent with a config dir keeps its key over the dir login', () => {
@@ -66,16 +71,22 @@ describe('classifyMainAgentAuth', () => {
     expect(main({})).toEqual({ winner: 'shared-login', configDir: 'shared', shadowed: [] })
   })
 
-  it('the token from .env or the fleet token file wins, and shadows an explicit dir login and the API key', () => {
+  it('the token from .env or the fleet token file wins and shadows the API key, when there is no own-login dir', () => {
     expect(main({ envFileOauth: true }).winner).toBe('oauth-env')
     expect(main({ hasFleetToken: true, envFileApiKey: true }).shadowed).toEqual(['ANTHROPIC_API_KEY'])
-    expect(main({ hasFleetToken: true, cfgMode: 'explicit' })).toEqual({ winner: 'oauth-env', configDir: 'explicit', shadowed: ['config-dir login'] })
-    expect(main({ hasFleetToken: true, cfgMode: 'rotated' }).shadowed).toEqual(['config-dir login'])
   })
 
-  it('an explicit dir with no token exported keeps its own login; an API key still beats it', () => {
+  it('an explicit or rotated dir keeps its own login: the launch command unsets the token the shell exported', () => {
+    // the pin used to say the token shadowed the dir login; that recorded the defect this fixes
+    for (const cfgMode of ['explicit', 'rotated'] as const) {
+      expect(main({ hasFleetToken: true, envFileOauth: true, cfgMode })).toEqual({ winner: 'config-dir-login', configDir: 'explicit', shadowed: [] })
+    }
     expect(main({ cfgMode: 'explicit' })).toEqual({ winner: 'config-dir-login', configDir: 'explicit', shadowed: [] })
-    expect(main({ cfgMode: 'explicit', envFileApiKey: true })).toEqual({ winner: 'api-key-env', configDir: 'explicit', shadowed: ['config-dir login'] })
+  })
+
+  it('an API key in .env still beats the login of an explicit dir', () => {
+    expect(main({ cfgMode: 'explicit', envFileApiKey: true, hasFleetToken: true }))
+      .toEqual({ winner: 'api-key-env', configDir: 'explicit', shadowed: ['config-dir login'] })
   })
 
   it('the isolated mode authenticates from the token it injects', () => {
@@ -91,12 +102,18 @@ describe('launcher source the classifiers mirror', () => {
   const channels = flat('scripts/channels.sh')
 
   it('sub-agent: the API key is exported only for authMode api on a Claude model', () => {
-    expect(spawn).toContain("if (isClaude && authMode === 'api') {")
+    expect(spawn).toContain("const ownApiKeyAuth = isClaude && authMode === 'api'")
+    expect(spawn).toContain('if (ownApiKeyAuth) {')
     expect(spawn).toContain('apiKeyEnv = `export ANTHROPIC_API_KEY=')
   })
 
-  it('sub-agent: the fleet token is exported for every dir-less agent, whatever its authMode', () => {
-    expect(spawn).toContain('if (!claudeConfigDir && hasFleetOauthToken()) { oauthTokenEnv =')
+  it('sub-agent: the fleet token is exported for a dir-less agent, except one on its own API key', () => {
+    expect(spawn).toContain('if (!claudeConfigDir && !ownApiKeyAuth && hasFleetOauthToken()) { oauthTokenEnv =')
+    expect(spawn).toContain('if (!ownApiKeyAuth) { oauthTokenEnv =')
+  })
+
+  it('sub-agent: an own-key agent unsets a token inherited from the tmux environment', () => {
+    expect(spawn).toContain("${ownApiKeyAuth ? ' CLAUDE_CODE_OAUTH_TOKEN' : ''}")
   })
 
   it('sub-agent: isolation covers channel agents and non-api Claude agents, not the main agent', () => {
@@ -114,12 +131,13 @@ describe('launcher source the classifiers mirror', () => {
     expect(channels).toContain('store/.claude-oauth-token" ]; then _oauth="$(cat "$INSTALL_DIR/store/.claude-oauth-token")"')
   })
 
-  it('main agent: explicit and rotated dirs inject no token of their own, isolated does', () => {
-    const explicit = channels.slice(channels.indexOf('if [ "$_cfg_mode" = "explicit" ]'))
-    const explicitBranch = explicit.slice(0, explicit.indexOf('else'))
-    expect(explicitBranch).toContain("CFG_ENV=\"export CLAUDE_CONFIG_DIR='$_cfg_dir' && \"")
-    expect(explicitBranch).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
-    const isolatedBranch = explicit.slice(explicit.indexOf('else'), explicit.indexOf(' fi '))
+  it('main agent: explicit and rotated dirs unset the token, isolated seeds it', () => {
+    const fn = channels.slice(channels.indexOf('main_cfg_env() {'))
+    const explicitBranch = fn.slice(0, fn.indexOf(' else '))
+    expect(explicitBranch).toContain("unset CLAUDE_CODE_OAUTH_TOKEN && ")
+    expect(explicitBranch).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
+    const isolatedBranch = fn.slice(fn.indexOf(' else '), fn.indexOf(' fi '))
     expect(isolatedBranch).toContain('export CLAUDE_CODE_OAUTH_TOKEN=')
+    expect(channels).toContain('CFG_ENV="$(main_cfg_env "$_cfg_mode" "$_cfg_dir")"')
   })
 })

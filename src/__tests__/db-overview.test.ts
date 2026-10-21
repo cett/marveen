@@ -17,7 +17,6 @@ import {
   countOverviewStuckScheduledTasks,
   listOverviewRecentMemories,
   listOverviewRecentMessages,
-  listOverviewRecentApprovals,
 } from '../db/overview.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
@@ -213,13 +212,5 @@ describe('the recent lists', () => {
     expect((await listOverviewRecentMessages(10, 'acme')).map(m => m.content)).toEqual(['mid'])
     for (let i = 0; i < 20; i++) addMessage(`bulk ${i}`, 'done', 100 + i, 'default')
     expect(await listOverviewRecentMessages(0, null)).toHaveLength(15)
-  })
-
-  // Known defect, pinned so the move onto the facade does not change it silently: the query reads
-  // approvals.created_at, the column is requested_at, so the call throws and the overview route drops the
-  // approvals from its activity feed in its catch. A fix is its own change.
-  it('approvals: the query names a column the table does not have', async () => {
-    addApproval('a1', 'pending', 5, 'default')
-    await expect(listOverviewRecentApprovals(0, null)).rejects.toThrow(/no such column: created_at/)
   })
 })
