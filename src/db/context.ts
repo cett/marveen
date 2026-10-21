@@ -1,4 +1,4 @@
-// The db context carrier (Phase 1): WHO runs a db call, carried through `await`s with an
+// The db context carrier: WHO runs a db call, carried through `await`s with an
 // AsyncLocalStorage, so the PostgreSQL phase can set the row-level-security role per call without every
 // db function growing a parameter.
 //
@@ -6,8 +6,8 @@
 //   runAs.tenant('acme', () => ...)               a request of a tenant
 //   runAs.agent('agent-a', 'acme', () => ...)        a request of an agent token
 //
-// In Phase 1 the carrier only RECORDS and COUNTS: a call without a context is not refused and nothing is
-// filtered by it (that is Phase 2). Every facade call reads the context; a call without one bumps a counter
+// For now the carrier only RECORDS and COUNTS: a call without a context is not refused and nothing is
+// filtered by it (that comes with the PostgreSQL step). Every facade call reads the context; a call without one bumps a counter
 // and, at most once per interval, logs a warning with the call site, so the places that still need a
 // `runAs` show up before enforcement exists.
 //
@@ -83,7 +83,7 @@ export function noteDbCall(): void {
   if (now - lastWarnAt < WARN_INTERVAL_MS && lastWarnAt !== 0) return
   lastWarnAt = now
   lastCallSite = captureOrigin()
-  logger.warn({ callSite: lastCallSite, withoutContext, total }, 'db: call without a db context (runAs.system / tenant / agent); not enforced in Phase 1')
+  logger.warn({ callSite: lastCallSite, withoutContext, total }, 'db: call without a db context (runAs.system / tenant / agent); not enforced yet')
 }
 
 export function getDbContextStats(): DbContextStats {

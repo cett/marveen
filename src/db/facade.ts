@@ -1,7 +1,7 @@
-// The async db facade (`dbx`) of the PostgreSQL preparation (Phase 1).
+// The async db facade (`dbx`) of the PostgreSQL preparation.
 //
 // Every method returns a Promise, so the callers are written once for the SQLite backend of today and the
-// PostgreSQL backend of Phase 2. A module that moves onto the facade uses `dbx`, never the raw `db` handle.
+// PostgreSQL backend later. A module that moves onto the facade uses `dbx`, never the raw `db` handle.
 //
 // Rules of the surface:
 //  - parameters are positional `?` values (any number of arguments) OR one object for `@name` placeholders;

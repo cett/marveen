@@ -1,5 +1,5 @@
 // The db context carrier (runAs / currentDbContext) and the counting of facade calls without a context.
-// The first group pins the AsyncLocalStorage traps the Phase 1 waves rely on.
+// The first group pins the AsyncLocalStorage traps the migration waves rely on.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats } from '../db.js'

@@ -258,7 +258,7 @@ jobs:
 
       - name: Raw SQL outside the db layer ratchet
         # .prepare( / getDb( / .transaction( outside src/db/ (src/ and scripts/) may not grow
-        # past scripts/db-outside-sql-baseline.json, and no new file may add one (Phase 1).
+        # past scripts/db-outside-sql-baseline.json, and no new file may add one.
         run: python3 scripts/db-outside-sql-ratchet.py
 
       - name: Log message literal ratchet
@@ -281,7 +281,7 @@ jobs:
           node tools/eslint/check-fixture.mjs
 
       - name: Async lint (no-floating-promises, no-misused-promises, await-thenable, require-await; FAILS the build)
-        # ERROR MODE for the production src/ (Phase 1): a finding fails the build. The rules need
+        # ERROR MODE for the production src/: a finding fails the build. The rules need
         # the classic TypeScript API, which TypeScript 7 does not ship, so they run from the isolated
         # tools/eslint toolchain (TypeScript 6.0 for the linter only). See tools/eslint/eslint.config.mjs.
         # The summary is printed whether or not the lint passed.

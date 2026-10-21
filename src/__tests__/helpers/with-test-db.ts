@@ -1,4 +1,4 @@
-// The single entry point of a test that needs the database (Phase 1).
+// The single entry point of a test that needs the database.
 //
 //   const { dbx } = useTestDb()
 //   it('...', async () => { await dbx.run(...) })
@@ -7,7 +7,7 @@
 // lock and its scope, the db context carrier and its counters) and `initDatabase(':memory:')` hands out a fresh
 // database; that call also loads the system_config cache for it. After each test the connection is closed.
 //
-// Phase 2 runs the same call against a PostgreSQL template database (switched by an environment variable), so
+// The PostgreSQL step runs the same call against a template database (switched by an environment variable), so
 // the tests that use it do not change. The tests that open the database by hand (218 of them) are moved over
 // module by module with the waves.
 

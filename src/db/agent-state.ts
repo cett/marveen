@@ -38,7 +38,7 @@ const UPSERT = `
       updated_at = excluded.updated_at
   `
 
-// The first module on the async db facade (Phase 1 pilot): both operations go through `dbx` and return
+// The first module on the async db facade (the pilot of the migration): both operations go through `dbx` and return
 // a Promise. Read-modify-write over the two calls is NOT atomic (another caller can run between them): the
 // only RMW user today is the context restart gate, which runs one sweep timer per agent, so there is no
 // concurrent run for the same agent.
@@ -55,7 +55,7 @@ export async function setAgentState(agentId: string, key: AgentStateKey, value: 
 
 // BOOT-SYNCHRONOUS twins. initDatabase() runs a synchronous chain (db/index.ts: the one-time importers of the
 // JSON side-cars), which cannot await. These two keep the raw handle and are for that chain ONLY: nothing else
-// may call them (a test pins this). The Phase 2 initDatabase() is asynchronous and the twins go away with it.
+// may call them (a test pins this). Once initDatabase() is asynchronous the twins go away.
 export function getAgentStateSync(agentId: string, key: AgentStateKey): AgentStateRow | undefined {
   return db.prepare(SELECT_ONE).get(agentId, key) as AgentStateRow | undefined
 }

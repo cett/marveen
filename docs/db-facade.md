@@ -1,6 +1,6 @@
 # The async db facade (`dbx`)
 
-Phase 1 of the PostgreSQL preparation turns the db layer asynchronous one module at a time. This page says
+The PostgreSQL preparation turns the db layer asynchronous one module at a time. This page says
 how to write a database operation while that is going on. The facade lives in `src/db/facade.ts`, its lock in
 `src/db/tx-lock.ts`, the caller context in `src/db/context.ts`, the config cache in `src/db/config-cache.ts`.
 
@@ -24,7 +24,7 @@ how to write a database operation while that is going on. The facade lives in `s
    0 turns it off) is logged with the line that opened it. A transaction inside a transaction is a `SAVEPOINT`;
    `dbx.tx(fn, { mode: 'immediate' })` is `BEGIN IMMEDIATE`.
 6. **Run inside a context.** `runAs.system('job-name', fn)`, `runAs.tenant(tenantId, fn)` or
-   `runAs.agent(agentId, tenantId, fn)` around the work that touches the database. In Phase 1 a call without one
+   `runAs.agent(agentId, tenantId, fn)` around the work that touches the database. For now a call without one
    is counted and warned about (`getDbContextStats()`), not refused. A timer created before `runAs` does not
    inherit it: a tick that touches the database opens its own `runAs`.
 7. **Per-request counters are buffered writes** (wave 3), not one write per request.
@@ -37,9 +37,9 @@ calls `reloadSystemConfigCache()`.
 
 ## Boot code stays synchronous
 
-`initDatabase()` is synchronous in Phase 1 and cannot await. The one-time importers it runs use the
+`initDatabase()` is synchronous for now and cannot await. The one-time importers it runs use the
 synchronous twins of a migrated module (`getAgentStateSync`, `setAgentStateSync`), which only `src/db/index.ts`
-may call. Phase 2 makes `initDatabase()` asynchronous and the twins go away.
+may call. A later step makes `initDatabase()` asynchronous and the twins go away.
 
 ## Tests
 
@@ -54,7 +54,7 @@ it('writes a row', async () => {
 ```
 
 `useTestDb()` resets the lock, the context carrier and the config cache and opens a fresh `:memory:` database
-before each test. Phase 2 runs the same call against a PostgreSQL template database, so the tests do not change.
+before each test. The PostgreSQL step runs the same call against a template database, so the tests do not change.
 The tests that open the database by hand are moved over module by module.
 
 ## What the facade does not cover
