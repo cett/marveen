@@ -236,7 +236,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // default (non-opt-in) recall response for any other caller.
       let docResults: WorkspaceDocSearchResult[] = await hybridSearchDocs(q, {
         tenantId: recallTenantId,
-        agentId: agentId || undefined,
+        // Enforce: a fleet agent's docs are its own, whichever agent the (shared-tier) request named;
+        // the shared exemption in token-shadow.ts covers memory rows only, docs have no shared tier.
+        agentId: enforcedSelfScope(ctx) || agentId || undefined,
         limit,
       })
       // Defence-in-depth guard, same rationale as the memories one above:
