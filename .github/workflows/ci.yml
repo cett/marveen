@@ -288,8 +288,8 @@ jobs:
         run: |
           npm ci --prefix tools/eslint --ignore-scripts
           status=0
-          tools/eslint/node_modules/.bin/eslint -c tools/eslint/eslint.config.mjs -f json -o eslint-async.json src || status=$?
-          node tools/eslint/summarize.mjs eslint-async.json 15
+          tools/eslint/node_modules/.bin/eslint -c tools/eslint/eslint.config.mjs -f json -o "$RUNNER_TEMP/eslint-async.json" src || status=$?
+          node tools/eslint/summarize.mjs "$RUNNER_TEMP/eslint-async.json" 15
           exit $status
 
       - name: Async lint report for the tests (report only)
@@ -297,8 +297,8 @@ jobs:
         # so this step never fails the build; it keeps the count in the log.
         continue-on-error: true
         run: |
-          ESLINT_ASYNC_TESTS=1 tools/eslint/node_modules/.bin/eslint -c tools/eslint/eslint.config.mjs -f json -o eslint-async-tests.json src || true
-          node tools/eslint/summarize.mjs eslint-async-tests.json 15
+          ESLINT_ASYNC_TESTS=1 tools/eslint/node_modules/.bin/eslint -c tools/eslint/eslint.config.mjs -f json -o "$RUNNER_TEMP/eslint-async-tests.json" src || true
+          node tools/eslint/summarize.mjs "$RUNNER_TEMP/eslint-async-tests.json" 15
 
       - name: Shell tests
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
