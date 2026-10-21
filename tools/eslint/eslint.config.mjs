@@ -1,5 +1,5 @@
 // Async-correctness rules for the 1017 Phase 1 rewrite (the db layer becomes async).
-// ERROR MODE for production src/ (1017 Phase 1 base wave): a finding fails the build. The test files
+// ERROR MODE for production src/ (Phase 1 base wave): a finding fails the build. The test files
 // (ESLINT_ASYNC_TESTS=1) stay in report mode: the tests are rewritten module by module with the waves.
 //
 // Type-aware (the rules need the types of the expressions): the project's tsconfig.json is used as is.

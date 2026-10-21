@@ -38,7 +38,7 @@ const UPSERT = `
       updated_at = excluded.updated_at
   `
 
-// The first module on the async db facade (1017 Phase 1 pilot): both operations go through `dbx` and return
+// The first module on the async db facade (Phase 1 pilot): both operations go through `dbx` and return
 // a Promise. Read-modify-write over the two calls is NOT atomic (another caller can run between them): the
 // only RMW user today is the context restart gate, which runs one sweep timer per agent, so there is no
 // concurrent run for the same agent.

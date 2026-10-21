@@ -1,4 +1,4 @@
-// The db context carrier (1017 Phase 1): WHO runs a db call, carried through `await`s with an
+// The db context carrier (Phase 1): WHO runs a db call, carried through `await`s with an
 // AsyncLocalStorage, so the PostgreSQL phase can set the row-level-security role per call without every
 // db function growing a parameter.
 //

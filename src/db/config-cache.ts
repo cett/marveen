@@ -1,4 +1,4 @@
-// A synchronous write-through cache of the `system_config` table (1017 Phase 1).
+// A synchronous write-through cache of the `system_config` table (Phase 1).
 //
 // Why: the configuration readers (`getEffectiveSettingValue` and 56 calls in 23 files, the model fallback,
 // the schedule runner, the terminal input switch, ...) are synchronous and sit on hot paths. They must NOT

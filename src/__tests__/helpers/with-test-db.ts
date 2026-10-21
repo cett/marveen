@@ -1,4 +1,4 @@
-// The single entry point of a test that needs the database (1017 Phase 1).
+// The single entry point of a test that needs the database (Phase 1).
 //
 //   const { dbx } = useTestDb()
 //   it('...', async () => { await dbx.run(...) })
