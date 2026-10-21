@@ -27,6 +27,9 @@ describe('listOverviewRecentApprovals', () => {
     addApproval('old', 'pending', 5, 'default')
     addApproval('mid', 'approved', 20, 'acme')
     addApproval('new', 'rejected', 30, 'default')
+    // The cut-off is inclusive: a row requested exactly at the cut-off is in, the one before it is out.
+    expect(listOverviewRecentApprovals(20, null).map(a => a.created_at)).toEqual([30, 20])
+    expect(listOverviewRecentApprovals(21, null).map(a => a.created_at)).toEqual([30])
     expect(listOverviewRecentApprovals(10, null)).toEqual([
       { agent_id: 'agent-a', action_description: 'act new', status: 'rejected', created_at: 30 },
       { agent_id: 'agent-a', action_description: 'act mid', status: 'approved', created_at: 20 },
