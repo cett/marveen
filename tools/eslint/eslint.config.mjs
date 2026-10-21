@@ -1,4 +1,4 @@
-// Async-correctness rules for the 1017 Phase 1 rewrite (the db layer becomes async).
+// Async-correctness rules for the rewrite that turns the db layer async.
 // ERROR MODE for production src/: a finding fails the build. The test files
 // (ESLINT_ASYNC_TESTS=1) stay in report mode: the tests are rewritten module by module with the waves.
 //
@@ -20,8 +20,6 @@ const withTests = process.env.ESLINT_ASYNC_TESTS === '1'
 const severity = withTests ? 'warn' : 'error'
 
 const requireAwaitContractFiles = [
-  // ChannelProvider: every adapter method returns a Promise, the Telegram/Slack/Discord adapters just have no await yet.
-  'src/channel-provider.ts',
   // Vector search/backfill: the same signature on the SQLite and the PostgreSQL (pgvector) backend, async by contract.
   'src/db/vector.ts',
   // RouteHandler = (ctx) => Promise<boolean> (src/web/routes/types.ts, RouteDispatcher awaits every handler).

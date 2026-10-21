@@ -105,9 +105,24 @@ export function txWarnMs(): number {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_TX_WARN_MS
 }
 
-/** The first stack line outside the facade: where the transaction was opened. */
-export function captureOrigin(): string {
-  const lines = (new Error().stack ?? '').split('\n').slice(1)
+function originOf(stack: string | undefined): string {
+  const lines = (stack ?? '').split('\n').slice(1)
   const outside = lines.find((l) => !/db[\\/](facade|tx-lock|context)\./.test(l) && !/node:internal/.test(l))
   return (outside ?? lines[0] ?? 'unknown').trim()
+}
+
+/** The first stack line outside the facade: where the transaction was opened. */
+export function captureOrigin(): string {
+  return originOf(new Error().stack)
+}
+
+/**
+ * Records the call stack now and formats it only when the returned function is called. The frames are captured
+ * eagerly (they are gone later); turning them into text, the expensive part, waits for a transaction that is
+ * actually slow.
+ */
+export function captureOriginLater(): () => string {
+  const holder: { stack?: string } = {}
+  Error.captureStackTrace(holder, captureOriginLater)
+  return () => originOf(holder.stack)
 }

@@ -20,7 +20,7 @@
 import { db } from './connection.js'
 import { logger } from '../logger.js'
 import { noteDbCall } from './context.js'
-import { captureOrigin, currentTxScope, lockFor, newTxScope, txStore, txWarnMs, type TxScope } from './tx-lock.js'
+import { captureOriginLater, currentTxScope, lockFor, newTxScope, txStore, txWarnMs, type TxScope } from './tx-lock.js'
 
 export interface RunResult {
   changes: number
@@ -36,7 +36,11 @@ export interface SqlOps {
 }
 
 export interface TxOptions {
-  /** `deferred` is the default (BEGIN); `immediate` takes the write lock at the start (BEGIN IMMEDIATE). */
+  /**
+   * `deferred` is the default (BEGIN); `immediate` takes the write lock at the start (BEGIN IMMEDIATE).
+   * It applies to the outermost transaction only: a transaction opened inside another one is a SAVEPOINT in
+   * the already open transaction, so its `mode` is ignored (same as better-sqlite3's nested `.immediate()`).
+   */
   mode?: 'deferred' | 'immediate'
 }
 
@@ -109,6 +113,7 @@ function makeTx(scope: TxScope): Tx {
     all: <T = unknown>(sql: string, ...params: unknown[]) => live(() => sqliteOps.all<T>(sql, ...params)),
     run: (sql: string, ...params: unknown[]) => live(() => sqliteOps.run(sql, ...params)),
     exec: (sql: string) => live(() => sqliteOps.exec(sql)),
+    // `mode` is not forwarded on purpose: a nested transaction is a savepoint (see TxOptions).
     tx: <T>(fn: (tx: Tx) => Promise<T>) => live(() => runNested(scope, fn)),
   }
 }
@@ -121,14 +126,15 @@ async function runTx<T>(fn: (tx: Tx) => Promise<T>, opts: TxOptions): Promise<T>
   if (parent) return runNested(parent, fn)
 
   const handle = db
-  const origin = captureOrigin()
+  // The call stack is recorded only when the slow-transaction warning is on, and formatted only when it fires.
+  const warnMs = txWarnMs()
+  const origin = warnMs > 0 ? captureOriginLater() : undefined
   const release = await lockFor(handle).acquire()
   let warn: NodeJS.Timeout | undefined
   try {
-    const warnMs = txWarnMs()
-    if (warnMs > 0) {
+    if (origin) {
       warn = setTimeout(() => {
-        logger.warn({ origin, warnMs }, 'db: a transaction has been open longer than DB_TX_WARN_MS (keep only db calls in a transaction body)')
+        logger.warn({ origin: origin(), warnMs }, 'db: a transaction has been open longer than DB_TX_WARN_MS (keep only db calls in a transaction body)')
       }, warnMs)
       warn.unref?.()
     }

@@ -226,6 +226,32 @@ describe('nested transactions (savepoints)', () => {
     expect(events).toEqual(['a-start', 'a-end', 'b-start', 'b-end'])
     expect(await names()).toEqual(['a', 'b'])
   })
+
+  it('the mode of a nested transaction is ignored: it joins the open transaction and goes with it', async () => {
+    await expect(dbx.tx(async (tx) => {
+      await tx.tx(async (inner) => { await inner.run('INSERT INTO tx_t (name) VALUES (?)', 'imm-inner') }, { mode: 'immediate' })
+      await dbx.tx(async () => { await dbx.run('INSERT INTO tx_t (name) VALUES (?)', 'imm-outer-handle') }, { mode: 'immediate' })
+      expect(db.inTransaction).toBe(true)
+      throw new Error('outer failed')
+    })).rejects.toThrow('outer failed')
+    expect(await count()).toBe(0)
+    expect(db.inTransaction).toBe(false)
+  })
+})
+
+describe('a COMMIT that fails', () => {
+  it('rolls back, frees the lock, and the next transaction works', async () => {
+    db.exec('PRAGMA foreign_keys = ON')
+    db.exec('CREATE TABLE qa_parent (id INTEGER PRIMARY KEY)')
+    db.exec('CREATE TABLE qa_child (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES qa_parent(id) DEFERRABLE INITIALLY DEFERRED)')
+    // the violation of a deferred foreign key shows only at COMMIT
+    await expect(dbx.tx(async (tx) => { await tx.run('INSERT INTO qa_child (id, pid) VALUES (1, 999)') })).rejects.toThrow(/FOREIGN KEY/i)
+    expect(db.inTransaction).toBe(false)
+    expect(lockFor(db).busy).toBe(false)
+    await dbx.tx(async (tx) => { await tx.run('INSERT INTO qa_parent (id) VALUES (1)') })
+    expect(await dbx.get('SELECT COUNT(*) AS c FROM qa_child')).toEqual({ c: 0 })
+    expect(await dbx.get('SELECT COUNT(*) AS c FROM qa_parent')).toEqual({ c: 1 })
+  })
 })
 
 describe('immediate mode', () => {
@@ -303,5 +329,15 @@ describe('slow transaction warning', () => {
     process.env.DB_TX_WARN_MS = '5000'
     await dbx.tx(async () => { await sleep(5) })
     expect(slowWarnings(warn)).toEqual([])
+  })
+
+  it('records the call stack of a transaction only while the warning is on', async () => {
+    const capture = vi.spyOn(Error, 'captureStackTrace')
+    process.env.DB_TX_WARN_MS = '0'
+    await dbx.tx(async (tx) => { await tx.get('SELECT 1') })
+    expect(capture).not.toHaveBeenCalled()
+    process.env.DB_TX_WARN_MS = '5000'
+    await dbx.tx(async (tx) => { await tx.get('SELECT 1') })
+    expect(capture).toHaveBeenCalledTimes(1)
   })
 })

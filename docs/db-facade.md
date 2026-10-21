@@ -17,23 +17,27 @@ how to write a database operation while that is going on. The facade lives in `s
 4. **Do not count on atomicity between two calls.** Two `await`ed calls can have another caller's statement
    between them. What must be atomic is either ONE statement or one `dbx.tx(...)`. A read-modify-write over two
    calls is only safe when something else guarantees a single caller (write down which, as the agent-state
-   pilot does).
+   pilot does). That guarantee covers the context restart gate's own sweep only: `PUT /api/agent-state` can
+   write the same key (`gate_run_state`) between the gate's read and its write.
 5. **A transaction body holds the connection lock.** Inside `dbx.tx(async (tx) => { ... })` use `tx.get/all/run/exec`
    and nothing else that waits: no LLM call, HTTP request, file I/O or `sleep`. Every other statement on the
    connection queues behind the open transaction. A transaction open longer than `DB_TX_WARN_MS` (default 2000,
    0 turns it off) is logged with the line that opened it. A transaction inside a transaction is a `SAVEPOINT`;
-   `dbx.tx(fn, { mode: 'immediate' })` is `BEGIN IMMEDIATE`.
+   `dbx.tx(fn, { mode: 'immediate' })` is `BEGIN IMMEDIATE`; the `mode` of a nested transaction is ignored,
+   because a savepoint joins the transaction that is already open.
 6. **Run inside a context.** `runAs.system('job-name', fn)`, `runAs.tenant(tenantId, fn)` or
    `runAs.agent(agentId, tenantId, fn)` around the work that touches the database. For now a call without one
    is counted and warned about (`getDbContextStats()`), not refused. A timer created before `runAs` does not
    inherit it: a tick that touches the database opens its own `runAs`.
-7. **Per-request counters are buffered writes** (wave 3), not one write per request.
+7. **No database write per request for a counter.** The facade has no write buffer yet; a per-request counter
+   waits for one (batched flushes) instead of adding a write to the request path.
 
 ## Configuration reads stay synchronous
 
 `getSystemConfig` / `listSystemConfig` (and so `getEffectiveSettingValue`) read a write-through cache that
 `initDatabase()` fills. Writes go to the database first, then the cache. Code that writes the table directly
-calls `reloadSystemConfigCache()`.
+calls `reloadSystemConfigCache()`. The cache lives in the dashboard process: a value changed by hand in the
+database (manual SQL, another process) is not seen until the dashboard restarts or `reloadSystemConfigCache()` runs.
 
 ## Boot code stays synchronous
 

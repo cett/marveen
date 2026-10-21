@@ -116,7 +116,12 @@ async function parseBinaryInWorker(filePath: string, ext: string): Promise<strin
       resolve(result)
     }
 
-    const timer = setTimeout(() => { void worker.terminate().catch(() => {}); settle(null) }, 10_000)
+    const timer = setTimeout(() => {
+      void worker.terminate().catch((err: unknown) => {
+        logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'import-crawler: terminating the timed-out extraction worker failed')
+      })
+      settle(null)
+    }, 10_000)
 
     worker.on('message', (msg: { ok: boolean; text?: string }) => {
       clearTimeout(timer)
