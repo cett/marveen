@@ -246,6 +246,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // net, not the primary control -- a non-admin caller must never see
       // another tenant's docs even if a future branch forgets SQL-level scoping.
       if (!isAdmin) docResults = docResults.filter(d => (d.tenant_id ?? 'default') === effectiveTenantId)
+      // Same for the agent: under enforce a fleet agent gets its own docs only, even if the scope passed
+      // to hybridSearchDocs above ever stops holding. Admin, session and shadow mode are unchanged.
+      const docsSelf = enforcedSelfScope(ctx)
+      if (docsSelf) docResults = docResults.filter(d => d.agent_id === docsSelf)
       jsonMaybeGzip(req, res, { memories: formatted, workspace_docs: docResults })
       return true
     }
