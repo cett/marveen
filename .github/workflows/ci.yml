@@ -267,6 +267,14 @@ jobs:
         # approval-gated sender, the self-only digest sender, the gate's recognition).
         run: python3 scripts/gmail-send-route-ratchet.py
 
+      - name: Async lint self-test (fixture, FAILS the build)
+        # The lint of the project tree below only reports, so a type the linter's TypeScript 6.0 cannot
+        # resolve would silently report nothing while the TypeScript 7 build stays green. This step lints
+        # tools/eslint/fixture/cases.ts and fails unless it yields exactly the findings marked in the file.
+        run: |
+          npm ci --prefix tools/eslint --ignore-scripts
+          node tools/eslint/check-fixture.mjs
+
       - name: Async lint report (no-floating-promises, no-misused-promises, await-thenable, require-await)
         # REPORT MODE (1017 Phase 1): the findings are warnings and this step never fails the build
         # (continue-on-error); it prints the count per rule and the top files into the log. The rules
