@@ -3,7 +3,13 @@
 // Phase 1 base wave, once the findings of the current code are fixed.
 //
 // Type-aware (the rules need the types of the expressions): the project's tsconfig.json is used as is.
-// Only src/ production code is linted; the tests are reported separately with --report-tests.
+// Only src/ production code is linted; ESLINT_ASYNC_TESTS=1 adds the tests.
+//
+// PHASE-OUT: this whole directory (tools/eslint/) exists only because typescript-eslint needs the classic
+// TypeScript JS API (peer typescript <6.1.0) and the project builds with TypeScript 7, which does not ship it.
+// As soon as typescript-eslint supports TypeScript 7, delete tools/eslint/, move these four rules into a root
+// eslint config and drop the "Async lint" CI steps and the tools/eslint audit step. check-fixture.mjs guards
+// against a silent false negative in the meantime (the CI step that runs it fails the build).
 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
