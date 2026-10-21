@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { initDatabase, saveAgentMemory } from '../db.js'
+import { saveWorkspaceDoc } from '../db/workspace.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
 import { tryHandleRecall } from '../web/routes/recall.js'
 import { enforcedSelfScope } from '../web/fleet-agent-identity.js'
@@ -127,5 +128,30 @@ describe('GET /api/recall with no agent filter', () => {
     const names = (body: any): string[] => (body.memories ?? []).map((m: any) => m.content).sort()
     expect(names(enforced.body)).toEqual(['a cold', 'a warm', 'b shared', 'c shared'])
     expect(names(shadow.body)).toHaveLength(7)
+  })
+})
+
+describe('GET /api/memories shared search with the docs fold-in (enforce)', () => {
+  const seedDocs = (): void => {
+    for (const agent of ['agent-a', 'agent-b']) {
+      saveWorkspaceDoc({ agent_id: agent, tenant_id: 'default', doc_key: `notes/${agent}`, title: `${agent} private note`, content: 'zebrafish sentinel', content_type: 'text', type: 'notes' })
+    }
+  }
+  const docAgents = (body: any): string[] => (body.workspace_docs ?? []).map((d: any) => d.agent_id).sort()
+
+  it('a fleet agent naming another agent with category=shared gets no workspace_docs of that agent', async () => {
+    seedDocs()
+    const r = await call((c) => tryHandleMemories(c), '/api/memories?agent=agent-b&category=shared&q=zebrafish&include_docs=1', fleetA(true))
+    expect(r.status).toBe(200)
+    expect(docAgents(r.body)).not.toContain('agent-b')
+    expect((r.body.memories ?? []).every((m: any) => m.category === 'shared')).toBe(true)
+  })
+
+  it('the docs fold-in keeps the caller\'s own docs, and an admin naming an agent still gets that agent\'s', async () => {
+    seedDocs()
+    const own = await call((c) => tryHandleMemories(c), '/api/memories?agent=agent-a&q=zebrafish&include_docs=1', fleetA(true))
+    expect(docAgents(own.body)).toEqual(['agent-a'])
+    const admin = await call((c) => tryHandleMemories(c), '/api/memories?agent=agent-b&q=zebrafish&include_docs=1', { role: 'admin' })
+    expect(docAgents(admin.body)).toEqual(['agent-b'])
   })
 })
