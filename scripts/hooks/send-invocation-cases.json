@@ -1100,6 +1100,56 @@
       "name": "MAILGATEVARARGS1020 documented limit: a literal sender path with variable arguments (unchanged; it passed before too)",
       "cmd": "python3 scripts/support-mail/send.py $ARGS",
       "expected": false
+    },
+    {
+      "name": "cluster: -uX with its value as a separate token before the sender",
+      "cmd": "python3 -uX utf8 scripts/support-mail/send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "cluster: -OX with its value as a separate token before the sender",
+      "cmd": "python3 -OX utf8 scripts/support-mail/send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "cluster: -uXutf8 with the value glued before the sender",
+      "cmd": "python3 -uXutf8 scripts/support-mail/send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "cluster: -msend, the module glued to the option",
+      "cmd": "python3 -msend --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "cluster: -um send, the module behind a flag cluster",
+      "cmd": "python3 -um send --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "cluster: -uc with code that runs the sender",
+      "cmd": "python3 -uc \"import subprocess; subprocess.run(['scripts/support-mail/send.py', '--to', 'a@example.com'])\"",
+      "expected": true
+    },
+    {
+      "name": "cluster control: -uX before another script",
+      "cmd": "python3 -uX utf8 tools/report.py --out r.json",
+      "expected": false
+    },
+    {
+      "name": "cluster control: -OX before another script with a --to-date flag",
+      "cmd": "python3 -OX utf8 tools/report.py --to-date 2026-10-20",
+      "expected": false
+    },
+    {
+      "name": "cluster control: -um with another module",
+      "cmd": "python3 -um unittest discover",
+      "expected": false
+    },
+    {
+      "name": "cluster control: -uc with harmless code",
+      "cmd": "python3 -uc \"print(1)\"",
+      "expected": false
     }
   ]
 }

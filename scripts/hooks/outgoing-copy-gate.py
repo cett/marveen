@@ -527,6 +527,20 @@ def _segment_is_send(toks, depth: int) -> bool:
 _PY_OPT_WITH_ARG = {"-X", "-W", "--check-hash-based-pycs"}
 _RECIPIENT_FLAG = re.compile(r"^--to?(=|$)")
 _UNDECIDABLE_PATH = re.compile(r"[*?[{$]")
+# CPython reads a cluster of short options left to right (`-uX utf8`, `-um send`, `-msend`,
+# `-uc "code"`): the first of c, m, X or W takes the rest of the token as its value, or the next
+# token when nothing is left. Mirrored in email-send-gate.mjs (pythonCluster); keep the two identical.
+_PY_CLUSTER = re.compile(r"^-[A-Za-z]+$")
+
+
+def _python_cluster(t):
+    """(opt, value) for a short-option cluster; opt is None when it holds none of c, m, X, W. None when t is no cluster."""
+    if not _PY_CLUSTER.match(t):
+        return None
+    for j in range(1, len(t)):
+        if t[j] in "cmXW":
+            return t[j], t[j + 1:]
+    return None, ""
 
 
 def _python_script_operand(rest):
@@ -541,6 +555,12 @@ def _python_script_operand(rest):
             return None, True, stdin_redirect
         if re.match(r"^-[cm]", t):  # code string / module: judged elsewhere
             return None, False, stdin_redirect
+        cl = _python_cluster(t)
+        if cl and cl[0] in ("c", "m"):
+            return None, False, stdin_redirect
+        if cl and cl[0] and not cl[1]:  # -X / -W at the end of a cluster: the next token is its value
+            i += 2
+            continue
         if t in _PY_OPT_WITH_ARG:
             i += 2
             continue
@@ -649,6 +669,14 @@ def _head_is_send(toks, depth: int) -> bool:
         for i, t in enumerate(rest):
             if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1]):
                 return True
+    if _PYTHON.match(prog):
+        # `-uc "code"`, `-c"code"`: the code string behind a cluster of short options.
+        for i, t in enumerate(rest):
+            cl = _python_cluster(t)
+            if cl and cl[0] == "c":
+                code = cl[1] or (rest[i + 1] if i + 1 < len(rest) else "")
+                if code and _code_string_sends(code):
+                    return True
     # send.py futtatasa (kozvetlenul, vagy python/runner utan) --to cimzettel
     candidates = [prog] + (
         [_basename(rest[0])] if rest and (_PYTHON.match(prog) or _NODEISH.match(prog)) else []
@@ -659,6 +687,13 @@ def _head_is_send(toks, depth: int) -> bool:
         for i, t in enumerate(rest):
             if t == "-m" and i + 1 < len(rest) and rest[i + 1].rsplit(".", 1)[-1] == "send":
                 candidates.append("send.py")
+        # `-msend`, `-um send`: the module behind a cluster of short options.
+        for i, t in enumerate(rest):
+            cl = _python_cluster(t)
+            if cl and cl[0] == "m":
+                mod = cl[1] or (rest[i + 1] if i + 1 < len(rest) else "")
+                if mod and mod.rsplit(".", 1)[-1] == "send":
+                    candidates.append("send.py")
     if any(_SENDPY.match(c) for c in candidates) and any(_RECIPIENT_FLAG.match(t) for t in rest):
         return True
     if _PYTHON.match(prog) and _python_head_sends(rest):

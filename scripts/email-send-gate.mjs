@@ -500,6 +500,18 @@ function commandHeads(toksIn, d = 0) {
 const PY_OPT_WITH_ARG = new Set(['-X', '-W', '--check-hash-based-pycs'])
 const RECIPIENT_FLAG = /^--to?(=|$)/
 const UNDECIDABLE_PATH = /[*?[{$]/
+// CPython reads a cluster of short options left to right (`-uX utf8`, `-um send`, `-msend`,
+// `-uc "code"`): the first of c, m, X or W takes the rest of the token as its value, or the next
+// token when nothing is left. null when the token is not a cluster; opt is null when the cluster
+// holds none of the four (`-u`, `-OB`).
+const PY_CLUSTER = /^-[A-Za-z]+$/
+function pythonCluster(t) {
+  if (!PY_CLUSTER.test(t)) return null
+  for (let j = 1; j < t.length; j++) {
+    if ('cmXW'.includes(t[j])) return { opt: t[j], value: t.slice(j + 1) }
+  }
+  return { opt: null, value: '' }
+}
 function pythonScriptOperand(rest) {
   let stdinRedirect = false
   for (let i = 0; i < rest.length; i++) {
@@ -507,6 +519,9 @@ function pythonScriptOperand(rest) {
     if (t === '--') return { script: rest[i + 1] ?? null, stdin: false, stdinRedirect }
     if (t === '-') return { script: null, stdin: true, stdinRedirect }
     if (/^-[cm]/.test(t)) return { script: null, stdin: false, stdinRedirect } // code string / module: judged elsewhere
+    const cl = pythonCluster(t)
+    if (cl && (cl.opt === 'c' || cl.opt === 'm')) return { script: null, stdin: false, stdinRedirect }
+    if (cl && cl.opt && !cl.value) { i++; continue } // -X / -W at the end of a cluster: the next token is its value
     if (PY_OPT_WITH_ARG.has(t)) { i++; continue }
     if (t.startsWith('<')) { stdinRedirect = true; if (t === '<') i++; continue }
     if (/^\d*>/.test(t)) { if (/^\d*>>?$/.test(t)) i++; continue }
@@ -588,12 +603,30 @@ function headIsSend(toks, depth) {
           rest[i + 1] && codeStringSends(rest[i + 1])) return true
     }
   }
+  if (PYTHON.test(prog)) {
+    // `-uc "code"`, `-c"code"`: the code string behind a cluster of short options.
+    for (let i = 0; i < rest.length; i++) {
+      const cl = pythonCluster(rest[i])
+      if (cl && cl.opt === 'c') {
+        const code = cl.value || rest[i + 1]
+        if (code && codeStringSends(code)) return true
+      }
+    }
+  }
   const candidates = [prog]
   if ((PYTHON.test(prog) || NODEISH.test(prog)) && rest.length) candidates.push(basename(rest[0]))
   // Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender by module name.
   if (PYTHON.test(prog)) {
     for (let i = 0; i < rest.length - 1; i++) {
       if (rest[i] === '-m' && rest[i + 1].split('.').pop() === 'send') candidates.push('send.py')
+    }
+    // `-msend`, `-um send`: the module behind a cluster of short options.
+    for (let i = 0; i < rest.length; i++) {
+      const cl = pythonCluster(rest[i])
+      if (cl && cl.opt === 'm') {
+        const mod = cl.value || rest[i + 1]
+        if (mod && mod.split('.').pop() === 'send') candidates.push('send.py')
+      }
     }
   }
   if (candidates.some((c) => SENDPY.test(c)) && rest.some((t) => RECIPIENT_FLAG.test(t))) return true
