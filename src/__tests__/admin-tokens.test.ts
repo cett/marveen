@@ -10,6 +10,7 @@ vi.mock('../db.js', () => ({
   insertApiToken: vi.fn(),
   revokeApiToken: vi.fn(),
   rotateApiToken: vi.fn(),
+  ApiTokenAlreadyRevokedError: class ApiTokenAlreadyRevokedError extends Error {},
 }))
 
 vi.mock('../logger.js', () => ({
@@ -176,6 +177,17 @@ describe('POST /api/v1/admin/tokens/:id/rotate', () => {
     expect(out.body.rotated_from).toBe(1)
     expect(db.rotateApiToken).toHaveBeenCalledTimes(1)
     expect(vi.mocked(db.rotateApiToken).mock.calls[0][0]).toBe(SAMPLE_TOKEN_ROW)
+  })
+
+  it('returns 409, not 500, when a concurrent rotation or revoke wins after the pre-check', async () => {
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(SAMPLE_TOKEN_ROW)
+    vi.mocked(db.rotateApiToken).mockRejectedValue(new db.ApiTokenAlreadyRevokedError(1))
+
+    const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens/1/rotate')
+    expect(await tryHandleAdminTokens(ctx)).toBe(true)
+
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('conflict')
   })
 
   it('returns 404 when token not found', async () => {

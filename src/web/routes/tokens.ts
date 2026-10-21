@@ -21,6 +21,7 @@ import {
   insertApiToken,
   revokeApiToken,
   rotateApiToken,
+  ApiTokenAlreadyRevokedError,
   type ApiTokenRow,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -177,6 +178,9 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       logger.info({ oldId: id, newId: newRow.id, name: old.name }, 'api_token rotated')
       json(res, { token: rawToken, ...toPublic(newRow) })
     } catch (e) {
+      // A concurrent rotation or revoke won between the check above and the transaction: same answer as the
+      // pre-check, not a server error.
+      if (e instanceof ApiTokenAlreadyRevokedError) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
       logger.error({ err: e }, 'api_token rotate failed')
       json(res, { error: 'internal_error', hint: 'failed to rotate token' }, 500)
     }

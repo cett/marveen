@@ -133,9 +133,21 @@ export async function revokeApiToken(id: number, now: number): Promise<void> {
   await dbx.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ?', now, id)
 }
 
+/** Thrown by rotateApiToken when the token is no longer active: another caller revoked or rotated it first. */
+export class ApiTokenAlreadyRevokedError extends Error {
+  constructor(readonly tokenId: number) {
+    super(`api token ${tokenId} is already revoked`)
+    this.name = 'ApiTokenAlreadyRevokedError'
+  }
+}
+
 /**
  * Revokes `old` and mints its replacement in one transaction, so there is never
- * a moment with zero or two valid tokens. Returns the new row.
+ * a moment with zero or two valid tokens. Returns the new row. The revoke only
+ * takes an ACTIVE row: when it finds none changed (a concurrent rotation or
+ * revoke won), the transaction rolls back, no replacement is written, and the
+ * call rejects with ApiTokenAlreadyRevokedError. Inside a larger transaction
+ * this is a savepoint, and the error also rolls that larger transaction back.
  */
 export async function rotateApiToken(
   old: Pick<ApiTokenRow, 'id' | 'name' | 'role' | 'tenant_id' | 'agent_id'>,
@@ -144,7 +156,8 @@ export async function rotateApiToken(
   expiresAt: number | null,
 ): Promise<ApiTokenRow> {
   await dbx.tx(async (tx) => {
-    await tx.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ?', now, old.id)
+    const revoked = await tx.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL', now, old.id)
+    if (revoked.changes === 0) throw new ApiTokenAlreadyRevokedError(old.id)
     await tx.run(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, rotated_from, agent_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, newTokenHash, old.name, old.role, old.tenant_id, now, expiresAt, old.id, old.agent_id)
   })

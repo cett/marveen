@@ -18,7 +18,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
   agentConfigRoot: (name: string) => (name === 'main-agent' ? state.root : join(state.root, 'agents', name)),
 }))
 
-import { initDatabase, getDb, listApiTokenRows, revokeApiTokensForAgent } from '../db.js'
+import { initDatabase, getDb, dbx, ApiTokenAlreadyRevokedError, listApiTokenRows, revokeApiTokensForAgent } from '../db.js'
 import { agentTokenPath, issueAgentToken, issueOperatorToken } from '../agent-tokens.js'
 import { resolveApiToken } from '../web/auth-gate.js'
 
@@ -120,5 +120,29 @@ describe('issueAgentToken', () => {
     expect(existsSync(agentTokenPath('beta'))).toBe(false)
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM api_tokens').get()).toEqual({ n: 1 })
     expect(sha('x')).toHaveLength(64)
+  })
+})
+
+// issue() reads the active rows, writes the token file, then rotates in one transaction. Another caller can
+// revoke the matching row between the read and the transaction; the rotation then finds it revoked, and the
+// whole call must fail (the CLI prints FAILED, agent creation logs a warning) instead of minting a second
+// active token next to the winner's.
+describe('issueAgentToken: a rotation that loses to a concurrent revoke', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('rejects with the typed error and leaves no new active token', async () => {
+    const first = await issueAgentToken('alpha')
+    const before = (await listApiTokenRows()).length
+    const original = dbx.tx.bind(dbx)
+    vi.spyOn(dbx, 'tx').mockImplementationOnce((fn, opts) => {
+      // The concurrent caller wins: it revokes the row this call is about to rotate.
+      getDb().prepare('UPDATE api_tokens SET revoked_at = 1 WHERE id = ?').run(first.tokenId)
+      return original(fn, opts)
+    })
+
+    await expect(issueAgentToken('alpha', { rotate: true })).rejects.toBeInstanceOf(ApiTokenAlreadyRevokedError)
+
+    expect(await listApiTokenRows()).toHaveLength(before)
+    expect((await listApiTokenRows()).filter(r => r.agent_id === 'alpha' && r.revoked_at === null)).toHaveLength(0)
   })
 })
