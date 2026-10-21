@@ -55,7 +55,7 @@ import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from
 import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfig } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
-import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
+import { getAgentStateSync, setAgentStateSync, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
 import { migrateCostBudgetsFromFile } from './cost-budgets.js'
 import { migrateVaultBindingsFromFile } from './vault-bindings.js'
 import { migrateFederationConfigFromFile } from './federation.js'
@@ -333,11 +333,11 @@ export function retireFederationConfigFile(): void {
 function migrateKanbanAuditStateFromFile(): void {
   const p = join(STORE_DIR, 'kanban-audit-state.json')
   if (!existsSync(p)) return
-  if (getAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at')) return
+  if (getAgentStateSync(MAIN_AGENT_ID, 'kanban_audit_last_audit_at')) return
   try {
     const raw = JSON.parse(readFileSync(p, 'utf-8')) as { last_audit_at?: unknown }
     if (typeof raw?.last_audit_at === 'number' && Number.isFinite(raw.last_audit_at)) {
-      setAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at', raw.last_audit_at)
+      setAgentStateSync(MAIN_AGENT_ID, 'kanban_audit_last_audit_at', raw.last_audit_at)
     }
   } catch (err) {
     logger.warn({ err, file: 'kanban-audit-state.json' }, 'kanban-audit state migration: failed to parse file, skipping')
