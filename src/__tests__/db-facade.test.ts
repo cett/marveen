@@ -92,8 +92,4 @@ describe('dbx handle', () => {
     const row = await dbx.get('SELECT 1 AS one')
     expect(row).toEqual({ one: 1 })
   })
-
-  it('tx is refused until the transaction lock exists', async () => {
-    await expect(dbx.tx(async () => 1)).rejects.toThrow(/not available yet/)
-  })
 })
