@@ -3,9 +3,11 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { initDatabase, dbx } from '../db.js'
+import { useTestDb } from './helpers/with-test-db.js'
+
+useTestDb()
 
 beforeEach(async () => {
-  initDatabase(':memory:')
   await dbx.exec('CREATE TABLE facade_t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, n INTEGER NOT NULL DEFAULT 0)')
 })
 

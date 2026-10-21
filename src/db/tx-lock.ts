@@ -92,6 +92,7 @@ export function lockFor(handle: object): AsyncLock {
 /** Test hook: forget every lock (a test that left a transaction hanging must not poison the next one). */
 export function resetTxLockState(): void {
   locks = new WeakMap<object, AsyncLock>()
+  txStore.disable()
 }
 
 const DEFAULT_TX_WARN_MS = 2000

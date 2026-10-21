@@ -4,13 +4,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats } from '../db.js'
 import { logger } from '../logger.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
-beforeEach(() => {
-  initDatabase(':memory:')
-  resetDbContextStats()
-})
+useTestDb()
 
 afterEach(() => {
   vi.useRealTimers()

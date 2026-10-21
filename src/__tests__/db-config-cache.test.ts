@@ -10,10 +10,9 @@ import {
 } from '../db.js'
 import { initDatabase as connectionInitDatabase } from '../db/connection.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
-beforeEach(() => {
-  initDatabase(':memory:')
-})
+useTestDb()
 
 afterEach(() => {
   vi.restoreAllMocks()

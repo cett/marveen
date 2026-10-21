@@ -97,3 +97,9 @@ export function resetDbContextStats(): void {
   lastCallSite = null
   lastWarnAt = 0
 }
+
+/** Test hook: the counters AND the carrier itself (a leaked `runAs` from a previous test must not reach the next one). */
+export function resetDbContextForTest(): void {
+  resetDbContextStats()
+  store.disable()
+}

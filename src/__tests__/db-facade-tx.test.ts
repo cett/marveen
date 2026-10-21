@@ -10,11 +10,13 @@ import Database from 'better-sqlite3'
 import { initDatabase, dbx, db } from '../db.js'
 import { lockFor } from '../db/tx-lock.js'
 import { logger } from '../logger.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+useTestDb()
+
 beforeEach(async () => {
-  initDatabase(':memory:')
   await dbx.exec('CREATE TABLE tx_t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)')
 })
 
