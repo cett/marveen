@@ -187,6 +187,7 @@ describe('the recent lists', () => {
   it('are empty on empty tables', async () => {
     expect(await listOverviewRecentMemories(0, null)).toEqual([])
     expect(await listOverviewRecentMessages(0, null)).toEqual([])
+    expect(await listOverviewRecentApprovals(0, null)).toEqual([])
   })
 
   it('memories: newest first, from the cut-off, tenant narrowing, capped at 20', async () => {
@@ -215,11 +216,16 @@ describe('the recent lists', () => {
     expect(await listOverviewRecentMessages(0, null)).toHaveLength(15)
   })
 
-  // Known defect, pinned so the move onto the facade does not change it silently: the query reads
-  // approvals.created_at, the column is requested_at, so the call throws and the overview route drops the
-  // approvals from its activity feed in its catch. A fix is its own change.
-  it('approvals: the query names a column the table does not have', async () => {
-    addApproval('a1', 'pending', 5, 'default')
-    await expect(listOverviewRecentApprovals(0, null)).rejects.toThrow(/no such column: created_at/)
+  it('approvals: newest first, from the cut-off, tenant narrowing, capped at 10', async () => {
+    addApproval('old', 'pending', 5, 'default')
+    addApproval('mid', 'approved', 20, 'acme')
+    addApproval('new', 'rejected', 30, 'default')
+    expect(await listOverviewRecentApprovals(10, null)).toEqual([
+      { agent_id: 'zack', action_description: 'act new', status: 'rejected', created_at: 30 },
+      { agent_id: 'zack', action_description: 'act mid', status: 'approved', created_at: 20 },
+    ])
+    expect((await listOverviewRecentApprovals(10, 'acme')).map(a => a.status)).toEqual(['approved'])
+    for (let i = 0; i < 15; i++) addApproval(`bulk-${i}`, 'pending', 100 + i, 'default')
+    expect(await listOverviewRecentApprovals(0, null)).toHaveLength(10)
   })
 })

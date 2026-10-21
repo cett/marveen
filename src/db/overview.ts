@@ -127,5 +127,6 @@ export async function listOverviewRecentApprovals(
   tenantId: string | null,
 ): Promise<{ agent_id: string; action_description: string; status: string; created_at: number }[]> {
   const { tc, tp } = tenantFilter(tenantId)
-  return (await dbx.all(`SELECT agent_id, action_description, status, created_at FROM approvals WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 10`, sinceSec, ...tp)) as { agent_id: string; action_description: string; status: string; created_at: number }[]
+  // approvals has requested_at, not created_at; the alias keeps the shape the route reads.
+  return (await dbx.all(`SELECT agent_id, action_description, status, requested_at AS created_at FROM approvals WHERE requested_at >= ?${tc} ORDER BY requested_at DESC LIMIT 10`, sinceSec, ...tp)) as { agent_id: string; action_description: string; status: string; created_at: number }[]
 }
