@@ -1,0 +1,14 @@
+{
+  "name": "marveen-eslint-async-rules",
+  "private": true,
+  "description": "Isolated toolchain for the async ESLint rules (1017 Phase 1). typescript-eslint needs the classic TypeScript JS API, which the project's own TypeScript 7 compiler does not ship, so this directory pins TypeScript 6.0 for the linter only. The project itself still builds with TypeScript 7.",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint --config eslint.config.mjs ../../src"
+  },
+  "devDependencies": {
+    "eslint": "10.13.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.0"
+  }
+}

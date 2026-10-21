@@ -262,6 +262,17 @@ jobs:
         # approval-gated sender, the self-only digest sender, the gate's recognition).
         run: python3 scripts/gmail-send-route-ratchet.py
 
+      - name: Async lint report (no-floating-promises, no-misused-promises, await-thenable, require-await)
+        # REPORT MODE (1017 Phase 1): the findings are warnings and this step never fails the build
+        # (continue-on-error); it prints the count per rule and the top files into the log. The rules
+        # need the classic TypeScript API, which TypeScript 7 does not ship, so they run from the isolated
+        # tools/eslint toolchain (TypeScript 6.0 for the linter only). See tools/eslint/eslint.config.mjs.
+        continue-on-error: true
+        run: |
+          npm ci --prefix tools/eslint --ignore-scripts
+          tools/eslint/node_modules/.bin/eslint -c tools/eslint/eslint.config.mjs -f json -o eslint-async.json src || true
+          node tools/eslint/summarize.mjs eslint-async.json 15
+
       - name: Shell tests
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
         # vault-file-materializer / channels-mcp-unlock / channels-auth-probe,
