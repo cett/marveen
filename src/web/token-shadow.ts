@@ -16,8 +16,14 @@
 //                                    approvals). target = the agent it named.
 //   foreign_row_access               the same for the endpoints a fleet_agent token reaches by
 //                                    permission only (memories, workspace, kanban, blackboard,
-//                                    schedules): the agent id the request names, or the owner of the
-//                                    row it addresses, is not the caller. target = that agent.
+//                                    schedules), when enforce mode WOULD refuse the request: the agent
+//                                    id the request names, or the owner of the row it addresses, is not
+//                                    the caller. target = that agent.
+//   foreign_row_read                 the same naming of another agent, but on a request the enforce mode lets
+//                                    through (a read of a workspace doc or a kanban card by id, a read of a
+//                                    shared memory): informational, not a blocker of the enforce switch.
+//   identity_refused                 enforce mode refused the request (403): it named another agent.
+//                                    Informational after the switch: every row is a bug or an attempt.
 //   unscoped_read                    a memories / workspace listing with no agent filter: it reads
 //                                    across agents (target '*').
 //   missing_tenant_context           a shared agent (one that serves several tenants) acts with no
@@ -74,6 +80,8 @@ export const TOKEN_SHADOW_CATEGORIES = [
   'shared_token_use',
   'agent_id_mismatch',
   'foreign_row_access',
+  'foreign_row_read',
+  'identity_refused',
   'unscoped_read',
   'missing_tenant_context',
   'shared_agent_memories_no_tenant',
@@ -170,10 +178,14 @@ export function identityHits(input: {
   caller: string
   mainAgentId: string
   targets: Iterable<string>
+  /** False when enforce mode lets this request through: an unscoped hit is then foreign_row_read. Default true. */
+  refusable?: boolean
 }): ShadowHit[] {
   const { kind, caller, mainAgentId } = input
   if (!caller || caller === mainAgentId.trim().toLowerCase()) return []
-  const category: TokenShadowCategory = kind === 'own' ? 'agent_id_mismatch' : 'foreign_row_access'
+  const category: TokenShadowCategory = kind === 'own'
+    ? 'agent_id_mismatch'
+    : input.refusable === false ? 'foreign_row_read' : 'foreign_row_access'
   const seen = new Set<string>()
   const hits: ShadowHit[] = []
   for (const raw of input.targets) {
@@ -264,6 +276,11 @@ interface WatchSpec {
    */
   enforce: 'any' | 'write' | 'none'
   /**
+   * A read the enforce mode lets through although `enforce` is 'any' (the shared memories: a tier meant
+   * for the other agents). Such a request is counted as foreign_row_read, not foreign_row_access.
+   */
+  readExempt?: (r: { method: string; path: string; param: string | undefined; query: URLSearchParams }) => boolean
+  /**
    * The route acts as the MAIN agent when the request names no agent (`agent_id || MAIN_AGENT_ID`).
    * For a caller that is not the main agent, enforce reads "names nobody" as "names the main agent":
    * 'always' = every caller, 'shared' = only a shared-token caller (a fleet_agent token falls back to
@@ -278,6 +295,31 @@ const AGENT_QUERY = ['agent', 'agent_id'] as const
 const AGENT_BODY = ['agent_id', 'agent'] as const
 const NONE: ReadonlySet<string> = new Set()
 
+/**
+ * The one read of another agent's memories that is allowed: the `shared` tier, which is for the other
+ * agents. A listing asked for the shared category (the agent filter is then only a spelling: the shared
+ * rows belong to everyone), or one shared row by id. Any other sub-route (graph, links, detail) is not
+ * exempt: it does not filter by category.
+ *
+ * The listing route filters by `tier || category` (first value of each). The exemption must agree with
+ * the route on what is asked for, so it reads EVERY tier / category value and exempts only when all of
+ * them are exactly 'shared': `category=shared&tier=warm` (the route filters by warm) is not exempt. A
+ * row by id is exempt only when it carries no parameter that changes what comes back (`include=versions`
+ * adds the row's history, `agent` / `agent_id` records a read for the named agent).
+ */
+function sharedMemoryRead(r: { method: string; path: string; param: string | undefined; query: URLSearchParams }): boolean {
+  if (r.method !== 'GET') return false
+  if (r.path === '/api/memories') {
+    const asked = [...r.query.getAll('tier'), ...r.query.getAll('category')].filter((v) => v !== '')
+    return asked.length > 0 && asked.every((v) => v === 'shared')
+  }
+  if (r.param !== undefined && /^\d+$/.test(r.param) && r.path === `/api/memories/${r.param}`) {
+    if (['include', 'agent', 'agent_id'].some((k) => r.query.has(k))) return false
+    return getMemoryOwnerRow(Number(r.param))?.category === 'shared'
+  }
+  return false
+}
+
 const WATCHED: readonly WatchSpec[] = [
   { prefix: '/api/conversation-ledger', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/agent-state', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true, queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
@@ -291,10 +333,23 @@ const WATCHED: readonly WatchSpec[] = [
   { prefix: '/api/artifacts', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/approvals', kind: 'own', queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, enforce: 'any' },
   { prefix: '/api/messages', kind: 'own', queryKeys: [], bodyKeys: ['from'], enforce: 'any' },
+  // The agent resources addressed by name (profile, security, team, conversation, channel access list,
+  // pairing codes, ...): a fleet agent reads and acts on its own, never on another's. The list
+  // (GET /api/agents) names nobody and stays open; the literal sub-routes are not an agent name.
+  {
+    prefix: '/api/agents', kind: 'own', paramSeg: 0, paramName: ':agent', paramIsAgent: true,
+    paramLiterals: new Set(['activity', 'export-all', 'import', 'model-suggest']),
+    queryKeys: [], bodyKeys: [], enforce: 'any',
+  },
+  // Recall reads an agent's daily logs and memories: the agent filter is the agent whose logs come back.
+  { prefix: '/api/recall', kind: 'own', queryKeys: ['agent'], bodyKeys: [], listsAcrossAgents: true, enforce: 'any' },
   {
     prefix: '/api/memories', kind: 'unscoped', paramSeg: 0, paramName: ':id',
+    // The sub-routes that are not a row id (graph, stats, ...), so they are not read as one.
+    paramLiterals: new Set(['import', 'backfill', 'stats', 'resort', 'links', 'read-event', 'graph', 'stale']),
     owner: (p) => (/^\d+$/.test(p) ? getMemoryOwnerRow(Number(p))?.agent_id : undefined),
-    queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'write', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent_id' },
+    queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'any', readExempt: sharedMemoryRead,
+    omittedMain: { who: 'always', on: 'write', bodyKey: 'agent_id' },
   },
   {
     prefix: '/api/workspace', kind: 'unscoped', paramSeg: 0, paramName: ':id',
@@ -320,6 +375,11 @@ const WATCHED: readonly WatchSpec[] = [
     queryKeys: AGENT_QUERY, bodyKeys: ['agent'], bodyMaxBytes: SCHEDULE_BODY_MAX_BYTES, enforce: 'any', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent' },
   },
 ]
+
+/** The path prefixes the counter / the enforce gate watch (read-only view of WATCHED, for the route inventory guard). */
+export function watchedPrefixes(): string[] {
+  return WATCHED.map((s) => s.prefix)
+}
 
 function matchesPrefix(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`)
@@ -532,7 +592,7 @@ const pendingBodies = new WeakMap<http.IncomingMessage, Pending>()
 // way round a refusal. It reads with the size cap of the route that follows (WatchSpec.bodyMaxBytes),
 // so a body that route would refuse as too large is refused here the same way, not read in full first.
 
-interface PathVerdict { caller: string; hit: ShadowHit }
+interface PathVerdict { caller: string; hit: ShadowHit; base: Base }
 const pathVerdicts = new WeakMap<http.IncomingMessage, PathVerdict>()
 
 function isWriteMethod(method: string): boolean {
@@ -608,9 +668,12 @@ export async function identityRefusal(
  * request on to its route. The 413 is the one the routes give for an oversized body.
  */
 export async function answerIdentityRefusal(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+  // Taken before the check: reading the body drops the pending entry the check works from.
+  const base = pathVerdicts.get(req)?.base ?? pendingBodies.get(req)?.base
   try {
     const refusal = await identityRefusal(req)
     if (!refusal) return false
+    if (base) recordTokenShadow(base, { category: 'identity_refused', target: refusal.target })
     logger.warn(
       { path: req.url?.split('?')[0], method: req.method, caller: refusal.caller, target: refusal.target, category: refusal.category },
       'token identity: request names another agent, refused',
@@ -694,19 +757,20 @@ export function observeTokenUsage(
     }
 
     const recorded = new Set<string>()
-    const refusable = enforceApplies(spec, method)
+    const exempt = !!spec.readExempt?.({ method, path, param, query: url.searchParams })
+    const refusable = enforceApplies(spec, method) && !exempt
     // A write takes its agent from the body only (the route ignores the query), a read from the query key.
     const queryKeyNamed = !!spec.omittedMain?.queryKey && !!url.searchParams.get(spec.omittedMain.queryKey)?.trim()
     const omittedMain = refusable && !pathNamed && omittedMeansMain(spec, method, who.shared) && (isWriteMethod(method) || !queryKeyNamed)
     // A read that names no agent, on a route that then acts as the main agent. (A write may still name
     // the agent in its body: that is decided when the body is read.)
     if (omittedMain && !isWriteMethod(method)) {
-      pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: mainAgentId.trim().toLowerCase() } })
+      pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: mainAgentId.trim().toLowerCase() }, base })
     }
-    for (const hit of identityHits({ kind: spec.kind, caller: who.caller, mainAgentId, targets })) {
+    for (const hit of identityHits({ kind: spec.kind, caller: who.caller, mainAgentId, targets, refusable })) {
       recordTokenShadow(base, hit)
       recorded.add(hit.target)
-      if (refusable && !pathVerdicts.has(req)) pathVerdicts.set(req, { caller: who.caller, hit })
+      if (refusable && !pathVerdicts.has(req)) pathVerdicts.set(req, { caller: who.caller, hit, base })
     }
     if (spec.listsAcrossAgents && method === 'GET' && param === undefined && !queryNamed) {
       recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
@@ -734,7 +798,7 @@ export function observeRequestBody(req: http.IncomingMessage, body: Buffer, main
     if (body.length === 0 || body.length > BODY_PEEK_MAX_BYTES) return
     const data: unknown = JSON.parse(body.toString('utf8'))
     const named = collectBodyAgents(data, pending.spec.bodyKeys)
-    for (const hit of identityHits({ kind: pending.spec.kind, caller: pending.base.caller, mainAgentId, targets: named })) {
+    for (const hit of identityHits({ kind: pending.spec.kind, caller: pending.base.caller, mainAgentId, targets: named, refusable: pending.refusable })) {
       if (pending.recorded.has(hit.target)) continue
       pending.recorded.add(hit.target)
       recordTokenShadow(pending.base, hit)
