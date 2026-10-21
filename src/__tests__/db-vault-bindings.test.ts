@@ -90,11 +90,11 @@ describe('deleteVaultBindingsForSecret', () => {
     expect(await dbMod.deleteVaultBindingsForSecret('default', 'nope')).toEqual([])
   })
 
-  // Boo QA (C5): the select-then-delete used to be two unguarded dbx calls
-  // (a concurrent writer could slip a change in between). Structural proof
-  // it now runs as one transaction: dbx.tx is called exactly once, not once
-  // per statement -- two separate guarded calls would show as either zero
-  // tx() calls (both outside a transaction) or two.
+  // The select-then-delete used to be two unguarded dbx calls (a concurrent
+  // writer could slip a change in between). Structural proof it now runs as
+  // one transaction: dbx.tx is called exactly once, not once per statement --
+  // two separate guarded calls would show as either zero tx() calls (both
+  // outside a transaction) or two.
   it('runs the select and the delete inside one dbx.tx, not two separate calls', async () => {
     const { dbx } = await import('../db/facade.js')
     await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
