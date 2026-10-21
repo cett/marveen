@@ -495,7 +495,7 @@ describe('exportFleet/importFleet -- costBudgets (DB-backed)', () => {
 describe('exportFleet/importFleet -- vaultBindings (DB-backed, vault section)', () => {
   it('exports vault_bindings rows as the VaultExport.bindings array (requires a real .vault-key file)', async () => {
     const { replaceVaultBindings } = await import('../db/vault-bindings.js')
-    replaceVaultBindings('default', [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] }])
+    await replaceVaultBindings('default', [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] }])
     writeFileSync(join(STORE_DIR, '.vault-key'), 'test-vault-key-material', 'utf-8')
     writeFileSync(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [] }), 'utf-8')
 
@@ -509,25 +509,25 @@ describe('exportFleet/importFleet -- vaultBindings (DB-backed, vault section)', 
 
   it('import replaces the target binding set wholesale', async () => {
     const { replaceVaultBindings, listVaultBindings } = await import('../db/vault-bindings.js')
-    replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
+    await replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
     const fleetJson = JSON.stringify(fleetWithVault([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }]))
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    const rows = listVaultBindings('default')
+    const rows = await listVaultBindings('default')
     expect(rows).toHaveLength(1)
     expect(rows[0].vaultSecretId).toBe('s1')
   })
 
   it('import does NOT wipe the target bindings when the source array is empty', async () => {
     const { replaceVaultBindings, listVaultBindings } = await import('../db/vault-bindings.js')
-    replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
+    await replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
     const fleetJson = JSON.stringify(fleetWithVault([]))
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    expect(listVaultBindings('default')).toHaveLength(1)
-    expect(listVaultBindings('default')[0].vaultSecretId).toBe('target-only')
+    expect(await listVaultBindings('default')).toHaveLength(1)
+    expect((await listVaultBindings('default'))[0].vaultSecretId).toBe('target-only')
     expect(applied.warnings?.some((w: string) => w.includes('vault bindings üres volt'))).toBe(true)
   })
 
@@ -541,7 +541,7 @@ describe('exportFleet/importFleet -- vaultBindings (DB-backed, vault section)', 
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    const rows = listVaultBindings('default')
+    const rows = await listVaultBindings('default')
     expect(rows).toHaveLength(1)
     expect(rows[0].vaultSecretId).toBe('good')
     expect(applied.warnings?.some((w: string) => w.includes('vault bindings') && w.includes('érvénytelen'))).toBe(true)
@@ -549,14 +549,14 @@ describe('exportFleet/importFleet -- vaultBindings (DB-backed, vault section)', 
 
   it('import does NOT wipe the target when every source entry is invalid', async () => {
     const { replaceVaultBindings, listVaultBindings } = await import('../db/vault-bindings.js')
-    replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
+    await replaceVaultBindings('default', [{ vaultSecretId: 'target-only', envVar: 'X', targets: [] }])
     const fleetJson = JSON.stringify(fleetWithVault([
       { envVar: 'NO_SECRET_ID', targets: [] },
     ]))
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    const rows = listVaultBindings('default')
+    const rows = await listVaultBindings('default')
     expect(rows).toHaveLength(1)
     expect(rows[0].vaultSecretId).toBe('target-only')
     expect(applied.warnings?.some((w: string) => w.includes('egyetlen érvényes bejegyzés sem maradt'))).toBe(true)
@@ -572,7 +572,7 @@ describe('exportFleet/importFleet -- vaultBindings (DB-backed, vault section)', 
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    const rows = listVaultBindings('default')
+    const rows = await listVaultBindings('default')
     expect(rows).toHaveLength(2)
     expect(rows.find((r) => r.vaultSecretId === 'dup')?.targets).toEqual([{ mcpFilePath: '/first', serverName: 'srv' }])
     expect(applied.warnings?.some((w: string) => w.includes('vault bindings') && w.includes('duplikált'))).toBe(true)

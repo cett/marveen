@@ -52,23 +52,23 @@ export interface SyncResult {
 // tenant_id is hardcoded to 'default' here, same MVP scope as costBudgets
 // (group 6/8) -- the table has the column for future multi-tenancy, but no
 // caller of this module (connectors.ts routes) is tenant-aware yet.
-export function getBindings(): VaultBinding[] {
+export async function getBindings(): Promise<VaultBinding[]> {
   return listVaultBindings('default')
 }
 
-export function addBinding(binding: VaultBinding): void {
-  upsertVaultBinding('default', binding)
+export async function addBinding(binding: VaultBinding): Promise<void> {
+  await upsertVaultBinding('default', binding)
 }
 
-export function removeBinding(vaultSecretId: string, envVar: string): boolean {
+export async function removeBinding(vaultSecretId: string, envVar: string): Promise<boolean> {
   return deleteVaultBinding('default', vaultSecretId, envVar)
 }
 
-export function removeBindingsForSecret(vaultSecretId: string): void {
+export async function removeBindingsForSecret(vaultSecretId: string): Promise<void> {
   // Fetch-then-delete (not delete-then-use-return-value): the DB layer
   // already returns the deleted rows, so their targets are still available
   // here for the per-target MCP-file cleanup below.
-  const toRemove = deleteVaultBindingsForSecret('default', vaultSecretId)
+  const toRemove = await deleteVaultBindingsForSecret('default', vaultSecretId)
   for (const binding of toRemove) {
     for (const target of binding.targets) {
       try {
@@ -189,8 +189,8 @@ function serverHasVaultRefs(env: Record<string, string> | undefined): boolean {
   return Object.values(env).some(v => typeof v === 'string' && v.startsWith('vault:'))
 }
 
-export function syncSecret(vaultSecretId: string): SyncResult {
-  const bindings = getBindings().filter(b => b.vaultSecretId === vaultSecretId)
+export async function syncSecret(vaultSecretId: string): Promise<SyncResult> {
+  const bindings = (await getBindings()).filter(b => b.vaultSecretId === vaultSecretId)
   if (bindings.length === 0) return { updated: 0, errors: [] }
 
   const secret = getSecret(vaultSecretId)
@@ -223,8 +223,8 @@ export function syncSecret(vaultSecretId: string): SyncResult {
   return { updated, errors }
 }
 
-export function unsyncBinding(vaultSecretId: string, envVar: string): void {
-  const bindings = getBindings().filter(
+export async function unsyncBinding(vaultSecretId: string, envVar: string): Promise<void> {
+  const bindings = (await getBindings()).filter(
     b => b.vaultSecretId === vaultSecretId && b.envVar === envVar,
   )
   for (const binding of bindings) {
@@ -241,14 +241,14 @@ export function unsyncBinding(vaultSecretId: string, envVar: string): void {
   }
 }
 
-export function syncAllBindings(): SyncResult {
-  const allBindings = getBindings()
+export async function syncAllBindings(): Promise<SyncResult> {
+  const allBindings = await getBindings()
   const secretIds = new Set(allBindings.map(b => b.vaultSecretId))
   let totalUpdated = 0
   const allErrors: string[] = []
 
   for (const id of secretIds) {
-    const result = syncSecret(id)
+    const result = await syncSecret(id)
     totalUpdated += result.updated
     allErrors.push(...result.errors)
   }

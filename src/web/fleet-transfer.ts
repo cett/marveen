@@ -424,9 +424,9 @@ function looksLikeHeaderSecret(key: string, value: string): boolean {
 }
 
 // Build lookup: mcpFilePath -> serverName -> envVar -> vaultSecretId
-function buildBindingLookup(): Map<string, Map<string, Map<string, string>>> {
+async function buildBindingLookup(): Promise<Map<string, Map<string, Map<string, string>>>> {
   const lookup = new Map<string, Map<string, Map<string, string>>>()
-  for (const binding of getBindings()) {
+  for (const binding of await getBindings()) {
     for (const target of binding.targets) {
       if (!lookup.has(target.mcpFilePath)) lookup.set(target.mcpFilePath, new Map())
       const byServer = lookup.get(target.mcpFilePath)!
@@ -730,7 +730,7 @@ async function exportDashboardSettings(): Promise<DashboardSettingsExport> {
   }
 }
 
-function exportVault(): VaultExport | null {
+async function exportVault(): Promise<VaultExport | null> {
   const vaultKeyPath = join(STORE_DIR, '.vault-key')
   const vaultKeyMigratedPath = join(STORE_DIR, '.vault-key.migrated')
   const vaultPath = join(STORE_DIR, 'vault.json')
@@ -752,7 +752,7 @@ function exportVault(): VaultExport | null {
   const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
   // DB-backed (vault_bindings, migration 0062, #985 group 7/8), not the
   // retired store/vault-bindings.json.
-  const bindings = listVaultBindings('default') as unknown as Record<string, unknown>[]
+  const bindings = (await listVaultBindings('default')) as unknown as Record<string, unknown>[]
 
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
@@ -770,7 +770,7 @@ export async function exportFleet(options: { vaultPassword?: string } = {}): Pro
   }
 
   const withSecrets = !!options.vaultPassword
-  const bindingLookup = withSecrets ? new Map() : buildBindingLookup()
+  const bindingLookup = withSecrets ? new Map() : await buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
   const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
@@ -823,7 +823,7 @@ export async function exportFleet(options: { vaultPassword?: string } = {}): Pro
   const vaultSshServers = exportTableRows('vault_ssh_servers')
 
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
-  const vault = withSecrets ? exportVault() : undefined
+  const vault = withSecrets ? await exportVault() : undefined
 
   const fleet: FleetJson = {
     schemaVersion: 1,
@@ -1205,7 +1205,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
 // vault_bindings' PRIMARY KEY mid-write and throwing. Pushes onto the
 // caller's `warnings` array (the same applyWarnings list importFleet's other
 // DB-backed fields report through) rather than returning its own.
-function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings: string[]): void {
+async function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings: string[]): Promise<void> {
   // vault.vaultKey is plaintext -- the caller already decrypted the whole JSON with the user password
   trackedWrite(join(STORE_DIR, '.vault-key'), vault.vaultKey, tracker, { mode: 0o600 })
   trackedWrite(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: vault.entries }, null, 2), tracker, { mode: 0o600 })
@@ -1252,7 +1252,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings:
   // length would let replaceVaultBindings('default', []) through in exactly
   // that case, still wiping the target for reasons the source never asked for.
   if (deduped.length > 0) {
-    replaceVaultBindings('default', deduped)
+    await replaceVaultBindings('default', deduped)
   }
   if (invalidCount > 0) {
     warnings.push(`vault bindings: ${invalidCount} érvénytelen bejegyzés kimaradt az importból.`)
@@ -1647,7 +1647,7 @@ export async function importFleet(
 
     // 6. Vault -- LAST: vault data is plaintext (decrypted at the top of importFleet)
     if (fleet.vault) {
-      importVaultSection(fleet.vault, tracker, applyWarnings)
+      await importVaultSection(fleet.vault, tracker, applyWarnings)
     }
 
     // M3: fire-and-forget re-embed imported memories (embedding was stripped at export)

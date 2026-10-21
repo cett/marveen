@@ -725,7 +725,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       ? (tenant_id?.trim() || vaultEffectiveTenantId || 'default')
       : (ctx.tenantId ?? 'default')
     setSecret(id.trim(), label || id.trim(), value, targetTenantId)
-    const syncResult = syncSecret(id.trim())
+    const syncResult = await syncSecret(id.trim())
     json(res, { ok: true, synced: syncResult.updated })
     return true
   }
@@ -766,14 +766,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const ownerTenantId = resolveVaultAccess(id)
     if (ownerTenantId === null) return true
     deleteSecret(id, ownerTenantId)
-    removeBindingsForSecret(id)
+    await removeBindingsForSecret(id)
     json(res, { ok: true })
     return true
   }
 
   // === Vault Bindings ===
   if (path === '/api/vault/bindings' && method === 'GET') {
-    json(res, { bindings: getBindings() })
+    json(res, { bindings: await getBindings() })
     return true
   }
 
@@ -835,8 +835,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'serverName', hint: 'No targets found for this server' }, 400)
       return true
     }
-    addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
-    const syncResult = syncSecret(data.vaultSecretId)
+    await addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
+    const syncResult = await syncSecret(data.vaultSecretId)
     json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
     return true
   }
@@ -845,14 +845,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (bindingDeleteMatch && method === 'DELETE') {
     const secretId = decodeURIComponent(bindingDeleteMatch[1])
     const envVar = decodeURIComponent(bindingDeleteMatch[2])
-    unsyncBinding(secretId, envVar)
-    if (!removeBinding(secretId, envVar)) { json(res, { error: 'not_found', hint: 'Binding not found' }, 404); return true }
+    await unsyncBinding(secretId, envVar)
+    if (!(await removeBinding(secretId, envVar))) { json(res, { error: 'not_found', hint: 'Binding not found' }, 404); return true }
     json(res, { ok: true })
     return true
   }
 
   if (path === '/api/vault/sync' && method === 'POST') {
-    const result = syncAllBindings()
+    const result = await syncAllBindings()
     json(res, { ok: true, ...result })
     return true
   }
@@ -894,8 +894,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       setSecret(imp.vaultId, imp.label, value)
       imported++
       if (imp.createBinding && imp.targets.length > 0) {
-        addBinding({ vaultSecretId: imp.vaultId, envVar: imp.envVar, targets: imp.targets })
-        const sync = syncSecret(imp.vaultId)
+        await addBinding({ vaultSecretId: imp.vaultId, envVar: imp.envVar, targets: imp.targets })
+        const sync = await syncSecret(imp.vaultId)
         bound++
         errors.push(...sync.errors)
       }
