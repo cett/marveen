@@ -73,6 +73,9 @@ export async function createArtifact(params: CreateArtifactParams): Promise<{ id
     // UPSERT path: dedup on cloud_url; only updates rows that are already
     // cloud-sourced (WHERE source = 'cloud:artifact') to prevent accidental
     // overwrites of locally-created artifacts that happen to share a URL.
+    // The existing-row read and the UPSERT are two awaits, no longer one synchronous step. Two concurrent calls
+    // for the same cloud_url both end in one row (the unique cloud_url protects it, the last writer wins), but
+    // `updated` can report false for both when neither saw the other's insert. Accepted: the flag is advisory.
     const existing = await dbx.get<{ id: string }>('SELECT id FROM artifacts WHERE cloud_url = ?', params.cloud_url)
     const source = params.source ?? 'cloud:artifact'
     const row = (await dbx.get(`
