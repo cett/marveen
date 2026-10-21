@@ -36,7 +36,9 @@ function runProbe(opts: { getMe: string; webhook?: string; updatesStatus?: strin
       [
         '#!/bin/bash',
         opts.curlFails ? 'exit 7' : '',
+        // curl_tok_url hands the URL to curl as a config on stdin (`curl -K - ...`), so the token is not in argv
         'url="${@: -1}"',
+        '[ "$1" = "-K" ] && url="$(cat)"',
         'case "$url" in',
         `  *getMe*) printf '%s' '${opts.getMe}' ;;`,
         `  *getWebhookInfo*) printf '%s' '${opts.webhook ?? '{"ok":true,"result":{"url":""}}'}' ;;`,
@@ -54,6 +56,7 @@ function runProbe(opts: { getMe: string; webhook?: string; updatesStatus?: strin
         '#!/bin/bash',
         'set -e',                                  // the installer runs under set -e
         'ORANGE=""; NC=""; DIM=""',
+        `INSTALL_DIR='${ROOT}'`,                    // the probe sources scripts/lib/curl-tok.sh from here
         'warn() { echo "WARN: $*"; }',
         sliceProbeFn(MACOS),
         'probe_telegram_token "123456:SECRETTOKENVALUE"',

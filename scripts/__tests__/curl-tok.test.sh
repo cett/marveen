@@ -14,17 +14,8 @@ bad() { echo "  FAIL $1"; FAILS=$((FAILS + 1)); }
 
 echo "1) ratchet: argv-form secrets in shell scripts"
 # file and the number of lines that may still carry the form. Lower a number (or delete the row) when a script is fixed.
+# The table is empty: every script that called the Telegram API with the bot token in the URL now uses curl_tok_url.
 LEGACY="
-install-linux.sh 3
-install-macos.sh 3
-scripts/disk-space-guard.sh 1
-scripts/fleet-memory-gate.sh 1
-scripts/github-pr-monitor.sh 1
-scripts/host-restart-watchdog.sh 1
-scripts/limit-monitor.sh 1
-scripts/notify.sh 1
-scripts/stuck-modal-guard.sh 1
-scripts/unit-fail-notify.sh 1
 "
 hits() {
   # comment lines and the config-header form (`header = "..."`, what the helpers print) do not count

@@ -53,6 +53,7 @@ fi
 # MAIN_AGENT_ID which falls back to "marveen"; the main agent MUST be core so
 # a memory-pressure band never throttles the operator's primary bot.
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/curl-tok.sh" 2>/dev/null || true  # curl_tok_url: the bot token goes to curl on stdin, not argv
 _env_val() { [[ -f "$INSTALL_DIR/.env" ]] && grep -E "^$1=" "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"'"'"'\r'; }
 MAIN_AGENT_ID="$(_env_val MAIN_AGENT_ID)"; MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
@@ -135,7 +136,7 @@ send_alert() {
   local token=""
   [[ -f "$ENV_FILE" ]] && token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
   if [[ -n "$token" ]]; then
-    curl -s --max-time 15 "https://api.telegram.org/bot${token}/sendMessage" \
+    curl_tok_url "$token" 'https://api.telegram.org/bot@TOKEN@/sendMessage' -s --max-time 15 \
       --data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${msg}" >/dev/null 2>&1 \
       && log "Telegram sent [$band]" || log "Telegram send failed (best-effort)"
   else

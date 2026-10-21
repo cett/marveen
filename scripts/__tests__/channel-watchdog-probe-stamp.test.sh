@@ -164,7 +164,7 @@ run_doctor() {
   local name="$1" age="$2" dir="$TMP/doctor-$1"
   mkdir -p "$dir/store"
   if [ "$age" != "none" ]; then touch "$dir/store/.channel-keepalive-probe"; set_age "$dir/store/.channel-keepalive-probe" "$age"; fi
-  DOC_OUT="$(cd "$dir" && ok() { echo "OK $1"; }; warn() { echo "WARN $1"; }; fail() { echo "FAIL $1"; }; . "$DOCTOR_SECTION" 2>&1)"
+  DOC_OUT="$(cd "$dir" && ok() { echo "OK $1"; }; warn() { echo "WARN $1"; }; fail() { echo "FAIL $1"; }; . "$SRC_DIR/lib/portable.sh"; . "$DOCTOR_SECTION" 2>&1)"
 }
 run_doctor missing none
 case "$DOC_OUT" in WARN*"NOT RUNNING"*"install-channel-keepalive-probe.sh"*) pass "(f) a missing stamp is a WARN with the fix command" ;; *) fail "(f) missing stamp: $DOC_OUT" ;; esac

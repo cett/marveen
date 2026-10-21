@@ -12,6 +12,7 @@
 
 set -u
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/curl-tok.sh" 2>/dev/null || true  # curl_tok_url: the bot token goes to curl on stdin, not argv
 STORE="$INSTALL_DIR/store"
 STATE="$STORE/.limit-monitor-state"
 LOG="$STORE/limit-monitor.log"
@@ -73,7 +74,7 @@ $SNIP
 
 Lehet hogy közeledünk vagy elértük a Claude előfizetés keretét. Ha kell, ritkítom a heartbeatet vagy szünetet tartok. Nézd meg a sessiont ha tudod."
 if [ -n "$TOKEN" ]; then
-  curl -s -m 15 "https://api.telegram.org/bot$TOKEN/sendMessage" \
+  curl_tok_url "$TOKEN" 'https://api.telegram.org/bot@TOKEN@/sendMessage' -s -m 15 \
     --data-urlencode "chat_id=$CHAT_ID" \
     --data-urlencode "text=$MSG" \
     --data-urlencode "disable_web_page_preview=true" -o /dev/null

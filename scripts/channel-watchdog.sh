@@ -140,16 +140,26 @@ fi
 # start of every run; no readable, fresh stamp = the keepalive age says nothing. Returns 0 when the probe is running.
 # Logs why not, at most once a day, so a permanently absent probe does not fill the log every 5 minutes.
 probe_is_running() {
-  local reason="" stamp_mtime warned
+  local reason="" stamp_mtime stamp_age warned warned_age
   if [ ! -f "$PROBE_STAMP_FILE" ]; then
     reason="no probe stamp ($PROBE_STAMP_FILE)"
   elif ! stamp_mtime="$(portable_mtime "$PROBE_STAMP_FILE")"; then
     reason="cannot read the mtime of $PROBE_STAMP_FILE"
-  elif [ $(( now - stamp_mtime )) -ge "$PROBE_STALE_SECONDS" ]; then
-    reason="probe stamp is $(( now - stamp_mtime ))s old (limit ${PROBE_STALE_SECONDS}s)"
+  else
+    # A stamp in the future (the clock was set back, or the stamp was written by a clock that ran ahead) proves
+    # nothing about the probe running now, so it reads as "not running" -- the safe side, STALE stays disabled.
+    stamp_age=0
+    stamp_age="$(portable_age_since "$stamp_mtime" "$now")" || stamp_age=""
+    if [ -z "$stamp_age" ]; then
+      reason="probe stamp mtime is in the future or unusable (clock set back?)"
+    elif [ "$stamp_age" -ge "$PROBE_STALE_SECONDS" ]; then
+      reason="probe stamp is ${stamp_age}s old (limit ${PROBE_STALE_SECONDS}s)"
+    fi
   fi
   [ -z "$reason" ] && return 0
-  if [ -f "$PROBE_WARN_STAMP" ] && warned="$(portable_mtime "$PROBE_WARN_STAMP")" && [ $(( now - warned )) -lt "$PROBE_WARN_INTERVAL_SECONDS" ]; then
+  # A warn stamp in the future would silence the warning for as long as the skew lasts: it only counts as recent
+  # when its age is known and below the interval.
+  if [ -f "$PROBE_WARN_STAMP" ] && warned="$(portable_mtime "$PROBE_WARN_STAMP")" && warned_age="$(portable_age_since "$warned" "$now")" && [ "$warned_age" -lt "$PROBE_WARN_INTERVAL_SECONDS" ]; then
     return 1
   fi
   log "keepalive-probe not running: $reason -- STALE signal disabled (the keepalive age proves nothing without the probe; see scripts/install-channel-keepalive-probe.sh, GUI login needed on macOS)"
@@ -170,9 +180,16 @@ else
   if ka_mtime="$(portable_mtime "$KEEPALIVE_FILE")"; then
     # the file cannot be fresher than the last wake: measure from the later of the two
     [ -n "$wake" ] && [ "$wake" -gt "$ka_mtime" ] && ka_mtime="$wake"
-    age=$(( now - ka_mtime ))
-    if [ "$age" -ge "$STALE_SECONDS" ] && probe_is_running; then
-      STALE=true
+    # A future mtime (the clock was set back, or a writer's clock ran ahead) would make now - mtime negative and the
+    # file look fresh until the clock catches up. It says nothing either way, so like an unreadable mtime it is not
+    # stale; the log line makes the skew visible (doctor.sh reports it too).
+    if age="$(portable_age_since "$ka_mtime" "$now")"; then
+      if [ "$age" -ge "$STALE_SECONDS" ] && probe_is_running; then
+        STALE=true
+      fi
+    else
+      age=0
+      log "the mtime of $KEEPALIVE_FILE is in the future (clock set back?) -- age unknown, STALE=false"
     fi
   else
     # An mtime that cannot be read is not a stale file: reading it as 0 made every tick look wedged and
@@ -218,7 +235,14 @@ if [ -f "$RESPAWN_STAMP" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but the age of $RESPAWN_STAMP cannot be read -- deferring"
     exit 0
   fi
-  if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
+  if ! last_age="$(portable_age_since "$last" "$now")"; then
+    # A stamp in the future would hold the grace for as long as the skew lasts, and a respawn that is due would
+    # never go out. Re-base it to now: the grace then runs from this tick and ends on its own.
+    log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but the mtime of $RESPAWN_STAMP is in the future (clock set back?) -- re-based to now, deferring"
+    : > "$RESPAWN_STAMP" 2>/dev/null
+    exit 0
+  fi
+  if [ "$last_age" -lt "$GRACE_SECONDS" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but within respawn grace -- deferring"
     exit 0
   fi

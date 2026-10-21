@@ -20,6 +20,36 @@ portable_mtime() {
   printf '%s\n' "$out"
 }
 
+# portable_age_since MTIME [NOW]: how old a modification time is, in whole seconds, and never negative.
+# `now - mtime` goes negative when the clock was set back (a step, a bad NTP answer, a restored backup) or a stamp
+# was written by a clock that ran ahead; a caller that compares that with a limit then reads the file as fresh
+# for as long as the skew lasts. Three outcomes, so the caller picks its own safe side:
+#   status 0, age on stdout    the mtime is not in the future, or by no more than PORTABLE_CLOCK_SKEW_SECONDS
+#                              (default 60: ordinary clock jitter between writer and reader), which counts as 0
+#   status 2, no output        the mtime is further in the future than that: the age is NOT known
+#   status 1, no output        MTIME is not a number
+portable_age_since() {
+  local mtime="$1" now="${2:-}" skew="${PORTABLE_CLOCK_SKEW_SECONDS:-60}"
+  [ -n "$now" ] || now="$(date +%s)"
+  case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  case "$skew" in ''|*[!0-9]*) skew=60 ;; esac
+  if [ "$mtime" -gt "$now" ]; then
+    [ $(( mtime - now )) -le "$skew" ] || return 2
+    printf '0\n'
+    return 0
+  fi
+  printf '%s\n' $(( now - mtime ))
+}
+
+# portable_age FILE [NOW]: portable_age_since of the file's modification time. Status 1 when the mtime cannot be
+# read, 2 when it is in the future (see above), otherwise 0 with the age.
+portable_age() {
+  local mtime
+  mtime="$(portable_mtime "$1")" || return 1
+  portable_age_since "$mtime" "${2:-}"
+}
+
 # portable_wake_epoch: when the machine last woke from sleep, in epoch seconds (macOS only).
 # `kern.waketime` is `{ sec = N, usec = M } <date>` and also moves on a DarkWake (a maintenance wake), which is the
 # case that matters: the timers that were due during the sleep all fire right after the wake, in no fixed order,

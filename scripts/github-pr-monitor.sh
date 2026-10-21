@@ -9,6 +9,7 @@
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/curl-tok.sh" 2>/dev/null || true  # curl_tok_url: the bot token goes to curl on stdin, not argv
 cd "$INSTALL_DIR"
 
 # Upstream repo and the PRs to watch are both derived, not hardcoded: a fork
@@ -50,8 +51,8 @@ CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
 send_telegram() {
   local text="$1"
   [ -n "${BOT_TOKEN:-}" ] && [ -n "${CHAT_ID:-}" ] || return 0
-  curl -s -m 20 -o /dev/null \
-    -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  curl_tok_url "$BOT_TOKEN" 'https://api.telegram.org/bot@TOKEN@/sendMessage' -s -m 20 -o /dev/null \
+    -X POST \
     --data-urlencode "chat_id=${CHAT_ID}" \
     --data-urlencode "text=${text}" \
     --data-urlencode "disable_web_page_preview=true" || true
