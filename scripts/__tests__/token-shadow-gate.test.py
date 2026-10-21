@@ -156,6 +156,20 @@ class Categories(unittest.TestCase):
         self.assertEqual(r["blocking"], [])
         self.assertIn("foreign_row_read", gate.render(r))
 
+    def test_channel_credential_drift_is_listed_not_blocking_and_a_queried_category(self):
+        self.assertIn("channel_credential_drift", gate.CATEGORIES)
+        self.assertNotIn("channel_credential_drift", gate.BLOCKING_ALWAYS)
+        r = decide([row(category="channel_credential_drift", caller="alpha", source="token", target="alpha")])
+        self.assertEqual((r["state"], r["exit_code"]), ("PASS", 0))
+        self.assertEqual(len(r["channel_drift"]), 1)
+        self.assertEqual(r["blocking"], [])
+        self.assertIn("channel_credential_drift", gate.render(r))
+
+    def test_channel_credential_drift_beside_a_blocking_row_does_not_hide_it(self):
+        r = decide([row(category="channel_credential_drift"), row()])
+        self.assertEqual(r["state"], "FAIL")
+        self.assertEqual(len(r["channel_drift"]), 1)
+
     def test_identity_refused_is_reported_not_blocking_and_a_queried_category(self):
         self.assertIn("identity_refused", gate.CATEGORIES)
         self.assertNotIn("identity_refused", gate.BLOCKING_ALWAYS)
