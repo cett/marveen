@@ -22,6 +22,8 @@ Blocking (FAIL):
       foreign_row_access counts only a request the enforce mode WOULD refuse; a foreign read it lets
       through is foreign_row_read (informational)
 Reported but not blocking: foreign_row_read, identity_refused (after the switch, each row explained),
+channel_credential_drift (informational: a channel file differs from its adopted baseline; not an
+identity call, it has its own alert, and it does not decide the enforce switch, but each row is listed),
 fleet_skill_write_denied (each row to be explained: a delegation that was
 skipped), unscoped_read (informational: the RLS context is a different topic), shared_token_refused
 (after the rotation: a process that still holds the old token; its 401 is unchanged, the rows name the
@@ -85,7 +87,8 @@ INFO = "unscoped_read"
 FOREIGN_READ = "foreign_row_read"  # enforce mode lets these through (shared memories, a workspace doc / kanban card by id)
 IDENTITY_REFUSED = "identity_refused"  # enforce mode answered 403: each row is a bug or an attempt, explained in the follow-up
 REFUSED = "shared_token_refused"  # the old shared token knocked AFTER the rotation; reported for the 7-day follow-up
-CATEGORIES = (SHARED,) + BLOCKING_ALWAYS + (EXPLAIN, INFO, FOREIGN_READ, IDENTITY_REFUSED, REFUSED)
+CHANNEL_DRIFT = "channel_credential_drift"  # a channel file differs from its adopted baseline: not an identity call, listed so it never goes silent
+CATEGORIES = (SHARED,) + BLOCKING_ALWAYS + (EXPLAIN, INFO, FOREIGN_READ, IDENTITY_REFUSED, REFUSED, CHANNEL_DRIFT)
 MARKERS = ("_overflow", "_invalid")
 
 
@@ -217,6 +220,7 @@ def evaluate(rows_by_category, truncated, canary, schedules, args, today, main_a
         "foreign_read": rows_by_category.get(FOREIGN_READ, []),
         "identity_refused": rows_by_category.get(IDENTITY_REFUSED, []),
         "refused": rows_by_category.get(REFUSED, []),
+        "channel_drift": rows_by_category.get(CHANNEL_DRIFT, []),
         "reasons": reasons,
     }
 
@@ -351,6 +355,10 @@ def render(result):
         out.append("")
         out.append("shared_token_refused (reported, not blocking: a straggler still holds the rotated-away token): %d row(s)" % len(result["refused"]))
         out.extend(_row_line(r) for r in result["refused"])
+    if result.get("channel_drift"):
+        out.append("")
+        out.append("channel_credential_drift (informational, not blocking: a channel file differs from its adopted baseline; it has its own alert): %d row(s)" % len(result["channel_drift"]))
+        out.extend(_row_line(r) for r in result["channel_drift"])
     if result["reasons"]:
         out.append("")
         out.append("NOT CONCLUSIVE because:")
