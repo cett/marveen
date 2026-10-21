@@ -54,10 +54,12 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }))
 
-// The fleet_agent scope checks are tested on their own (voice-tts-scope.test.ts); here only the wiring.
-vi.mock('../web/voice-tts-scope.js', () => ({
-  resolveOwnStateDir: vi.fn().mockReturnValue(null),
-  chatIsPaired: vi.fn().mockReturnValue(false),
+// The server-side record (vault token, adopted chat list) is tested on its own
+// (channel-credentials.test.ts); here only the wiring.
+vi.mock('../web/channel-credentials.js', () => ({
+  getChannelBotToken: vi.fn(),
+  serverMaySendTo: vi.fn(),
+  isValidChannelAgentId: (id: string) => /^[a-zA-Z0-9_-]+$/.test(id),
 }))
 
 import { tryHandleVoice, voiceSystemDepsHint } from '../web/routes/voice.js'
@@ -65,7 +67,7 @@ import { spawn } from 'node:child_process'
 import { logger } from '../logger.js'
 import { buildTtsDirective, inboundIsAudio } from '../web/voice-directive.js'
 import { readAgentVoiceConfig } from '../web/agent-config.js'
-import { resolveOwnStateDir, chatIsPaired } from '../web/voice-tts-scope.js'
+import { getChannelBotToken, serverMaySendTo } from '../web/channel-credentials.js'
 
 // A fake ChildProcess good enough for runProc(): stdout/stderr emitters plus
 // a 'close' event carrying the exit code, fired on the next tick so runProc's
@@ -133,6 +135,8 @@ beforeEach(() => {
   mockExistingOnnx.clear()
   vi.mocked(readAgentVoiceConfig).mockReturnValue({ responseMode: 'text', voiceModel: null } as never)
   vi.mocked(inboundIsAudio).mockReturnValue(false)
+  vi.mocked(getChannelBotToken).mockReturnValue('123456:DEFAULT-TEST-TOKEN-cccccccccccc')
+  vi.mocked(serverMaySendTo).mockReturnValue(true)
   vi.mocked(buildTtsDirective).mockReturnValue('TTS_DIRECTIVE' as never)
 })
 
@@ -266,47 +270,78 @@ describe('GET /api/voice/status', () => {
 describe('POST /api/voice/stt -- success and failure', () => {
   it('returns the trimmed transcript on success', async () => {
     queueSpawn({ stdout: '  szia vilag  \n', code: 0 })
-    const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', state_dir: '/tmp/mock-agents/a/.claude/channels/telegram' })
+    const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', agent_id: 'a' })
     await tryHandleVoice(ctx)
     expect(out.body).toEqual({ transcript: 'szia vilag' })
   })
 
   it('returns internal_error when whisper exits non-zero', async () => {
     queueSpawn({ stderr: 'boom', code: 1 })
-    const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', state_dir: '/tmp/mock-agents/a/.claude/channels/telegram' })
+    const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', agent_id: 'a' })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(500)
     expect(out.body.error).toBe('internal_error')
+  })
+
+  it('takes the bot token from the server-side record and hands it over by environment, never by argv', async () => {
+    vi.mocked(getChannelBotToken).mockReturnValue('111111:SERVER-SIDE-TOKEN-aaaaaaaaaaaa')
+    queueSpawn({ stdout: 'x\n', code: 0 })
+    const { ctx } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', agent_id: 'a' })
+    await tryHandleVoice(ctx)
+    expect(getChannelBotToken).toHaveBeenCalledWith('a')
+    const [, args, opts] = vi.mocked(spawn).mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }]
+    expect(opts.env.MARVEEN_CHANNEL_BOT_TOKEN).toBe('111111:SERVER-SIDE-TOKEN-aaaaaaaaaaaa')
+    expect(args.join(' ')).not.toContain('SERVER-SIDE-TOKEN')
+  })
+
+  it('refuses a channel that is not adopted, and nothing is spawned', async () => {
+    vi.mocked(getChannelBotToken).mockReturnValue(null)
+    const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', agent_id: 'a' })
+    await tryHandleVoice(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('conflict')
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('has no state_dir: a caller-supplied directory is ignored, the agent id decides', async () => {
+    queueSpawn({ stdout: 'x\n', code: 0 })
+    const { ctx } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', agent_id: 'a', state_dir: '/tmp/mock-agents/other/.claude/channels/telegram' })
+    await tryHandleVoice(ctx)
+    const args = vi.mocked(spawn).mock.calls[0][1] as string[]
+    expect(args.join(' ')).not.toContain('/other/')
+    expect(getChannelBotToken).toHaveBeenCalledWith('a')
   })
 })
 
 // ── TTS ──────────────────────────────────────────────────────────────────────
 
+const ONNX = () => require('node:path').join(require('node:os').homedir(), '.local', 'share', 'marveen-voice', 'voices', 'en_US-test-voice.onnx')
+
 describe('POST /api/voice/tts', () => {
   it('requires text', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: '  ', chat_id: '1', state_dir: '/x' })
+    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: '  ', chat_id: '1', agent_id: 'a' })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('required')
   })
 
   it('requires a numeric chat_id', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hi', chat_id: 'abc', state_dir: '/x' })
+    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hi', chat_id: 'abc', agent_id: 'a' })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
     expect(out.body.field).toBe('chat_id')
   })
 
-  it('requires a safe state_dir', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hi', chat_id: '1', state_dir: '/etc/passwd' })
+  it('requires a valid agent_id from an admin principal', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hi', chat_id: '1', agent_id: '../etc' })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.field).toBe('state_dir')
+    expect(out.body.field).toBe('agent_id')
   })
 
   it('rejects an unknown voice model', async () => {
     const { ctx, out } = makeCtx('POST', '/api/voice/tts', {
-      text: 'hi', chat_id: '1', state_dir: '/tmp/mock-agents/a/.claude/channels/telegram', voice_model: 'not-a-real-model',
+      text: 'hi', chat_id: '1', agent_id: 'a', voice_model: 'not-a-real-model',
     })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
@@ -315,7 +350,7 @@ describe('POST /api/voice/tts', () => {
 
   it('rejects a known voice model whose .onnx file is missing', async () => {
     const { ctx, out } = makeCtx('POST', '/api/voice/tts', {
-      text: 'hi', chat_id: '1', state_dir: '/tmp/mock-agents/a/.claude/channels/telegram', voice_model: 'en_US-test-voice',
+      text: 'hi', chat_id: '1', agent_id: 'a', voice_model: 'en_US-test-voice',
     })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(400)
@@ -323,10 +358,10 @@ describe('POST /api/voice/tts', () => {
   })
 
   it('returns internal_error when piper/sendVoice fails', async () => {
-    mockExistingOnnx.add(require('node:path').join(require('node:os').homedir(), '.local', 'share', 'marveen-voice', 'voices', 'en_US-test-voice.onnx'))
+    mockExistingOnnx.add(ONNX())
     queueSpawn({ stderr: 'piper crashed', code: 1 })
     const { ctx, out } = makeCtx('POST', '/api/voice/tts', {
-      text: 'hi', chat_id: '1', state_dir: '/tmp/mock-agents/a/.claude/channels/telegram', voice_model: 'en_US-test-voice',
+      text: 'hi', chat_id: '1', agent_id: 'a', voice_model: 'en_US-test-voice',
     })
     await tryHandleVoice(ctx)
     expect(out.status).toBe(500)
@@ -334,91 +369,104 @@ describe('POST /api/voice/tts', () => {
   })
 
   it('parses ok/message_id from the vtools stdout on success', async () => {
-    mockExistingOnnx.add(require('node:path').join(require('node:os').homedir(), '.local', 'share', 'marveen-voice', 'voices', 'en_US-test-voice.onnx'))
+    mockExistingOnnx.add(ONNX())
     queueSpawn({ stdout: 'ok=True id=12345\n', code: 0 })
     const { ctx, out } = makeCtx('POST', '/api/voice/tts', {
-      text: 'hi', chat_id: '1', state_dir: '/tmp/mock-agents/a/.claude/channels/telegram', voice_model: 'en_US-test-voice',
+      text: 'hi', chat_id: '1', agent_id: 'a', voice_model: 'en_US-test-voice',
     })
     await tryHandleVoice(ctx)
     expect(out.body).toEqual({ ok: true, message_id: 12345 })
   })
 
   it('reports ok:false with a null message_id when vtools reports failure', async () => {
-    mockExistingOnnx.add(require('node:path').join(require('node:os').homedir(), '.local', 'share', 'marveen-voice', 'voices', 'en_US-test-voice.onnx'))
+    mockExistingOnnx.add(ONNX())
     queueSpawn({ stdout: 'ok=False id=None\n', code: 0 })
     const { ctx, out } = makeCtx('POST', '/api/voice/tts', {
-      text: 'hi', chat_id: '1', state_dir: '/tmp/mock-agents/a/.claude/channels/telegram', voice_model: 'en_US-test-voice',
+      text: 'hi', chat_id: '1', agent_id: 'a', voice_model: 'en_US-test-voice',
     })
     await tryHandleVoice(ctx)
     expect(out.body).toEqual({ ok: false, message_id: null })
   })
+
+  it('is refused for a channel that is not adopted (no server-side token), and nothing is spawned', async () => {
+    mockExistingOnnx.add(ONNX())
+    vi.mocked(getChannelBotToken).mockReturnValue(null)
+    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hi', chat_id: '1', agent_id: 'a', voice_model: 'en_US-test-voice' })
+    await tryHandleVoice(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('conflict')
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('applies the adopted chat list to an admin principal too', async () => {
+    mockExistingOnnx.add(ONNX())
+    vi.mocked(serverMaySendTo).mockReturnValue(false)
+    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hi', chat_id: '999', agent_id: 'a', voice_model: 'en_US-test-voice' })
+    Object.assign(ctx, { role: 'admin' })
+    await tryHandleVoice(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.field).toBe('chat_id')
+    expect(serverMaySendTo).toHaveBeenCalledWith('a', '999')
+    expect(spawn).not.toHaveBeenCalled()
+  })
 })
 
 describe('POST /api/voice/tts as a fleet_agent', () => {
-  const OWN_DIR = '/tmp/mock-agents/zed/.claude/channels/telegram'
-  // what the scope check hands back: the resolved real path, which is what must be checked AND spoken on
-  const RESOLVED_DIR = '/real/mock-agents/zed/.claude/channels/telegram'
-  const body = { text: 'hi', chat_id: '4242', state_dir: OWN_DIR, voice_model: 'en_US-test-voice' }
+  const body = { text: 'hi', chat_id: '4242', voice_model: 'en_US-test-voice' }
   const asFleetAgent = (b: object = body, tokenAgentId = 'zed') => {
-    mockExistingOnnx.add(require('node:path').join(require('node:os').homedir(), '.local', 'share', 'marveen-voice', 'voices', 'en_US-test-voice.onnx'))
+    mockExistingOnnx.add(ONNX())
     const made = makeCtx('POST', '/api/voice/tts', b)
     Object.assign(made.ctx, { role: 'fleet_agent', tokenAgentId })
     return made
   }
 
-  it('is refused on a state_dir that is not its own channel, and nothing is spawned', async () => {
-    vi.mocked(resolveOwnStateDir).mockReturnValue(null)
-    const { ctx, out } = asFleetAgent({ ...body, state_dir: '/tmp/mock-agents/other/.claude/channels/telegram' })
+  it('speaks as the agent its token belongs to, with the server-side token, and nothing else is spoken on', async () => {
+    vi.mocked(getChannelBotToken).mockReturnValue('222222:ZED-VAULT-TOKEN-bbbbbbbbbbbbbbb')
+    queueSpawn({ stdout: 'ok=True id=77\n', code: 0 })
+    const { ctx, out } = asFleetAgent()
     await tryHandleVoice(ctx)
-    expect(out.status).toBe(403)
-    expect(out.body.field).toBe('state_dir')
-    expect(spawn).not.toHaveBeenCalled()
-    expect(resolveOwnStateDir).toHaveBeenCalledWith('zed', '/tmp/mock-agents/other/.claude/channels/telegram')
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, message_id: 77 })
+    expect(getChannelBotToken).toHaveBeenCalledWith('zed')
+    expect(serverMaySendTo).toHaveBeenCalledWith('zed', '4242')
+    const [, args, opts] = vi.mocked(spawn).mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }]
+    expect(args).toContain('4242')
+    expect(opts.env.MARVEEN_CHANNEL_BOT_TOKEN).toBe('222222:ZED-VAULT-TOKEN-bbbbbbbbbbbbbbb')
+    expect(args.join(' ')).not.toContain('ZED-VAULT-TOKEN')
   })
 
-  it('is refused on a chat that is not paired on its own channel, and nothing is spawned', async () => {
-    vi.mocked(resolveOwnStateDir).mockReturnValue(RESOLVED_DIR)
-    vi.mocked(chatIsPaired).mockReturnValue(false)
+  it('is refused when the body names another agent, and nothing is spawned', async () => {
+    const { ctx, out } = asFleetAgent({ ...body, agent_id: 'other' })
+    await tryHandleVoice(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.field).toBe('agent_id')
+    expect(getChannelBotToken).not.toHaveBeenCalled()
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('is refused on a chat that is not on the adopted list, and nothing is spawned', async () => {
+    vi.mocked(serverMaySendTo).mockReturnValue(false)
     const { ctx, out } = asFleetAgent()
     await tryHandleVoice(ctx)
     expect(out.status).toBe(403)
     expect(out.body.field).toBe('chat_id')
     expect(spawn).not.toHaveBeenCalled()
-    expect(chatIsPaired).toHaveBeenCalledWith(RESOLVED_DIR, '4242')
   })
 
   it('is refused when its token names no agent', async () => {
-    vi.mocked(resolveOwnStateDir).mockReturnValue(RESOLVED_DIR)
-    vi.mocked(chatIsPaired).mockReturnValue(true)
     const { ctx, out } = asFleetAgent(body, '')
     await tryHandleVoice(ctx)
     expect(out.status).toBe(403)
     expect(spawn).not.toHaveBeenCalled()
   })
 
-  it('speaks on its own channel to a paired chat', async () => {
-    vi.mocked(resolveOwnStateDir).mockReturnValue(RESOLVED_DIR)
-    vi.mocked(chatIsPaired).mockReturnValue(true)
-    queueSpawn({ stdout: 'ok=True id=77\n', code: 0 })
-    const { ctx, out } = asFleetAgent()
+  it('a state_dir in the body changes nothing: the files an agent can write are not an input', async () => {
+    queueSpawn({ stdout: 'ok=True id=1\n', code: 0 })
+    const { ctx } = asFleetAgent({ ...body, state_dir: '/tmp/mock-agents/other/.claude/channels/telegram' })
     await tryHandleVoice(ctx)
-    expect(out.status).toBe(200)
-    expect(out.body).toEqual({ ok: true, message_id: 77 })
     const args = vi.mocked(spawn).mock.calls[0][1] as string[]
-    expect(args).toEqual(expect.arrayContaining([RESOLVED_DIR, '4242']))
-    // the request's own spelling of the dir is not what is spoken on (no swap between check and use)
-    expect(args).not.toContain(OWN_DIR)
-  })
-
-  it('negative control: an admin principal is not held to the scope (the helpers are never asked)', async () => {
-    mockExistingOnnx.add(require('node:path').join(require('node:os').homedir(), '.local', 'share', 'marveen-voice', 'voices', 'en_US-test-voice.onnx'))
-    queueSpawn({ stdout: 'ok=True id=5\n', code: 0 })
-    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { ...body, state_dir: '/tmp/mock-agents/other/.claude/channels/telegram' })
-    Object.assign(ctx, { role: 'admin' })
-    await tryHandleVoice(ctx)
-    expect(out.status).toBe(200)
-    expect(resolveOwnStateDir).not.toHaveBeenCalled()
-    expect(chatIsPaired).not.toHaveBeenCalled()
+    expect(args.join(' ')).not.toContain('/other/')
+    expect(getChannelBotToken).toHaveBeenCalledWith('zed')
   })
 })
 

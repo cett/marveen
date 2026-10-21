@@ -34,6 +34,8 @@ const SEEDERS: Record<string, (t: string) => void> = {
   conversation_log: (t) => db().prepare("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at, tenant_id) VALUES ('a', 'c', 'in', ?, 'text', 0, ?)").run(`m-${t}`, t),
   // agent_id is the primary key, so each tenant's row needs its own agent.
   agent_inflight_turns: (t) => db().prepare("INSERT INTO agent_inflight_turns (agent_id, turn_id, source, prompt_hash, started_at, tenant_id) VALUES (?, ?, 'prompt', 'abcd1234', 0, ?)").run(`agent-${t}`, `turn-${t}`, t),
+  channel_allowed_chats: (t) => db().prepare("INSERT INTO channel_allowed_chats (agent_id, provider, chat_id, adopted_by, tenant_id) VALUES ('a', 'telegram', '42', 'owner', ?)").run(t),
+  channel_credential_baseline: (t) => db().prepare("INSERT INTO channel_credential_baseline (agent_id, provider, token_sha256, allow_sha256, adopted_by, tenant_id) VALUES ('a', 'telegram', 'h1', 'h2', 'owner', ?)").run(t),
   cost_budgets: (t) => db().prepare('INSERT INTO cost_budgets (id, name, amount, tenant_id) VALUES (?, ?, 100, ?)').run('b1', 'b', t),
   egress_allowlist: (t) => db().prepare("INSERT INTO egress_allowlist (value, type, tenant_id) VALUES ('example.org', 'domain', ?)").run(t),
   idea_box: (t) => db().prepare("INSERT INTO idea_box (id, title, created_at, updated_at, tenant_id) VALUES (?, 'idea', 0, 0, ?)").run(`idea-${t}`, t),

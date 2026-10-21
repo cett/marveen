@@ -25,6 +25,7 @@ import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startBlackboardStaleSweeper } from './web/blackboard-stale-sweeper.js'
+import { startChannelCredentialDriftSweeper } from './web/channel-credentials.js'
 import { startOtelPushExporter } from './web/otel-push-exporter.js'
 import { startWorkspaceDocsTtlSweeper } from './web/workspace-docs-ttl-sweeper.js'
 import { startScheduleRunner, getInflightScheduleAgents } from './web/schedule-runner.js'
@@ -107,6 +108,7 @@ import { tryHandleTenantGateStatus } from './web/routes/tenant-gate-status.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
+import { tryHandleChannelCredentials } from './web/routes/channel-credentials.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
@@ -183,6 +185,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleEgressAllowlist)
   .add(tryHandleModelFallback)
   .add(tryHandleVoice)
+  .add(tryHandleChannelCredentials)
   .add(tryHandleVaultSshKeys)
   .add(tryHandleVaultSsh)
   .add(tryHandleAuditLog)
@@ -565,6 +568,7 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) logger.info('Update checker started (15min poll)')
 
   const blackboardStaleInterval = webOnly ? undefined : startBlackboardStaleSweeper(getInflightScheduleAgents)
+  const channelDriftInterval = webOnly ? undefined : startChannelCredentialDriftSweeper()
   if (!webOnly) logger.info('Blackboard stale sweeper started (5min sweep)')
 
   const otelPushInterval = webOnly ? undefined : startOtelPushExporter()
@@ -829,6 +833,7 @@ export function startWebServer(port = 3420): http.Server {
     stopImportCrawler()
     clearInterval(updateCheckerInterval)
     if (blackboardStaleInterval) clearInterval(blackboardStaleInterval)
+    if (channelDriftInterval) clearInterval(channelDriftInterval)
     if (otelPushInterval) clearInterval(otelPushInterval)
     if (workspaceDocsTtlInterval) clearInterval(workspaceDocsTtlInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)

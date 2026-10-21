@@ -9,6 +9,7 @@ import { issueAgentToken } from '../../agent-tokens.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { setSecret, deleteSecret } from '../vault.js'
+import { forgetChannel } from '../channel-credentials.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -966,6 +967,9 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // A deleted agent keeps no credential (its token file goes with the directory).
     revokeApiTokensForAgent(name, Math.floor(Date.now() / 1000))
     rmSync(dir, { recursive: true, force: true })
+    // The server-side channel record (vault token, adopted chats) must not outlive the agent: a new
+    // agent of the same name would otherwise inherit the old bot and its chat list.
+    forgetChannel(name)
     cleanupTeamReferences(name)
     try {
       writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'delete', entity_id: name })

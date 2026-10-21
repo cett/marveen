@@ -480,6 +480,9 @@ describe('agents-crud routes (extended)', () => {
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     expect((responseBody() as any).ok).toBe(true)
+    // the server-side channel record (vault token, adopted chats) goes with the agent
+    const cc = await import('../web/channel-credentials.js')
+    expect(cc.forgetChannel).toHaveBeenCalledWith('del-agent')
   })
 
   it('GET /api/agents/test-agent/security returns security profile', async () => {
@@ -1020,3 +1023,10 @@ describe('agent readers are tenant-scoped like GET /api/agents', async () => {
     }
   })
 })
+
+// The server-side channel record has its own tests (channel-credentials.test.ts); here only that the routes keep it in step.
+vi.mock('../web/channel-credentials.js', () => ({
+  CHANNEL_PROVIDER: 'telegram',
+  forgetChannel: vi.fn(),
+  resetChannelAfterSetup: vi.fn(),
+}))

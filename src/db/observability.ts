@@ -469,6 +469,8 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 // later migration is a red test until someone decides where it belongs.
 export const TENANT_PURGE_SIMPLE_TABLES = [
   'conversation_log',
+  // The server-side channel record (migration 0086): the adopted chats and the baseline of a channel's files.
+  'channel_allowed_chats', 'channel_credential_baseline',
   // The interrupted-turn journal keeps a preview of a prompt (migration 0085): tenant data.
   'agent_inflight_turns',
   'cost_budgets',

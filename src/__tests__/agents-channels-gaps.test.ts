@@ -489,3 +489,10 @@ describe('tryHandleAgentsChannels (gaps)', () => {
     })
   })
 })
+
+// The server-side channel record has its own tests (channel-credentials.test.ts); here only that the routes keep it in step.
+vi.mock('../web/channel-credentials.js', () => ({
+  CHANNEL_PROVIDER: 'telegram',
+  forgetChannel: vi.fn(),
+  resetChannelAfterSetup: vi.fn(),
+}))
