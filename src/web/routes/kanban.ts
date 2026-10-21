@@ -649,10 +649,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // Tokens per card: what the assignee spent while the card was in_progress. The tenant gate above already
-  // answered 404 for a foreign card to a non-admin caller.
+  // Tokens per card: what the assignee spent while the card was in_progress. Admin only, like /api/token-usage
+  // (unlisted in the RBAC matrix, so admin:all): the token rows are keyed by agent, not by tenant, so for a
+  // shared agent the sums and the overlap count would carry another tenant's work. The tenant gate above
+  // already answered 404 for a foreign card to a non-admin caller; an own card answers 403 here.
   const cardTokensMatch = path.match(/^\/api\/kanban\/([^/]+)\/tokens$/)
   if (cardTokensMatch && method === 'GET') {
+    if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Token usage is visible to an admin only' }, 403); return true }
     const usage = getCardTokenUsage(decodeURIComponent(cardTokensMatch[1]), { botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID })
     if (!usage) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     json(res, usage)

@@ -270,7 +270,11 @@ describe('an own card keeps working', () => {
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/labels`)).status).toBe(200)
     expect((await callAs(alpha(), 'DELETE', `/api/kanban/${DEFAULT_CARD}/labels/lbl-default`)).status).toBe(200)
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/events`)).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(200)
+    // Tokens per card is admin only (the rows are keyed by agent, not tenant): an own card is 403 for a fleet
+    // token, 200 for an admin.
+    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(403)
+    expect((await callAs(admin(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(200)
+    expect((await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}/tokens`)).status).toBe(200)
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/children`)).status).toBe(200)
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/subtree`)).status).toBe(200)
   })
