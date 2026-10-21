@@ -19,7 +19,7 @@ describe('runAs', () => {
   it('sets the context for system, tenant and agent and returns what the function returns', () => {
     expect(runAs.system('heartbeat', () => currentDbContext())).toEqual({ role: 'system', name: 'heartbeat' })
     expect(runAs.tenant('acme', () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
-    expect(runAs.agent('zack', 'acme', () => currentDbContext())).toEqual({ role: 'agent', agentId: 'zack', tenantId: 'acme' })
+    expect(runAs.agent('agent-a', 'acme', () => currentDbContext())).toEqual({ role: 'agent', agentId: 'agent-a', tenantId: 'acme' })
     expect(runAs.system('x', () => 42)).toBe(42)
     expect(currentDbContext()).toBeUndefined()
   })
@@ -35,7 +35,7 @@ describe('runAs', () => {
   it('refuses an empty id', () => {
     expect(() => runAs.system('', () => 1)).toThrow(TypeError)
     expect(() => runAs.tenant('', () => 1)).toThrow(TypeError)
-    expect(() => runAs.agent('zack', '', () => 1)).toThrow(TypeError)
+    expect(() => runAs.agent('agent-a', '', () => 1)).toThrow(TypeError)
     expect(() => runAs.agent('', 'acme', () => 1)).toThrow(TypeError)
   })
 })

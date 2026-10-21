@@ -4,7 +4,7 @@
 //
 //   runAs.system('heartbeat', () => ...)          a job of the dashboard itself
 //   runAs.tenant('acme', () => ...)               a request of a tenant
-//   runAs.agent('zack', 'acme', () => ...)        a request of an agent token
+//   runAs.agent('agent-a', 'acme', () => ...)        a request of an agent token
 //
 // In Phase 1 the carrier only RECORDS and COUNTS: a call without a context is not refused and nothing is
 // filtered by it (that is Phase 2). Every facade call reads the context; a call without one bumps a counter
