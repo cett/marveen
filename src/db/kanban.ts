@@ -592,6 +592,18 @@ export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
   return db.prepare('SELECT * FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardEvent[]
 }
 
+/** Ids of the other cards (any column) assigned to one of `assignees` (lowercase) that were ever moved into or out of in_progress. */
+export function listOtherCardIdsWithProgressEvents(cardId: string, assignees: string[]): string[] {
+  if (assignees.length === 0) return []
+  const rows = db.prepare(`
+    SELECT DISTINCT e.card_id AS id FROM kanban_card_events e
+    JOIN kanban_cards c ON c.id = e.card_id
+    WHERE e.card_id <> ? AND lower(c.assignee) IN (${assignees.map(() => '?').join(',')})
+      AND (e.to_status = 'in_progress' OR e.from_status = 'in_progress')
+  `).all(cardId, ...assignees) as { id: string }[]
+  return rows.map(r => r.id)
+}
+
 // Lookup a kanban card's `seq` (its sqlite rowid) by the 8-char hex id stored
 // in `kanban_cards.id`. Used by the kanban-ref normalizer to rewrite hex
 // references to the human-facing `#<seq>` form. Returns null when the prefix

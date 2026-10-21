@@ -25,6 +25,7 @@ import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
+import { getCardTokenUsage } from '../card-token-usage.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -228,7 +229,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // card named in the PATH only; an id carried in a request body (the new parent_id of a reparent, a
   // column list) is a reference to another row and is checked where the body is read. PUT/DELETE /:id
   // keep their own lookups. `labels` is no card id: /api/kanban/labels/:id is the label registry.
-  const cardIdRoute = path.match(/^\/api\/kanban\/([^/]+)\/(?:move|archive|unarchive|comments|events|labels|labels\/[^/]+|breakdown|breakdown\/accept|children|subtree|parent)$/)
+  const cardIdRoute = path.match(/^\/api\/kanban\/([^/]+)\/(?:move|archive|unarchive|comments|events|labels|labels\/[^/]+|breakdown|breakdown\/accept|children|subtree|parent|tokens)$/)
   if (cardIdRoute && cardIdRoute[1] !== 'labels' && !isAdmin && effectiveTenantId !== null) {
     if (!scopeToTenant(effectiveTenantId).kanban.get(decodeURIComponent(cardIdRoute[1]))) {
       json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
@@ -645,6 +646,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanEventsMatch && method === 'GET') {
     const cardId = decodeURIComponent(kanbanEventsMatch[1])
     json(res, getKanbanCardEvents(cardId))
+    return true
+  }
+
+  // Tokens per card: what the assignee spent while the card was in_progress. The tenant gate above already
+  // answered 404 for a foreign card to a non-admin caller.
+  const cardTokensMatch = path.match(/^\/api\/kanban\/([^/]+)\/tokens$/)
+  if (cardTokensMatch && method === 'GET') {
+    const usage = getCardTokenUsage(decodeURIComponent(cardTokensMatch[1]), { botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID })
+    if (!usage) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
+    json(res, usage)
     return true
   }
 
