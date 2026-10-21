@@ -86,6 +86,10 @@ function needsParens(e) {
   return false
 }
 
+// `return f()` of a Promise needs no await, except inside try/catch/finally (there the await decides who catches).
+const inTry = (n) => { for (const a of n.getAncestors()) { if (isFn(a) || isSpecialFn(a)) return false; if (Node.isTryStatement(a)) return true } return false }
+const plainReturn = (e) => { const p = e.getParent(); return !!p && (Node.isReturnStatement(p) || (Node.isArrowFunction(p) && p.getBody() === e)) && !inTry(e) }
+
 // A parenthesised `await` at the start of a statement needs a leading `;` in the repo's no-semicolon style.
 const openParen = (e) => { const st = e.getFirstAncestorByKind(SyntaxKind.ExpressionStatement); return st && st.getStart() === e.getStart() ? ';(' : '(' }
 
@@ -205,10 +209,11 @@ function convertTarget(sf) {
       else castKept = true
     }
     const paren = castKept || needsParens(e)
-    const open = `${paren ? openParen(e) : ''}await ${obj}.${c.method}${generic}(`
+    const aw = !castKept && plainReturn(e) ? '' : 'await '
+    const open = `${paren ? openParen(e) : ''}${aw}${obj}.${c.method}${generic}(`
     if (c.method === 'exec') {
       const pa = call.getExpression()
-      edit(file, call.getStart(), pa.getNameNode().getEnd(), `${paren ? openParen(e) : ''}await ${obj}.exec`)
+      edit(file, call.getStart(), pa.getNameNode().getEnd(), `${paren ? openParen(e) : ''}${plainReturn(e) ? '' : 'await '}${obj}.exec`)
       rewrittenDb.add(pa.getExpression())
     } else {
       const prepare = call.getExpression().getExpression()
@@ -227,7 +232,7 @@ function convertTarget(sf) {
   for (const t of usedTxs) {
     const e = t.outer
     const paren = needsParens(e)
-    edit(file, e.getStart(), t.fn.getStart(), `${paren ? openParen(e) : ''}await dbx.tx(`)
+    edit(file, e.getStart(), t.fn.getStart(), `${paren ? openParen(e) : ''}${plainReturn(e) ? '' : 'await '}dbx.tx(`)
     const arrowToken = t.fn.getFirstChildByKindOrThrow(SyntaxKind.EqualsGreaterThanToken)
     if (isAsyncFn(t.fn)) { note('transaction-callback-already-async', t.fn); continue }
     edit(file, t.fn.getStart(), arrowToken.getEnd(), 'async (tx) =>')
@@ -331,6 +336,7 @@ function wrapAwait(call) {
   awaited.add(key)
   const p = call.getParent()
   if (Node.isAwaitExpression(p)) return
+  if (plainReturn(call)) return
   const paren = needsParens(call)
   edit(file, call.getStart(), call.getStart(), `${paren ? openParen(call) : ''}await `)
   if (paren) edit(file, call.getEnd(), call.getEnd(), ')')
@@ -428,3 +434,15 @@ const report = {
 if (reportPath) writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n')
 console.log(`${dryRun ? '[dry-run] ' : ''}functions converted: ${report.convertedFunctions.length}, awaits added: ${awaitCount}, files edited: ${changedFiles.length}, edits: ${totalEdits}, manual places: ${report.manual.length}`)
 for (const m of report.manual) console.log(`  MANUAL ${m.kind}: ${m.file}:${m.line}  ${m.detail}`)
+// the main categories at a glance: per kind, the files that hold most of it
+const byKind = new Map()
+for (const m of report.manual) {
+  const k = byKind.get(m.kind) ?? new Map()
+  k.set(m.file, (k.get(m.file) ?? 0) + 1)
+  byKind.set(m.kind, k)
+}
+for (const [kind, files] of [...byKind].sort((a, b) => [...b[1].values()].reduce((x, y) => x + y, 0) - [...a[1].values()].reduce((x, y) => x + y, 0))) {
+  const total = [...files.values()].reduce((x, y) => x + y, 0)
+  const top = [...files].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([f, n]) => `${f} ${n}`).join(', ')
+  console.log(`  SUMMARY ${kind}: ${total} in ${files.size} files (top: ${top})`)
+}

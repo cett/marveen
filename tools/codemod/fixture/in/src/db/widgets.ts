@@ -33,3 +33,12 @@ export function importWidgets(names: string[]): number {
   for (const name of names) n += stmt.run(name).changes
   return n
 }
+
+// inside try the await decides who catches: it must stay
+export function safeWidget(id: number): Widget | undefined {
+  try {
+    return db.prepare('SELECT id, name FROM widgets WHERE id = ?').get(id) as Widget | undefined
+  } catch {
+    return undefined
+  }
+}

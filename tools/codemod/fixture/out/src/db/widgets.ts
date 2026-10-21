@@ -4,11 +4,11 @@ import { dbx } from './facade.js'
 export interface Widget { id: number; name: string }
 
 export async function getWidget(id: number): Promise<Widget | undefined> {
-  return await dbx.get<Widget>('SELECT id, name FROM widgets WHERE id = ?', id)
+  return dbx.get<Widget>('SELECT id, name FROM widgets WHERE id = ?', id)
 }
 
 export async function listWidgets(): Promise<Widget[]> {
-  return await dbx.all<Widget>('SELECT id, name FROM widgets')
+  return dbx.all<Widget>('SELECT id, name FROM widgets')
 }
 
 export async function renameWidget(id: number, name: string): Promise<number> {
@@ -33,4 +33,13 @@ export function importWidgets(names: string[]): number {
   let n = 0
   for (const name of names) n += stmt.run(name).changes
   return n
+}
+
+// inside try the await decides who catches: it must stay
+export async function safeWidget(id: number): Promise<Widget | undefined> {
+  try {
+    return await dbx.get<Widget>('SELECT id, name FROM widgets WHERE id = ?', id)
+  } catch {
+    return undefined
+  }
 }

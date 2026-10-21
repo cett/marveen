@@ -32,7 +32,7 @@ console.log('db codemod self-test')
 
 const dry = run(['--dry-run'])
 check(files(fixtureIn).every((f) => read(work, f) === read(fixtureIn, f)), '--dry-run writes nothing')
-check(/\[dry-run\] functions converted: 10/.test(dry), 'dry-run summary counts the converted functions', dry.split('\n')[0])
+check(/\[dry-run\] functions converted: 11/.test(dry), 'dry-run summary counts the converted functions', dry.split('\n')[0])
 
 const first = run([])
 for (const f of files(fixtureOut)) check(read(work, f) === read(fixtureOut, f), `${f} matches the expected output`)
