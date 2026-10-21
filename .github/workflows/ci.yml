@@ -280,6 +280,14 @@ jobs:
           npm ci --prefix tools/eslint --ignore-scripts
           node tools/eslint/check-fixture.mjs
 
+      - name: Db codemod self-test (fixture, FAILS the build)
+        # tools/codemod moves a src/db module onto the async facade. It has its own toolchain (ts-morph with its
+        # own TypeScript); the self-test runs it on tools/codemod/fixture/in and compares the result with fixture/out
+        # (a few seconds). The build does not import it.
+        run: |
+          npm ci --prefix tools/codemod --ignore-scripts
+          node tools/codemod/selftest.mjs
+
       - name: Async lint (no-floating-promises, no-misused-promises, await-thenable, require-await; FAILS the build)
         # ERROR MODE for the production src/: a finding fails the build. The rules need
         # the classic TypeScript API, which TypeScript 7 does not ship, so they run from the isolated
