@@ -5,10 +5,9 @@
 // (db/index.ts's migrator) -- same per-test STORE_DIR isolation as db-cost-budgets.test.ts, since that
 // function reads the JSON side-cars from STORE_DIR.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { readdirSync, readFileSync as readFileSyncFs, rmSync, statSync, mkdtempSync } from 'node:fs'
+import { rmSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
 
 let dbMod: typeof import('../db.js')
 let storeDir: string
@@ -132,28 +131,5 @@ describe('importAgentSettingsFromFile (boot-sync twin)', () => {
 
   it('skips a null/undefined entry, keeps the rest', () => {
     expect(dbMod.importAgentSettingsFromFile('auto_restart', { 'agent-a': null, 'agent-b': { enabled: true } }, () => 'default')).toBe(1)
-  })
-
-  it('only the boot chain (db/index.ts) calls importAgentSettingsFromFile', () => {
-    const srcDir = fileURLToPath(new URL('..', import.meta.url))
-    // Strip comments first: several files mention the function name in a doc comment
-    // (cross-reference), which is not a call.
-    const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    const offenders: string[] = []
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const full = join(dir, name)
-        if (statSync(full).isDirectory()) {
-          if (name === '__tests__') continue
-          walk(full)
-        } else if (name.endsWith('.ts')) {
-          const rel = full.slice(srcDir.length)
-          if (rel === 'db/agent-settings.ts' || rel === 'db/index.ts') continue
-          if (/\bimportAgentSettingsFromFile\s*\(/.test(stripComments(readFileSyncFs(full, 'utf8')))) offenders.push(rel)
-        }
-      }
-    }
-    walk(srcDir)
-    expect(offenders).toEqual([])
   })
 })

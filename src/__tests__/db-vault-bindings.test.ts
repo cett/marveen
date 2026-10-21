@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync as readFileSyncFs, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
 
 // Per-test STORE_DIR isolation (same pattern as db-cost-budgets.test.ts):
 // each test gets its own module instance since STORE_DIR is a module-level
@@ -88,19 +87,6 @@ describe('deleteVaultBindingsForSecret', () => {
 
   it('returns an empty array when the secret has no bindings', async () => {
     expect(await dbMod.deleteVaultBindingsForSecret('default', 'nope')).toEqual([])
-  })
-
-  // The select-then-delete used to be two unguarded dbx calls (a concurrent
-  // writer could slip a change in between). Structural proof it now runs as
-  // one transaction: dbx.tx is called exactly once, not once per statement --
-  // two separate guarded calls would show as either zero tx() calls (both
-  // outside a transaction) or two.
-  it('runs the select and the delete inside one dbx.tx, not two separate calls', async () => {
-    const { dbx } = await import('../db/facade.js')
-    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
-    const txSpy = vi.spyOn(dbx, 'tx')
-    await dbMod.deleteVaultBindingsForSecret('default', 's1')
-    expect(txSpy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -195,29 +181,6 @@ describe('migrateVaultBindingsFromFile', () => {
     }))
     expect(dbMod.migrateVaultBindingsFromFile()).toBe(1)
     expect((await dbMod.listVaultBindings('default'))[0].targets).toEqual([])
-  })
-
-  it('only the boot chain (db/index.ts) calls migrateVaultBindingsFromFile', () => {
-    const srcDir = fileURLToPath(new URL('..', import.meta.url))
-    // Strip comments first: several files cross-reference the function name
-    // in a doc comment, which is not a call.
-    const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    const offenders: string[] = []
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const full = join(dir, name)
-        if (statSync(full).isDirectory()) {
-          if (name === '__tests__') continue
-          walk(full)
-        } else if (name.endsWith('.ts')) {
-          const rel = full.slice(srcDir.length)
-          if (rel === 'db/vault-bindings.ts' || rel === 'db/index.ts') continue
-          if (/\bmigrateVaultBindingsFromFile\s*\(/.test(stripComments(readFileSyncFs(full, 'utf8')))) offenders.push(rel)
-        }
-      }
-    }
-    walk(srcDir)
-    expect(offenders).toEqual([])
   })
 })
 

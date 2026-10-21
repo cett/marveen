@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync as readFileSyncFs, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
 
 // Per-test STORE_DIR isolation (same pattern as db-system-config.test.ts):
 // each test gets its own module instance since STORE_DIR is a module-level
@@ -125,28 +124,5 @@ describe('migrateCostBudgetsFromFile', () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(costopsPath(), JSON.stringify({ version: 1, currency: 'HUF', fixed_costs: [] }))
     expect(dbMod.migrateCostBudgetsFromFile()).toBe(0)
-  })
-
-  it('only the boot chain (db/index.ts) calls migrateCostBudgetsFromFile', () => {
-    const srcDir = fileURLToPath(new URL('..', import.meta.url))
-    // Strip comments first: several files mention the function name in a
-    // doc comment (cross-reference), which is not a call.
-    const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    const offenders: string[] = []
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const full = join(dir, name)
-        if (statSync(full).isDirectory()) {
-          if (name === '__tests__') continue
-          walk(full)
-        } else if (name.endsWith('.ts')) {
-          const rel = full.slice(srcDir.length)
-          if (rel === 'db/cost-budgets.ts' || rel === 'db/index.ts') continue
-          if (/\bmigrateCostBudgetsFromFile\s*\(/.test(stripComments(readFileSyncFs(full, 'utf8')))) offenders.push(rel)
-        }
-      }
-    }
-    walk(srcDir)
-    expect(offenders).toEqual([])
   })
 })

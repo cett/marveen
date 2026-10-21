@@ -10,6 +10,8 @@ import {
   getDb,
   createTenant,
   deleteTenant,
+  getAgentSetting,
+  setAgentSetting,
   TENANT_PURGE_SIMPLE_TABLES,
   TENANT_PURGE_AGENT_KEYED_TABLES,
   TENANT_PURGE_HANDLED_TABLES,
@@ -139,6 +141,23 @@ describe('deleteTenant: agent-keyed rows', () => {
     for (const table of TENANT_PURGE_AGENT_KEYED_TABLES) expect(tenantOf(table, 'shared'), table).toEqual(['default'])
     expect(result.purged.agent_settings_retagged).toBe(1)
     expect(result.purged.agent_settings).toBe(1)
+  })
+
+  // agent_settings is read through a synchronous write-through cache, and deleteTenant writes the table on
+  // the raw connection. The cache only learns of the delete and the re-tag from reloadAgentSettingsCache(),
+  // so the tests above (which read the table) cannot see it missing. This one reads what a caller reads, and
+  // primes the cache with write-through writes first: a row seeded by raw SQL would not be in the cache
+  // before the delete, and a stale-cache bug would pass unnoticed.
+  it('the cached read sees the delete and the re-tag, not the rows as they were before', async () => {
+    await setAgentSetting('solo', 'auto_restart', { enabled: true }, TARGET)
+    await setAgentSetting('shared', 'auto_restart', { enabled: true }, TARGET)
+    expect(getAgentSetting('solo', 'auto_restart')?.tenant_id).toBe(TARGET)
+    expect(getAgentSetting('shared', 'auto_restart')?.tenant_id).toBe(TARGET)
+
+    deleteTenant(TARGET)
+
+    expect(getAgentSetting('solo', 'auto_restart')).toBeUndefined()
+    expect(getAgentSetting('shared', 'auto_restart')?.tenant_id).toBe('default')
   })
 
   it('does not touch the rows of agents that never served the deleted tenant', () => {
