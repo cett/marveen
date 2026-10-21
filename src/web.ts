@@ -19,6 +19,7 @@ import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.
 import { instrumentHttpRequest } from './otel-http.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
 import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
+import { backfillQuarantineReaders } from './web/quarantine-backfill.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -721,11 +722,9 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureContextWatchdogHook(agentName)) watchdogPatched.push(agentName)
         quarantineAgents.push(agentName)
       }
-      // ensureQuarantineReader reads the egress allowlist through the db facade, so it is asynchronous. This function
-      // hands back the server and stays synchronous, so the step runs right behind the loop with its own failure log.
-      void (async () => {
-        for (const agentName of quarantineAgents) await ensureQuarantineReader(agentName)
-      })().catch((err) => logger.warn({ err }, 'Quarantine reader backfill skipped'))
+      // ensureQuarantineReader is asynchronous (egress allowlist from the db facade) and this function stays
+      // synchronous, so the step runs behind the loop; it logs its own failures (see quarantine-backfill.ts).
+      void backfillQuarantineReaders(quarantineAgents, ensureQuarantineReader)
       // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
       // route. Inside the hook-registration branch on purpose: only the instance that owns the
       // hooks watches the shared store, a worktree / WEB_ONLY instance does not.
