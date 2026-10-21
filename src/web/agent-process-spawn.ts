@@ -204,8 +204,11 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
     // Code picks it up without needing OAuth credentials at all.
+    // The same agents must never receive the fleet OAuth token: CLAUDE_CODE_OAUTH_TOKEN overrides
+    // ANTHROPIC_API_KEY, so a token exported next to the key would silently move the agent to the fleet login.
+    const ownApiKeyAuth = isClaude && authMode === 'api'
     let apiKeyEnv = ''
-    if (isClaude && authMode === 'api') {
+    if (ownApiKeyAuth) {
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
         apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
@@ -346,7 +349,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // stable token instead -- this is what makes the Linux credentials-guard
     // rename safe (a shared sub-agent with no env token would otherwise be
     // locked out once credentials.json is moved aside). No-op without a token.
-    if (!claudeConfigDir && hasFleetOauthToken()) {
+    if (!claudeConfigDir && !ownApiKeyAuth && hasFleetOauthToken()) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
@@ -374,7 +377,9 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
           // Read the token at launch via $(cat) so the literal secret never
           // appears in the JS-built command string or in `ps`. The file is 0600
           // and the value lands only in this process's own environment.
-          oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          if (!ownApiKeyAuth) {
+            oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          }
         }
       } else {
         logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
@@ -425,7 +430,9 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // less agents keep --continue to preserve their accumulated context.
     const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
+    // An own-key agent also drops a fleet token inherited from the tmux global environment (channels.sh sets it
+    // there for the main agent), so the key it is configured with is what Claude Code sees.
+    const unsetTokens = `unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN${ownApiKeyAuth ? ' CLAUDE_CODE_OAUTH_TOKEN' : ''}`
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
