@@ -94,52 +94,52 @@ describe('resolveTenantDeliveryChats / buildTaskDeliveryPrefix', () => {
   })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-  it('no binding: no instruction, although access.json has an entry (no allowFrom[0] fallback)', () => {
+  it('no binding: no instruction, although access.json has an entry (no allowFrom[0] fallback)', async () => {
     writeAccess({ allowFrom: ['900100'] })
-    expect(resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
-    const prefix = buildTaskDeliveryPrefix({ name: 'acme-daily', tenantId: 'acme' }, 'worker')
+    expect(await resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
+    const prefix = await buildTaskDeliveryPrefix({ name: 'acme-daily', tenantId: 'acme' }, 'worker')
     expect(prefix).toBe('[Utemezett feladat: acme-daily] ')
     expect(prefix).not.toContain('900100')
     expect(prefix).not.toContain('chat_id')
   })
 
-  it('never uses a binding of another tenant, for the same agent', () => {
+  it('never uses a binding of another tenant, for the same agent', async () => {
     writeAccess({ allowFrom: ['111', '222'] })
     fakeBindings.rows = [bind('worker', 'other', '111'), bind('worker', 'default', '222')]
-    expect(resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
+    expect(await resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
     expect(listSpy).toHaveBeenCalledWith({ tenantId: 'acme', agentId: 'worker' })
   })
 
-  it('never uses a binding of another agent, for the same tenant', () => {
+  it('never uses a binding of another agent, for the same tenant', async () => {
     writeAccess({ allowFrom: ['111'] })
     fakeBindings.rows = [bind('someone-else', 'acme', '111')]
-    expect(resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
+    expect(await resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
   })
 
-  it('a binding that is not on the allowlist is excluded', () => {
+  it('a binding that is not on the allowlist is excluded', async () => {
     writeAccess({ allowFrom: ['900100'] })
     fakeBindings.rows = [bind('worker', 'acme', '111')]
-    expect(resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
+    expect(await resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
   })
 
-  it('binding plus allowlist: the prefix carries exactly the bound chat ids', () => {
+  it('binding plus allowlist: the prefix carries exactly the bound chat ids', async () => {
     writeAccess({ allowFrom: ['900100', '111', '222'] })
     fakeBindings.rows = [bind('worker', 'acme', '111'), bind('worker', 'acme', '222'), bind('worker', 'acme', '-100777')]
-    expect(buildTaskDeliveryPrefix({ name: 'acme-daily', tenantId: 'acme' }, 'worker'))
+    expect(await buildTaskDeliveryPrefix({ name: 'acme-daily', tenantId: 'acme' }, 'worker'))
       .toBe('[Utemezett feladat: acme-daily] Az eredmenyt kuldd el Telegramon (chat_id: 111, 222, reply tool). ')
   })
 
-  it('a missing access.json yields no recipients', () => {
+  it('a missing access.json yields no recipients', async () => {
     fakeBindings.rows = [bind('worker', 'acme', '111')]
-    expect(resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
+    expect(await resolveTenantDeliveryChats('worker', 'acme')).toEqual([])
   })
 
-  it('the default tenant keeps the bound-chat lookup and never reads the bindings table', () => {
+  it('the default tenant keeps the bound-chat lookup and never reads the bindings table', async () => {
     writeAccess({ allowFrom: ['900100', '111'] })
     fakeBindings.rows = [bind('worker', 'default', '111')]
-    expect(buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'worker'))
+    expect(await buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'worker'))
       .toBe('[Utemezett feladat: daily] Az eredmenyt kuldd el Telegramon (chat_id: 900100, reply tool). ')
-    expect(buildTaskDeliveryPrefix({ name: 'daily' }, 'worker'))
+    expect(await buildTaskDeliveryPrefix({ name: 'daily' }, 'worker'))
       .toBe('[Utemezett feladat: daily] Az eredmenyt kuldd el Telegramon (chat_id: 900100, reply tool). ')
     expect(listSpy).not.toHaveBeenCalled()
   })

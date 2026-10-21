@@ -136,7 +136,7 @@ beforeEach(() => {
   vi.mocked(readAgentVoiceConfig).mockReturnValue({ responseMode: 'text', voiceModel: null } as never)
   vi.mocked(inboundIsAudio).mockReturnValue(false)
   vi.mocked(getChannelBotToken).mockReturnValue('123456:DEFAULT-TEST-TOKEN-cccccccccccc')
-  vi.mocked(serverMaySendTo).mockReturnValue(true)
+  vi.mocked(serverMaySendTo).mockResolvedValue(true)
   vi.mocked(buildTtsDirective).mockReturnValue('TTS_DIRECTIVE' as never)
 })
 
@@ -400,7 +400,7 @@ describe('POST /api/voice/tts', () => {
 
   it('applies the adopted chat list to an admin principal too', async () => {
     mockExistingOnnx.add(ONNX())
-    vi.mocked(serverMaySendTo).mockReturnValue(false)
+    vi.mocked(serverMaySendTo).mockResolvedValue(false)
     const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hi', chat_id: '999', agent_id: 'a', voice_model: 'en_US-test-voice' })
     Object.assign(ctx, { role: 'admin' })
     await tryHandleVoice(ctx)
@@ -445,7 +445,7 @@ describe('POST /api/voice/tts as a fleet_agent', () => {
   })
 
   it('is refused on a chat that is not on the adopted list, and nothing is spawned', async () => {
-    vi.mocked(serverMaySendTo).mockReturnValue(false)
+    vi.mocked(serverMaySendTo).mockResolvedValue(false)
     const { ctx, out } = asFleetAgent()
     await tryHandleVoice(ctx)
     expect(out.status).toBe(403)

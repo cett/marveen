@@ -969,7 +969,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     rmSync(dir, { recursive: true, force: true })
     // The server-side channel record (vault token, adopted chats) must not outlive the agent: a new
     // agent of the same name would otherwise inherit the old bot and its chat list.
-    forgetChannel(name)
+    await forgetChannel(name)
     cleanupTeamReferences(name)
     try {
       writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'delete', entity_id: name })
