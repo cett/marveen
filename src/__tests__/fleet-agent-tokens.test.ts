@@ -44,8 +44,8 @@ vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<ty
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const NOW = () => Math.floor(Date.now() / 1000)
 
-function mint(raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent', over: { expiresAt?: number | null } = {}): number {
-  return insertApiToken({ tokenHash: sha(raw), name: `${role}:${agentId ?? 'none'}`, role, tenantId: 'default', createdAt: NOW() - 10, expiresAt: over.expiresAt ?? null, agentId }).id
+async function mint(raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent', over: { expiresAt?: number | null } = {}): Promise<number> {
+  return (await insertApiToken({ tokenHash: sha(raw), name: `${role}:${agentId ?? 'none'}`, role, tenantId: 'default', createdAt: NOW() - 10, expiresAt: over.expiresAt ?? null, agentId })).id
 }
 
 const HANDLERS: RouteHandler[] = [
@@ -72,7 +72,7 @@ async function request(rawToken: string | null, method: string, path: string, bo
     },
   } as unknown as http.ServerResponse
   const url = new URL(`http://localhost:3420${path}`)
-  const auth = resolveAuth(req, url, url.pathname, method, 'the-file-token', true)
+  const auth = await resolveAuth(req, url, url.pathname, method, 'the-file-token', true)
   if (auth.kind === 'none') { out.status = 401; return out }
   if (auth.kind === 'token' && auth.tenantContextMissing) { out.status = 403; out.body = { error: 'forbidden', hint: 'no fresh tenant context' }; return out }
   const decision = checkPermission(auth, method, url.pathname)
@@ -95,41 +95,41 @@ const setContext = (agent: string, tenant: string, status: string, ageSeconds = 
 
 const turn = (agent: string, id: string) => ({ agent_id: agent, chat_id: '1', direction: 'in' as const, message_id: id, text: `t-${id}`, created_at: 1000 })
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  mint('tok-alpha', 'alpha')
-  mint('tok-beta', 'beta')
-  mint('tok-main-agent', 'main-agent', 'admin')
+  await mint('tok-alpha', 'alpha')
+  await mint('tok-beta', 'beta')
+  await mint('tok-main-agent', 'main-agent', 'admin')
 })
 
 describe('resolveAuth with a fleet_agent token', () => {
-  it('names the agent and the role, and derives the tenant instead of reading it from the token', () => {
+  it('names the agent and the role, and derives the tenant instead of reading it from the token', async () => {
     const req = { headers: { authorization: 'Bearer tok-alpha' } } as unknown as http.IncomingMessage
-    const auth = resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)
+    const auth = await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)
     expect(auth).toMatchObject({ kind: 'token', role: 'fleet_agent', agentId: 'alpha', tenantId: 'default' })
   })
 
-  it('refuses a revoked token without falling back to the file token or to admin', () => {
-    const id = mint('tok-gone', 'alpha')
-    revokeApiToken(id, NOW())
+  it('refuses a revoked token without falling back to the file token or to admin', async () => {
+    const id = await mint('tok-gone', 'alpha')
+    await revokeApiToken(id, NOW())
     const req = { headers: { authorization: 'Bearer tok-gone' } } as unknown as http.IncomingMessage
-    expect(resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toEqual({ kind: 'none' })
+    expect(await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toEqual({ kind: 'none' })
   })
 
-  it('refuses an expired token', () => {
-    mint('tok-old', 'alpha', 'fleet_agent', { expiresAt: NOW() - 5 })
+  it('refuses an expired token', async () => {
+    await mint('tok-old', 'alpha', 'fleet_agent', { expiresAt: NOW() - 5 })
     const req = { headers: { authorization: 'Bearer tok-old' } } as unknown as http.IncomingMessage
-    expect(resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toEqual({ kind: 'none' })
+    expect(await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toEqual({ kind: 'none' })
   })
 
-  it('a named admin token carries the agent id as a label and stays admin', () => {
+  it('a named admin token carries the agent id as a label and stays admin', async () => {
     const req = { headers: { authorization: 'Bearer tok-main-agent' } } as unknown as http.IncomingMessage
-    expect(resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toMatchObject({ kind: 'token', role: 'admin', agentId: 'main-agent' })
+    expect(await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toMatchObject({ kind: 'token', role: 'admin', agentId: 'main-agent' })
   })
 
-  it('the shared file token keeps working and names no agent', () => {
+  it('the shared file token keeps working and names no agent', async () => {
     const req = { headers: { authorization: 'Bearer the-file-token' } } as unknown as http.IncomingMessage
-    const auth = resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
+    const auth = await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
     expect(auth).toEqual({ kind: 'token' })
   })
 })
@@ -263,11 +263,11 @@ describe('what a fleet_agent token cannot reach at all', () => {
 })
 
 describe('a shared agent has no tenant on the token: the serving context decides, and none means no', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     createTenant('acme', 'Acme')
     setTenantAgentAvailability('default', 'shared', true)
     setTenantAgentAvailability('acme', 'shared', true)
-    mint('tok-shared', 'shared')
+    await mint('tok-shared', 'shared')
     logLedgerTurn(turn('shared', 's1'))
   })
 
@@ -290,15 +290,15 @@ describe('a shared agent has no tenant on the token: the serving context decides
   it('works with a fresh context and takes the tenant from it', async () => {
     setContext('shared', 'acme', 'bound')
     const req = { headers: { authorization: 'Bearer tok-shared' } } as unknown as http.IncomingMessage
-    expect(resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toMatchObject({ role: 'fleet_agent', tenantId: 'acme', agentId: 'shared' })
+    expect(await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toMatchObject({ role: 'fleet_agent', tenantId: 'acme', agentId: 'shared' })
     expect((await request('tok-shared', 'GET', '/api/conversation-ledger/shared/recent')).status).toBe(200)
   })
 
   it('an agent that serves one tenant needs no context', async () => {
     setTenantAgentAvailability('acme', 'solo', true)
-    mint('tok-solo', 'solo')
+    await mint('tok-solo', 'solo')
     const req = { headers: { authorization: 'Bearer tok-solo' } } as unknown as http.IncomingMessage
-    expect(resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toMatchObject({ tenantId: 'acme' })
+    expect(await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toMatchObject({ tenantId: 'acme' })
   })
 
   it('checkPermission itself denies the missing-context token (not only the web gate)', () => {
@@ -337,7 +337,7 @@ describe('token management with agent_id', () => {
   })
 
   it('rotation keeps the agent: the old token stops, the new one is the same agent', async () => {
-    const id = (listApiTokenRows().find(r => r.agent_id === 'alpha'))!.id
+    const id = ((await listApiTokenRows()).find(r => r.agent_id === 'alpha'))!.id
     const rotated = await request('the-file-token', 'POST', `/api/admin/tokens/${id}/rotate`, {})
     expect(rotated.status).toBe(200)
     expect(rotated.body).toMatchObject({ agent_id: 'alpha', role: 'fleet_agent' })
@@ -346,7 +346,7 @@ describe('token management with agent_id', () => {
   })
 
   it('revoking stops a token at the next request', async () => {
-    const id = (listApiTokenRows().find(r => r.agent_id === 'beta'))!.id
+    const id = ((await listApiTokenRows()).find(r => r.agent_id === 'beta'))!.id
     expect((await request('tok-beta', 'GET', '/api/conversation-ledger/beta/recent')).status).toBe(200)
     expect((await request('the-file-token', 'DELETE', `/api/admin/tokens/${id}/revoke`)).status).toBe(200)
     expect((await request('tok-beta', 'GET', '/api/conversation-ledger/beta/recent')).status).toBe(401)

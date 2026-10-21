@@ -359,7 +359,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    json(res, { keys: listDeviceKeys() })
+    json(res, { keys: await listDeviceKeys() })
     return true
   }
 
@@ -400,7 +400,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       }
       installId = body.install_id
     }
-    const minted = createDeviceKey(name, { expiresInDays, installId })
+    const minted = await createDeviceKey(name, { expiresInDays, installId })
     logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt, installId: minted.installId ?? undefined }, 'device key minted')
     // `key` is the one and only disclosure of the raw credential.
     json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, install_id: minted.installId }, 201)
@@ -414,8 +414,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const id = Number(deviceKeyMatch[1])
-    const key = getDeviceKey(id)
-    if (!key || !revokeDeviceKey(id)) {
+    const key = await getDeviceKey(id)
+    if (!key || !await revokeDeviceKey(id)) {
       json(res, { error: 'not_found', field: 'device_key' }, 404)
       return true
     }

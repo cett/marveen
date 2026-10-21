@@ -12,7 +12,7 @@ vi.mock('../db.js', () => ({
   setChannelBinding: vi.fn(),
   deleteChannelBinding: vi.fn(),
 }))
-vi.mock('../web/auth-device-keys.js', () => ({ listDeviceKeys: vi.fn().mockReturnValue([]), assignDeviceKeyTenant: vi.fn() }))
+vi.mock('../web/auth-device-keys.js', () => ({ listDeviceKeys: vi.fn().mockResolvedValue([]), assignDeviceKeyTenant: vi.fn() }))
 vi.mock('../web/password-hash.js', () => ({ hashPassword: vi.fn() }))
 vi.mock('../prompt-safety.js', () => ({ sanitizeAgentIdent: vi.fn().mockImplementation((s: string) => s) }))
 vi.mock('../web/agent-config.js', () => ({ isKnownAgent: vi.fn(), listAgentNames: vi.fn().mockReturnValue([]) }))

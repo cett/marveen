@@ -92,7 +92,7 @@ describe('costops budgets route -- CRUD', () => {
     expect(body().budget).toMatchObject({ id: 'global-monthly', amount: 5_000_000, block_on_hard: false })
 
     const { listCostBudgets } = await import('../db/cost-budgets.js')
-    const rows = listCostBudgets('default')
+    const rows = await listCostBudgets('default')
     expect(rows).toHaveLength(1)
     expect(rows[0].id).toBe('global-monthly')
   })

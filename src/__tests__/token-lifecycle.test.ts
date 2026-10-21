@@ -74,11 +74,11 @@ describe('token creation', () => {
     expect(row.token_hash).not.toBe(raw)
   })
 
-  it('resolves valid token with correct role and tenant', () => {
+  it('resolves valid token with correct role and tenant', async () => {
     const db = openDb()
     const raw = 'agent-tok-abc'
     insertToken(db, { hash: sha256(raw), role: 'agent', tenantId: 'tenant-x' })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(true)
     if (result.found) {
       expect(result.role).toBe('agent')
@@ -86,22 +86,22 @@ describe('token creation', () => {
     }
   })
 
-  it('resolves admin token with admin role', () => {
+  it('resolves admin token with admin role', async () => {
     const db = openDb()
     const raw = 'admin-tok-xyz'
     insertToken(db, { hash: sha256(raw), role: 'admin', tenantId: 'default' })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(true)
     if (result.found) {
       expect(result.role).toBe('admin')
     }
   })
 
-  it('resolves the token row name alongside role/tenant', () => {
+  it('resolves the token row name alongside role/tenant', async () => {
     const db = openDb()
     const raw = 'named-tok-123'
     insertToken(db, { hash: sha256(raw), name: 'example-service-token', role: 'agent', tenantId: 'default' })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(true)
     if (result.found) {
       expect(result.name).toBe('example-service-token')
@@ -112,28 +112,28 @@ describe('token creation', () => {
 // ── 3. Expiry ─────────────────────────────────────────────────────────────────
 
 describe('token expiry', () => {
-  it('expired token returns found=false, registeredButInvalid=true', () => {
+  it('expired token returns found=false, registeredButInvalid=true', async () => {
     const db = openDb()
     const raw = 'expired-token'
     insertToken(db, { hash: sha256(raw), expiresAt: NOW - 3600 })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(false)
     if (!result.found) expect(result.registeredButInvalid).toBe(true)
   })
 
-  it('non-expired token with future expires_at resolves correctly', () => {
+  it('non-expired token with future expires_at resolves correctly', async () => {
     const db = openDb()
     const raw = 'valid-expiry-token'
     insertToken(db, { hash: sha256(raw), expiresAt: NOW + 86400 })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(true)
   })
 
-  it('token with null expires_at (no expiry) resolves correctly', () => {
+  it('token with null expires_at (no expiry) resolves correctly', async () => {
     const db = openDb()
     const raw = 'no-expiry-token'
     insertToken(db, { hash: sha256(raw), expiresAt: null })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(true)
   })
 })
@@ -141,20 +141,20 @@ describe('token expiry', () => {
 // ── 4. Revocation ─────────────────────────────────────────────────────────────
 
 describe('token revocation', () => {
-  it('revoked token returns found=false, registeredButInvalid=true', () => {
+  it('revoked token returns found=false, registeredButInvalid=true', async () => {
     const db = openDb()
     const raw = 'revoked-token'
     insertToken(db, { hash: sha256(raw), revokedAt: NOW - 60 })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(false)
     if (!result.found) expect(result.registeredButInvalid).toBe(true)
   })
 
-  it('active token with null revoked_at resolves correctly', () => {
+  it('active token with null revoked_at resolves correctly', async () => {
     const db = openDb()
     const raw = 'active-token'
     insertToken(db, { hash: sha256(raw), revokedAt: null })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(true)
   })
 })
@@ -162,11 +162,11 @@ describe('token revocation', () => {
 // ── 5. CRITICAL: revoked/expired token blocks file-token fallback ─────────────
 
 describe('CRITICAL: expired/revoked token in DB blocks file-token fallback', () => {
-  it('resolveApiToken returns registeredButInvalid=true for expired token', () => {
+  it('resolveApiToken returns registeredButInvalid=true for expired token', async () => {
     const db = openDb()
     const raw = 'file-matches-expired'
     insertToken(db, { hash: sha256(raw), expiresAt: NOW - 1 })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     // The caller MUST treat registeredButInvalid=true as a hard deny, not fall through
     expect(result.found).toBe(false)
     if (!result.found) {
@@ -175,21 +175,21 @@ describe('CRITICAL: expired/revoked token in DB blocks file-token fallback', () 
     }
   })
 
-  it('resolveApiToken returns registeredButInvalid=true for revoked token', () => {
+  it('resolveApiToken returns registeredButInvalid=true for revoked token', async () => {
     const db = openDb()
     const raw = 'file-matches-revoked'
     insertToken(db, { hash: sha256(raw), revokedAt: NOW - 1 })
-    const result = resolveApiToken(raw)
+    const result = await resolveApiToken(raw)
     expect(result.found).toBe(false)
     if (!result.found) {
       expect(result.registeredButInvalid).toBe(true)
     }
   })
 
-  it('registeredButInvalid=false for token absent from DB (fallback allowed)', () => {
+  it('registeredButInvalid=false for token absent from DB (fallback allowed)', async () => {
     const db = openDb()
     // No row inserted -- this simulates the prod file-token which is not in DB
-    const result = resolveApiToken('completely-unknown-token')
+    const result = await resolveApiToken('completely-unknown-token')
     expect(result.found).toBe(false)
     if (!result.found) {
       // Caller may proceed to file-token fallback
@@ -201,7 +201,7 @@ describe('CRITICAL: expired/revoked token in DB blocks file-token fallback', () 
 // ── 2. Rotation ───────────────────────────────────────────────────────────────
 
 describe('token rotation', () => {
-  it('after rotation the old hash is revoked and the new hash resolves', () => {
+  it('after rotation the old hash is revoked and the new hash resolves', async () => {
     const db = openDb()
     const oldRaw = 'old-token'
     const oldId = insertToken(db, { hash: sha256(oldRaw), role: 'agent', tenantId: 'tenant-a' })
@@ -216,12 +216,12 @@ describe('token rotation', () => {
     ).run(sha256(newRaw), now, oldId)
 
     // Old token is now revoked
-    const oldResult = resolveApiToken(oldRaw)
+    const oldResult = await resolveApiToken(oldRaw)
     expect(oldResult.found).toBe(false)
     if (!oldResult.found) expect(oldResult.registeredButInvalid).toBe(true)
 
     // New token resolves correctly
-    const newResult = resolveApiToken(newRaw)
+    const newResult = await resolveApiToken(newRaw)
     expect(newResult.found).toBe(true)
     if (newResult.found) {
       expect(newResult.role).toBe('agent')
@@ -289,9 +289,9 @@ describe('resolveRole with DB token role', () => {
 // ── 10. Unknown token (not in DB) ─────────────────────────────────────────────
 
 describe('unknown token', () => {
-  it('returns found=false, registeredButInvalid=false for token not in DB', () => {
+  it('returns found=false, registeredButInvalid=false for token not in DB', async () => {
     const db = openDb()
-    const result = resolveApiToken('not-in-db-token')
+    const result = await resolveApiToken('not-in-db-token')
     expect(result.found).toBe(false)
     if (!result.found) expect(result.registeredButInvalid).toBe(false)
   })

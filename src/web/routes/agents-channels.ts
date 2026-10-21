@@ -368,7 +368,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     // The server-side record follows the channel: the new token goes into the vault, and the adopted
     // chat list and baseline of the previous setup are dropped (access.json was just reset). The owner
     // adopts the pairing again once it exists (POST /api/channel-credentials/adopt).
-    if (provider === CHANNEL_PROVIDER) resetChannelAfterSetup(name, botToken.trim())
+    if (provider === CHANNEL_PROVIDER) await resetChannelAfterSetup(name, botToken.trim())
 
     // Main agent doesn't have an agent-config.json or enabled-plugins entry
     // (the channels session reuses the system claude install), so skip the
@@ -408,7 +408,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const accessFile = join(stateDir, 'access.json')
     if (existsSync(envFile)) unlinkSync(envFile)
     if (existsSync(accessFile)) unlinkSync(accessFile)
-    if (provider === CHANNEL_PROVIDER) forgetChannel(name)
+    if (provider === CHANNEL_PROVIDER) await forgetChannel(name)
     writeAgentChannelProvider(name, '')
     resetAgentEnabledPlugins(name)
     json(res, { ok: true })

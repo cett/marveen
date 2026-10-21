@@ -53,17 +53,17 @@ type ApiTokenResult =
   | { found: true; role: Role; tenantId: string; name: string; agentId: string | null }
   | { found: false; registeredButInvalid: boolean }
 
-export function resolveApiToken(bearer: string): ApiTokenResult {
+export async function resolveApiToken(bearer: string): Promise<ApiTokenResult> {
   const hash = createHash('sha256').update(bearer).digest('hex')
   const now = Math.floor(Date.now() / 1000)
 
-  const validRow = getValidApiToken(hash, now)
+  const validRow = await getValidApiToken(hash, now)
 
   if (validRow) {
     return { found: true, role: validRow.role as Role, tenantId: validRow.tenant_id, name: validRow.name, agentId: validRow.agent_id }
   }
 
-  return { found: false, registeredButInvalid: apiTokenHashExists(hash) }
+  return { found: false, registeredButInvalid: await apiTokenHashExists(hash) }
 }
 
 // A fleet_agent token names the agent, and the tenant is NOT on the token: it is the tenant of the
@@ -141,7 +141,7 @@ export function requiresAuth(path: string, method: string): boolean {
   return path.startsWith('/api/')
 }
 
-export function resolveAuth(
+export async function resolveAuth(
   req: http.IncomingMessage,
   url: URL,
   path: string,
@@ -150,7 +150,7 @@ export function resolveAuth(
   // true = consult api_tokens and dashboard_users (production). false = the
   // DB-less mode: bearer/device/federation lanes only, sessions carry no role.
   dbLookups: boolean,
-): AuthResult {
+): Promise<AuthResult> {
   const bearerHeader = req.headers.authorization
   const bearerMatch = /^Bearer\s+(.+)$/.exec(bearerHeader ?? '')
   const bearerValue = bearerMatch?.[1]?.trim()
@@ -161,7 +161,7 @@ export function resolveAuth(
   //    re-grant admin and bypass revocation. Only tokens absent from DB entirely
   //    may reach the legacy fallback in step 2.
   if (bearerValue && dbLookups) {
-    const result = resolveApiToken(bearerValue)
+    const result = await resolveApiToken(bearerValue)
     if (result.found) {
       if (result.role === 'fleet_agent') return resolveFleetAgentToken(result)
       return {
@@ -208,7 +208,7 @@ export function resolveAuth(
   //    makes this a no-op for every non-key bearer (and with zero device_keys
   //    rows the whole step never resolves -- fresh installs unaffected).
   if (bearerMatch) {
-    const dk = resolveDeviceKey(bearerValue!)
+    const dk = await resolveDeviceKey(bearerValue!)
     if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
   }
 
@@ -224,10 +224,10 @@ export function resolveAuth(
     // when its own hash is a registered-but-invalid api_tokens row (revoked), it is not accepted here,
     // as step 1 would not accept it. Checking the presented string instead would let a padded variant
     // of the revoked value (hash differs, the Bearer comparison trims) slip past.
-    const held = dbLookups && dashboardToken !== '' ? resolveApiToken(dashboardToken) : null
+    const held = dbLookups && dashboardToken !== '' ? await resolveApiToken(dashboardToken) : null
     const inMemoryRevoked = held !== null && !held.found && held.registeredButInvalid
     if (!inMemoryRevoked && checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
-    const dk = resolveDeviceKey(qtoken)
+    const dk = await resolveDeviceKey(qtoken)
     if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
   }
 

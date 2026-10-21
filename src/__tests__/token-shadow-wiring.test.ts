@@ -36,7 +36,7 @@ vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<ty
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const NOW = () => Math.floor(Date.now() / 1000)
-const mint = (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
+const mint = async (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
   insertApiToken({ tokenHash: sha(raw), name: `${role}:${agentId ?? 'none'}`, role, tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId })
 
 const HANDLERS: RouteHandler[] = [tryHandleConversationLedger, tryHandleDailyLog, tryHandleSkills, tryHandleTokenShadow]
@@ -58,7 +58,7 @@ async function request(rawToken: string | null, method: string, path: string, bo
     },
   } as unknown as http.ServerResponse
   const url = new URL(`http://localhost:3420${path}`)
-  const auth = resolveAuth(req, url, url.pathname, method, 'the-file-token', true)
+  const auth = await resolveAuth(req, url, url.pathname, method, 'the-file-token', true)
   if (auth.kind === 'none') { out.status = 401; return out }
   if (auth.kind === 'token' && auth.tenantContextMissing) {
     recordTenantContextRefusal(req, auth, method, url.pathname)
@@ -87,14 +87,14 @@ const total = (category: string): number => rows(category).reduce((n, r) => n + 
 const setContext = (agent: string, tenant: string, status: string) =>
   getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)').run(agent, tenant, status, NOW())
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   resetTokenShadowForTests()
-  mint('tok-alpha', 'alpha')
-  mint('tok-beta', 'beta')
-  mint('tok-main-agent', 'main-agent', 'admin')
+  await mint('tok-alpha', 'alpha')
+  await mint('tok-beta', 'beta')
+  await mint('tok-main-agent', 'main-agent', 'admin')
   // The shared dashboard token as production has it: enrolled in api_tokens as 'dashboard', admin, no agent.
-  insertApiToken({ tokenHash: sha('the-enrolled-token'), name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: null })
+  await insertApiToken({ tokenHash: sha('the-enrolled-token'), name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: null })
 })
 
 describe('the counter sees what the routes decide', () => {
@@ -126,11 +126,11 @@ describe('the counter sees what the routes decide', () => {
   })
 
   describe('a shared agent (two tenants) with no fresh tenant context', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       createTenant('tenant-a', 'Tenant A')
       setTenantAgentAvailability('default', 'shared', true)
       setTenantAgentAvailability('tenant-a', 'shared', true)
-      mint('tok-shared', 'shared')
+      await mint('tok-shared', 'shared')
     })
 
     it('its fleet token is refused 403 and the refusal is counted', async () => {

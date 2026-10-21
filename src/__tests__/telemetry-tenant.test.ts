@@ -252,7 +252,7 @@ describe('token rollups keep the tenants of a shared agent apart', () => {
     db.prepare("INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, model, tenant_id) VALUES ('shared', ?, ?, ?, 'm', ?)")
       .run(`s-${tenant}-${ts}`, ts, tokens, tenant)
 
-  it('one daily and one monthly row per tenant, and the tenant budget sees the old months', () => {
+  it('one daily and one monthly row per tenant, and the tenant budget sees the old months', async () => {
     const old = Math.floor(Date.now() / 1000) - 100 * 86400
     raw('acme', old, 10)
     raw('acme', old + 60, 5)
@@ -268,9 +268,9 @@ describe('token rollups keep the tenants of a shared agent apart', () => {
       { tenant_id: 'acme', input_tokens: 15 },
       { tenant_id: 'beta', input_tokens: 7 },
     ])
-    expect(getMonthlyTokenSpend({ tenant: 'acme' }, old)).toBe(15)
-    expect(getMonthlyTokenSpend({ tenant: 'beta' }, old)).toBe(7)
-    expect(getMonthlyTokenSpend({}, old)).toBe(22)
+    expect(await getMonthlyTokenSpend({ tenant: 'acme' }, old)).toBe(15)
+    expect(await getMonthlyTokenSpend({ tenant: 'beta' }, old)).toBe(7)
+    expect(await getMonthlyTokenSpend({}, old)).toBe(22)
   })
 })
 

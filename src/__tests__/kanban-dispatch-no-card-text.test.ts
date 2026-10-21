@@ -65,7 +65,7 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
@@ -77,18 +77,18 @@ const CARD = 'abc12345'
 const DEFAULT_CARD = 'card-default'
 const ACME_CARD = 'card-acme'
 
-const alpha = () => tokenAuth('tok-alpha') // fleet_agent, tenant default
+const alpha = async () => tokenAuth('tok-alpha') // fleet_agent, tenant default
 const acmeUser = () => session('agent', 'acme') // tenant user of acme
-const admin = () => tokenAuth('the-file-token')
+const admin = async () => tokenAuth('the-file-token')
 
 const messages = () => getDb().prepare('SELECT to_agent, from_agent, content FROM agent_messages').all() as
   { to_agent: string; from_agent: string; content: string }[]
 const dispatchedAt = (id: string) => (getDb().prepare('SELECT dispatched_at FROM kanban_cards WHERE id = ?').get(id) as { dispatched_at: number | null }).dispatched_at
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('acme', 'Acme')
-  insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
+  await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
   createKanbanCard({ id: CARD, title: HOSTILE_TITLE, description: HOSTILE_DESC, assignee: 'alpha', priority: 'urgent', tenant_id: 'default' })
   createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', description: 'default text', assignee: 'beta', tenant_id: 'default' })
   createKanbanCard({ id: ACME_CARD, title: 'Acme card', description: 'secret acme text', assignee: 'beta', tenant_id: 'acme' })
@@ -98,7 +98,7 @@ beforeEach(() => {
 
 describe('the dispatch message does not carry the card text', () => {
   it('a card moved to in_progress wakes the assignee with the id, the assignee, the priority and the read command only', async () => {
-    const res = await callAs(admin(), 'POST', `/api/kanban/${CARD}/move`, { status: 'in_progress' })
+    const res = await callAs(await admin(), 'POST', `/api/kanban/${CARD}/move`, { status: 'in_progress' })
     expect(res.status).toBe(200)
     const sent = messages()
     expect(sent).toHaveLength(1)
@@ -122,7 +122,7 @@ describe('the dispatch message does not carry the card text', () => {
   it('a card whose id is not a plain token sends nothing and is not marked as dispatched', async () => {
     const odd = 'a;b c'
     createKanbanCard({ id: odd, title: 'imported', assignee: 'alpha', tenant_id: 'default' })
-    const res = await callAs(admin(), 'POST', `/api/kanban/${encodeURIComponent(odd)}/move`, { status: 'in_progress' })
+    const res = await callAs(await admin(), 'POST', `/api/kanban/${encodeURIComponent(odd)}/move`, { status: 'in_progress' })
     expect(res.status).toBe(200)
     expect(messages()).toEqual([])
     expect(dispatchedAt(odd)).toBeNull()
@@ -144,16 +144,16 @@ describe('the dispatch message does not carry the card text', () => {
 
 describe('GET /api/kanban/:id', () => {
   it('returns the card with its text and labels to the assigned fleet agent of the same tenant', async () => {
-    const res = await callAs(alpha(), 'GET', `/api/kanban/${CARD}`)
+    const res = await callAs(await alpha(), 'GET', `/api/kanban/${CARD}`)
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({ id: CARD, title: HOSTILE_TITLE, description: HOSTILE_DESC, assignee: 'alpha', priority: 'urgent', labels: [] })
-    const labelled = await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}`)
+    const labelled = await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}`)
     expect((labelled.body as { labels: { id: string }[] }).labels.map((l) => l.id)).toEqual(['lbl-default'])
   })
 
   it("a foreign tenant's card answers 404 exactly like a missing one, for a fleet token and a tenant user", async () => {
-    const foreign = await callAs(alpha(), 'GET', `/api/kanban/${ACME_CARD}`)
-    const missing = await callAs(alpha(), 'GET', '/api/kanban/no-such-card')
+    const foreign = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}`)
+    const missing = await callAs(await alpha(), 'GET', '/api/kanban/no-such-card')
     expect(foreign.status).toBe(404)
     expect(foreign).toEqual(missing)
     expect((await callAs(acmeUser(), 'GET', `/api/kanban/${DEFAULT_CARD}`)).status).toBe(404)
@@ -161,22 +161,22 @@ describe('GET /api/kanban/:id', () => {
   })
 
   it('an admin reads a card of any tenant', async () => {
-    const res = await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}`)
+    const res = await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}`)
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({ id: ACME_CARD, description: 'secret acme text' })
   })
 
   it('does not shadow the fixed-name routes under /api/kanban/', async () => {
-    const labels = await callAs(admin(), 'GET', '/api/kanban/labels')
+    const labels = await callAs(await admin(), 'GET', '/api/kanban/labels')
     expect(labels.status).toBe(200)
     expect(Array.isArray(labels.body)).toBe(true)
-    const archived = await callAs(admin(), 'GET', '/api/kanban/archived')
+    const archived = await callAs(await admin(), 'GET', '/api/kanban/archived')
     expect(archived.status).toBe(200)
     expect(archived.body).not.toHaveProperty('error')
-    const assignees = await callAs(admin(), 'GET', '/api/kanban/assignees')
+    const assignees = await callAs(await admin(), 'GET', '/api/kanban/assignees')
     expect(assignees.status).toBe(200)
     expect(assignees.body).not.toHaveProperty('error')
-    const heartbeat = await callAs(admin(), 'GET', '/api/kanban/heartbeat-summary')
+    const heartbeat = await callAs(await admin(), 'GET', '/api/kanban/heartbeat-summary')
     expect(heartbeat.status).toBe(200)
     expect(heartbeat.body).toHaveProperty('counts')
   })

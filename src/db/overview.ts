@@ -4,58 +4,52 @@
 // migration ran); the route wraps every call and degrades to a zero value.
 // tenantId null = fleet-wide (admin default), a string = narrow to one tenant.
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 function tenantFilter(tenantId: string | null): { tc: string; tp: string[] } {
   return tenantId ? { tc: ' AND tenant_id = ?', tp: [tenantId] } : { tc: '', tp: [] }
 }
 
-export function countOverviewMemories(tenantId: string | null): number {
+export async function countOverviewMemories(tenantId: string | null): Promise<number> {
   const { tc, tp } = tenantFilter(tenantId)
-  const row = db.prepare(`SELECT COUNT(*) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
+  const row = (await dbx.get(`SELECT COUNT(*) as c FROM memories WHERE 1=1${tc}`, ...tp)) as { c: number }
   return row.c
 }
 
-export function countOverviewMemoryCategories(tenantId: string | null): number {
+export async function countOverviewMemoryCategories(tenantId: string | null): Promise<number> {
   const { tc, tp } = tenantFilter(tenantId)
-  const row = db.prepare(`SELECT COUNT(DISTINCT category) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
+  const row = (await dbx.get(`SELECT COUNT(DISTINCT category) as c FROM memories WHERE 1=1${tc}`, ...tp)) as { c: number }
   return row.c
 }
 
-export function countOverviewArtifacts(tenantId: string | null): number {
+export async function countOverviewArtifacts(tenantId: string | null): Promise<number> {
   const { tc, tp } = tenantFilter(tenantId)
-  const row = db.prepare(`SELECT COUNT(*) as c FROM artifacts WHERE 1=1${tc}`).get(...tp) as { c: number }
+  const row = (await dbx.get(`SELECT COUNT(*) as c FROM artifacts WHERE 1=1${tc}`, ...tp)) as { c: number }
   return row.c
 }
 
 // Per-agent last token_usage timestamp (ms epoch). Not tenant-scoped.
-export function listOverviewLastActive(): { agent: string; last_active: number }[] {
-  return db.prepare(
-    'SELECT agent, MAX(timestamp) as last_active FROM token_usage GROUP BY agent'
-  ).all() as { agent: string; last_active: number }[]
+export async function listOverviewLastActive(): Promise<{ agent: string; last_active: number }[]> {
+  return (await dbx.all('SELECT agent, MAX(timestamp) as last_active FROM token_usage GROUP BY agent')) as { agent: string; last_active: number }[]
 }
 
-export function sumOverviewTokensSince(sinceSec: number, tenantId: string | null): number {
+export async function sumOverviewTokensSince(sinceSec: number, tenantId: string | null): Promise<number> {
   const { tc, tp } = tenantFilter(tenantId)
-  const rows = db.prepare(
-    `SELECT input_tokens, output_tokens FROM token_usage WHERE timestamp >= ?${tc}`
-  ).all(sinceSec, ...tp) as { input_tokens: number; output_tokens: number }[]
+  const rows = (await dbx.all(`SELECT input_tokens, output_tokens FROM token_usage WHERE timestamp >= ?${tc}`, sinceSec, ...tp)) as { input_tokens: number; output_tokens: number }[]
   let total = 0
   for (const r of rows) total += r.input_tokens + r.output_tokens
   return total
 }
 
-export function countOverviewPendingApprovals(tenantId: string | null): number {
+export async function countOverviewPendingApprovals(tenantId: string | null): Promise<number> {
   const { tc, tp } = tenantFilter(tenantId)
-  const row = db.prepare(`SELECT COUNT(*) as c FROM approvals WHERE status='pending'${tc}`).get(...tp) as { c: number }
+  const row = (await dbx.get(`SELECT COUNT(*) as c FROM approvals WHERE status='pending'${tc}`, ...tp)) as { c: number }
   return row.c
 }
 
 // Error/timeout spans since sinceMs (otel_spans.start_ms is milliseconds). Not tenant-scoped.
-export function countOverviewErrorSpansSince(sinceMs: number): number {
-  const row = db.prepare(
-    "SELECT COUNT(*) as c FROM otel_spans WHERE status IN ('error','timeout') AND start_ms >= ?"
-  ).get(sinceMs) as { c: number }
+export async function countOverviewErrorSpansSince(sinceMs: number): Promise<number> {
+  const row = (await dbx.get("SELECT COUNT(*) as c FROM otel_spans WHERE status IN ('error','timeout') AND start_ms >= ?", sinceMs)) as { c: number }
   return row.c
 }
 
@@ -85,12 +79,10 @@ function errorSpanDetail(operation: string, attributes: string | null): string {
 }
 
 // The newest error/timeout spans since sinceMs, the rows behind countOverviewErrorSpansSince.
-export function listOverviewErrorSpansSince(sinceMs: number, limit: number): OverviewErrorSpan[] {
-  const rows = db.prepare(
-    `SELECT trace_id, span_id, agent_id, operation, status, start_ms, end_ms, attributes
+export async function listOverviewErrorSpansSince(sinceMs: number, limit: number): Promise<OverviewErrorSpan[]> {
+  const rows = (await dbx.all(`SELECT trace_id, span_id, agent_id, operation, status, start_ms, end_ms, attributes
        FROM otel_spans WHERE status IN ('error','timeout') AND start_ms >= ?
-      ORDER BY start_ms DESC LIMIT ?`
-  ).all(sinceMs, limit) as Array<{
+      ORDER BY start_ms DESC LIMIT ?`, sinceMs, limit)) as Array<{
     trace_id: string; span_id: string; agent_id: string; operation: string; status: 'error' | 'timeout'
     start_ms: number; end_ms: number | null; attributes: string | null
   }>
@@ -102,46 +94,43 @@ export function listOverviewErrorSpansSince(sinceMs: number, limit: number): Ove
   }))
 }
 
-export function countOverviewPendingMessages(tenantId: string | null): number {
+export async function countOverviewPendingMessages(tenantId: string | null): Promise<number> {
   const { tc, tp } = tenantFilter(tenantId)
-  const row = db.prepare(`SELECT COUNT(*) as c FROM agent_messages WHERE status='pending'${tc}`).get(...tp) as { c: number }
+  const row = (await dbx.get(`SELECT COUNT(*) as c FROM agent_messages WHERE status='pending'${tc}`, ...tp)) as { c: number }
   return row.c
 }
 
 // Legacy scheduled_tasks table: no tenant_id column, fleet-level figure only.
-export function countOverviewStuckScheduledTasks(nextRunBeforeSec: number): number {
-  const row = db.prepare(
-    "SELECT COUNT(*) as c FROM scheduled_tasks WHERE status='active' AND next_run < ?"
-  ).get(nextRunBeforeSec) as { c: number }
+export async function countOverviewStuckScheduledTasks(nextRunBeforeSec: number): Promise<number> {
+  const row = (await dbx.get("SELECT COUNT(*) as c FROM scheduled_tasks WHERE status='active' AND next_run < ?", nextRunBeforeSec)) as { c: number }
   return row.c
 }
 
-export function listOverviewRecentMemories(
+export async function listOverviewRecentMemories(
   sinceSec: number,
   tenantId: string | null,
-): { content: string; created_at: number; agent_id: string }[] {
+): Promise<{ content: string; created_at: number; agent_id: string }[]> {
   const { tc, tp } = tenantFilter(tenantId)
-  return db.prepare(
-    `SELECT content, created_at, agent_id FROM memories WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 20`
-  ).all(sinceSec, ...tp) as { content: string; created_at: number; agent_id: string }[]
+  return (await dbx.all(`SELECT content, created_at, agent_id FROM memories WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 20`, sinceSec, ...tp)) as { content: string; created_at: number; agent_id: string }[]
 }
 
-export function listOverviewRecentMessages(
+export async function listOverviewRecentMessages(
   sinceSec: number,
   tenantId: string | null,
-): { from_agent: string; to_agent: string; content: string; created_at: number }[] {
+): Promise<{ from_agent: string; to_agent: string; content: string; created_at: number }[]> {
   const { tc, tp } = tenantFilter(tenantId)
-  return db.prepare(
-    `SELECT from_agent, to_agent, content, created_at FROM agent_messages WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 15`
-  ).all(sinceSec, ...tp) as { from_agent: string; to_agent: string; content: string; created_at: number }[]
+  return (await dbx.all(`SELECT from_agent, to_agent, content, created_at FROM agent_messages WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 15`, sinceSec, ...tp)) as { from_agent: string; to_agent: string; content: string; created_at: number }[]
 }
 
-export function listOverviewRecentApprovals(
+export async function listOverviewRecentApprovals(
   sinceSec: number,
   tenantId: string | null,
-): { agent_id: string; action_description: string; status: string; created_at: number }[] {
+): Promise<{ agent_id: string; action_description: string; status: string; created_at: number }[]> {
   const { tc, tp } = tenantFilter(tenantId)
-  return db.prepare(
-    `SELECT agent_id, action_description, status, created_at FROM approvals WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 10`
-  ).all(sinceSec, ...tp) as { agent_id: string; action_description: string; status: string; created_at: number }[]
+  return (await dbx.all(
+    // approvals has requested_at, not created_at; the alias keeps the shape the route reads.
+    `SELECT agent_id, action_description, status, requested_at AS created_at FROM approvals WHERE requested_at >= ?${tc} ORDER BY requested_at DESC LIMIT 10`,
+    sinceSec,
+    ...tp,
+  )) as { agent_id: string; action_description: string; status: string; created_at: number }[]
 }

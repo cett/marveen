@@ -196,17 +196,17 @@ export function getChannelBotToken(agentId: string): string | null {
 }
 
 /** Is `chatId` on the adopted list of the agent's channel? No adoption means no chat. */
-export function serverMaySendTo(agentId: string, chatId: string): boolean {
-  return isValidChannelAgentId(agentId) && isChatAdopted(agentId, CHANNEL_PROVIDER, chatId)
+export async function serverMaySendTo(agentId: string, chatId: string): Promise<boolean> {
+  return isValidChannelAgentId(agentId) && await isChatAdopted(agentId, CHANNEL_PROVIDER, chatId)
 }
 
 /** The chat a scheduled task reports to: the first adopted chat, or null when nothing is adopted. */
-export function adoptedDeliveryChat(agentId: string): string | null {
-  return listAdoptedChats(agentId, CHANNEL_PROVIDER)[0] ?? null
+export async function adoptedDeliveryChat(agentId: string): Promise<string | null> {
+  return (await listAdoptedChats(agentId, CHANNEL_PROVIDER))[0] ?? null
 }
 
-export function hasAdoption(agentId: string): boolean {
-  return getChannelCredentialBaseline(agentId, CHANNEL_PROVIDER) !== null
+export async function hasAdoption(agentId: string): Promise<boolean> {
+  return (await getChannelCredentialBaseline(agentId, CHANNEL_PROVIDER)) !== null
 }
 
 // ── adopt ───────────────────────────────────────────────────────────────────
@@ -220,7 +220,7 @@ export type AdoptResult =
  * and the hashes into the DB, in that order, so a failure half way leaves no list without a token.
  * An empty chat list is a valid adoption (a channel nobody paired yet); the server then sends nowhere.
  */
-export function adoptChannel(agentId: string, adoptedBy: string): AdoptResult {
+export async function adoptChannel(agentId: string, adoptedBy: string): Promise<AdoptResult> {
   if (!isValidChannelAgentId(agentId)) return { ok: false, reason: 'invalid_agent' }
   let files: ChannelFiles
   try {
@@ -234,14 +234,15 @@ export function adoptChannel(agentId: string, adoptedBy: string): AdoptResult {
   // someone else's bot (a copied or linked file), and adopting it would let this agent's server sends
   // go out on that bot.
   const hash = tokenHash(files.token)
-  const heldByOther = listChannelCredentialBaselines().some((b) => b.agent_id !== agentId && b.token_sha256 === hash)
+  const baselines = await listChannelCredentialBaselines()
+  const heldByOther = baselines.some((b) => b.agent_id !== agentId && b.token_sha256 === hash)
     || [MAIN_AGENT_ID, ...listAgentNames()].some((n) => n !== agentId && (getChannelBotToken(n) ?? '') !== '' && tokenHash(getChannelBotToken(n) as string) === hash)
   if (heldByOther) {
     return { ok: false, reason: 'token_in_use' }
   }
   const previous = getChannelBotToken(agentId)
   setSecret(channelTokenSecretId(agentId), `Channel bot token (${CHANNEL_PROVIDER}) of ${agentId}`, files.token)
-  adoptChannelCredential({
+  await adoptChannelCredential({
     agentId,
     provider: CHANNEL_PROVIDER,
     chatIds: files.chats,
@@ -258,9 +259,9 @@ export function adoptChannel(agentId: string, adoptedBy: string): AdoptResult {
  * keeps sending on the right bot while the chat list stays empty until the owner adopts the new
  * pairing.
  */
-export function resetChannelAfterSetup(agentId: string, botToken: string): void {
+export async function resetChannelAfterSetup(agentId: string, botToken: string): Promise<void> {
   if (!isValidChannelAgentId(agentId)) return
-  clearChannelAdoption(agentId, CHANNEL_PROVIDER)
+  await clearChannelAdoption(agentId, CHANNEL_PROVIDER)
   try {
     setSecret(channelTokenSecretId(agentId), `Channel bot token (${CHANNEL_PROVIDER}) of ${agentId}`, botToken)
   } catch (err) {
@@ -269,9 +270,9 @@ export function resetChannelAfterSetup(agentId: string, botToken: string): void 
 }
 
 /** The agent is gone: its record and its vault token go with it. */
-export function forgetChannel(agentId: string): void {
+export async function forgetChannel(agentId: string): Promise<void> {
   if (!isValidChannelAgentId(agentId)) return
-  clearChannelAdoption(agentId, CHANNEL_PROVIDER)
+  await clearChannelAdoption(agentId, CHANNEL_PROVIDER)
   try { deleteSecret(channelTokenSecretId(agentId)) } catch { /* nothing stored */ }
 }
 
@@ -314,7 +315,7 @@ export async function checkChannelDrift(
   send: (text: string) => Promise<boolean> = deliverToChannel,
 ): Promise<ChannelDriftState | null> {
   try {
-    const baseline = getChannelCredentialBaseline(agentId, CHANNEL_PROVIDER)
+    const baseline = await getChannelCredentialBaseline(agentId, CHANNEL_PROVIDER)
     if (!baseline) return null
     let state: ChannelDriftState
     try {
@@ -322,7 +323,7 @@ export async function checkChannelDrift(
     } catch {
       state = 'unreadable'
     }
-    const started = recordChannelDriftCheck(agentId, CHANNEL_PROVIDER, state, nowSec)
+    const started = await recordChannelDriftCheck(agentId, CHANNEL_PROVIDER, state, nowSec)
     if (started) {
       logger.warn({ agent: agentId, state }, 'channel-credentials: drift between the channel files and the adopted record')
       recordTokenShadow(
@@ -345,16 +346,16 @@ export async function checkChannelDrift(
 
 /** One pass over every recorded channel. */
 export async function checkAllChannelDrift(nowSec?: number, send?: (text: string) => Promise<boolean>): Promise<void> {
-  for (const b of listChannelCredentialBaselines()) {
+  for (const b of await listChannelCredentialBaselines()) {
     await checkChannelDrift(b.agent_id, nowSec, send)
   }
 }
 
 /** Agents that have a channel on disk but no adoption: the server cannot send for them yet. */
-export function listUnadoptedChannelAgents(): string[] {
+export async function listUnadoptedChannelAgents(): Promise<string[]> {
   const out: string[] = []
   for (const name of [MAIN_AGENT_ID, ...listAgentNames()]) {
-    if (out.includes(name) || hasAdoption(name)) continue
+    if (out.includes(name) || await hasAdoption(name)) continue
     if (existsSync(join(channelDirForAgent(name), '.env'))) out.push(name)
   }
   return out
@@ -378,14 +379,13 @@ export function startChannelCredentialDriftSweeper(): NodeJS.Timeout {
   }
   const first = setTimeout(() => {
     run()
-    try {
-      const unadopted = listUnadoptedChannelAgents()
-      if (unadopted.length > 0) {
-        logger.warn({ agents: unadopted }, 'channel-credentials: channels without an adopted record, server voice sends are refused for them until POST /api/channel-credentials/adopt')
-      }
-    } catch (err) {
-      logger.warn({ err }, 'channel-credentials: unadopted listing failed')
-    }
+    listUnadoptedChannelAgents()
+      .then((unadopted) => {
+        if (unadopted.length > 0) {
+          logger.warn({ agents: unadopted }, 'channel-credentials: channels without an adopted record, server voice sends are refused for them until POST /api/channel-credentials/adopt')
+        }
+      })
+      .catch((err) => logger.warn({ err }, 'channel-credentials: unadopted listing failed'))
   }, DRIFT_FIRST_CHECK_DELAY_MS)
   first.unref()
   return setInterval(run, DRIFT_SWEEP_INTERVAL_MS)

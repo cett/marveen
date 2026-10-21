@@ -46,7 +46,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   }
 })
 
-import { initDatabase, getDb, createTenant, setTenantAgentAvailability } from '../db.js'
+import { initDatabase, getDb, createTenant, setTenantAgentAvailability, reloadAgentSettingsCache } from '../db.js'
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
 import { setStoreWriteActor } from '../store-watcher.js'
 
@@ -59,6 +59,7 @@ beforeAll(() => {
 
 afterEach(() => {
   getDb().exec("DELETE FROM agent_settings WHERE agent_id = 'rbac-agent'")
+  reloadAgentSettingsCache() // the raw DELETE above bypasses the write-through cache (agent-settings-cache.ts)
 })
 
 function makeCtx(opts: {

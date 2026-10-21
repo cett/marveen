@@ -21,13 +21,14 @@ vi.mock('../notify.js', async (importOriginal) => ({
   deliverToChannel: vi.fn().mockResolvedValue(true),
 }))
 
-import { initDatabase, createDashboardUser, getApproval, listApprovalEvents, getAutonomyCategory } from '../db.js'
+import { createDashboardUser, getApproval, listApprovalEvents, getAutonomyCategory } from '../db.js'
 import { db } from '../db/connection.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import { tryHandleAutonomy } from '../web/routes/autonomy.js'
 import { SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import { checkCategory, isHumanOnly, humanSessionOf } from '../web/approval-human-only.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
 // Spelled out as code points so the source carries no invisible or look-alike character itself.
 const ZWSP = String.fromCodePoint(0x200b) // zero-width space
@@ -43,9 +44,10 @@ function makeUser(name: string, role: string, tenant: string | null): string {
   return createSession({ userId: u.id, username: u.username })
 }
 
+useTestDb()
+
 beforeEach(() => {
   flags.enforce = true
-  initDatabase(':memory:')
   _clearSessionCacheForTest()
   cookies = {
     owner: makeUser('owner', 'admin', null), // the first user: global admin
@@ -96,31 +98,31 @@ const patch = (id: string, caller: Caller, body: object = { status: 'approved' }
 describe('the category check', () => {
   const FLOOR = ['email_send', 'email_standing_recipient']
 
-  it('takes a plain category as it is, and lower-cases and trims an ordinary one', () => {
-    expect(checkCategory('file_write', FLOOR)).toEqual({ ok: true, category: 'file_write' })
-    expect(checkCategory(' File_Write ', FLOOR)).toEqual({ ok: true, category: 'file_write' })
-    expect(checkCategory('email_send', FLOOR)).toEqual({ ok: true, category: 'email_send' })
+  it('takes a plain category as it is, and lower-cases and trims an ordinary one', async () => {
+    expect(await checkCategory('file_write', FLOOR)).toEqual({ ok: true, category: 'file_write' })
+    expect(await checkCategory(' File_Write ', FLOOR)).toEqual({ ok: true, category: 'file_write' })
+    expect(await checkCategory('email_send', FLOOR)).toEqual({ ok: true, category: 'email_send' })
   })
 
   it.each([
     ['Email_Send'], [' email_send'], ['email_send' + ZWSP], ['emailsend'], ['email__send'], ['EMAIL_SEND '], [FULLWIDTH_E + 'mail_send'],
-  ])('refuses %j as a twin of email_send', (raw) => {
-    const r = checkCategory(raw, FLOOR)
+  ])('refuses %j as a twin of email_send', async (raw) => {
+    const r = await checkCategory(raw, FLOOR)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toBe('category_alias_of_human_only')
   })
 
-  it.each([['email-send'], [CYRILLIC_E + 'mail_send'], ['email_send;x'], [''], ['a'.repeat(65)], ['two words']])('refuses %j as a malformed name', (raw) => {
-    const r = checkCategory(raw, FLOOR)
+  it.each([['email-send'], [CYRILLIC_E + 'mail_send'], ['email_send;x'], [''], ['a'.repeat(65)], ['two words']])('refuses %j as a malformed name', async (raw) => {
+    const r = await checkCategory(raw, FLOOR)
     expect(r.ok).toBe(false)
   })
 
-  it('knows the floor, and any column the table adds', () => {
-    expect(isHumanOnly('email_send')).toBe(true)
-    expect(isHumanOnly('email_standing_recipient')).toBe(true)
-    expect(isHumanOnly('file_write')).toBe(false)
+  it('knows the floor, and any column the table adds', async () => {
+    expect(await isHumanOnly('email_send')).toBe(true)
+    expect(await isHumanOnly('email_standing_recipient')).toBe(true)
+    expect(await isHumanOnly('file_write')).toBe(false)
     db.prepare("UPDATE autonomy_categories SET human_only = 1 WHERE key = 'payment'").run()
-    expect(isHumanOnly('payment')).toBe(true)
+    expect(await isHumanOnly('payment')).toBe(true)
   })
 })
 
@@ -252,7 +254,7 @@ describe('marking a category human-only through the autonomy route', () => {
 
   it('lets an admin token mark one, and shows it on the list', async () => {
     expect((await mark(TOKEN, 'payment', true)).status).toBe(200)
-    expect(getAutonomyCategory('payment')?.human_only).toBe(1)
+    expect((await getAutonomyCategory('payment'))?.human_only).toBe(1)
     const list = await call('GET', '/api/autonomy', TOKEN)
     expect(list.body.categories.find((c: any) => c.key === 'payment').humanOnly).toBe(true)
     expect(list.body.categories.find((c: any) => c.key === 'email_send').humanOnly).toBe(true) // the floor
@@ -262,7 +264,7 @@ describe('marking a category human-only through the autonomy route', () => {
   it('does not let a token take the mark off, nor anyone take the floor off', async () => {
     await mark(TOKEN, 'payment', true)
     expect((await mark(TOKEN, 'payment', false)).body.code).toBe('human_session_required')
-    expect(getAutonomyCategory('payment')?.human_only).toBe(1)
+    expect((await getAutonomyCategory('payment'))?.human_only).toBe(1)
     const floor = await mark(sessionOf('owner', 'admin'), 'email_send', false)
     expect(floor.status).toBe(403)
     expect(floor.body.code).toBe('human_only_floor')
@@ -271,7 +273,7 @@ describe('marking a category human-only through the autonomy route', () => {
   it('lets the global admin session take a non-floor mark off', async () => {
     await mark(TOKEN, 'payment', true)
     expect((await mark(sessionOf('owner', 'admin'), 'payment', false)).status).toBe(200)
-    expect(getAutonomyCategory('payment')?.human_only).toBe(0)
+    expect((await getAutonomyCategory('payment'))?.human_only).toBe(0)
   })
 
   it('refuses a non-admin, and a value that is not a boolean', async () => {

@@ -18,11 +18,11 @@ vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
 }))
 vi.mock('../web/auto-restart-store.js', () => ({
   readAutoRestartConfig: vi.fn().mockReturnValue({ enabled: false }),
-  writeAutoRestartConfig: vi.fn().mockReturnValue({ enabled: true, maxRestarts: 3 }),
+  writeAutoRestartConfig: vi.fn().mockResolvedValue({ enabled: true, maxRestarts: 3 }),
 }))
 vi.mock('../web/context-guard-store.js', () => ({
   readContextGuardConfig: vi.fn().mockReturnValue({ enabled: false, limitPct: 80 }),
-  writeContextGuardConfig: vi.fn().mockReturnValue({ enabled: true, limitPct: 85 }),
+  writeContextGuardConfig: vi.fn().mockResolvedValue({ enabled: true, limitPct: 85 }),
 }))
 vi.mock('../web/context-guard-runner.js', () => ({
   getContextGuardStatus: vi.fn().mockReturnValue([{ name: 'marveen', phase: 'idle', contextPct: 10 }]),

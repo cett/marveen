@@ -586,7 +586,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   // PATCH /api/admin/device-keys/:id  {tenant_id}    assign/clear tenant
 
   if (path === '/api/admin/device-keys' && method === 'GET') {
-    const keys = listDeviceKeys()
+    const keys = await listDeviceKeys()
     json(res, { items: keys, total: keys.length })
     return true
   }
@@ -608,7 +608,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const ok = assignDeviceKeyTenant(keyId, newTenantId)
+    const ok = await assignDeviceKeyTenant(keyId, newTenantId)
     if (!ok) { json(res, { error: 'not_found', field: 'id', hint: 'Device key not found' }, 404); return true }
     auditAdmin(ctx, 'admin.device_key.assign_tenant', keyId, { tenant_id: newTenantId })
     json(res, { ok: true, id: keyId, tenant_id: newTenantId })

@@ -32,8 +32,8 @@ describe('model_profile_map read/write helpers', () => {
     expect(dbMod.listModelProfileMap()).toHaveLength(4)
   })
 
-  it('upsertModelProfileMapEntry inserts a new row', () => {
-    dbMod.upsertModelProfileMapEntry({
+  it('upsertModelProfileMapEntry inserts a new row', async () => {
+    await dbMod.upsertModelProfileMapEntry({
       profile_id: 'build_strong', model_id: 'claude-sonnet-5', updated_by: 'db',
     })
     const row = dbMod.getModelProfileMapEntry('build_strong')
@@ -41,15 +41,15 @@ describe('model_profile_map read/write helpers', () => {
     expect(row?.updated_at).toBeGreaterThan(0)
   })
 
-  it('upsertModelProfileMapEntry upserts: a second call updates the row in place, no duplicate', () => {
-    dbMod.upsertModelProfileMapEntry({ profile_id: 'routine_lowcost', model_id: 'model-a', updated_by: 'db' })
-    dbMod.upsertModelProfileMapEntry({ profile_id: 'routine_lowcost', model_id: 'model-b', updated_by: 'db' })
+  it('upsertModelProfileMapEntry upserts: a second call updates the row in place, no duplicate', async () => {
+    await dbMod.upsertModelProfileMapEntry({ profile_id: 'routine_lowcost', model_id: 'model-a', updated_by: 'db' })
+    await dbMod.upsertModelProfileMapEntry({ profile_id: 'routine_lowcost', model_id: 'model-b', updated_by: 'db' })
     expect(dbMod.listModelProfileMap().filter(r => r.profile_id === 'routine_lowcost')).toHaveLength(1)
     expect(dbMod.getModelProfileMapEntry('routine_lowcost')?.model_id).toBe('model-b')
   })
 
-  it('setModelProfileMapEntry updates model_id and updated_by', () => {
-    dbMod.setModelProfileMapEntry('analysis_efficient', 'new-model', 'dashboard')
+  it('setModelProfileMapEntry updates model_id and updated_by', async () => {
+    await dbMod.setModelProfileMapEntry('analysis_efficient', 'new-model', 'dashboard')
     const row = dbMod.getModelProfileMapEntry('analysis_efficient')!
     expect(row.model_id).toBe('new-model')
     expect(row.updated_by).toBe('dashboard')
@@ -84,7 +84,7 @@ describe('migration 0054: hardcoded default profile seed', () => {
     // guard inside 0054's own SQL (not just that the outer bookkeeping skips
     // it), exec the migration file's SQL directly a second time and confirm
     // it does not touch a row whose profile id already exists.
-    dbMod.setModelProfileMapEntry('build_strong', 'operator-edited-model', 'dashboard')
+    await dbMod.setModelProfileMapEntry('build_strong', 'operator-edited-model', 'dashboard')
     const before = dbMod.listModelProfileMap()
 
     const { readFileSync } = await import('node:fs')

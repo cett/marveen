@@ -65,14 +65,14 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
 
-const admin = () => tokenAuth('the-file-token')
-const move = (id: string, body: unknown) => callAs(admin(), 'POST', `/api/kanban/${id}/move`, body)
-const put = (id: string, body: unknown) => callAs(admin(), 'PUT', `/api/kanban/${id}`, body)
+const admin = async () => tokenAuth('the-file-token')
+const move = async (id: string, body: unknown) => callAs(await admin(), 'POST', `/api/kanban/${id}/move`, body)
+const put = async (id: string, body: unknown) => callAs(await admin(), 'PUT', `/api/kanban/${id}`, body)
 const stamp = (id: string) => (getDb().prepare('SELECT dispatched_at FROM kanban_cards WHERE id = ?').get(id) as { dispatched_at: number | null }).dispatched_at
 const status = (id: string) => (getDb().prepare('SELECT status FROM kanban_cards WHERE id = ?').get(id) as { status: string }).status
 const sentMessages = () => (getDb().prepare('SELECT COUNT(*) AS n FROM agent_messages').get() as { n: number }).n
@@ -83,10 +83,10 @@ const PARENT = 'card-parent'
 const CHILD_1 = 'card-child-1'
 const CHILD_2 = 'card-child-2'
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('tenant-x', 'Tenant X')
-  insertApiToken({ tokenHash: sha('tok-agent-a'), name: 'fleet:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'agent-a' })
+  await insertApiToken({ tokenHash: sha('tok-agent-a'), name: 'fleet:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'agent-a' })
   createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
   createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
 })

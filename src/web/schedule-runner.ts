@@ -750,8 +750,8 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
  *  construction. Deliberately NOT falling back to ALLOWED_CHAT_ID: that is
  *  the boss's chat, and pointing a sub-agent's result there is the precise
  *  bug the old sentinel existed to avoid. */
-export function resolveBoundChatId(agentName: string): string | null {
-  const raw = readTelegramAccessJson(agentName)
+export async function resolveBoundChatId(agentName: string): Promise<string | null> {
+  const raw = await readTelegramAccessJson(agentName)
   if (!raw) return null
   const chosen = chatIdFromAccessConfig(raw)
   // "First allowlist entry" is a HEURISTIC, not a stated fact: access.json
@@ -772,9 +772,9 @@ export function resolveBoundChatId(agentName: string): string | null {
  *  agent-writable access.json is not read at all, so a forged allowFrom cannot redirect a task's
  *  result. Until then (a channel nobody has adopted yet) the file is the legacy source: the plugin
  *  enforces it on the agent's own sends either way. */
-function readTelegramAccessJson(agentName: string): Record<string, unknown> | null {
+async function readTelegramAccessJson(agentName: string): Promise<Record<string, unknown> | null> {
   try {
-    if (hasAdoption(agentName)) return { allowFrom: listAdoptedChats(agentName, CHANNEL_PROVIDER) }
+    if (await hasAdoption(agentName)) return { allowFrom: await listAdoptedChats(agentName, CHANNEL_PROVIDER) }
   } catch (err) {
     logger.warn({ err, agent: agentName }, 'schedule-runner: adopted chat list unavailable, reading access.json')
   }
@@ -825,11 +825,11 @@ export function selectTenantDeliveryChats(
  *  DM bindings of (tenant, agent), restricted to the agent's own allowlist.
  *  Never falls back to access.json allowFrom[0]: that entry can be the fleet
  *  owner, not the tenant's user. No binding -> empty list -> no instruction. */
-export function resolveTenantDeliveryChats(agentName: string, tenantId: string): string[] {
+export async function resolveTenantDeliveryChats(agentName: string, tenantId: string): Promise<string[]> {
   try {
     const bindings = listChannelBindings({ tenantId, agentId: agentName })
     if (bindings.length === 0) return []
-    return selectTenantDeliveryChats(bindings, readTelegramAccessJson(agentName))
+    return selectTenantDeliveryChats(bindings, await readTelegramAccessJson(agentName))
   } catch (err) {
     logger.warn({ err, agent: agentName, tenant: tenantId }, 'tenant delivery chat resolution failed -- no Telegram instruction')
     return []
@@ -839,17 +839,17 @@ export function resolveTenantDeliveryChats(agentName: string, tenantId: string):
 /** Delivery prefix of a non-heartbeat task prompt. `default` tenant keeps the
  *  agent's bound chat (resolveBoundChatId); a tenant-owned task goes only to its
  *  tenant's bindings, and without any it carries no Telegram instruction. */
-export function buildTaskDeliveryPrefix(task: Pick<ScheduledTask, 'name' | 'tenantId'>, agentName: string): string {
+export async function buildTaskDeliveryPrefix(task: Pick<ScheduledTask, 'name' | 'tenantId'>, agentName: string): Promise<string> {
   const tenantId = task.tenantId ?? 'default'
   if (tenantId !== 'default') {
-    const chats = resolveTenantDeliveryChats(agentName, tenantId)
+    const chats = await resolveTenantDeliveryChats(agentName, tenantId)
     if (chats.length > 0) {
       return `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${chats.join(', ')}, reply tool). `
     }
     logger.warn({ task: task.name, agent: agentName, tenant: tenantId }, 'scheduled task: tenant has no deliverable telegram binding for this agent -- prompt omits the Telegram delivery instruction')
     return `[Utemezett feladat: ${task.name}] `
   }
-  const boundChatId = resolveBoundChatId(agentName)
+  const boundChatId = await resolveBoundChatId(agentName)
   if (boundChatId) {
     return `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${boundChatId}, reply tool). `
   }
@@ -1090,7 +1090,7 @@ async function attemptFireTask(
       // than to deliver to the wrong chat, and the warn below makes the
       // config gap visible. The system-level pending-retry alert further
       // down still uses ALLOWED_CHAT_ID by design.
-      prefix = buildTaskDeliveryPrefix(task, agentName)
+      prefix = await buildTaskDeliveryPrefix(task, agentName)
     }
     // A scheduled task body is the agent's OWN task, authored by the operator
     // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both

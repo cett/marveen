@@ -70,9 +70,9 @@ describe('ON CONFLICT DO NOTHING keeps the insert-if-absent behaviour', () => {
     expect(n.n).toBe(1)
   })
 
-  it('an egress allowlist entry added twice stays one row', () => {
-    insertEgressAllowlistEntry({ value: 'rw.example.test', type: 'domain' })
-    insertEgressAllowlistEntry({ value: 'rw.example.test', type: 'domain' })
+  it('an egress allowlist entry added twice stays one row', async () => {
+    await insertEgressAllowlistEntry({ value: 'rw.example.test', type: 'domain' })
+    await insertEgressAllowlistEntry({ value: 'rw.example.test', type: 'domain' })
     const n = getDb().prepare("SELECT COUNT(*) AS n FROM egress_allowlist WHERE value = 'rw.example.test'").get() as { n: number }
     expect(n.n).toBe(1)
   })

@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import type http from 'node:http'
-import { initDatabase, createDashboardUser, adminPatchDashboardUser, insertApiToken, revokeApiToken } from '../db.js'
+import { initDatabase, createDashboardUser, adminPatchDashboardUser, insertApiToken, revokeApiToken, dbx } from '../db.js'
 import { createHash } from 'node:crypto'
 import { resolveAuth, requiresAuth, parseCookies, SESSION_COOKIE_NAME, resolveAgentIdHeader } from '../web/auth-gate.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
@@ -72,56 +72,56 @@ describe('requiresAuth (gated-path predicate)', () => {
 })
 
 describe('bearer lane (byte-identical, users absent AND present)', () => {
-  it('accepts a valid bearer with ZERO users configured', () => {
+  it('accepts a valid bearer with ZERO users configured', async () => {
     // fresh in-memory DB: no dashboard_users rows
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+    const r = await resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
 
-  it('accepts the SAME valid bearer once a user EXISTS (no behavior drift)', () => {
+  it('accepts the SAME valid bearer once a user EXISTS (no behavior drift)', async () => {
     createDashboardUser('operator', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+    const r = await resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
 
-  it('rejects a wrong bearer with no cookie -> none (401 upstream)', () => {
-    const r = resolveAuth(mkReq({ authorization: 'Bearer wrong' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+  it('rejects a wrong bearer with no cookie -> none (401 upstream)', async () => {
+    const r = await resolveAuth(mkReq({ authorization: 'Bearer wrong' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 
-  it('rejects a missing Authorization header -> none', () => {
-    const r = resolveAuth(mkReq(), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+  it('rejects a missing Authorization header -> none', async () => {
+    const r = await resolveAuth(mkReq(), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 })
 
 describe('SSE pane-stream ?token= lane', () => {
   const path = '/api/agents/zara/pane/stream'
-  it('accepts the token via query on the SSE path', () => {
-    const r = resolveAuth(mkReq(), mkUrl(path, `?token=${TOKEN}`), path, 'GET', TOKEN, false)
+  it('accepts the token via query on the SSE path', async () => {
+    const r = await resolveAuth(mkReq(), mkUrl(path, `?token=${TOKEN}`), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
-  it('rejects a wrong token via query', () => {
-    const r = resolveAuth(mkReq(), mkUrl(path, '?token=nope'), path, 'GET', TOKEN, false)
+  it('rejects a wrong token via query', async () => {
+    const r = await resolveAuth(mkReq(), mkUrl(path, '?token=nope'), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
-  it('does NOT honor ?token= on a non-SSE path', () => {
-    const r = resolveAuth(mkReq(), mkUrl('/api/memories', `?token=${TOKEN}`), '/api/memories', 'GET', TOKEN, false)
+  it('does NOT honor ?token= on a non-SSE path', async () => {
+    const r = await resolveAuth(mkReq(), mkUrl('/api/memories', `?token=${TOKEN}`), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
-  it('accepts a session cookie on the SSE path (cookie-only EventSource)', () => {
+  it('accepts a session cookie on the SSE path (cookie-only EventSource)', async () => {
     const u = createDashboardUser('sse-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl(path), path, 'GET', TOKEN, false)
+    const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl(path), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'session', user: 'sse-user' })
   })
 })
 
 describe('session cookie lane', () => {
-  it('resolves a valid session cookie to its user', () => {
+  it('resolves a valid session cookie to its user', async () => {
     const u = createDashboardUser('alice', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+    const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'session', user: 'alice' })
   })
 
@@ -129,10 +129,10 @@ describe('session cookie lane', () => {
   // present (e.g., browser with localStorage token + active session login).
   // Fleet API callers (curl, notify.sh, channels probe) never carry a session
   // cookie so their bearer-only flows are unaffected -- see regression tests below.
-  it('session cookie wins over legacy file-token when both are present', () => {
+  it('session cookie wins over legacy file-token when both are present', async () => {
     const u = createDashboardUser('bob', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(
+    const r = await resolveAuth(
       mkReq({ authorization: `Bearer ${TOKEN}`, cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
       mkUrl('/api/memories'),
       '/api/memories',
@@ -143,8 +143,8 @@ describe('session cookie lane', () => {
     expect(r).toEqual({ kind: 'session', user: 'bob' })
   })
 
-  it('rejects an unknown/garbage cookie value -> none', () => {
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=deadbeef` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+  it('rejects an unknown/garbage cookie value -> none', async () => {
+    const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=deadbeef` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 })
@@ -152,8 +152,8 @@ describe('session cookie lane', () => {
 describe('session-priority regression: bearer-only fleet calls unchanged', () => {
   // Fleet agents (curl, notify.sh, channels probe) use Bearer only -- no cookie.
   // The session-priority reorder must not affect them.
-  it('bearer alone (no cookie) still resolves to token', () => {
-    const r = resolveAuth(
+  it('bearer alone (no cookie) still resolves to token', async () => {
+    const r = await resolveAuth(
       mkReq({ authorization: `Bearer ${TOKEN}` }),
       mkUrl('/api/memories'),
       '/api/memories',
@@ -164,8 +164,8 @@ describe('session-priority regression: bearer-only fleet calls unchanged', () =>
     expect(r).toEqual({ kind: 'token' })
   })
 
-  it('bearer alone, no session, no db -- token unchanged (zero-user install)', () => {
-    const r = resolveAuth(
+  it('bearer alone, no session, no db -- token unchanged (zero-user install)', async () => {
+    const r = await resolveAuth(
       mkReq({ authorization: `Bearer ${TOKEN}` }),
       mkUrl('/api/kanban'),
       '/api/kanban',
@@ -176,8 +176,8 @@ describe('session-priority regression: bearer-only fleet calls unchanged', () =>
     expect(r).toEqual({ kind: 'token' })
   })
 
-  it('invalid session cookie + valid bearer -> falls through to token (stale cookie ignored)', () => {
-    const r = resolveAuth(
+  it('invalid session cookie + valid bearer -> falls through to token (stale cookie ignored)', async () => {
+    const r = await resolveAuth(
       mkReq({ authorization: `Bearer ${TOKEN}`, cookie: `${SESSION_COOKIE_NAME}=stale-garbage` }),
       mkUrl('/api/memories'),
       '/api/memories',
@@ -192,15 +192,15 @@ describe('session-priority regression: bearer-only fleet calls unchanged', () =>
 describe('SSE pane-stream ?token= and device-key unaffected by session-priority', () => {
   const ssePath = '/api/agents/zara/pane/stream'
 
-  it('SSE ?token= without session cookie still resolves to token', () => {
-    const r = resolveAuth(mkReq(), mkUrl(ssePath, `?token=${TOKEN}`), ssePath, 'GET', TOKEN, false)
+  it('SSE ?token= without session cookie still resolves to token', async () => {
+    const r = await resolveAuth(mkReq(), mkUrl(ssePath, `?token=${TOKEN}`), ssePath, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
 
-  it('SSE path: valid session cookie wins over ?token= (browser EventSource with session)', () => {
+  it('SSE path: valid session cookie wins over ?token= (browser EventSource with session)', async () => {
     const u = createDashboardUser('sse-session-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(
+    const r = await resolveAuth(
       mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
       mkUrl(ssePath, `?token=${TOKEN}`),
       ssePath,
@@ -216,16 +216,16 @@ describe('federation endpoint scoping is preserved', () => {
   // Federation is disabled by default (no federation_config_json row in
   // system_config), so identifyFederationCaller returns null: a fed token
   // can never authenticate.
-  it('does not authenticate an arbitrary token on the manifest endpoint', () => {
-    const r = resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/federation/manifest'), '/api/federation/manifest', 'GET', TOKEN, false)
+  it('does not authenticate an arbitrary token on the manifest endpoint', async () => {
+    const r = await resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/federation/manifest'), '/api/federation/manifest', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
-  it('still accepts the dashboard bearer on a federation endpoint', () => {
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/federation/inbox'), '/api/federation/inbox', 'POST', TOKEN, false)
+  it('still accepts the dashboard bearer on a federation endpoint', async () => {
+    const r = await resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/federation/inbox'), '/api/federation/inbox', 'POST', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
-  it('federation scoping does not leak onto a non-federation path', () => {
-    const r = resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+  it('federation scoping does not leak onto a non-federation path', async () => {
+    const r = await resolveAuth(mkReq({ authorization: 'Bearer some-peer-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
   })
 })
@@ -246,38 +246,75 @@ describe('DB-backed lookups (dbLookups = true)', () => {
   const sha = (raw: string) => createHash('sha256').update(raw).digest('hex')
   const NOW = Math.floor(Date.now() / 1000)
 
-  it('a session resolves its role and tenant from dashboard_users', () => {
+  it('a session resolves its role and tenant from dashboard_users', async () => {
     const u = createDashboardUser('lookup-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     adminPatchDashboardUser(u.id, { role: 'agent', tenant_id: null })
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
     expect(r).toEqual({ kind: 'session', user: 'lookup-user', role: 'agent', tenantId: null })
   })
 
-  it('a disabled user keeps the session identity but gets no role', () => {
+  it('a disabled user keeps the session identity but gets no role', async () => {
     const u = createDashboardUser('disabled-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     adminPatchDashboardUser(u.id, { disabled: true })
     const cookie = createSession({ userId: u.id, username: u.username })
-    const r = resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+    const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
     expect(r).toEqual({ kind: 'session', user: 'disabled-user' })
   })
 
-  it('a registered API token resolves with its own role and tenant', () => {
-    insertApiToken({ tokenHash: sha('registered-token'), name: 'ci', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
-    const r = resolveAuth(mkReq({ authorization: 'Bearer registered-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+  it('a registered API token resolves with its own role and tenant', async () => {
+    await insertApiToken({ tokenHash: sha('registered-token'), name: 'ci', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
+    const r = await resolveAuth(mkReq({ authorization: 'Bearer registered-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
     expect(r).toEqual({ kind: 'token', role: 'viewer', tenantId: 'tenant-a', tokenName: 'ci' })
   })
 
-  it('a revoked API token is refused and never falls through to the dashboard token', () => {
-    const row = insertApiToken({ tokenHash: sha(TOKEN), name: 'dashboard-copy', role: 'admin', tenantId: 'default', createdAt: NOW, expiresAt: null })
-    revokeApiToken(row.id, NOW)
-    const r = resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
+  it('a revoked API token is refused and never falls through to the dashboard token', async () => {
+    const row = await insertApiToken({ tokenHash: sha(TOKEN), name: 'dashboard-copy', role: 'admin', tenantId: 'default', createdAt: NOW, expiresAt: null })
+    await revokeApiToken(row.id, NOW)
+    const r = await resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
     expect(r).toEqual({ kind: 'none' })
   })
 
-  it('the same registered token is not looked up when DB lookups are off', () => {
-    insertApiToken({ tokenHash: sha('offline-token'), name: 'ci2', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
-    const r = resolveAuth(mkReq({ authorization: 'Bearer offline-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
+  it('the same registered token is not looked up when DB lookups are off', async () => {
+    await insertApiToken({ tokenHash: sha('offline-token'), name: 'ci2', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
+    const r = await resolveAuth(mkReq({ authorization: 'Bearer offline-token' }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'none' })
+  })
+})
+
+// The authentication path is asynchronous now (api_tokens and device_keys go through the db facade). Two things
+// must not change with it: a revoke takes effect on the very next request (no cache in front of the lookup), and
+// a database failure denies instead of falling through to the legacy file-token fallback, which would grant admin.
+describe('auth path: revocation is immediate, a database failure fails closed', () => {
+  const sha = (raw: string) => createHash('sha256').update(raw).digest('hex')
+  const NOW = Math.floor(Date.now() / 1000)
+  const bearer = (raw: string) => mkReq({ authorization: `Bearer ${raw}` })
+  // A file token no earlier test registered or revoked in this shared database.
+  const FILE_TOKEN = 'f'.repeat(64)
+  const ask = (raw: string) => resolveAuth(bearer(raw), mkUrl('/api/memories'), '/api/memories', 'GET', FILE_TOKEN, true)
+
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('a token is accepted, then refused on the very next request once it is revoked', async () => {
+    const row = await insertApiToken({ tokenHash: sha('short-lived'), name: 'ci-revoke', role: 'viewer', tenantId: 'tenant-a', createdAt: NOW, expiresAt: null })
+    expect(await ask('short-lived')).toMatchObject({ kind: 'token', tokenName: 'ci-revoke' })
+    await revokeApiToken(row.id, NOW)
+    expect(await ask('short-lived')).toEqual({ kind: 'none' })
+  })
+
+  it('a database failure on the token lookup rejects: it never resolves to a principal', async () => {
+    vi.spyOn(dbx, 'get').mockRejectedValue(new Error('database unavailable'))
+    await expect(ask('registered-or-not')).rejects.toThrow('database unavailable')
+  })
+
+  it('a database failure does not let the dashboard file token through the legacy fallback', async () => {
+    // FILE_TOKEN is the file token: with a healthy database and no row for it, the fallback grants admin (the
+    // "bearer lane" tests above). With the lookup failing, the answer must be a rejection, not that grant.
+    vi.spyOn(dbx, 'get').mockRejectedValue(new Error('database unavailable'))
+    await expect(ask(FILE_TOKEN)).rejects.toThrow('database unavailable')
+  })
+
+  it('the legacy fallback still answers for the file token while the database is healthy (the control)', async () => {
+    expect(await ask(FILE_TOKEN)).toEqual({ kind: 'token' })
   })
 })

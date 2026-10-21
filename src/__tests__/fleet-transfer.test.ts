@@ -52,11 +52,11 @@ vi.mock('../db.js', () => ({
   initDatabase: () => {},
   listAllSkills: vi.fn().mockReturnValue([]),
   seedSkillIfAbsent: vi.fn().mockReturnValue(true),
-  listAutonomyCategories: vi.fn().mockReturnValue([]),
+  listAutonomyCategories: vi.fn().mockResolvedValue([]),
   upsertAutonomyCategory: vi.fn(),
   listModelProfileMap: vi.fn().mockReturnValue([]),
   upsertModelProfileMapEntry: vi.fn(),
-  listEgressAllowlistRows: vi.fn().mockReturnValue([]),
+  listEgressAllowlistRows: vi.fn().mockResolvedValue([]),
   mergeEgressAllowlistEntries: vi.fn(),
   listAgentSettingsByKey: vi.fn().mockReturnValue({}),
   setAgentSetting: vi.fn(),
@@ -170,7 +170,7 @@ describe('importFleet: encrypted wrapper detection', () => {
     const blob = _encryptForTest(MINIMAL_FLEET, 'test-password-ok')
     const wrapper = JSON.stringify({ enc: ENCRYPTED_FLEET_VERSION, blob })
 
-    const result = importFleet(wrapper, { apply: false })
+    const result = await importFleet(wrapper, { apply: false })
     expect('dryRun' in result).toBe(true)
     expect((result as any).errors).toContain(
       'A fájl titkosítva van -- add meg a vault jelszót az importhoz.'
@@ -184,7 +184,7 @@ describe('importFleet: encrypted wrapper detection', () => {
     const blob = _encryptForTest(MINIMAL_FLEET, 'correct-pw-12345')
     const wrapper = JSON.stringify({ enc: ENCRYPTED_FLEET_VERSION, blob })
 
-    const result = importFleet(wrapper, { vaultPassword: 'wrong-pw-12345678', apply: false })
+    const result = await importFleet(wrapper, { vaultPassword: 'wrong-pw-12345678', apply: false })
     expect('dryRun' in result).toBe(true)
     expect((result as any).errors).toContain(
       'Helytelen vault jelszó -- a titkosított fájl nem dekódolható.'
@@ -197,14 +197,14 @@ describe('importFleet: encrypted wrapper detection', () => {
     const blob = _encryptForTest(MINIMAL_FLEET, 'correct-pw-12345')
     const wrapper = JSON.stringify({ enc: ENCRYPTED_FLEET_VERSION, blob })
 
-    const result = importFleet(wrapper, { vaultPassword: 'correct-pw-12345', apply: false })
+    const result = await importFleet(wrapper, { vaultPassword: 'correct-pw-12345', apply: false })
     expect('dryRun' in result).toBe(true)
     expect((result as any).errors).toHaveLength(0)
   })
 
   it('accepts plaintext fleet JSON without password', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    const result = importFleet(MINIMAL_FLEET, { apply: false })
+    const result = await importFleet(MINIMAL_FLEET, { apply: false })
     expect('dryRun' in result).toBe(true)
     expect((result as any).errors).toHaveLength(0)
   })
@@ -217,7 +217,7 @@ describe('importFleet: encrypted wrapper detection', () => {
 describe('importFleet: wouldOverwrite in DiffReport', () => {
   it('DiffReport contains wouldOverwrite fields', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    const result = importFleet(MINIMAL_FLEET, { apply: false })
+    const result = await importFleet(MINIMAL_FLEET, { apply: false })
     expect('dryRun' in result).toBe(true)
     const diff = result as any
     expect(diff).toHaveProperty('wouldOverwrite')
@@ -237,7 +237,7 @@ describe('importFleet: wouldOverwrite in DiffReport', () => {
       ideaBox: { ideas: [], comments: [], statusLog: [] },
       dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
     })
-    const result = importFleet(withAgents, { apply: false })
+    const result = await importFleet(withAgents, { apply: false })
     const diff = result as any
     // listAgentNames is mocked to return [] so nothing to overwrite
     expect(diff.wouldOverwrite.agents).toHaveLength(0)
@@ -272,7 +272,7 @@ describe('exportFleet: channelEnvs not in VaultExport', () => {
       dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
     })
     // Should dry-run cleanly (channelEnvs is ignored, not written)
-    const result = importFleet(fleetWithChannelEnvs, { apply: false })
+    const result = await importFleet(fleetWithChannelEnvs, { apply: false })
     expect('dryRun' in result).toBe(true)
     expect((result as any).errors).toHaveLength(0)
   })
@@ -314,7 +314,7 @@ const FLEET_WITH_SOURCE_ID = JSON.stringify({
 describe('importFleet: identity takeover', () => {
   it('dry-run includes identity warning when mainAgent.agentId is present', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    const result = importFleet(FLEET_WITH_SOURCE_ID, { apply: false })
+    const result = await importFleet(FLEET_WITH_SOURCE_ID, { apply: false })
     expect('dryRun' in result).toBe(true)
     expect((result as any).errors).toHaveLength(0)
     const warnings: string[] = (result as any).warnings
@@ -332,7 +332,7 @@ describe('importFleet: identity takeover', () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
     const { atomicWriteFileSync } = await import('../web/atomic-write.js')
 
-    const result = importFleet(FLEET_WITH_SOURCE_ID, { apply: true })
+    const result = await importFleet(FLEET_WITH_SOURCE_ID, { apply: true })
     // ImportResult (not DiffReport)
     expect('ok' in result).toBe(true)
     const ir = result as any
@@ -348,7 +348,7 @@ describe('importFleet: identity takeover', () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
     const { updateEnvFile } = await import('../env.js')
 
-    importFleet(FLEET_WITH_SOURCE_ID, { apply: true })
+    await importFleet(FLEET_WITH_SOURCE_ID, { apply: true })
 
     expect(updateEnvFile as any).toHaveBeenCalled()
     const envArg = (updateEnvFile as any).mock.calls.at(-1)[0]
@@ -370,7 +370,7 @@ describe('importFleet: identity takeover', () => {
     hostile.mainAgent.identity.TELEGRAM_BOT_TOKEN = 'not-for-the-env'
     hostile.mainAgent.identity['BAD KEY'] = 'x'
 
-    importFleet(JSON.stringify(hostile), { apply: true })
+    await importFleet(JSON.stringify(hostile), { apply: true })
 
     const envArg = (updateEnvFile as any).mock.calls.at(-1)[0]
     expect(Object.keys(envArg).sort()).toEqual(['BOT_NAME', 'BRAND_NAME', 'CHANNEL_PROVIDER', 'MAIN_AGENT_ID', 'OWNER_NAME'])
@@ -382,7 +382,7 @@ describe('importFleet: identity takeover', () => {
     const hostile = JSON.parse(FLEET_WITH_SOURCE_ID)
     hostile.mainAgent.identity.OWNER_NAME = 'Norbert\nOTEL_EXPORTER_OTLP_ENDPOINT=https://collector.invalid'
 
-    importFleet(JSON.stringify(hostile), { apply: true })
+    await importFleet(JSON.stringify(hostile), { apply: true })
 
     const envArg = (updateEnvFile as any).mock.calls.at(-1)[0]
     expect(envArg).not.toHaveProperty('OWNER_NAME')
@@ -393,7 +393,7 @@ describe('importFleet: identity takeover', () => {
     // If remap were active (atlas -> marveen), duplicate dedup could collapse rows.
     // With original agent_ids preserved, all 2 memories count as new.
     const { importFleet } = await import('../web/fleet-transfer.js')
-    const result = importFleet(FLEET_WITH_SOURCE_ID, { apply: false })
+    const result = await importFleet(FLEET_WITH_SOURCE_ID, { apply: false })
     expect('dryRun' in result).toBe(true)
     expect((result as any).wouldCreate.memories).toBe(2)
     // Daily logs: 1 entry (atlas) counted
@@ -424,7 +424,7 @@ describe('importFleet: avatarExt traversal rejected', () => {
       dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
     })
 
-    const result = importFleet(malicious, { apply: false })
+    const result = await importFleet(malicious, { apply: false })
     expect('dryRun' in result).toBe(true)
     const errors = (result as any).errors as string[]
     expect(errors.some(e => e.includes('avatarExt') && e.includes('testbot'))).toBe(true)
@@ -445,7 +445,7 @@ describe('exportFleet: skills come from SQL, not the filesystem', () => {
     ])
 
     const { exportFleet } = await import('../web/fleet-transfer.js')
-    const result = exportFleet()
+    const result = await exportFleet()
     const fleet = JSON.parse(result.data)
 
     // Only the fleet-tenant global/* row is included -- the agent/* row and the
@@ -472,7 +472,7 @@ describe('importFleet: skill import writes SQL rows (not just files)', () => {
       dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
     })
 
-    importFleet(fleetJson, { apply: true })
+    await importFleet(fleetJson, { apply: true })
 
     const call = (seedSkillIfAbsent as any).mock.calls.find((c: any[]) => c[0]?.id === 'global/my-skill')
     expect(call).toBeDefined()
@@ -506,7 +506,7 @@ describe('importFleet: skill import writes SQL rows (not just files)', () => {
       dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
     })
 
-    importFleet(fleetJson, { apply: true })
+    await importFleet(fleetJson, { apply: true })
 
     const call = (seedSkillIfAbsent as any).mock.calls.find((c: any[]) => c[0]?.id === 'agent/testbot/agent-skill')
     expect(call).toBeDefined()

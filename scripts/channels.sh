@@ -154,6 +154,28 @@ if [ "${1:-}" = "--resolve-main-model" ]; then
   exit 0
 fi
 
+# The env prefix of the main agent's config-dir mode (<mode> <dir>, mode as main-agent-isolated-config.mjs
+# prints it). `explicit` and `rotated` bring their OWN .credentials.json, so the launch command drops the
+# CLAUDE_CODE_OAUTH_TOKEN this shell exported above (and the one the tmux global environment carries): a token
+# in the environment strictly overrides the login stored in the directory. `isolated` seeds the token from the
+# fleet token file, its dir carries no login.
+# A function so `--resolve-cfg-env` can print exactly what the launch path uses.
+main_cfg_env() {
+  local _mode="$1" _dir="$2"
+  if [ "$_mode" = "explicit" ] || [ "$_mode" = "rotated" ]; then
+    printf '%s' "export CLAUDE_CONFIG_DIR='$_dir' && unset CLAUDE_CODE_OAUTH_TOKEN && "
+  else
+    printf '%s' "export CLAUDE_CONFIG_DIR='$_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+  fi
+}
+
+# Test seam: print the config-dir env prefix and exit before any side effect.
+if [ "${1:-}" = "--resolve-cfg-env" ]; then
+  main_cfg_env "${2:-}" "${3:-}"
+  echo
+  exit 0
+fi
+
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
 # .claude/settings.json can silently drop the entry and disable the channel
@@ -403,18 +425,12 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   _cfg_mode="${_cfg_line%%	*}"
   _cfg_dir="${_cfg_line#*	}"
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
-    if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
-      # Both carry their OWN .credentials.json (an operator-logged-in dir for
-      # `explicit`, a registered plan's dir for `rotated` -- design 6.5/4) --
-      # neither wants the fleet token injected below.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
-    else
-      # Seed the token from the SAME 0600 file the isolated dir is gated on, so
-      # the config dir and the active token always match (the isolated dir carries
-      # no .credentials.json). $(cat) is evaluated in the launched shell so the
-      # secret never lands in the argv/`ps` command string.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
-    fi
+    # explicit / rotated carry their OWN .credentials.json (an operator-logged-in dir for `explicit`, a
+    # registered plan's dir for `rotated` -- design 6.5/4): no fleet token, and the one exported above is
+    # unset. isolated seeds the token from the SAME 0600 file the isolated dir is gated on, so the config
+    # dir and the active token always match; $(cat) is evaluated in the launched shell so the secret never
+    # lands in the argv/`ps` command string. See main_cfg_env.
+    CFG_ENV="$(main_cfg_env "$_cfg_mode" "$_cfg_dir")"
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
   fi
   unset _cfg_line _cfg_mode _cfg_dir

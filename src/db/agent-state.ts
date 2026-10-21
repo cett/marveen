@@ -56,10 +56,12 @@ export async function setAgentState(agentId: string, key: AgentStateKey, value: 
 // BOOT-SYNCHRONOUS twins. initDatabase() runs a synchronous chain (db/index.ts: the one-time importers of the
 // JSON side-cars), which cannot await. These two keep the raw handle and are for that chain ONLY: nothing else
 // may call them (a test pins this). Once initDatabase() is asynchronous the twins go away.
+// @boot-sync-twin
 export function getAgentStateSync(agentId: string, key: AgentStateKey): AgentStateRow | undefined {
   return db.prepare(SELECT_ONE).get(agentId, key) as AgentStateRow | undefined
 }
 
+// @boot-sync-twin
 export function setAgentStateSync(agentId: string, key: AgentStateKey, value: unknown, tenantId = 'default'): void {
   db.prepare(UPSERT).run(agentId, key, JSON.stringify(value), tenantId)
 }
@@ -70,6 +72,7 @@ export function setAgentStateSync(agentId: string, key: AgentStateKey, value: un
  * "only if absent" idempotence via INSERT OR IGNORE. Returns the number of
  * rows actually inserted.
  */
+// @boot-sync-twin
 export function importAgentStateFromFile(key: AgentStateKey, entries: Record<string, unknown>): number {
   let migrated = 0
   const stmt = db.prepare(`

@@ -1,10 +1,8 @@
 // The pilot module on the async facade: agent_state. The operations return Promises and go through dbx;
-// the synchronous twins for the boot chain give the same rows, and nothing but db/index.ts may call them.
+// the synchronous twins for the boot chain give the same rows (that nothing but the boot chain calls them is
+// pinned for every twin at once in db-boot-sync-twins.test.ts).
 
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { getAgentState, setAgentState, getAgentStateSync, setAgentStateSync, importAgentStateFromFile, getDbContextStats } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
@@ -58,25 +56,5 @@ describe('the boot-synchronous twins', () => {
     expect(importAgentStateFromFile('gate_run_state', { 'pilot-i': { a: 1 } })).toBe(1)
     expect(importAgentStateFromFile('gate_run_state', { 'pilot-i': { a: 2 } })).toBe(0)
     expect(getAgentStateSync('pilot-i', 'gate_run_state')?.state_value).toBe('{"a":1}')
-  })
-
-  it('only the boot chain (db/index.ts) calls the synchronous twins', () => {
-    const srcDir = fileURLToPath(new URL('..', import.meta.url))
-    const offenders: string[] = []
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const full = join(dir, name)
-        if (statSync(full).isDirectory()) {
-          if (name === '__tests__') continue
-          walk(full)
-        } else if (name.endsWith('.ts')) {
-          const rel = full.slice(srcDir.length)
-          if (rel === 'db/agent-state.ts' || rel === 'db/index.ts') continue
-          if (/\b(get|set)AgentStateSync\b/.test(readFileSync(full, 'utf8'))) offenders.push(rel)
-        }
-      }
-    }
-    walk(srcDir)
-    expect(offenders).toEqual([])
   })
 })

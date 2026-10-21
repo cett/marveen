@@ -18,7 +18,7 @@ import {
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames, invalidateModelProfileMapCache } from './agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -424,9 +424,9 @@ function looksLikeHeaderSecret(key: string, value: string): boolean {
 }
 
 // Build lookup: mcpFilePath -> serverName -> envVar -> vaultSecretId
-function buildBindingLookup(): Map<string, Map<string, Map<string, string>>> {
+async function buildBindingLookup(): Promise<Map<string, Map<string, Map<string, string>>>> {
   const lookup = new Map<string, Map<string, Map<string, string>>>()
-  for (const binding of getBindings()) {
+  for (const binding of await getBindings()) {
     for (const target of binding.targets) {
       if (!lookup.has(target.mcpFilePath)) lookup.set(target.mcpFilePath, new Map())
       const byServer = lookup.get(target.mcpFilePath)!
@@ -713,10 +713,10 @@ function exportScheduledTasks(): ScheduledTaskExport[] {
   return result
 }
 
-function exportDashboardSettings(): DashboardSettingsExport {
+async function exportDashboardSettings(): Promise<DashboardSettingsExport> {
   const read = (name: string) => safeReadJson(join(STORE_DIR, name))
   return {
-    autonomy: listAutonomyCategories(),
+    autonomy: await listAutonomyCategories(),
     modelProfileMap: listModelProfileMap(),
     autoRestart: listAgentSettingsByKey('auto_restart'),
     agentsDesired: [...getDesiredAgents()].sort(),
@@ -724,13 +724,13 @@ function exportDashboardSettings(): DashboardSettingsExport {
     modelFallback: readModelFallbackFieldsRaw(),
     federation: readFederationConfigObjectRaw(),
     costopsConfig: read('costops-config.json'),
-    costBudgets: listCostBudgets('default'),
-    egressAllowlist: listEgressAllowlistRows(null),
+    costBudgets: await listCostBudgets('default'),
+    egressAllowlist: await listEgressAllowlistRows(null),
     terminalInputEnabled: readTerminalInputEnabledRaw(),
   }
 }
 
-function exportVault(): VaultExport | null {
+async function exportVault(): Promise<VaultExport | null> {
   const vaultKeyPath = join(STORE_DIR, '.vault-key')
   const vaultKeyMigratedPath = join(STORE_DIR, '.vault-key.migrated')
   const vaultPath = join(STORE_DIR, 'vault.json')
@@ -752,7 +752,7 @@ function exportVault(): VaultExport | null {
   const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
   // DB-backed (vault_bindings, migration 0062, #985 group 7/8), not the
   // retired store/vault-bindings.json.
-  const bindings = listVaultBindings('default') as unknown as Record<string, unknown>[]
+  const bindings = (await listVaultBindings('default')) as unknown as Record<string, unknown>[]
 
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
@@ -764,13 +764,13 @@ export const ENCRYPTED_FLEET_VERSION = 1
 
 export type ExportedFleet = { data: string; exportedAt: string }
 
-export function exportFleet(options: { vaultPassword?: string } = {}): ExportedFleet {
+export async function exportFleet(options: { vaultPassword?: string } = {}): Promise<ExportedFleet> {
   if (options.vaultPassword !== undefined && options.vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
     throw new Error(`A vault jelszó legalább ${MIN_VAULT_PASSWORD_LEN} karakter kell legyen.`)
   }
 
   const withSecrets = !!options.vaultPassword
-  const bindingLookup = withSecrets ? new Map() : buildBindingLookup()
+  const bindingLookup = withSecrets ? new Map() : await buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
   const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
@@ -823,7 +823,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const vaultSshServers = exportTableRows('vault_ssh_servers')
 
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
-  const vault = withSecrets ? exportVault() : undefined
+  const vault = withSecrets ? await exportVault() : undefined
 
   const fleet: FleetJson = {
     schemaVersion: 1,
@@ -841,7 +841,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     importSources,
     vaultSshKeys,
     vaultSshServers,
-    dashboardSettings: exportDashboardSettings(),
+    dashboardSettings: await exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
 
@@ -1205,7 +1205,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
 // vault_bindings' PRIMARY KEY mid-write and throwing. Pushes onto the
 // caller's `warnings` array (the same applyWarnings list importFleet's other
 // DB-backed fields report through) rather than returning its own.
-function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings: string[]): void {
+async function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings: string[]): Promise<void> {
   // vault.vaultKey is plaintext -- the caller already decrypted the whole JSON with the user password
   trackedWrite(join(STORE_DIR, '.vault-key'), vault.vaultKey, tracker, { mode: 0o600 })
   trackedWrite(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: vault.entries }, null, 2), tracker, { mode: 0o600 })
@@ -1252,7 +1252,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings:
   // length would let replaceVaultBindings('default', []) through in exactly
   // that case, still wiping the target for reasons the source never asked for.
   if (deduped.length > 0) {
-    replaceVaultBindings('default', deduped)
+    await replaceVaultBindings('default', deduped)
   }
   if (invalidCount > 0) {
     warnings.push(`vault bindings: ${invalidCount} érvénytelen bejegyzés kimaradt az importból.`)
@@ -1273,10 +1273,10 @@ const EMPTY_DIFF: DiffReport = {
   errors: [],
 }
 
-export function importFleet(
+export async function importFleet(
   rawBody: string,
   options: { vaultPassword?: string; apply: boolean },
-): DiffReport | ImportResult {
+): Promise<DiffReport | ImportResult> {
   // Auto-detect encrypted export: {"enc":1,"blob":"..."}
   // H2/M2: decrypt FIRST, before any file writes or DB commits (fail-fast on wrong password)
   let jsonBody: string
@@ -1391,17 +1391,17 @@ export function importFleet(
     // untouched, consistent with the identity-takeover model not being
     // destructive beyond what the source snapshot actually describes.
     if (Array.isArray(s.autonomy)) {
-      for (const row of s.autonomy) upsertAutonomyCategory(row)
+      for (const row of s.autonomy) await upsertAutonomyCategory(row)
     }
-    // Same upsert-not-replace rationale as autonomy above.
+    // Same upsert-not-replace rationale as autonomy above. upsertModelProfileMapEntry
+    // is write-through (db/model-profile-map-cache.ts), no separate cache invalidation needed.
     if (Array.isArray(s.modelProfileMap)) {
-      for (const row of s.modelProfileMap) upsertModelProfileMapEntry(row)
-      invalidateModelProfileMapCache()
+      for (const row of s.modelProfileMap) await upsertModelProfileMapEntry(row)
     }
     // DB-backed (agent_settings) -- upsert per agent, same
     // rationale as autonomy/modelProfileMap above, not a file write.
     if (s.autoRestart) {
-      for (const [agentId, cfg] of Object.entries(s.autoRestart)) setAgentSetting(agentId, 'auto_restart', cfg)
+      for (const [agentId, cfg] of Object.entries(s.autoRestart)) await setAgentSetting(agentId, 'auto_restart', cfg)
     }
     // DB-backed (system_config 'agents_desired') -- whole-value replace, not a
     // file write. Array.isArray guards a pre-migration snapshot that still has
@@ -1481,7 +1481,7 @@ export function importFleet(
       // exactly that case, still wiping the target for reasons the source
       // never actually asked for (nothing it sent survived validation).
       if (deduped.length > 0) {
-        replaceCostBudgets('default', deduped)
+        await replaceCostBudgets('default', deduped)
       }
       if (budgetErrors.length > 0) {
         applyWarnings.push(
@@ -1503,7 +1503,7 @@ export function importFleet(
     // DashboardSettingsExport doc): INSERT OR IGNORE per row is the union
     // semantics, same upsert-not-replace rationale as autonomy above.
     if (Array.isArray(s.egressAllowlist)) {
-      mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
+      await mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
     }
 
     // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
@@ -1647,7 +1647,7 @@ export function importFleet(
 
     // 6. Vault -- LAST: vault data is plaintext (decrypted at the top of importFleet)
     if (fleet.vault) {
-      importVaultSection(fleet.vault, tracker, applyWarnings)
+      await importVaultSection(fleet.vault, tracker, applyWarnings)
     }
 
     // M3: fire-and-forget re-embed imported memories (embedding was stripped at export)

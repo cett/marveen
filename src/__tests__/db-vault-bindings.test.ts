@@ -27,16 +27,16 @@ function bindingsPath(): string {
 }
 
 describe('listVaultBindings / upsertVaultBinding / deleteVaultBinding', () => {
-  it('returns an empty array when nothing was ever set', () => {
-    expect(dbMod.listVaultBindings('default')).toEqual([])
+  it('returns an empty array when nothing was ever set', async () => {
+    expect(await dbMod.listVaultBindings('default')).toEqual([])
   })
 
-  it('upsertVaultBinding persists a binding, readable via listVaultBindings', () => {
-    dbMod.upsertVaultBinding('default', {
+  it('upsertVaultBinding persists a binding, readable via listVaultBindings', async () => {
+    await dbMod.upsertVaultBinding('default', {
       vaultSecretId: 's1', envVar: 'API_KEY',
       targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }],
     })
-    const rows = dbMod.listVaultBindings('default')
+    const rows = await dbMod.listVaultBindings('default')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toEqual({
       vaultSecretId: 's1', envVar: 'API_KEY',
@@ -44,80 +44,80 @@ describe('listVaultBindings / upsertVaultBinding / deleteVaultBinding', () => {
     })
   })
 
-  it('upsertVaultBinding replaces the targets of an existing (vaultSecretId, envVar) pair', () => {
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/a', serverName: 'x' }] })
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/b', serverName: 'y' }] })
-    const rows = dbMod.listVaultBindings('default')
+  it('upsertVaultBinding replaces the targets of an existing (vaultSecretId, envVar) pair', async () => {
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/a', serverName: 'x' }] })
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/b', serverName: 'y' }] })
+    const rows = await dbMod.listVaultBindings('default')
     expect(rows).toHaveLength(1)
     expect(rows[0].targets).toEqual([{ mcpFilePath: '/b', serverName: 'y' }])
   })
 
-  it('deleteVaultBinding removes the matching row and returns true', () => {
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
-    expect(dbMod.deleteVaultBinding('default', 's1', 'API_KEY')).toBe(true)
-    expect(dbMod.listVaultBindings('default')).toEqual([])
+  it('deleteVaultBinding removes the matching row and returns true', async () => {
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
+    expect(await dbMod.deleteVaultBinding('default', 's1', 'API_KEY')).toBe(true)
+    expect(await dbMod.listVaultBindings('default')).toEqual([])
   })
 
-  it('deleteVaultBinding returns false when nothing matched', () => {
-    expect(dbMod.deleteVaultBinding('default', 'nope', 'NOPE')).toBe(false)
+  it('deleteVaultBinding returns false when nothing matched', async () => {
+    expect(await dbMod.deleteVaultBinding('default', 'nope', 'NOPE')).toBe(false)
   })
 
-  it('scopes reads/writes by tenant_id', () => {
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
-    dbMod.upsertVaultBinding('other-tenant', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/x', serverName: 'y' }] })
-    expect(dbMod.listVaultBindings('default')[0].targets).toEqual([])
-    expect(dbMod.listVaultBindings('other-tenant')[0].targets).toEqual([{ mcpFilePath: '/x', serverName: 'y' }])
+  it('scopes reads/writes by tenant_id', async () => {
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
+    await dbMod.upsertVaultBinding('other-tenant', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/x', serverName: 'y' }] })
+    expect((await dbMod.listVaultBindings('default'))[0].targets).toEqual([])
+    expect((await dbMod.listVaultBindings('other-tenant'))[0].targets).toEqual([{ mcpFilePath: '/x', serverName: 'y' }])
   })
 })
 
 describe('deleteVaultBindingsForSecret', () => {
-  it('deletes every binding for the secret and returns the deleted rows (with their targets)', () => {
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/a', serverName: 'x' }] })
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'OTHER', targets: [] })
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's2', envVar: 'UNRELATED', targets: [] })
+  it('deletes every binding for the secret and returns the deleted rows (with their targets)', async () => {
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/a', serverName: 'x' }] })
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'OTHER', targets: [] })
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's2', envVar: 'UNRELATED', targets: [] })
 
-    const deleted = dbMod.deleteVaultBindingsForSecret('default', 's1')
+    const deleted = await dbMod.deleteVaultBindingsForSecret('default', 's1')
 
     expect(deleted).toHaveLength(2)
     expect(deleted.find(b => b.envVar === 'API_KEY')?.targets).toEqual([{ mcpFilePath: '/a', serverName: 'x' }])
-    const remaining = dbMod.listVaultBindings('default')
+    const remaining = await dbMod.listVaultBindings('default')
     expect(remaining).toHaveLength(1)
     expect(remaining[0].vaultSecretId).toBe('s2')
   })
 
-  it('returns an empty array when the secret has no bindings', () => {
-    expect(dbMod.deleteVaultBindingsForSecret('default', 'nope')).toEqual([])
+  it('returns an empty array when the secret has no bindings', async () => {
+    expect(await dbMod.deleteVaultBindingsForSecret('default', 'nope')).toEqual([])
   })
 })
 
 describe('replaceVaultBindings', () => {
-  it('is a whole-value replace: a binding dropped from the new set disappears, not just left un-upserted', () => {
-    dbMod.replaceVaultBindings('default', [
+  it('is a whole-value replace: a binding dropped from the new set disappears, not just left un-upserted', async () => {
+    await dbMod.replaceVaultBindings('default', [
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] },
       { vaultSecretId: 's2', envVar: 'OTHER', targets: [] },
     ])
-    dbMod.replaceVaultBindings('default', [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/new', serverName: 'srv' }] }])
-    const rows = dbMod.listVaultBindings('default')
+    await dbMod.replaceVaultBindings('default', [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/new', serverName: 'srv' }] }])
+    const rows = await dbMod.listVaultBindings('default')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ vaultSecretId: 's1', targets: [{ mcpFilePath: '/new', serverName: 'srv' }] })
   })
 
-  it('scopes replace by tenant_id, leaving other tenants untouched', () => {
-    dbMod.replaceVaultBindings('default', [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
-    dbMod.replaceVaultBindings('other-tenant', [{ vaultSecretId: 's-other', envVar: 'X', targets: [] }])
-    dbMod.replaceVaultBindings('default', [])
-    expect(dbMod.listVaultBindings('default')).toEqual([])
-    expect(dbMod.listVaultBindings('other-tenant')).toHaveLength(1)
+  it('scopes replace by tenant_id, leaving other tenants untouched', async () => {
+    await dbMod.replaceVaultBindings('default', [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
+    await dbMod.replaceVaultBindings('other-tenant', [{ vaultSecretId: 's-other', envVar: 'X', targets: [] }])
+    await dbMod.replaceVaultBindings('default', [])
+    expect(await dbMod.listVaultBindings('default')).toEqual([])
+    expect(await dbMod.listVaultBindings('other-tenant')).toHaveLength(1)
   })
 })
 
 describe('migrateVaultBindingsFromFile', () => {
-  it('returns 0 and writes nothing when the file does not exist', () => {
+  it('returns 0 and writes nothing when the file does not exist', async () => {
     expect(dbMod.migrateVaultBindingsFromFile()).toBe(0)
-    expect(dbMod.listVaultBindings('default')).toEqual([])
+    expect(await dbMod.listVaultBindings('default')).toEqual([])
   })
 
-  it('backfills every binding from an existing file into tenant=default', () => {
+  it('backfills every binding from an existing file into tenant=default', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(bindingsPath(), JSON.stringify({
       bindings: [
@@ -129,23 +129,23 @@ describe('migrateVaultBindingsFromFile', () => {
     const migrated = dbMod.migrateVaultBindingsFromFile()
 
     expect(migrated).toBe(2)
-    const rows = dbMod.listVaultBindings('default')
+    const rows = await dbMod.listVaultBindings('default')
     expect(rows).toHaveLength(2)
     expect(rows.find(r => r.vaultSecretId === 's1')?.targets).toEqual([{ mcpFilePath: '/mcp.json', serverName: 'srv' }])
   })
 
-  it('is idempotent: a second run does not overwrite an operator-set row', () => {
+  it('is idempotent: a second run does not overwrite an operator-set row', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(bindingsPath(), JSON.stringify({
       bindings: [{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }],
     }))
     dbMod.migrateVaultBindingsFromFile()
 
-    dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/operator-added', serverName: 'srv' }] })
+    await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/operator-added', serverName: 'srv' }] })
     const secondRun = dbMod.migrateVaultBindingsFromFile()
 
     expect(secondRun).toBe(0)
-    expect(dbMod.listVaultBindings('default')[0].targets).toEqual([{ mcpFilePath: '/operator-added', serverName: 'srv' }])
+    expect((await dbMod.listVaultBindings('default'))[0].targets).toEqual([{ mcpFilePath: '/operator-added', serverName: 'srv' }])
   })
 
   it('skips a corrupt JSON file without throwing', () => {
@@ -155,7 +155,7 @@ describe('migrateVaultBindingsFromFile', () => {
     expect(dbMod.migrateVaultBindingsFromFile()).toBe(0)
   })
 
-  it('skips a binding entry with a missing vaultSecretId or envVar, keeps the rest', () => {
+  it('skips a binding entry with a missing vaultSecretId or envVar, keeps the rest', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(bindingsPath(), JSON.stringify({
       bindings: [
@@ -165,7 +165,7 @@ describe('migrateVaultBindingsFromFile', () => {
       ],
     }))
     expect(dbMod.migrateVaultBindingsFromFile()).toBe(1)
-    expect(dbMod.listVaultBindings('default')).toHaveLength(1)
+    expect(await dbMod.listVaultBindings('default')).toHaveLength(1)
   })
 
   it('returns 0 when the file has no bindings array', () => {
@@ -174,13 +174,13 @@ describe('migrateVaultBindingsFromFile', () => {
     expect(dbMod.migrateVaultBindingsFromFile()).toBe(0)
   })
 
-  it('defaults a missing/non-array targets field to an empty array instead of throwing', () => {
+  it('defaults a missing/non-array targets field to an empty array instead of throwing', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(bindingsPath(), JSON.stringify({
       bindings: [{ vaultSecretId: 's1', envVar: 'API_KEY' }],
     }))
     expect(dbMod.migrateVaultBindingsFromFile()).toBe(1)
-    expect(dbMod.listVaultBindings('default')[0].targets).toEqual([])
+    expect((await dbMod.listVaultBindings('default'))[0].targets).toEqual([])
   })
 })
 

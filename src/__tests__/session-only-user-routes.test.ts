@@ -61,7 +61,7 @@ function makeUser(name: string, role: string, tenant: string | null): void {
   ids[name] = u.id
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   flags.enforce = true
   initDatabase(':memory:')
   _clearSessionCacheForTest()
@@ -72,7 +72,7 @@ beforeEach(() => {
   makeUser('owner', 'admin', null) // the first user: global admin
   makeUser('tadmin', 'admin', 'tenant-b') // an admin, but of one tenant
   makeUser('tagent', 'agent', 'tenant-b') // the target of the user-management calls
-  seededTokenId = insertApiToken({ tokenHash: 'a'.repeat(64), name: 'seeded', role: 'viewer', tenantId: 'default', createdAt: 1, expiresAt: null }).id
+  seededTokenId = (await insertApiToken({ tokenHash: 'a'.repeat(64), name: 'seeded', role: 'viewer', tenantId: 'default', createdAt: 1, expiresAt: null })).id
 })
 
 interface Caller {

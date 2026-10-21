@@ -26,9 +26,9 @@ export function readGateConfig(name: string): GateConfig {
   }
 }
 
-export function writeGateConfig(name: string, cfg: unknown, tenantId = 'default'): GateConfig {
+export async function writeGateConfig(name: string, cfg: unknown, tenantId = 'default'): Promise<GateConfig> {
   const normalized = normalizeGateConfig(cfg)
-  setAgentSetting(name, 'context_restart_gate', normalized, tenantId)
+  await setAgentSetting(name, 'context_restart_gate', normalized, tenantId)
   return normalized
 }
 

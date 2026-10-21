@@ -70,7 +70,7 @@ export async function tryHandleEgressAllowlist(ctx: RouteContext): Promise<boole
 
   if (path === '/api/egress-allowlist' && method === 'GET') {
     const tenant = effectiveTenant(ctx)
-    const rows = listEgressAllowlistRows(tenant)
+    const rows = await listEgressAllowlistRows(tenant)
     // Reshaped for the hook's own JSON schema (domains/prefixes/quarantine_domains)
     // alongside the raw `rows` the Settings UI table renders.
     const domains = rows.filter((r) => r.type === 'domain').map((r) => r.value)
@@ -108,7 +108,7 @@ export async function tryHandleEgressAllowlist(ctx: RouteContext): Promise<boole
       }
       const tenantId = typeof body.tenant_id === 'string' && body.tenant_id.trim() ? body.tenant_id.trim() : 'default'
       const addedBy = ctx.auth?.user ?? ctx.auth?.tokenName ?? ctx.agentId ?? 'dashboard'
-      insertEgressAllowlistEntry({ value, type, tenant_id: tenantId, added_by: addedBy })
+      await insertEgressAllowlistEntry({ value, type, tenant_id: tenantId, added_by: addedBy })
       logger.info({ value, type, tenantId }, 'Egress allowlist entry added')
       json(res, { ok: true }, 201)
     } catch (err) {
@@ -125,12 +125,12 @@ export async function tryHandleEgressAllowlist(ctx: RouteContext): Promise<boole
       return true
     }
     const id = parseInt(idMatch[1], 10)
-    const row = getEgressAllowlistRow(id)
+    const row = await getEgressAllowlistRow(id)
     if (!row) {
       json(res, { error: 'not_found', hint: `Allowlist entry ${id} not found` }, 404)
       return true
     }
-    deleteEgressAllowlistEntry(id)
+    await deleteEgressAllowlistEntry(id)
     logger.info({ id, value: row.value }, 'Egress allowlist entry deleted')
     json(res, { ok: true })
     return true

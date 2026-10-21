@@ -18,7 +18,7 @@ const { TMP_ROOT, STORE_DIR } = vi.hoisted(() => {
 
 vi.mock('../config.js', () => ({ PROJECT_ROOT: TMP_ROOT, STORE_DIR }))
 
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, getDb, reloadAgentSettingsCache } from '../db.js'
 import {
   readGateConfig,
   writeGateConfig,
@@ -40,6 +40,7 @@ beforeAll(() => {
 afterEach(() => {
   getDb().exec("DELETE FROM agent_settings WHERE setting_key = 'context_restart_gate'")
   getDb().exec("DELETE FROM agent_state WHERE state_key = 'gate_run_state'")
+  reloadAgentSettingsCache() // the raw DELETE above bypasses the write-through cache (agent-settings-cache.ts)
 })
 
 describe('readGateConfig / writeGateConfig', () => {
@@ -47,22 +48,22 @@ describe('readGateConfig / writeGateConfig', () => {
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 
-  it('returns defaults for an agent with no entry', () => {
-    writeGateConfig('other', { enabled: true })
+  it('returns defaults for an agent with no entry', async () => {
+    await writeGateConfig('other', { enabled: true })
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 
-  it('normalizes and persists a written config', () => {
-    const saved = writeGateConfig('agent-a', { enabled: true, thresholdTokens: 123456 })
+  it('normalizes and persists a written config', async () => {
+    const saved = await writeGateConfig('agent-a', { enabled: true, thresholdTokens: 123456 })
     expect(saved.enabled).toBe(true)
     expect(saved.thresholdTokens).toBe(123456)
     expect(readGateConfig('agent-a')).toEqual(saved)
   })
 
-  it('overwrites an existing entry without affecting others', () => {
-    writeGateConfig('agent-a', { enabled: true })
-    writeGateConfig('agent-d', { enabled: false })
-    writeGateConfig('agent-a', { enabled: false })
+  it('overwrites an existing entry without affecting others', async () => {
+    await writeGateConfig('agent-a', { enabled: true })
+    await writeGateConfig('agent-d', { enabled: false })
+    await writeGateConfig('agent-a', { enabled: false })
     expect(readGateConfig('agent-a').enabled).toBe(false)
     expect(readGateConfig('agent-d').enabled).toBe(false)
   })
@@ -71,6 +72,7 @@ describe('readGateConfig / writeGateConfig', () => {
     getDb().prepare(
       `INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id) VALUES (?, 'context_restart_gate', '{not json', 'default')`,
     ).run('agent-a')
+    reloadAgentSettingsCache() // the raw INSERT above bypasses the write-through cache
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 })

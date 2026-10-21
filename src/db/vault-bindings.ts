@@ -15,6 +15,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
@@ -42,67 +43,72 @@ function rowToBinding(row: VaultBindingRow): VaultBinding {
   return { vaultSecretId: row.vault_secret_id, envVar: row.env_var, targets }
 }
 
-export function listVaultBindings(tenantId: string = 'default'): VaultBinding[] {
-  const rows = db
-    .prepare('SELECT vault_secret_id, env_var, targets, tenant_id FROM vault_bindings WHERE tenant_id = ? ORDER BY vault_secret_id, env_var')
-    .all(tenantId) as VaultBindingRow[]
+export async function listVaultBindings(tenantId: string = 'default'): Promise<VaultBinding[]> {
+  const rows = await dbx.all<VaultBindingRow>(
+    'SELECT vault_secret_id, env_var, targets, tenant_id FROM vault_bindings WHERE tenant_id = ? ORDER BY vault_secret_id, env_var',
+    tenantId,
+  )
   return rows.map(rowToBinding)
 }
 
 // Insert-or-replace keyed by (vaultSecretId, envVar, tenantId) -- mirrors
 // the pre-migration addBinding()'s find-by-pair-and-replace semantics.
-export function upsertVaultBinding(tenantId: string, binding: VaultBinding): void {
-  db.prepare(`
+export async function upsertVaultBinding(tenantId: string, binding: VaultBinding): Promise<void> {
+  await dbx.run(`
     INSERT INTO vault_bindings (vault_secret_id, env_var, targets, tenant_id, created_at, updated_at)
     VALUES (?, ?, ?, ?, unixepoch(), unixepoch())
     ON CONFLICT(vault_secret_id, env_var, tenant_id) DO UPDATE SET
       targets = excluded.targets,
       updated_at = excluded.updated_at
-  `).run(binding.vaultSecretId, binding.envVar, JSON.stringify(binding.targets), tenantId)
+  `, binding.vaultSecretId, binding.envVar, JSON.stringify(binding.targets), tenantId)
 }
 
 // Returns true iff a matching row existed and was deleted -- mirrors
 // removeBinding()'s pre-migration boolean return.
-export function deleteVaultBinding(tenantId: string, vaultSecretId: string, envVar: string): boolean {
-  const result = db
-    .prepare('DELETE FROM vault_bindings WHERE vault_secret_id = ? AND env_var = ? AND tenant_id = ?')
-    .run(vaultSecretId, envVar, tenantId)
+export async function deleteVaultBinding(tenantId: string, vaultSecretId: string, envVar: string): Promise<boolean> {
+  const result = await dbx.run(
+    'DELETE FROM vault_bindings WHERE vault_secret_id = ? AND env_var = ? AND tenant_id = ?',
+    vaultSecretId, envVar, tenantId,
+  )
   return result.changes > 0
 }
 
 // Returns the bindings that were deleted (their targets are still needed by
 // the caller -- removeBindingsForSecret() -- to strip the env var from each
-// target MCP file before the row itself disappears).
-export function deleteVaultBindingsForSecret(tenantId: string, vaultSecretId: string): VaultBinding[] {
-  const rows = db
-    .prepare('SELECT vault_secret_id, env_var, targets, tenant_id FROM vault_bindings WHERE vault_secret_id = ? AND tenant_id = ?')
-    .all(vaultSecretId, tenantId) as VaultBindingRow[]
-  db.prepare('DELETE FROM vault_bindings WHERE vault_secret_id = ? AND tenant_id = ?').run(vaultSecretId, tenantId)
-  return rows.map(rowToBinding)
+// target MCP file before the row itself disappears). The select-then-delete
+// is one dbx.tx so no other writer can slip a change in between the two.
+export async function deleteVaultBindingsForSecret(tenantId: string, vaultSecretId: string): Promise<VaultBinding[]> {
+  return dbx.tx(async (tx) => {
+    const rows = await tx.all<VaultBindingRow>(
+      'SELECT vault_secret_id, env_var, targets, tenant_id FROM vault_bindings WHERE vault_secret_id = ? AND tenant_id = ?',
+      vaultSecretId, tenantId,
+    )
+    await tx.run('DELETE FROM vault_bindings WHERE vault_secret_id = ? AND tenant_id = ?', vaultSecretId, tenantId)
+    return rows.map(rowToBinding)
+  })
 }
 
 // Whole-value replace within a transaction: used by fleet-transfer import
 // (P3 semantics, matching the old whole-file overwrite this store used to
 // get from trackedWrite('vault-bindings.json', ...)).
-export function replaceVaultBindings(tenantId: string, bindings: VaultBinding[]): void {
+export async function replaceVaultBindings(tenantId: string, bindings: VaultBinding[]): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM vault_bindings WHERE tenant_id = ?').run(tenantId)
-    const stmt = db.prepare(`
-      INSERT INTO vault_bindings (vault_secret_id, env_var, targets, tenant_id, created_at, updated_at)
-      VALUES (@vault_secret_id, @env_var, @targets, @tenant_id, @now, @now)
-    `)
+  await dbx.tx(async (tx) => {
+    await tx.run('DELETE FROM vault_bindings WHERE tenant_id = ?', tenantId)
     for (const b of bindings) {
-      stmt.run({
-        vault_secret_id: b.vaultSecretId,
-        env_var: b.envVar,
-        targets: JSON.stringify(b.targets ?? []),
-        tenant_id: tenantId,
-        now,
-      })
+      await tx.run(
+        `INSERT INTO vault_bindings (vault_secret_id, env_var, targets, tenant_id, created_at, updated_at)
+         VALUES (@vault_secret_id, @env_var, @targets, @tenant_id, @now, @now)`,
+        {
+          vault_secret_id: b.vaultSecretId,
+          env_var: b.envVar,
+          targets: JSON.stringify(b.targets ?? []),
+          tenant_id: tenantId,
+          now,
+        },
+      )
     }
   })
-  tx()
 }
 
 // One-time backfill of an existing install's store/vault-bindings.json into
@@ -111,6 +117,7 @@ export function replaceVaultBindings(tenantId: string, bindings: VaultBinding[])
 // overwritten by a stale re-read, and a fresh install with no file gets zero
 // rows -- matching getBindings()'s own pre-migration default of an empty
 // list. Safe to call on every boot.
+// @boot-sync-twin
 export function migrateVaultBindingsFromFile(): number {
   const filePath = join(STORE_DIR, 'vault-bindings.json')
   if (!existsSync(filePath)) return 0

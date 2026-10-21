@@ -54,22 +54,22 @@ async function callAs(auth: AuthResult, method: string, path: string) {
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
 const session = (role: 'admin' | 'agent' | 'read_only' | 'viewer', tenantId: string | null): AuthResult => ({ kind: 'session', user: `u-${role}`, role, tenantId })
 
-const alpha = () => tokenAuth('tok-alpha') // fleet_agent, tenant default
+const alpha = async () => tokenAuth('tok-alpha') // fleet_agent, tenant default
 const acmeUser = () => session('agent', 'acme')
-const admin = () => tokenAuth('the-file-token')
+const admin = async () => tokenAuth('the-file-token')
 
 const archivedIds = (body: unknown) => ((body as { cards: Array<{ id: string }> }).cards).map((c) => c.id).sort()
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('acme', 'Acme')
-  insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
+  await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
   createKanbanCard({ id: 'def-arch', title: 'Default archived', project: 'proj-default', tenant_id: 'default' })
   createKanbanCard({ id: 'acme-arch', title: 'Acme archived', project: 'proj-acme', tenant_id: 'acme' })
   createKanbanCard({ id: 'def-live', title: 'Default live', project: 'proj-default-live', tenant_id: 'default' })
@@ -84,7 +84,7 @@ beforeEach(() => {
 
 describe('GET /api/kanban/archived', () => {
   it('a fleet token sees only its own tenant\'s archived cards', async () => {
-    const r = await callAs(alpha(), 'GET', '/api/kanban/archived')
+    const r = await callAs(await alpha(), 'GET', '/api/kanban/archived')
     expect(r.status).toBe(200)
     expect(archivedIds(r.body)).toEqual(['def-arch'])
   })
@@ -94,27 +94,27 @@ describe('GET /api/kanban/archived', () => {
   })
 
   it('the project and label filters stay inside the tenant (a foreign project name yields nothing)', async () => {
-    expect(archivedIds((await callAs(alpha(), 'GET', '/api/kanban/archived?project=proj-acme')).body)).toEqual([])
-    expect(archivedIds((await callAs(alpha(), 'GET', '/api/kanban/archived?label=urgent')).body)).toEqual(['def-arch'])
+    expect(archivedIds((await callAs(await alpha(), 'GET', '/api/kanban/archived?project=proj-acme')).body)).toEqual([])
+    expect(archivedIds((await callAs(await alpha(), 'GET', '/api/kanban/archived?label=urgent')).body)).toEqual(['def-arch'])
   })
 
   it('an admin sees every tenant, or one with ?tenant=', async () => {
-    expect(archivedIds((await callAs(admin(), 'GET', '/api/kanban/archived')).body)).toEqual(['acme-arch', 'def-arch'])
-    expect(archivedIds((await callAs(admin(), 'GET', '/api/kanban/archived?tenant=acme')).body)).toEqual(['acme-arch'])
+    expect(archivedIds((await callAs(await admin(), 'GET', '/api/kanban/archived')).body)).toEqual(['acme-arch', 'def-arch'])
+    expect(archivedIds((await callAs(await admin(), 'GET', '/api/kanban/archived?tenant=acme')).body)).toEqual(['acme-arch'])
   })
 
   it('a non-admin cannot widen its view with ?tenant=', async () => {
-    expect(archivedIds((await callAs(alpha(), 'GET', '/api/kanban/archived?tenant=acme')).body)).toEqual(['def-arch'])
+    expect(archivedIds((await callAs(await alpha(), 'GET', '/api/kanban/archived?tenant=acme')).body)).toEqual(['def-arch'])
   })
 })
 
 describe('GET /api/kanban-projects', () => {
   it('a fleet token and a tenant user see only their own tenant\'s project names', async () => {
-    expect((await callAs(alpha(), 'GET', '/api/kanban-projects')).body).toEqual(['proj-default-live'])
+    expect((await callAs(await alpha(), 'GET', '/api/kanban-projects')).body).toEqual(['proj-default-live'])
     expect((await callAs(acmeUser(), 'GET', '/api/kanban-projects')).body).toEqual(['proj-acme-live'])
   })
 
   it('an admin sees the project names of every tenant', async () => {
-    expect((await callAs(admin(), 'GET', '/api/kanban-projects')).body).toEqual(['proj-acme-live', 'proj-default-live'])
+    expect((await callAs(await admin(), 'GET', '/api/kanban-projects')).body).toEqual(['proj-acme-live', 'proj-default-live'])
   })
 })
