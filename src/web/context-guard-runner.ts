@@ -763,6 +763,7 @@ export function startContextGuardRunner(): NodeJS.Timeout {
       try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  const tick = () => { void sweep().catch((err) => logger.error({ err }, 'context-guard: sweep tick failed')) }
+  setTimeout(tick, INITIAL_DELAY_MS)
+  return setInterval(tick, INTERVAL_MS)
 }

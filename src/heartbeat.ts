@@ -511,19 +511,23 @@ let heartbeatTimeout: ReturnType<typeof setTimeout> | null = null
 let stopped = false
 
 function scheduleNext(delayMs: number): void {
-  heartbeatTimeout = setTimeout(async () => {
-    await executeHeartbeat().catch((err) => logger.error({ err }, 'Heartbeat hiba'))
-
-    if (stopped) return
-
-    const nextDelayMs = msUntilNextHeartbeat()
-    const nextRun = new Date(Date.now() + nextDelayMs)
-    logger.info(
-      { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: APP_TZ }) },
-      `Heartbeat kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: APP_TZ })}`
-    )
-    scheduleNext(nextDelayMs)
+  heartbeatTimeout = setTimeout(() => {
+    void runHeartbeatTick().catch((err) => logger.error({ err }, 'Heartbeat tick hiba'))
   }, delayMs)
+}
+
+async function runHeartbeatTick(): Promise<void> {
+  await executeHeartbeat().catch((err) => logger.error({ err }, 'Heartbeat hiba'))
+
+  if (stopped) return
+
+  const nextDelayMs = msUntilNextHeartbeat()
+  const nextRun = new Date(Date.now() + nextDelayMs)
+  logger.info(
+    { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: APP_TZ }) },
+    `Heartbeat kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: APP_TZ })}`
+  )
+  scheduleNext(nextDelayMs)
 }
 
 export function initHeartbeat(): void {

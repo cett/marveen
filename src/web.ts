@@ -227,7 +227,7 @@ export function startWebServer(port = 3420): http.Server {
   // stay in sync without an extra env var.
   const allowedHosts = buildAllowedHosts(allowedOrigins)
 
-  const server = http.createServer(async (req, res) => {
+  const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const { path, deprecated, apiVersion } = normalizePath(url.pathname)
     const method = req.method || 'GET'
@@ -371,6 +371,16 @@ export function startWebServer(port = 3420): http.Server {
       logger.error({ err }, 'Web szerver hiba')
       json(res, { error: 'internal_error', hint: 'Szerver hiba' }, 500)
     }
+  }
+
+  // The listener is synchronous on purpose (no-misused-promises): a rejection from anything outside the
+  // route try/catch above is logged and answered, never an unhandled rejection.
+  const server = http.createServer((req, res) => {
+    void handleRequest(req, res).catch((err) => {
+      logger.error({ err }, 'Web szerver hiba (kezeletlen)')
+      if (!res.headersSent) res.writeHead(500)
+      res.end()
+    })
   })
 
   server.on('error', (err: NodeJS.ErrnoException) => {

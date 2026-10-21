@@ -143,11 +143,11 @@ export function buildKanbanContext(): string {
   return `[Kanban tabla]\n${lines.join('\n')}`
 }
 
-export async function saveConversationTurn(
+export function saveConversationTurn(
   chatId: string,
   userMsg: string,
   assistantMsg: string
-): Promise<void> {
+): void {
   // Skip trivial, short, or command messages
   if (userMsg.length <= 20 || userMsg.startsWith('/')) return
   if (SKIP_PATTERN.test(userMsg.trim())) return

@@ -7,6 +7,7 @@
 // just stores what it's told.
 
 import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 export const AGENT_STATE_KEYS = [
   'gate_run_state',
@@ -27,23 +28,40 @@ export interface AgentStateRow {
 
 const SELECT_COLUMNS = 'agent_id, state_key, state_value, tenant_id, updated_at'
 
-export function getAgentState(agentId: string, key: AgentStateKey): AgentStateRow | undefined {
-  return db
-    .prepare(`SELECT ${SELECT_COLUMNS} FROM agent_state WHERE agent_id = ? AND state_key = ?`)
-    .get(agentId, key) as AgentStateRow | undefined
-}
+const SELECT_ONE = `SELECT ${SELECT_COLUMNS} FROM agent_state WHERE agent_id = ? AND state_key = ?`
 
-/** Upsert one agent's state. `tenantId` defaults to 'default' for callers
- *  with no tenant context (tests, scripts, or -- for this table's current
- *  sole consumer -- an internal runner with no per-request tenant at all). */
-export function setAgentState(agentId: string, key: AgentStateKey, value: unknown, tenantId = 'default'): void {
-  db.prepare(`
+const UPSERT = `
     INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id, updated_at)
     VALUES (?, ?, ?, ?, unixepoch())
     ON CONFLICT(agent_id, state_key) DO UPDATE SET
       state_value = excluded.state_value,
       updated_at = excluded.updated_at
-  `).run(agentId, key, JSON.stringify(value), tenantId)
+  `
+
+// The first module on the async db facade (the pilot of the migration): both operations go through `dbx` and return
+// a Promise. Read-modify-write over the two calls is NOT atomic (another caller can run between them): the
+// only RMW user today is the context restart gate, which runs one sweep timer per agent, so there is no
+// concurrent run for the same agent.
+export function getAgentState(agentId: string, key: AgentStateKey): Promise<AgentStateRow | undefined> {
+  return dbx.get<AgentStateRow>(SELECT_ONE, agentId, key)
+}
+
+/** Upsert one agent's state. `tenantId` defaults to 'default' for callers
+ *  with no tenant context (tests, scripts, or -- for this table's current
+ *  sole consumer -- an internal runner with no per-request tenant at all). */
+export async function setAgentState(agentId: string, key: AgentStateKey, value: unknown, tenantId = 'default'): Promise<void> {
+  await dbx.run(UPSERT, agentId, key, JSON.stringify(value), tenantId)
+}
+
+// BOOT-SYNCHRONOUS twins. initDatabase() runs a synchronous chain (db/index.ts: the one-time importers of the
+// JSON side-cars), which cannot await. These two keep the raw handle and are for that chain ONLY: nothing else
+// may call them (a test pins this). Once initDatabase() is asynchronous the twins go away.
+export function getAgentStateSync(agentId: string, key: AgentStateKey): AgentStateRow | undefined {
+  return db.prepare(SELECT_ONE).get(agentId, key) as AgentStateRow | undefined
+}
+
+export function setAgentStateSync(agentId: string, key: AgentStateKey, value: unknown, tenantId = 'default'): void {
+  db.prepare(UPSERT).run(agentId, key, JSON.stringify(value), tenantId)
 }
 
 /**

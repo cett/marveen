@@ -66,8 +66,8 @@ function normalizeState(raw: unknown): GateRunState {
   }
 }
 
-export function readGateRunState(name: string): GateRunState {
-  const row = getAgentState(name, 'gate_run_state')
+export async function readGateRunState(name: string): Promise<GateRunState> {
+  const row = await getAgentState(name, 'gate_run_state')
   if (!row) return { ...EMPTY_STATE }
   try {
     return normalizeState(JSON.parse(row.state_value))
@@ -76,6 +76,6 @@ export function readGateRunState(name: string): GateRunState {
   }
 }
 
-export function writeGateRunState(name: string, state: GateRunState): void {
-  setAgentState(name, 'gate_run_state', state)
+export function writeGateRunState(name: string, state: GateRunState): Promise<void> {
+  return setAgentState(name, 'gate_run_state', state)
 }

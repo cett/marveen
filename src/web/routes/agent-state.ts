@@ -39,7 +39,7 @@ export async function tryHandleAgentState(ctx: RouteContext): Promise<boolean> {
   }
 
   if (method === 'GET') {
-    const row = getAgentState(agentId, key as AgentStateKey)
+    const row = await getAgentState(agentId, key as AgentStateKey)
     if (!row) {
       json(res, { error: 'not_found', hint: 'No state stored for this agent and key' }, 404)
       return true
@@ -60,7 +60,7 @@ export async function tryHandleAgentState(ctx: RouteContext): Promise<boolean> {
     json(res, { error: 'required', field: 'value', hint: 'Body must carry a non-null "value"' }, 400)
     return true
   }
-  setAgentState(agentId, key as AgentStateKey, data.value)
+  await setAgentState(agentId, key as AgentStateKey, data.value)
   json(res, { ok: true })
   return true
 }

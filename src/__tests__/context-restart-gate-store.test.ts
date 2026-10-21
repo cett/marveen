@@ -78,47 +78,47 @@ describe('readGateConfig / writeGateConfig', () => {
 describe('readGateRunState / writeGateRunState', () => {
   const EMPTY_STATE: GateRunState = { firstBlockedAt: null, lastAlertAt: null, lastClearAt: null }
 
-  it('returns empty state when no row exists', () => {
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+  it('returns empty state when no row exists', async () => {
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('returns empty state for an agent with no entry', () => {
-    writeGateRunState('other', { firstBlockedAt: 1000, lastAlertAt: null, lastClearAt: null })
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+  it('returns empty state for an agent with no entry', async () => {
+    await writeGateRunState('other', { firstBlockedAt: 1000, lastAlertAt: null, lastClearAt: null })
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('persists and reads back a written state', () => {
+  it('persists and reads back a written state', async () => {
     const state: GateRunState = { firstBlockedAt: 1000, lastAlertAt: 2000, lastClearAt: 3000 }
-    writeGateRunState('agent-a', state)
-    expect(readGateRunState('agent-a')).toEqual(state)
+    await writeGateRunState('agent-a', state)
+    expect(await readGateRunState('agent-a')).toEqual(state)
   })
 
-  it('normalizes non-positive / non-finite fields to null on read', () => {
+  it('normalizes non-positive / non-finite fields to null on read', async () => {
     getDb().prepare(
       `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', ?, 'default')`,
     ).run('agent-a', JSON.stringify({ firstBlockedAt: -5, lastAlertAt: Infinity, lastClearAt: 'nope' }))
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('floors fractional timestamps on read', () => {
+  it('floors fractional timestamps on read', async () => {
     getDb().prepare(
       `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', ?, 'default')`,
     ).run('agent-a', JSON.stringify({ firstBlockedAt: 1000.7, lastAlertAt: null, lastClearAt: null }))
-    expect(readGateRunState('agent-a').firstBlockedAt).toBe(1000)
+    expect((await readGateRunState('agent-a')).firstBlockedAt).toBe(1000)
   })
 
-  it('survives a row whose state_value is not valid JSON', () => {
+  it('survives a row whose state_value is not valid JSON', async () => {
     getDb().prepare(
       `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', 'INVALID', 'default')`,
     ).run('agent-a')
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('overwrites an existing entry without affecting others', () => {
-    writeGateRunState('agent-a', { firstBlockedAt: 1, lastAlertAt: null, lastClearAt: null })
-    writeGateRunState('agent-d', { firstBlockedAt: 2, lastAlertAt: null, lastClearAt: null })
-    writeGateRunState('agent-a', EMPTY_STATE)
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
-    expect(readGateRunState('agent-d').firstBlockedAt).toBe(2)
+  it('overwrites an existing entry without affecting others', async () => {
+    await writeGateRunState('agent-a', { firstBlockedAt: 1, lastAlertAt: null, lastClearAt: null })
+    await writeGateRunState('agent-d', { firstBlockedAt: 2, lastAlertAt: null, lastClearAt: null })
+    await writeGateRunState('agent-a', EMPTY_STATE)
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+    expect((await readGateRunState('agent-d')).firstBlockedAt).toBe(2)
   })
 })

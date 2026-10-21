@@ -373,17 +373,21 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
 }
 
 export function startMessageRouter(): NodeJS.Timeout {
-  return setInterval(async () => {
-    // Re-entrancy guard: STT can hold a tick for up to 65s; skip new ticks
-    // while the previous one is still in flight to prevent double-delivery.
-    if (_tickRunning) return
-    _tickRunning = true
-    try {
-      await runMessageRouterTick()
-    } finally {
-      _tickRunning = false
-    }
+  return setInterval(() => {
+    void guardedMessageRouterTick().catch((err) => logger.error({ err }, 'message-router: tick failed'))
   }, 5000)
+}
+
+async function guardedMessageRouterTick(): Promise<void> {
+  // Re-entrancy guard: STT can hold a tick for up to 65s; skip new ticks
+  // while the previous one is still in flight to prevent double-delivery.
+  if (_tickRunning) return
+  _tickRunning = true
+  try {
+    await runMessageRouterTick()
+  } finally {
+    _tickRunning = false
+  }
 }
 
 // Per-receiver batched-message-id set for the CURRENT tick. Built by the

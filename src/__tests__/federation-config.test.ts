@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { initDatabase, db } from '../db.js'
+import { initDatabase, db, clearSystemConfigCache, reloadSystemConfigCache } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { checkBearerToken } from '../web/dashboard-auth.js'
@@ -237,6 +237,7 @@ describe('fail-closed store reads', () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger)
     db.exec('ALTER TABLE system_config RENAME TO system_config_test_down')
     try {
+      clearSystemConfigCache() // the system_config read cache would answer without touching the table
       reloadFederationForTest() // clear the cache so the next read actually hits the DB
       const cfg = getFederationConfig()
       expect(cfg.enabled).toBe(false)
@@ -247,6 +248,7 @@ describe('fail-closed store reads', () => {
       expect(logArg).toHaveProperty('err')
     } finally {
       db.exec('ALTER TABLE system_config_test_down RENAME TO system_config')
+      reloadSystemConfigCache()
       errorSpy.mockRestore()
       reloadFederationForTest()
     }

@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
+import { cacheAfterWrite, cachedSystemConfig, cachedSystemConfigList, refreshSystemConfigCacheIfLive } from './config-cache.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
@@ -22,13 +23,20 @@ export interface SystemConfigRow {
   source: string
 }
 
+// Reads are served from the synchronous write-through cache (config-cache.ts) once initDatabase() has loaded
+// it for the current connection; until then (and for a connection the cache was not loaded for) they read the
+// table, exactly as before. The reads stay synchronous when the db layer turns async.
 export function getSystemConfig(key: string): SystemConfigRow | undefined {
+  const cached = cachedSystemConfig(key)
+  if (cached !== null) return cached
   return db.prepare('SELECT key, value, updated_at, source FROM system_config WHERE key = ?').get(key) as
     | SystemConfigRow
     | undefined
 }
 
 export function listSystemConfig(): SystemConfigRow[] {
+  const cached = cachedSystemConfigList()
+  if (cached !== null) return cached
   return db.prepare('SELECT key, value, updated_at, source FROM system_config ORDER BY key').all() as SystemConfigRow[]
 }
 
@@ -39,6 +47,7 @@ export function setSystemConfig(key: string, value: string, source: string = 'db
     `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, source = excluded.source`
   ).run(key, value, source)
+  cacheAfterWrite(key) // database first, then the cache
 }
 
 // Hard delete, not a value clear -- for keys that may hold secret material
@@ -46,6 +55,7 @@ export function setSystemConfig(key: string, value: string, source: string = 'db
 // worse than removing it outright. Used by removeFederationStore().
 export function deleteSystemConfig(key: string): void {
   db.prepare('DELETE FROM system_config WHERE key = ?').run(key)
+  cacheAfterWrite(key) // database first, then the cache
 }
 
 // One-time migration of store/config-overrides.json into system_config.
@@ -82,6 +92,7 @@ export function migrateConfigOverridesToSystemConfig(): number {
     const result = stmt.run(key, String(value))
     if (result.changes > 0) migrated++
   }
+  if (migrated > 0) refreshSystemConfigCacheIfLive()
   return migrated
 }
 
@@ -141,6 +152,7 @@ function migrateOneGroup5File(filename: string, extract: (parsed: unknown) => Ar
     const result = stmt.run(key, value)
     if (result.changes > 0) migrated++
   }
+  if (migrated > 0) refreshSystemConfigCacheIfLive()
   return migrated
 }
 

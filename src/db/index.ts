@@ -18,10 +18,13 @@ export * from './audit.js'
 export * from './autonomy.js'
 export * from './claude-plans.js'
 export * from './channel-credentials.js'
+export { reloadSystemConfigCache, clearSystemConfigCache } from './config-cache.js'
+export * from './context.js'
 export * from './conversation-ledger.js'
 export * from './cost-budgets.js'
 export * from './device-keys.js'
 export * from './egress-allowlist.js'
+export * from './facade.js'
 export * from './kanban.js'
 export * from './memory.js'
 export * from './misc.js'
@@ -52,10 +55,11 @@ import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from
 import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfig } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
-import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
+import { getAgentStateSync, setAgentStateSync, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
 import { migrateCostBudgetsFromFile } from './cost-budgets.js'
 import { migrateVaultBindingsFromFile } from './vault-bindings.js'
 import { migrateFederationConfigFromFile } from './federation.js'
+import { loadSystemConfigCache } from './config-cache.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -159,6 +163,10 @@ export function initDatabase(dbPathOverride?: string): void {
   // getSystemConfig() guard in migrateFederationConfigFromFile takes the
   // place of INSERT OR IGNORE here since there's only one row to skip).
   migrateFederationConfigFromFile()
+
+  // Last step, after every migrator that writes system_config: fill the synchronous write-through cache the
+  // configuration readers are served from (config-cache.ts). Runs again on every re-initialisation.
+  loadSystemConfigCache()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
@@ -325,11 +333,11 @@ export function retireFederationConfigFile(): void {
 function migrateKanbanAuditStateFromFile(): void {
   const p = join(STORE_DIR, 'kanban-audit-state.json')
   if (!existsSync(p)) return
-  if (getAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at')) return
+  if (getAgentStateSync(MAIN_AGENT_ID, 'kanban_audit_last_audit_at')) return
   try {
     const raw = JSON.parse(readFileSync(p, 'utf-8')) as { last_audit_at?: unknown }
     if (typeof raw?.last_audit_at === 'number' && Number.isFinite(raw.last_audit_at)) {
-      setAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at', raw.last_audit_at)
+      setAgentStateSync(MAIN_AGENT_ID, 'kanban_audit_last_audit_at', raw.last_audit_at)
     }
   } catch (err) {
     logger.warn({ err, file: 'kanban-audit-state.json' }, 'kanban-audit state migration: failed to parse file, skipping')

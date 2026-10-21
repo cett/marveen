@@ -67,7 +67,7 @@ describe('runDueImports', () => {
     const seeded = Math.floor(Date.now() / 1000) - 7200 // 2h ago
     createSource(db, 'due-src', { intervalHours: 1, lastRunAt: seeded, path: emptyDir })
 
-    await runDueImports()
+    runDueImports()
     await waitForCrawl(db, 'due-src', seeded)
 
     expect(lastRunAt(db, 'due-src')).not.toBe(seeded)
@@ -77,7 +77,7 @@ describe('runDueImports', () => {
     const db = getDb()
     createSource(db, 'never-run-src', { intervalHours: 24, lastRunAt: null, path: emptyDir })
 
-    await runDueImports()
+    runDueImports()
     await waitForCrawl(db, 'never-run-src', null)
 
     expect(lastRunAt(db, 'never-run-src')).not.toBeNull()
@@ -88,7 +88,7 @@ describe('runDueImports', () => {
     const seeded = Math.floor(Date.now() / 1000) - 60 // 1 minute ago
     createSource(db, 'not-due-src', { intervalHours: 24, lastRunAt: seeded, path: emptyDir })
 
-    await runDueImports()
+    runDueImports()
     // No crawl should fire: give any errant async work a moment, then assert
     // the seeded value never moved.
     await new Promise((r) => setTimeout(r, 100))
@@ -101,13 +101,13 @@ describe('runDueImports', () => {
     const seeded = Math.floor(Date.now() / 1000) - 7200
     createSource(db, 'disabled-src', { intervalHours: 1, lastRunAt: seeded, path: emptyDir, enabled: 0 })
 
-    await runDueImports()
+    runDueImports()
     await new Promise((r) => setTimeout(r, 100))
 
     expect(lastRunAt(db, 'disabled-src')).toBe(seeded)
   })
 
-  it('no enabled sources: resolves without throwing', async () => {
-    await expect(runDueImports()).resolves.toBeUndefined()
+  it('no enabled sources: returns without throwing', () => {
+    expect(runDueImports()).toBeUndefined()
   })
 })

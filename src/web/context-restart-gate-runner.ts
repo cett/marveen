@@ -384,13 +384,13 @@ export function noteSessionStartUnknown(agent: string, reason: string | null): b
  * agent_state so it does not return on the next sweep. Returns the state to
  * evaluate the gate with.
  */
-export function reconcileRunState(name: string, sessionStartMs: number | null) {
-  const stored = readGateRunState(name)
+export async function reconcileRunState(name: string, sessionStartMs: number | null) {
+  const stored = await readGateRunState(name)
   const reconciled = resetStreakIfPreviousSession(stored, sessionStartMs)
   if (reconciled !== stored) {
     logger.info({ agent: name, firstBlockedAt: stored.firstBlockedAt, lastAlertAt: stored.lastAlertAt, sessionStartMs },
       'context-restart-gate: block streak predates the current session, resetting')
-    writeGateRunState(name, reconciled)
+    await writeGateRunState(name, reconciled)
   }
   return reconciled
 }
@@ -400,17 +400,17 @@ export function reconcileRunState(name: string, sessionStartMs: number | null) {
  * threshold (compacted or cleared by something other than this gate), writing
  * the reset back to agent_state so it does not return on the next sweep.
  */
-export function reconcileStreakWithContext(
+export async function reconcileStreakWithContext(
   name: string,
   state: GateRunState,
   contextTokens: number | null,
   thresholdTokens: number,
-): GateRunState {
+): Promise<GateRunState> {
   const reconciled = resetStreakIfBelowThreshold(state, contextTokens, thresholdTokens)
   if (reconciled !== state) {
     logger.info({ agent: name, firstBlockedAt: state.firstBlockedAt, lastAlertAt: state.lastAlertAt, contextTokens, thresholdTokens },
       'context-restart-gate: context is back under the threshold, ending the stale block streak')
-    writeGateRunState(name, reconciled)
+    await writeGateRunState(name, reconciled)
   }
   return reconciled
 }
@@ -522,7 +522,7 @@ export function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): st
  * allow path and the persistent-block force-restart escalation below.
  */
 async function sendClear(session: string): Promise<void> {
-  await withSessionSendLock(session, null, 'deliver', async () => {
+  await withSessionSendLock(session, null, 'deliver', () => {
     execFileSync(TMUX, ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
     execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
   })
@@ -608,8 +608,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     hasLiveTaskState:       liveTaskState,
   }
 
-  const runState = reconcileStreakWithContext(
-    name, reconcileRunState(name, sessionStartMs), inputs.contextTokens, cfg.thresholdTokens)
+  const runState = await reconcileStreakWithContext(
+    name, await reconcileRunState(name, sessionStartMs), inputs.contextTokens, cfg.thresholdTokens)
   const decision = decideGate(inputs, cfg, runState.firstBlockedAt)
 
   logger.debug({ agent: name, action: decision.action, reason: decision.reason,
@@ -631,7 +631,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
       try {
         await sendClear(session)
         logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
-        writeGateRunState(name, {
+        await writeGateRunState(name, {
           ...runState,
           firstBlockedAt: null,
           lastClearAt: nowMs,
@@ -662,7 +662,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             `[CONTEXT-RESTART-GATE] force-restart after 4h persistent block: a(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt (utolso ok: ${decision.reason}), a pane idle es nincs elo munka-jel -- /clear elkuldve.`,
             'context-restart-gate force-restart',
           )
-          writeGateRunState(name, {
+          await writeGateRunState(name, {
             ...runState,
             firstBlockedAt: null,
             lastAlertAt: nowMs,
@@ -704,7 +704,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           )
           logger.warn({ agent: name, reason: decision.reason, blockedSinceMin },
             'context-restart-gate: persistent-block alert sent')
-          writeGateRunState(name, {
+          await writeGateRunState(name, {
             ...runState,
             firstBlockedAt: runState.firstBlockedAt ?? nowMs,
             lastAlertAt: nowMs,
@@ -726,7 +726,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           : null
       )
       if (firstBlockedAt !== runState.firstBlockedAt) {
-        writeGateRunState(name, { ...runState, firstBlockedAt })
+        await writeGateRunState(name, { ...runState, firstBlockedAt })
       }
       break
     }
@@ -738,17 +738,21 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 const sweepTimers = new Map<string, NodeJS.Timeout>()
 
 function scheduleSweep(name: string, delayMs: number): void {
-  sweepTimers.set(name, setTimeout(async () => {
-    const cfg = readGateConfig(name)
-    if (!cfg.enabled) {
-      sweepTimers.delete(name)
-      return
-    }
-    try { await checkAgent(name, Date.now()) }
-    catch (err) { logger.debug({ err, agent: name }, 'context-restart-gate: sweep error') }
-    // Re-schedule using the agent's current retryIntervalMs (may have changed).
-    scheduleSweep(name, readGateConfig(name).retryIntervalMs)
+  sweepTimers.set(name, setTimeout(() => {
+    void runSweep(name).catch((err) => logger.error({ err, agent: name }, 'context-restart-gate: sweep tick failed'))
   }, delayMs))
+}
+
+async function runSweep(name: string): Promise<void> {
+  const cfg = readGateConfig(name)
+  if (!cfg.enabled) {
+    sweepTimers.delete(name)
+    return
+  }
+  try { await checkAgent(name, Date.now()) }
+  catch (err) { logger.debug({ err, agent: name }, 'context-restart-gate: sweep error') }
+  // Re-schedule using the agent's current retryIntervalMs (may have changed).
+  scheduleSweep(name, readGateConfig(name).retryIntervalMs)
 }
 
 export function startContextRestartGateRunner(): void {

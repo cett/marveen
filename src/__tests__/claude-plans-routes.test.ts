@@ -33,7 +33,7 @@ const hardRestartMarveenChannels = vi.fn((): { ok: boolean; error?: string } => 
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => hardRestartMarveenChannels() }))
 
 const restartAgentProcess = vi.fn(
-  async (_name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
+  (_name: string): { ok: boolean; pid?: number; error?: string } => ({ ok: true, pid: 123 }),
 )
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) => restartAgentProcess(name) }))
 
@@ -178,7 +178,7 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     rotationEnabled = '1'
     mainIsolated = '1'
     hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
-    restartAgentProcess.mockClear().mockResolvedValue({ ok: true, pid: 123 })
+    restartAgentProcess.mockClear().mockReturnValue({ ok: true, pid: 123 })
   })
 
   async function seedTwoPlans() {
