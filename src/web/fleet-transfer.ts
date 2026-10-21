@@ -1401,7 +1401,7 @@ export async function importFleet(
     // DB-backed (agent_settings) -- upsert per agent, same
     // rationale as autonomy/modelProfileMap above, not a file write.
     if (s.autoRestart) {
-      for (const [agentId, cfg] of Object.entries(s.autoRestart)) setAgentSetting(agentId, 'auto_restart', cfg)
+      for (const [agentId, cfg] of Object.entries(s.autoRestart)) await setAgentSetting(agentId, 'auto_restart', cfg)
     }
     // DB-backed (system_config 'agents_desired') -- whole-value replace, not a
     // file write. Array.isArray guards a pre-migration snapshot that still has

@@ -73,7 +73,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     }
     const owningTenant = resolveAgentOwningTenantId(name)
     setStoreWriteActor('dashboard', owningTenant)
-    const saved = writeAutoRestartConfig(name, data, owningTenant)
+    const saved = await writeAutoRestartConfig(name, data, owningTenant)
     json(res, { ok: true, autoRestart: saved })
     return true
   }
@@ -101,7 +101,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     }
     const owningTenant = resolveAgentOwningTenantId(name)
     setStoreWriteActor('dashboard', owningTenant)
-    const saved = writeContextGuardConfig(name, data, owningTenant)
+    const saved = await writeContextGuardConfig(name, data, owningTenant)
     json(res, { ok: true, contextGuard: saved })
     return true
   }

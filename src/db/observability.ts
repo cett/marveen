@@ -6,6 +6,7 @@ import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
+import { reloadAgentSettingsCache } from './agent-settings-cache.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
 import { GENAI_TOKEN_BUCKET_BOUNDS } from '../otel-genai.js'
 
@@ -549,7 +550,7 @@ export interface TenantDeleteResult {
 export function deleteTenant(tenantId: string): TenantDeleteResult {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  return db.transaction((): TenantDeleteResult => {
+  const result = db.transaction((): TenantDeleteResult => {
     // 0. Agents exclusive to this tenant: exactly one enabled availability row, and it is this tenant's
     //    (the same reading as resolveAgentTenant). Must run before step 13 deletes the availability rows.
     const exclusiveAgents = (
@@ -673,6 +674,14 @@ export function deleteTenant(tenantId: string): TenantDeleteResult {
 
     return { memoriesDeleted: memIds.length, secretsDeleted, scheduleNames, purged, exclusiveAgents }
   })()
+
+  // agent_settings is one of TENANT_PURGE_AGENT_KEYED_TABLES above, written on the raw connection
+  // inside the transaction, bypassing the synchronous write-through cache (agent-settings-cache.ts).
+  // Reload it now the transaction has committed -- database first, then the cache, same rule as every
+  // other writer of that table.
+  reloadAgentSettingsCache()
+
+  return result
 }
 
 // ── B2B Dashboard user provisioning ──────────────────────────────────────────

@@ -20,6 +20,7 @@ export * from './claude-plans.js'
 export * from './channel-credentials.js'
 export { reloadSystemConfigCache, clearSystemConfigCache } from './config-cache.js'
 export { reloadModelProfileMapCache, clearModelProfileMapCache } from './model-profile-map-cache.js'
+export { reloadAgentSettingsCache, clearAgentSettingsCache } from './agent-settings-cache.js'
 export * from './context.js'
 export * from './conversation-ledger.js'
 export * from './cost-budgets.js'
@@ -62,6 +63,7 @@ import { migrateVaultBindingsFromFile } from './vault-bindings.js'
 import { migrateFederationConfigFromFile } from './federation.js'
 import { loadSystemConfigCache } from './config-cache.js'
 import { loadModelProfileMapCache } from './model-profile-map-cache.js'
+import { loadAgentSettingsCache } from './agent-settings-cache.js'
 import { resolveAgentOwningTenantId } from './agents.js'
 import { logger } from '../logger.js'
 
@@ -173,6 +175,12 @@ export function initDatabase(dbPathOverride?: string): void {
   // model_profile_map has no file migrator (migration 0054 seeds it directly) -- just the equivalent
   // synchronous write-through cache load (model-profile-map-cache.ts), for the same reason.
   loadModelProfileMapCache()
+
+  // agent_settings DOES have a file migrator (migrateAgentSettingsFromFiles() above, at the
+  // "Migration 0058" step) -- same every-boot-but-effectively-once shape as the others. The
+  // synchronous write-through cache (agent-settings-cache.ts) loads last, after that migrator has
+  // run, so a freshly-imported row is already in the cache the first time a reader asks for it.
+  loadAgentSettingsCache()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring

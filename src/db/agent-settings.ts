@@ -16,8 +16,20 @@
 // passes it in. Keeping that resolution out of this module mirrors the
 // existing db/*.ts split (agents.ts owns tenant_agent_availability, this
 // module just stores what it's told).
+//
+// Reads stay synchronous (agent-settings-cache.ts, the model_profile_map/
+// system_config pattern): context-guard-runner.ts, auto-restart-runner.ts,
+// startup-reconciliation.ts and the agent-detail routes reach
+// getAgentSetting/listAgentSettingsByKey on a synchronous path and must not
+// become asynchronous. Writes go through the async facade -- their callers
+// (the two dashboard PUT routes, fleet-transfer.ts's import) already are, or
+// can be, async. `importAgentSettingsFromFile` below stays on the raw
+// connection: it is the boot-sync twin (db/index.ts's migrator), the same
+// shape as cost-budgets.ts/vault-bindings.ts's file migrators.
 
+import { dbx } from './facade.js'
 import { db } from './connection.js'
+import { cachedAgentSetting, cachedAgentSettingsByKey, cacheAfterAgentSettingWrite } from './agent-settings-cache.js'
 
 export type AgentSettingKey = 'context_guard' | 'auto_restart' | 'context_restart_gate'
 
@@ -32,6 +44,8 @@ export interface AgentSettingRow {
 const SELECT_COLUMNS = 'agent_id, setting_key, setting_value, tenant_id, updated_at'
 
 export function getAgentSetting(agentId: string, key: AgentSettingKey): AgentSettingRow | undefined {
+  const cached = cachedAgentSetting(agentId, key)
+  if (cached !== null) return cached
   return db
     .prepare(`SELECT ${SELECT_COLUMNS} FROM agent_settings WHERE agent_id = ? AND setting_key = ?`)
     .get(agentId, key) as AgentSettingRow | undefined
@@ -44,15 +58,16 @@ export function getAgentSetting(agentId: string, key: AgentSettingKey): AgentSet
  * 'default' for callers (tests, scripts) that have no tenant context --
  * the route always resolves and passes the real owning tenant.
  */
-export function setAgentSetting(agentId: string, key: AgentSettingKey, value: unknown, tenantId = 'default'): void {
-  db.prepare(`
+export async function setAgentSetting(agentId: string, key: AgentSettingKey, value: unknown, tenantId = 'default'): Promise<void> {
+  await dbx.run(`
     INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at)
     VALUES (?, ?, ?, ?, unixepoch())
     ON CONFLICT(agent_id, setting_key) DO UPDATE SET
       setting_value = excluded.setting_value,
       tenant_id = excluded.tenant_id,
       updated_at = excluded.updated_at
-  `).run(agentId, key, JSON.stringify(value), tenantId)
+  `, agentId, key, JSON.stringify(value), tenantId)
+  cacheAfterAgentSettingWrite(agentId, key) // database first, then the cache
 }
 
 /**
@@ -89,6 +104,8 @@ export function importAgentSettingsFromFile(
  *  used by fleet-transfer.ts export and by any future "list every agent's
  *  config" caller. */
 export function listAgentSettingsByKey(key: AgentSettingKey): Record<string, unknown> {
+  const cached = cachedAgentSettingsByKey(key)
+  if (cached !== null) return cached
   const rows = db
     .prepare(`SELECT agent_id, setting_value FROM agent_settings WHERE setting_key = ?`)
     .all(key) as { agent_id: string; setting_value: string }[]
