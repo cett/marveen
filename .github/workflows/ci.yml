@@ -251,6 +251,11 @@ jobs:
         # may not grow past scripts/non-ts-db-access-baseline.json.
         run: python3 scripts/non-ts-db-access-ratchet.py
 
+      - name: Raw SQL outside the db layer ratchet
+        # .prepare( / getDb( / .transaction( outside src/db/ (src/ and scripts/) may not grow
+        # past scripts/db-outside-sql-baseline.json, and no new file may add one (1017 Phase 1).
+        run: python3 scripts/db-outside-sql-ratchet.py
+
       - name: Log message literal ratchet
         # A warn/error/fatal log call may not build a value into its message
         # (the application log export sends the message): scripts/log-message-literal-baseline.json.

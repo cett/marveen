@@ -4,7 +4,9 @@
 // only. Never message text, task prompts, Telegram content or user names. Each metric lists the attribute keys
 // it may carry; anything else is dropped by the registry.
 
-import { getDb } from './db/connection.js'
+import {
+  countIncomingEventsBySourceStatus, countPendingAgentMessages, oldestPendingAgentMessageAt, oldestPendingIncomingEventBySource,
+} from './db/otel-gauges.js'
 import { defineCounter, defineGauge, defineHistogram, defineObservableCounter, otelCount, otelRecord } from './otel-metrics.js'
 import { getGateDecisionCounts } from './db/otel-logs.js'
 import { getAppLogDropped } from './otel-app-logs.js'
@@ -74,25 +76,18 @@ function nowSec(): number {
 }
 
 // Queue depth and the age of its oldest entry, read when an export happens.
-defineGauge('marveen.agent_messages.pending', '{message}', () => {
-  const row = getDb().prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE status = 'pending'").get() as { n: number }
-  return [{ value: row.n }]
-})
+defineGauge('marveen.agent_messages.pending', '{message}', () => [{ value: countPendingAgentMessages() }])
 defineGauge('marveen.agent_messages.oldest_pending_age', 's', () => {
-  const row = getDb().prepare("SELECT MIN(created_at) AS oldest FROM agent_messages WHERE status = 'pending'").get() as { oldest: number | null }
-  return row.oldest == null ? [] : [{ value: Math.max(0, nowSec() - row.oldest) }]
+  const oldest = oldestPendingAgentMessageAt()
+  return oldest == null ? [] : [{ value: Math.max(0, nowSec() - oldest) }]
 })
 
 // ── Telegram channel (incoming_events): counts per status and the age of the oldest unhandled event ──
 defineGauge('marveen.channel.events', '{event}', () => {
-  const rows = getDb().prepare('SELECT source, status, COUNT(*) AS n FROM incoming_events GROUP BY source, status')
-    .all() as { source: string; status: string; n: number }[]
-  return rows.map((r) => ({ attrs: { channel: r.source, status: r.status }, value: r.n }))
+  return countIncomingEventsBySourceStatus().map((r) => ({ attrs: { channel: r.source, status: r.status }, value: r.n }))
 }, ['channel', 'status'])
 defineGauge('marveen.channel.handoff.oldest_pending_age', 's', () => {
-  const rows = getDb().prepare("SELECT source, MIN(created_at) AS oldest FROM incoming_events WHERE status = 'pending' GROUP BY source")
-    .all() as { source: string; oldest: number | null }[]
-  return rows.filter((r) => r.oldest != null).map((r) => ({ attrs: { channel: r.source }, value: Math.max(0, nowSec() - (r.oldest as number)) }))
+  return oldestPendingIncomingEventBySource().filter((r) => r.oldest != null).map((r) => ({ attrs: { channel: r.source }, value: Math.max(0, nowSec() - (r.oldest as number)) }))
 }, ['channel'])
 
 // ── PreToolUse gate verdicts (scripts/hooks/gate_audit_lib.py writes gate_decision_counts) ──

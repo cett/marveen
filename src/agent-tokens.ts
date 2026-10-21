@@ -16,8 +16,10 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, STORE_DIR } from './config.js'
-import Database from 'better-sqlite3'
-import { getApiTokenRowByHash, getDb, insertApiToken, latestActiveDashboardTokenAt, listActiveApiTokensByName, rotateApiToken, revokeApiToken } from './db.js'
+import {
+  archiveDashboardTokenCreatedAt, getApiTokenRowByHash, latestActiveDashboardTokenAt, listActiveApiTokensByName,
+  replaceActiveApiToken, rotateSharedDashboardToken,
+} from './db.js'
 import { readEnvFile } from './env.js'
 import { atomicWriteFileSync } from './web/atomic-write.js'
 import { agentConfigRoot } from './web/agent-config.js'
@@ -91,17 +93,9 @@ function issue(spec: Spec, opts: { rotate?: boolean; now?: number }): IssueResul
   atomicWriteFileSync(spec.path, `${raw}\n`, { mode: 0o600 })
   const hash = sha256(raw)
 
-  const row = getDb().transaction(() => {
-    if (current) {
-      const next = rotateApiToken(current, hash, now, null)
-      for (const stale of active) if (stale.id !== current.id) revokeApiToken(stale.id, now)
-      return next
-    }
-    // The file was missing or held nothing active: whatever was active under this name is unreachable
-    // now (nobody holds its secret), so it goes before the replacement comes.
-    for (const stale of active) revokeApiToken(stale.id, now)
-    return insertApiToken({ tokenHash: hash, name: spec.name, role: spec.role, tenantId: 'default', createdAt: now, expiresAt: null, agentId: spec.agentId })
-  })()
+  // One transaction in the db layer: rotate the matching row (or, when the file held nothing active, revoke
+  // what was active under the name, which nobody can reach any more) and mint the replacement.
+  const row = replaceActiveApiToken({ current, active, tokenHash: hash, name: spec.name, role: spec.role, agentId: spec.agentId, now })
   return { subject: spec.subject, role: spec.role, status: current ? 'rotated' : 'issued', path: spec.path, tokenId: row.id }
 }
 
@@ -153,12 +147,7 @@ export function rotateSharedToken(opts: { now?: number } = {}): RotateSharedResu
   const hash = sha256(raw)
 
   const active = listActiveApiTokensByName('dashboard', now)
-  const row = getDb().transaction(() => {
-    const [first, ...others] = active
-    for (const stale of others) revokeApiToken(stale.id, now)
-    if (first) return rotateApiToken(first, hash, now, null)
-    return insertApiToken({ tokenHash: hash, name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: now, expiresAt: null, agentId: null })
-  })()
+  const row = rotateSharedDashboardToken(active, hash, now)
   return { status: active.length > 0 ? 'rotated' : 'issued', path, tokenId: row.id }
 }
 
@@ -174,18 +163,13 @@ export type ArchiveSharedAge = 'predates' | 'current' | 'unknown'
  * live database file.
  */
 export function archiveSharedTokenAge(archiveDbPath: string): ArchiveSharedAge {
-  let archive: Database.Database | undefined
   try {
-    archive = new Database(archiveDbPath, { fileMustExist: true })
-    const row = archive.prepare("SELECT MAX(created_at) AS t FROM api_tokens WHERE name = 'dashboard' AND revoked_at IS NULL").get() as { t: number | null }
-    const archived = row.t ?? 0
+    const archived = archiveDashboardTokenCreatedAt(archiveDbPath) ?? 0
     const live = latestActiveDashboardTokenAt()
     if (archived <= 0 || live <= 0) return 'unknown'
     return live > archived ? 'predates' : 'current'
   } catch {
     return 'unknown'
-  } finally {
-    archive?.close()
   }
 }
 
