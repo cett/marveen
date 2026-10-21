@@ -66,15 +66,17 @@ export function adoptChannelCredential(input: {
   tenantId?: string
 }): void {
   const tenantId = input.tenantId ?? DEFAULT_TENANT
+  // One timestamp for the list and the baseline, passed in as a parameter so the SQL stays portable.
+  const adoptedAt = Math.floor(Date.now() / 1000)
   db.transaction(() => {
     db.prepare('DELETE FROM channel_allowed_chats WHERE tenant_id = ? AND agent_id = ? AND provider = ?').run(tenantId, input.agentId, input.provider)
     const insert = db.prepare(
-      'INSERT INTO channel_allowed_chats (agent_id, provider, chat_id, position, adopted_by, adopted_at, tenant_id) VALUES (?, ?, ?, ?, ?, unixepoch(), ?)',
+      'INSERT INTO channel_allowed_chats (agent_id, provider, chat_id, position, adopted_by, adopted_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
     )
-    input.chatIds.forEach((chatId, i) => insert.run(input.agentId, input.provider, chatId, i, input.adoptedBy, tenantId))
+    input.chatIds.forEach((chatId, i) => insert.run(input.agentId, input.provider, chatId, i, input.adoptedBy, adoptedAt, tenantId))
     db.prepare(`
       INSERT INTO channel_credential_baseline (agent_id, provider, token_sha256, allow_sha256, adopted_by, adopted_at, last_checked_at, drift_state, drift_since, tenant_id)
-      VALUES (?, ?, ?, ?, ?, unixepoch(), NULL, 'ok', NULL, ?)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, 'ok', NULL, ?)
       ON CONFLICT(tenant_id, agent_id, provider) DO UPDATE SET
         token_sha256    = excluded.token_sha256,
         allow_sha256    = excluded.allow_sha256,
@@ -83,7 +85,7 @@ export function adoptChannelCredential(input: {
         last_checked_at = NULL,
         drift_state     = 'ok',
         drift_since     = NULL
-    `).run(input.agentId, input.provider, input.tokenSha256, input.allowSha256, input.adoptedBy, tenantId)
+    `).run(input.agentId, input.provider, input.tokenSha256, input.allowSha256, input.adoptedBy, adoptedAt, tenantId)
   })()
 }
 
