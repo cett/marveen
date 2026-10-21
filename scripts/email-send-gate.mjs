@@ -502,13 +502,15 @@ const RECIPIENT_FLAG = /^--to?(=|$)/
 const UNDECIDABLE_PATH = /[*?[{$]/
 // CPython reads a cluster of short options left to right (`-uX utf8`, `-um send`, `-msend`,
 // `-uc "code"`): the first of c, m, X or W takes the rest of the token as its value, or the next
-// token when nothing is left. null when the token is not a cluster; opt is null when the cluster
-// holds none of the four (`-u`, `-OB`).
-const PY_CLUSTER = /^-[A-Za-z]+$/
+// token when nothing is left, WHATEVER characters it holds (`-mpkg.send`, `-c"import x; ..."`). null
+// when the token is not a cluster; opt is null when the letters before the first non-letter hold
+// none of the four (`-u`, `-OB`).
+const PY_CLUSTER = /^-[A-Za-z]/
 function pythonCluster(t) {
   if (!PY_CLUSTER.test(t)) return null
   for (let j = 1; j < t.length; j++) {
     if ('cmXW'.includes(t[j])) return { opt: t[j], value: t.slice(j + 1) }
+    if (!/[A-Za-z]/.test(t[j])) break
   }
   return { opt: null, value: '' }
 }

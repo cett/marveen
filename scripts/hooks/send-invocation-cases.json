@@ -1150,6 +1150,36 @@
       "name": "cluster control: -uc with harmless code",
       "cmd": "python3 -uc \"print(1)\"",
       "expected": false
+    },
+    {
+      "name": "cluster: -c with the code string glued to the option",
+      "cmd": "python3 -c\"import subprocess; subprocess.run(['scripts/support-mail/send.py', '--to', 'a@example.com'])\"",
+      "expected": true
+    },
+    {
+      "name": "cluster: -uc with the code string glued to the cluster",
+      "cmd": "python3 -uc\"import subprocess; subprocess.run(['scripts/support-mail/send.py', '--to', 'a@example.com'])\"",
+      "expected": true
+    },
+    {
+      "name": "cluster: -m with a dotted module glued to the option",
+      "cmd": "python3 -mpkg.send --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "cluster: -um with a dotted module glued to the cluster",
+      "cmd": "python3 -umpkg.send --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "cluster control: -c with glued harmless code",
+      "cmd": "python3 -c\"print(1); print(2)\"",
+      "expected": false
+    },
+    {
+      "name": "cluster control: a dotted module that does not end in send",
+      "cmd": "python3 -mpkg.sender --to a@example.com",
+      "expected": false
     }
   ]
 }

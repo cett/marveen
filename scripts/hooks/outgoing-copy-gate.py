@@ -530,16 +530,20 @@ _UNDECIDABLE_PATH = re.compile(r"[*?[{$]")
 # CPython reads a cluster of short options left to right (`-uX utf8`, `-um send`, `-msend`,
 # `-uc "code"`): the first of c, m, X or W takes the rest of the token as its value, or the next
 # token when nothing is left. Mirrored in email-send-gate.mjs (pythonCluster); keep the two identical.
-_PY_CLUSTER = re.compile(r"^-[A-Za-z]+$")
+_PY_CLUSTER = re.compile(r"^-[A-Za-z]")
 
 
 def _python_cluster(t):
-    """(opt, value) for a short-option cluster; opt is None when it holds none of c, m, X, W. None when t is no cluster."""
+    """(opt, value) for a short-option cluster; the value is the rest of the token WHATEVER characters it holds
+    (`-mpkg.send`, `-c"import x; ..."`). opt is None when the letters before the first non-letter hold none of
+    c, m, X, W. None when t is no cluster."""
     if not _PY_CLUSTER.match(t):
         return None
     for j in range(1, len(t)):
         if t[j] in "cmXW":
             return t[j], t[j + 1:]
+        if not t[j].isascii() or not t[j].isalpha():
+            break
     return None, ""
 
 
