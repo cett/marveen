@@ -36,6 +36,25 @@ describe('auth path: database failure handling per lane', () => {
   })
 })
 
+// The SSE pane-stream lane (?token=) has its own lookups after the header lanes: the check that the in-memory
+// dashboard token was revoked, and the device-key lookup. A failure in either must reject too; the first would
+// otherwise read as "not revoked" and let the file token through.
+describe('SSE ?token= lane: a database failure rejects', () => {
+  const FILE_TOKEN = 'f'.repeat(64)
+  const sse = (q: string, dbLookups: boolean) =>
+    resolveAuth(mkReq({}), new URL(`http://127.0.0.1:3420/api/agents/agent-a/pane/stream?token=${q}`), '/api/agents/agent-a/pane/stream', 'GET', FILE_TOKEN, dbLookups)
+
+  it('a failing in-memory-revoked check does not let the file token through', async () => {
+    vi.spyOn(dbx, 'get').mockRejectedValue(new Error('database unavailable'))
+    await expect(sse(FILE_TOKEN, true)).rejects.toThrow('database unavailable')
+  })
+
+  it('a failing device-key lookup rejects (the api_tokens lanes are off)', async () => {
+    vi.spyOn(dbx, 'get').mockRejectedValue(new Error('database unavailable'))
+    await expect(sse('mvdk_not-a-real-key', false)).rejects.toThrow('database unavailable')
+  })
+})
+
 describe('device-key lookup that keeps racing a removal', () => {
   // Every read is overtaken by a removal (5 of them). After 3 attempts the lookup must deny (fail closed), not
   // trust a row it read across a removal; without the cap it would loop until the removals stop and then accept.
