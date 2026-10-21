@@ -309,7 +309,7 @@ describe('GitHub repo connectors', () => {
   })
 
   it('POST stores env vars in the vault and installs with the resulting mapping', async () => {
-    vi.mocked(installGitHubRepo).mockResolvedValue({
+    vi.mocked(installGitHubRepo).mockReturnValue({
       repo: { url: 'https://github.com/owner/repo', name: 'owner--repo', path: '/tmp/repo', installedAt: '2026-09-12T00:00:00Z' },
       requiredEnvVars: ['API_KEY'],
     })
@@ -327,7 +327,7 @@ describe('GitHub repo connectors', () => {
   })
 
   it('POST installs without an env mapping when no env vars are given', async () => {
-    vi.mocked(installGitHubRepo).mockResolvedValue({
+    vi.mocked(installGitHubRepo).mockReturnValue({
       repo: { url: 'https://github.com/owner/repo', name: 'owner--repo', path: '/tmp/repo', installedAt: '2026-09-12T00:00:00Z' },
       requiredEnvVars: [],
     })

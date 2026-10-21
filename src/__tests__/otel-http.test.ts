@@ -290,7 +290,7 @@ describe('instrumentHttpRequest on a real HTTP server', () => {
   it('is what the dashboard server calls first in its handler', async () => {
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(new URL('../web.ts', import.meta.url), 'utf8')
-    const handler = src.slice(src.indexOf('http.createServer(async (req, res) => {'))
+    const handler = src.slice(src.indexOf('const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {'))
     expect(handler.slice(0, 900)).toContain('instrumentHttpRequest(req, res, method, path, httpTrust)')
     // the caller counts as authenticated once resolveAuth found a principal, not before
     expect(src).toMatch(/resolveAuth\(req, url, path, method, DASHBOARD_TOKEN, true\)\n\s+httpTrust\.authenticated = auth\.kind !== 'none'/)

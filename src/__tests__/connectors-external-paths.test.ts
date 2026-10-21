@@ -72,7 +72,7 @@ describe('connectors token-to-status mapping', () => {
   })
 
   it('POST /api/connectors/github-repos: conflict -> 409', async () => {
-    vi.mocked(installGitHubRepo).mockResolvedValue({ error: 'conflict', hint: 'Already installed: owner--repo' })
+    vi.mocked(installGitHubRepo).mockReturnValue({ error: 'conflict', hint: 'Already installed: owner--repo' })
     const { ctx, out } = makeCtx('POST', '/api/connectors/github-repos', { url: 'https://github.com/owner/repo' })
     await tryHandleConnectors(ctx)
     expect(out.status).toBe(409)
@@ -80,7 +80,7 @@ describe('connectors token-to-status mapping', () => {
   })
 
   it('POST /api/connectors/github-repos: invalid_value -> 400', async () => {
-    vi.mocked(installGitHubRepo).mockResolvedValue({ error: 'invalid_value', field: 'url', hint: 'Invalid GitHub URL' })
+    vi.mocked(installGitHubRepo).mockReturnValue({ error: 'invalid_value', field: 'url', hint: 'Invalid GitHub URL' })
     const { ctx, out } = makeCtx('POST', '/api/connectors/github-repos', { url: 'https://github.com/owner/repo' })
     await tryHandleConnectors(ctx)
     expect(out.status).toBe(400)

@@ -116,7 +116,7 @@ async function parseBinaryInWorker(filePath: string, ext: string): Promise<strin
       resolve(result)
     }
 
-    const timer = setTimeout(() => { worker.terminate(); settle(null) }, 10_000)
+    const timer = setTimeout(() => { void worker.terminate().catch(() => {}); settle(null) }, 10_000)
 
     worker.on('message', (msg: { ok: boolean; text?: string }) => {
       clearTimeout(timer)
@@ -343,10 +343,10 @@ async function crawlGdriveSource(
 // IT/data-protection policy permits copying content into a personal AI system.
 // The system does not manage the classification level of the source material.
 // Required Microsoft Graph scope: Sites.Read.All (read-only minimum).
-async function crawlSharePointSource(
+function crawlSharePointSource(
   source: ImportSource,
   _totalSizeBefore: number,
-): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number; dirsSkippedError: number }> {
+): { added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number; dirsSkippedError: number } {
   const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0, dirsSkippedError: 0 }
   // TODO: wire to the Microsoft Graph MCP when available.
   logger.warn({ sourceId: source.id }, 'SharePoint MCP connector: not yet wired to live session; skipping')
@@ -574,7 +574,7 @@ export async function crawlSource(sourceId: string): Promise<void> {
     } else if (source.type === 'gdrive') {
       counts = await crawlGdriveSource(source, totalSizeBefore)
     } else if (source.type === 'sharepoint') {
-      counts = await crawlSharePointSource(source, totalSizeBefore)
+      counts = crawlSharePointSource(source, totalSizeBefore)
     } else if (source.type === 'confluence') {
       counts = await crawlConfluenceSource(source, totalSizeBefore)
     } else {
@@ -622,7 +622,7 @@ export async function crawlSource(sourceId: string): Promise<void> {
 }
 
 // ── Scheduler: check all enabled sources and run overdue ones ─────────────────
-export async function runDueImports(): Promise<void> {
+export function runDueImports(): void {
   const sources = getEnabledSources()
   const now = Math.floor(Date.now() / 1000)
 

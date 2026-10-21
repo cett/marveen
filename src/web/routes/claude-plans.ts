@@ -189,7 +189,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     // agent_active_plans row via deactivatePlanForAgent, see
     // agent-process-spawn.ts) -- so the mirror activation MUST happen after
     // the restart succeeds, not before, or it would be wiped immediately.
-    const result = await restartAgentProcess(agentId)
+    const result = restartAgentProcess(agentId)
     if (!result.ok) {
       json(res, { error: 'internal_error', hint: result.error || `Restart failed for agent ${agentId}` }, 500)
       return true

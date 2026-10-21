@@ -522,7 +522,7 @@ export function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): st
  * allow path and the persistent-block force-restart escalation below.
  */
 async function sendClear(session: string): Promise<void> {
-  await withSessionSendLock(session, null, 'deliver', async () => {
+  await withSessionSendLock(session, null, 'deliver', () => {
     execFileSync(TMUX, ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
     execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
   })
@@ -738,17 +738,21 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 const sweepTimers = new Map<string, NodeJS.Timeout>()
 
 function scheduleSweep(name: string, delayMs: number): void {
-  sweepTimers.set(name, setTimeout(async () => {
-    const cfg = readGateConfig(name)
-    if (!cfg.enabled) {
-      sweepTimers.delete(name)
-      return
-    }
-    try { await checkAgent(name, Date.now()) }
-    catch (err) { logger.debug({ err, agent: name }, 'context-restart-gate: sweep error') }
-    // Re-schedule using the agent's current retryIntervalMs (may have changed).
-    scheduleSweep(name, readGateConfig(name).retryIntervalMs)
+  sweepTimers.set(name, setTimeout(() => {
+    void runSweep(name).catch((err) => logger.error({ err, agent: name }, 'context-restart-gate: sweep tick failed'))
   }, delayMs))
+}
+
+async function runSweep(name: string): Promise<void> {
+  const cfg = readGateConfig(name)
+  if (!cfg.enabled) {
+    sweepTimers.delete(name)
+    return
+  }
+  try { await checkAgent(name, Date.now()) }
+  catch (err) { logger.debug({ err, agent: name }, 'context-restart-gate: sweep error') }
+  // Re-schedule using the agent's current retryIntervalMs (may have changed).
+  scheduleSweep(name, readGateConfig(name).retryIntervalMs)
 }
 
 export function startContextRestartGateRunner(): void {
