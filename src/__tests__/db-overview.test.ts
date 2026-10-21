@@ -28,7 +28,7 @@ beforeEach(() => {
   db.prepare("INSERT INTO tenants (id, display_name, created_at) VALUES ('acme', 'Acme', 1)").run()
 })
 
-function addMemory(content: string, category: string, createdAt: number, tenantId: string, agentId = 'zack'): void {
+function addMemory(content: string, category: string, createdAt: number, tenantId: string, agentId = 'agent-a'): void {
   db.prepare(
     `INSERT INTO memories (chat_id, content, sector, created_at, accessed_at, agent_id, category, tenant_id)
      VALUES ('c', ?, 'semantic', ?, ?, ?, ?, ?)`
@@ -44,20 +44,20 @@ function addUsage(agent: string, ts: number, input: number, output: number, tena
 function addApproval(id: string, status: string, requestedAt: number, tenantId: string): void {
   db.prepare(
     `INSERT INTO approvals (id, agent_id, category, action_description, status, requested_at, tenant_id)
-     VALUES (?, 'zack', 'email_send', ?, ?, ?, ?)`
+     VALUES (?, 'agent-a', 'email_send', ?, ?, ?, ?)`
   ).run(id, `act ${id}`, status, requestedAt, tenantId)
 }
 
 function addMessage(content: string, status: string, createdAt: number, tenantId: string): void {
   db.prepare(
     'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run('zack', 'jarvis', content, status, createdAt, tenantId)
+  ).run('agent-a', 'agent-b', content, status, createdAt, tenantId)
 }
 
 function addSpan(spanId: string, status: string, startMs: number, endMs: number | null, operation: string, attributes: string | null): void {
   db.prepare(
     'INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, end_ms, status, attributes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run('t1', spanId, 'zack', operation, startMs, endMs, status, attributes)
+  ).run('t1', spanId, 'agent-a', operation, startMs, endMs, status, attributes)
 }
 
 describe('the counts', () => {
@@ -85,7 +85,7 @@ describe('the counts', () => {
   })
 
   it('artifacts: fleet-wide count and tenant narrowing', async () => {
-    const ins = db.prepare("INSERT INTO artifacts (agent_id, title, kind, content, tenant_id) VALUES ('zack', ?, 'text', 'x', ?)")
+    const ins = db.prepare("INSERT INTO artifacts (agent_id, title, kind, content, tenant_id) VALUES ('agent-a', ?, 'text', 'x', ?)")
     ins.run('one', 'default')
     ins.run('two', 'acme')
     ins.run('three', 'acme')
@@ -136,18 +136,18 @@ describe('the counts', () => {
 describe('token usage', () => {
   it('last active per agent is the newest timestamp, not tenant scoped', async () => {
     expect(await listOverviewLastActive()).toEqual([])
-    addUsage('zack', 100, 1, 1, 'default')
-    addUsage('zack', 300, 1, 1, 'default')
-    addUsage('jarvis', 200, 1, 1, 'acme')
+    addUsage('agent-a', 100, 1, 1, 'default')
+    addUsage('agent-a', 300, 1, 1, 'default')
+    addUsage('agent-b', 200, 1, 1, 'acme')
     const rows = (await listOverviewLastActive()).sort((x, y) => x.agent.localeCompare(y.agent))
-    expect(rows).toEqual([{ agent: 'jarvis', last_active: 200 }, { agent: 'zack', last_active: 300 }])
+    expect(rows).toEqual([{ agent: 'agent-a', last_active: 300 }, { agent: 'agent-b', last_active: 200 }])
   })
 
   it('sum since: input plus output from the cut-off on, tenant narrowing', async () => {
     expect(await sumOverviewTokensSince(0, null)).toBe(0)
-    addUsage('zack', 100, 10, 5, 'default')
-    addUsage('zack', 200, 20, 7, 'acme')
-    addUsage('zack', 300, 1, 1, 'acme')
+    addUsage('agent-a', 100, 10, 5, 'default')
+    addUsage('agent-a', 200, 20, 7, 'acme')
+    addUsage('agent-a', 300, 1, 1, 'acme')
     expect(await sumOverviewTokensSince(0, null)).toBe(44)
     expect(await sumOverviewTokensSince(200, null)).toBe(29)
     expect(await sumOverviewTokensSince(0, 'acme')).toBe(29)
@@ -171,7 +171,7 @@ describe('error span list', () => {
     const all = await listOverviewErrorSpansSince(0, 10)
     expect(all.map(s => s.span_id)).toEqual(['n1', 'b1', 'c1', 'h1'])
     expect(all.find(s => s.span_id === 'h1')).toEqual({
-      trace_id: 't1', span_id: 'h1', agent_id: 'zack', operation: 'http.server', status: 'error',
+      trace_id: 't1', span_id: 'h1', agent_id: 'agent-a', operation: 'http.server', status: 'error',
       start_ms: 1000, duration_ms: 250, detail: 'GET /api/x 500',
     })
     expect(all.find(s => s.span_id === 'c1')).toMatchObject({ status: 'timeout', duration_ms: null, detail: 'nightly' })
@@ -191,11 +191,11 @@ describe('the recent lists', () => {
 
   it('memories: newest first, from the cut-off, tenant narrowing, capped at 20', async () => {
     addMemory('old', 'hot', 5, 'default')
-    addMemory('mid', 'hot', 20, 'acme', 'jarvis')
+    addMemory('mid', 'hot', 20, 'acme', 'agent-b')
     addMemory('new', 'hot', 30, 'default')
     expect(await listOverviewRecentMemories(10, null)).toEqual([
-      { content: 'new', created_at: 30, agent_id: 'zack' },
-      { content: 'mid', created_at: 20, agent_id: 'jarvis' },
+      { content: 'new', created_at: 30, agent_id: 'agent-a' },
+      { content: 'mid', created_at: 20, agent_id: 'agent-b' },
     ])
     expect((await listOverviewRecentMemories(10, 'acme')).map(m => m.content)).toEqual(['mid'])
     for (let i = 0; i < 25; i++) addMemory(`bulk ${i}`, 'hot', 100 + i, 'default')
@@ -207,8 +207,8 @@ describe('the recent lists', () => {
     addMessage('mid', 'done', 20, 'acme')
     addMessage('new', 'pending', 30, 'default')
     expect(await listOverviewRecentMessages(10, null)).toEqual([
-      { from_agent: 'zack', to_agent: 'jarvis', content: 'new', created_at: 30 },
-      { from_agent: 'zack', to_agent: 'jarvis', content: 'mid', created_at: 20 },
+      { from_agent: 'agent-a', to_agent: 'agent-b', content: 'new', created_at: 30 },
+      { from_agent: 'agent-a', to_agent: 'agent-b', content: 'mid', created_at: 20 },
     ])
     expect((await listOverviewRecentMessages(10, 'acme')).map(m => m.content)).toEqual(['mid'])
     for (let i = 0; i < 20; i++) addMessage(`bulk ${i}`, 'done', 100 + i, 'default')
