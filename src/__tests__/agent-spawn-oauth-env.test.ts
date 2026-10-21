@@ -23,7 +23,8 @@ const h = vi.hoisted(() => ({
   commands: [] as string[],
 }))
 
-vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } }))
+const logWarn = vi.hoisted(() => vi.fn())
+vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: logWarn, debug: vi.fn(), error: vi.fn() } }))
 vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'main-x', SUBAGENT_INBOX_TEE: false }))
 vi.mock('../pane-state.js', () => ({ detectPaneState: vi.fn() }))
 vi.mock('../db.js', () => ({ deactivatePlanForAgent: vi.fn() }))
@@ -192,6 +193,30 @@ describe('an authMode api agent never gets the fleet OAuth token', () => {
     expect(cmd).toContain('export ANTHROPIC_API_KEY="fixture-api-key" && ')
     expect(cmd).toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN &&')
     expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
+  })
+
+  it('without a vault key it starts with no credential, fail closed, and warns with the agent name', () => {
+    h.authMode = 'api'
+    h.apiKey = ''
+    logWarn.mockClear()
+    const cmd = launch()
+    expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
+    expect(cmd).not.toContain('ANTHROPIC_API_KEY')
+    expect(cmd).toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN &&')
+    const warned = logWarn.mock.calls.filter((c) => String(c[1]).includes('no API key in the vault'))
+    expect(warned).toHaveLength(1)
+    expect(warned[0][0]).toEqual({ name: 'agent-a' })
+  })
+
+  it('with a vault key, or for another authMode, there is no such warning', () => {
+    logWarn.mockClear()
+    h.authMode = 'api'
+    h.apiKey = 'fixture-api-key'
+    launch()
+    h.authMode = 'shared'
+    h.apiKey = ''
+    launch()
+    expect(logWarn.mock.calls.filter((c) => String(c[1]).includes('no API key in the vault'))).toEqual([])
   })
 
   it('the api rule needs a Claude model: a non-Claude agent marked api is launched as any other', () => {

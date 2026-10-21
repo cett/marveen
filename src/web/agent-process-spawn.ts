@@ -212,6 +212,9 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
         apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
+      } else {
+        // Fail closed on purpose: no fleet-token fallback for an own-key agent, so it starts without a credential.
+        logger.warn({ name }, 'authMode api agent has no API key in the vault and gets no fleet token: it starts without a credential (logged out)')
       }
     }
     // Apply security profile: write allow/deny list into settings.json, and
