@@ -43,3 +43,22 @@ export async function safeWidget(id: number): Promise<Widget | undefined> {
     return undefined
   }
 }
+
+export async function getWidgetQa(id: number): Promise<{ id: number } | undefined> {
+  return dbx.get<{ id: number }>('SELECT id FROM widgets WHERE id = ?', id)
+}
+
+// kept by hand: a stored statement next to a supported chain blocks the whole function
+export function mixedWidgets(names: string[]): number {
+  const stmt = db.prepare('INSERT INTO widgets (name) VALUES (?)')
+  const before = db.prepare('SELECT COUNT(*) AS c FROM widgets').get() as { c: number }
+  for (const name of names) stmt.run(name)
+  return before.c
+}
+
+// kept by hand: better-sqlite3 transactions are synchronous, an async body is not a shape the codemod knows
+export function asyncTx(): void {
+  db.transaction(async () => {
+    db.prepare('DELETE FROM widgets').run()
+  })()
+}

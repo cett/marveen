@@ -173,7 +173,7 @@ function convertTarget(sf) {
   for (const t of txs) {
     const f = t.tx.getArguments()[0]
     const holder = nearestFn(t.outer)
-    if (!f || !Node.isArrowFunction(f) || f.getParameters().length > 0 || f.getReturnTypeNode() || t.outer.getArguments().length > 0 || (t.mode === 'exclusive')) {
+    if (!f || !Node.isArrowFunction(f) || isAsyncFn(f) || f.getParameters().length > 0 || f.getReturnTypeNode() || t.outer.getArguments().length > 0 || (t.mode === 'exclusive')) {
       note('unsupported-transaction-shape', t.outer)
       if (holder) blocked.set(holder, 'unsupported-transaction-shape')
       continue
@@ -234,7 +234,6 @@ function convertTarget(sf) {
     const paren = needsParens(e)
     edit(file, e.getStart(), t.fn.getStart(), `${paren ? openParen(e) : ''}${plainReturn(e) ? '' : 'await '}dbx.tx(`)
     const arrowToken = t.fn.getFirstChildByKindOrThrow(SyntaxKind.EqualsGreaterThanToken)
-    if (isAsyncFn(t.fn)) { note('transaction-callback-already-async', t.fn); continue }
     edit(file, t.fn.getStart(), arrowToken.getEnd(), 'async (tx) =>')
     edit(file, t.fn.getEnd(), e.getEnd(), `${t.mode === 'immediate' ? ", { mode: 'immediate' }" : ''})${paren ? ')' : ''}`)
     rewrittenDb.add(t.tx.getExpression().getExpression())
