@@ -107,6 +107,6 @@ export function txWarnMs(): number {
 /** The first stack line outside the facade: where the transaction was opened. */
 export function captureOrigin(): string {
   const lines = (new Error().stack ?? '').split('\n').slice(1)
-  const outside = lines.find((l) => !/db[\\/](facade|tx-lock)\./.test(l) && !/node:internal/.test(l))
+  const outside = lines.find((l) => !/db[\\/](facade|tx-lock|context)\./.test(l) && !/node:internal/.test(l))
   return (outside ?? lines[0] ?? 'unknown').trim()
 }

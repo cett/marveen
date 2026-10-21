@@ -13,11 +13,13 @@
 //  - one FIFO lock per connection (tx-lock.ts): `dbx.tx()` holds it from BEGIN to COMMIT/ROLLBACK, a statement
 //    outside a transaction waits while one is open, a statement inside the transaction body does not.
 //    A transaction body holds the lock: only db calls in it, no LLM / HTTP / file I/O / sleep,
+//  - every call reads the db context (context.ts, runAs): a call without one is counted and warned about, not refused,
 //  - the body is synchronous better-sqlite3 wrapped in a Promise. The statement is prepared per call, as the
 //    callers do today; a statement cache waits for a measurement.
 
 import { db } from './connection.js'
 import { logger } from '../logger.js'
+import { noteDbCall } from './context.js'
 import { captureOrigin, currentTxScope, lockFor, newTxScope, txStore, txWarnMs, type TxScope } from './tx-lock.js'
 
 export interface RunResult {
@@ -79,6 +81,7 @@ export const sqliteOps: SqlOps = {
 // running INSIDE a transaction (the transaction scope travels with it) goes straight through. With no
 // transaction open the statement runs at once: it is synchronous, so nothing can interleave.
 function guarded<T>(op: () => Promise<T>): Promise<T> {
+  noteDbCall()
   if (currentTxScope()) return op()
   const lock = lockFor(db)
   if (!lock.busy) return op()
@@ -97,8 +100,10 @@ const lockedOps: SqlOps = {
 // The handle a body receives. It refuses to work once its transaction has ended, so a stray reference kept
 // past the commit cannot write outside the lock.
 function makeTx(scope: TxScope): Tx {
-  const live = <T>(op: () => Promise<T>): Promise<T> =>
-    scope.active ? op() : Promise.reject(new Error('dbx: the transaction has already finished'))
+  const live = <T>(op: () => Promise<T>): Promise<T> => {
+    noteDbCall()
+    return scope.active ? op() : Promise.reject(new Error('dbx: the transaction has already finished'))
+  }
   return {
     get: <T = unknown>(sql: string, ...params: unknown[]) => live(() => sqliteOps.get<T>(sql, ...params)),
     all: <T = unknown>(sql: string, ...params: unknown[]) => live(() => sqliteOps.all<T>(sql, ...params)),
@@ -111,6 +116,7 @@ function makeTx(scope: TxScope): Tx {
 // Open a transaction: take the connection lock, BEGIN, run the body with the scope attached, COMMIT, or
 // ROLLBACK when the body throws or rejects. The lock is always given back (finally).
 async function runTx<T>(fn: (tx: Tx) => Promise<T>, opts: TxOptions): Promise<T> {
+  noteDbCall()
   const parent = currentTxScope()
   if (parent) return runNested(parent, fn)
 
