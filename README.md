@@ -108,6 +108,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 - **Kódszerkezet:** a frontend ES-modulokból áll lazy-loaddal (becsülten 85-90%-kal kevesebb token-terhelés egy módosításhoz), a backend route-modulokból és egy dispatcherből; a skillek hordozható placeholderekkel hivatkoznak az ágensekre és a tulajdonosra. Az SQLite-beállítások kis memóriaigényűek, a kapcsolatkezelés versenyhelyzet-mentes.
 - **CI és minőség:** checksum-ellenőrzött, tranzakciós migráció-futtató; Node 22 és Python 3.12 teljes tesztkészlet, ratchetelt coverage-gate, frontend smoke-teszt, commit-üzenet ellenőrzés a belső azonosítók ellen.
+- **Aszinkron lint (jelentés módban):** típusérzékeny ESLint-szabályok (lebegő és rosszul használt Promise, `await` nem Promise-on, felesleges `async`) a `tools/eslint` önálló eszközkészletből futnak TypeScript 6.0-val, mert a typescript-eslint még nem támogatja a projekt TypeScript 7 fordítóját. A találatok figyelmeztetések, a CI-lépés nem buktat. A `tools/eslint` megszűnik, amint a typescript-eslint támogatja a TypeScript 7-et.
 - **Telepítés és dokumentáció:** idempotens, újraindítható telepítők (macOS, Linux, Windows), kétnyelvű felhasználói és üzemeltetési kézikönyv.
 
 ## A fork létrehozása óta átvett - cherry-pick - javítások:

@@ -34,6 +34,11 @@ jobs:
       - name: Security audit
         run: npm audit --audit-level=high
 
+      - name: Security audit (tools/eslint lint toolchain, advisory)
+        # The isolated lint toolchain has its own lock, so the root audit does not see it. A high advisory
+        # there is shown as a warning annotation and does not fail the build or block the (report-mode) lint.
+        run: npm audit --prefix tools/eslint --audit-level=high || echo "::warning title=tools/eslint audit::npm audit found high advisories in the lint toolchain lock"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -266,6 +271,25 @@ jobs:
         # only in the files listed in scripts/gmail-send-route-ratchet.py ALLOWED (the
         # approval-gated sender, the self-only digest sender, the gate's recognition).
         run: python3 scripts/gmail-send-route-ratchet.py
+
+      - name: Async lint self-test (fixture, FAILS the build)
+        # The lint of the project tree below only reports, so a type the linter's TypeScript 6.0 cannot
+        # resolve would silently report nothing while the TypeScript 7 build stays green. This step lints
+        # tools/eslint/fixture/cases.ts and fails unless it yields exactly the findings marked in the file.
+        run: |
+          npm ci --prefix tools/eslint --ignore-scripts
+          node tools/eslint/check-fixture.mjs
+
+      - name: Async lint report (no-floating-promises, no-misused-promises, await-thenable, require-await)
+        # REPORT MODE (1017 Phase 1): the findings are warnings and this step never fails the build
+        # (continue-on-error); it prints the count per rule and the top files into the log. The rules
+        # need the classic TypeScript API, which TypeScript 7 does not ship, so they run from the isolated
+        # tools/eslint toolchain (TypeScript 6.0 for the linter only). See tools/eslint/eslint.config.mjs.
+        continue-on-error: true
+        run: |
+          npm ci --prefix tools/eslint --ignore-scripts
+          tools/eslint/node_modules/.bin/eslint -c tools/eslint/eslint.config.mjs -f json -o eslint-async.json src || true
+          node tools/eslint/summarize.mjs eslint-async.json 15
 
       - name: Shell tests
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
