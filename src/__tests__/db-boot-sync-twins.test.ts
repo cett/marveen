@@ -21,6 +21,9 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   importAgentStateFromFile: ['db/agent-state.ts', 'db/index.ts'],
   getAgentStateSync: ['db/agent-state.ts', 'db/index.ts'],
   setAgentStateSync: ['db/agent-state.ts', 'db/index.ts'],
+  // startWebServer enrolls the file token before it listens and cannot await: the bootstrap helper it calls is
+  // the one caller, outside db/index.ts.
+  enrollDashboardApiTokenSync: ['db/api-tokens.ts', 'web/token-bootstrap.ts'],
 }
 
 // Several files cross-reference a twin by name in a doc comment, which is not a call.
@@ -30,6 +33,16 @@ const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, 
 function filesMentioning(twin: string, sources: ReadonlyMap<string, string>): string[] {
   const re = new RegExp(`\\b${twin}\\b`)
   return [...sources].filter(([, src]) => re.test(stripComments(src))).map(([rel]) => rel).sort()
+}
+
+/** The names declared right below a `// @boot-sync-twin` line in src/db/. */
+function taggedTwins(sources: ReadonlyMap<string, string>): string[] {
+  const out: string[] = []
+  for (const [rel, src] of sources) {
+    if (!rel.startsWith('db/')) continue
+    for (const m of src.matchAll(/\/\/ @boot-sync-twin\s*\n\s*export function (\w+)/g)) out.push(m[1]!)
+  }
+  return out.sort()
 }
 
 function readSources(dir: string, out: Map<string, string> = new Map()): Map<string, string> {
@@ -59,6 +72,13 @@ describe('boot-synchronous twins stay inside the boot chain', () => {
     expect(filesMentioning(twin, SOURCES)).toEqual([...allowed].sort())
   })
 
+  // The table is checked against an independent source: a twin carries a `// @boot-sync-twin` line above its
+  // declaration. Deleting a row (which would make a twin unguarded and fail nothing above) or adding a twin
+  // without a row both fail here.
+  it('the table lists exactly the functions tagged @boot-sync-twin', () => {
+    expect(taggedTwins(SOURCES)).toEqual(Object.keys(BOOT_SYNC_TWINS).sort())
+  })
+
   // Negative controls for the detector: without them a regex that matches nothing would pass every row above.
   describe('the detector', () => {
     const sources = new Map<string, string>([
@@ -78,6 +98,11 @@ describe('boot-synchronous twins stay inside the boot chain', () => {
 
     it('does not count a longer name that merely contains the twin name', () => {
       expect(filesMentioning('migrateCostBudgetsFromFile', sources)).not.toContain('web/lookalike.ts')
+    })
+
+    it('the tag finder reads the declaration under the tag and ignores an untagged function', () => {
+      const db = new Map([['db/x.ts', '// @boot-sync-twin\nexport function fooSync() {}\nexport function barSync() {}'], ['web/y.ts', '// @boot-sync-twin\nexport function ignored() {}']])
+      expect(taggedTwins(db)).toEqual(['fooSync'])
     })
 
     it('the sync pair is matched by exact name, so the async getAgentState is not a twin hit', () => {

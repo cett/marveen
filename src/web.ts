@@ -290,7 +290,7 @@ export function startWebServer(port = 3420): http.Server {
     // fleet curl call keeps working with users present or absent. requiresAuth()
     // decides whether a missing principal is a 401 (gated /api/* + fleet
     // manifest) or a public probe (auth status/login, avatars).
-    const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN, true)
+    const auth: AuthResult = await resolveAuth(req, url, path, method, DASHBOARD_TOKEN, true)
     httpTrust.authenticated = auth.kind !== 'none' // a traceparent is believed only from a caller with credentials
     if (requiresAuth(path, method) && auth.kind === 'none') {
       if (isFederationWireEndpoint(path, method)) {
@@ -298,7 +298,7 @@ export function startWebServer(port = 3420): http.Server {
         // brute-force surface -- make them visible (round-2 scoped-token gate).
         logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
       }
-      observeRefusedSharedToken(req, method, path) // shadow counter: a rotated-away shared token knocking; never throws
+      await observeRefusedSharedToken(req, method, path) // shadow counter: a rotated-away shared token knocking; never throws
       res.writeHead(401, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'unauthorized', hint: 'Bearer token required' }))
       return
@@ -606,16 +606,19 @@ export function startWebServer(port = 3420): http.Server {
   // Hourly sweep of expired browser-login sessions (7d idle / 30d absolute).
   // Runs regardless of WEB_ONLY -- it is a cheap indexed delete on the shared DB
   // and keeps auth_sessions from growing unboundedly on any instance.
-  const authSessionSweepInterval = setInterval(() => {
+  // The device-key sweep is asynchronous now, so the body is its own async function with its own try/catch:
+  // the timer callback stays synchronous (no floating Promise) and a failed sweep is still only a warning.
+  const sweepAuthState = async (): Promise<void> => {
     try {
       const swept = sweepExpiredSessions()
       if (swept > 0) logger.info({ swept }, 'Expired auth sessions swept')
-      const sweptKeys = sweepExpiredDeviceKeys()
+      const sweptKeys = await sweepExpiredDeviceKeys()
       if (sweptKeys > 0) logger.info({ swept: sweptKeys }, 'Expired device keys swept')
     } catch (err) {
       logger.warn({ err }, 'Auth session sweep failed')
     }
-  }, 60 * 60 * 1000)
+  }
+  const authSessionSweepInterval = setInterval(() => { void sweepAuthState() }, 60 * 60 * 1000)
 
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))

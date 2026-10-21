@@ -345,7 +345,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // The agent's own API token (agents/<name>/.agent-token, 0600). A failure does not undo the
     // agent: it still works on the shared token, and `npm run agent-tokens -- issue <name>` retries.
     try {
-      issueAgentToken(name)
+      await issueAgentToken(name)
     } catch (err) {
       logger.warn({ err, name }, 'agent token could not be issued; issue it with `npm run agent-tokens`')
     }
@@ -965,7 +965,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // agent immediately on next create -- unasked.
     removeDesiredAgent(name)
     // A deleted agent keeps no credential (its token file goes with the directory).
-    revokeApiTokensForAgent(name, Math.floor(Date.now() / 1000))
+    await revokeApiTokensForAgent(name, Math.floor(Date.now() / 1000))
     rmSync(dir, { recursive: true, force: true })
     // The server-side channel record (vault token, adopted chats) must not outlive the agent: a new
     // agent of the same name would otherwise inherit the old bot and its chat list.

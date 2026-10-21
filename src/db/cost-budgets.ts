@@ -90,6 +90,7 @@ export async function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[
 // later DB edit is never overwritten by a stale re-read, and a fresh
 // install with no file gets zero rows -- matching loadCostopsConfig()'s own
 // pre-migration default of an empty budgets array. Safe to call on every boot.
+// @boot-sync-twin
 export function migrateCostBudgetsFromFile(): number {
   const filePath = join(STORE_DIR, 'costops-config.json')
   if (!existsSync(filePath)) return 0

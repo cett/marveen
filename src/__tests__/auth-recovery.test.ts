@@ -91,16 +91,16 @@ beforeEach(() => {
 describe('securityReset', () => {
   it('revokes all device keys and sessions, keeps users, audits the counts', async () => {
     const u = createDashboardUser('op', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
-    const key = createDeviceKey('phone')
+    const key = await createDeviceKey('phone')
     const cookie = createSession({ userId: u.id, username: u.username })
-    expect(resolveDeviceKey(key.key)).not.toBeNull()
+    expect(await resolveDeviceKey(key.key)).not.toBeNull()
     expect(resolveSession(cookie)).not.toBeNull()
 
-    const r = securityReset('test')
+    const r = await securityReset('test')
     expect(r).toEqual({ deviceKeysRevoked: 1, sessionsCleared: 1 })
-    expect(resolveDeviceKey(key.key)).toBeNull()
+    expect(await resolveDeviceKey(key.key)).toBeNull()
     expect(resolveSession(cookie)).toBeNull()
-    expect(listDeviceKeys()).toHaveLength(0)
+    expect(await listDeviceKeys()).toHaveLength(0)
     // The user (and their password hash) survive: this is not a factory reset.
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM dashboard_users').get()).toEqual({ c: 1 })
 
@@ -110,8 +110,8 @@ describe('securityReset', () => {
     expect(rows[0]!.new_value).toBe('device_keys=1 sessions=1')
   })
 
-  it('is a safe no-op on an empty install', () => {
-    expect(securityReset('test')).toEqual({ deviceKeysRevoked: 0, sessionsCleared: 0 })
+  it('is a safe no-op on an empty install', async () => {
+    expect(await securityReset('test')).toEqual({ deviceKeysRevoked: 0, sessionsCleared: 0 })
   })
 })
 
@@ -142,9 +142,9 @@ describe('HTTP break-glass password reset audit', () => {
 })
 
 describe('out-of-band revocation reaches a live cache (CLI -> running server)', () => {
-  it('a cached device key stops resolving once its row is gone and the debounce fires', () => {
-    const minted = createDeviceKey('phone')
-    expect(resolveDeviceKey(minted.key)).not.toBeNull() // cached, last_used stamped
+  it('a cached device key stops resolving once its row is gone and the debounce fires', async () => {
+    const minted = await createDeviceKey('phone')
+    expect(await resolveDeviceKey(minted.key)).not.toBeNull() // cached, last_used stamped
 
     // Simulate the CLI process: delete the row directly, bypassing the cache.
     getDb().prepare('DELETE FROM device_keys').run()
@@ -156,21 +156,21 @@ describe('out-of-band revocation reaches a live cache (CLI -> running server)', 
     // cache's knowledge of the stamp through a fresh entry -- a cache MISS also
     // goes to the DB and must reject.
     _clearDeviceKeyCacheForTest()
-    expect(resolveDeviceKey(minted.key)).toBeNull()
+    expect(await resolveDeviceKey(minted.key)).toBeNull()
   })
 
-  it('a WARM cache entry is evicted by the debounced existence check (no restart, no cache clear)', () => {
-    const minted = createDeviceKey('phone')
-    expect(resolveDeviceKey(minted.key)).not.toBeNull() // cache warm, last_used stamped now
+  it('a WARM cache entry is evicted by the debounced existence check (no restart, no cache clear)', async () => {
+    const minted = await createDeviceKey('phone')
+    expect(await resolveDeviceKey(minted.key)).not.toBeNull() // cache warm, last_used stamped now
     // Out-of-band delete with the cache warm and its stamp fresh...
     getDb().prepare('DELETE FROM device_keys').run()
     // ...a resolve within the debounce window still serves the cache (the documented <=60s staleness):
-    expect(resolveDeviceKey(minted.key)).not.toBeNull()
+    expect(await resolveDeviceKey(minted.key)).not.toBeNull()
     // ...but once the stamp is old enough that the debounced write fires, the
     // 0-changes result must evict and reject:
     ageDeviceKeyCacheStamp(minted.key, 120)
-    expect(resolveDeviceKey(minted.key)).toBeNull()
-    expect(resolveDeviceKey(minted.key)).toBeNull() // stays evicted
+    expect(await resolveDeviceKey(minted.key)).toBeNull()
+    expect(await resolveDeviceKey(minted.key)).toBeNull() // stays evicted
   })
 
   it('a cached session stops resolving after its row is deleted out-of-band', () => {

@@ -78,9 +78,9 @@ function readTokenHash(path: string): string | null {
   }
 }
 
-function issue(spec: Spec, opts: { rotate?: boolean; now?: number }): IssueResult {
+async function issue(spec: Spec, opts: { rotate?: boolean; now?: number }): Promise<IssueResult> {
   const now = opts.now ?? Math.floor(Date.now() / 1000)
-  const active = listActiveApiTokensByName(spec.name, now)
+  const active = await listActiveApiTokensByName(spec.name, now)
   const fileHash = readTokenHash(spec.path)
   const current = fileHash ? active.find(r => r.token_hash === fileHash) : undefined
 
@@ -95,19 +95,19 @@ function issue(spec: Spec, opts: { rotate?: boolean; now?: number }): IssueResul
 
   // One transaction in the db layer: rotate the matching row (or, when the file held nothing active, revoke
   // what was active under the name, which nobody can reach any more) and mint the replacement.
-  const row = replaceActiveApiToken({ current, active, tokenHash: hash, name: spec.name, role: spec.role, agentId: spec.agentId, now })
+  const row = await replaceActiveApiToken({ current, active, tokenHash: hash, name: spec.name, role: spec.role, agentId: spec.agentId, now })
   return { subject: spec.subject, role: spec.role, status: current ? 'rotated' : 'issued', path: spec.path, tokenId: row.id }
 }
 
 /** Issues (or keeps, or rotates) the token of one agent. The agent's directory must exist. */
-export function issueAgentToken(agentId: string, opts: { rotate?: boolean; now?: number } = {}): IssueResult {
+export async function issueAgentToken(agentId: string, opts: { rotate?: boolean; now?: number } = {}): Promise<IssueResult> {
   const spec = agentSpec(agentId)
   if (!existsSync(agentConfigRoot(agentId))) throw new Error(`agent '${agentId}' has no directory`)
   return issue(spec, opts)
 }
 
 /** The operator's own named admin token (for the scripts an operator runs), instead of the shared file token. */
-export function issueOperatorToken(opts: { rotate?: boolean; now?: number } = {}): IssueResult {
+export async function issueOperatorToken(opts: { rotate?: boolean; now?: number } = {}): Promise<IssueResult> {
   return issue({ subject: 'operator', name: 'operator', role: 'admin', agentId: null, path: operatorTokenPath() }, opts)
 }
 
@@ -137,7 +137,7 @@ export class SharedTokenInEnvError extends Error {
  * recognises, which the next dashboard start enrols (and which revokes the old row), never a valid token
  * nobody holds. Works with the dashboard stopped (direct database). Refuses when DASHBOARD_TOKEN is set.
  */
-export function rotateSharedToken(opts: { now?: number } = {}): RotateSharedResult {
+export async function rotateSharedToken(opts: { now?: number } = {}): Promise<RotateSharedResult> {
   const inEnv = (readEnvFile(['DASHBOARD_TOKEN']).DASHBOARD_TOKEN ?? '').trim() !== '' || (process.env.DASHBOARD_TOKEN ?? '').trim() !== ''
   if (inEnv) throw new SharedTokenInEnvError()
   const now = opts.now ?? Math.floor(Date.now() / 1000)
@@ -146,8 +146,8 @@ export function rotateSharedToken(opts: { now?: number } = {}): RotateSharedResu
   atomicWriteFileSync(path, raw, { mode: 0o600 })
   const hash = sha256(raw)
 
-  const active = listActiveApiTokensByName('dashboard', now)
-  const row = rotateSharedDashboardToken(active, hash, now)
+  const active = await listActiveApiTokensByName('dashboard', now)
+  const row = await rotateSharedDashboardToken(active, hash, now)
   return { status: active.length > 0 ? 'rotated' : 'issued', path, tokenId: row.id }
 }
 
@@ -162,10 +162,10 @@ export type ArchiveSharedAge = 'predates' | 'current' | 'unknown'
  * on it, but a database in WAL mode may get its sidecar files next to it, so never point this at a
  * live database file.
  */
-export function archiveSharedTokenAge(archiveDbPath: string): ArchiveSharedAge {
+export async function archiveSharedTokenAge(archiveDbPath: string): Promise<ArchiveSharedAge> {
   try {
     const archived = archiveDashboardTokenCreatedAt(archiveDbPath) ?? 0
-    const live = latestActiveDashboardTokenAt()
+    const live = await latestActiveDashboardTokenAt()
     if (archived <= 0 || live <= 0) return 'unknown'
     return live > archived ? 'predates' : 'current'
   } catch {
@@ -198,11 +198,11 @@ export interface CheckResult {
   ok: boolean
 }
 
-function checkSpec(spec: Spec, now: number): CheckRow {
+async function checkSpec(spec: Spec, now: number): Promise<CheckRow> {
   const row = (status: CheckStatus): CheckRow => ({ subject: spec.subject, status, role: spec.role, path: spec.path })
   const fileHash = readTokenHash(spec.path)
   if (!fileHash) return row('missing')
-  const found = getApiTokenRowByHash(fileHash)
+  const found = await getApiTokenRowByHash(fileHash)
   if (!found) return row('unknown_hash')
   if (found.revoked_at !== null || (found.expires_at !== null && found.expires_at <= now)) return row('revoked')
   if (found.role !== spec.role || found.name !== spec.name || found.agent_id !== spec.agentId) return row('wrong_role')
@@ -218,17 +218,18 @@ function checkSpec(spec: Spec, now: number): CheckRow {
  * not a finding (the dashboard draws a fresh one at its next start). Nothing is written and no token
  * value leaves this function.
  */
-export function checkAgentTokens(agentIds: string[], opts: { now?: number; includeOperator?: boolean; includeShared?: boolean } = {}): CheckResult {
+export async function checkAgentTokens(agentIds: string[], opts: { now?: number; includeOperator?: boolean; includeShared?: boolean } = {}): Promise<CheckResult> {
   const now = opts.now ?? Math.floor(Date.now() / 1000)
-  const rows: CheckRow[] = agentIds.map(id => checkSpec(agentSpec(id), now))
+  const rows: CheckRow[] = []
+  for (const id of agentIds) rows.push(await checkSpec(agentSpec(id), now))
   if (opts.includeOperator !== false) {
-    rows.push(checkSpec({ subject: 'operator', name: 'operator', role: 'admin', agentId: null, path: operatorTokenPath() }, now))
+    rows.push(await checkSpec({ subject: 'operator', name: 'operator', role: 'admin', agentId: null, path: operatorTokenPath() }, now))
   }
   if (opts.includeShared !== false) {
     const sharedPath = dashboardTokenFilePath(STORE_DIR)
     const fileHash = readTokenHash(sharedPath)
     if (fileHash) {
-      const matches = listActiveApiTokensByName('dashboard', now).some(r => r.token_hash === fileHash)
+      const matches = (await listActiveApiTokensByName('dashboard', now)).some(r => r.token_hash === fileHash)
       rows.push({ subject: 'shared', status: matches ? 'ok' : 'shared_mismatch', role: '-', path: sharedPath })
     }
     const inEnv = (readEnvFile(['DASHBOARD_TOKEN']).DASHBOARD_TOKEN ?? '').trim() !== '' || (process.env.DASHBOARD_TOKEN ?? '').trim() !== ''

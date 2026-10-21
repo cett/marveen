@@ -55,10 +55,10 @@ describe('POST /api/auth/enroll-browser', () => {
     expect(r.body.token).toMatch(/^[0-9a-f]{64}$/)
     expect(r.body.name).toMatch(/^browser \d{4}-\d{2}-\d{2} [0-9a-f]{4}$/)
 
-    const resolved = resolveApiToken(r.body.token)
+    const resolved = await resolveApiToken(r.body.token)
     expect(resolved).toMatchObject({ found: true, role: 'admin', tenantId: 'default', name: r.body.name })
 
-    const row = getApiTokenRowById(r.body.id)!
+    const row = (await getApiTokenRowById(r.body.id))!
     expect(row.expires_at).toBeNull()
     expect(row.revoked_at).toBeNull()
     expect(row.token_hash).not.toBe(r.body.token) // only the hash is stored
@@ -103,9 +103,9 @@ describe('POST /api/auth/enroll-browser', () => {
   it('mints a token that is revoked alone: the gate then refuses it, the others stay valid', async () => {
     const a = await enroll(issueEnrollCode().code)
     const b = await enroll(issueEnrollCode().code)
-    revokeApiToken(a.body.id, Math.floor(Date.now() / 1000))
-    expect(resolveApiToken(a.body.token)).toEqual({ found: false, registeredButInvalid: true })
-    expect(resolveApiToken(b.body.token)).toMatchObject({ found: true })
+    await revokeApiToken(a.body.id, Math.floor(Date.now() / 1000))
+    expect(await resolveApiToken(a.body.token)).toEqual({ found: false, registeredButInvalid: true })
+    expect(await resolveApiToken(b.body.token)).toMatchObject({ found: true })
   })
 
   it('shows up in the token list and revokes through the admin route', async () => {
@@ -118,7 +118,7 @@ describe('POST /api/auth/enroll-browser', () => {
     const del = makeCtx('DELETE', `/api/admin/tokens/${r.body.id}/revoke`, undefined)
     await tryHandleAdminTokens(del.ctx)
     expect(del.out.body).toEqual({ revoked: true, id: r.body.id })
-    expect(resolveApiToken(r.body.token)).toEqual({ found: false, registeredButInvalid: true })
+    expect(await resolveApiToken(r.body.token)).toEqual({ found: false, registeredButInvalid: true })
   })
 })
 

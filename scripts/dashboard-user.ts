@@ -158,7 +158,7 @@ async function main(): Promise<void> {
       break
     }
     case 'security:reset': {
-      const r = securityReset('cli')
+      const r = await securityReset('cli')
       await notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${r.deviceKeysRevoked} eszközkulcs visszavonva, ${r.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`)
       process.stdout.write(
         `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +

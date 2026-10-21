@@ -45,8 +45,8 @@ vi.mock('../db.js', () => ({
 }))
 
 vi.mock('../web/auth-device-keys.js', () => ({
-  listDeviceKeys: vi.fn().mockReturnValue([]),
-  assignDeviceKeyTenant: vi.fn().mockReturnValue(true),
+  listDeviceKeys: vi.fn().mockResolvedValue([]),
+  assignDeviceKeyTenant: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('../prompt-safety.js', () => ({

@@ -3,6 +3,7 @@
 // feeds the auth gate lives in web/auth-gate.ts.
 
 import Database from 'better-sqlite3'
+import { dbx } from './facade.js'
 import { db } from './connection.js'
 
 export interface ApiTokenRow {
@@ -36,7 +37,25 @@ export interface ValidApiTokenRow {
  * A -> B -> A restore of the token file (rotate by deleting the file, which draws a fresh token; recover a
  * locked-out file token with the rollback in web/token-bootstrap.ts).
  */
-export function enrollDashboardApiToken(tokenHash: string, now: number): number {
+export async function enrollDashboardApiToken(tokenHash: string, now: number): Promise<number> {
+  return dbx.tx(async (tx) => {
+    const inserted = (await tx.run(`INSERT INTO api_tokens
+           (token_hash, name, role, created_at)
+         VALUES (?, 'dashboard', 'admin', ?)
+         ON CONFLICT DO NOTHING`, tokenHash, now)).changes
+    await tx.run(`UPDATE api_tokens SET revoked_at = ?
+       WHERE name = 'dashboard' AND token_hash != ? AND revoked_at IS NULL`, now, tokenHash)
+    return inserted
+  })
+}
+
+/**
+ * The boot-synchronous twin of enrollDashboardApiToken, on the raw connection: startWebServer enrolls the file
+ * token before it listens and returns an http.Server, so it cannot await. Same two statements, same rules, same
+ * return value -- keep the two in step. Only web/token-bootstrap.ts calls it (db-boot-sync-twins.test.ts pins that).
+ */
+// @boot-sync-twin
+export function enrollDashboardApiTokenSync(tokenHash: string, now: number): number {
   return db.transaction(() => {
     const inserted = db
       .prepare(
@@ -55,40 +74,36 @@ export function enrollDashboardApiToken(tokenHash: string, now: number): number 
 }
 
 /** The token row when it is neither revoked nor expired at `now`. */
-export function getValidApiToken(tokenHash: string, now: number): ValidApiTokenRow | undefined {
-  return db
-    .prepare(
-      `SELECT role, tenant_id, name, agent_id FROM api_tokens
-       WHERE token_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
-    )
-    .get(tokenHash, now) as ValidApiTokenRow | undefined
+export async function getValidApiToken(tokenHash: string, now: number): Promise<ValidApiTokenRow | undefined> {
+  return dbx.get<ValidApiTokenRow>(`SELECT role, tenant_id, name, agent_id FROM api_tokens
+       WHERE token_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`, tokenHash, now)
 }
 
 /** True when the hash is registered at all (valid, expired or revoked). */
-export function apiTokenHashExists(tokenHash: string): boolean {
-  return !!db.prepare('SELECT id FROM api_tokens WHERE token_hash = ?').get(tokenHash)
+export async function apiTokenHashExists(tokenHash: string): Promise<boolean> {
+  return !!await dbx.get('SELECT id FROM api_tokens WHERE token_hash = ?', tokenHash)
 }
 
 /** When the active `dashboard` row (the shared token) was enrolled, epoch seconds; 0 when there is none. */
-export function latestActiveDashboardTokenAt(): number {
-  const row = db.prepare("SELECT MAX(created_at) AS t FROM api_tokens WHERE name = 'dashboard' AND revoked_at IS NULL").get() as { t: number | null }
+export async function latestActiveDashboardTokenAt(): Promise<number> {
+  const row = (await dbx.get("SELECT MAX(created_at) AS t FROM api_tokens WHERE name = 'dashboard' AND revoked_at IS NULL")) as { t: number | null }
   return row.t ?? 0
 }
 
 /** The row registered under this hash in any state (active, expired or revoked), or undefined. */
-export function getApiTokenRowByHash(tokenHash: string): ApiTokenRow | undefined {
-  return db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(tokenHash) as ApiTokenRow | undefined
+export async function getApiTokenRowByHash(tokenHash: string): Promise<ApiTokenRow | undefined> {
+  return dbx.get<ApiTokenRow>('SELECT * FROM api_tokens WHERE token_hash = ?', tokenHash)
 }
 
-export function listApiTokenRows(): ApiTokenRow[] {
-  return db.prepare('SELECT * FROM api_tokens ORDER BY created_at DESC').all() as ApiTokenRow[]
+export async function listApiTokenRows(): Promise<ApiTokenRow[]> {
+  return dbx.all<ApiTokenRow>('SELECT * FROM api_tokens ORDER BY created_at DESC')
 }
 
-export function getApiTokenRowById(id: number): ApiTokenRow | undefined {
-  return db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as ApiTokenRow | undefined
+export async function getApiTokenRowById(id: number): Promise<ApiTokenRow | undefined> {
+  return dbx.get<ApiTokenRow>('SELECT * FROM api_tokens WHERE id = ?', id)
 }
 
-export function insertApiToken(row: {
+export async function insertApiToken(row: {
   tokenHash: string
   name: string
   role: string
@@ -96,54 +111,44 @@ export function insertApiToken(row: {
   createdAt: number
   expiresAt: number | null
   agentId?: string | null
-}): ApiTokenRow {
-  return db
-    .prepare(
-      `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, agent_id)
+}): Promise<ApiTokenRow> {
+  return (await dbx.get(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, agent_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       RETURNING *`,
-    )
-    .get(row.tokenHash, row.name, row.role, row.tenantId, row.createdAt, row.expiresAt, row.agentId ?? null) as ApiTokenRow
+       RETURNING *`, row.tokenHash, row.name, row.role, row.tenantId, row.createdAt, row.expiresAt, row.agentId ?? null)) as ApiTokenRow
 }
 
 /** The not-revoked, not-expired tokens carrying this name, newest first. */
-export function listActiveApiTokensByName(name: string, now: number): ApiTokenRow[] {
-  return db
-    .prepare(
-      `SELECT * FROM api_tokens
+export async function listActiveApiTokensByName(name: string, now: number): Promise<ApiTokenRow[]> {
+  return dbx.all<ApiTokenRow>(`SELECT * FROM api_tokens
        WHERE name = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
-       ORDER BY created_at DESC, id DESC`,
-    )
-    .all(name, now) as ApiTokenRow[]
+       ORDER BY created_at DESC, id DESC`, name, now)
 }
 
 /** Revokes every active token that belongs to the agent (an agent that is deleted keeps no credential). */
-export function revokeApiTokensForAgent(agentId: string, now: number): number {
-  return db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL').run(now, agentId).changes
+export async function revokeApiTokensForAgent(agentId: string, now: number): Promise<number> {
+  return (await dbx.run('UPDATE api_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL', now, agentId)).changes
 }
 
-export function revokeApiToken(id: number, now: number): void {
-  db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ?').run(now, id)
+export async function revokeApiToken(id: number, now: number): Promise<void> {
+  await dbx.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ?', now, id)
 }
 
 /**
  * Revokes `old` and mints its replacement in one transaction, so there is never
  * a moment with zero or two valid tokens. Returns the new row.
  */
-export function rotateApiToken(
+export async function rotateApiToken(
   old: Pick<ApiTokenRow, 'id' | 'name' | 'role' | 'tenant_id' | 'agent_id'>,
   newTokenHash: string,
   now: number,
   expiresAt: number | null,
-): ApiTokenRow {
-  db.transaction(() => {
-    db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ?').run(now, old.id)
-    db.prepare(
-      `INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, rotated_from, agent_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(newTokenHash, old.name, old.role, old.tenant_id, now, expiresAt, old.id, old.agent_id)
-  })()
-  return db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(newTokenHash) as ApiTokenRow
+): Promise<ApiTokenRow> {
+  await dbx.tx(async (tx) => {
+    await tx.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ?', now, old.id)
+    await tx.run(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, rotated_from, agent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, newTokenHash, old.name, old.role, old.tenant_id, now, expiresAt, old.id, old.agent_id)
+  })
+  return (await dbx.get('SELECT * FROM api_tokens WHERE token_hash = ?', newTokenHash)) as ApiTokenRow
 }
 
 /**
@@ -152,7 +157,7 @@ export function rotateApiToken(
  * the file was missing or held nothing active, so whatever was active under the name is unreachable (nobody
  * holds its secret) and goes before the replacement comes.
  */
-export function replaceActiveApiToken(input: {
+export async function replaceActiveApiToken(input: {
   current: ApiTokenRow | undefined
   active: ApiTokenRow[]
   tokenHash: string
@@ -160,19 +165,19 @@ export function replaceActiveApiToken(input: {
   role: string
   agentId: string | null
   now: number
-}): ApiTokenRow {
-  return db.transaction(() => {
+}): Promise<ApiTokenRow> {
+  return dbx.tx(async (tx) => {
     if (input.current) {
-      const next = rotateApiToken(input.current, input.tokenHash, input.now, null)
-      for (const stale of input.active) if (stale.id !== input.current.id) revokeApiToken(stale.id, input.now)
+      const next = await rotateApiToken(input.current, input.tokenHash, input.now, null)
+      for (const stale of input.active) if (stale.id !== input.current.id) await revokeApiToken(stale.id, input.now)
       return next
     }
-    for (const stale of input.active) revokeApiToken(stale.id, input.now)
+    for (const stale of input.active) await revokeApiToken(stale.id, input.now)
     return insertApiToken({
       tokenHash: input.tokenHash, name: input.name, role: input.role, tenantId: 'default',
       createdAt: input.now, expiresAt: null, agentId: input.agentId,
     })
-  })()
+  })
 }
 
 /**
@@ -180,13 +185,13 @@ export function replaceActiveApiToken(input: {
  * `dashboard` row is rotated (revoked WITH its hash kept), any older active one is revoked, and without an
  * active row a new one is inserted. `active` is listActiveApiTokensByName('dashboard', now), newest first.
  */
-export function rotateSharedDashboardToken(active: ApiTokenRow[], tokenHash: string, now: number): ApiTokenRow {
-  return db.transaction(() => {
+export async function rotateSharedDashboardToken(active: ApiTokenRow[], tokenHash: string, now: number): Promise<ApiTokenRow> {
+  return dbx.tx(async (tx) => {
     const [first, ...others] = active
-    for (const stale of others) revokeApiToken(stale.id, now)
+    for (const stale of others) await revokeApiToken(stale.id, now)
     if (first) return rotateApiToken(first, tokenHash, now, null)
     return insertApiToken({ tokenHash, name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: now, expiresAt: null, agentId: null })
-  })()
+  })
 }
 
 /**

@@ -75,7 +75,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
   // GET /api/admin/tokens
   if (method === 'GET' && path === '/api/admin/tokens') {
-    json(res, listApiTokenRows().map(toPublic))
+    json(res, (await listApiTokenRows()).map(toPublic))
     return true
   }
 
@@ -132,7 +132,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const hash = sha256hex(rawToken)
 
     try {
-      const row = insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt: now, expiresAt, agentId: agentId || null })
+      const row = await insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt: now, expiresAt, agentId: agentId || null })
       logger.info({ tokenId: row.id, name, role, tenantId, agentId: agentId || null }, 'api_token created')
       // Return the raw token value ONCE -- it cannot be recovered after this response.
       json(res, { token: rawToken, ...toPublic(row) }, 201)
@@ -159,7 +159,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       return true
     }
 
-    const old = getApiTokenRowById(id)
+    const old = await getApiTokenRowById(id)
     if (!old) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
     // deliberate: discriminating error response, admin-gated
     if (old.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
@@ -173,7 +173,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
     try {
       // Revokes the old token atomically with creating the replacement.
-      const newRow = rotateApiToken(old, hash, now, expiresAt)
+      const newRow = await rotateApiToken(old, hash, now, expiresAt)
       logger.info({ oldId: id, newId: newRow.id, name: old.name }, 'api_token rotated')
       json(res, { token: rawToken, ...toPublic(newRow) })
     } catch (e) {
@@ -187,13 +187,13 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
   const revokeMatch = /^\/api\/admin\/tokens\/(\d+)\/revoke$/.exec(path)
   if (method === 'DELETE' && revokeMatch) {
     const id = Number(revokeMatch[1])
-    const row = getApiTokenRowById(id)
+    const row = await getApiTokenRowById(id)
     if (!row) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
     // deliberate: discriminating error response, admin-gated
     if (row.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
 
     const now = Math.floor(Date.now() / 1000)
-    revokeApiToken(id, now)
+    await revokeApiToken(id, now)
     logger.info({ tokenId: id, name: row.name }, 'api_token revoked')
     json(res, { revoked: true, id })
     return true

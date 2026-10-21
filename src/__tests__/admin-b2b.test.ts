@@ -29,8 +29,8 @@ vi.mock('../db.js', () => ({
 }))
 
 vi.mock('../web/auth-device-keys.js', () => ({
-  listDeviceKeys: vi.fn().mockReturnValue([]),
-  assignDeviceKeyTenant: vi.fn().mockReturnValue(true),
+  listDeviceKeys: vi.fn().mockResolvedValue([]),
+  assignDeviceKeyTenant: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('../prompt-safety.js', () => ({
@@ -550,7 +550,7 @@ describe('PUT /api/v1/admin/agent-availability', () => {
 
 describe('GET /api/v1/admin/device-keys', () => {
   it('returns list of device keys', async () => {
-    vi.mocked(deviceKeys.listDeviceKeys).mockReturnValue([
+    vi.mocked(deviceKeys.listDeviceKeys).mockResolvedValue([
       { id: 1, name: 'Phone', createdAt: 1787000000, lastUsedAt: null, expiresAt: null, installId: null, tenantId: null },
       { id: 2, name: 'Tablet', createdAt: 1787000001, lastUsedAt: 1787000100, expiresAt: null, installId: null, tenantId: 'acme-corp' },
     ])
@@ -566,7 +566,7 @@ describe('GET /api/v1/admin/device-keys', () => {
 describe('PATCH /api/v1/admin/device-keys/:id', () => {
   it('assigns a tenant to a device key', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockReturnValue(true)
+    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockResolvedValue(true)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/3', { tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
@@ -576,7 +576,7 @@ describe('PATCH /api/v1/admin/device-keys/:id', () => {
   })
 
   it('clears tenant assignment when tenant_id is null', async () => {
-    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockReturnValue(true)
+    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockResolvedValue(true)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/3', { tenant_id: null })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
@@ -592,7 +592,7 @@ describe('PATCH /api/v1/admin/device-keys/:id', () => {
   })
 
   it('returns 404 when device key not found', async () => {
-    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockReturnValue(false)
+    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockResolvedValue(false)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/999', { tenant_id: null })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(404)

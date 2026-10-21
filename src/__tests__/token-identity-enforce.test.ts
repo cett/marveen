@@ -20,7 +20,7 @@ vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<ty
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const NOW = () => Math.floor(Date.now() / 1000)
-const mint = (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
+const mint = async (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
   insertApiToken({ tokenHash: sha(raw), name: `${role}:${agentId ?? 'none'}`, role, tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId })
 
 const SHARED = 'the-file-token'
@@ -48,16 +48,16 @@ async function send(
   ;(req as unknown as { destroy: () => void }).destroy = () => {}
   setImmediate(() => { req.emit('data', buf); req.emit('end') })
   const url = new URL(`http://localhost:3420${path}`)
-  const auth = resolveAuth(req, url, url.pathname, method, SHARED, true)
+  const auth = await resolveAuth(req, url, url.pathname, method, SHARED, true)
   observeTokenUsage(req, auth, method, url.pathname, url)
   return { req, refusal: await identityRefusal(req) }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   resetTokenShadowForTests()
-  mint('tok-alpha', 'alpha')
-  mint('tok-main', 'main-agent', 'admin')
+  await mint('tok-alpha', 'alpha')
+  await mint('tok-main', 'main-agent', 'admin')
 })
 
 describe('enforce: the path and the query', () => {
@@ -283,7 +283,7 @@ describe('identity_refused: every refusal is counted', () => {
     ;(req as unknown as { destroy: () => void }).destroy = () => {}
     setImmediate(() => { req.emit('data', buf); req.emit('end') })
     const url = new URL(`http://localhost:3420${path}`)
-    observeTokenUsage(req, resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
+    observeTokenUsage(req, await resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
     const out = { status: 0 }
     const res = { writeHead(code: number) { out.status = code }, setHeader() {}, end() {} } as unknown as http.ServerResponse
     return { refused: await answerIdentityRefusal(req, res), status: out.status }

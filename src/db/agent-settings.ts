@@ -81,6 +81,7 @@ export async function setAgentSetting(agentId: string, key: AgentSettingKey, val
  * db/agents.ts's resolveAgentOwningTenantId/agentBelongsToTenant). Returns
  * the number of rows actually inserted.
  */
+// @boot-sync-twin
 export function importAgentSettingsFromFile(
   key: AgentSettingKey,
   entries: Record<string, unknown>,

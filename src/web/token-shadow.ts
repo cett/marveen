@@ -528,14 +528,14 @@ function agentHasNoTenant(agentId: string): boolean {
  * straggler that still holds the old token is visible. Never changes the 401, never throws. A bearer
  * that is unknown, expired or any other revoked token is not the shared token and is not counted.
  */
-export function observeRefusedSharedToken(req: http.IncomingMessage, method: string, rawPath: string): void {
+export async function observeRefusedSharedToken(req: http.IncomingMessage, method: string, rawPath: string): Promise<void> {
   try {
     const m = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
     const bearer = m?.[1]?.trim()
     if (!bearer) return
     const path = stripApiVersion(rawPath)
     if (path === TOKEN_SHADOW_ROUTE) return
-    const row = getApiTokenRowByHash(createHash('sha256').update(bearer).digest('hex'))
+    const row = await getApiTokenRowByHash(createHash('sha256').update(bearer).digest('hex'))
     if (!row || row.name !== DASHBOARD_TOKEN_NAME || row.revoked_at === null) return
     const declared = cleanAgentId(resolveAgentIdHeader(req))
     recordTokenShadow(

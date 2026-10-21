@@ -60,13 +60,18 @@ use the synchronous twins of a migrated module, kept on the raw connection. The 
 | `migrateCostBudgetsFromFile` | `db/cost-budgets.ts` |
 | `migrateVaultBindingsFromFile` | `db/vault-bindings.ts` |
 | `importAgentSettingsFromFile` (takes a synchronous `resolveAgentOwningTenantId` callback) | `db/agent-settings.ts` |
+| `enrollDashboardApiTokenSync` (the file token is enrolled before `startWebServer` listens; it cannot await) | `db/api-tokens.ts`, called from `web/token-bootstrap.ts` |
 
-The rule: **a twin is called from `src/db/index.ts` and from nowhere else.** A caller anywhere else would run on
+The table lists the twins only, not every boot-time migrator: `migrateFederationConfigFromFile` and
+`migrateScheduleLastRunFromFile` belong to modules that are still entirely synchronous, so they are not twins of
+anything yet.
+
+The rule: **a twin is called from the boot chain (`src/db/index.ts`, or the bootstrap helper that `startWebServer` calls) and from nowhere else.** A caller anywhere else would run on
 the raw connection beside the facade's transaction lock, which is what the facade exists to prevent, and which
 has no equivalent on PostgreSQL. `src/__tests__/db-boot-sync-twins.test.ts` enforces it for every twin at once:
-`BOOT_SYNC_TWINS` maps a twin to the only files that may mention it (its own module and `db/index.ts`), and the
+`BOOT_SYNC_TWINS` maps a twin to the only files that may mention it (its own module and its boot caller), and the
 test fails when any other production file does, or when a listed file no longer does (a stale row would
-permit a future caller). A new twin is one more row in that table, not a new guard test. A later step makes
+permit a future caller). A twin carries a `// @boot-sync-twin` line above its declaration and the test checks the table against those tags, so a deleted row fails too. A new twin is a tag and one more row in that table, not a new guard test. A later step makes
 `initDatabase()` asynchronous and the twins go away.
 
 ## Read-then-write is one transaction
@@ -75,17 +80,26 @@ A select followed by a write on the same rows (select-then-delete, read the stat
 that must replace a list) is `dbx.tx` with every statement on the `tx` handle. Two `await`ed facade calls leave a
 window for another caller's statement. `src/__tests__/db-read-then-write-transactions.test.ts` is the table of the
 functions that must have this shape: it counts the transactions opened and the statements run on `dbx` itself
-during the call (`helpers/single-transaction.ts`), and expects exactly one transaction and no outside statement.
+during the call (`helpers/single-transaction.ts`), and expects exactly one transaction and no outside statement. It sees the `dbx` facade only: a raw
+`getDb().prepare(...)` in such a function is covered by the `db-outside-sql` ratchet, not by this test.
 A new read-then-write function is one more case in that table.
 
 ## The authentication path fails closed
 
-A function that decides who a caller is (`resolveAuth`, the device-key and API-token checks) answers *deny* when
-it cannot read the database: an error, a timeout or a missing row is never an *allow*, and is never retried as a
-weaker check. A revoked credential is refused on the very next request, so the auth path does not read a cache
-that a revoke has to reach first. When such a function becomes asynchronous, every call site `await`s it: a
-Promise that is not awaited is truthy, so a forgotten `await` would let every request through. The lint
-(`no-floating-promises`, `no-misused-promises`) and a test that makes the database fail are the guard.
+A function that decides who a caller is (`resolveAuth`, the device-key and API-token lookups) answers *deny* when
+it cannot read the database: the rejection reaches the request handler (a 500), and it is never turned into a
+"no such token, carry on" that would reach the legacy file-token fallback and grant admin. Nothing on this path
+catches a database error and continues. When such a function becomes asynchronous, every call site `await`s it:
+a Promise that is not awaited is truthy, so a forgotten `await` would let every request through. The lint
+(`no-floating-promises`, `no-misused-promises`) and the tests in `auth-gate.test.ts` (database failure, revoke on the
+very next request) are the guard.
+
+Revocation of an API token is immediate because its lookup has no cache: each request reads `api_tokens`. A device
+key keeps an in-process cache (`auth-device-keys.ts`). A revoke made through the dashboard process clears the row
+and the cache entry together, and a lookup that read the row across that revoke does not put it back in the cache
+(`removalEpoch`; `auth-device-keys.test.ts` pins it). A revoke made by ANOTHER process (`dashboard-user
+security:reset`) cannot reach the cache and is noticed by the next debounced `last_used` write: within
+`LAST_USED_DEBOUNCE_SEC` (60 s).
 
 ## Tests
 

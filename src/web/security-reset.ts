@@ -22,8 +22,8 @@ export interface SecurityResetResult {
   sessionsCleared: number
 }
 
-export function securityReset(actor: string): SecurityResetResult {
-  const deviceKeysRevoked = revokeAllDeviceKeys()
+export async function securityReset(actor: string): Promise<SecurityResetResult> {
+  const deviceKeysRevoked = await revokeAllDeviceKeys()
   const sessionsCleared = revokeAllSessions()
   // Counts only -- never credential material -- into the audit trail.
   logConfigChange('security.reset', null, `device_keys=${deviceKeysRevoked} sessions=${sessionsCleared}`, actor)

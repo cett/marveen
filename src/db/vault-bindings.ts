@@ -117,6 +117,7 @@ export async function replaceVaultBindings(tenantId: string, bindings: VaultBind
 // overwritten by a stale re-read, and a fresh install with no file gets zero
 // rows -- matching getBindings()'s own pre-migration default of an empty
 // list. Safe to call on every boot.
+// @boot-sync-twin
 export function migrateVaultBindingsFromFile(): number {
   const filePath = join(STORE_DIR, 'vault-bindings.json')
   if (!existsSync(filePath)) return 0

@@ -62,7 +62,7 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
@@ -72,18 +72,18 @@ const DEFAULT_CARD = 'card-default'
 const ACME_CARD = 'card-acme'
 const ACME_ARCHIVED = 'card-acme-archived'
 
-const alpha = () => tokenAuth('tok-alpha') // fleet_agent, tenant default
+const alpha = async () => tokenAuth('tok-alpha') // fleet_agent, tenant default
 const acmeUser = () => session('agent', 'acme') // tenant user of acme
-const admin = () => tokenAuth('the-file-token')
+const admin = async () => tokenAuth('the-file-token')
 
 const row = (id: string) => getDb().prepare('SELECT status, archived_at, dispatched_at FROM kanban_cards WHERE id = ?').get(id) as
   { status: string; archived_at: number | null; dispatched_at: number | null }
 
-beforeEach(() => {
+beforeEach(async () => {
   generateBreakdown.mockClear()
   initDatabase(':memory:')
   createTenant('acme', 'Acme')
-  insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
+  await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
   createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
   createKanbanCard({ id: ACME_CARD, title: 'Acme card', assignee: 'beta', tenant_id: 'acme' })
   createKanbanCard({ id: ACME_ARCHIVED, title: 'Acme archived', tenant_id: 'acme' })
@@ -119,62 +119,62 @@ const CASES: Case[] = [
 describe("a foreign card id on a /api/kanban/:id/* route is a 404 for a non-admin caller", () => {
   for (const c of CASES) {
     it(`${c.name}: fleet token and tenant user get 404 on the other tenant's card`, async () => {
-      expect((await callAs(alpha(), c.method, c.path(ACME_CARD), c.body)).status).toBe(404)
+      expect((await callAs(await alpha(), c.method, c.path(ACME_CARD), c.body)).status).toBe(404)
       expect((await callAs(acmeUser(), c.method, c.path(DEFAULT_CARD), c.body)).status).toBe(404)
     })
   }
 
   it('the 404 body is the same as for a card that does not exist (no id probing)', async () => {
-    const foreign = await callAs(alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
-    const missing = await callAs(alpha(), 'GET', '/api/kanban/no-such-card/comments')
+    const foreign = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
+    const missing = await callAs(await alpha(), 'GET', '/api/kanban/no-such-card/comments')
     expect(foreign).toEqual(missing)
     expect(foreign.status).toBe(404)
   })
 
   it('an archived foreign card is covered too', async () => {
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)).status).toBe(404)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${ACME_ARCHIVED}/comments`)).status).toBe(404)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)).status).toBe(404)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${ACME_ARCHIVED}/comments`)).status).toBe(404)
     expect(row(ACME_ARCHIVED).archived_at).not.toBeNull()
   })
 })
 
 describe('a foreign card is left exactly as it was', () => {
   it('move does not change the status and does not dispatch', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'in_progress', sort_order: 1 })
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'in_progress', sort_order: 1 })
     expect(row(ACME_CARD)).toMatchObject({ status: 'planned', dispatched_at: null })
     const msgs = getDb().prepare('SELECT COUNT(*) AS n FROM agent_messages').get() as { n: number }
     expect(msgs.n).toBe(0)
   })
 
   it('archive and unarchive change nothing', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/archive`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/archive`)
     expect(row(ACME_CARD).archived_at).toBeNull()
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)
     expect(row(ACME_ARCHIVED).archived_at).not.toBeNull()
   })
 
   it('a comment is not written, the existing one is not readable', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'x', content: 'intruder' })
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'x', content: 'intruder' })
     expect(getKanbanComments(ACME_CARD).map((c) => c.content)).toEqual(['secret acme comment'])
-    const read = await callAs(alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
+    const read = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
     expect(JSON.stringify(read.body)).not.toContain('secret acme comment')
   })
 
   it('labels are not attached to or detached from it', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/labels`, { labelId: 'lbl-default' })
-    await callAs(alpha(), 'DELETE', `/api/kanban/${ACME_CARD}/labels/lbl-acme`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/labels`, { labelId: 'lbl-default' })
+    await callAs(await alpha(), 'DELETE', `/api/kanban/${ACME_CARD}/labels/lbl-acme`)
     expect(getLabelsForCard(ACME_CARD).map((l) => l.id)).toEqual(['lbl-acme'])
   })
 
   it('breakdown never reaches the LLM with the foreign card\'s title', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown`)
     expect(generateBreakdown).not.toHaveBeenCalled()
   })
 
   it('a foreign card is not detached from its parent and gets no accepted subtasks', async () => {
-    await callAs(alpha(), 'PATCH', '/api/kanban/acme-child/parent', { parent_id: null })
+    await callAs(await alpha(), 'PATCH', '/api/kanban/acme-child/parent', { parent_id: null })
     expect((getKanbanCard('acme-child') as { parent_id: string | null }).parent_id).toBe(ACME_CARD)
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown/accept`, { subtasks: [{ title: 'intruder', description: '', assignee: null, priority: 'normal' }] })
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown/accept`, { subtasks: [{ title: 'intruder', description: '', assignee: null, priority: 'normal' }] })
     const kids = getDb().prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE parent_id = ?').get(ACME_CARD) as { n: number }
     expect(kids.n).toBe(1)
     expect(getKanbanComments(ACME_CARD).map((c) => c.content)).toEqual(['secret acme comment'])
@@ -182,7 +182,7 @@ describe('a foreign card is left exactly as it was', () => {
 
   it('children and subtree do not list the foreign tree', async () => {
     for (const p of ['children', 'subtree']) {
-      const r = await callAs(alpha(), 'GET', `/api/kanban/${ACME_CARD}/${p}`)
+      const r = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}/${p}`)
       expect(JSON.stringify(r.body)).not.toContain('Acme child')
     }
   })
@@ -194,7 +194,7 @@ describe('move: the orderedIds column list is cut down to the caller\'s own tena
   it("a foreign card id in orderedIds keeps its sort_order, the own cards are renumbered", async () => {
     createKanbanCard({ id: 'default-b', title: 'Default b', tenant_id: 'default' })
     getDb().prepare('UPDATE kanban_cards SET sort_order = 777 WHERE id = ?').run(ACME_CARD)
-    const res = await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, {
+    const res = await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, {
       status: 'waiting', sort_order: 0, orderedIds: ['default-b', ACME_CARD, DEFAULT_CARD],
     })
     expect(res.status).toBe(200)
@@ -205,7 +205,7 @@ describe('move: the orderedIds column list is cut down to the caller\'s own tena
 
   it('an admin renumbers a list that crosses tenants, as before', async () => {
     getDb().prepare('UPDATE kanban_cards SET sort_order = 777 WHERE id = ?').run(ACME_CARD)
-    await callAs(admin(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 0, orderedIds: [DEFAULT_CARD, ACME_CARD] })
+    await callAs(await admin(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 0, orderedIds: [DEFAULT_CARD, ACME_CARD] })
     expect(sortOrder(ACME_CARD)).toBe(1)
   })
 })
@@ -214,7 +214,7 @@ describe('PATCH /parent and breakdown/accept: the references and the tenant of w
   const tree = (id: string) => getDb().prepare('SELECT parent_id, tenant_id FROM kanban_cards WHERE id = ?').get(id) as { parent_id: string | null; tenant_id: string }
 
   it("an own card cannot be moved under another tenant's card (404, unchanged)", async () => {
-    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: ACME_CARD })).status).toBe(404)
+    expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: ACME_CARD })).status).toBe(404)
     expect((await callAs(acmeUser(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: DEFAULT_CARD })).status).toBe(404)
     expect(tree(DEFAULT_CARD).parent_id).toBeNull()
     expect(tree(ACME_CARD).parent_id).toBeNull()
@@ -222,10 +222,10 @@ describe('PATCH /parent and breakdown/accept: the references and the tenant of w
 
   it('an own card moves under an own parent and detaches again (200); an admin may cross', async () => {
     createKanbanCard({ id: 'parent-default', title: 'P', tenant_id: 'default' })
-    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
     expect(tree(DEFAULT_CARD).parent_id).toBe('parent-default')
-    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: null })).status).toBe(200)
-    expect((await callAs(admin(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: null })).status).toBe(200)
+    expect((await callAs(await admin(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
   })
 
   it('the subtasks of an accepted breakdown carry the tenant of the card they hang under', async () => {
@@ -241,36 +241,36 @@ describe('POST /api/kanban: a parent_id in the body is held to the caller\'s ten
 
   it("a card cannot be created under another tenant's card (404, nothing created)", async () => {
     const before = count()
-    expect((await callAs(alpha(), 'POST', '/api/kanban', { title: 'sneaky', parent_id: ACME_CARD })).status).toBe(404)
+    expect((await callAs(await alpha(), 'POST', '/api/kanban', { title: 'sneaky', parent_id: ACME_CARD })).status).toBe(404)
     expect((await callAs(acmeUser(), 'POST', '/api/kanban', { title: 'sneaky', parent_id: DEFAULT_CARD })).status).toBe(404)
     expect(count()).toBe(before)
   })
 
   it('under an own card it is created in the caller\'s tenant (200)', async () => {
-    const res = await callAs(alpha(), 'POST', '/api/kanban', { title: 'child', parent_id: DEFAULT_CARD })
+    const res = await callAs(await alpha(), 'POST', '/api/kanban', { title: 'child', parent_id: DEFAULT_CARD })
     expect(res.status).toBe(200)
     const created = getDb().prepare('SELECT tenant_id, parent_id FROM kanban_cards WHERE id = ?').get((res.body as { id: string }).id)
     expect(created).toEqual({ tenant_id: 'default', parent_id: DEFAULT_CARD })
   })
 
   it('without a parent_id nothing changes, and an admin keeps the cross-tenant reach', async () => {
-    expect((await callAs(alpha(), 'POST', '/api/kanban', { title: 'plain' })).status).toBe(200)
-    expect((await callAs(admin(), 'POST', '/api/kanban', { title: 'admin child', parent_id: ACME_CARD })).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', '/api/kanban', { title: 'plain' })).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', '/api/kanban', { title: 'admin child', parent_id: ACME_CARD })).status).toBe(200)
   })
 })
 
 describe('an own card keeps working', () => {
   it('move, comments, labels, events, children and subtree answer 200 for the owning tenant', async () => {
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
     expect(row(DEFAULT_CARD).status).toBe('waiting')
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/comments`, { author: 'a', content: 'mine' })).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/comments`)).status).toBe(200)
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/labels`, { labelId: 'lbl-default' })).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/labels`)).status).toBe(200)
-    expect((await callAs(alpha(), 'DELETE', `/api/kanban/${DEFAULT_CARD}/labels/lbl-default`)).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/events`)).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/children`)).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/subtree`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/comments`, { author: 'a', content: 'mine' })).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/comments`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/labels`, { labelId: 'lbl-default' })).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/labels`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'DELETE', `/api/kanban/${DEFAULT_CARD}/labels/lbl-default`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/events`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/children`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/subtree`)).status).toBe(200)
   })
 
   it('a tenant user reaches the archived card of its own tenant (unarchive 200)', async () => {
@@ -293,13 +293,13 @@ describe('an own card keeps working', () => {
 
 describe('an admin keeps the cross-tenant reach', () => {
   it('reads and writes a card of any tenant', async () => {
-    expect((await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}/comments`)).status).toBe(200)
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'root', content: 'from admin' })).status).toBe(200)
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}/comments`)).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'root', content: 'from admin' })).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
     expect(getKanbanCard(ACME_CARD)?.status).toBe('waiting')
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/archive`)).status).toBe(200)
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/unarchive`)).status).toBe(200)
-    expect((await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}/subtree`)).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/archive`)).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/unarchive`)).status).toBe(200)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}/subtree`)).status).toBe(200)
   })
 })
 
