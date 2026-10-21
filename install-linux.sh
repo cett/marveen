@@ -26,6 +26,20 @@ INSTALL_STEP="init"
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
+# The managed-settings.json writes below are machine-wide (org-policy layer)
+# and need root. Say what is written and why, ONCE, before the first of them asks
+# for a password. The text lives in install-lang.sh; the function stays here, so a
+# standalone run that fetched an older install-lang.sh still has it (an unknown
+# _t key just prints nothing).
+managed_settings_notice() {
+  if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
+    return 0
+  fi
+  MANAGED_NOTICE_SHOWN=1
+  echo -e "  ${ORANGE}i${NC} $(_t managed.notice_what)"
+  echo -e "    $(_t managed.notice_sudo)"
+}
+
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
   if ! command -v claude &>/dev/null; then
@@ -402,6 +416,7 @@ fi
 # notifications on a team/enterprise org unless managed-settings has
 # channelsEnabled:true (harmless / no-op on a personal org). Idempotent.
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
   bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
 fi
