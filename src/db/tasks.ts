@@ -521,6 +521,28 @@ export function getSkill(id: string): SkillRow | undefined {
   return db.prepare('SELECT * FROM skills WHERE id = ?').get(id) as SkillRow | undefined
 }
 
+/** True when the agent has an enabled availability row for one of the tenants (skill-sync's qualification check). */
+export function agentHasEnabledAvailability(agentId: string, tenantIds: readonly string[]): boolean {
+  if (tenantIds.length === 0) return false
+  const placeholders = tenantIds.map(() => '?').join(',')
+  return db
+    .prepare(`SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN (${placeholders})`)
+    .get(agentId, ...tenantIds) !== undefined
+}
+
+/** Write-back of an edited SKILL.md: sets the content of an existing skill row (the caller strips the generated header). */
+export function setSkillContent(skillId: string, content: string, now: number): void {
+  db.prepare('UPDATE skills SET content = ?, updated_at = ? WHERE id = ?').run(content, now, skillId)
+}
+
+/** Write-back of a SKILL.md that has no row yet: creates it as a fleet skill (global/... ids are global). */
+export function insertFleetSkillFromFile(skillId: string, name: string, content: string, isGlobal: boolean, now: number): void {
+  db.prepare(`
+    INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
+    VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?)
+  `).run(skillId, name, content, isGlobal ? 1 : 0, now, now)
+}
+
 export function updateSkill(id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }): SkillRow | undefined {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
