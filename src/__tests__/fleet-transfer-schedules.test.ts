@@ -86,7 +86,7 @@ describe('exportFleet -- schedules', () => {
     insertSchedule({ id: 'morning-chain', enabled: 1 })
     insertSchedule({ id: 'nightly-cleanup', enabled: 0, type: 'command' })
 
-    const result = exportFleet()
+    const result = await exportFleet()
     const fleet = JSON.parse(result.data)
     expect(fleet.schedules).toHaveLength(2)
     expect(fleet.schedules.every((s: any) => s.enabled === 0)).toBe(true)
@@ -98,11 +98,11 @@ describe('importFleet -- schedules', () => {
   it('dry-run reports the schedule as new and warns it will land disabled', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     insertSchedule({ id: 'heartbeat-1', type: 'heartbeat' })
-    const exported = exportFleet()
+    const exported = await exportFleet()
 
     initDatabase(':memory:') // fresh target -- no schedules yet
 
-    const dry = importFleet(exported.data, { apply: false }) as any
+    const dry = await importFleet(exported.data, { apply: false }) as any
     expect(dry.wouldCreate.schedules).toBe(1)
     expect(dry.warnings.some((w: string) => w.includes('ütemezés'))).toBe(true)
   })
@@ -110,11 +110,11 @@ describe('importFleet -- schedules', () => {
   it('apply inserts the schedule disabled, preserving its other fields', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     insertSchedule({ id: 'heartbeat-1', type: 'heartbeat', schedule: '*/15 * * * *', enabled: 1 })
-    const exported = exportFleet()
+    const exported = await exportFleet()
 
     initDatabase(':memory:') // fresh target
 
-    const applied = importFleet(exported.data, { apply: true }) as any
+    const applied = await importFleet(exported.data, { apply: true }) as any
     expect(applied.ok).toBe(true)
     expect(applied.imported.schedules).toBe(1)
 
@@ -133,7 +133,7 @@ describe('importFleet -- schedules', () => {
       insertSchedule({ id: 'job-foreign', tenant_id: 'tenant-elsewhere' })
       insertSchedule({ id: 'job-default', tenant_id: 'default' })
       insertSchedule({ id: 'job-none', tenant_id: null })
-      return exportFleet()
+      return await exportFleet()
     }
     const tenantOf = (id: string) => (getDb().prepare('SELECT tenant_id FROM schedules WHERE id = ?').get(id) as any).tenant_id
 
@@ -144,7 +144,7 @@ describe('importFleet -- schedules', () => {
       const { createTenant } = await import('../db.js')
       createTenant('tenant-known', 'Known')
 
-      const applied = importFleet(exported.data, { apply: true }) as any
+      const applied = await importFleet(exported.data, { apply: true }) as any
       expect(applied.ok).toBe(true)
       expect(tenantOf('job-local')).toBe('tenant-known')
       // Fix-revert proof: without the validation the foreign id would be stored verbatim.
@@ -163,7 +163,7 @@ describe('importFleet -- schedules', () => {
       createTenant('tenant-known', 'Known')
       updateTenant('tenant-known', { disabled: true })
 
-      importFleet(exported.data, { apply: true })
+      await importFleet(exported.data, { apply: true })
       expect(tenantOf('job-local')).toBe('default')
     })
 
@@ -174,14 +174,14 @@ describe('importFleet -- schedules', () => {
       const { createTenant } = await import('../db.js')
       createTenant('tenant-known', 'Known')
 
-      const dry = importFleet(exported.data, { apply: false }) as any
+      const dry = await importFleet(exported.data, { apply: false }) as any
       expect(dry.warnings.filter((w: string) => w.includes('default tenantba kerül'))).toEqual([
         expect.stringContaining('1 ütemezés tenantja nem létezik'),
       ])
 
       initDatabase(':memory:')
       createTenant('tenant-known', 'Known'); createTenant('tenant-elsewhere', 'Elsewhere')
-      const clean = importFleet(exported.data, { apply: false }) as any
+      const clean = await importFleet(exported.data, { apply: false }) as any
       expect(clean.warnings.some((w: string) => w.includes('default tenantba kerül'))).toBe(false)
     })
   })
@@ -189,11 +189,11 @@ describe('importFleet -- schedules', () => {
   it('is idempotent on id -- re-applying the same export does not duplicate the row', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     insertSchedule({ id: 'daily-digest' })
-    const exported = exportFleet()
+    const exported = await exportFleet()
 
     initDatabase(':memory:')
-    importFleet(exported.data, { apply: true })
-    importFleet(exported.data, { apply: true })
+    await importFleet(exported.data, { apply: true })
+    await importFleet(exported.data, { apply: true })
 
     const rows = getDb().prepare('SELECT * FROM schedules WHERE id = ?').all('daily-digest') as any[]
     expect(rows).toHaveLength(1)
@@ -205,7 +205,7 @@ describe('importFleet -- schedules', () => {
       ...MINIMAL_FLEET_FIELDS,
       schedules: [{ id: 'bad-row' }, { id: 'good-row', schedule: '0 * * * *', agent: 'agent-a', type: 'task', prompt: 'p', description: 'd', enabled: 1, created_at: 1, updated_at: 1 }],
     })
-    const applied = importFleet(fleetJson, { apply: true }) as any
+    const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
     expect(getDb().prepare('SELECT * FROM schedules WHERE id = ?').get('bad-row')).toBeUndefined()
     expect(getDb().prepare('SELECT * FROM schedules WHERE id = ?').get('good-row')).toBeTruthy()

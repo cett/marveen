@@ -698,6 +698,7 @@ export function startWebServer(port = 3420): http.Server {
       const govPatched: string[] = []
       const skillUsagePatched: string[] = []
       const watchdogPatched: string[] = []
+      const quarantineAgents: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
       // into ~/.claude/settings.json alongside existing hooks (e.g. telegram_progress.py).
@@ -718,8 +719,13 @@ export function startWebServer(port = 3420): http.Server {
         // No-op for MAIN_AGENT_ID (already covered via the project-tracked
         // .claude/settings.json) -- see ensureContextWatchdogHook's own comment.
         if (ensureContextWatchdogHook(agentName)) watchdogPatched.push(agentName)
-        ensureQuarantineReader(agentName)
+        quarantineAgents.push(agentName)
       }
+      // ensureQuarantineReader reads the egress allowlist through the db facade, so it is asynchronous. This function
+      // hands back the server and stays synchronous, so the step runs right behind the loop with its own failure log.
+      void (async () => {
+        for (const agentName of quarantineAgents) await ensureQuarantineReader(agentName)
+      })().catch((err) => logger.warn({ err }, 'Quarantine reader backfill skipped'))
       // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
       // route. Inside the hook-registration branch on purpose: only the instance that owns the
       // hooks watches the shared store, a worktree / WEB_ONLY instance does not.

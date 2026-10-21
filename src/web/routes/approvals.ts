@@ -22,10 +22,10 @@ import { tryHandleApprovalUse } from './approvals-consume.js'
 
 // Every approval gets a deadline: the category's timeout_minutes, or the 24 h ceiling for an unknown
 // category / NULL value / unreadable DB. The caller's timeout_seconds can only shorten it.
-function getTimeoutAt(category: string, requestedSeconds: unknown): number {
+async function getTimeoutAt(category: string, requestedSeconds: unknown): Promise<number> {
   let categoryMinutes: number | null = null
   try {
-    categoryMinutes = getAutonomyCategory(category)?.timeout_minutes ?? null
+    categoryMinutes = (await getAutonomyCategory(category))?.timeout_minutes ?? null
   } catch (err) {
     logger.warn({ err, category }, 'Autonomy category lookup failed, using the default approval timeout')
   }
@@ -55,8 +55,8 @@ function withinOwnerNoticeAllowance(approval: Approval): boolean {
 }
 
 /** A request is human-only when its row says so (a snapshot, so a later widening of the set also reaches it) or its category is. */
-function isHumanOnlyApproval(approval: Approval | undefined): boolean {
-  return approval !== undefined && (approval.human_only === 1 || isHumanOnly(approval.category))
+async function isHumanOnlyApproval(approval: Approval | undefined): Promise<boolean> {
+  return approval !== undefined && (approval.human_only === 1 || await isHumanOnly(approval.category))
 }
 
 /**
@@ -90,7 +90,7 @@ const HUMAN_ONLY_REFUSAL = {
  * told not to relay or decide it, and a failed owner message is reported back as OWNER_UNREACHED. The
  * requester hears the outcome from notifyRequester. Never throws: the approval exists either way.
  */
-function notifyAboutNewRequest(approval: Approval): void {
+async function notifyAboutNewRequest(approval: Approval): Promise<void> {
   if (approval.category === EMAIL_SEND_CATEGORY && !withinOwnerNoticeAllowance(approval)) {
     logger.warn({ approvalId: approval.id, agent: approval.agent_id }, 'Email approval request not announced: the hourly notice allowance is used up')
     try {
@@ -100,7 +100,7 @@ function notifyAboutNewRequest(approval: Approval): void {
     }
     return
   }
-  if (!APPROVAL_HUMAN_ONLY_ENFORCE || !isHumanOnlyApproval(approval)) {
+  if (!APPROVAL_HUMAN_ONLY_ENFORCE || !await isHumanOnlyApproval(approval)) {
     notifyMainAgent(approval)
     return
   }
@@ -119,8 +119,8 @@ function notifyAboutNewRequest(approval: Approval): void {
 }
 
 /** Tell the requester how its human-only request was decided (enforcement on). Best effort. */
-function notifyRequester(approval: Approval | undefined): void {
-  if (!approval || !isHumanOnlyApproval(approval) || !APPROVAL_HUMAN_ONLY_ENFORCE) return
+async function notifyRequester(approval: Approval | undefined): Promise<void> {
+  if (!approval || !await isHumanOnlyApproval(approval) || !APPROVAL_HUMAN_ONLY_ENFORCE) return
   sendSystemMessage(approval.agent_id, approvalResolvedLine(approval), approval)
 }
 
@@ -220,7 +220,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const requester = agent_id.trim()
     let storedCategory = category.trim()
     if (APPROVAL_HUMAN_ONLY_ENFORCE) {
-      const checked = checkCategory(category)
+      const checked = await checkCategory(category)
       if (!checked.ok) {
         json(res, { error: 'invalid_value', field: 'category', code: checked.error, hint: checked.hint }, 400)
         return true
@@ -234,14 +234,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
         id,
         agent_id: requester,
         category: storedCategory,
-        human_only: isHumanOnly(storedCategory),
+        human_only: await isHumanOnly(storedCategory),
         action_description: (action_description as string).trim(),
         action_payload: typeof action_payload === 'string' ? action_payload : null,
         content_hash: typeof content_hash === 'string' ? content_hash : null,
-        timeout_at: getTimeoutAt(storedCategory, timeout_seconds),
+        timeout_at: await getTimeoutAt(storedCategory, timeout_seconds),
         tenant_id: requestTenant,
       })
-      notifyAboutNewRequest(approval)
+      await notifyAboutNewRequest(approval)
       try {
         writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
       } catch { /* audit failure must not abort the write */ }
@@ -304,7 +304,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_description: describeEmail(parsed.envelope, parsed.hash),
       action_payload: parsed.canon,
       content_hash: parsed.hash,
-      timeout_at: getTimeoutAt(EMAIL_SEND_CATEGORY, timeout_seconds),
+      timeout_at: await getTimeoutAt(EMAIL_SEND_CATEGORY, timeout_seconds),
       tenant_id: requestTenant,
       max_pending: MAX_PENDING_EMAIL_REQUESTS,
     })
@@ -323,7 +323,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const approval = opened.approval
-    notifyAboutNewRequest(approval)
+    await notifyAboutNewRequest(approval)
     try {
       writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
     } catch { /* audit failure must not abort the write */ }
@@ -408,7 +408,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // permission also covers the request.
     if (ctx.role === 'fleet_agent') {
       const asked = getApproval(idMatch[1])
-      if (asked && isHumanOnlyApproval(asked)) journalNonHumanDecision(asked, ctx.tokenAgentId)
+      if (asked && await isHumanOnlyApproval(asked)) journalNonHumanDecision(asked, ctx.tokenAgentId)
       json(res, { error: 'forbidden', hint: 'A fleet agent token cannot resolve approvals' }, 403)
       return true
     }
@@ -449,7 +449,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // by a token is as much a decision as an approval). Without enforcement the request goes through as
     // before, and the journal records that it would have been refused.
     let resolvedVia: ApprovalResolvedVia | null = ctx.auth?.kind === 'session' ? 'dashboard_session' : ctx.auth ? 'bearer' : null
-    if (target && isHumanOnlyApproval(target)) {
+    if (target && await isHumanOnlyApproval(target)) {
       const human = humanSessionOf(req)
       if (human) {
         resolvedVia = 'dashboard_session'
@@ -503,7 +503,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const approval = getApproval(idMatch[1])
-    notifyRequester(approval)
+    await notifyRequester(approval)
     try {
       writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null, ...(declared && declared !== effectiveResolvedBy ? { declared_resolved_by: declared } : {}) } })
     } catch { /* audit failure must not abort the write */ }

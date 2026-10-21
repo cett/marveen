@@ -341,7 +341,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (!description) { json(res, { error: 'required', field: 'description', hint: 'description is required' }, 400); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'conflict', hint: 'An agent with this name already exists' }, 409); return true }
 
-    scaffoldAgentDir(name)
+    await scaffoldAgentDir(name)
     // The agent's own API token (agents/<name>/.agent-token, 0600). A failure does not undo the
     // agent: it still works on the shared token, and `npm run agent-tokens -- issue <name>` retries.
     try {

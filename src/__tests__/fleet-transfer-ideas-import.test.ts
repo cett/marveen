@@ -71,7 +71,7 @@ describe('importFleet -- ideaBox', () => {
       ideaBox: { ideas: [idea({ id: undefined, title: 'no id' }), idea({ id: null, title: 'null id' }), idea({ id: '', title: 'empty id' }), idea()], comments: [], statusLog: [] },
     })
     for (let i = 0; i < 2; i++) {
-      const applied = importFleet(fleetJson, { apply: true }) as any
+      const applied = await importFleet(fleetJson, { apply: true }) as any
       expect(applied.ok).toBe(true)
     }
     const db = getDb()
@@ -85,7 +85,7 @@ describe('importFleet -- ideaBox', () => {
       ...MINIMAL_FLEET_FIELDS,
       ideaBox: { ideas: [idea({ id: 'no-title', title: null }), idea({ id: 'bad-status', status: 'bogus' }), idea({ id: 'good' }), idea({ id: 'good' })], comments: [], statusLog: [] },
     })
-    expect((importFleet(fleetJson, { apply: true }) as any).ok).toBe(true)
+    expect((await importFleet(fleetJson, { apply: true }) as any).ok).toBe(true)
     const ids = (getDb().prepare('SELECT id FROM idea_box ORDER BY id').all() as { id: string }[]).map((r) => r.id)
     expect(ids).toEqual(['good'])
   })

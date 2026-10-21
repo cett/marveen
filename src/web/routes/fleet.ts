@@ -17,7 +17,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       return true
     }
     try {
-      const exported: ExportedFleet = exportFleet({ vaultPassword: vaultPassword || undefined })
+      const exported: ExportedFleet = await exportFleet({ vaultPassword: vaultPassword || undefined })
       const buf = Buffer.from(exported.data)
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -56,7 +56,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {
-      const result = importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply })
+      const result = await importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply })
       if ('dryRun' in result && result.errors.length > 0) {
         json(res, result, 400)
       } else {

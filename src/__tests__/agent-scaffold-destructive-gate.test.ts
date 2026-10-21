@@ -182,30 +182,30 @@ describe('ensureAuthAdminGate', () => {
 })
 
 describe('ensureQuarantineReader', () => {
-  it('deploys the rendered template to a sub-agent .claude/agents dir', () => {
+  it('deploys the rendered template to a sub-agent .claude/agents dir', async () => {
     const dest = join(probeDir, '.claude', 'agents', 'quarantine-reader.md')
     expect(existsSync(dest)).toBe(false)
-    expect(ensureQuarantineReader(PROBE)).toBe(true)
+    expect(await ensureQuarantineReader(PROBE)).toBe(true)
     expect(existsSync(dest)).toBe(true)
     expect(readFileSync(dest, 'utf-8').length).toBeGreaterThan(0)
   })
 
-  it('is a no-op once the deployed content already matches the render', () => {
-    expect(ensureQuarantineReader(PROBE)).toBe(true)
-    expect(ensureQuarantineReader(PROBE)).toBe(false)
+  it('is a no-op once the deployed content already matches the render', async () => {
+    expect(await ensureQuarantineReader(PROBE)).toBe(true)
+    expect(await ensureQuarantineReader(PROBE)).toBe(false)
   })
 
-  it('re-writes when the deployed file has drifted from the current render', () => {
-    ensureQuarantineReader(PROBE)
+  it('re-writes when the deployed file has drifted from the current render', async () => {
+    await ensureQuarantineReader(PROBE)
     const dest = join(probeDir, '.claude', 'agents', 'quarantine-reader.md')
     writeFileSync(dest, 'hand-edited, stale content')
-    expect(ensureQuarantineReader(PROBE)).toBe(true)
+    expect(await ensureQuarantineReader(PROBE)).toBe(true)
     expect(readFileSync(dest, 'utf-8')).not.toBe('hand-edited, stale content')
   })
 
-  it('deploys to the user-global agents dir for the main agent', () => {
+  it('deploys to the user-global agents dir for the main agent', async () => {
     const dest = join(fakeHome, '.claude', 'agents', 'quarantine-reader.md')
-    expect(ensureQuarantineReader(MAIN_AGENT_ID)).toBe(true)
+    expect(await ensureQuarantineReader(MAIN_AGENT_ID)).toBe(true)
     expect(existsSync(dest)).toBe(true)
   })
 })

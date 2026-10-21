@@ -713,10 +713,10 @@ function exportScheduledTasks(): ScheduledTaskExport[] {
   return result
 }
 
-function exportDashboardSettings(): DashboardSettingsExport {
+async function exportDashboardSettings(): Promise<DashboardSettingsExport> {
   const read = (name: string) => safeReadJson(join(STORE_DIR, name))
   return {
-    autonomy: listAutonomyCategories(),
+    autonomy: await listAutonomyCategories(),
     modelProfileMap: listModelProfileMap(),
     autoRestart: listAgentSettingsByKey('auto_restart'),
     agentsDesired: [...getDesiredAgents()].sort(),
@@ -725,7 +725,7 @@ function exportDashboardSettings(): DashboardSettingsExport {
     federation: readFederationConfigObjectRaw(),
     costopsConfig: read('costops-config.json'),
     costBudgets: listCostBudgets('default'),
-    egressAllowlist: listEgressAllowlistRows(null),
+    egressAllowlist: await listEgressAllowlistRows(null),
     terminalInputEnabled: readTerminalInputEnabledRaw(),
   }
 }
@@ -764,7 +764,7 @@ export const ENCRYPTED_FLEET_VERSION = 1
 
 export type ExportedFleet = { data: string; exportedAt: string }
 
-export function exportFleet(options: { vaultPassword?: string } = {}): ExportedFleet {
+export async function exportFleet(options: { vaultPassword?: string } = {}): Promise<ExportedFleet> {
   if (options.vaultPassword !== undefined && options.vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
     throw new Error(`A vault jelszó legalább ${MIN_VAULT_PASSWORD_LEN} karakter kell legyen.`)
   }
@@ -841,7 +841,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     importSources,
     vaultSshKeys,
     vaultSshServers,
-    dashboardSettings: exportDashboardSettings(),
+    dashboardSettings: await exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
 
@@ -1273,10 +1273,10 @@ const EMPTY_DIFF: DiffReport = {
   errors: [],
 }
 
-export function importFleet(
+export async function importFleet(
   rawBody: string,
   options: { vaultPassword?: string; apply: boolean },
-): DiffReport | ImportResult {
+): Promise<DiffReport | ImportResult> {
   // Auto-detect encrypted export: {"enc":1,"blob":"..."}
   // H2/M2: decrypt FIRST, before any file writes or DB commits (fail-fast on wrong password)
   let jsonBody: string
@@ -1391,7 +1391,7 @@ export function importFleet(
     // untouched, consistent with the identity-takeover model not being
     // destructive beyond what the source snapshot actually describes.
     if (Array.isArray(s.autonomy)) {
-      for (const row of s.autonomy) upsertAutonomyCategory(row)
+      for (const row of s.autonomy) await upsertAutonomyCategory(row)
     }
     // Same upsert-not-replace rationale as autonomy above.
     if (Array.isArray(s.modelProfileMap)) {
@@ -1503,7 +1503,7 @@ export function importFleet(
     // DashboardSettingsExport doc): INSERT OR IGNORE per row is the union
     // semantics, same upsert-not-replace rationale as autonomy above.
     if (Array.isArray(s.egressAllowlist)) {
-      mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
+      await mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
     }
 
     // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)

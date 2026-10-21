@@ -1010,9 +1010,9 @@ export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
 // read path the WebFetch egress-gate hook uses when it cannot reach this
 // process's DB (the hook runs outside this process; see decision D1, #985
 // plan doc).
-export function ownerAllowedDomainsFromDb(storeDir = STORE_DIR): string[] {
+export async function ownerAllowedDomainsFromDb(storeDir = STORE_DIR): Promise<string[]> {
   try {
-    return listEgressAllowlistValues('domain')
+    return (await listEgressAllowlistValues('domain'))
       .map((d) => d.trim())
       .filter((d) => isPublicFetchHost(d))
   } catch {
@@ -1164,7 +1164,7 @@ export function ensureSkillUsageMatcher(name: string): boolean {
 // disappeared on 2026-07-30. Now the owner's domains are an INPUT to the
 // render, so a re-render preserves the decision instead of erasing it.
 // Returns true if the file was written, false if already up-to-date.
-export function ensureQuarantineReader(name: string): boolean {
+export async function ensureQuarantineReader(name: string): Promise<boolean> {
   const tplPath = join(PROJECT_ROOT, 'templates', 'sub-agents', 'quarantine-reader.md')
   if (!existsSync(tplPath)) return false
   let destDir: string
@@ -1177,7 +1177,7 @@ export function ensureQuarantineReader(name: string): boolean {
   const destPath = join(destDir, 'quarantine-reader.md')
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), ownerAllowedDomainsFromDb())
+    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), await ownerAllowedDomainsFromDb())
   } catch {
     return false
   }
@@ -1254,7 +1254,7 @@ export function ensureDefaultScheduledTasks(): void {
   }
 }
 
-export function scaffoldAgentDir(name: string) {
+export async function scaffoldAgentDir(name: string) {
   const dir = agentDir(name)
   mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
   mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true })
@@ -1265,7 +1265,7 @@ export function scaffoldAgentDir(name: string) {
   // Deploy the quarantine-reader sub-agent definition from the template so every
   // scaffolded agent can use it for safe web/RSS fetching without calling WebFetch
   // directly in the main context (where untrusted content would run as instructions).
-  ensureQuarantineReader(name)
+  await ensureQuarantineReader(name)
 
   // Initialize empty files if they don't exist
   const memoryMd = join(dir, 'memory', 'MEMORY.md')
