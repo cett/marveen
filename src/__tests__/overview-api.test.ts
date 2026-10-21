@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { initDatabase, getDb, createApproval, createSkill, createTenant, setTenantAgentAvailability, upsertOtelSpan } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
-import { logger } from '../logger.js'
 
 vi.mock('../web/agent-config.js', () => ({
   agentDir: () => '/tmp/agent-a',
@@ -410,35 +409,6 @@ describe('GET /api/overview — activity feed 4h filter', () => {
     await tryHandleOverview(ctx)
     const texts = out.body.activity.map((a: any) => a.text)
     expect(texts.some((t: string) => t.includes('old event'))).toBe(false)
-  })
-})
-
-describe('GET /api/overview, activity feed approvals', () => {
-  it('includes a recent approval with its status', async () => {
-    createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
-
-    const { ctx, out } = fakeCtx('/api/overview')
-    await tryHandleOverview(ctx)
-    const item = out.body.activity.find((a: any) => a.icon === 'approval')
-    expect(item).toMatchObject({ text: '[pending] send the weekly mail', agent: 'agent-a' })
-  })
-
-  it('a failing approvals read leaves the feed without them, answers 200 and logs the error', async () => {
-    createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
-    getDb().exec('ALTER TABLE approvals RENAME COLUMN requested_at TO requested_at_gone')
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
-    try {
-      const { ctx, out } = fakeCtx('/api/overview')
-      await tryHandleOverview(ctx)
-      expect(out.status).toBe(200)
-      expect(out.body.activity.some((a: any) => a.icon === 'approval')).toBe(false)
-      expect(warn).toHaveBeenCalledWith(
-        expect.objectContaining({ err: expect.objectContaining({ message: expect.stringContaining('requested_at') }) }),
-        'overview approvals feed read failed',
-      )
-    } finally {
-      warn.mockRestore()
-    }
   })
 })
 

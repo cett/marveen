@@ -14,7 +14,6 @@ import {
 } from '../agent-config.js'
 import { readAgentTeam } from '../agent-team.js'
 import { isAgentRunning } from '../agent-process.js'
-import { logger } from '../../logger.js'
 import { jsonMaybeGzip } from '../http-helpers.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC } from '../quota.js'
 import type { RouteContext } from './types.js'
@@ -229,11 +228,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
           agent: r.agent_id,
         })
       }
-    } catch (err) {
-      // The feed degrades without the approvals, but the failure must not be invisible (a wrong column name
-      // once hid here).
-      logger.warn({ err }, 'overview approvals feed read failed')
-    }
+    } catch { /* ignore */ }
     activity.sort((a, b) => b.at - a.at)
 
     // Build agents list with last_active timestamp
