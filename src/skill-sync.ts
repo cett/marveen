@@ -1,5 +1,7 @@
-import { db } from './db/connection.js'
-import { getSkill, getSkillFile, countSkillFiles, listSkillAccess, putSkillFile } from './db/tasks.js'
+import {
+  agentHasEnabledAvailability, countSkillFiles, getSkill, getSkillFile, insertFleetSkillFromFile, listSkillAccess,
+  putSkillFile, setSkillContent,
+} from './db/tasks.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from './skill-files.js'
 import { stripGeneratedHeader } from './skill-header.js'
 import { tenantSkillDirName } from './web/skill-regen.js'
@@ -30,15 +32,11 @@ const ignored = (message: string): SkillSyncResult => ({ ok: true, ignored: true
  *  tenant or for a tenant it is granted to (the recipients regen writes to). */
 function agentQualifies(skillId: string, ownerTenant: string, agentId: string): boolean {
   const tenants = [...new Set([ownerTenant, ...listSkillAccess(skillId).map(g => g.tenant_id)])].sort()
-  const placeholders = tenants.map(() => '?').join(',')
-  return db
-    .prepare(`SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN (${placeholders})`)
-    .get(agentId, ...tenants) !== undefined
+  return agentHasEnabledAvailability(agentId, tenants)
 }
 
 function touchContent(skillId: string, content: string): void {
-  db.prepare('UPDATE skills SET content = ?, updated_at = ? WHERE id = ?')
-    .run(stripGeneratedHeader(content), Math.floor(Date.now() / 1000), skillId)
+  setSkillContent(skillId, stripGeneratedHeader(content), Math.floor(Date.now() / 1000))
 }
 
 /** A plain SKILL.md (global/<dir> or agent/<id>/<dir>): update the row, or create it as a fleet skill. */
@@ -49,10 +47,7 @@ export function syncSkillContent(skillId: string, content: string): SkillSyncRes
   } else {
     const now = Math.floor(Date.now() / 1000)
     const name = skillId.slice(skillId.lastIndexOf('/') + 1)
-    db.prepare(`
-      INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
-      VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?)
-    `).run(skillId, name, stripGeneratedHeader(content), skillId.startsWith('global/') ? 1 : 0, now, now)
+    insertFleetSkillFromFile(skillId, name, stripGeneratedHeader(content), skillId.startsWith('global/'), now)
   }
   return done(`upserted ${skillId}`)
 }
