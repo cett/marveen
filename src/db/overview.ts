@@ -142,6 +142,7 @@ export function listOverviewRecentApprovals(
 ): { agent_id: string; action_description: string; status: string; created_at: number }[] {
   const { tc, tp } = tenantFilter(tenantId)
   return db.prepare(
-    `SELECT agent_id, action_description, status, created_at FROM approvals WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 10`
+    // approvals has requested_at, not created_at; the alias keeps the shape the route reads.
+    `SELECT agent_id, action_description, status, requested_at AS created_at FROM approvals WHERE requested_at >= ?${tc} ORDER BY requested_at DESC LIMIT 10`
   ).all(sinceSec, ...tp) as { agent_id: string; action_description: string; status: string; created_at: number }[]
 }
