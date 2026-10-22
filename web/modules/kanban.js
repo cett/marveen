@@ -14,7 +14,8 @@
 //   wireCardTouch            -- wireKanbanCardTouchDnD from app.js DnD block (extracted in S-5)
 //   loadIdeasPage            -- app.js page loader, called by breakdown accept in idea mode
 
-import { escapeHtml } from './util.js'
+import { escapeHtml, mainAgentId } from './util.js'
+import { liveAgentIdForAssignee, agentLiveState } from './kanban-agent-state.js'
 import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
@@ -1206,6 +1207,60 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
   }
 })
 
+// === Tokens per card (in the detail modal) ===
+// The assignee's token use while this card was in_progress. The number is an upper bound when the agent had
+// other cards in_progress at the same time, and the text says so instead of splitting it.
+function formatTokenCount(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M'
+  if (n >= 1e3) return Math.round(n / 1e3) + 'k'
+  return String(n)
+}
+
+async function renderCardTokensSection(card) {
+  const box = document.getElementById('cardDetailTokens')
+  const body = document.getElementById('cardDetailTokensBody')
+  if (!box || !body) return
+  box.hidden = true
+  body.textContent = ''
+  let data
+  try {
+    const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/tokens`)
+    if (!r.ok) return
+    data = await r.json()
+  } catch { return }
+  if (!data || !data.agent || !Array.isArray(data.windows) || data.windows.length === 0) return
+  const lines = []
+  if (data.totalCalls === 0) {
+    // A zero from a window the log no longer covers is not "no tokens used": say the data is gone instead.
+    if (!data.dataExpired) lines.push(t('kanban.tokens.none'))
+  } else {
+    // Cache reads dominate the raw sum (96-98% on measured cards), so the headline names the three kinds
+    // instead of one big number.
+    lines.push(t('kanban.tokens.total', {
+      output: formatTokenCount(data.outputTokens),
+      fresh: formatTokenCount(data.freshInputTokens),
+      cached: formatTokenCount(data.cacheReadTokens),
+      calls: data.totalCalls,
+    }))
+    for (const m of data.perModel) {
+      lines.push(`${m.model || '?'}: ${t('kanban.tokens.model_line', { output: formatTokenCount(m.outputTokens), calls: m.calls })}`)
+    }
+  }
+  if (data.dataExpired) lines.push(t('kanban.tokens.expired', { days: data.retentionDays }))
+  if (data.overlappingCards > 0) lines.push(t('kanban.tokens.overlap', { n: data.overlappingCards }))
+  const lastTo = data.windows[data.windows.length - 1].to
+  if (data.dataUntil && data.dataUntil < lastTo) {
+    lines.push(t('kanban.tokens.data_until', { time: new Date(data.dataUntil * 1000).toLocaleString() }))
+  }
+  for (const line of lines) {
+    const div = document.createElement('div')
+    div.textContent = line
+    body.appendChild(div)
+  }
+  box.title = t('kanban.tokens.tooltip', { agent: data.agent })
+  box.hidden = false
+}
+
 // === Card labels (in the detail modal) ===
 // Always re-fetches the card's own labels via the dedicated endpoint instead
 // of trusting card.labels -- callers that pass a card object sourced from
@@ -1327,6 +1382,46 @@ async function loadActiveTime(card) {
   el.title = text ? t('kanban.active.tooltip') : t('kanban.active.tooltip_none')
 }
 
+// === Live state of the assignee agent (in the detail modal) ===
+// The pure part (which agent, which state) is in kanban-agent-state.js; this is the fetch and the DOM.
+const AGENT_LIVE_POLL_MS = 5000
+let agentLiveTimer = null
+
+function stopAgentLivePoll() {
+  if (agentLiveTimer) { clearInterval(agentLiveTimer); agentLiveTimer = null }
+}
+
+async function refreshAgentLiveState(agentId) {
+  const item = document.getElementById('metaAgentStateItem')
+  const val = document.getElementById('metaAgentStateValue')
+  if (!item || !val) { stopAgentLivePoll(); return }
+  let state = null
+  try {
+    const res = await fetch('/api/agents/activity')
+    if (res.ok) state = agentLiveState(await res.json(), agentId)
+  } catch { /* shown as hidden: no reading is better than a wrong one */ }
+  // The modal may have been re-rendered for another card, or closed, while the request was in flight.
+  if (!val.isConnected) return
+  if (state === null) { item.hidden = true; return }
+  val.textContent = ''
+  const dot = document.createElement('span')
+  dot.className = `agent-live-dot agent-live-dot--${state}`
+  val.appendChild(dot)
+  val.appendChild(document.createTextNode(t(`kanban.agent_state.${state}`)))
+  val.title = t('kanban.agent_state.tooltip')
+  item.hidden = false
+}
+
+function startAgentLivePoll(agentId) {
+  stopAgentLivePoll()
+  refreshAgentLiveState(agentId)
+  agentLiveTimer = setInterval(() => {
+    // Stops by itself once the modal is closed or the element is gone.
+    if (!cardDetailOverlay.classList.contains('active') || !document.getElementById('metaAgentStateValue')) { stopAgentLivePoll(); return }
+    refreshAgentLiveState(agentId)
+  }, AGENT_LIVE_POLL_MS)
+}
+
 export async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
@@ -1339,6 +1434,7 @@ export async function showCardDetail(card) {
     ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawDetailAssignee.toLowerCase())
     : null
   const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || '-- nincs --')
+  const liveAgentId = liveAgentIdForAssignee(assignee, mainAgentId())
   const priorityLabels = { low: t('kanban.priority.low'), normal: t('kanban.priority.normal'), high: t('kanban.priority.high'), urgent: t('kanban.priority.urgent') }
   const statusLabels = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), testing: t('kanban.status.testing'), waiting: t('kanban.status.waiting'), done: t('kanban.status.done') }
 
@@ -1357,6 +1453,12 @@ export async function showCardDetail(card) {
       <span class="meta-label">${t('kanban.meta.assignee')}</span>
       <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
     </div>
+    ${liveAgentId ? `
+    <div class="meta-item" id="metaAgentStateItem" hidden>
+      <span class="meta-label">${t('kanban.meta.agent_state')}</span>
+      <span class="meta-value" id="metaAgentStateValue"></span>
+    </div>
+    ` : ''}
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.priority')}</span>
       <span class="meta-value">${priorityLabels[card.priority]}</span>
@@ -1381,6 +1483,8 @@ export async function showCardDetail(card) {
     ` : ''}
   `
   loadActiveTime(card)
+  if (liveAgentId) startAgentLivePoll(liveAgentId)
+  else stopAgentLivePoll()
 
   // Inline edit for status on detail view. HTML5 drag & drop is the only way to
   // change a card's column, and it is dead on touch devices (no dragstart is
@@ -1482,6 +1586,7 @@ export async function showCardDetail(card) {
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
   renderCardLabelsSection(card)
+  renderCardTokensSection(card)
 
   // #115: Parent meta row — dropdown replaces the old read-only display; shown only when editable
   const parentMetaItem = document.getElementById('parentMetaItem')

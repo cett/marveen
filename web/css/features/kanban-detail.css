@@ -14,7 +14,29 @@
 }
 .card-detail-desc:empty { display: none; }
 
+/* Live state of the assignee agent: a dot and a word, colour is never the only signal. */
+.meta-item[hidden] { display: none; }
+.agent-live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.agent-live-dot--working { background: var(--success); }
+.agent-live-dot--idle { background: var(--text-muted); }
+.agent-live-dot--dead,
+.agent-live-dot--error { background: var(--danger); }
+.agent-live-dot--stopped,
+.agent-live-dot--unreachable,
+.agent-live-dot--unknown { background: var(--warning); }
+
+/* Tokens per card, same heading style as the labels. */
+.card-detail-tokens { margin-bottom: 20px; }
+.card-detail-tokens-body { font-size: 13px; color: var(--text); display: grid; gap: 2px; }
 .card-detail-labels { margin-bottom: 20px; }
+.card-detail-tokens h4,
 .card-detail-labels h4 {
   font-size: 12px;
   font-weight: 600;

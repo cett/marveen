@@ -1,5 +1,5 @@
 // Every kanban route that reaches a card by the id in its path must hold the tenant line for a non-admin
-// caller: move, archive, unarchive, comments (read and write), events, labels (read, attach, detach),
+// caller: move, archive, unarchive, comments (read and write), events, tokens, labels (read, attach, detach),
 // breakdown, children, subtree. A foreign id answers 404 exactly like a missing one and the row stays as it
 // was; an own card keeps working; an admin keeps the cross-tenant reach. Real in-memory database, the gate
 // chain of web.ts in miniature.
@@ -106,6 +106,7 @@ const CASES: Case[] = [
   { name: 'GET comments', method: 'GET', path: (id) => `/api/kanban/${id}/comments` },
   { name: 'POST comments', method: 'POST', path: (id) => `/api/kanban/${id}/comments`, body: { author: 'x', content: 'hello' } },
   { name: 'GET events', method: 'GET', path: (id) => `/api/kanban/${id}/events` },
+  { name: 'GET tokens', method: 'GET', path: (id) => `/api/kanban/${id}/tokens` },
   { name: 'GET labels', method: 'GET', path: (id) => `/api/kanban/${id}/labels` },
   { name: 'POST labels', method: 'POST', path: (id) => `/api/kanban/${id}/labels`, body: { labelId: 'lbl-acme' } },
   { name: 'DELETE labels/:labelId', method: 'DELETE', path: (id) => `/api/kanban/${id}/labels/lbl-acme` },
@@ -269,6 +270,11 @@ describe('an own card keeps working', () => {
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/labels`)).status).toBe(200)
     expect((await callAs(alpha(), 'DELETE', `/api/kanban/${DEFAULT_CARD}/labels/lbl-default`)).status).toBe(200)
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/events`)).status).toBe(200)
+    // Tokens per card is admin only (the rows are keyed by agent, not tenant): an own card is 403 for a fleet
+    // token, 200 for an admin.
+    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(403)
+    expect((await callAs(admin(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(200)
+    expect((await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}/tokens`)).status).toBe(200)
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/children`)).status).toBe(200)
     expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/subtree`)).status).toBe(200)
   })
