@@ -110,6 +110,16 @@ describe('POST /api/approvals by the main agent token', () => {
     } finally { auditFail.on = false }
   })
 
+  it('an id that only begins or ends like its own is another agent: own id plus a suffix, a prefix of it, a longer id around it', async () => {
+    for (const other of ['main-x2', 'main-x-2', 'main-xx', 'main-', 'main', 'x-main-x', 'main-x.bak']) {
+      const r = await open(MAIN, other)
+      expect(r.status, other).toBe(403)
+      expect(r.body, other).toMatchObject({ error: 'forbidden', code: 'agent_id_mismatch' })
+    }
+    expect(approvalCount()).toBe(0)
+    expect(refusals()).toHaveLength(7)
+  })
+
   it('the platform sender names get no exception here', async () => {
     expect((await open(MAIN, 'scheduler')).status).toBe(403)
     expect((await open(MAIN, 'system')).status).toBe(403)
