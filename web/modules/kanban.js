@@ -14,7 +14,8 @@
 //   wireCardTouch            -- wireKanbanCardTouchDnD from app.js DnD block (extracted in S-5)
 //   loadIdeasPage            -- app.js page loader, called by breakdown accept in idea mode
 
-import { escapeHtml } from './util.js'
+import { escapeHtml, mainAgentId } from './util.js'
+import { liveAgentIdForAssignee, agentLiveState } from './kanban-agent-state.js'
 import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
@@ -1381,6 +1382,46 @@ async function loadActiveTime(card) {
   el.title = text ? t('kanban.active.tooltip') : t('kanban.active.tooltip_none')
 }
 
+// === Live state of the assignee agent (in the detail modal) ===
+// The pure part (which agent, which state) is in kanban-agent-state.js; this is the fetch and the DOM.
+const AGENT_LIVE_POLL_MS = 5000
+let agentLiveTimer = null
+
+function stopAgentLivePoll() {
+  if (agentLiveTimer) { clearInterval(agentLiveTimer); agentLiveTimer = null }
+}
+
+async function refreshAgentLiveState(agentId) {
+  const item = document.getElementById('metaAgentStateItem')
+  const val = document.getElementById('metaAgentStateValue')
+  if (!item || !val) { stopAgentLivePoll(); return }
+  let state = null
+  try {
+    const res = await fetch('/api/agents/activity')
+    if (res.ok) state = agentLiveState(await res.json(), agentId)
+  } catch { /* shown as hidden: no reading is better than a wrong one */ }
+  // The modal may have been re-rendered for another card, or closed, while the request was in flight.
+  if (!val.isConnected) return
+  if (state === null) { item.hidden = true; return }
+  val.textContent = ''
+  const dot = document.createElement('span')
+  dot.className = `agent-live-dot agent-live-dot--${state}`
+  val.appendChild(dot)
+  val.appendChild(document.createTextNode(t(`kanban.agent_state.${state}`)))
+  val.title = t('kanban.agent_state.tooltip')
+  item.hidden = false
+}
+
+function startAgentLivePoll(agentId) {
+  stopAgentLivePoll()
+  refreshAgentLiveState(agentId)
+  agentLiveTimer = setInterval(() => {
+    // Stops by itself once the modal is closed or the element is gone.
+    if (!cardDetailOverlay.classList.contains('active') || !document.getElementById('metaAgentStateValue')) { stopAgentLivePoll(); return }
+    refreshAgentLiveState(agentId)
+  }, AGENT_LIVE_POLL_MS)
+}
+
 export async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
@@ -1393,6 +1434,7 @@ export async function showCardDetail(card) {
     ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawDetailAssignee.toLowerCase())
     : null
   const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || '-- nincs --')
+  const liveAgentId = liveAgentIdForAssignee(assignee, mainAgentId())
   const priorityLabels = { low: t('kanban.priority.low'), normal: t('kanban.priority.normal'), high: t('kanban.priority.high'), urgent: t('kanban.priority.urgent') }
   const statusLabels = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), testing: t('kanban.status.testing'), waiting: t('kanban.status.waiting'), done: t('kanban.status.done') }
 
@@ -1411,6 +1453,12 @@ export async function showCardDetail(card) {
       <span class="meta-label">${t('kanban.meta.assignee')}</span>
       <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
     </div>
+    ${liveAgentId ? `
+    <div class="meta-item" id="metaAgentStateItem" hidden>
+      <span class="meta-label">${t('kanban.meta.agent_state')}</span>
+      <span class="meta-value" id="metaAgentStateValue"></span>
+    </div>
+    ` : ''}
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.priority')}</span>
       <span class="meta-value">${priorityLabels[card.priority]}</span>
@@ -1435,6 +1483,8 @@ export async function showCardDetail(card) {
     ` : ''}
   `
   loadActiveTime(card)
+  if (liveAgentId) startAgentLivePoll(liveAgentId)
+  else stopAgentLivePoll()
 
   // Inline edit for status on detail view. HTML5 drag & drop is the only way to
   // change a card's column, and it is dead on touch devices (no dragstart is
