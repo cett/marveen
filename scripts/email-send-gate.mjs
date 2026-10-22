@@ -575,9 +575,13 @@ export function flattenSubstitutions(cmd) {
   return out
 }
 
-// A script operand that names a stream, not a file (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`):
-// the program is whatever the stream carries, as undecidable here as a glob or `$` (W-1).
-const STREAM_SCRIPT = /^(?:\/dev\/(?:stdin|fd\/[0-9]+)|\/proc\/self\/fd\/[0-9]+)$/
+// A script operand under /dev/ or /proc/ (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`, `/proc/<pid>/fd/0`,
+// `/dev/./stdin`, `//dev/stdin`) is a stream or a process file, not a script on disk: the program is whatever
+// it carries, as undecidable here as a glob or `$` (W-1). A general rule on the leading directory (extra
+// slashes and `./` segments before it are skipped), not a list of stream names. NOT covered: a `..` that walks
+// into /dev or /proc from another directory (`/tmp/../dev/stdin`); like the other path tricks it is a known
+// limit of the pattern gate.
+const DEVPROC_SCRIPT = /^\/+(?:\.\/+)*(?:dev|proc)\//
 // `-m runpy` (also `-mrunpy`, `-um runpy`) runs whatever the next argument names: undecidable (W-2).
 function pythonRunsRunpy(rest) {
   for (let i = 0; i < rest.length; i++) {
@@ -591,7 +595,7 @@ function pythonHeadSends(rest) {
   const { script, stdin, stdinRedirect } = pythonScriptOperand(rest)
   if (script !== null && SENDPY.test(basename(script))) return recipient
   if (script !== null && UNDECIDABLE_PATH.test(script)) return recipient // MAILGATEVARARGS1020
-  if (script !== null && STREAM_SCRIPT.test(script)) return recipient
+  if (script !== null && DEVPROC_SCRIPT.test(script)) return recipient
   if (pythonRunsRunpy(rest)) return recipient
   if (stdin || (script === null && stdinRedirect)) return recipient
   return false

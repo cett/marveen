@@ -1207,23 +1207,83 @@
       "expected": false
     },
     {
-      "name": "stream script control: /dev/fd/ with a non-numeric tail is no stream",
+      "name": "dev/proc script: any file under /dev/, not only the known stream names (/dev/fd/ with a non-numeric tail)",
       "cmd": "python3 /dev/fd/x --to a@example.com",
-      "expected": false
+      "expected": true
     },
     {
-      "name": "stream script control: a longer name starting with /dev/stdin is no stream",
+      "name": "dev/proc script: a longer name starting with /dev/stdin",
       "cmd": "python3 /dev/stdinx --to a@example.com",
-      "expected": false
+      "expected": true
     },
     {
-      "name": "stream script control: /proc/self/fd/ with a non-numeric tail is no stream",
+      "name": "dev/proc script: /proc/self/fd/ with a non-numeric tail",
       "cmd": "python3 /proc/self/fd/x --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script: another process by pid",
+      "cmd": "python3 /proc/1234/fd/0 --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script: thread-self",
+      "cmd": "python3 /proc/thread-self/fd/3 --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script: a device file that is no stream, /dev/null, is no script on disk either",
+      "cmd": "python3 /dev/null --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script: a doubled slash after /dev",
+      "cmd": "python3 /dev//stdin --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script: a dot segment before the name",
+      "cmd": "python3 /dev/./stdin --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script: a leading double slash",
+      "cmd": "python3 //dev/stdin --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script: a dot segment before /dev",
+      "cmd": "python3 /./dev/stdin --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "dev/proc script control: /proc without a recipient flag",
+      "cmd": "python3 /proc/self/fd/3",
       "expected": false
     },
     {
-      "name": "stream script control: an ordinary file whose path ends in /dev/stdin is no stream",
+      "name": "dev/proc script control: an ordinary file whose path only contains /dev/stdin",
       "cmd": "python3 /tmp/dev/stdin --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "dev/proc script control: a directory whose name only starts with dev",
+      "cmd": "python3 /devices/run.py --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "dev/proc script control: a directory whose name only starts with proc",
+      "cmd": "python3 /process/run.py --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "dev/proc script control: a relative dev/ directory is no /dev",
+      "cmd": "python3 dev/stdin --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "dev/proc script control: the interpreter running a script under the repo, with the recipient flag",
+      "cmd": "python3 ./scripts/dev/report.py --to a@example.com",
       "expected": false
     },
     {

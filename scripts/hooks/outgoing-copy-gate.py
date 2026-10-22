@@ -641,9 +641,12 @@ def flatten_substitutions(cmd: str) -> str:
     return "".join(out)
 
 
-# A script operand that names a stream, not a file (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`):
-# the program is whatever the stream carries, as undecidable here as a glob or `$` (W-1).
-_STREAM_SCRIPT = re.compile(r"(?:/dev/(?:stdin|fd/[0-9]+)|/proc/self/fd/[0-9]+)")
+# A script operand under /dev/ or /proc/ (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`, `/proc/<pid>/fd/0`,
+# `/dev/./stdin`, `//dev/stdin`) is a stream or a process file, not a script on disk: the program is whatever
+# it carries, as undecidable here as a glob or `$` (W-1). A general rule on the leading directory (extra
+# slashes and `./` segments before it are skipped), not a list of stream names. NOT covered: a `..` that walks
+# into /dev or /proc from another directory (`/tmp/../dev/stdin`). Mirrored in email-send-gate.mjs.
+_DEVPROC_SCRIPT = re.compile(r"/+(?:\./+)*(?:dev|proc)/")
 
 
 def _python_runs_runpy(rest) -> bool:
@@ -664,7 +667,7 @@ def _python_head_sends(rest) -> bool:
         return recipient
     if script is not None and _UNDECIDABLE_PATH.search(script):
         return recipient  # MAILGATEVARARGS1020
-    if script is not None and _STREAM_SCRIPT.fullmatch(script):
+    if script is not None and _DEVPROC_SCRIPT.match(script):
         return recipient
     if _python_runs_runpy(rest):
         return recipient
