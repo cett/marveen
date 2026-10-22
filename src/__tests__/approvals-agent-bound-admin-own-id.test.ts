@@ -89,12 +89,21 @@ describe('POST /api/approvals by the main agent token', () => {
     expect(getApproval(id)?.status).toBe('pending')
   })
 
+  it('the comparison is on the normalised id: stray characters fall away, and the stored id is still the token\'s', async () => {
+    const created = await open(MAIN, 'ma.in-x')
+    expect(created.status).toBe(201)
+    expect(getApproval(created.body.id as string)?.agent_id).toBe('main-x')
+  })
+
   it('a token id with upper case is compared case-insensitively too, and the stored id is the token\'s', async () => {
     const mixed: Who = { ...MAIN, tokenAgentId: 'Main-X' }
     const created = await open(mixed, 'main-x')
     expect(created.status).toBe(201)
     expect(getApproval(created.body.id as string)?.agent_id).toBe('Main-X')
     expect((await open(mixed, 'agent-d')).status).toBe(403)
+    // the token side is normalised the same way as the declared side
+    const dotted: Who = { ...MAIN, tokenAgentId: 'ma.in-X' }
+    expect((await open(dotted, 'main-x')).status).toBe(201)
   })
 
   it('the email_send branch is unchanged: its own id is let through to the email checks, another id is refused first', async () => {

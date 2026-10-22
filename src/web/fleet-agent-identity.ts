@@ -13,6 +13,7 @@
 // themselves do under enforce is enforcedSelfScope below.
 
 import { json } from './http-helpers.js'
+import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { writeAgentAuditLog } from '../db.js'
 import type { RouteContext } from './routes/types.js'
 
@@ -80,8 +81,8 @@ export function agentBoundAdminId(ctx: Pick<RouteContext, 'role' | 'auth' | 'tok
  * reach; this is the one place it is held to its own identity, because an approval carries who is
  * asking and the self-approval guard of the resolve route compares that to the resolver. A request that
  * names another agent is a 403 (`agent_id_mismatch`), the attempt is audited, and nothing is stored. The
- * comparison ignores case and padding (the route then stores the token's own id, see agentBoundAdminId),
- * and unlike the sender of an inter-agent message the platform senders (`scheduler`, `system`) get no
+ * comparison is on the normalised identifier (sanitizeAgentIdent, case-folded; the route then stores the
+ * token's own id, see agentBoundAdminId), and unlike the sender of an inter-agent message the platform senders (`scheduler`, `system`) get no
  * exception: an approval is never theirs.
  * The operator's token (it names no agent), a dashboard session and a federation peer are untouched.
  * Writes the 403 and returns true when the request must stop.
@@ -92,7 +93,7 @@ export function denyAgentBoundAdminForeign(
 ): boolean {
   const ownId = agentBoundAdminId(ctx)
   if (!ownId) return false
-  if (agentId.trim().toLowerCase() === ownId.trim().toLowerCase()) return false
+  if (sanitizeAgentIdent(agentId).toLowerCase() === sanitizeAgentIdent(ownId).toLowerCase()) return false
   try {
     writeAgentAuditLog({
       agent_id: ownId, entity: 'approval', action: 'create_refused',
