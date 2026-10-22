@@ -41,7 +41,7 @@ source "$(dirname "$0")/install-lang.sh"
 # and need root. Say what is written and why, ONCE, before the first of them asks
 # for a password. The text lives in install-lang.sh; the function stays here, so a
 # standalone run that fetched an older install-lang.sh still has it (an unknown
-# _t key just prints nothing).
+# _t key prints the key itself, so such a run shows the raw managed.notice_* names).
 managed_settings_notice() {
   if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
     return 0
