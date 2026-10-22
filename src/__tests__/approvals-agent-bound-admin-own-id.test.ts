@@ -16,6 +16,19 @@ import type { RouteContext } from '../web/routes/types.js'
 import { initDatabase, getDb, getApproval } from '../db.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 
+// The audit write can be made to throw, to show the refusal does not depend on it.
+const auditFail = vi.hoisted(() => ({ on: false }))
+vi.mock('../db.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../db.js')>()
+  return {
+    ...real,
+    writeAgentAuditLog: (...args: Parameters<typeof real.writeAgentAuditLog>) => {
+      if (auditFail.on) throw new Error('audit store down')
+      return real.writeAgentAuditLog(...args)
+    },
+  }
+})
+
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-x' }))
 
 type Who = Pick<RouteContext, 'role' | 'auth' | 'tokenAgentId'>
@@ -63,7 +76,38 @@ describe('POST /api/approvals by the main agent token', () => {
     const rows = refusals()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ agent_id: 'main-x', entity: 'approval' })
-    expect(JSON.parse(rows[0].detail)).toEqual({ declared_agent_id: 'agent-d', principal: 'main-agent:main-x', principalSource: 'token' })
+    expect(JSON.parse(rows[0].detail)).toEqual({
+      declared_agent_id: 'agent-d', declared_agent_id_len: 'agent-d'.length, principal: 'main-agent:main-x', principalSource: 'token',
+    })
+  })
+
+  it('the audit row keeps the first 128 characters of the declared id and its length, whatever was sent', async () => {
+    const detailOf = (): any => JSON.parse(refusals().at(-1)!.detail)
+    expect((await open(MAIN, 'a'.repeat(128))).status).toBe(403)
+    expect(detailOf().declared_agent_id).toBe('a'.repeat(128)) // at the limit: whole
+    expect(detailOf().declared_agent_id_len).toBe(128)
+    expect((await open(MAIN, 'b'.repeat(129))).status).toBe(403)
+    expect(detailOf().declared_agent_id).toBe('b'.repeat(128)) // one over: cut
+    expect(detailOf().declared_agent_id_len).toBe(129)
+    expect((await open(MAIN, `  ${'c'.repeat(10)}  `)).status).toBe(403)
+    expect(detailOf()).toMatchObject({ declared_agent_id: 'c'.repeat(10), declared_agent_id_len: 10 }) // padding is not counted
+    const huge = 'd'.repeat(400_000)
+    expect((await open(MAIN, huge)).status).toBe(403)
+    const row = refusals().at(-1)!
+    expect(JSON.parse(row.detail)).toMatchObject({ declared_agent_id: 'd'.repeat(128), declared_agent_id_len: 400_000 })
+    expect(row.detail.length).toBeLessThan(512) // the row does not grow with the id
+    expect(approvalCount()).toBe(0)
+  })
+
+  it('fails closed when the audit write throws: still a 403 with the same body, and no request is stored', async () => {
+    auditFail.on = true
+    try {
+      const r = await open(MAIN, 'agent-d')
+      expect(r.status).toBe(403)
+      expect(r.body).toMatchObject({ error: 'forbidden', code: 'agent_id_mismatch' })
+      expect(approvalCount()).toBe(0)
+      expect(refusals()).toHaveLength(0) // the write failed, the refusal did not
+    } finally { auditFail.on = false }
   })
 
   it('the platform sender names get no exception here', async () => {

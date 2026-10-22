@@ -75,6 +75,9 @@ export function agentBoundAdminId(ctx: Pick<RouteContext, 'role' | 'auth' | 'tok
   return ctx.role === 'admin' && ctx.auth?.kind === 'token' && ctx.tokenAgentId ? ctx.tokenAgentId : null
 }
 
+/** How many characters of a refused, caller-supplied agent id the audit row keeps. */
+const DECLARED_ID_AUDIT_MAX = 128
+
 /**
  * An agent-bound admin token (the main agent's `main-agent:<id>`: role admin, a token that names an
  * agent) opens an approval request only as the agent it names. The admin role keeps every other
@@ -94,12 +97,17 @@ export function denyAgentBoundAdminForeign(
   const ownId = agentBoundAdminId(ctx)
   if (!ownId) return false
   if (sanitizeAgentIdent(agentId).toLowerCase() === sanitizeAgentIdent(ownId).toLowerCase()) return false
+  // The declared id is whatever the caller sent, so the audit row keeps its first 128 characters and its length.
+  const declared = agentId.trim()
   try {
     writeAgentAuditLog({
       agent_id: ownId, entity: 'approval', action: 'create_refused',
-      detail: { declared_agent_id: agentId.trim(), principal: (ctx.auth as { tokenName?: string }).tokenName ?? null, principalSource: 'token' },
+      detail: {
+        declared_agent_id: declared.slice(0, DECLARED_ID_AUDIT_MAX), declared_agent_id_len: declared.length,
+        principal: (ctx.auth as { tokenName?: string }).tokenName ?? null, principalSource: 'token',
+      },
     })
-  } catch { /* an audit failure must not change the refusal */ }
+  } catch { /* an audit failure must not change the refusal: the request still stops below */ }
   json(ctx.res, { error: 'forbidden', code: 'agent_id_mismatch', hint: 'An agent-bound admin token may only open an approval request as its own agent' }, 403)
   return true
 }
