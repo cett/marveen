@@ -63,6 +63,9 @@ interface Caller {
   cookie?: string
 }
 const TOKEN: Caller = { auth: { kind: 'token', tokenName: 'main-token' }, role: 'admin', tokenAgentId: 'main-agent' }
+// Opens the requests of other agents for the fixtures: the operator's token names no agent. The main agent's own
+// token opens requests only as itself (see approvals-agent-bound-admin-own-id.test.ts).
+const OPENER: Caller = { auth: { kind: 'token', tokenName: 'operator' }, role: 'admin' }
 const sessionOf = (name: string, role: RouteContext['role'], tenant: string | null = null): Caller =>
   ({ auth: { kind: 'session', user: name }, role, tenantId: tenant, cookie: cookies[name] })
 
@@ -87,7 +90,7 @@ async function call(method: string, path: string, caller: Caller, body?: object)
 }
 
 async function request(category: string, agent = 'agent-d'): Promise<string> {
-  const out = await call('POST', '/api/approvals', TOKEN, { agent_id: agent, category, action_description: 'do it' })
+  const out = await call('POST', '/api/approvals', OPENER, { agent_id: agent, category, action_description: 'do it' })
   expect(out.status).toBe(201)
   return out.body.id as string
 }
@@ -224,7 +227,7 @@ describe('asking for an approval (enforce)', () => {
   })
 
   it.each([['Email_Send'], [' email_send'], ['emailsend'], ['email_send' + ZWSP], ['email-send'], [CYRILLIC_E + 'mail_send'], ['email_send;x']])('refuses %j', async (category) => {
-    const out = await call('POST', '/api/approvals', TOKEN, { agent_id: 'agent-d', category, action_description: 'x' })
+    const out = await call('POST', '/api/approvals', OPENER, { agent_id: 'agent-d', category, action_description: 'x' })
     expect(out.status).toBe(400)
     expect(out.body.field).toBe('category')
     expect(db.prepare('SELECT COUNT(*) AS n FROM approvals').get()).toEqual({ n: 0 })

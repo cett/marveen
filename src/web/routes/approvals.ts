@@ -9,7 +9,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { denyForeignAgent } from '../fleet-agent-identity.js'
+import { denyForeignAgent, denyAgentBoundAdminForeign, agentBoundAdminId } from '../fleet-agent-identity.js'
 import { checkCategory, humanSessionOf, isHumanOnly, isEmailSendCategory, EMAIL_SEND_CATEGORY } from '../approval-human-only.js'
 import { parseEmailEnvelope, describeEmail, MAX_PAYLOAD_BYTES } from '../email-envelope.js'
 import {
@@ -211,13 +211,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     // A fleet_agent asks for approval as itself, in the tenant it is serving (never one it names).
     if (denyForeignAgent(ctx, agent_id.trim())) return true
+    // An agent-bound admin token (the main agent's) asks as the agent it names, never as another one.
+    if (denyAgentBoundAdminForeign(ctx, agent_id.trim())) return true
     const requestTenant: string | null =
       ctx.role === 'fleet_agent' ? (ctx.tenantId ?? null) : (typeof tenant_id === 'string' ? tenant_id.trim() || null : null)
 
     // With enforcement on, the category is stored in its canonical form and a spelling that reads as a
     // human-only category without being it is refused (an unguarded twin of the gated name). Without it
     // the name is stored as sent, as before; the human-only snapshot below is taken either way.
-    const requester = agent_id.trim()
+    // An agent-bound admin token's request is stored under the token's own id, whatever case or padding the body used.
+    const requester = agentBoundAdminId(ctx) ?? agent_id.trim()
     let storedCategory = category.trim()
     if (APPROVAL_HUMAN_ONLY_ENFORCE) {
       const checked = checkCategory(category)
