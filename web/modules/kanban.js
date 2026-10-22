@@ -1230,7 +1230,8 @@ async function renderCardTokensSection(card) {
   if (!data || !data.agent || !Array.isArray(data.windows) || data.windows.length === 0) return
   const lines = []
   if (data.totalCalls === 0) {
-    lines.push(t('kanban.tokens.none'))
+    // A zero from a window the log no longer covers is not "no tokens used": say the data is gone instead.
+    if (!data.dataExpired) lines.push(t('kanban.tokens.none'))
   } else {
     // Cache reads dominate the raw sum (96-98% on measured cards), so the headline names the three kinds
     // instead of one big number.
@@ -1244,6 +1245,7 @@ async function renderCardTokensSection(card) {
       lines.push(`${m.model || '?'}: ${t('kanban.tokens.model_line', { output: formatTokenCount(m.outputTokens), calls: m.calls })}`)
     }
   }
+  if (data.dataExpired) lines.push(t('kanban.tokens.expired', { days: data.retentionDays }))
   if (data.overlappingCards > 0) lines.push(t('kanban.tokens.overlap', { n: data.overlappingCards }))
   const lastTo = data.windows[data.windows.length - 1].to
   if (data.dataUntil && data.dataUntil < lastTo) {

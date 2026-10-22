@@ -269,6 +269,7 @@ window._i18n.hu = {
   'kanban.tokens.total': '{output} kimenet, {fresh} új bemenet, {cached} gyorsítótárból olvasva, {calls} hívás',
   'kanban.tokens.model_line': '{output} kimenet, {calls} hívás',
   'kanban.tokens.none': 'Amíg folyamatban volt, a felelős nem használt tokent (vagy még nincs begyűjtve).',
+  'kanban.tokens.expired': 'A kártya folyamatban-időszakának egy része a nyers token-napló megőrzési ideje ({days} nap) előtt van, ott az adat már összesítve és törölve lett, ezért ez az érték hiányos.',
   'kanban.tokens.overlap': 'Közben {n} másik kártyája is folyamatban volt, ezért ez felső becslés.',
   'kanban.tokens.data_until': 'A token-adat eddig van begyűjtve: {time}',
   'kanban.tokens.tooltip': '{agent} fogyasztása, amíg a kártya folyamatban volt',

@@ -269,6 +269,7 @@ window._i18n.en = {
   'kanban.tokens.total': '{output} output, {fresh} new input, {cached} read from cache, {calls} calls',
   'kanban.tokens.model_line': '{output} output, {calls} calls',
   'kanban.tokens.none': 'The assignee used no tokens while this was in progress (or they are not collected yet).',
+  'kanban.tokens.expired': 'Part of the time this card was in progress lies before the raw token log is kept ({days} days): that data was rolled up and deleted, so this figure is incomplete.',
   'kanban.tokens.overlap': '{n} other card(s) of theirs were in progress at the same time, so this is an upper bound.',
   'kanban.tokens.data_until': 'Token data collected up to: {time}',
   'kanban.tokens.tooltip': "{agent}'s usage while this card was in progress",

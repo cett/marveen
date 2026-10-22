@@ -12,6 +12,7 @@ import {
   getKanbanCard, getKanbanCardEvents, listOtherCardIdsWithProgressEvents,
   sumTokenUsageByModel, getLastTokenUsageTimestamp,
 } from '../db.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 
 export interface CardWindow { from: number; to: number }
 
@@ -58,6 +59,13 @@ export interface CardTokenUsage {
   overlappingCards: number
   /** Latest collected token row of this agent: rows after it are not in the sum yet. */
   dataUntil: number | null
+  /**
+   * True when a window starts before the raw token log is kept (TOKEN_USAGE_RETENTION_DAYS): the rows of
+   * that part were rolled up and deleted, so the sums are incomplete there and a zero is not a measurement.
+   */
+  dataExpired: boolean
+  /** The retention in days the check used, or null when the setting is not a usable number. */
+  retentionDays: number | null
 }
 
 /** Map a card assignee onto the token_usage agent name (lowercase id). */
@@ -71,17 +79,27 @@ export function tokenAgentForAssignee(
   return a
 }
 
+/** The raw token log retention in days, or null when the setting is not a positive number. */
+function rawRetentionDays(): number | null {
+  const n = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 export function getCardTokenUsage(
   cardId: string,
-  opts: { botName: string; mainAgentId: string; now?: number },
+  opts: { botName: string; mainAgentId: string; now?: number; retentionDays?: number | null },
 ): CardTokenUsage | null {
   const card = getKanbanCard(cardId)
   if (!card) return null
   const now = opts.now ?? Math.floor(Date.now() / 1000)
   const agent = tokenAgentForAssignee(card.assignee, opts)
   const windows = inProgressWindows(getKanbanCardEvents(cardId), now)
+  // The prune keeps rows with timestamp >= now - retention; a window that starts before that has lost rows.
+  const retentionDays = opts.retentionDays !== undefined ? opts.retentionDays : rawRetentionDays()
+  const dataExpired = retentionDays !== null && windows.some((w) => w.from < now - retentionDays * 86400)
   const empty: CardTokenUsage = {
     agent, windows, totalCalls: 0, totalTokens: 0, outputTokens: 0, freshInputTokens: 0, cacheReadTokens: 0, perModel: [], overlappingCards: 0, dataUntil: null,
+    dataExpired, retentionDays,
   }
   if (!agent) return empty
   empty.dataUntil = getLastTokenUsageTimestamp(agent)
@@ -122,6 +140,6 @@ export function getCardTokenUsage(
 
   return {
     agent, windows, totalCalls, totalTokens, outputTokens, freshInputTokens, cacheReadTokens, perModel,
-    overlappingCards, dataUntil: empty.dataUntil,
+    overlappingCards, dataUntil: empty.dataUntil, dataExpired, retentionDays,
   }
 }
