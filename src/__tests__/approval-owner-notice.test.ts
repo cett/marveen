@@ -62,6 +62,9 @@ beforeEach(() => {
 
 interface Caller { auth?: RouteContext['auth']; role?: RouteContext['role']; tokenAgentId?: string; cookie?: string }
 const TOKEN: Caller = { auth: { kind: 'token', tokenName: 'main-token' }, role: 'admin', tokenAgentId: 'main-agent' }
+// Opens the requests of other agents for the fixtures: the operator's token names no agent. The main agent's own
+// token opens requests only as itself (see approvals-agent-bound-admin-own-id.test.ts).
+const OPENER: Caller = { auth: { kind: 'token', tokenName: 'operator' }, role: 'admin' }
 const OWNER: Caller = { auth: { kind: 'session', user: 'person-a' }, role: 'admin', cookie: undefined }
 
 async function call(method: string, path: string, caller: Caller, body?: object, cookie?: string) {
@@ -82,7 +85,7 @@ async function call(method: string, path: string, caller: Caller, body?: object,
 }
 
 const ask = (agent: string, category: string, action = 'Send the weekly digest') =>
-  call('POST', '/api/approvals', TOKEN, { agent_id: agent, category, action_description: action })
+  call('POST', '/api/approvals', OPENER, { agent_id: agent, category, action_description: action })
 const decide = (id: string, caller: Caller, cookie?: string, status = 'approved') =>
   call('PATCH', `/api/approvals/${id}`, caller, { status }, cookie)
 const inbox = (agent: string) => getPendingMessages(agent).map(m => m.content)
