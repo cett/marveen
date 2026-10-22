@@ -9,6 +9,7 @@ vi.mock('../logger.js', () => ({
 }))
 
 import { initDatabase, getDb, createKanbanCard } from '../db.js'
+import { setSystemConfig } from '../db/system-config.js'
 import { inProgressWindows, getCardTokenUsage, tokenAgentForAssignee } from '../web/card-token-usage.js'
 
 const OPTS = { botName: 'Orin', mainAgentId: 'orin', now: 10_000 }
@@ -38,6 +39,20 @@ describe('inProgressWindows', () => {
       { from_status: 'in_progress', to_status: 'waiting', created_at: 200 },
       { from_status: 'waiting', to_status: 'in_progress', created_at: 300 },
     ], 1000)).toEqual([{ from: 100, to: 200 }, { from: 300, to: 1000 }])
+  })
+
+  it('an in_progress event while a window is open does not reopen it: the first opening stays', () => {
+    expect(inProgressWindows([
+      { from_status: 'planned', to_status: 'in_progress', created_at: 100 },
+      { from_status: 'in_progress', to_status: 'in_progress', created_at: 150 },
+      { from_status: 'waiting', to_status: 'in_progress', created_at: 180 },
+      { from_status: 'in_progress', to_status: 'done', created_at: 200 },
+    ], 1000)).toEqual([{ from: 100, to: 200 }])
+    // an open window repeated at the end runs from the first opening to now
+    expect(inProgressWindows([
+      { from_status: 'planned', to_status: 'in_progress', created_at: 100 },
+      { from_status: 'in_progress', to_status: 'in_progress', created_at: 150 },
+    ], 1000)).toEqual([{ from: 100, to: 1000 }])
   })
 
   it('a card never in_progress has no window', () => {
@@ -123,6 +138,21 @@ describe('getCardTokenUsage breakdown', () => {
     expect(u.totalTokens).toBe(955)
     expect(u.perModel.map((m) => m.model)).toEqual(['claude-opus'])
     expect(u.totalCalls).toBe(1)
+  })
+})
+
+describe('getCardTokenUsage with a repeated in_progress event', () => {
+  it('the rows between the first opening and the repeat still count', () => {
+    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
+    event('c1', 'planned', 'in_progress', 100)
+    event('c1', 'in_progress', 'in_progress', 150)
+    event('c1', 'in_progress', 'done', 200)
+    tokens('dex', 120, 10, 1) // before the repeat: lost if the repeat reopened the window
+    tokens('dex', 160, 100, 1)
+    const u = getCardTokenUsage('c1', OPTS)!
+    expect(u.windows).toEqual([{ from: 100, to: 200 }])
+    expect(u.totalCalls).toBe(2)
+    expect(u.freshInputTokens).toBe(110)
   })
 })
 
@@ -215,6 +245,21 @@ describe('getCardTokenUsage expired data', () => {
     expect(getCardTokenUsage('c1', { ...OPTS, now: NOW, retentionDays: 7 })!.dataExpired).toBe(true)
     createKanbanCard({ id: 'c2', title: 'Never', assignee: 'dex' })
     expect(getCardTokenUsage('c2', { ...OPTS, now: NOW, retentionDays: 7 })!.dataExpired).toBe(false)
+  })
+
+  it('a stored retention of zero, a negative or a non-number is not a retention: no flag, retentionDays null', () => {
+    createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
+    event('c1', 'planned', 'in_progress', 1)
+    for (const bad of ['0', '-5', 'abc']) {
+      setSystemConfig('TOKEN_USAGE_RETENTION_DAYS', bad)
+      const u = getCardTokenUsage('c1', { ...OPTS, now: 40 * DAY })!
+      expect(u.retentionDays, bad).toBeNull()
+      expect(u.dataExpired, bad).toBe(false)
+    }
+    setSystemConfig('TOKEN_USAGE_RETENTION_DAYS', '7') // a real one is used, and flags the old window
+    const ok = getCardTokenUsage('c1', { ...OPTS, now: 40 * DAY })!
+    expect(ok.retentionDays).toBe(7)
+    expect(ok.dataExpired).toBe(true)
   })
 
   it('the flag comes from the windows alone, so a card with no assignee reports it too', () => {
