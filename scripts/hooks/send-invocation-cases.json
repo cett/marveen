@@ -1180,6 +1180,81 @@
       "name": "cluster control: a dotted module that does not end in send",
       "cmd": "python3 -mpkg.sender --to a@example.com",
       "expected": false
+    },
+    {
+      "name": "stream script: /dev/stdin with a recipient flag is undecidable, so a send",
+      "cmd": "python3 /dev/stdin --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "stream script: /dev/fd/0 with a recipient flag",
+      "cmd": "python3 /dev/fd/0 --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "stream script: /proc/self/fd/3 with a recipient flag",
+      "cmd": "python3 /proc/self/fd/3 --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "stream script: behind an interpreter option, with the recipient flag abbreviated",
+      "cmd": "python3 -u /dev/stdin --t a@example.com",
+      "expected": true
+    },
+    {
+      "name": "stream script control: /dev/stdin without a recipient flag",
+      "cmd": "python3 /dev/stdin",
+      "expected": false
+    },
+    {
+      "name": "stream script control: /dev/fd/ with a non-numeric tail is no stream",
+      "cmd": "python3 /dev/fd/x --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "stream script control: a longer name starting with /dev/stdin is no stream",
+      "cmd": "python3 /dev/stdinx --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "stream script control: /proc/self/fd/ with a non-numeric tail is no stream",
+      "cmd": "python3 /proc/self/fd/x --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "stream script control: an ordinary file whose path ends in /dev/stdin is no stream",
+      "cmd": "python3 /tmp/dev/stdin --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "runpy: -m runpy with a recipient flag is undecidable, so a send",
+      "cmd": "python3 -m runpy --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "runpy: -mrunpy glued",
+      "cmd": "python3 -mrunpy --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "runpy: -um runpy behind a cluster",
+      "cmd": "python3 -um runpy --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "runpy control: -m runpy without a recipient flag",
+      "cmd": "python3 -m runpy",
+      "expected": false
+    },
+    {
+      "name": "runpy control: another module with a recipient flag",
+      "cmd": "python3 -m json.tool --to a@example.com",
+      "expected": false
+    },
+    {
+      "name": "runpy control: a module that only starts with runpy",
+      "cmd": "python3 -m runpyx --to a@example.com",
+      "expected": false
     }
   ]
 }

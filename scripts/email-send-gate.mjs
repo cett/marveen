@@ -575,11 +575,24 @@ export function flattenSubstitutions(cmd) {
   return out
 }
 
+// A script operand that names a stream, not a file (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`):
+// the program is whatever the stream carries, as undecidable here as a glob or `$` (W-1).
+const STREAM_SCRIPT = /^(?:\/dev\/(?:stdin|fd\/[0-9]+)|\/proc\/self\/fd\/[0-9]+)$/
+// `-m runpy` (also `-mrunpy`, `-um runpy`) runs whatever the next argument names: undecidable (W-2).
+function pythonRunsRunpy(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    const cl = pythonCluster(rest[i])
+    if (cl && cl.opt === 'm' && (cl.value || rest[i + 1]) === 'runpy') return true
+  }
+  return false
+}
 function pythonHeadSends(rest) {
   const recipient = rest.some((t) => RECIPIENT_FLAG.test(t))
   const { script, stdin, stdinRedirect } = pythonScriptOperand(rest)
   if (script !== null && SENDPY.test(basename(script))) return recipient
   if (script !== null && UNDECIDABLE_PATH.test(script)) return recipient // MAILGATEVARARGS1020
+  if (script !== null && STREAM_SCRIPT.test(script)) return recipient
+  if (pythonRunsRunpy(rest)) return recipient
   if (stdin || (script === null && stdinRedirect)) return recipient
   return false
 }

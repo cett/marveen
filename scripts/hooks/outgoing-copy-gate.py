@@ -641,6 +641,22 @@ def flatten_substitutions(cmd: str) -> str:
     return "".join(out)
 
 
+# A script operand that names a stream, not a file (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`):
+# the program is whatever the stream carries, as undecidable here as a glob or `$` (W-1).
+_STREAM_SCRIPT = re.compile(r"(?:/dev/(?:stdin|fd/[0-9]+)|/proc/self/fd/[0-9]+)")
+
+
+def _python_runs_runpy(rest) -> bool:
+    """`-m runpy` (also `-mrunpy`, `-um runpy`) runs whatever the next argument names: undecidable (W-2)."""
+    for i, t in enumerate(rest):
+        cl = _python_cluster(t)
+        if cl and cl[0] == "m":
+            mod = cl[1] or (rest[i + 1] if i + 1 < len(rest) else None)
+            if mod == "runpy":
+                return True
+    return False
+
+
 def _python_head_sends(rest) -> bool:
     recipient = any(_RECIPIENT_FLAG.match(t) for t in rest)
     script, stdin, stdin_redirect = _python_script_operand(rest)
@@ -648,6 +664,10 @@ def _python_head_sends(rest) -> bool:
         return recipient
     if script is not None and _UNDECIDABLE_PATH.search(script):
         return recipient  # MAILGATEVARARGS1020
+    if script is not None and _STREAM_SCRIPT.fullmatch(script):
+        return recipient
+    if _python_runs_runpy(rest):
+        return recipient
     if stdin or (script is None and stdin_redirect):
         return recipient
     return False
