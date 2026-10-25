@@ -26,6 +26,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
+import { isReservedTokenName } from '../../reserved-token-names.js'
 import { isKnownAgent } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
 import { denyAgentCredentialIssue } from '../session-only-guard.js'
@@ -98,6 +99,12 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const agentId = typeof parsed.agent_id === 'string' ? parsed.agent_id.trim() : ''
 
     if (!name) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
+    // The server's own token names (operator, dashboard, main-agent:*, fleet-agent:*) are not for callers to pick.
+    if (isReservedTokenName(name)) {
+      // `conflict` is the canonical token for a name that is taken; `reason` tells the caller why.
+      json(res, { error: 'conflict', field: 'name', reason: 'reserved_name', hint: 'this name is reserved for the server\'s own tokens (operator, dashboard, main-agent:*, fleet-agent:*)' }, 409)
+      return true
+    }
     if (!VALID_ROLES.has(role)) {
       json(res, { error: 'invalid_value', field: 'role', hint: `role must be one of: ${[...VALID_ROLES].join(', ')}` }, 400)
       return true
