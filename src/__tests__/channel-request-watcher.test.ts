@@ -20,8 +20,9 @@ vi.mock('node:fs', () => ({
 
 const mockLoggerInfo = vi.hoisted(() => vi.fn())
 const mockLoggerWarn = vi.hoisted(() => vi.fn())
+const mockLoggerError = vi.hoisted(() => vi.fn())
 vi.mock('../logger.js', () => ({
-  logger: { info: mockLoggerInfo, warn: mockLoggerWarn, error: vi.fn(), debug: vi.fn() },
+  logger: { info: mockLoggerInfo, warn: mockLoggerWarn, error: mockLoggerError, debug: vi.fn() },
 }))
 
 vi.mock('../config.js', () => ({
@@ -83,6 +84,7 @@ beforeEach(async () => {
   mockReadFileSync.mockReset().mockReturnValue(Buffer.from(''))
   mockLoggerInfo.mockClear()
   mockLoggerWarn.mockClear()
+  mockLoggerError.mockClear()
   mockListAgentNames.mockReset().mockReturnValue([])
   mockReadAgentChannelProvider.mockReset().mockReturnValue(null)
   mockAgentDir.mockClear()
@@ -123,6 +125,35 @@ describe('channel-request-watcher: start/stop lifecycle', () => {
   it('re-scans on each interval tick', async () => {
     await startChannelRequestWatcher(5_000)
     await vi.advanceTimersByTimeAsync(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mockListAgentNames).toHaveBeenCalledTimes(3)
+  })
+
+  it('skips an interval tick while the previous scan is still waiting on the db', async () => {
+    mockListAgentNames.mockReturnValue(['slack-agent'])
+    mockReadAgentChannelProvider.mockReturnValue('slack')
+    let release: (rows: never[]) => void = () => {}
+    mockListPendingChannelRequests.mockImplementation(() => new Promise((r) => { release = r }))
+
+    const started = startChannelRequestWatcher(5_000)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(mockListAgentNames).toHaveBeenCalledTimes(1)
+
+    release([])
+    await started
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mockListAgentNames).toHaveBeenCalledTimes(2)
+  })
+
+  it('logs a failed scan tick and keeps scanning (no unhandled rejection from the interval)', async () => {
+    mockListAgentNames.mockReturnValue(['slack-agent'])
+    mockReadAgentChannelProvider.mockReturnValue('slack')
+    mockListPendingChannelRequests.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('db gone')).mockResolvedValue([])
+
+    await startChannelRequestWatcher(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mockLoggerError).toHaveBeenCalledWith(expect.objectContaining({ err: expect.any(Error) }), 'Channel request scan tick failed')
+
     await vi.advanceTimersByTimeAsync(5_000)
     expect(mockListAgentNames).toHaveBeenCalledTimes(3)
   })
