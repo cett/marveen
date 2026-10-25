@@ -15,6 +15,7 @@ import { initDatabase, insertApiToken, saveAgentMemory, getDb } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
 import { answerIdentityRefusal, identityRefusal, inspectBodyAgents, observeTokenUsage, resetTokenShadowForTests } from '../web/token-shadow.js'
 import { readBody, RequestBodyTooLargeError } from '../web/http-helpers.js'
+import * as wsDb from '../db/workspace.js'
 
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))
 
@@ -49,7 +50,7 @@ async function send(
   setImmediate(() => { req.emit('data', buf); req.emit('end') })
   const url = new URL(`http://localhost:3420${path}`)
   const auth = await resolveAuth(req, url, url.pathname, method, SHARED, true)
-  observeTokenUsage(req, auth, method, url.pathname, url)
+  await observeTokenUsage(req, auth, method, url.pathname, url)
   return { req, refusal: await identityRefusal(req) }
 }
 
@@ -283,7 +284,7 @@ describe('identity_refused: every refusal is counted', () => {
     ;(req as unknown as { destroy: () => void }).destroy = () => {}
     setImmediate(() => { req.emit('data', buf); req.emit('end') })
     const url = new URL(`http://localhost:3420${path}`)
-    observeTokenUsage(req, await resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
     const out = { status: 0 }
     const res = { writeHead(code: number) { out.status = code }, setHeader() {}, end() {} } as unknown as http.ServerResponse
     return { refused: await answerIdentityRefusal(req, res), status: out.status }
@@ -342,5 +343,17 @@ describe('the switch and its wiring', () => {
 
   it('web.ts hands the switch to the routes through the context, the only way a route learns of it', () => {
     expect(WEB_SRC).toContain("identityEnforced: TOKEN_IDENTITY_MODE === 'enforce'")
+  })
+})
+
+describe('enforce on /api/workspace/:id: the row owner is looked up asynchronously', () => {
+  const doc = (agent: string) => wsDb.saveWorkspaceDoc({ agent_id: agent, tenant_id: 'default', title: 't', content: 'c', content_type: 'text', type: 'notes' })
+
+  it('alpha PATCH/DELETE on beta\'s doc is refused (enforce), on its own doc it is not, GET of a foreign doc is allowed', async () => {
+    const foreign = await doc('beta'); const own = await doc('alpha')
+    expect((await send('alpha', 'PATCH', `/api/workspace/${foreign.id}`, { title: 'x' })).refusal).toMatchObject({ caller: 'alpha', target: 'beta' })
+    expect((await send('alpha', 'DELETE', `/api/workspace/${foreign.id}`)).refusal).toMatchObject({ target: 'beta' })
+    expect((await send('alpha', 'PATCH', `/api/workspace/${own.id}`, { title: 'x' })).refusal).toBeNull()
+    expect((await send('alpha', 'GET', `/api/workspace/${foreign.id}`)).refusal).toBeNull()
   })
 })

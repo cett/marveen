@@ -283,11 +283,12 @@ describe('listArtifacts FTS search (q param)', () => {
     expect(rows.every(r => r.agent_id === 'fts-match-agent')).toBe(true)
   })
 
-  it('handles FTS special characters gracefully', () => {
-    // Double-quotes in the search term must not cause a syntax error
-    expect(async () => listArtifacts({ q: 'test "quoted" term' })).not.toThrow()
-    expect(async () => listArtifacts({ q: 'a OR b' })).not.toThrow()
-    expect(async () => listArtifacts({ q: 'a*' })).not.toThrow()
+  it('handles FTS special characters gracefully', async () => {
+    // Double-quotes in the search term must not cause a syntax error. listArtifacts is async: the assertion
+    // has to await the promise (an assertion on a thrown error of an async callback can never fail).
+    await expect(listArtifacts({ q: 'test "quoted" term' })).resolves.toBeInstanceOf(Array)
+    await expect(listArtifacts({ q: 'a OR b' })).resolves.toBeInstanceOf(Array)
+    await expect(listArtifacts({ q: 'a*' })).resolves.toBeInstanceOf(Array)
   })
 
   it('removed artifact no longer appears in FTS results', async () => {

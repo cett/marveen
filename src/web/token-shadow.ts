@@ -262,8 +262,8 @@ interface WatchSpec {
   paramLiterals?: ReadonlySet<string>
   /** The path parameter IS an agent id (otherwise it addresses a row, see `owner`). */
   paramIsAgent?: boolean
-  /** Owner agent of the row the path parameter addresses. */
-  owner?: (param: string) => string | null | undefined
+  /** Owner agent of the row the path parameter addresses. May be asynchronous: the reader awaits it. */
+  owner?: (param: string) => string | null | undefined | Promise<string | null | undefined>
   queryKeys: readonly string[]
   bodyKeys: readonly string[]
   /** The size cap of the route's own body read, when it is tighter than the default; the gate reads with the same cap. */
@@ -354,7 +354,7 @@ const WATCHED: readonly WatchSpec[] = [
   },
   {
     prefix: '/api/workspace', kind: 'unscoped', paramSeg: 0, paramName: ':id',
-    owner: (p) => peekWorkspaceDoc(p)?.agent_id,
+    owner: async (p) => (await peekWorkspaceDoc(p))?.agent_id,
     queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'write',
   },
   {
@@ -693,14 +693,14 @@ export async function answerIdentityRefusal(req: http.IncomingMessage, res: http
  * and bounded: a few string operations, at most one row-owner lookup and one counter upsert per hit.
  * Never throws and never touches the request or the response (the body is not consumed here).
  */
-export function observeTokenUsage(
+export async function observeTokenUsage(
   req: http.IncomingMessage,
   auth: AuthResult,
   method: string,
   rawPath: string,
   url: URL,
   mainAgentId: string = MAIN_AGENT_ID,
-): void {
+): Promise<void> {
   try {
     const path = stripApiVersion(rawPath)
     if (path === TOKEN_SHADOW_ROUTE) return
@@ -743,7 +743,7 @@ export function observeTokenUsage(
       if (spec.paramIsAgent) targets.add(param)
       else if (spec.owner) {
         try {
-          const owner = spec.owner(param)
+          const owner = await spec.owner(param)
           if (owner) targets.add(owner)
         } catch (err) {
           warnThrottled(err, 'token-shadow: row owner lookup failed')

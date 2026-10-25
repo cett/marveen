@@ -352,7 +352,7 @@ export function startWebServer(port = 3420): http.Server {
 
       // Phase T2 shadow counter: measures the shared token and per-agent token use. Counts only; it
       // never throws, never reads the body here and never changes the outcome of the request.
-      if (requiresAuth(path, method)) observeTokenUsage(req, auth, method, path, url)
+      if (requiresAuth(path, method)) await observeTokenUsage(req, auth, method, path, url)
 
       // Phase T4-7: with TOKEN_IDENTITY_MODE=enforce a non-main agent caller that names another agent
       // is refused with the same classification the counter just recorded. Shadow (the default): no-op.

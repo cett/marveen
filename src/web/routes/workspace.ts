@@ -89,12 +89,12 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'invalid_value', field: 'q', hint: `"q" is at most ${MAX_SEARCH_QUERY_CHARS} characters` }, 400)
         return true
       }
-      const found = searchWorkspaceDocsPage(q, { ...filter, limit, offset })
+      const found = await searchWorkspaceDocsPage(q, { ...filter, limit, offset })
       json(res, { items: found.items, total: found.total, offset, limit: limit ?? null })
       return true
     }
-    const docs = listWorkspaceDocs({ ...filter, limit, offset })
-    const total = countWorkspaceDocs(filter)
+    const docs = await listWorkspaceDocs({ ...filter, limit, offset })
+    const total = await countWorkspaceDocs(filter)
     json(res, { items: docs, total, offset, limit: limit ?? null })
     return true
   }
@@ -159,7 +159,7 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
 
     const tenantId = effectiveTenant(ctx) ?? 'default'
     try {
-      const doc = saveWorkspaceDoc({
+      const doc = await saveWorkspaceDoc({
         agent_id: agentId, tenant_id: tenantId, doc_key: docKey,
         title, content: effectiveContent, content_blob: contentBlob,
         content_type: contentType, type: docType, task_ref: taskRef,
@@ -184,16 +184,16 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
     const id = idMatch[1]
     // Peek first (no last_accessed_at side-effect) so the tenant gate runs
     // before we touch the row; return 404 on mismatch to avoid ID enumeration.
-    const meta = peekWorkspaceDoc(id)
+    const meta = await peekWorkspaceDoc(id)
     if (!meta) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
     if (ctx.role !== 'admin' && meta.tenant_id !== (ctx.tenantId ?? 'default')) {
       json(res, { error: 'not_found', field: 'id' }, 404); return true
     }
 
     // Gate passed — full fetch (bumps last_accessed_at).
-    const doc = getWorkspaceDoc(id)!
+    const doc = (await getWorkspaceDoc(id))!
     if (doc.content_type === 'binary') {
-      const blob = getWorkspaceDocBlob(id)
+      const blob = await getWorkspaceDocBlob(id)
       json(res, { ...doc, content_blob_b64: blob ? blob.toString('base64') : null })
     } else {
       json(res, doc)
@@ -209,7 +209,7 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
     }
 
     const id = idMatch[1]
-    const meta = peekWorkspaceDoc(id)
+    const meta = await peekWorkspaceDoc(id)
     if (!meta) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
     // Tenant gate: non-admin fleet agents may only patch docs in their own tenant.
     if (ctx.role !== 'admin' && meta.tenant_id !== (ctx.tenantId ?? 'default')) {
@@ -249,7 +249,7 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const updated = patchWorkspaceDoc(id, patch)
+    const updated = await patchWorkspaceDoc(id, patch)
     if (!updated) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
     // Fire-and-forget: re-index the embedding only when the embedded text
     // (title/content) actually changed, not on metadata-only patches.
@@ -270,7 +270,7 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
 
     const id = idMatch[1]
     // Peek first — no last_accessed_at side-effect, tenant gate before delete.
-    const meta = peekWorkspaceDoc(id)
+    const meta = await peekWorkspaceDoc(id)
     if (!meta) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
     // Tenant gate: non-admin may not delete docs from another tenant.
     if (ctx.role !== 'admin' && meta.tenant_id !== (ctx.tenantId ?? 'default')) {
@@ -281,7 +281,7 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
     // fleet-agent token may delete any doc within its tenant.  Per-agent token
     // differentiation is a future work item.
 
-    deleteWorkspaceDoc(id)
+    await deleteWorkspaceDoc(id)
     logger.info({ id, agent_id: meta.agent_id }, 'workspace_doc deleted')
     json(res, { ok: true })
     return true

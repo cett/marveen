@@ -312,7 +312,10 @@ function nameNodeOf(f) {
   return null
 }
 
-const BLOCKING_CALLEES = new Set(['map', 'filter', 'forEach', 'some', 'every', 'find', 'findIndex', 'reduce', 'sort', 'flatMap', 'on', 'once', 'addListener', 'setInterval', 'setTimeout', 'setImmediate', 'addEventListener', 'toSorted', 'findLast'])
+const BLOCKING_CALLEES = new Set(['map', 'filter', 'forEach', 'some', 'every', 'find', 'findIndex', 'reduce', 'sort', 'flatMap', 'on', 'once', 'addListener', 'setInterval', 'setTimeout', 'setImmediate', 'addEventListener', 'toSorted', 'findLast', 'expect'])
+// `expect` is in the list for the thrown-error assertions: `expect(() => f()).not.toThrow()` turned into
+// `expect(async () => ...)` can never fail (a rejection is not a throw). The test is rewritten by hand as
+// `await expect(f()).resolves...` / `.rejects.toThrow(...)`.
 
 // May the anonymous function `g` (an argument) become async? Reports when it must be looked at by hand.
 function callbackVerdict(g) {

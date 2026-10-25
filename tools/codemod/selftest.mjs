@@ -43,7 +43,7 @@ for (const kind of ['callback-boundary', 'function-value', 'boot-synchronous', '
 }
 // The callback-safety rules: each of these callers must be reported and left untouched (the expected output keeps them).
 // Without the rule a callback that expects a synchronous value would silently become async (a Promise array, a floating Promise).
-for (const [line, why] of [['src/caller.ts:13', 'callback of forEach'], ['src/caller.ts:20', 'callback of map'], ['src/caller.ts:24', 'callback of setInterval'], ['src/caller.ts:29', 'callback expecting void']]) {
+for (const [line, why] of [['src/caller.ts:13', 'callback of forEach'], ['src/caller.ts:20', 'callback of map'], ['src/caller.ts:24', 'callback of setInterval'], ['src/caller.ts:29', 'callback expecting void'], ['src/caller.ts:33', 'callback of expect']]) {
   check(first.includes(`MANUAL callback-boundary: ${line}  ${why}`), `a ${why} is reported, not rewritten`)
 }
 check(first.includes('MANUAL unsupported-transaction-shape: src/db/widgets.ts'), 'an already-async transaction body is left alone')

@@ -9,10 +9,10 @@ import { logger } from '../logger.js'
 const SWEEP_INTERVAL_MS = 5 * 60_000
 
 export function startWorkspaceDocsTtlSweeper(): NodeJS.Timeout {
-  const sweep = () => {
+  const sweep = async () => {
     try {
       const ttlDays = getEffectiveSettingValue('WORKSPACE_DOCS_TTL_DAYS') as number
-      const deleted = sweepExpiredWorkspaceDocs(ttlDays)
+      const deleted = await sweepExpiredWorkspaceDocs(ttlDays)
       if (deleted > 0) {
         logger.info({ deleted, ttlDays }, 'workspace-docs-ttl-sweeper: deleted expired docs')
       }
@@ -20,5 +20,5 @@ export function startWorkspaceDocsTtlSweeper(): NodeJS.Timeout {
       logger.error({ err }, 'workspace-docs-ttl-sweeper: sweep failed')
     }
   }
-  return setInterval(sweep, SWEEP_INTERVAL_MS)
+  return setInterval(() => { void sweep() }, SWEEP_INTERVAL_MS)
 }
