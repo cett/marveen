@@ -13,6 +13,8 @@
 // themselves do under enforce is enforcedSelfScope below.
 
 import { json } from './http-helpers.js'
+import { sanitizeAgentIdent } from '../prompt-safety.js'
+import { writeAgentAuditLog } from '../db.js'
 import type { RouteContext } from './routes/types.js'
 
 /** True when the request carries a fleet_agent token. */
@@ -61,4 +63,51 @@ export function actingAgentId(ctx: Pick<RouteContext, 'role' | 'tokenAgentId'>, 
 export function enforcedSelfScope(ctx: Pick<RouteContext, 'role' | 'tokenAgentId' | 'identityEnforced'>): string | null {
   if (!ctx.identityEnforced) return null
   return ctx.role === 'fleet_agent' && ctx.tokenAgentId ? ctx.tokenAgentId : null
+}
+
+/**
+ * The agent an agent-bound admin token (role admin, kind token, a token that names an agent) speaks
+ * for, or null for any other caller. The approvals route stores such a request under this exact id,
+ * not under the spelling the body used: the self-approval guard of the resolve route is an exact
+ * comparison, so a request stored as `MAIN-X` would not stop the token `main-x` from resolving it.
+ */
+export function agentBoundAdminId(ctx: Pick<RouteContext, 'role' | 'auth' | 'tokenAgentId'>): string | null {
+  return ctx.role === 'admin' && ctx.auth?.kind === 'token' && ctx.tokenAgentId ? ctx.tokenAgentId : null
+}
+
+/** How many characters of a refused, caller-supplied agent id the audit row keeps. */
+const DECLARED_ID_AUDIT_MAX = 128
+
+/**
+ * An agent-bound admin token (the main agent's `main-agent:<id>`: role admin, a token that names an
+ * agent) opens an approval request only as the agent it names. The admin role keeps every other
+ * reach; this is the one place it is held to its own identity, because an approval carries who is
+ * asking and the self-approval guard of the resolve route compares that to the resolver. A request that
+ * names another agent is a 403 (`agent_id_mismatch`), the attempt is audited, and nothing is stored. The
+ * comparison is on the normalised identifier (sanitizeAgentIdent, case-folded; the route then stores the
+ * token's own id, see agentBoundAdminId), and unlike the sender of an inter-agent message the platform senders (`scheduler`, `system`) get no
+ * exception: an approval is never theirs.
+ * The operator's token (it names no agent), a dashboard session and a federation peer are untouched.
+ * Writes the 403 and returns true when the request must stop.
+ */
+export function denyAgentBoundAdminForeign(
+  ctx: Pick<RouteContext, 'role' | 'auth' | 'tokenAgentId' | 'res'>,
+  agentId: string,
+): boolean {
+  const ownId = agentBoundAdminId(ctx)
+  if (!ownId) return false
+  if (sanitizeAgentIdent(agentId).toLowerCase() === sanitizeAgentIdent(ownId).toLowerCase()) return false
+  // The declared id is whatever the caller sent, so the audit row keeps its first 128 characters and its length.
+  const declared = agentId.trim()
+  try {
+    writeAgentAuditLog({
+      agent_id: ownId, entity: 'approval', action: 'create_refused',
+      detail: {
+        declared_agent_id: declared.slice(0, DECLARED_ID_AUDIT_MAX), declared_agent_id_len: declared.length,
+        principal: (ctx.auth as { tokenName?: string }).tokenName ?? null, principalSource: 'token',
+      },
+    })
+  } catch { /* an audit failure must not change the refusal: the request still stops below */ }
+  json(ctx.res, { error: 'forbidden', code: 'agent_id_mismatch', hint: 'An agent-bound admin token may only open an approval request as its own agent' }, 403)
+  return true
 }

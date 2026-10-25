@@ -108,7 +108,10 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
-const PYTHON = /^python3?$/i
+// SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13, and
+// the free-threaded python3.13t) is the same python; the old /^python3?$/ let it
+// through as "not an interpreter".
+const PYTHON = /^python(3(\.\d+t?)?)?$/i
 const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
@@ -451,6 +454,153 @@ function commandHeads(toksIn, d = 0) {
   return starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
 }
 
+// SUBAGENTMAILGATE1016 (measured on the sub-agent gate, 2026-10-16): the
+// support-mail sender was recognised only as `python3 <path>/send.py --to ...`,
+// that is, with the script as the FIRST argument and the exact `--to` flag. Six
+// spellings ran the same sender past this gate: an interpreter option first
+// (`python3 -u`, `python3 -X utf8`), a version-suffixed interpreter, a glob or a
+// variable as the script path (`s?nd.py`, `$P`), and the program read from
+// stdin (`python3 - --to ... < send.py`). argparse also takes `--t` for `--to`.
+// The boundary, fail-closed where the command cannot be read statically:
+//   - the script operand is found past the interpreter's own options (a
+//     separate argument for -X / -W / --check-hash-based-pycs);
+//   - a recipient flag is `--to` or any argparse abbreviation of it (`--t`),
+//     with or without `=value` (the sender's --to is required, so every
+//     delivering call carries one of these);
+//   - send.py by basename + a recipient flag: a send (as before, now from any
+//     operand position, interpreter spelling and flag spelling);
+//   - a script operand that cannot be resolved statically (glob or brace
+//     characters, or a `$` expansion) + a recipient flag: a send, because what
+//     runs is undecidable here (until MAILGATEVARARGS1020 also "or another `$`
+//     token", see below);
+//   - a program read from stdin (`-`, or no script operand and a `<` redirect)
+//     + a recipient flag: a send (a heredoc-fed program is judged by its body,
+//     heredocProgramSends, as before).
+// Anything else stays allowed: `python3 -u other.py`, `python3 -c "print(1)"`,
+// `for f in *.py; do python3 $f; done`, `python3 x.py --to-date ...`,
+// `python3 "$DIR/gen.py" "$OUT"`.
+// Mirrors _python_head_sends in hooks/outgoing-copy-gate.py; the shared
+// send-invocation-cases.json binds the two.
+//
+// MAILGATEVARARGS1020 (measured on a production install, 2026-10-19): the
+// "or another `$` token" half denied ordinary scripted work. In one day 26
+// sub-agent Bash calls, across four agents, were denied as mail sends; none
+// of them was one (no recipient flag, no sender, no mail program). Each was a
+// script run from a variable path with a variable argument:
+// `python3 "$SP/gen.py" "$SP/out.json"`, `python3 "$L" /dev/null "$SP/o.txt"`,
+// `python3 $A/check.py $S/x.json && python3 $A/stamp.py --note-file "$A/n.json"`.
+// The agents lost turns on rewrites and workarounds. The extra `$` rule also
+// guarded nothing the rest of the gate guards: a literal sender path with a
+// variable argument (`python3 scripts/support-mail/send.py $ARGS`) has always
+// passed, because a recipient flag inside a variable is not visible statically
+// on ANY branch. So this branch now asks what the send.py and the stdin
+// branches ask: is there a recipient flag. A variable path WITH one
+// (`python3 $P --to ...`) is still a send; `python3 $SENDER $ARGS` passes,
+// pinned as a documented limit in send-invocation-cases.json.
+const PY_OPT_WITH_ARG = new Set(['-X', '-W', '--check-hash-based-pycs'])
+const RECIPIENT_FLAG = /^--to?(=|$)/
+const UNDECIDABLE_PATH = /[*?[{$]/
+// CPython reads a cluster of short options left to right (`-uX utf8`, `-um send`, `-msend`,
+// `-uc "code"`): the first of c, m, X or W takes the rest of the token as its value, or the next
+// token when nothing is left, WHATEVER characters it holds (`-mpkg.send`, `-c"import x; ..."`). null
+// when the token is not a cluster; opt is null when the letters before the first non-letter hold
+// none of the four (`-u`, `-OB`).
+const PY_CLUSTER = /^-[A-Za-z]/
+function pythonCluster(t) {
+  if (!PY_CLUSTER.test(t)) return null
+  for (let j = 1; j < t.length; j++) {
+    if ('cmXW'.includes(t[j])) return { opt: t[j], value: t.slice(j + 1) }
+    if (!/[A-Za-z]/.test(t[j])) break
+  }
+  return { opt: null, value: '' }
+}
+function pythonScriptOperand(rest) {
+  let stdinRedirect = false
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    if (t === '--') return { script: rest[i + 1] ?? null, stdin: false, stdinRedirect }
+    if (t === '-') return { script: null, stdin: true, stdinRedirect }
+    if (/^-[cm]/.test(t)) return { script: null, stdin: false, stdinRedirect } // code string / module: judged elsewhere
+    const cl = pythonCluster(t)
+    if (cl && (cl.opt === 'c' || cl.opt === 'm')) return { script: null, stdin: false, stdinRedirect }
+    if (cl && cl.opt && !cl.value) { i++; continue } // -X / -W at the end of a cluster: the next token is its value
+    if (PY_OPT_WITH_ARG.has(t)) { i++; continue }
+    if (t.startsWith('<')) { stdinRedirect = true; if (t === '<') i++; continue }
+    if (/^\d*>/.test(t)) { if (/^\d*>>?$/.test(t)) i++; continue }
+    if (t.startsWith('-') && t.length > 1) continue
+    return { script: t, stdin: false, stdinRedirect }
+  }
+  return { script: null, stdin: false, stdinRedirect }
+}
+// A command or process substitution as a word of the command (`$(...)`, a
+// backtick pair, `<(...)`, `>(...)`), with the substitution replaced by one
+// placeholder word that carries a `$`. maskSubshellMarkers splits these into
+// their own segments, which is right for judging the INNER command, but it
+// leaves the outer one without the word: `python3 $(echo .../send.py) --to x`
+// became `python3` and `--to x`. Judged on this form as well, the word is an
+// undecidable script path (or interpreter) like a variable. Quoted text is left
+// alone: a quoted `"$(...)"` already reaches the tokenizer as a `$` word.
+export function flattenSubstitutions(cmd) {
+  let out = ''
+  let q = null
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+      if (ch === q) q = null
+      out += ch
+      continue
+    }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    const opens = (ch === '$' || ch === '<' || ch === '>') && cmd[i + 1] === '('
+    if (opens || ch === '`') {
+      let depth = 1
+      let j = i + (opens ? 2 : 1)
+      let iq = null
+      for (; j < cmd.length && depth > 0; j++) {
+        const c = cmd[j]
+        if (iq) { if (c === iq) iq = null; continue }
+        if (c === "'" || c === '"') { iq = c; continue }
+        if (ch === '`') { if (c === '`') depth = 0; continue }
+        if (c === '(') depth++
+        else if (c === ')') depth--
+      }
+      out += ' $__SUBST__ '
+      i = j - 1
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+// A script operand under /dev/ or /proc/ (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`, `/proc/<pid>/fd/0`,
+// `/dev/./stdin`, `//dev/stdin`) is a stream or a process file, not a script on disk: the program is whatever
+// it carries, as undecidable here as a glob or `$` (W-1). A general rule on the leading directory (extra
+// slashes and `./` segments before it are skipped), not a list of stream names. NOT covered: a `..` that walks
+// into /dev or /proc from another directory (`/tmp/../dev/stdin`); like the other path tricks it is a known
+// limit of the pattern gate.
+const DEVPROC_SCRIPT = /^\/+(?:\.\/+)*(?:dev|proc)\//
+// `-m runpy` (also `-mrunpy`, `-um runpy`) runs whatever the next argument names: undecidable (W-2).
+function pythonRunsRunpy(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    const cl = pythonCluster(rest[i])
+    if (cl && cl.opt === 'm' && (cl.value || rest[i + 1]) === 'runpy') return true
+  }
+  return false
+}
+function pythonHeadSends(rest) {
+  const recipient = rest.some((t) => RECIPIENT_FLAG.test(t))
+  const { script, stdin, stdinRedirect } = pythonScriptOperand(rest)
+  if (script !== null && SENDPY.test(basename(script))) return recipient
+  if (script !== null && UNDECIDABLE_PATH.test(script)) return recipient // MAILGATEVARARGS1020
+  if (script !== null && DEVPROC_SCRIPT.test(script)) return recipient
+  if (pythonRunsRunpy(rest)) return recipient
+  if (stdin || (script === null && stdinRedirect)) return recipient
+  return false
+}
+
 function segmentIsSend(toksIn, depth) {
   return commandHeads(toksIn).some((h) => headIsSend(h, depth))
 }
@@ -472,6 +622,16 @@ function headIsSend(toks, depth) {
           rest[i + 1] && codeStringSends(rest[i + 1])) return true
     }
   }
+  if (PYTHON.test(prog)) {
+    // `-uc "code"`, `-c"code"`: the code string behind a cluster of short options.
+    for (let i = 0; i < rest.length; i++) {
+      const cl = pythonCluster(rest[i])
+      if (cl && cl.opt === 'c') {
+        const code = cl.value || rest[i + 1]
+        if (code && codeStringSends(code)) return true
+      }
+    }
+  }
   const candidates = [prog]
   if ((PYTHON.test(prog) || NODEISH.test(prog)) && rest.length) candidates.push(basename(rest[0]))
   // Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender by module name.
@@ -479,9 +639,20 @@ function headIsSend(toks, depth) {
     for (let i = 0; i < rest.length - 1; i++) {
       if (rest[i] === '-m' && rest[i + 1].split('.').pop() === 'send') candidates.push('send.py')
     }
+    // `-msend`, `-um send`: the module behind a cluster of short options.
+    for (let i = 0; i < rest.length; i++) {
+      const cl = pythonCluster(rest[i])
+      if (cl && cl.opt === 'm') {
+        const mod = cl.value || rest[i + 1]
+        if (mod && mod.split('.').pop() === 'send') candidates.push('send.py')
+      }
+    }
   }
-  if (candidates.some((c) => SENDPY.test(c)) &&
-      rest.some((t) => t === '--to' || t.startsWith('--to='))) return true
+  if (candidates.some((c) => SENDPY.test(c)) && rest.some((t) => RECIPIENT_FLAG.test(t))) return true
+  if (PYTHON.test(prog) && pythonHeadSends(rest)) return true
+  // An interpreter or program that cannot be resolved statically ($PY, a glob,
+  // a substitution) with a recipient flag: what runs is undecidable here.
+  if (UNDECIDABLE_PATH.test(toks[0]) && rest.some((t) => RECIPIENT_FLAG.test(t))) return true
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
@@ -594,7 +765,16 @@ export function isSendInvocation(cmd, depth = 0) {
     // this path the gate is exactly as strict as before -- never weaker.
     return SEND_PATTERNS.some((re) => re.test(cmd))
   }
-  return segments.some((toks) => segmentIsSend(toks, depth))
+  if (segments.some((toks) => segmentIsSend(toks, depth))) return true
+  // The same command with every substitution as one undecidable word (see
+  // flattenSubstitutions): the outer command keeps the word it would run.
+  const flat = flattenSubstitutions(cmd)
+  if (flat === cmd) return false
+  try {
+    return segmentsTokens(flat).some((toks) => segmentIsSend(toks, depth))
+  } catch {
+    return SEND_PATTERNS.some((re) => re.test(cmd))
+  }
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of
