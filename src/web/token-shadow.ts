@@ -113,6 +113,8 @@ const TENANTLESS_TTL_MS = 5000
 const WARN_INTERVAL_MS = 60_000
 const OVERFLOW = '_overflow'
 const INVALID = '_invalid'
+/** The target of a refusal made because the check itself failed (no verdict could be reached). */
+const UNDECIDED = '_undecided'
 const SECONDS_PER_DAY = 86_400
 
 // ── pure helpers ────────────────────────────────────────────────────────────
@@ -593,7 +595,7 @@ const pendingBodies = new WeakMap<http.IncomingMessage, Pending>()
 // way round a refusal. It reads with the size cap of the route that follows (WatchSpec.bodyMaxBytes),
 // so a body that route would refuse as too large is refused here the same way, not read in full first.
 
-interface PathVerdict { caller: string; hit: ShadowHit; base: Base }
+interface PathVerdict { caller: string; hit: ShadowHit; base: Base; undecided?: boolean }
 const pathVerdicts = new WeakMap<http.IncomingMessage, PathVerdict>()
 
 function isWriteMethod(method: string): boolean {
@@ -624,22 +626,36 @@ export interface IdentityRefusal {
   /** The agent the request named (or whose row it addressed) that is not the caller. */
   target: string
   category: TokenShadowCategory
+  /**
+   * The check could not reach a verdict (a row-owner lookup or the check itself failed): the request is refused
+   * because it cannot be shown to be the caller's own. The caller is told so with a 500, not a 403.
+   */
+  undecided?: boolean
+}
+
+function undecidedRefusal(caller: string): IdentityRefusal {
+  return { caller, target: UNDECIDED, category: 'agent_id_mismatch', undecided: true }
 }
 
 /**
  * The refusal TOKEN_IDENTITY_MODE=enforce gives this request, or null to let it through. Call after
  * observeTokenUsage and only in enforce mode. May read the request body (kept for the route).
- * Never throws: a fault in the check lets the request through, as the counter does, because a bug
- * here must not become an outage; the route-level checks of the fleet_agent endpoints still hold.
+ *
+ * Fails closed where it matters: a request the gate would have to decide (a refusable endpoint, a caller that
+ * is an agent and not the coordinator) and could not, because a row-owner lookup or the check itself failed, is
+ * refused as `undecided` instead of let through. A request the gate has nothing to decide about (unwatched
+ * route, the coordinator, an endpoint enforce never refuses) is unaffected by a fault. Throws only the
+ * RequestBodyTooLargeError the route would have raised.
  */
 export async function identityRefusal(
   req: http.IncomingMessage,
   mainAgentId: string = MAIN_AGENT_ID,
 ): Promise<IdentityRefusal | null> {
+  let pending: Pending | undefined
   try {
     const verdict = pathVerdicts.get(req)
-    if (verdict) return { caller: verdict.caller, target: verdict.hit.target, category: verdict.hit.category }
-    const pending = pendingBodies.get(req)
+    if (verdict) return { caller: verdict.caller, target: verdict.hit.target, category: verdict.hit.category, ...(verdict.undecided ? { undecided: true } : {}) }
+    pending = pendingBodies.get(req)
     if (!pending || !pending.refusable) return null
     const body = await readBody(req, { maxBytes: pending.spec.bodyMaxBytes })
     if (body.length === 0) return null
@@ -659,7 +675,7 @@ export async function identityRefusal(
   } catch (err) {
     if (err instanceof RequestBodyTooLargeError) throw err // the route would have refused it the same way
     warnThrottled(err, 'token-shadow: identity refusal check failed')
-    return null
+    return pending?.refusable ? undecidedRefusal(pending.caller) : null
   }
 }
 
@@ -675,6 +691,14 @@ export async function answerIdentityRefusal(req: http.IncomingMessage, res: http
     const refusal = await identityRefusal(req)
     if (!refusal) return false
     if (base) recordTokenShadow(base, { category: 'identity_refused', target: refusal.target })
+    if (refusal.undecided) {
+      logger.error(
+        { path: req.url?.split('?')[0], method: req.method, caller: refusal.caller },
+        'token identity: the check could not be completed, request refused',
+      )
+      json(res, { error: 'internal_error', hint: 'The token identity check could not be completed' }, 500)
+      return true
+    }
     logger.warn(
       { path: req.url?.split('?')[0], method: req.method, caller: refusal.caller, target: refusal.target, category: refusal.category },
       'token identity: request names another agent, refused',
@@ -722,66 +746,104 @@ export async function observeTokenUsage(
     }
     const hasTenantParam = !!url.searchParams.get('tenant')
 
-    // (4) tenant context. A shared-token request that declares a shared agent and names no tenant.
-    if (who.shared && who.source === 'self_declared' && !hasTenantParam && agentHasNoTenant(who.caller)) {
-      recordTokenShadow(base, { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) })
-    }
-    // The memory read of a shared agent from a caller that has no tenant of its own to scope it by.
-    if (spec?.prefix === '/api/memories' && method === 'GET' && !hasTenantParam && (who.shared || who.fleetAgent)) {
-      const named = cleanAgentId(url.searchParams.get('agent') ?? url.searchParams.get('agent_id'))
-      if (named && named !== INVALID && agentHasNoTenant(named)) {
-        recordTokenShadow(base, { category: 'shared_agent_memories_no_tenant', target: named })
+    // (4) tenant context. A counting side effect only: a fault in it must not skip the identity check below.
+    try {
+      // A shared-token request that declares a shared agent and names no tenant.
+      if (who.shared && who.source === 'self_declared' && !hasTenantParam && agentHasNoTenant(who.caller)) {
+        recordTokenShadow(base, { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) })
       }
+      // The memory read of a shared agent from a caller that has no tenant of its own to scope it by.
+      if (spec?.prefix === '/api/memories' && method === 'GET' && !hasTenantParam && (who.shared || who.fleetAgent)) {
+        const named = cleanAgentId(url.searchParams.get('agent') ?? url.searchParams.get('agent_id'))
+        if (named && named !== INVALID && agentHasNoTenant(named)) {
+          recordTokenShadow(base, { category: 'shared_agent_memories_no_tenant', target: named })
+        }
+      }
+    } catch (err) {
+      warnThrottled(err, 'token-shadow: tenant-context count failed')
     }
 
     // (2) / (3) identity: only for a caller that is an agent and not the coordinator.
     if (!spec || !who.caller || who.caller === mainAgentId.trim().toLowerCase()) return
 
-    const targets = new Set<string>()
-    const param = paramOf(spec, path)
-    if (param !== undefined) {
-      if (spec.paramIsAgent) targets.add(param)
-      else if (spec.owner) {
-        try {
-          const owner = await spec.owner(param)
-          if (owner) targets.add(owner)
-        } catch (err) {
-          warnThrottled(err, 'token-shadow: row owner lookup failed')
-        }
+    try {
+      await observeIdentity(req, spec, who, base, method, path, url, mainAgentId)
+    } catch (err) {
+      // The decision could not be made. Where enforce would have had to decide, it refuses (see identityRefusal);
+      // the exemption is not known any more, so a read enforce would have let through is refused too.
+      warnThrottled(err, 'token-shadow: identity observe failed')
+      if (enforceApplies(spec, method) && !pathVerdicts.has(req)) {
+        pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: UNDECIDED }, base, undecided: true })
       }
-    }
-    const pathNamed = targets.size > 0
-    let queryNamed = false
-    for (const k of spec.queryKeys) {
-      const v = url.searchParams.get(k)
-      if (v && v.trim()) { targets.add(v); queryNamed = true }
-    }
-
-    const recorded = new Set<string>()
-    const exempt = !!spec.readExempt?.({ method, path, param, query: url.searchParams })
-    const refusable = enforceApplies(spec, method) && !exempt
-    // A write takes its agent from the body only (the route ignores the query), a read from the query key.
-    const queryKeyNamed = !!spec.omittedMain?.queryKey && !!url.searchParams.get(spec.omittedMain.queryKey)?.trim()
-    const omittedMain = refusable && !pathNamed && omittedMeansMain(spec, method, who.shared) && (isWriteMethod(method) || !queryKeyNamed)
-    // A read that names no agent, on a route that then acts as the main agent. (A write may still name
-    // the agent in its body: that is decided when the body is read.)
-    if (omittedMain && !isWriteMethod(method)) {
-      pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: mainAgentId.trim().toLowerCase() }, base })
-    }
-    for (const hit of identityHits({ kind: spec.kind, caller: who.caller, mainAgentId, targets, refusable })) {
-      recordTokenShadow(base, hit)
-      recorded.add(hit.target)
-      if (refusable && !pathVerdicts.has(req)) pathVerdicts.set(req, { caller: who.caller, hit, base })
-    }
-    if (spec.listsAcrossAgents && method === 'GET' && param === undefined && !queryNamed) {
-      recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
-    }
-
-    if (spec.bodyKeys.length > 0 && isWriteMethod(method)) {
-      pendingBodies.set(req, { base, spec, recorded, caller: who.caller, refusable, omittedMain })
     }
   } catch (err) {
     warnThrottled(err, 'token-shadow: observe failed')
+  }
+}
+
+/**
+ * The identity half of observeTokenUsage: classify what the request names, count it, and remember the verdict enforce
+ * will give. May throw: the caller turns a fault into an `undecided` verdict where enforce applies.
+ */
+async function observeIdentity(
+  req: http.IncomingMessage,
+  spec: WatchSpec,
+  who: ShadowCaller,
+  base: Base,
+  method: string,
+  path: string,
+  url: URL,
+  mainAgentId: string,
+): Promise<void> {
+  const targets = new Set<string>()
+  let ownerLookupFailed = false
+  const param = paramOf(spec, path)
+  if (param !== undefined) {
+    if (spec.paramIsAgent) targets.add(param)
+    else if (spec.owner) {
+      try {
+        const owner = await spec.owner(param)
+        if (owner) targets.add(owner)
+      } catch (err) {
+        // Not knowing whose row it is does not mean it is the caller's: remembered, and decided below.
+        warnThrottled(err, 'token-shadow: row owner lookup failed')
+        ownerLookupFailed = true
+      }
+    }
+  }
+  const pathNamed = targets.size > 0
+  let queryNamed = false
+  for (const k of spec.queryKeys) {
+    const v = url.searchParams.get(k)
+    if (v && v.trim()) { targets.add(v); queryNamed = true }
+  }
+
+  const recorded = new Set<string>()
+  const exempt = !!spec.readExempt?.({ method, path, param, query: url.searchParams })
+  const refusable = enforceApplies(spec, method) && !exempt
+  // A write takes its agent from the body only (the route ignores the query), a read from the query key.
+  const queryKeyNamed = !!spec.omittedMain?.queryKey && !!url.searchParams.get(spec.omittedMain.queryKey)?.trim()
+  const omittedMain = refusable && !pathNamed && omittedMeansMain(spec, method, who.shared) && (isWriteMethod(method) || !queryKeyNamed)
+  // A read that names no agent, on a route that then acts as the main agent. (A write may still name
+  // the agent in its body: that is decided when the body is read.)
+  if (omittedMain && !isWriteMethod(method)) {
+    pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: mainAgentId.trim().toLowerCase() }, base })
+  }
+  for (const hit of identityHits({ kind: spec.kind, caller: who.caller, mainAgentId, targets, refusable })) {
+    recordTokenShadow(base, hit)
+    recorded.add(hit.target)
+    if (refusable && !pathVerdicts.has(req)) pathVerdicts.set(req, { caller: who.caller, hit, base })
+  }
+  // The owner of the row could not be read: where enforce refuses, so does this (a real hit above came first).
+  if (ownerLookupFailed && refusable && !pathVerdicts.has(req)) {
+    pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: UNDECIDED }, base, undecided: true })
+  }
+  if (spec.listsAcrossAgents && method === 'GET' && param === undefined && !queryNamed) {
+    recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
+  }
+
+  if (spec.bodyKeys.length > 0 && isWriteMethod(method)) {
+    pendingBodies.set(req, { base, spec, recorded, caller: who.caller, refusable, omittedMain })
   }
 }
 

@@ -17,6 +17,13 @@ import { answerIdentityRefusal, identityRefusal, inspectBodyAgents, observeToken
 import { readBody, RequestBodyTooLargeError } from '../web/http-helpers.js'
 import * as wsDb from '../db/workspace.js'
 
+// A switch for the one test that makes the tenant lookup of the counting side fail.
+const tenantFault = vi.hoisted(() => ({ on: false }))
+vi.mock('../db/write-tenant.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../db/write-tenant.js')>()
+  return { ...orig, resolveWriteTenant: (a: string | null | undefined) => { if (tenantFault.on) throw new Error('tenant lookup failed'); return orig.resolveWriteTenant(a) } }
+})
+
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -331,7 +338,7 @@ describe('the switch and its wiring', () => {
 
   it('web.ts runs the identity gate only in enforce mode, after the counter and before dispatch', () => {
     expect(WEB_SRC.match(/\banswerIdentityRefusal\(/g)?.length).toBe(1)
-    const observeAt = WEB_SRC.indexOf('observeTokenUsage(req, auth, method, path, url)')
+    const observeAt = WEB_SRC.indexOf('await observeTokenUsage(req, auth, method, path, url)')
     const guardAt = WEB_SRC.indexOf("if (TOKEN_IDENTITY_MODE === 'enforce' && requiresAuth(path, method))")
     const refuseAt = WEB_SRC.indexOf('answerIdentityRefusal(req, res)')
     const dispatchAt = WEB_SRC.indexOf('await dispatcher.dispatch(routeCtx)')
@@ -355,5 +362,166 @@ describe('enforce on /api/workspace/:id: the row owner is looked up asynchronous
     expect((await send('alpha', 'DELETE', `/api/workspace/${foreign.id}`)).refusal).toMatchObject({ target: 'beta' })
     expect((await send('alpha', 'PATCH', `/api/workspace/${own.id}`, { title: 'x' })).refusal).toBeNull()
     expect((await send('alpha', 'GET', `/api/workspace/${foreign.id}`)).refusal).toBeNull()
+  })
+})
+
+// A decision that cannot be made is not a decision to let the request through. Where enforce has to decide (a
+// refusable endpoint, a caller that is an agent and not the coordinator) and the row-owner lookup or the check
+// itself fails, the request is refused as undecided: a 500 for the caller, one identity_refused row.
+describe('enforce fails closed when the check cannot be made', () => {
+  // [what is addressed, method, path, the table its owner lookup reads]
+  const OWNER_LOOKUPS: Array<[string, string, string, string]> = [
+    ['a workspace doc', 'PATCH', '/api/workspace/doc-1', 'workspace_docs'],
+    ['a blackboard row', 'DELETE', '/api/blackboard/row-1', 'fleet_blackboard'],
+    ['a schedule', 'PUT', '/api/schedules/task-1', 'schedules'],
+    ['a memory', 'PUT', '/api/memories/5', 'memories'],
+  ]
+
+  it.each(OWNER_LOOKUPS)('%s: a failing owner lookup refuses the write instead of letting it through', async (_what, method, path, table) => {
+    getDb().exec(`DROP TABLE ${table}`)
+    const sent = await send('alpha', method, path, {})
+    expect(sent.refusal).toMatchObject({ caller: 'alpha', target: '_undecided', undecided: true })
+  })
+
+  it.each(OWNER_LOOKUPS)('%s: answered with a 500 and counted once, not as a 403', async (_what, method, path, table) => {
+    getDb().exec(`DROP TABLE ${table}`)
+    const sent = await send('alpha', method, path, {})
+    const out = { status: 0 }
+    const res = { writeHead(code: number) { out.status = code }, setHeader() {}, end() {} } as unknown as http.ServerResponse
+    expect(await answerIdentityRefusal(sent.req, res)).toBe(true)
+    expect(out.status).toBe(500)
+    const rows = getDb().prepare("SELECT target, count FROM token_usage_shadow WHERE category = 'identity_refused'").all()
+    expect(rows).toEqual([{ target: '_undecided', count: 1 }])
+  })
+
+  it('a fault in the exemption check (the shared-tier read of a memory by id) refuses the read, it does not pass it', async () => {
+    getDb().exec('DROP TABLE memories')
+    const sent = await send('alpha', 'GET', '/api/memories/5')
+    expect(sent.refusal).toMatchObject({ caller: 'alpha', target: '_undecided', undecided: true })
+  })
+
+  it('the workspace owner lookup is asynchronous: a rejected promise refuses the write as undecided', async () => {
+    const spy = vi.spyOn(wsDb, 'peekWorkspaceDoc').mockRejectedValueOnce(new Error('db down'))
+    try {
+      const sent = await send('alpha', 'PATCH', '/api/workspace/doc-1', {})
+      expect(sent.refusal).toMatchObject({ caller: 'alpha', target: '_undecided', undecided: true })
+      expect(spy).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('a lookup that works but finds nothing is not a failure: a missing row is the route\'s 404', async () => {
+    expect((await send('alpha', 'PATCH', '/api/workspace/no-such-doc', {})).refusal).toBeNull()
+    expect((await send('alpha', 'PUT', '/api/schedules/no-such-task', { agent: 'alpha' })).refusal).toBeNull()
+  })
+
+  it('what enforce never refuses is not refused because a lookup failed', async () => {
+    getDb().exec('DROP TABLE workspace_docs')
+    getDb().exec('DROP TABLE kanban_cards')
+    // a read of a workspace doc by id is allowed (enforce: write only); kanban is scoped by tenant, never by agent
+    expect((await send('alpha', 'GET', '/api/workspace/doc-1')).refusal).toBeNull()
+    expect((await send('alpha', 'PATCH', '/api/kanban/card-1', {})).refusal).toBeNull()
+    // the coordinator acts across agents by design
+    expect((await send('main', 'PATCH', '/api/workspace/doc-1', {})).refusal).toBeNull()
+  })
+
+  it('a request that names the caller\'s own agent is still let through when no lookup is involved', async () => {
+    getDb().exec('DROP TABLE workspace_docs')
+    expect((await send('alpha', 'POST', '/api/workspace', { agent_id: 'alpha', doc_key: 'k' })).refusal).toBeNull()
+  })
+
+  it('a real finding is reported as such, not as undecided, when the lookup fails next to it', async () => {
+    getDb().exec('DROP TABLE schedules')
+    const sent = await send('alpha', 'PUT', '/api/schedules/task-1?agent=beta', {})
+    expect(sent.refusal).toMatchObject({ target: 'beta' })
+    expect(sent.refusal?.undecided).toBeUndefined()
+  })
+
+  it('a fault in the tenant-context counting does not skip the identity check', async () => {
+    tenantFault.on = true
+    try {
+      const sent = await send({ sharedAs: 'alpha' }, 'GET', '/api/daily-log?agent=beta')
+      expect(sent.refusal).toMatchObject({ caller: 'alpha', target: 'beta' })
+    } finally {
+      tenantFault.on = false
+    }
+  })
+
+  it('a body that cannot be read on a refusable write is refused as undecided', async () => {
+    const req = new EventEmitter() as unknown as http.IncomingMessage
+    req.method = 'POST'
+    req.headers = { authorization: 'Bearer tok-alpha' }
+    ;(req as unknown as { destroy: () => void }).destroy = () => {}
+    setImmediate(() => { req.emit('error', new Error('socket hang up')) })
+    const url = new URL('http://localhost:3420/api/workspace')
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
+    expect(await identityRefusal(req)).toMatchObject({ caller: 'alpha', undecided: true })
+  })
+
+  it('a body that cannot be read on a write enforce never refuses stays out of it', async () => {
+    const req = new EventEmitter() as unknown as http.IncomingMessage
+    req.method = 'POST'
+    req.headers = { authorization: 'Bearer tok-alpha' }
+    ;(req as unknown as { destroy: () => void }).destroy = () => {}
+    // No 'error' is emitted here: nothing reads this body, so no listener would catch it (an unhandled 'error' event
+    // is an uncaught exception). The point is that the gate does not even try to read a body it cannot refuse on.
+    const url = new URL('http://localhost:3420/api/kanban')
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
+    expect(await identityRefusal(req)).toBeNull()
+    expect(req.listenerCount('data')).toBe(0)
+    expect(req.listenerCount('error')).toBe(0)
+  })
+})
+
+// Who the fail-closed rule applies to, and what a fault in the classification of a request does.
+describe('enforce fails closed: who it applies to', () => {
+  it('a principal that is not an agent is never refused because a lookup failed (main agent, undeclared shared token, dashboard session)', async () => {
+    getDb().exec('DROP TABLE workspace_docs')
+    getDb().exec('DROP TABLE memories')
+    expect((await send('main', 'PATCH', '/api/workspace/doc-1', {})).refusal).toBeNull()
+    expect((await send('main', 'GET', '/api/memories/5')).refusal).toBeNull()
+    expect((await send('shared', 'PATCH', '/api/workspace/doc-1', {})).refusal).toBeNull()
+    for (const auth of [
+      { kind: 'session', user: 'u', role: 'admin', tenantId: null },
+      { kind: 'session', user: 'u', role: 'agent', tenantId: 'default' },
+    ] as const) {
+      const req = new EventEmitter() as unknown as http.IncomingMessage
+      req.method = 'PATCH'
+      req.headers = {}
+      ;(req as unknown as { destroy: () => void }).destroy = () => {}
+      setImmediate(() => { req.emit('data', Buffer.from('{}')); req.emit('end') })
+      const url = new URL('http://localhost:3420/api/workspace/doc-1')
+      await observeTokenUsage(req, auth as never, 'PATCH', url.pathname, url)
+      expect(await identityRefusal(req)).toBeNull()
+    }
+  })
+
+  it('a shared-token request that declares the agent is held like the agent token', async () => {
+    getDb().exec('DROP TABLE workspace_docs')
+    expect((await send({ sharedAs: 'alpha' }, 'PATCH', '/api/workspace/doc-1', {})).refusal).toMatchObject({ caller: 'alpha', undecided: true })
+  })
+
+  it('a fault in the classification of a request: a pass where enforce never refuses (GET workspace doc by id), undecided where it does (PATCH)', async () => {
+    // The url object throws when the `agent` query key is read, which happens in the identity half of the observer.
+    const faulty = (method: string, path: string) => {
+      const req = new EventEmitter() as unknown as http.IncomingMessage
+      req.method = method
+      req.headers = { authorization: 'Bearer tok-alpha' }
+      ;(req as unknown as { destroy: () => void }).destroy = () => {}
+      setImmediate(() => { req.emit('data', Buffer.from('{}')); req.emit('end') })
+      const real = new URL(`http://localhost:3420${path}`)
+      const url = {
+        pathname: real.pathname,
+        searchParams: { get: (k: string) => { if (k === 'agent') throw new Error('boom'); return real.searchParams.get(k) } },
+      } as unknown as URL
+      return { req, url }
+    }
+    const read = faulty('GET', '/api/workspace/doc-1')
+    await observeTokenUsage(read.req, await resolveAuth(read.req, read.url, read.url.pathname, 'GET', SHARED, true), 'GET', read.url.pathname, read.url)
+    expect(await identityRefusal(read.req)).toBeNull()
+    const write = faulty('PATCH', '/api/workspace/doc-1')
+    await observeTokenUsage(write.req, await resolveAuth(write.req, write.url, write.url.pathname, 'PATCH', SHARED, true), 'PATCH', write.url.pathname, write.url)
+    expect(await identityRefusal(write.req)).toMatchObject({ caller: 'alpha', undecided: true })
   })
 })
