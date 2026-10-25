@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-const mockSweepExpiredWorkspaceDocs = vi.hoisted(() => vi.fn(() => 3))
+const mockSweepExpiredWorkspaceDocs = vi.hoisted(() => vi.fn(() => Promise.resolve(3)))
 const mockGetEffectiveSettingValue = vi.hoisted(() => vi.fn(() => 7))
 const mockLoggerInfo = vi.hoisted(() => vi.fn())
 const mockLoggerError = vi.hoisted(() => vi.fn())
@@ -44,10 +44,10 @@ describe('workspace-docs-ttl-sweeper', () => {
     expect(handle).toBeDefined()
   })
 
-  it('sweeps expired docs on interval tick', () => {
+  it('sweeps expired docs on interval tick', async () => {
     startWorkspaceDocsTtlSweeper()
 
-    vi.advanceTimersByTime(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
 
     expect(mockGetEffectiveSettingValue).toHaveBeenCalledWith('WORKSPACE_DOCS_TTL_DAYS')
     expect(mockSweepExpiredWorkspaceDocs).toHaveBeenCalledWith(7)
@@ -57,23 +57,21 @@ describe('workspace-docs-ttl-sweeper', () => {
     )
   })
 
-  it('does not log info when no documents were deleted', () => {
-    mockSweepExpiredWorkspaceDocs.mockReturnValueOnce(0)
+  it('does not log info when no documents were deleted', async () => {
+    mockSweepExpiredWorkspaceDocs.mockResolvedValueOnce(0)
 
     startWorkspaceDocsTtlSweeper()
-    vi.advanceTimersByTime(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
 
     expect(mockLoggerInfo).not.toHaveBeenCalled()
   })
 
-  it('logs error when sweep fails', () => {
+  it('logs error when sweep fails', async () => {
     const sweepError = new Error('sweep failed')
-    mockSweepExpiredWorkspaceDocs.mockImplementationOnce(() => {
-      throw sweepError
-    })
+    mockSweepExpiredWorkspaceDocs.mockRejectedValueOnce(sweepError)
 
     startWorkspaceDocsTtlSweeper()
-    vi.advanceTimersByTime(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
 
     expect(mockLoggerError).toHaveBeenCalledWith(
       { err: sweepError },
@@ -81,16 +79,16 @@ describe('workspace-docs-ttl-sweeper', () => {
     )
   })
 
-  it('continues sweeping on repeated interval ticks', () => {
+  it('continues sweeping on repeated interval ticks', async () => {
     mockSweepExpiredWorkspaceDocs
-      .mockReturnValueOnce(1)
-      .mockReturnValueOnce(2)
-      .mockReturnValueOnce(0)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(0)
 
     startWorkspaceDocsTtlSweeper()
 
     // First tick
-    vi.advanceTimersByTime(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
     expect(mockSweepExpiredWorkspaceDocs).toHaveBeenCalledTimes(1)
     expect(mockLoggerInfo).toHaveBeenCalledWith(
       { deleted: 1, ttlDays: 7 },
@@ -98,7 +96,7 @@ describe('workspace-docs-ttl-sweeper', () => {
     )
 
     // Second tick
-    vi.advanceTimersByTime(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
     expect(mockSweepExpiredWorkspaceDocs).toHaveBeenCalledTimes(2)
     expect(mockLoggerInfo).toHaveBeenLastCalledWith(
       { deleted: 2, ttlDays: 7 },
@@ -106,17 +104,17 @@ describe('workspace-docs-ttl-sweeper', () => {
     )
 
     // Third tick (no docs deleted)
-    vi.advanceTimersByTime(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
     expect(mockSweepExpiredWorkspaceDocs).toHaveBeenCalledTimes(3)
     // Info should still be called exactly 2 times (the 0-doc tick doesn't log)
     expect(mockLoggerInfo).toHaveBeenCalledTimes(2)
   })
 
-  it('uses WORKSPACE_DOCS_TTL_DAYS setting value', () => {
+  it('uses WORKSPACE_DOCS_TTL_DAYS setting value', async () => {
     mockGetEffectiveSettingValue.mockReturnValueOnce(30)
 
     startWorkspaceDocsTtlSweeper()
-    vi.advanceTimersByTime(5 * 60_000)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
 
     expect(mockSweepExpiredWorkspaceDocs).toHaveBeenCalledWith(30)
   })

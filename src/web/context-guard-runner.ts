@@ -260,8 +260,8 @@ const HANDOFF_DOC_KEY = 'handoff'
 // different cwd/config-dir than workingDirFor() assumes); the file mtime is
 // kept as a fallback for a handoff written before an agent's skill picked up
 // the SQL step, so freshness detection does not go blind mid-rollout.
-function handoffMtime(name: string): number | null {
-  const sqlMtime = getWorkspaceDocUpdatedAtMs(name, HANDOFF_DOC_KEY)
+async function handoffMtime(name: string): Promise<number | null> {
+  const sqlMtime = await getWorkspaceDocUpdatedAtMs(name, HANDOFF_DOC_KEY)
   if (sqlMtime !== null) return sqlMtime
   try { return statSync(handoffPathFor(name)).mtimeMs } catch { return null }
 }
@@ -476,7 +476,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     paneIdle: paneState === 'idle',
     paneBusy: paneState === 'busy',
     sessionReady,
-    handoffMtime: needPct ? handoffMtime(name) : null,
+    handoffMtime: needPct ? await handoffMtime(name) : null,
     paneSaturated: pane !== null ? paneShowsContextSaturation(pane) : false,
     // Context-size probe, paid for only when the idle-flush tier is armed.
     // Note the condition is cfg.idleFlushEnabled, NOT cfg.enabled: the two
@@ -657,7 +657,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         break
       }
       case 'inject-resume': {
-        const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
+        const hadHandoff = inputs.handoffMtime !== null || await handoffMtime(name) !== null
         // Staleness was measured at RESTART time and rode here in the state;
         // measuring now would be meaningless (the old session is gone).
         let outcome: Awaited<ReturnType<typeof sendPromptToSession>>

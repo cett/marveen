@@ -123,7 +123,7 @@ vi.mock('../notify.js', async () => {
   h.notifyChannel = vi.fn(async () => {})
   return { notifyChannel: (...a: unknown[]) => h.notifyChannel(...a) }
 })
-vi.mock('../db/workspace.js', () => ({ getWorkspaceDocUpdatedAtMs: () => null }))
+vi.mock('../db/workspace.js', () => ({ getWorkspaceDocUpdatedAtMs: () => Promise.resolve(null) }))
 vi.mock('../db.js', async () => {
   const { vi } = await import('vitest')
   h.createAgentMessage = vi.fn(() => ({ id: 1 }))

@@ -73,7 +73,7 @@ async function request(rawToken: string | null, method: string, path: string, bo
     agentId: role === 'fleet_agent' && tokenAgentId ? tokenAgentId : resolveAgentIdHeader(req),
     auth: auth.kind === 'token' ? { kind: 'token', tokenName: auth.tokenName } : undefined,
   } as unknown as RouteContext
-  observeTokenUsage(req, auth, method, url.pathname, url) // where web.ts calls it: after the gates, before dispatch
+  await observeTokenUsage(req, auth, method, url.pathname, url) // where web.ts calls it: after the gates, before dispatch
   for (const h of HANDLERS) if (await h(ctx)) return out
   out.status = 404
   return out
@@ -226,7 +226,8 @@ describe('wiring in the production request pipeline (source level; booting the s
     expect(ctxAt).toBeGreaterThan(0)
     expect(observeAt).toBeGreaterThan(ctxAt)
     expect(dispatchAt).toBeGreaterThan(observeAt)
-    expect(WEB).toMatch(/if \(requiresAuth\(path, method\)\) observeTokenUsage\(/)
+    // awaited: the owner lookup of a watched route is asynchronous and the enforce gate reads what it records
+    expect(WEB).toMatch(/if \(requiresAuth\(path, method\)\) await observeTokenUsage\(/)
   })
 
   it('web.ts counts the tenant-context refusal before it answers 403, and registers the admin route', () => {

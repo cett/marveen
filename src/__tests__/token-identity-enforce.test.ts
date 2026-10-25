@@ -49,7 +49,7 @@ async function send(
   setImmediate(() => { req.emit('data', buf); req.emit('end') })
   const url = new URL(`http://localhost:3420${path}`)
   const auth = await resolveAuth(req, url, url.pathname, method, SHARED, true)
-  observeTokenUsage(req, auth, method, url.pathname, url)
+  await observeTokenUsage(req, auth, method, url.pathname, url)
   return { req, refusal: await identityRefusal(req) }
 }
 
@@ -283,7 +283,7 @@ describe('identity_refused: every refusal is counted', () => {
     ;(req as unknown as { destroy: () => void }).destroy = () => {}
     setImmediate(() => { req.emit('data', buf); req.emit('end') })
     const url = new URL(`http://localhost:3420${path}`)
-    observeTokenUsage(req, await resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
     const out = { status: 0 }
     const res = { writeHead(code: number) { out.status = code }, setHeader() {}, end() {} } as unknown as http.ServerResponse
     return { refused: await answerIdentityRefusal(req, res), status: out.status }

@@ -113,7 +113,7 @@ const {
     mockReadTranscriptMtimeFromProjectDir: vi.fn((dir: string) => transcriptMtimeByDir.get(dir) ?? null),
     mockReadContextGuardConfig: vi.fn((name: string) => cfgByAgent.get(name) ?? DEFAULT_CFG),
     mockCreateAgentMessage: vi.fn(),
-    mockGetWorkspaceDocUpdatedAtMs: vi.fn((name: string) => handoffMtimeByAgent.get(name) ?? null),
+    mockGetWorkspaceDocUpdatedAtMs: vi.fn((name: string) => Promise.resolve(handoffMtimeByAgent.get(name) ?? null)),
     mockAppendActivePlanMarkerToHandoff: vi.fn(),
     mockHardRestartMarveenChannels: vi.fn(() => ({ ok: true }) as { ok: boolean; error?: string }),
     mockLastMainRespawnAt: vi.fn(() => null as number | null),
@@ -308,7 +308,7 @@ beforeEach(async () => {
   mockReadTranscriptMtimeFromProjectDir.mockImplementation((dir: string) => transcriptMtimeByDir.get(dir) ?? null)
   mockReadContextGuardConfig.mockImplementation((name: string) => cfgByAgent.get(name) ?? DEFAULT_CFG)
   mockCreateAgentMessage.mockReset()
-  mockGetWorkspaceDocUpdatedAtMs.mockImplementation((name: string) => handoffMtimeByAgent.get(name) ?? null)
+  mockGetWorkspaceDocUpdatedAtMs.mockImplementation((name: string) => Promise.resolve(handoffMtimeByAgent.get(name) ?? null))
   mockAppendActivePlanMarkerToHandoff.mockReset()
   mockHardRestartMarveenChannels.mockReset().mockReturnValue({ ok: true })
   mockLastMainRespawnAt.mockReset().mockReturnValue(null)

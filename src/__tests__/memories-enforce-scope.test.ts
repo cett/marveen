@@ -132,15 +132,15 @@ describe('GET /api/recall with no agent filter', () => {
 })
 
 describe('GET /api/memories shared search with the docs fold-in (enforce)', () => {
-  const seedDocs = (): void => {
+  const seedDocs = async (): Promise<void> => {
     for (const agent of ['agent-a', 'agent-b']) {
-      saveWorkspaceDoc({ agent_id: agent, tenant_id: 'default', doc_key: `notes/${agent}`, title: `${agent} private note`, content: 'zebrafish sentinel', content_type: 'text', type: 'notes' })
+      await saveWorkspaceDoc({ agent_id: agent, tenant_id: 'default', doc_key: `notes/${agent}`, title: `${agent} private note`, content: 'zebrafish sentinel', content_type: 'text', type: 'notes' })
     }
   }
   const docAgents = (body: any): string[] => (body.workspace_docs ?? []).map((d: any) => d.agent_id).sort()
 
   it('a fleet agent naming another agent with category=shared gets no workspace_docs of that agent', async () => {
-    seedDocs()
+    await seedDocs()
     const r = await call((c) => tryHandleMemories(c), '/api/memories?agent=agent-b&category=shared&q=zebrafish&include_docs=1', fleetA(true))
     expect(r.status).toBe(200)
     expect(docAgents(r.body)).not.toContain('agent-b')
@@ -148,7 +148,7 @@ describe('GET /api/memories shared search with the docs fold-in (enforce)', () =
   })
 
   it('the docs fold-in keeps the caller\'s own docs, and an admin naming an agent still gets that agent\'s', async () => {
-    seedDocs()
+    await seedDocs()
     const own = await call((c) => tryHandleMemories(c), '/api/memories?agent=agent-a&q=zebrafish&include_docs=1', fleetA(true))
     expect(docAgents(own.body)).toEqual(['agent-a'])
     const admin = await call((c) => tryHandleMemories(c), '/api/memories?agent=agent-b&q=zebrafish&include_docs=1', { role: 'admin' })

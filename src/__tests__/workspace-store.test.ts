@@ -35,12 +35,12 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('getWorkspaceDocUpdatedAtMs', () => {
-  it('returns null when no doc matches the (agent_id, doc_key) pair', () => {
-    expect(getWorkspaceDocUpdatedAtMs('agent-a', 'handoff')).toBeNull()
+  it('returns null when no doc matches the (agent_id, doc_key) pair', async () => {
+    expect(await getWorkspaceDocUpdatedAtMs('agent-a', 'handoff')).toBeNull()
   })
 
-  it('returns updated_at converted to milliseconds for a matching doc', () => {
-    saveWorkspaceDoc({
+  it('returns updated_at converted to milliseconds for a matching doc', async () => {
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default', doc_key: 'handoff',
       title: 'Handoff', content: 'body', content_type: 'text', type: 'notes',
     })
@@ -48,35 +48,35 @@ describe('getWorkspaceDocUpdatedAtMs', () => {
       'SELECT updated_at FROM workspace_docs WHERE agent_id = ? AND doc_key = ?',
     ).get('agent-a', 'handoff') as { updated_at: number }
 
-    expect(getWorkspaceDocUpdatedAtMs('agent-a', 'handoff')).toBe(row.updated_at * 1000)
+    expect(await getWorkspaceDocUpdatedAtMs('agent-a', 'handoff')).toBe(row.updated_at * 1000)
   })
 
-  it('does not touch last_accessed_at (unlike getWorkspaceDoc)', () => {
-    const doc = saveWorkspaceDoc({
+  it('does not touch last_accessed_at (unlike getWorkspaceDoc)', async () => {
+    const doc = await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default', doc_key: 'handoff',
       title: 'Handoff', content: 'body', content_type: 'text', type: 'notes',
     })
-    getWorkspaceDocUpdatedAtMs('agent-a', 'handoff')
+    await getWorkspaceDocUpdatedAtMs('agent-a', 'handoff')
     const row = getDb().prepare(
       'SELECT last_accessed_at FROM workspace_docs WHERE id = ?',
     ).get(doc.id) as { last_accessed_at: number | null }
     expect(row.last_accessed_at).toBeNull()
   })
 
-  it('scopes strictly by agent_id -- another agent with the same doc_key does not match', () => {
-    saveWorkspaceDoc({
+  it('scopes strictly by agent_id -- another agent with the same doc_key does not match', async () => {
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default', doc_key: 'handoff',
       title: 'Handoff', content: 'body', content_type: 'text', type: 'notes',
     })
-    expect(getWorkspaceDocUpdatedAtMs('agent-b', 'handoff')).toBeNull()
+    expect(await getWorkspaceDocUpdatedAtMs('agent-b', 'handoff')).toBeNull()
   })
 
-  it('upsert on (agent_id, doc_key) advances updated_at rather than creating a second row', () => {
-    saveWorkspaceDoc({
+  it('upsert on (agent_id, doc_key) advances updated_at rather than creating a second row', async () => {
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default', doc_key: 'handoff',
       title: 'Handoff', content: 'v1', content_type: 'text', type: 'notes',
     })
-    saveWorkspaceDoc({
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default', doc_key: 'handoff',
       title: 'Handoff', content: 'v2', content_type: 'text', type: 'notes',
     })
@@ -103,39 +103,39 @@ describe('sweepExpiredWorkspaceDocs', () => {
     `).run(id, opts.contentType ?? 'text', opts.taskRef ?? null, updatedAt, updatedAt)
   }
 
-  it('deletes an old doc with no task_ref', () => {
+  it('deletes an old doc with no task_ref', async () => {
     insertDoc('doc-old-notask', OLD)
-    expect(sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(1)
+    expect(await sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(1)
     expect(getDb().prepare('SELECT 1 FROM workspace_docs WHERE id = ?').get('doc-old-notask')).toBeUndefined()
   })
 
-  it('keeps a fresh doc with no task_ref', () => {
+  it('keeps a fresh doc with no task_ref', async () => {
     insertDoc('doc-fresh-notask', FRESH)
-    expect(sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
+    expect(await sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
     expect(getDb().prepare('SELECT 1 FROM workspace_docs WHERE id = ?').get('doc-fresh-notask')).toBeDefined()
   })
 
-  it('deletes an old doc whose linked kanban card is done', () => {
+  it('deletes an old doc whose linked kanban card is done', async () => {
     getDb().prepare(
       "INSERT INTO kanban_cards (id, title, status, created_at, updated_at) VALUES ('card-done', 'x', 'done', ?, ?)",
     ).run(OLD, OLD)
     insertDoc('doc-old-done-task', OLD, { taskRef: 'card-done' })
-    expect(sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(1)
+    expect(await sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(1)
     expect(getDb().prepare('SELECT 1 FROM workspace_docs WHERE id = ?').get('doc-old-done-task')).toBeUndefined()
   })
 
-  it('keeps an old doc whose linked kanban card is still in_progress', () => {
+  it('keeps an old doc whose linked kanban card is still in_progress', async () => {
     getDb().prepare(
       "INSERT INTO kanban_cards (id, title, status, created_at, updated_at) VALUES ('card-open', 'x', 'in_progress', ?, ?)",
     ).run(OLD, OLD)
     insertDoc('doc-old-open-task', OLD, { taskRef: 'card-open' })
-    expect(sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
+    expect(await sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
     expect(getDb().prepare('SELECT 1 FROM workspace_docs WHERE id = ?').get('doc-old-open-task')).toBeDefined()
   })
 
-  it('exempts binary content even when old and task-less', () => {
+  it('exempts binary content even when old and task-less', async () => {
     insertDoc('doc-old-binary', OLD, { contentType: 'binary' })
-    expect(sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
+    expect(await sweepExpiredWorkspaceDocs(TTL_DAYS)).toBe(0)
     expect(getDb().prepare('SELECT 1 FROM workspace_docs WHERE id = ?').get('doc-old-binary')).toBeDefined()
   })
 })
@@ -149,7 +149,7 @@ describe('sweepExpiredWorkspaceDocs', () => {
 
 describe('storeWorkspaceDocEmbedding', () => {
   it('does not throw when Ollama is unavailable (matches artifacts-db.test.ts convention: only assert no throw, not the null/embedded outcome, since a locally running Ollama would legitimately produce a real embedding)', async () => {
-    const doc = saveWorkspaceDoc({
+    const doc = await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'Embed-test', content: 'some content to embed', content_type: 'text', type: 'notes',
     })
@@ -162,7 +162,7 @@ describe('storeWorkspaceDocEmbedding', () => {
   })
 
   it('does not throw for empty text', async () => {
-    const doc = saveWorkspaceDoc({
+    const doc = await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'Empty', content: '', content_type: 'text', type: 'notes',
     })
@@ -170,7 +170,7 @@ describe('storeWorkspaceDocEmbedding', () => {
   })
 
   it('does not throw for a binary doc', async () => {
-    const doc = saveWorkspaceDoc({
+    const doc = await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'Binary-doc', content_blob: Buffer.from('x'), content_type: 'binary', type: 'notes',
     })
@@ -184,7 +184,7 @@ describe('storeWorkspaceDocEmbedding', () => {
 
 describe('backfillWorkspaceDocs', () => {
   it('does not throw and returns a number when Ollama is unavailable', async () => {
-    saveWorkspaceDoc({
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'Backfill-me', content: 'needs an embedding', content_type: 'text', type: 'notes',
     })
@@ -193,11 +193,11 @@ describe('backfillWorkspaceDocs', () => {
   })
 
   it('skips binary docs and docs with no content', async () => {
-    saveWorkspaceDoc({
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'Binary-skip', content_blob: Buffer.from('x'), content_type: 'binary', type: 'notes',
     })
-    saveWorkspaceDoc({
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'No-content', content: null, content_type: 'text', type: 'notes',
     })
@@ -208,7 +208,7 @@ describe('backfillWorkspaceDocs', () => {
   })
 
   it('skips docs that already have an embedding_blob', async () => {
-    const doc = saveWorkspaceDoc({
+    const doc = await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'Already-embedded', content: 'text', content_type: 'text', type: 'notes',
     })
@@ -245,14 +245,14 @@ describe('vectorSearchDocs -- tenant isolation (critical)', () => {
 
   it('an ANN hit never crosses a tenant boundary even when both tenants embed identical content', async () => {
     vi.mocked(generateEmbedding).mockResolvedValueOnce(FAKE_EMBEDDING)
-    const docA = saveWorkspaceDoc({
+    const docA = await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'tenant-vec-a',
       title: 'Vec doc A', content: 'vectorisolationprobe shared content', content_type: 'text', type: 'notes',
     })
     await storeWorkspaceDocEmbedding(docA.id, 'agent-a', 'tenant-vec-a', 'vectorisolationprobe shared content')
 
     vi.mocked(generateEmbedding).mockResolvedValueOnce(FAKE_EMBEDDING)
-    const docB = saveWorkspaceDoc({
+    const docB = await saveWorkspaceDoc({
       agent_id: 'agent-b', tenant_id: 'tenant-vec-b',
       title: 'Vec doc B', content: 'vectorisolationprobe shared content', content_type: 'text', type: 'notes',
     })
@@ -276,7 +276,7 @@ describe('vectorSearchDocs -- tenant isolation (critical)', () => {
 
 describe('hybridSearchDocs', () => {
   it('falls back to pure FTS ranking when vectorSearchDocs finds nothing', async () => {
-    saveWorkspaceDoc({
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'default',
       title: 'Hybrid fallback test', content: 'unique fusiontestkeyword content', content_type: 'text', type: 'notes',
     })
@@ -286,7 +286,7 @@ describe('hybridSearchDocs', () => {
   })
 
   it('is tenant-scoped exactly like searchWorkspaceDocs', async () => {
-    saveWorkspaceDoc({
+    await saveWorkspaceDoc({
       agent_id: 'agent-a', tenant_id: 'tenant-x',
       title: 'Tenant-x doc', content: 'fusionscopekeyword content', content_type: 'text', type: 'notes',
     })
