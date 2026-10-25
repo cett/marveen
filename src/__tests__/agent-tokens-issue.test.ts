@@ -19,7 +19,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
 }))
 
 import { initDatabase, getDb, dbx, listApiTokenRows, revokeApiTokensForAgent } from '../db.js'
-import { agentTokenPath, issueAgentToken, issueOperatorToken } from '../agent-tokens.js'
+import { agentTokenPath, checkAgentTokens, issueAgentToken, issueOperatorToken } from '../agent-tokens.js'
 import { resolveApiToken } from '../web/auth-gate.js'
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -224,10 +224,13 @@ describe('issueAgentToken: overlapping calls', () => {
     expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
   })
 
-  it('a stray second active row under the name is revoked by the next rotation', async () => {
+  const addStrayRow = () => getDb().prepare(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, agent_id)
+    VALUES (?, 'fleet-agent:alpha', 'fleet_agent', 'default', ?, 'alpha')`).run(sha('stray-secret'), Math.floor(Date.now() / 1000))
+  const checkAlpha = async () => (await checkAgentTokens(['alpha'], { includeOperator: false, includeShared: false })).rows
+
+  it('a stray second active row under the name is revoked by the next rotate', async () => {
     const first = await issueAgentToken('alpha')
-    getDb().prepare(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, agent_id)
-      VALUES (?, 'fleet-agent:alpha', 'fleet_agent', 'default', ?, 'alpha')`).run(sha('stray-secret'), Math.floor(Date.now() / 1000))
+    addStrayRow()
 
     await issueAgentToken('alpha', { rotate: true })
 
@@ -235,5 +238,29 @@ describe('issueAgentToken: overlapping calls', () => {
     expect(active).toHaveLength(1)
     expect(active[0].id).not.toBe(first.tokenId)
     expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
+  })
+
+  it('a plain issue that keeps the file is an idempotent no-op: the stray row stays, check reports it', async () => {
+    const first = await issueAgentToken('alpha')
+    addStrayRow()
+
+    const r = await issueAgentToken('alpha')
+
+    expect(r).toMatchObject({ status: 'kept', tokenId: first.tokenId })
+    expect(await activeRows('alpha')).toHaveLength(2)
+    expect(await checkAlpha()).toEqual([expect.objectContaining({
+      subject: 'alpha', status: 'multiple_active', detail: 'fleet-agent:alpha: 2 active rows',
+    })])
+  })
+
+  it('after a rotate there is one active row and check reports nothing', async () => {
+    await issueAgentToken('alpha')
+    addStrayRow()
+    expect((await checkAlpha())[0].status).toBe('multiple_active')
+
+    await issueAgentToken('alpha', { rotate: true })
+
+    expect(await checkAlpha()).toEqual([expect.objectContaining({ subject: 'alpha', status: 'ok' })])
+    expect((await checkAlpha())[0].detail).toBeUndefined()
   })
 })

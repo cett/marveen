@@ -206,6 +206,8 @@ export type CheckStatus =
   | 'wrong_role'
   | 'shared_mismatch'
   | 'shared_in_env'
+  /** The file token is fine, but the name has more than one active row (the others are unreachable). */
+  | 'multiple_active'
 
 export interface CheckRow {
   /** The agent id, `operator`, or `shared` for the dashboard token. */
@@ -215,6 +217,8 @@ export interface CheckRow {
   role: string
   /** Where the token file is. The token itself is never part of a result. */
   path: string
+  /** Set for `multiple_active`: the token name and how many active rows it has. */
+  detail?: string
 }
 
 export interface CheckResult {
@@ -231,6 +235,10 @@ async function checkSpec(spec: Spec, now: number): Promise<CheckRow> {
   if (!found) return row('unknown_hash')
   if (found.revoked_at !== null || (found.expires_at !== null && found.expires_at <= now)) return row('revoked')
   if (found.role !== spec.role || found.name !== spec.name || found.agent_id !== spec.agentId) return row('wrong_role')
+  // issue() keeps one active row per name, but a stray one (a CLI/dashboard overlap, an older database) is
+  // not removed by a plain `issue` that finds the file valid: it is only reported here, `--rotate` clears it.
+  const activeRows = (await listActiveApiTokensByName(spec.name, now)).length
+  if (activeRows > 1) return { ...row('multiple_active'), detail: `${spec.name}: ${activeRows} active rows` }
   return row('ok')
 }
 
