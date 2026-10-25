@@ -27,3 +27,7 @@ export function timerCaller() {
 export function takesVoidCallback(fn: (n: number) => void) { fn(1) }
 
 export function usesVoidCallback() { takesVoidCallback((n) => { getWidgetQa(n) }) }
+
+// a thrown-error assertion on a callback: once the callee is async the assertion can never fail
+declare function expect(actual: unknown): { not: { toThrow(): void }; toThrow(): void }
+export function expectCaller() { expect(() => getWidgetQa(1)).not.toThrow() }
