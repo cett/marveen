@@ -941,6 +941,35 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
   return rows.map(r => ({ ...r, perModel: byAgent.get(r.agent) ?? [] }))
 }
 
+export interface TokenUsageWindowModelRow {
+  model: string | null
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+}
+
+/** One agent's token rows with `from <= timestamp < to`, summed per model. */
+export function sumTokenUsageByModel(agent: string, from: number, to: number): TokenUsageWindowModelRow[] {
+  return db.prepare(`
+    SELECT model, COUNT(*) AS calls,
+      COALESCE(SUM(input_tokens), 0) AS inputTokens,
+      COALESCE(SUM(output_tokens), 0) AS outputTokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+      COALESCE(SUM(cache_creation_tokens), 0) AS cacheCreationTokens
+    FROM token_usage
+    WHERE agent = ? AND timestamp >= ? AND timestamp < ?
+    GROUP BY model
+  `).all(agent, from, to) as TokenUsageWindowModelRow[]
+}
+
+/** Timestamp of the newest token row of one agent, or null when it has none. */
+export function getLastTokenUsageTimestamp(agent: string): number | null {
+  const row = db.prepare('SELECT MAX(timestamp) AS ts FROM token_usage WHERE agent = ?').get(agent) as { ts: number | null }
+  return row.ts ?? null
+}
+
 export interface ModelDistEntry {
   model: string
   count: number

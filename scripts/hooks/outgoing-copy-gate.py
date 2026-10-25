@@ -95,7 +95,8 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 _CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
-_PYTHON = re.compile(r"^python3?$", re.I)
+# SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13t) is the same python.
+_PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 # A ket kapu (ez + scripts/email-send-gate.mjs) SZANDEKOSAN azonos
 # felismeres-szemantikat visel, es ezt kozos eset-lista orzi
 # (send-invocation-cases.json + konformancia-teszt): a divergencia
@@ -518,6 +519,163 @@ def _segment_is_send(toks, depth: int) -> bool:
     return any(_head_is_send(h, depth) for h in _command_heads(toks))
 
 
+# SUBAGENTMAILGATE1016: the sender was recognised only with the script as the
+# FIRST interpreter argument and the exact --to flag. The boundary and the
+# measured bypasses are written out at pythonHeadSends in email-send-gate.mjs
+# (the JS twin); send-invocation-cases.json binds the two. MAILGATEVARARGS1020
+# narrowed the undecidable-path branch to the recipient flag (same place).
+_PY_OPT_WITH_ARG = {"-X", "-W", "--check-hash-based-pycs"}
+_RECIPIENT_FLAG = re.compile(r"^--to?(=|$)")
+_UNDECIDABLE_PATH = re.compile(r"[*?[{$]")
+# CPython reads a cluster of short options left to right (`-uX utf8`, `-um send`, `-msend`,
+# `-uc "code"`): the first of c, m, X or W takes the rest of the token as its value, or the next
+# token when nothing is left. Mirrored in email-send-gate.mjs (pythonCluster); keep the two identical.
+_PY_CLUSTER = re.compile(r"^-[A-Za-z]")
+
+
+def _python_cluster(t):
+    """(opt, value) for a short-option cluster; the value is the rest of the token WHATEVER characters it holds
+    (`-mpkg.send`, `-c"import x; ..."`). opt is None when the letters before the first non-letter hold none of
+    c, m, X, W. None when t is no cluster."""
+    if not _PY_CLUSTER.match(t):
+        return None
+    for j in range(1, len(t)):
+        if t[j] in "cmXW":
+            return t[j], t[j + 1:]
+        if not t[j].isascii() or not t[j].isalpha():
+            break
+    return None, ""
+
+
+def _python_script_operand(rest):
+    """(script, stdin, stdin_redirect) for an interpreter's argument list."""
+    stdin_redirect = False
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        if t == "--":
+            return (rest[i + 1] if i + 1 < len(rest) else None), False, stdin_redirect
+        if t == "-":
+            return None, True, stdin_redirect
+        if re.match(r"^-[cm]", t):  # code string / module: judged elsewhere
+            return None, False, stdin_redirect
+        cl = _python_cluster(t)
+        if cl and cl[0] in ("c", "m"):
+            return None, False, stdin_redirect
+        if cl and cl[0] and not cl[1]:  # -X / -W at the end of a cluster: the next token is its value
+            i += 2
+            continue
+        if t in _PY_OPT_WITH_ARG:
+            i += 2
+            continue
+        if t.startswith("<"):
+            stdin_redirect = True
+            i += 2 if t == "<" else 1
+            continue
+        if re.match(r"^\d*>", t):
+            i += 2 if re.match(r"^\d*>>?$", t) else 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            i += 1
+            continue
+        return t, False, stdin_redirect
+    return None, False, stdin_redirect
+
+
+def flatten_substitutions(cmd: str) -> str:
+    """Every unquoted command or process substitution as one undecidable word;
+    see flattenSubstitutions in email-send-gate.mjs (the JS twin)."""
+    out = []
+    q = None
+    i = 0
+    n = len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(ch + cmd[i + 1])
+                i += 2
+                continue
+            if ch == q:
+                q = None
+            out.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            q = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch + cmd[i + 1])
+            i += 2
+            continue
+        opens = ch in ("$", "<", ">") and i + 1 < n and cmd[i + 1] == "("
+        if opens or ch == "`":
+            depth = 1
+            j = i + (2 if opens else 1)
+            iq = None
+            while j < n and depth > 0:
+                c = cmd[j]
+                j += 1
+                if iq:
+                    if c == iq:
+                        iq = None
+                    continue
+                if c in ("'", '"'):
+                    iq = c
+                    continue
+                if ch == "`":
+                    if c == "`":
+                        depth = 0
+                    continue
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+            out.append(" $__SUBST__ ")
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+# A script operand under /dev/ or /proc/ (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/3`, `/proc/<pid>/fd/0`,
+# `/dev/./stdin`, `//dev/stdin`) is a stream or a process file, not a script on disk: the program is whatever
+# it carries, as undecidable here as a glob or `$` (W-1). A general rule on the leading directory (extra
+# slashes and `./` segments before it are skipped), not a list of stream names. NOT covered: a `..` that walks
+# into /dev or /proc from another directory (`/tmp/../dev/stdin`). Mirrored in email-send-gate.mjs.
+_DEVPROC_SCRIPT = re.compile(r"/+(?:\./+)*(?:dev|proc)/")
+
+
+def _python_runs_runpy(rest) -> bool:
+    """`-m runpy` (also `-mrunpy`, `-um runpy`) runs whatever the next argument names: undecidable (W-2)."""
+    for i, t in enumerate(rest):
+        cl = _python_cluster(t)
+        if cl and cl[0] == "m":
+            mod = cl[1] or (rest[i + 1] if i + 1 < len(rest) else None)
+            if mod == "runpy":
+                return True
+    return False
+
+
+def _python_head_sends(rest) -> bool:
+    recipient = any(_RECIPIENT_FLAG.match(t) for t in rest)
+    script, stdin, stdin_redirect = _python_script_operand(rest)
+    if script is not None and _SENDPY.match(_basename(script)):
+        return recipient
+    if script is not None and _UNDECIDABLE_PATH.search(script):
+        return recipient  # MAILGATEVARARGS1020
+    if script is not None and _DEVPROC_SCRIPT.match(script):
+        return recipient
+    if _python_runs_runpy(rest):
+        return recipient
+    if stdin or (script is None and stdin_redirect):
+        return recipient
+    return False
+
+
 def _head_is_send(toks, depth: int) -> bool:
     if toks is None:  # the depth bound was hit on a wrapper: audit it
         return True
@@ -538,6 +696,14 @@ def _head_is_send(toks, depth: int) -> bool:
         for i, t in enumerate(rest):
             if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1]):
                 return True
+    if _PYTHON.match(prog):
+        # `-uc "code"`, `-c"code"`: the code string behind a cluster of short options.
+        for i, t in enumerate(rest):
+            cl = _python_cluster(t)
+            if cl and cl[0] == "c":
+                code = cl[1] or (rest[i + 1] if i + 1 < len(rest) else "")
+                if code and _code_string_sends(code):
+                    return True
     # send.py futtatasa (kozvetlenul, vagy python/runner utan) --to cimzettel
     candidates = [prog] + (
         [_basename(rest[0])] if rest and (_PYTHON.match(prog) or _NODEISH.match(prog)) else []
@@ -548,9 +714,20 @@ def _head_is_send(toks, depth: int) -> bool:
         for i, t in enumerate(rest):
             if t == "-m" and i + 1 < len(rest) and rest[i + 1].rsplit(".", 1)[-1] == "send":
                 candidates.append("send.py")
-    if any(_SENDPY.match(c) for c in candidates) and any(
-        t == "--to" or t.startswith("--to=") for t in rest
-    ):
+        # `-msend`, `-um send`: the module behind a cluster of short options.
+        for i, t in enumerate(rest):
+            cl = _python_cluster(t)
+            if cl and cl[0] == "m":
+                mod = cl[1] or (rest[i + 1] if i + 1 < len(rest) else "")
+                if mod and mod.rsplit(".", 1)[-1] == "send":
+                    candidates.append("send.py")
+    if any(_SENDPY.match(c) for c in candidates) and any(_RECIPIENT_FLAG.match(t) for t in rest):
+        return True
+    if _PYTHON.match(prog) and _python_head_sends(rest):
+        return True
+    # an interpreter or program that cannot be resolved statically ($PY, a glob,
+    # a substitution) with a recipient flag: what runs is undecidable here
+    if _UNDECIDABLE_PATH.search(toks[0]) and any(_RECIPIENT_FLAG.match(t) for t in rest):
         return True
     # graph-mail kimeno alparanccsal (tsx/node runner utan is)
     if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
@@ -693,7 +870,17 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
         # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
         # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
         return bool(_FALLBACK_LITERALS.search(cmd))
-    return any(_segment_is_send(toks, _depth) for toks in segments)
+    if any(_segment_is_send(toks, _depth) for toks in segments):
+        return True
+    # the same command with every substitution as one undecidable word
+    # (flatten_substitutions): the outer command keeps the word it would run
+    flat = flatten_substitutions(cmd)
+    if flat == cmd:
+        return False
+    try:
+        return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
+    except ValueError:
+        return bool(_FALLBACK_LITERALS.search(cmd))
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated
