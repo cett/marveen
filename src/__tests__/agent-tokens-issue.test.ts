@@ -18,7 +18,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
   agentConfigRoot: (name: string) => (name === 'main-agent' ? state.root : join(state.root, 'agents', name)),
 }))
 
-import { initDatabase, getDb, dbx, ApiTokenAlreadyRevokedError, listApiTokenRows, revokeApiTokensForAgent } from '../db.js'
+import { initDatabase, getDb, dbx, listApiTokenRows, revokeApiTokensForAgent } from '../db.js'
 import { agentTokenPath, issueAgentToken, issueOperatorToken } from '../agent-tokens.js'
 import { resolveApiToken } from '../web/auth-gate.js'
 
@@ -123,26 +123,117 @@ describe('issueAgentToken', () => {
   })
 })
 
-// issue() reads the active rows, writes the token file, then rotates in one transaction. Another caller can
-// revoke the matching row between the read and the transaction; the rotation then finds it revoked, and the
-// whole call must fail (the CLI prints FAILED, agent creation logs a warning) instead of minting a second
-// active token next to the winner's.
-describe('issueAgentToken: a rotation that loses to a concurrent revoke', () => {
+const activeRows = async (agentId: string) =>
+  (await listApiTokenRows()).filter(r => r.agent_id === agentId && r.revoked_at === null)
+
+// issue() reads the token file, writes a new one, then rotates / mints in one `immediate` transaction that
+// reads the active rows itself. Two overlapping calls used to leave two active rows, one of
+// them with a secret nobody held. After the fix: one issue() at a time per name in this process (the file
+// write and the row change are one unit), and the transaction revokes every other active row of the name.
+describe('issueAgentToken: overlapping calls', () => {
   afterEach(() => { vi.restoreAllMocks() })
 
-  it('rejects with the typed error and leaves no new active token', async () => {
+  it('two parallel rotations of an existing token leave one active row, and the file holds its token', async () => {
+    await issueAgentToken('alpha')
+
+    const results = await Promise.all([issueAgentToken('alpha', { rotate: true }), issueAgentToken('alpha', { rotate: true })])
+
+    const active = await activeRows('alpha')
+    expect(active).toHaveLength(1)
+    expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
+    expect(results.map(r => r.status)).toEqual(['rotated', 'rotated'])
+    expect(results.map(r => r.tokenId)).toContain(active[0].id)
+  })
+
+  it('two parallel plain issues without a file: one mints, the other keeps it', async () => {
+    const results = await Promise.all([issueAgentToken('alpha'), issueAgentToken('alpha')])
+
+    const active = await activeRows('alpha')
+    expect(active).toHaveLength(1)
+    expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
+    expect(results.map(r => r.status).sort()).toEqual(['issued', 'kept'])
+  })
+
+  it('two parallel rotations without a file (the lost-file case) leave one active row too', async () => {
+    const results = await Promise.all([issueAgentToken('alpha', { rotate: true }), issueAgentToken('alpha', { rotate: true })])
+
+    const active = await activeRows('alpha')
+    expect(active).toHaveLength(1)
+    expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
+    expect(results.map(r => r.status)).toEqual(['issued', 'rotated'])
+  })
+
+  it('the loser of a delayed transaction does not leave its file behind: file and active row stay the same token', async () => {
+    await issueAgentToken('alpha')
+    const original = dbx.tx.bind(dbx)
+    // The first transaction is held back, so without the in-process lock the second call would write its file
+    // and commit first, and the first call's late commit would revoke it: file = second token, active = first.
+    vi.spyOn(dbx, 'tx').mockImplementationOnce(async (fn, opts) => {
+      await new Promise(resolve => setTimeout(resolve, 30))
+      return original(fn, opts)
+    })
+
+    await Promise.all([issueAgentToken('alpha', { rotate: true }), issueAgentToken('alpha', { rotate: true })])
+
+    const active = await activeRows('alpha')
+    expect(active).toHaveLength(1)
+    expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
+  })
+
+  it('the lock is per name: another agent is not held up by a slow transaction', async () => {
+    const original = dbx.tx.bind(dbx)
+    let reachedAlpha!: () => void
+    const alphaReachedTx = new Promise<void>(resolve => { reachedAlpha = resolve })
+    let releaseAlpha!: () => void
+    const alphaGate = new Promise<void>(resolve => { releaseAlpha = resolve })
+    // The first transaction (alpha's) is held open until the test lets it go.
+    vi.spyOn(dbx, 'tx').mockImplementationOnce(async (fn, opts) => {
+      reachedAlpha()
+      await alphaGate
+      return original(fn, opts)
+    })
+
+    const alpha = issueAgentToken('alpha', { rotate: true })
+    await alphaReachedTx
+    const beta = issueAgentToken('beta', { rotate: true })
+    // A lock shared by all names would keep beta queued behind alpha, which is still held.
+    const raced = await Promise.race([beta, new Promise<'blocked'>(resolve => setTimeout(() => resolve('blocked'), 500))])
+    releaseAlpha()
+    await alpha
+
+    expect(raced).not.toBe('blocked')
+    expect(await activeRows('alpha')).toHaveLength(1)
+    expect(await activeRows('beta')).toHaveLength(1)
+  })
+
+  it('a row revoked between the file read and the transaction is not rotated again: a fresh token, one active', async () => {
     const first = await issueAgentToken('alpha')
-    const before = (await listApiTokenRows()).length
     const original = dbx.tx.bind(dbx)
     vi.spyOn(dbx, 'tx').mockImplementationOnce((fn, opts) => {
-      // The concurrent caller wins: it revokes the row this call is about to rotate.
+      // A concurrent caller revokes the row this call is about to rotate.
       getDb().prepare('UPDATE api_tokens SET revoked_at = 1 WHERE id = ?').run(first.tokenId)
       return original(fn, opts)
     })
 
-    await expect(issueAgentToken('alpha', { rotate: true })).rejects.toBeInstanceOf(ApiTokenAlreadyRevokedError)
+    const r = await issueAgentToken('alpha', { rotate: true })
 
-    expect(await listApiTokenRows()).toHaveLength(before)
-    expect((await listApiTokenRows()).filter(r => r.agent_id === 'alpha' && r.revoked_at === null)).toHaveLength(0)
+    expect(r.status).toBe('issued')
+    const active = await activeRows('alpha')
+    expect(active).toHaveLength(1)
+    expect(active[0].id).toBe(r.tokenId)
+    expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
+  })
+
+  it('a stray second active row under the name is revoked by the next rotation', async () => {
+    const first = await issueAgentToken('alpha')
+    getDb().prepare(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, agent_id)
+      VALUES (?, 'fleet-agent:alpha', 'fleet_agent', 'default', ?, 'alpha')`).run(sha('stray-secret'), Math.floor(Date.now() / 1000))
+
+    await issueAgentToken('alpha', { rotate: true })
+
+    const active = await activeRows('alpha')
+    expect(active).toHaveLength(1)
+    expect(active[0].id).not.toBe(first.tokenId)
+    expect(sha(read(agentTokenPath('alpha')))).toBe(active[0].token_hash)
   })
 })

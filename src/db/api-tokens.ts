@@ -165,32 +165,35 @@ export async function rotateApiToken(
 }
 
 /**
- * Mints the token for one name (agent-tokens issue()) in ONE transaction. `current` is the active row whose
- * file hash matched: it is rotated, and every other active row of the name is revoked. Without `current`
- * the file was missing or held nothing active, so whatever was active under the name is unreachable (nobody
- * holds its secret) and goes before the replacement comes.
+ * Mints the token for one name (agent-tokens issue()) in ONE `immediate` transaction, and reads what is
+ * active INSIDE it. `fileHash` is the hash of the token file as it stood: the active row carrying it is
+ * rotated (revoked with its hash kept, the new row points back at it), and EVERY other active row of the
+ * name is revoked. Without a match the file was missing or held nothing active, so whatever was active
+ * under the name is unreachable (nobody holds its secret) and goes before the replacement comes.
+ *
+ * Reading inside the transaction is what makes two overlapping calls (also from two processes: the write
+ * lock is taken at BEGIN) end with exactly one active row: the second one sees the first one's row and
+ * revokes it. `rotated` tells whether a row was rotated (true) or the name got a fresh row (false).
  */
 export async function replaceActiveApiToken(input: {
-  current: ApiTokenRow | undefined
-  active: ApiTokenRow[]
+  fileHash: string | null
   tokenHash: string
   name: string
   role: string
   agentId: string | null
   now: number
-}): Promise<ApiTokenRow> {
-  return dbx.tx(async (tx) => {
-    if (input.current) {
-      const next = await rotateApiToken(input.current, input.tokenHash, input.now, null)
-      for (const stale of input.active) if (stale.id !== input.current.id) await revokeApiToken(stale.id, input.now)
-      return next
-    }
-    for (const stale of input.active) await revokeApiToken(stale.id, input.now)
-    return insertApiToken({
+}): Promise<{ row: ApiTokenRow; rotated: boolean }> {
+  return dbx.tx(async () => {
+    const active = await listActiveApiTokensByName(input.name, input.now)
+    const current = input.fileHash ? active.find(r => r.token_hash === input.fileHash) : undefined
+    for (const stale of active) if (stale.id !== current?.id) await revokeApiToken(stale.id, input.now)
+    if (current) return { row: await rotateApiToken(current, input.tokenHash, input.now, null), rotated: true }
+    const row = await insertApiToken({
       tokenHash: input.tokenHash, name: input.name, role: input.role, tenantId: 'default',
       createdAt: input.now, expiresAt: null, agentId: input.agentId,
     })
-  })
+    return { row, rotated: false }
+  }, { mode: 'immediate' })
 }
 
 /**
