@@ -20,6 +20,7 @@ import {
   archiveDashboardTokenCreatedAt, getApiTokenRowByHash, latestActiveDashboardTokenAt, listActiveApiTokensByName,
   replaceActiveApiToken, rotateSharedDashboardToken,
 } from './db.js'
+import { AsyncLock } from './db/tx-lock.js'
 import { readEnvFile } from './env.js'
 import { atomicWriteFileSync } from './web/atomic-write.js'
 import { agentConfigRoot } from './web/agent-config.js'
@@ -78,25 +79,49 @@ function readTokenHash(path: string): string | null {
   }
 }
 
-async function issue(spec: Spec, opts: { rotate?: boolean; now?: number }): Promise<IssueResult> {
-  const now = opts.now ?? Math.floor(Date.now() / 1000)
-  const active = await listActiveApiTokensByName(spec.name, now)
-  const fileHash = readTokenHash(spec.path)
-  const current = fileHash ? active.find(r => r.token_hash === fileHash) : undefined
+// One issue() at a time per token name inside this process: the file write and the row change are one unit,
+// so after two overlapping calls the file holds the token of the call that finished LAST and that is the one
+// active row (replaceActiveApiToken revokes the rest). The file is still written before the row (see the
+// header). Another process (the CLI, scripts/agent-tokens.ts) is not covered by this lock: its overlap with
+// the dashboard is caught by the transaction (one active row), but the file then holds the token of whoever
+// wrote last, which can differ from the active one; only checkAgentTokens reports that.
+const issueLocks = new Map<string, AsyncLock>()
 
-  if (current && !opts.rotate) {
-    if ((statSync(spec.path).mode & 0o077) !== 0) chmodSync(spec.path, 0o600)
-    return { subject: spec.subject, role: spec.role, status: 'kept', path: spec.path, tokenId: current.id }
+async function withIssueLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  let lock = issueLocks.get(name)
+  if (!lock) issueLocks.set(name, lock = new AsyncLock())
+  const release = await lock.acquire()
+  try {
+    return await fn()
+  } finally {
+    release()
   }
+}
 
-  const raw = randomBytes(32).toString('hex')
-  atomicWriteFileSync(spec.path, `${raw}\n`, { mode: 0o600 })
-  const hash = sha256(raw)
+function issue(spec: Spec, opts: { rotate?: boolean; now?: number }): Promise<IssueResult> {
+  return withIssueLock(spec.name, async () => {
+    const now = opts.now ?? Math.floor(Date.now() / 1000)
+    const fileHash = readTokenHash(spec.path)
 
-  // One transaction in the db layer: rotate the matching row (or, when the file held nothing active, revoke
-  // what was active under the name, which nobody can reach any more) and mint the replacement.
-  const row = await replaceActiveApiToken({ current, active, tokenHash: hash, name: spec.name, role: spec.role, agentId: spec.agentId, now })
-  return { subject: spec.subject, role: spec.role, status: current ? 'rotated' : 'issued', path: spec.path, tokenId: row.id }
+    if (fileHash && !opts.rotate) {
+      const current = (await listActiveApiTokensByName(spec.name, now)).find(r => r.token_hash === fileHash)
+      if (current) {
+        if ((statSync(spec.path).mode & 0o077) !== 0) chmodSync(spec.path, 0o600)
+        return { subject: spec.subject, role: spec.role, status: 'kept', path: spec.path, tokenId: current.id }
+      }
+    }
+
+    const raw = randomBytes(32).toString('hex')
+    atomicWriteFileSync(spec.path, `${raw}\n`, { mode: 0o600 })
+
+    // One transaction in the db layer, which reads the active rows itself: rotate the one the file held (or,
+    // when the file held nothing active, revoke what was active under the name, which nobody can reach any
+    // more), revoke any other active row, and mint the replacement.
+    const { row, rotated } = await replaceActiveApiToken({
+      fileHash, tokenHash: sha256(raw), name: spec.name, role: spec.role, agentId: spec.agentId, now,
+    })
+    return { subject: spec.subject, role: spec.role, status: rotated ? 'rotated' : 'issued', path: spec.path, tokenId: row.id }
+  })
 }
 
 /** Issues (or keeps, or rotates) the token of one agent. The agent's directory must exist. */
@@ -181,6 +206,8 @@ export type CheckStatus =
   | 'wrong_role'
   | 'shared_mismatch'
   | 'shared_in_env'
+  /** The file token is fine, but the name has more than one active row (the others are unreachable). */
+  | 'multiple_active'
 
 export interface CheckRow {
   /** The agent id, `operator`, or `shared` for the dashboard token. */
@@ -190,6 +217,8 @@ export interface CheckRow {
   role: string
   /** Where the token file is. The token itself is never part of a result. */
   path: string
+  /** Set for `multiple_active`: the token name and how many active rows it has. */
+  detail?: string
 }
 
 export interface CheckResult {
@@ -206,6 +235,10 @@ async function checkSpec(spec: Spec, now: number): Promise<CheckRow> {
   if (!found) return row('unknown_hash')
   if (found.revoked_at !== null || (found.expires_at !== null && found.expires_at <= now)) return row('revoked')
   if (found.role !== spec.role || found.name !== spec.name || found.agent_id !== spec.agentId) return row('wrong_role')
+  // issue() keeps one active row per name, but a stray one (a CLI/dashboard overlap, an older database) is
+  // not removed by a plain `issue` that finds the file valid: it is only reported here, `--rotate` clears it.
+  const activeRows = (await listActiveApiTokensByName(spec.name, now)).length
+  if (activeRows > 1) return { ...row('multiple_active'), detail: `${spec.name}: ${activeRows} active rows` }
   return row('ok')
 }
 

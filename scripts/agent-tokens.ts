@@ -77,7 +77,7 @@ if (cmd === 'issue') {
   // Read-only: one line per expected token file, exit 1 when any is not `ok`.
   const targets = names.length > 0 ? names : [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
   const { rows, ok } = await checkAgentTokens(targets)
-  for (const r of rows) process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+  for (const r of rows) process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}${r.detail ? `\t${r.detail}` : ''}\n`)
   process.exit(ok ? 0 : 1)
 } else if (cmd === 'archive-shared-age' && names.length === 1) {
   // Used by verify-restore.sh on its extracted copy of an archive's database: predates | current | unknown.
