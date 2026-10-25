@@ -124,9 +124,12 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     // caller can't distinguish "not mine" from "doesn't exist" (kanban.ts
     // update/delete guard follows the same convention).
     if (!current || (!isAdmin && current.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
-    const changed = data.status && data.status !== current.status
-      ? await updateIdeaWithStatusLog(id, data, { from: current.status, to: data.status, actor: MAIN_AGENT_ID })
-      : await updateIdea(id, data)
+    let changed: boolean
+    if (data.status && data.status !== current.status) {
+      changed = await updateIdeaWithStatusLog(id, data, { from: current.status, to: data.status, actor: MAIN_AGENT_ID })
+    } else {
+      changed = await updateIdea(id, data)
+    }
     if (changed) {
       json(res, { ok: true })
       return true
