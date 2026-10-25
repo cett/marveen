@@ -440,10 +440,13 @@ describe('enforce fails closed when the check cannot be made', () => {
     req.method = 'POST'
     req.headers = { authorization: 'Bearer tok-alpha' }
     ;(req as unknown as { destroy: () => void }).destroy = () => {}
-    setImmediate(() => { req.emit('error', new Error('socket hang up')) })
+    // No 'error' is emitted here: nothing reads this body, so no listener would catch it (an unhandled 'error' event
+    // is an uncaught exception). The point is that the gate does not even try to read a body it cannot refuse on.
     const url = new URL('http://localhost:3420/api/kanban')
     observeTokenUsage(req, resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
     expect(await identityRefusal(req)).toBeNull()
+    expect(req.listenerCount('data')).toBe(0)
+    expect(req.listenerCount('error')).toBe(0)
   })
 })
 
