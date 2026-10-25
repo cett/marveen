@@ -24,7 +24,7 @@ interface AuditEntry {
 
 const fileOffsets = new Map<string, number>()
 
-function scanAuditLog(agent: string, auditPath: string): void {
+async function scanAuditLog(agent: string, auditPath: string): Promise<void> {
   if (!existsSync(auditPath)) return
 
   const buf = readFileSync(auditPath)
@@ -40,7 +40,7 @@ function scanAuditLog(agent: string, auditPath: string): void {
     try {
       const entry = JSON.parse(line) as AuditEntry
       if (entry.type === 'gate.inbound.drop' && entry.reason === 'channel-not-allowed' && entry.botMentioned && entry.channel) {
-        const inserted = upsertChannelRequest(agent, entry.channel, entry.user)
+        const inserted = await upsertChannelRequest(agent, entry.channel, entry.user)
         if (inserted) {
           logger.info({ agent, channel: entry.channel, user: entry.user }, 'New channel request from audit log')
           lookupChannelName(agent, entry.channel).catch(() => {})
@@ -82,9 +82,9 @@ async function lookupChannelName(agent: string, channelId: string): Promise<void
     const data = await resp.json() as { ok: boolean; channel?: { name: string } }
     if (data.ok && data.channel?.name) {
       channelNameCache.set(channelId, { name: data.channel.name, ts: Date.now() })
-      const pending = listPendingChannelRequests(agent)
+      const pending = await listPendingChannelRequests(agent)
       const match = pending.find(r => r.channel_id === channelId && !r.channel_name)
-      if (match) updateChannelRequestName(match.id, data.channel.name)
+      if (match) await updateChannelRequestName(match.id, data.channel.name)
     }
   } catch (err) {
     channelNameCache.set(channelId, { name: null, ts: Date.now() })
@@ -92,7 +92,7 @@ async function lookupChannelName(agent: string, channelId: string): Promise<void
   }
 }
 
-function runScanTick(): void {
+async function runScanTick(): Promise<void> {
   const activeAgents = new Set<string>()
   for (const name of listAgentNames()) {
     const provider = resolveAgentProvider(name)
@@ -100,8 +100,8 @@ function runScanTick(): void {
     const stateDir = channelStateDir(provider, agentDir(name))
     const auditPath = join(stateDir, 'audit.jsonl')
     activeAgents.add(auditPath)
-    scanAuditLog(name, auditPath)
-    for (const req of listPendingChannelRequests(name)) {
+    await scanAuditLog(name, auditPath)
+    for (const req of await listPendingChannelRequests(name)) {
       if (!req.channel_name) lookupChannelName(name, req.channel_id).catch(() => {})
     }
   }
@@ -112,10 +112,27 @@ function runScanTick(): void {
 
 let intervalId: ReturnType<typeof setInterval> | null = null
 
-export function startChannelRequestWatcher(intervalMs = 10_000): void {
+// One tick at a time: scanAuditLog advances the file offset before its awaits, and an interval callback cannot
+// be awaited, so the guarded tick owns the try/catch (a rejection would be an unhandled rejection) and a slow
+// tick makes the next one skip instead of overlapping it.
+let tickRunning = false
+async function guardedScanTick(): Promise<void> {
+  if (tickRunning) return
+  tickRunning = true
+  try {
+    await runScanTick()
+  } catch (err) {
+    logger.error({ err }, 'Channel request scan tick failed')
+  } finally {
+    tickRunning = false
+  }
+}
+
+export async function startChannelRequestWatcher(intervalMs = 10_000): Promise<void> {
   if (intervalId) return
-  runScanTick()
-  intervalId = setInterval(runScanTick, intervalMs)
+  // Claim the interval before the first await: a second start() during the first tick must see it and return.
+  intervalId = setInterval(() => { void guardedScanTick() }, intervalMs)
+  await guardedScanTick()
   logger.info({ intervalMs }, 'Channel request watcher started')
 }
 

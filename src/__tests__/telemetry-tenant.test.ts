@@ -195,11 +195,11 @@ describe('the writers stamp the tenant', () => {
     expect(tenantsOf('otel_spans', "span_id IN ('1','2')")).toEqual(['acme', 'beta'])
   })
 
-  it('daily_logs, background_tasks, skill_usage', () => {
+  it('daily_logs, background_tasks, skill_usage', async () => {
     appendDailyLog('solo', 'a')
     appendDailyLog('shared', 'b')
     expect(tenantsOf('daily_logs')).toEqual(['acme', 'beta'])
-    createBackgroundTaskAtomic('b1', 'shared', 'p', 'tmux', 5)
+    await createBackgroundTaskAtomic('b1', 'shared', 'p', 'tmux', 5)
     expect(tenantsOf('background_tasks')).toEqual(['beta'])
     logSkillUsage('solo', 'sk', 'tool_call', 's1')
     logSkillUsage('shared', 'sk', 'tool_call', 's2')

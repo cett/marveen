@@ -284,50 +284,50 @@ describe('daily log functions', () => {
 // --- Background tasks ---
 
 describe('background task functions', () => {
-  it('createBackgroundTaskAtomic creates a task when under concurrency limit', () => {
-    const task = createBackgroundTaskAtomic('db2-bg-1', 'db2-test-agent', 'run tests', 'sess-x', 5)
+  it('createBackgroundTaskAtomic creates a task when under concurrency limit', async () => {
+    const task = await createBackgroundTaskAtomic('db2-bg-1', 'db2-test-agent', 'run tests', 'sess-x', 5)
     expect(task).not.toBeNull()
     expect(task?.id).toBe('db2-bg-1')
     expect(task?.status).toBe('running')
   })
 
-  it('createBackgroundTaskAtomic returns null when at concurrency limit', () => {
+  it('createBackgroundTaskAtomic returns null when at concurrency limit', async () => {
     // maxConcurrent=0 means no slots available
-    const task = createBackgroundTaskAtomic('db2-bg-zero', 'db2-test-agent', 'blocked', 'sess-y', 0)
+    const task = await createBackgroundTaskAtomic('db2-bg-zero', 'db2-test-agent', 'blocked', 'sess-y', 0)
     expect(task).toBeNull()
   })
 
-  it('getRunningBackgroundTasks returns running tasks', () => {
-    const tasks = getRunningBackgroundTasks()
+  it('getRunningBackgroundTasks returns running tasks', async () => {
+    const tasks = await getRunningBackgroundTasks()
     expect(tasks.some(t => t.id === 'db2-bg-1')).toBe(true)
   })
 
-  it('getBackgroundTask retrieves a task by id', () => {
-    const t = getBackgroundTask('db2-bg-1')
+  it('getBackgroundTask retrieves a task by id', async () => {
+    const t = await getBackgroundTask('db2-bg-1')
     expect(t?.agent_id).toBe('db2-test-agent')
   })
 
-  it('countRunningBackgroundTasks returns correct count', () => {
-    const count = countRunningBackgroundTasks('db2-test-agent')
+  it('countRunningBackgroundTasks returns correct count', async () => {
+    const count = await countRunningBackgroundTasks('db2-test-agent')
     expect(count).toBeGreaterThanOrEqual(1)
   })
 
-  it('finishBackgroundTask marks task as done', () => {
-    finishBackgroundTask('db2-bg-1', 'done', 'output text')
-    const t = getBackgroundTask('db2-bg-1')
+  it('finishBackgroundTask marks task as done', async () => {
+    await finishBackgroundTask('db2-bg-1', 'done', 'output text')
+    const t = await getBackgroundTask('db2-bg-1')
     expect(t?.status).toBe('done')
     expect(t?.output).toBe('output text')
   })
 
-  it('getBackgroundTasks can filter by agentId and includeFinished', () => {
-    const all = getBackgroundTasks('db2-test-agent', true)
+  it('getBackgroundTasks can filter by agentId and includeFinished', async () => {
+    const all = await getBackgroundTasks('db2-test-agent', true)
     expect(all.some(t => t.id === 'db2-bg-1')).toBe(true)
-    const running = getBackgroundTasks('db2-test-agent', false)
+    const running = await getBackgroundTasks('db2-test-agent', false)
     expect(running.every(t => t.status === 'running')).toBe(true)
   })
 
-  it('markOrphanedTasksFailed returns a count', () => {
-    const count = markOrphanedTasksFailed()
+  it('markOrphanedTasksFailed returns a count', async () => {
+    const count = await markOrphanedTasksFailed()
     expect(typeof count).toBe('number')
   })
 })
@@ -459,23 +459,23 @@ describe('task run functions', () => {
 // --- Telegram history ---
 
 describe('telegram history functions', () => {
-  it('saveTelegramMessage + getTelegramHistory roundtrip', () => {
-    saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Hello from user', 'user-999')
-    saveTelegramMessage('db2-tg-chat1', 'msg-2', 'out', 'Hello back!', undefined)
-    const history = getTelegramHistory('db2-tg-chat1', 50)
+  it('saveTelegramMessage + getTelegramHistory roundtrip', async () => {
+    await saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Hello from user', 'user-999')
+    await saveTelegramMessage('db2-tg-chat1', 'msg-2', 'out', 'Hello back!', undefined)
+    const history = await getTelegramHistory('db2-tg-chat1', 50)
     expect(history.length).toBeGreaterThanOrEqual(2)
     expect(history.some(h => h.text === 'Hello from user')).toBe(true)
   })
 
-  it('INSERT OR IGNORE prevents duplicate message_ids', () => {
-    saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Duplicate attempt')
-    const history = getTelegramHistory('db2-tg-chat1', 50)
+  it('INSERT OR IGNORE prevents duplicate message_ids', async () => {
+    await saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Duplicate attempt')
+    const history = await getTelegramHistory('db2-tg-chat1', 50)
     const msgOnes = history.filter(h => h.message_id === 'msg-1')
     expect(msgOnes.length).toBe(1)
   })
 
-  it('getTelegramHistory returns empty for unknown chat', () => {
-    const history = getTelegramHistory('db2-tg-unknown-x99', 10)
+  it('getTelegramHistory returns empty for unknown chat', async () => {
+    const history = await getTelegramHistory('db2-tg-unknown-x99', 10)
     expect(history).toEqual([])
   })
 })
@@ -483,93 +483,93 @@ describe('telegram history functions', () => {
 // --- Ideas ---
 
 describe('idea box functions', () => {
-  it('createIdea + listIdeas roundtrip', () => {
-    createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2, tenant_id: 'default' })
-    const { items: ideas } = listIdeas()
+  it('createIdea + listIdeas roundtrip', async () => {
+    await createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2, tenant_id: 'default' })
+    const { items: ideas } = await listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
 
-  it('listIdeas filters by status', () => {
-    const { items: newIdeas } = listIdeas({ status: 'new' })
+  it('listIdeas filters by status', async () => {
+    const { items: newIdeas } = await listIdeas({ status: 'new' })
     expect(newIdeas.some(i => i.id === 'db2-idea-1')).toBe(true)
-    const { items: reviewedIdeas } = listIdeas({ status: 'reviewed' })
+    const { items: reviewedIdeas } = await listIdeas({ status: 'reviewed' })
     expect(reviewedIdeas.some(i => i.id === 'db2-idea-1')).toBe(false)
   })
 
-  it('listIdeas filters by category', () => {
-    const { items: cats } = listIdeas({ category: 'Fejlesztes' })
+  it('listIdeas filters by category', async () => {
+    const { items: cats } = await listIdeas({ category: 'Fejlesztes' })
     expect(cats.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
 
-  it('updateIdea updates fields', () => {
-    const ok = updateIdea('db2-idea-1', { status: 'reviewed', title: 'Updated idea', impact: 5 })
+  it('updateIdea updates fields', async () => {
+    const ok = await updateIdea('db2-idea-1', { status: 'reviewed', title: 'Updated idea', impact: 5 })
     expect(ok).toBe(true)
-    const { items: ideas } = listIdeas({ status: 'reviewed' })
+    const { items: ideas } = await listIdeas({ status: 'reviewed' })
     const idea = ideas.find(i => i.id === 'db2-idea-1')
     expect(idea?.title).toBe('Updated idea')
     expect(idea?.impact).toBe(5)
   })
 
-  it('listIdeaCategories returns known categories', () => {
-    const cats = listIdeaCategories()
+  it('listIdeaCategories returns known categories', async () => {
+    const cats = await listIdeaCategories()
     expect(cats).toContain('Fejlesztes')
   })
 
-  it('addIdeaComment + getIdeaComments roundtrip', () => {
-    const comment = addIdeaComment('db2-idea-1', 'agent-d', 'This is a great idea!')
+  it('addIdeaComment + getIdeaComments roundtrip', async () => {
+    const comment = await addIdeaComment('db2-idea-1', 'agent-d', 'This is a great idea!')
     expect(comment.idea_id).toBe('db2-idea-1')
     expect(comment.author).toBe('agent-d')
-    const comments = getIdeaComments('db2-idea-1')
+    const comments = await getIdeaComments('db2-idea-1')
     expect(comments.some(c => c.content === 'This is a great idea!')).toBe(true)
   })
 
-  it('logIdeaStatusChange + getIdeaStatusLog roundtrip', () => {
-    logIdeaStatusChange('db2-idea-1', 'new', 'reviewed', 'agent-d', 'Looks good')
-    const log = getIdeaStatusLog('db2-idea-1')
+  it('logIdeaStatusChange + getIdeaStatusLog roundtrip', async () => {
+    await logIdeaStatusChange('db2-idea-1', 'new', 'reviewed', 'agent-d', 'Looks good')
+    const log = await getIdeaStatusLog('db2-idea-1')
     expect(log.some(l => l.to_status === 'reviewed' && l.actor === 'agent-d')).toBe(true)
   })
 
-  it('revertIdeaFromKanban reverts a kanban idea to reviewed', () => {
-    createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null, tenant_id: 'default' })
-    const reverted = revertIdeaFromKanban('db2-card-k1')
+  it('revertIdeaFromKanban reverts a kanban idea to reviewed', async () => {
+    await createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null, tenant_id: 'default' })
+    const reverted = await revertIdeaFromKanban('db2-card-k1')
     expect(reverted).toBe('db2-idea-2')
-    const { items: ideas } = listIdeas()
+    const { items: ideas } = await listIdeas()
     const idea = ideas.find(i => i.id === 'db2-idea-2')
     expect(idea?.status).toBe('reviewed')
     expect(idea?.kanban_id).toBeNull()
   })
 
-  it('revertIdeaFromKanban returns null for unknown kanban card', () => {
-    const result = revertIdeaFromKanban('no-such-card')
+  it('revertIdeaFromKanban returns null for unknown kanban card', async () => {
+    const result = await revertIdeaFromKanban('no-such-card')
     expect(result).toBeNull()
   })
 
-  it('deleteIdea removes the idea', () => {
-    const ok = deleteIdea('db2-idea-1')
+  it('deleteIdea removes the idea', async () => {
+    const ok = await deleteIdea('db2-idea-1')
     expect(ok).toBe(true)
-    const { items: ideas } = listIdeas()
+    const { items: ideas } = await listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(false)
   })
 
-  it('listIdeas paginates with limit/offset and reports the unpaginated total', () => {
-    createIdea({ id: 'db2-idea-p1', title: 'P1', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
-    createIdea({ id: 'db2-idea-p2', title: 'P2', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
-    const page1 = listIdeas({ status: 'new', limit: 1, offset: 0 })
+  it('listIdeas paginates with limit/offset and reports the unpaginated total', async () => {
+    await createIdea({ id: 'db2-idea-p1', title: 'P1', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
+    await createIdea({ id: 'db2-idea-p2', title: 'P2', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
+    const page1 = await listIdeas({ status: 'new', limit: 1, offset: 0 })
     expect(page1.items).toHaveLength(1)
     expect(page1.total).toBeGreaterThanOrEqual(2)
-    const page2 = listIdeas({ status: 'new', limit: 1, offset: 1 })
+    const page2 = await listIdeas({ status: 'new', limit: 1, offset: 1 })
     expect(page2.items).toHaveLength(1)
     expect(page2.items[0].id).not.toBe(page1.items[0].id)
   })
 
-  it("listIdeas status:'active' matches new-or-reviewed only", () => {
-    const { items } = listIdeas({ status: 'active' })
+  it("listIdeas status:'active' matches new-or-reviewed only", async () => {
+    const { items } = await listIdeas({ status: 'active' })
     expect(items.every(i => i.status === 'new' || i.status === 'reviewed')).toBe(true)
     expect(items.some(i => i.status === 'kanban')).toBe(false)
   })
 
-  it('getIdeaStatusCounts tallies by status, tenant-scoped', () => {
-    const counts = getIdeaStatusCounts('default')
+  it('getIdeaStatusCounts tallies by status, tenant-scoped', async () => {
+    const counts = await getIdeaStatusCounts('default')
     expect(counts.new).toBeGreaterThanOrEqual(2)
     expect(typeof counts.kanban).toBe('number')
   })

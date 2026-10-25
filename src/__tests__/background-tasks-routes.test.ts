@@ -259,32 +259,32 @@ describe('background-tasks routes -- unmatched', () => {
 })
 
 describe('sweepOrphanedBackgroundTasks', () => {
-  it('does nothing when there are no running tasks', () => {
+  it('does nothing when there are no running tasks', async () => {
     mocks.getRunningBackgroundTasks.mockReturnValueOnce([])
-    sweepOrphanedBackgroundTasks()
+    await sweepOrphanedBackgroundTasks()
     expect(mocks.finishBackgroundTask).not.toHaveBeenCalled()
   })
 
-  it('marks a task failed when its tmux session is gone (orphaned on restart)', () => {
+  it('marks a task failed when its tmux session is gone (orphaned on restart)', async () => {
     mocks.getRunningBackgroundTasks.mockReturnValueOnce([
       { id: 'ORPH0001', agent_id: 'agent-a', prompt: 'p', status: 'running', tmux_session: 'bg-ORPH0001', started_at: 1700000000, finished_at: null, output: null },
     ])
     // list-sessions (isBgSessionAlive) -> empty output, session not found
     mocks.execFileSync.mockReturnValueOnce('')
-    sweepOrphanedBackgroundTasks()
+    await sweepOrphanedBackgroundTasks()
     expect(mocks.finishBackgroundTask).toHaveBeenCalledWith('ORPH0001', 'failed', '(orphaned on restart)')
   })
 
-  it('treats a task with no tmux_session as orphaned without touching tmux', () => {
+  it('treats a task with no tmux_session as orphaned without touching tmux', async () => {
     mocks.getRunningBackgroundTasks.mockReturnValueOnce([
       { id: 'ORPH0002', agent_id: 'agent-a', prompt: 'p', status: 'running', tmux_session: null, started_at: 1700000000, finished_at: null, output: null },
     ])
-    sweepOrphanedBackgroundTasks()
+    await sweepOrphanedBackgroundTasks()
     expect(mocks.execFileSync).not.toHaveBeenCalled()
     expect(mocks.finishBackgroundTask).toHaveBeenCalledWith('ORPH0002', 'failed', '(orphaned on restart)')
   })
 
-  it('resumes polling (no finish call) when the tmux session is still alive', () => {
+  it('resumes polling (no finish call) when the tmux session is still alive', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     try {
       mocks.getRunningBackgroundTasks.mockReturnValueOnce([
@@ -292,7 +292,7 @@ describe('sweepOrphanedBackgroundTasks', () => {
       ])
       // list-sessions (isBgSessionAlive) -> session name present in output
       mocks.execFileSync.mockReturnValueOnce('bg-ALIVE001\n')
-      sweepOrphanedBackgroundTasks()
+      await sweepOrphanedBackgroundTasks()
       expect(mocks.finishBackgroundTask).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()

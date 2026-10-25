@@ -206,7 +206,7 @@ function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
 }
 
-export function startWebServer(port = 3420): http.Server {
+export async function startWebServer(port = 3420): Promise<http.Server> {
   // SECURITY: Server binds to 127.0.0.1 (see server.listen below). The allowed
   // browser origins mirror that -- anything else is rejected to prevent CSRF
   // from malicious websites the user may visit while the dashboard is running.
@@ -818,7 +818,7 @@ export function startWebServer(port = 3420): http.Server {
   }
 
   try {
-    sweepOrphanedBackgroundTasks()
+    await sweepOrphanedBackgroundTasks()
   } catch (err) {
     logger.warn({ err }, 'Background task sweep skipped')
   }

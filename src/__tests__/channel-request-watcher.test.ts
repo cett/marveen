@@ -44,8 +44,8 @@ vi.mock('../channel-provider.js', () => ({
   readChannelToken: mockReadChannelToken,
 }))
 
-const mockUpsertChannelRequest = vi.hoisted(() => vi.fn((_agent: string, _channel: string, _user?: string) => true))
-const mockListPendingChannelRequests = vi.hoisted(() => vi.fn((_agent: string) => [] as Array<{ id: number; channel_id: string; channel_name: string | null }>))
+const mockUpsertChannelRequest = vi.hoisted(() => vi.fn((_agent: string, _channel: string, _user?: string) => Promise.resolve(true)))
+const mockListPendingChannelRequests = vi.hoisted(() => vi.fn((_agent: string) => Promise.resolve([] as Array<{ id: number; channel_id: string; channel_name: string | null }>)))
 const mockUpdateChannelRequestName = vi.hoisted(() => vi.fn())
 vi.mock('../db.js', () => ({
   upsertChannelRequest: mockUpsertChannelRequest,
@@ -72,7 +72,7 @@ const DROP_ENTRY = {
   botMentioned: true,
 }
 
-let startChannelRequestWatcher: (intervalMs?: number) => void
+let startChannelRequestWatcher: (intervalMs?: number) => Promise<void>
 let stopChannelRequestWatcher: () => void
 
 // Fresh module instance per test (see file header): only resets mocks +
@@ -88,8 +88,8 @@ beforeEach(async () => {
   mockAgentDir.mockClear()
   mockChannelStateDir.mockClear()
   mockReadChannelToken.mockReset().mockReturnValue(null)
-  mockUpsertChannelRequest.mockReset().mockReturnValue(true)
-  mockListPendingChannelRequests.mockReset().mockReturnValue([])
+  mockUpsertChannelRequest.mockReset().mockResolvedValue(true)
+  mockListPendingChannelRequests.mockReset().mockResolvedValue([])
   mockUpdateChannelRequestName.mockClear()
   mockFetch.mockReset()
 
@@ -108,29 +108,29 @@ describe('channel-request-watcher: start/stop lifecycle', () => {
     vi.useRealTimers()
   })
 
-  it('runs a scan tick immediately on start', () => {
+  it('runs a scan tick immediately on start', async () => {
     mockListAgentNames.mockReturnValue(['agent-a'])
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockListAgentNames).toHaveBeenCalledTimes(1)
   })
 
-  it('does not start a second interval when already running', () => {
-    startChannelRequestWatcher()
-    startChannelRequestWatcher()
+  it('does not start a second interval when already running', async () => {
+    await startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockListAgentNames).toHaveBeenCalledTimes(1)
   })
 
-  it('re-scans on each interval tick', () => {
-    startChannelRequestWatcher(5_000)
-    vi.advanceTimersByTime(5_000)
-    vi.advanceTimersByTime(5_000)
+  it('re-scans on each interval tick', async () => {
+    await startChannelRequestWatcher(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(mockListAgentNames).toHaveBeenCalledTimes(3)
   })
 
-  it('stops scanning after stopChannelRequestWatcher', () => {
-    startChannelRequestWatcher(5_000)
+  it('stops scanning after stopChannelRequestWatcher', async () => {
+    await startChannelRequestWatcher(5_000)
     stopChannelRequestWatcher()
-    vi.advanceTimersByTime(20_000)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(mockListAgentNames).toHaveBeenCalledTimes(1)
   })
 
@@ -138,8 +138,8 @@ describe('channel-request-watcher: start/stop lifecycle', () => {
     expect(() => stopChannelRequestWatcher()).not.toThrow()
   })
 
-  it('logs the interval on start', () => {
-    startChannelRequestWatcher(15_000)
+  it('logs the interval on start', async () => {
+    await startChannelRequestWatcher(15_000)
     expect(mockLoggerInfo).toHaveBeenCalledWith({ intervalMs: 15_000 }, 'Channel request watcher started')
   })
 })
@@ -149,26 +149,26 @@ describe('channel-request-watcher: agent provider filtering', () => {
     stopChannelRequestWatcher()
   })
 
-  it('skips agents whose resolved provider is not slack', () => {
+  it('skips agents whose resolved provider is not slack', async () => {
     mockListAgentNames.mockReturnValue(['tg-agent'])
     mockReadAgentChannelProvider.mockReturnValue('telegram')
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockExistsSync).not.toHaveBeenCalled()
   })
 
-  it('falls back to the global CHANNEL_PROVIDER when the agent has no override', () => {
+  it('falls back to the global CHANNEL_PROVIDER when the agent has no override', async () => {
     mockListAgentNames.mockReturnValue(['default-agent'])
     mockReadAgentChannelProvider.mockReturnValue(null)
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     // global CHANNEL_PROVIDER is mocked to 'telegram' -> not slack -> skipped
     expect(mockExistsSync).not.toHaveBeenCalled()
   })
 
-  it('scans agents whose provider resolves to slack', () => {
+  it('scans agents whose provider resolves to slack', async () => {
     mockListAgentNames.mockReturnValue(['slack-agent'])
     mockReadAgentChannelProvider.mockReturnValue('slack')
     mockExistsSync.mockReturnValue(false)
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockChannelStateDir).toHaveBeenCalledWith('slack', '/agents/slack-agent')
     expect(mockExistsSync).toHaveBeenCalledWith('/agents/slack-agent/channel-state/audit.jsonl')
   })
@@ -186,18 +186,18 @@ describe('channel-request-watcher: scanAuditLog', () => {
     vi.useRealTimers()
   })
 
-  it('does nothing when the audit file does not exist', () => {
+  it('does nothing when the audit file does not exist', async () => {
     mockExistsSync.mockReturnValue(false)
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockReadFileSync).not.toHaveBeenCalled()
     expect(mockUpsertChannelRequest).not.toHaveBeenCalled()
   })
 
-  it('records a new pending request on a matching drop line', () => {
+  it('records a new pending request on a matching drop line', async () => {
     mockExistsSync.mockReturnValue(true)
     mockReadFileSync.mockReturnValue(Buffer.from(auditLine(DROP_ENTRY)))
-    mockUpsertChannelRequest.mockReturnValue(true)
-    startChannelRequestWatcher()
+    mockUpsertChannelRequest.mockResolvedValue(true)
+    await startChannelRequestWatcher()
     expect(mockUpsertChannelRequest).toHaveBeenCalledWith('slack-agent', 'C123', 'U456')
     expect(mockLoggerInfo).toHaveBeenCalledWith(
       { agent: 'slack-agent', channel: 'C123', user: 'U456' },
@@ -205,11 +205,11 @@ describe('channel-request-watcher: scanAuditLog', () => {
     )
   })
 
-  it('does not log a new-request line when the request already existed', () => {
+  it('does not log a new-request line when the request already existed', async () => {
     mockExistsSync.mockReturnValue(true)
     mockReadFileSync.mockReturnValue(Buffer.from(auditLine(DROP_ENTRY)))
-    mockUpsertChannelRequest.mockReturnValue(false)
-    startChannelRequestWatcher()
+    mockUpsertChannelRequest.mockResolvedValue(false)
+    await startChannelRequestWatcher()
     expect(mockUpsertChannelRequest).toHaveBeenCalled()
     expect(mockLoggerInfo).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -217,65 +217,65 @@ describe('channel-request-watcher: scanAuditLog', () => {
     )
   })
 
-  it('ignores lines with a non-matching type', () => {
+  it('ignores lines with a non-matching type', async () => {
     mockExistsSync.mockReturnValue(true)
     mockReadFileSync.mockReturnValue(Buffer.from(auditLine({ type: 'gate.inbound.allow' })))
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockUpsertChannelRequest).not.toHaveBeenCalled()
   })
 
-  it('ignores drop entries where the bot was not mentioned', () => {
+  it('ignores drop entries where the bot was not mentioned', async () => {
     mockExistsSync.mockReturnValue(true)
     mockReadFileSync.mockReturnValue(Buffer.from(auditLine({ ...DROP_ENTRY, botMentioned: false })))
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockUpsertChannelRequest).not.toHaveBeenCalled()
   })
 
-  it('ignores malformed JSON lines without crashing', () => {
+  it('ignores malformed JSON lines without crashing', async () => {
     mockExistsSync.mockReturnValue(true)
     mockReadFileSync.mockReturnValue(Buffer.from('{not json\n' + auditLine(DROP_ENTRY)))
-    expect(() => startChannelRequestWatcher()).not.toThrow()
+    await expect(startChannelRequestWatcher()).resolves.toBeUndefined()
     expect(mockUpsertChannelRequest).toHaveBeenCalledTimes(1)
   })
 
-  it('skips blank lines', () => {
+  it('skips blank lines', async () => {
     mockExistsSync.mockReturnValue(true)
     mockReadFileSync.mockReturnValue(Buffer.from('\n\n' + auditLine(DROP_ENTRY) + '\n'))
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockUpsertChannelRequest).toHaveBeenCalledTimes(1)
   })
 
-  it('only processes bytes appended since the last scan', () => {
+  it('only processes bytes appended since the last scan', async () => {
     mockExistsSync.mockReturnValue(true)
     const first = auditLine(DROP_ENTRY)
     mockReadFileSync.mockReturnValue(Buffer.from(first))
-    startChannelRequestWatcher(5_000)
+    await startChannelRequestWatcher(5_000)
     expect(mockUpsertChannelRequest).toHaveBeenCalledTimes(1)
 
     // Same buffer (no growth) on the next tick -> nothing new processed.
-    vi.advanceTimersByTime(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(mockUpsertChannelRequest).toHaveBeenCalledTimes(1)
 
     // File grew -> only the appended tail is scanned.
     const second = { ...DROP_ENTRY, channel: 'C999' }
     mockReadFileSync.mockReturnValue(Buffer.from(first + auditLine(second)))
-    vi.advanceTimersByTime(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(mockUpsertChannelRequest).toHaveBeenCalledTimes(2)
     expect(mockUpsertChannelRequest).toHaveBeenLastCalledWith('slack-agent', 'C999', 'U456')
   })
 
-  it('drops stale file offsets for agents no longer active', () => {
+  it('drops stale file offsets for agents no longer active', async () => {
     mockExistsSync.mockReturnValue(true)
     mockReadFileSync.mockReturnValue(Buffer.from(auditLine(DROP_ENTRY)))
-    startChannelRequestWatcher(5_000)
+    await startChannelRequestWatcher(5_000)
     expect(mockUpsertChannelRequest).toHaveBeenCalledTimes(1)
 
     // Agent disappears for a tick, then comes back with the same audit path.
     mockListAgentNames.mockReturnValue([])
-    vi.advanceTimersByTime(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
 
     mockListAgentNames.mockReturnValue(['slack-agent'])
-    vi.advanceTimersByTime(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     // Offset was cleared while the agent was inactive, so the same buffer
     // content is treated as new again.
     expect(mockUpsertChannelRequest).toHaveBeenCalledTimes(2)
@@ -293,35 +293,35 @@ describe('channel-request-watcher: lookupChannelName', () => {
     stopChannelRequestWatcher()
   })
 
-  it('does not fetch when the pending request agent is not on slack', () => {
+  it('does not fetch when the pending request agent is not on slack', async () => {
     mockReadAgentChannelProvider.mockReturnValue('telegram')
-    mockListPendingChannelRequests.mockReturnValue([{ id: 1, channel_id: 'C1', channel_name: null }])
-    startChannelRequestWatcher()
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 1, channel_id: 'C1', channel_name: null }])
+    await startChannelRequestWatcher()
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
   it('does not fetch when there is no channel token', async () => {
-    mockListPendingChannelRequests.mockReturnValue([{ id: 1, channel_id: 'C1', channel_name: null }])
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 1, channel_id: 'C1', channel_name: null }])
     mockReadChannelToken.mockReturnValue(null)
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     await vi.waitFor(() => expect(mockReadChannelToken).toHaveBeenCalled())
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
-  it('skips pending requests that already have a resolved name', () => {
-    mockListPendingChannelRequests.mockReturnValue([{ id: 1, channel_id: 'C1', channel_name: 'general' }])
+  it('skips pending requests that already have a resolved name', async () => {
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 1, channel_id: 'C1', channel_name: 'general' }])
     mockReadChannelToken.mockReturnValue('xoxb-token')
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
   it('resolves and stores the channel name on a successful lookup', async () => {
-    mockListPendingChannelRequests.mockReturnValue([{ id: 42, channel_id: 'C1', channel_name: null }])
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 42, channel_id: 'C1', channel_name: null }])
     mockReadChannelToken.mockReturnValue('xoxb-token')
     mockFetch.mockResolvedValue({
       json: async () => ({ ok: true, channel: { name: 'general' } }),
     })
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     await vi.waitFor(() => expect(mockUpdateChannelRequestName).toHaveBeenCalled())
     expect(mockFetch).toHaveBeenCalledWith(
       'https://slack.com/api/conversations.info',
@@ -334,20 +334,25 @@ describe('channel-request-watcher: lookupChannelName', () => {
     expect(mockUpdateChannelRequestName).toHaveBeenCalledWith(42, 'general')
   })
 
-  it('does not update when the API response has no matching pending row', async () => {
-    mockListPendingChannelRequests.mockReturnValue([{ id: 1, channel_id: 'OTHER', channel_name: null }])
+  it('does not update when the pending row already has a channel name', async () => {
+    // The lookup comes from the audit-log path (the row is named, so the pending-row loop skips it); the post-fetch
+    // list call is the last step of the lookup, so waiting for it makes the "not called" assertion meaningful.
+    mockExistsSync.mockReturnValue(true)
+    mockReadFileSync.mockReturnValue(Buffer.from(auditLine(DROP_ENTRY)))
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 1, channel_id: 'C123', channel_name: 'already-named' }])
     mockReadChannelToken.mockReturnValue('xoxb-token')
     mockFetch.mockResolvedValue({ json: async () => ({ ok: true, channel: { name: 'general' } }) })
-    startChannelRequestWatcher()
-    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalled())
+    await startChannelRequestWatcher()
+    await vi.waitFor(() => expect(mockListPendingChannelRequests).toHaveBeenCalledTimes(2))
+    expect(mockFetch).toHaveBeenCalled()
     expect(mockUpdateChannelRequestName).not.toHaveBeenCalled()
   })
 
   it('caches a negative result and logs a warning when the fetch throws', async () => {
-    mockListPendingChannelRequests.mockReturnValue([{ id: 1, channel_id: 'C-ERR', channel_name: null }])
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 1, channel_id: 'C-ERR', channel_name: null }])
     mockReadChannelToken.mockReturnValue('xoxb-token')
     mockFetch.mockRejectedValue(new Error('network down'))
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     await vi.waitFor(() => expect(mockLoggerWarn).toHaveBeenCalled())
     expect(mockUpdateChannelRequestName).not.toHaveBeenCalled()
     expect(mockLoggerWarn).toHaveBeenCalledWith(
@@ -357,10 +362,10 @@ describe('channel-request-watcher: lookupChannelName', () => {
   })
 
   it('does not update when the response is not ok', async () => {
-    mockListPendingChannelRequests.mockReturnValue([{ id: 1, channel_id: 'C-NOTOK', channel_name: null }])
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 1, channel_id: 'C-NOTOK', channel_name: null }])
     mockReadChannelToken.mockReturnValue('xoxb-token')
     mockFetch.mockResolvedValue({ json: async () => ({ ok: false }) })
-    startChannelRequestWatcher()
+    await startChannelRequestWatcher()
     await vi.waitFor(() => expect(mockFetch).toHaveBeenCalled())
     expect(mockUpdateChannelRequestName).not.toHaveBeenCalled()
   })
@@ -370,18 +375,18 @@ describe('channel-request-watcher: lookupChannelName', () => {
     // The pending-request mock never reflects the DB write, so the same
     // "unresolved" row is handed back on every tick -- the module's own
     // in-memory cache is what must stop the second fetch.
-    mockListPendingChannelRequests.mockReturnValue([{ id: 1, channel_id: 'C-CACHED', channel_name: null }])
+    mockListPendingChannelRequests.mockResolvedValue([{ id: 1, channel_id: 'C-CACHED', channel_name: null }])
     mockReadChannelToken.mockReturnValue('xoxb-token')
     mockFetch.mockResolvedValue({ json: async () => ({ ok: true, channel: { name: 'general' } }) })
 
-    startChannelRequestWatcher(5_000)
+    await startChannelRequestWatcher(5_000)
     // Wait for the whole async chain, including the cache write, which
     // happens just before this call -- not just for fetch to have been
     // invoked, which races the next tick below.
     await vi.waitFor(() => expect(mockUpdateChannelRequestName).toHaveBeenCalledTimes(1))
     expect(mockFetch).toHaveBeenCalledTimes(1)
 
-    vi.advanceTimersByTime(5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     await vi.waitFor(() => expect(mockListAgentNames).toHaveBeenCalledTimes(2))
 
     expect(mockFetch).toHaveBeenCalledTimes(1)

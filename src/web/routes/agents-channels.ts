@@ -636,7 +636,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (chReqListMatch && method === 'GET') {
     const name = decodeURIComponent(chReqListMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    json(res, listPendingChannelRequests(name))
+    json(res, await listPendingChannelRequests(name))
     return true
   }
 
@@ -650,7 +650,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     let opts: { requireMention?: boolean; allowFromAll?: boolean } = {}
     try { opts = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
 
-    const pending = listPendingChannelRequests(name)
+    const pending = await listPendingChannelRequests(name)
     const request = pending.find(r => r.id === reqId)
     if (!request) { json(res, { error: 'not_found', hint: 'Request not found' }, 404); return true }
 
@@ -679,7 +679,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       access.channels[request.channel_id] = channelConfig
 
       atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
-      updateChannelRequestStatus(reqId, 'approved')
+      await updateChannelRequestStatus(reqId, 'approved')
       logger.info({ name, channelId: request.channel_id, channelName: request.channel_name }, 'Channel request approved')
       json(res, { ok: true })
     } catch (err) {
@@ -694,7 +694,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const name = decodeURIComponent(chReqDenyMatch[1])
     const reqId = Number(chReqDenyMatch[2])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    if (updateChannelRequestStatus(reqId, 'denied')) {
+    if (await updateChannelRequestStatus(reqId, 'denied')) {
       json(res, { ok: true })
     } else {
       json(res, { error: 'not_found', hint: 'Request not found or already resolved' }, 404)

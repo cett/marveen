@@ -1,7 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { resolveWriteTenant } from './write-tenant.js'
 
 export interface BackgroundTask {
@@ -15,53 +15,55 @@ export interface BackgroundTask {
   output: string | null
 }
 
-export function createBackgroundTaskAtomic(id: string, agentId: string, prompt: string, tmuxSession: string, maxConcurrent: number): BackgroundTask | null {
+export async function createBackgroundTaskAtomic(id: string, agentId: string, prompt: string, tmuxSession: string, maxConcurrent: number): Promise<BackgroundTask | null> {
   const now = Math.floor(Date.now() / 1000)
-  const result = db.transaction(() => {
-    const running = (db.prepare("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'").get(agentId) as { c: number }).c
+  const result = await dbx.tx(async (tx) => {
+    const running = ((await tx.get("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'", agentId)) as { c: number }).c
     if (running >= maxConcurrent) return null
-    db.prepare('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, agentId, prompt, 'running', tmuxSession, now, resolveWriteTenant(agentId))
+    await tx.run('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, agentId, prompt, 'running', tmuxSession, now, resolveWriteTenant(agentId))
     return { id, agent_id: agentId, prompt, status: 'running' as const, tmux_session: tmuxSession, started_at: now, finished_at: null, output: null }
-  })()
+  })
   return result
 }
 
-export function getRunningBackgroundTasks(): BackgroundTask[] {
-  return db.prepare("SELECT * FROM background_tasks WHERE status = 'running'").all() as BackgroundTask[]
+export async function getRunningBackgroundTasks(): Promise<BackgroundTask[]> {
+  return dbx.all<BackgroundTask>("SELECT * FROM background_tasks WHERE status = 'running'")
 }
 
-export function finishBackgroundTask(id: string, status: 'done' | 'failed' | 'timeout', output: string | null): void {
+/**
+ * Closes a task that is still running. Returns false when the row was already closed (or is gone): the poll
+ * ('done') and the timeout sweep ('timeout') race for the same row, and exactly one of them may win.
+ */
+export async function finishBackgroundTask(id: string, status: 'done' | 'failed' | 'timeout', output: string | null): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare('UPDATE background_tasks SET status = ?, finished_at = ?, output = ? WHERE id = ?')
-    .run(status, now, output, id)
+  const info = await dbx.run("UPDATE background_tasks SET status = ?, finished_at = ?, output = ? WHERE id = ? AND status = 'running'", status, now, output, id)
+  return info.changes > 0
 }
 
-export function getBackgroundTasks(agentId?: string, includeFinished = false): BackgroundTask[] {
+export async function getBackgroundTasks(agentId?: string, includeFinished = false): Promise<BackgroundTask[]> {
   if (agentId) {
     const sql = includeFinished
       ? 'SELECT * FROM background_tasks WHERE agent_id = ? ORDER BY started_at DESC LIMIT 50'
       : "SELECT * FROM background_tasks WHERE agent_id = ? AND status = 'running' ORDER BY started_at DESC"
-    return db.prepare(sql).all(agentId) as BackgroundTask[]
+    return dbx.all<BackgroundTask>(sql, agentId)
   }
   const sql = includeFinished
     ? 'SELECT * FROM background_tasks ORDER BY started_at DESC LIMIT 50'
     : "SELECT * FROM background_tasks WHERE status = 'running' ORDER BY started_at DESC"
-  return db.prepare(sql).all() as BackgroundTask[]
+  return dbx.all<BackgroundTask>(sql)
 }
 
-export function getBackgroundTask(id: string): BackgroundTask | undefined {
-  return db.prepare('SELECT * FROM background_tasks WHERE id = ?').get(id) as BackgroundTask | undefined
+export async function getBackgroundTask(id: string): Promise<BackgroundTask | undefined> {
+  return dbx.get<BackgroundTask>('SELECT * FROM background_tasks WHERE id = ?', id)
 }
 
-export function countRunningBackgroundTasks(agentId: string): number {
-  return (db.prepare("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'").get(agentId) as { c: number }).c
+export async function countRunningBackgroundTasks(agentId: string): Promise<number> {
+  return ((await dbx.get("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'", agentId)) as { c: number }).c
 }
 
-export function markOrphanedTasksFailed(): number {
+export async function markOrphanedTasksFailed(): Promise<number> {
   const now = Math.floor(Date.now() / 1000)
-  const info = db.prepare("UPDATE background_tasks SET status = 'failed', finished_at = ?, output = '(orphaned on restart)' WHERE status = 'running'")
-    .run(now)
+  const info = await dbx.run("UPDATE background_tasks SET status = 'failed', finished_at = ?, output = '(orphaned on restart)' WHERE status = 'running'", now)
   return info.changes
 }
 
@@ -75,50 +77,52 @@ export interface PendingChannelRequest {
   status: 'pending' | 'approved' | 'denied'
 }
 
-export function upsertChannelRequest(agent: string, channelId: string, userId?: string): boolean {
+/**
+ * One statement, so two overlapping calls cannot both insert: a pending row is stopped by the partial unique index
+ * idx_pcr_agent_channel (ON CONFLICT DO NOTHING), a recently denied one (7 days) by the NOT EXISTS. Returns true
+ * when this call created the row.
+ */
+export async function upsertChannelRequest(agent: string, channelId: string, userId?: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const sevenDaysAgo = now - 7 * 86400
-  const existing = db.prepare(
-    "SELECT id FROM pending_channel_requests WHERE agent = ? AND channel_id = ? AND (status = 'pending' OR (status = 'denied' AND COALESCE(resolved_at, requested_at) > ?))"
-  ).get(agent, channelId, sevenDaysAgo)
-  if (existing) return false
-  db.prepare(
-    'INSERT INTO pending_channel_requests (agent, channel_id, user_id, requested_at, status) VALUES (?, ?, ?, ?, ?)'
-  ).run(agent, channelId, userId ?? null, now, 'pending')
-  return true
+  const info = await dbx.run(
+    `INSERT INTO pending_channel_requests (agent, channel_id, user_id, requested_at, status)
+     SELECT ?, ?, ?, ?, 'pending'
+     WHERE NOT EXISTS (
+       SELECT 1 FROM pending_channel_requests
+       WHERE agent = ? AND channel_id = ? AND status = 'denied' AND COALESCE(resolved_at, requested_at) > ?
+     )
+     ON CONFLICT DO NOTHING`,
+    agent, channelId, userId ?? null, now, agent, channelId, sevenDaysAgo,
+  )
+  return info.changes > 0
 }
 
-export function listPendingChannelRequests(agent: string): PendingChannelRequest[] {
-  return db.prepare(
-    "SELECT * FROM pending_channel_requests WHERE agent = ? AND status = 'pending' ORDER BY requested_at DESC"
-  ).all(agent) as PendingChannelRequest[]
+export async function listPendingChannelRequests(agent: string): Promise<PendingChannelRequest[]> {
+  return dbx.all<PendingChannelRequest>("SELECT * FROM pending_channel_requests WHERE agent = ? AND status = 'pending' ORDER BY requested_at DESC", agent)
 }
 
-export function updateChannelRequestStatus(id: number, status: 'approved' | 'denied'): boolean {
+export async function updateChannelRequestStatus(id: number, status: 'approved' | 'denied'): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare(
-    'UPDATE pending_channel_requests SET status = ?, resolved_at = ? WHERE id = ? AND status = ?'
-  ).run(status, now, id, 'pending').changes > 0
+  return (await dbx.run('UPDATE pending_channel_requests SET status = ?, resolved_at = ? WHERE id = ? AND status = ?', status, now, id, 'pending')).changes > 0
 }
 
-export function updateChannelRequestName(id: number, channelName: string): void {
-  db.prepare('UPDATE pending_channel_requests SET channel_name = ? WHERE id = ?').run(channelName, id)
+export async function updateChannelRequestName(id: number, channelName: string): Promise<void> {
+  await dbx.run('UPDATE pending_channel_requests SET channel_name = ? WHERE id = ?', channelName, id)
 }
 
-export function saveTelegramMessage(
+export async function saveTelegramMessage(
   chatId: string,
   messageId: string,
   direction: 'in' | 'out',
   text: string,
   userId?: string,
   ts?: number,
-): void {
+): Promise<void> {
   const now = ts ?? Math.floor(Date.now() / 1000)
-  db.prepare(
-    `INSERT INTO telegram_history (chat_id, message_id, user_id, direction, text, ts)
+  await dbx.run(`INSERT INTO telegram_history (chat_id, message_id, user_id, direction, text, ts)
      VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT DO NOTHING`
-  ).run(chatId, messageId, userId ?? null, direction, text, now)
+     ON CONFLICT DO NOTHING`, chatId, messageId, userId ?? null, direction, text, now)
 }
 
 export interface TelegramHistoryRow {
@@ -131,10 +135,8 @@ export interface TelegramHistoryRow {
   ts: number
 }
 
-export function getTelegramHistory(chatId: string, limit: number = 50): TelegramHistoryRow[] {
-  return db.prepare(
-    'SELECT * FROM telegram_history WHERE chat_id = ? ORDER BY ts DESC LIMIT ?'
-  ).all(chatId, limit) as TelegramHistoryRow[]
+export async function getTelegramHistory(chatId: string, limit: number = 50): Promise<TelegramHistoryRow[]> {
+  return dbx.all<TelegramHistoryRow>('SELECT * FROM telegram_history WHERE chat_id = ? ORDER BY ts DESC LIMIT ?', chatId, limit)
 }
 
 export interface IdeaBoxRow {
@@ -160,7 +162,7 @@ export interface IdeaBoxRow {
 // every idea unfiltered (which broke once the list gained server-side
 // pagination: a page cut before the client filter ran would silently
 // under-fill and its total wouldn't match what was actually shown).
-export function listIdeas(opts?: { status?: string; category?: string; tenantId?: string; limit?: number; offset?: number }): { items: IdeaBoxRow[]; total: number } {
+export async function listIdeas(opts?: { status?: string; category?: string; tenantId?: string; limit?: number; offset?: number }): Promise<{ items: IdeaBoxRow[]; total: number }> {
   let where = ' WHERE 1=1'
   const params: string[] = []
   if (opts?.status === 'active') {
@@ -171,7 +173,7 @@ export function listIdeas(opts?: { status?: string; category?: string; tenantId?
   if (opts?.category) { where += ' AND category = ?'; params.push(opts.category) }
   if (opts?.tenantId) { where += ' AND tenant_id = ?'; params.push(opts.tenantId) }
 
-  const total = (db.prepare(`SELECT COUNT(*) AS c FROM idea_box${where}`).get(...params) as { c: number }).c
+  const total = ((await dbx.get(`SELECT COUNT(*) AS c FROM idea_box${where}`, ...params)) as { c: number }).c
 
   let q = `SELECT * FROM idea_box${where} ORDER BY created_at DESC`
   const allParams: unknown[] = [...params]
@@ -179,33 +181,31 @@ export function listIdeas(opts?: { status?: string; category?: string; tenantId?
     q += ' LIMIT ? OFFSET ?'
     allParams.push(opts.limit, opts.offset ?? 0)
   }
-  const items = db.prepare(q).all(...allParams) as IdeaBoxRow[]
+  const items = await dbx.all<IdeaBoxRow>(q, ...allParams)
   return { items, total }
 }
 
 // Status counts for the stats strip -- always tenant-scoped only (no
 // status/category filter), so the numbers stay accurate regardless of which
 // page or status filter the list itself is currently showing.
-export function getIdeaStatusCounts(tenantId?: string): Record<string, number> {
+export async function getIdeaStatusCounts(tenantId?: string): Promise<Record<string, number>> {
   let q = "SELECT status, COUNT(*) AS c FROM idea_box"
   const params: string[] = []
   if (tenantId) { q += ' WHERE tenant_id = ?'; params.push(tenantId) }
   q += ' GROUP BY status'
-  const rows = db.prepare(q).all(...params) as { status: string; c: number }[]
+  const rows = (await dbx.all(q, ...params)) as { status: string; c: number }[]
   const counts: Record<string, number> = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
   for (const r of rows) counts[r.status] = r.c
   return counts
 }
 
-export function createIdea(idea: Omit<IdeaBoxRow, 'created_at' | 'updated_at'>): void {
+export async function createIdea(idea: Omit<IdeaBoxRow, 'created_at' | 'updated_at'>): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    `INSERT INTO idea_box (id, title, description, category, status, source, kanban_id, impact, effort, tenant_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(idea.id, idea.title, idea.description ?? null, idea.category, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, idea.tenant_id, now, now)
+  await dbx.run(`INSERT INTO idea_box (id, title, description, category, status, source, kanban_id, impact, effort, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, idea.id, idea.title, idea.description ?? null, idea.category, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, idea.tenant_id, now, now)
 }
 
-export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): boolean {
+export async function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
@@ -217,15 +217,15 @@ export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' |
   if (patch.impact !== undefined) { sets.push('impact = ?'); params.push(patch.impact) }
   if (patch.effort !== undefined) { sets.push('effort = ?'); params.push(patch.effort) }
   params.push(id)
-  return db.prepare(`UPDATE idea_box SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
+  return (await dbx.run(`UPDATE idea_box SET ${sets.join(', ')} WHERE id = ?`, ...params)).changes > 0
 }
 
-export function deleteIdea(id: string): boolean {
-  return db.prepare('DELETE FROM idea_box WHERE id = ?').run(id).changes > 0
+export async function deleteIdea(id: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM idea_box WHERE id = ?', id)).changes > 0
 }
 
-export function listIdeaCategories(): string[] {
-  return (db.prepare('SELECT DISTINCT category FROM idea_box ORDER BY category').all() as { category: string }[]).map(r => r.category)
+export async function listIdeaCategories(): Promise<string[]> {
+  return ((await dbx.all('SELECT DISTINCT category FROM idea_box ORDER BY category')) as { category: string }[]).map(r => r.category)
 }
 
 export interface IdeaComment {
@@ -236,16 +236,14 @@ export interface IdeaComment {
   created_at: number
 }
 
-export function getIdeaComments(ideaId: string): IdeaComment[] {
-  return db.prepare('SELECT * FROM idea_comments WHERE idea_id = ? ORDER BY created_at ASC').all(ideaId) as IdeaComment[]
+export async function getIdeaComments(ideaId: string): Promise<IdeaComment[]> {
+  return dbx.all<IdeaComment>('SELECT * FROM idea_comments WHERE idea_id = ? ORDER BY created_at ASC', ideaId)
 }
 
-export function addIdeaComment(ideaId: string, author: string, content: string): IdeaComment {
+export async function addIdeaComment(ideaId: string, author: string, content: string): Promise<IdeaComment> {
   const now = Math.floor(Date.now() / 1000)
-  const { id } = db.prepare(
-    'INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id'
-  ).get(ideaId, author, content, now) as { id: number }
-  db.prepare('UPDATE idea_box SET updated_at = ? WHERE id = ?').run(now, ideaId)
+  const { id } = (await dbx.get('INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id', ideaId, author, content, now)) as { id: number }
+  await dbx.run('UPDATE idea_box SET updated_at = ? WHERE id = ?', now, ideaId)
   return { id, idea_id: ideaId, author, content, created_at: now }
 }
 
@@ -259,31 +257,29 @@ export interface IdeaStatusLogRow {
   created_at: number
 }
 
-export function logIdeaStatusChange(
+export async function logIdeaStatusChange(
   ideaId: string,
   fromStatus: string | null,
   toStatus: string,
   actor: string,
   note?: string,
-): void {
+): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    'INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(ideaId, fromStatus ?? null, toStatus, actor, note ?? null, now)
+  await dbx.run('INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?)', ideaId, fromStatus ?? null, toStatus, actor, note ?? null, now)
 }
 
-export function getIdeaStatusLog(ideaId: string): IdeaStatusLogRow[] {
-  return db.prepare('SELECT * FROM idea_status_log WHERE idea_id = ? ORDER BY created_at ASC').all(ideaId) as IdeaStatusLogRow[]
+export async function getIdeaStatusLog(ideaId: string): Promise<IdeaStatusLogRow[]> {
+  return dbx.all<IdeaStatusLogRow>('SELECT * FROM idea_status_log WHERE idea_id = ? ORDER BY created_at ASC', ideaId)
 }
 
 // Revert a promoted idea back to 'reviewed' when its kanban card is deleted or archived.
 // Returns the idea id if a matching idea was found and reverted, null otherwise.
-export function revertIdeaFromKanban(kanbanId: string): string | null {
-  const idea = db.prepare("SELECT id, status FROM idea_box WHERE kanban_id = ? AND status = 'kanban'").get(kanbanId) as { id: string; status: string } | undefined
+export async function revertIdeaFromKanban(kanbanId: string): Promise<string | null> {
+  const idea = await dbx.get<{ id: string; status: string }>("SELECT id, status FROM idea_box WHERE kanban_id = ? AND status = 'kanban'", kanbanId)
   if (!idea) return null
   const now = Math.floor(Date.now() / 1000)
-  db.prepare("UPDATE idea_box SET status = 'reviewed', kanban_id = NULL, updated_at = ? WHERE id = ?").run(now, idea.id)
-  logIdeaStatusChange(idea.id, 'kanban', 'reviewed', 'system', `Kanban card removed: ${kanbanId}`)
+  await dbx.run("UPDATE idea_box SET status = 'reviewed', kanban_id = NULL, updated_at = ? WHERE id = ?", now, idea.id)
+  await logIdeaStatusChange(idea.id, 'kanban', 'reviewed', 'system', `Kanban card removed: ${kanbanId}`)
   return idea.id
 }
 
@@ -298,26 +294,20 @@ export interface HomoglyphFindingRow {
   resolved_at: number | null
 }
 
-export function listHomoglyphFindings(includeResolved: boolean): HomoglyphFindingRow[] {
-  return db
-    .prepare(
-      `SELECT id, src_table, src_id, sample, found_at, resolved_at
+export async function listHomoglyphFindings(includeResolved: boolean): Promise<HomoglyphFindingRow[]> {
+  return dbx.all<HomoglyphFindingRow>(`SELECT id, src_table, src_id, sample, found_at, resolved_at
        FROM homoglyph_findings
        ${includeResolved ? '' : 'WHERE resolved_at IS NULL'}
-       ORDER BY id DESC LIMIT 200`
-    )
-    .all() as HomoglyphFindingRow[]
+       ORDER BY id DESC LIMIT 200`)
 }
 
 /** Returns the number of findings newly marked resolved (0 when absent or already resolved). */
-export function resolveHomoglyphFinding(id: number): number {
-  return db
-    .prepare('UPDATE homoglyph_findings SET resolved_at = unixepoch() WHERE id = ? AND resolved_at IS NULL')
-    .run(id).changes
+export async function resolveHomoglyphFinding(id: number): Promise<number> {
+  return (await dbx.run('UPDATE homoglyph_findings SET resolved_at = unixepoch() WHERE id = ? AND resolved_at IS NULL', id)).changes
 }
 
 // ── Idea box lookup ──────────────────────────────────────────────────
 
-export function getIdeaById(id: string): IdeaBoxRow | undefined {
-  return db.prepare('SELECT * FROM idea_box WHERE id = ?').get(id) as IdeaBoxRow | undefined
+export async function getIdeaById(id: string): Promise<IdeaBoxRow | undefined> {
+  return dbx.get<IdeaBoxRow>('SELECT * FROM idea_box WHERE id = ?', id)
 }

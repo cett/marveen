@@ -543,7 +543,7 @@ async function main(): Promise<void> {
     // (ensureAutonomySection, ensureFederationClaudeMdSection, reconcileAgentsOnStartup,
     // hook registration) -- isolated instances must never modify shared project files.
     process.env['WEB_ONLY'] = 'true'
-    webServer = startWebServer(WEB_PORT)
+    webServer = await startWebServer(WEB_PORT)
     logger.info(`Marveen fut izolalt modban! Dashboard: http://localhost:${WEB_PORT}`)
     return
   }
@@ -653,13 +653,13 @@ async function main(): Promise<void> {
   startInviteMonitor(MAIN_AGENT_ID, AGENTS_BASE_DIR)
 
   // Slack channel request watcher (audit.jsonl -> pending_channel_requests).
-  startChannelRequestWatcher()
+  await startChannelRequestWatcher()
 
   // Store file audit watcher
   startStoreWatcher()
 
   // Web dashboard
-  webServer = startWebServer(WEB_PORT)
+  webServer = await startWebServer(WEB_PORT)
 
   logger.info(`Marveen fut! Dashboard: http://localhost:${WEB_PORT}`)
   logger.info('Telegram kommunikacio: Claude Code Channels kezeli')

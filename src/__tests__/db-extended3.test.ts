@@ -125,19 +125,19 @@ describe('recallSearch', () => {
 // ---------------------------------------------------------------------------
 
 describe('getBackgroundTasks without agentId', () => {
-  it('returns all running tasks when agentId omitted', () => {
+  it('returns all running tasks when agentId omitted', async () => {
     const id = 'task-' + Date.now()
-    createBackgroundTaskAtomic(id, 'test-agent', 'Test prompt', 'tmux-sess', 10)
-    const tasks = getBackgroundTasks()
+    await createBackgroundTaskAtomic(id, 'test-agent', 'Test prompt', 'tmux-sess', 10)
+    const tasks = await getBackgroundTasks()
     expect(Array.isArray(tasks)).toBe(true)
     expect(tasks.some(t => t.id === id)).toBe(true)
   })
 
-  it('returns finished tasks with includeFinished=true', () => {
+  it('returns finished tasks with includeFinished=true', async () => {
     const id = 'task-fin-' + Date.now()
-    createBackgroundTaskAtomic(id, 'test-agent', 'Finished task', 'tmux-fin', 10)
-    finishBackgroundTask(id, 'done', 'output')
-    const tasks = getBackgroundTasks(undefined, true)
+    await createBackgroundTaskAtomic(id, 'test-agent', 'Finished task', 'tmux-fin', 10)
+    await finishBackgroundTask(id, 'done', 'output')
+    const tasks = await getBackgroundTasks(undefined, true)
     expect(tasks.some(t => t.id === id && t.status === 'done')).toBe(true)
   })
 })
@@ -316,10 +316,10 @@ describe('analyzeWorkflowCandidates', () => {
 // ---------------------------------------------------------------------------
 
 describe('queryAuditLog with idea source', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     const ideaId = 'idea-audit-' + Date.now().toString(16)
-    createIdea({ id: ideaId, title: 'Audit test idea', description: 'desc', category: 'Fejlesztes', status: 'new', source: 'test', impact: 3, effort: 2, kanban_id: null, tenant_id: 'default' })
-    logIdeaStatusChange(ideaId, null, 'new', 'test-actor', 'test note')
+    await createIdea({ id: ideaId, title: 'Audit test idea', description: 'desc', category: 'Fejlesztes', status: 'new', source: 'test', impact: 3, effort: 2, kanban_id: null, tenant_id: 'default' })
+    await logIdeaStatusChange(ideaId, null, 'new', 'test-actor', 'test note')
   })
 
   it('returns idea audit entries', () => {
@@ -437,10 +437,10 @@ describe('queryAuditLog with multiple sources', () => {
 // ---------------------------------------------------------------------------
 
 describe('updateIdea patch branches', () => {
-  it('updates all optional patch fields', () => {
+  it('updates all optional patch fields', async () => {
     const id = 'idea-patch-' + Date.now().toString(16)
-    createIdea({ id, title: 'Patch test idea', description: null, category: 'Fejlesztes', status: 'new', source: 'test', impact: 2, effort: 2, kanban_id: null, tenant_id: 'default' })
-    const ok = updateIdea(id, {
+    await createIdea({ id, title: 'Patch test idea', description: null, category: 'Fejlesztes', status: 'new', source: 'test', impact: 2, effort: 2, kanban_id: null, tenant_id: 'default' })
+    const ok = await updateIdea(id, {
       title: 'Updated Title',
       description: 'New description',
       category: 'Optimalizalas',
@@ -452,8 +452,8 @@ describe('updateIdea patch branches', () => {
     expect(ok).toBe(true)
   })
 
-  it('returns false for nonexistent idea', () => {
-    const ok = updateIdea('nonexistent-idea-' + Date.now(), { title: 'x' })
+  it('returns false for nonexistent idea', async () => {
+    const ok = await updateIdea('nonexistent-idea-' + Date.now(), { title: 'x' })
     expect(ok).toBe(false)
   })
 })

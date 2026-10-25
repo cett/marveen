@@ -45,11 +45,11 @@ function killSession(session: string): void {
   } catch { /* already dead */ }
 }
 
-export function spawnBackgroundTask(agentId: string, prompt: string): BackgroundTask | { error: string; hint?: string } {
+export async function spawnBackgroundTask(agentId: string, prompt: string): Promise<BackgroundTask | { error: string; hint?: string }> {
   const id = randomBytes(4).toString('hex').toUpperCase()
   const session = bgSessionName(id)
 
-  const task = createBackgroundTaskAtomic(id, agentId, prompt, session, MAX_CONCURRENT)
+  const task = await createBackgroundTaskAtomic(id, agentId, prompt, session, MAX_CONCURRENT)
   if (!task) {
     return { error: 'limit_exceeded', hint: `Maximum ${MAX_CONCURRENT} egyidejű háttérfeladat ágensenként.` }
   }
@@ -71,69 +71,92 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
     })
   } catch (err) {
     logger.error({ err, id, session }, 'Failed to spawn background task tmux session')
-    finishBackgroundTask(id, 'failed', '(spawn failed)')
+    await finishBackgroundTask(id, 'failed', '(spawn failed)')
     return { error: 'internal_error', hint: 'Nem sikerült elindítani a háttérfeladatot' }
   }
 
   logger.info({ id, agentId, session, prompt: prompt.slice(0, 100) }, 'Background task started')
 
-  setTimeout(() => checkAndFinalize(id), TIMEOUT_MS)
+  scheduleFinalize(id)
   pollUntilDone(id)
 
   return task
 }
 
 function pollUntilDone(id: string): void {
+  // The tick is async (db facade): an interval callback cannot be awaited, so the body is its own function with its
+  // own try/catch (a rejection would otherwise be an unhandled rejection), and `inFlight` keeps a slow tick from
+  // overlapping the next one.
+  let inFlight = false
   const interval = setInterval(() => {
-    const task = getBackgroundTask(id)
-    if (!task || task.status !== 'running') {
-      clearInterval(interval)
-      return
+    if (inFlight) return
+    inFlight = true
+    void pollTick().finally(() => { inFlight = false })
+  }, 10_000)
+
+  async function pollTick(): Promise<void> {
+    try {
+      const task = await getBackgroundTask(id)
+      if (!task || task.status !== 'running') {
+        clearInterval(interval)
+        return
+      }
+
+      const session = task.tmux_session
+      if (!session) { clearInterval(interval); return }
+
+      if (!isBgSessionAlive(session)) {
+        // finishBackgroundTask closes only a still-running task: false means the timeout sweep got there first.
+        if (await finishBackgroundTask(id, 'done', '(session ended)')) logger.info({ id }, 'Background task session ended')
+        clearInterval(interval)
+        return
+      }
+
+      const pane = captureSession(session)
+      if (pane && pane.includes('___BG_DONE___')) {
+        const output = pane.replace(/___BG_DONE___[\s\S]*$/, '').trim()
+        if (await finishBackgroundTask(id, 'done', output)) {
+          killSession(session)
+          logger.info({ id }, 'Background task completed')
+        }
+        clearInterval(interval)
+      }
+    } catch (err) {
+      logger.error({ err, id }, 'Background task poll tick failed')
     }
+  }
+}
+
+function scheduleFinalize(id: string): void {
+  setTimeout(() => { void checkAndFinalize(id) }, TIMEOUT_MS)
+}
+
+async function checkAndFinalize(id: string): Promise<void> {
+  try {
+    const task = await getBackgroundTask(id)
+    if (!task || task.status !== 'running') return
 
     const session = task.tmux_session
-    if (!session) { clearInterval(interval); return }
-
-    if (!isBgSessionAlive(session)) {
-      const output = '(session ended)'
-      finishBackgroundTask(id, 'done', output)
-      logger.info({ id }, 'Background task session ended')
-      clearInterval(interval)
-      return
-    }
-
-    const pane = captureSession(session)
-    if (pane && pane.includes('___BG_DONE___')) {
-      const output = pane.replace(/___BG_DONE___[\s\S]*$/, '').trim()
-      finishBackgroundTask(id, 'done', output)
-      killSession(session)
-      logger.info({ id }, 'Background task completed')
-      clearInterval(interval)
-    }
-  }, 10_000)
+    const output = session ? captureSession(session) : null
+    // The poll may finish the task between the read above and this write: only the writer that moves the row out of
+    // 'running' reports the final state and kills the session.
+    if (!(await finishBackgroundTask(id, 'timeout', output?.trim() || '(timeout)'))) return
+    if (session) killSession(session)
+    logger.warn({ id }, 'Background task timed out after 30 minutes')
+  } catch (err) {
+    logger.error({ err, id }, 'Background task timeout check failed')
+  }
 }
 
-function checkAndFinalize(id: string): void {
-  const task = getBackgroundTask(id)
-  if (!task || task.status !== 'running') return
-
-  const session = task.tmux_session
-  const output = session ? captureSession(session) : null
-  finishBackgroundTask(id, 'timeout', output?.trim() || '(timeout)')
-  if (session) killSession(session)
-  logger.warn({ id }, 'Background task timed out after 30 minutes')
-}
-
-export function sweepOrphanedBackgroundTasks(): void {
-  const running = getRunningBackgroundTasks()
+export async function sweepOrphanedBackgroundTasks(): Promise<void> {
+  const running = await getRunningBackgroundTasks()
   let orphaned = 0
   for (const task of running) {
     if (!task.tmux_session || !isBgSessionAlive(task.tmux_session)) {
       const output = task.tmux_session ? captureSession(task.tmux_session) : null
-      finishBackgroundTask(task.id, 'failed', output?.trim() || '(orphaned on restart)')
-      orphaned++
+      if (await finishBackgroundTask(task.id, 'failed', output?.trim() || '(orphaned on restart)')) orphaned++
     } else {
-      setTimeout(() => checkAndFinalize(task.id), TIMEOUT_MS)
+      scheduleFinalize(task.id)
       pollUntilDone(task.id)
     }
   }
@@ -157,7 +180,7 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
       return true
     }
 
-    const result = spawnBackgroundTask(data.agent_id.trim(), data.prompt.trim())
+    const result = await spawnBackgroundTask(data.agent_id.trim(), data.prompt.trim())
     if ('error' in result) {
       json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'limit_exceeded' ? 429 : 500)
       return true
@@ -169,7 +192,7 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
   if (path === '/api/background-tasks' && method === 'GET') {
     const agentId = url.searchParams.get('agent') || undefined
     const all = url.searchParams.get('all') === 'true'
-    const tasks = getBackgroundTasks(agentId, all)
+    const tasks = await getBackgroundTasks(agentId, all)
     const formatted = tasks.map(t => ({
       ...t,
       started_label: new Date(t.started_at * 1000).toLocaleString('hu-HU', { timeZone: TZ }),
@@ -181,7 +204,7 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
 
   const taskMatch = path.match(TASK_ID_RE)
   if (taskMatch && method === 'GET') {
-    const task = getBackgroundTask(taskMatch[1])
+    const task = await getBackgroundTask(taskMatch[1])
     if (!task) { json(res, { error: 'not_found', hint: 'Háttérfeladat nem található' }, 404); return true }
 
     let liveOutput: string | null = null
@@ -199,13 +222,13 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
   }
 
   if (taskMatch && method === 'DELETE') {
-    const task = getBackgroundTask(taskMatch[1])
+    const task = await getBackgroundTask(taskMatch[1])
     if (!task) { json(res, { error: 'not_found', hint: 'Háttérfeladat nem található' }, 404); return true }
     const output = task.tmux_session ? captureSession(task.tmux_session) : null
     if (task.status === 'running' && task.tmux_session) {
       killSession(task.tmux_session)
     }
-    finishBackgroundTask(task.id, 'failed', output?.trim() || '(cancelled)')
+    await finishBackgroundTask(task.id, 'failed', output?.trim() || '(cancelled)')
     json(res, { ok: true })
     return true
   }

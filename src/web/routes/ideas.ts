@@ -10,8 +10,6 @@ import type { RouteContext } from './types.js'
 
 type IdeaRow = import('../../db.js').IdeaBoxRow
 
-const getIdea = getIdeaById
-
 const VALID_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
 
 // Tenant-IDOR guard (backend half; migration 0049
@@ -41,16 +39,16 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const page = parsePagination(url.searchParams, res, { defaultLimit: 25, maxLimit: 100 })
     if (!page) return true
     const { limit, offset } = page
-    const { items, total } = listIdeas({ status, category, tenantId: effectiveTenantId ?? undefined, limit, offset })
+    const { items, total } = await listIdeas({ status, category, tenantId: effectiveTenantId ?? undefined, limit, offset })
     const staleCutoff = Math.floor(Date.now() / 1000) - IDEA_STALE_DAYS * 86400
     const ideas = items.map(i => ({ ...i, stale: i.status === 'new' && i.updated_at < staleCutoff }))
-    const counts = getIdeaStatusCounts(effectiveTenantId ?? undefined)
+    const counts = await getIdeaStatusCounts(effectiveTenantId ?? undefined)
     json(res, { ideas, total, offset, limit, counts })
     return true
   }
 
   if (path === '/api/ideas/categories' && method === 'GET') {
-    json(res, listIdeaCategories())
+    json(res, await listIdeaCategories())
     return true
   }
 
@@ -79,7 +77,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       effort = v
     }
     const id = randomUUID().slice(0, 8)
-    createIdea({
+    await createIdea({
       id,
       title: data.title,
       description: data.description ?? null,
@@ -120,15 +118,15 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'invalid_value', field: 'effort', hint: 'effort must be 1-5 or null' }, 400); return true }
       data.effort = v
     }
-    const current = getIdea(id)
+    const current = await getIdeaById(id)
     // Non-admin callers may only see/mutate ideas belonging to their own
     // tenant -- a cross-tenant id 404s rather than 403ing, so a probing
     // caller can't distinguish "not mine" from "doesn't exist" (kanban.ts
     // update/delete guard follows the same convention).
     if (!current || (!isAdmin && current.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
-    if (updateIdea(id, data)) {
+    if (await updateIdea(id, data)) {
       if (data.status && data.status !== current.status) {
-        logIdeaStatusChange(id, current.status, data.status, MAIN_AGENT_ID)
+        await logIdeaStatusChange(id, current.status, data.status, MAIN_AGENT_ID)
       }
       json(res, { ok: true })
       return true
@@ -139,9 +137,9 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
 
   if (ideaMatch && method === 'DELETE') {
     const id = decodeURIComponent(ideaMatch[1])
-    const current = getIdea(id)
+    const current = await getIdeaById(id)
     if (!current || (!isAdmin && current.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
-    if (deleteIdea(id)) { json(res, { ok: true }); return true }
+    if (await deleteIdea(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404)
     return true
   }
@@ -151,22 +149,22 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
 
   if (commentsMatch && method === 'GET') {
     const ideaId = decodeURIComponent(commentsMatch[1])
-    const idea = getIdea(ideaId)
+    const idea = await getIdeaById(ideaId)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
-    json(res, { comments: getIdeaComments(ideaId) })
+    json(res, { comments: await getIdeaComments(ideaId) })
     return true
   }
 
   if (commentsMatch && method === 'POST') {
     const ideaId = decodeURIComponent(commentsMatch[1])
-    const idea = getIdea(ideaId)
+    const idea = await getIdeaById(ideaId)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString()) as { author?: string; content?: string }
     if (!content || typeof content !== 'string' || !content.trim()) {
       json(res, { error: 'required', field: 'content', hint: 'content required' }, 400); return true
     }
-    const comment = addIdeaComment(ideaId, author?.trim() || MAIN_AGENT_ID, content.trim())
+    const comment = await addIdeaComment(ideaId, author?.trim() || MAIN_AGENT_ID, content.trim())
     json(res, { ok: true, comment })
     return true
   }
@@ -179,7 +177,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const data = JSON.parse(body.toString()) as { phase?: 'detail' | 'plan' }
     const phase = data.phase ?? 'detail'
 
-    const idea = getIdea(ideaId)
+    const idea = await getIdeaById(ideaId)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
 
     const cardId = randomUUID().slice(0, 8)
@@ -194,8 +192,8 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       assignee: BOT_NAME,
       project: 'Fejlesztési ötletek',
     })
-    logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote:${phase}`)
-    updateIdea(ideaId, { status: 'kanban', kanban_id: cardId })
+    await logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote:${phase}`)
+    await updateIdea(ideaId, { status: 'kanban', kanban_id: cardId })
     json(res, { ok: true, kanban_id: cardId })
     return true
   }
@@ -205,7 +203,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   const breakdownMatch = path.match(/^\/api\/ideas\/([^/]+)\/breakdown$/)
   if (breakdownMatch && method === 'POST') {
     const ideaId = decodeURIComponent(breakdownMatch[1])
-    const idea = getIdea(ideaId)
+    const idea = await getIdeaById(ideaId)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     try {
       const result = await generateBreakdown(idea.title, idea.description)
@@ -222,7 +220,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   const promoteBreakdownMatch = path.match(/^\/api\/ideas\/([^/]+)\/promote-breakdown$/)
   if (promoteBreakdownMatch && method === 'POST') {
     const ideaId = decodeURIComponent(promoteBreakdownMatch[1])
-    const idea = getIdea(ideaId)
+    const idea = await getIdeaById(ideaId)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     const body = await readBody(req)
     const { subtasks, success_criteria } = JSON.parse(body.toString()) as {
@@ -263,8 +261,8 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       })
       childIds.push(childId)
     }
-    logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote-breakdown:${childIds.length} subtasks`)
-    updateIdea(ideaId, { status: 'kanban', kanban_id: parentId })
+    await logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote-breakdown:${childIds.length} subtasks`)
+    await updateIdea(ideaId, { status: 'kanban', kanban_id: parentId })
     json(res, { ok: true, parent_id: parentId, child_count: childIds.length })
     return true
   }
@@ -273,11 +271,11 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   const revertMatch = path.match(/^\/api\/ideas\/([^/]+)\/revert$/)
   if (revertMatch && method === 'POST') {
     const id = decodeURIComponent(revertMatch[1])
-    const idea = getIdea(id)
+    const idea = await getIdeaById(id)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     if (idea.status !== 'kanban') { json(res, { error: 'invalid_value', field: 'status', hint: 'Csak kanban státuszú ötlet vonható vissza' }, 400); return true }
-    updateIdea(id, { status: 'reviewed', kanban_id: null })
-    logIdeaStatusChange(id, 'kanban', 'reviewed', MAIN_AGENT_ID, 'Manuális visszavonás')
+    await updateIdea(id, { status: 'reviewed', kanban_id: null })
+    await logIdeaStatusChange(id, 'kanban', 'reviewed', MAIN_AGENT_ID, 'Manuális visszavonás')
     json(res, { ok: true })
     return true
   }
@@ -286,9 +284,9 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   const statusLogMatch = path.match(/^\/api\/ideas\/([^/]+)\/status-log$/)
   if (statusLogMatch && method === 'GET') {
     const ideaId = decodeURIComponent(statusLogMatch[1])
-    const idea = getIdea(ideaId)
+    const idea = await getIdeaById(ideaId)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
-    json(res, { log: getIdeaStatusLog(ideaId) })
+    json(res, { log: await getIdeaStatusLog(ideaId) })
     return true
   }
 
