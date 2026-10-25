@@ -446,3 +446,55 @@ describe('enforce fails closed when the check cannot be made', () => {
     expect(await identityRefusal(req)).toBeNull()
   })
 })
+
+// Who the fail-closed rule applies to, and what a fault in the classification of a request does.
+describe('enforce fails closed: who it applies to', () => {
+  it('a principal that is not an agent is never refused because a lookup failed (main agent, undeclared shared token, dashboard session)', async () => {
+    getDb().exec('DROP TABLE workspace_docs')
+    getDb().exec('DROP TABLE memories')
+    expect((await send('main', 'PATCH', '/api/workspace/doc-1', {})).refusal).toBeNull()
+    expect((await send('main', 'GET', '/api/memories/5')).refusal).toBeNull()
+    expect((await send('shared', 'PATCH', '/api/workspace/doc-1', {})).refusal).toBeNull()
+    for (const auth of [
+      { kind: 'session', user: 'u', role: 'admin', tenantId: null },
+      { kind: 'session', user: 'u', role: 'agent', tenantId: 'default' },
+    ] as const) {
+      const req = new EventEmitter() as unknown as http.IncomingMessage
+      req.method = 'PATCH'
+      req.headers = {}
+      ;(req as unknown as { destroy: () => void }).destroy = () => {}
+      setImmediate(() => { req.emit('data', Buffer.from('{}')); req.emit('end') })
+      const url = new URL('http://localhost:3420/api/workspace/doc-1')
+      observeTokenUsage(req, auth as never, 'PATCH', url.pathname, url)
+      expect(await identityRefusal(req)).toBeNull()
+    }
+  })
+
+  it('a shared-token request that declares the agent is held like the agent token', async () => {
+    getDb().exec('DROP TABLE workspace_docs')
+    expect((await send({ sharedAs: 'alpha' }, 'PATCH', '/api/workspace/doc-1', {})).refusal).toMatchObject({ caller: 'alpha', undecided: true })
+  })
+
+  it('a fault in the classification of a request: a pass where enforce never refuses (GET workspace doc by id), undecided where it does (PATCH)', async () => {
+    // The url object throws when the `agent` query key is read, which happens in the identity half of the observer.
+    const faulty = (method: string, path: string) => {
+      const req = new EventEmitter() as unknown as http.IncomingMessage
+      req.method = method
+      req.headers = { authorization: 'Bearer tok-alpha' }
+      ;(req as unknown as { destroy: () => void }).destroy = () => {}
+      setImmediate(() => { req.emit('data', Buffer.from('{}')); req.emit('end') })
+      const real = new URL(`http://localhost:3420${path}`)
+      const url = {
+        pathname: real.pathname,
+        searchParams: { get: (k: string) => { if (k === 'agent') throw new Error('boom'); return real.searchParams.get(k) } },
+      } as unknown as URL
+      return { req, url }
+    }
+    const read = faulty('GET', '/api/workspace/doc-1')
+    observeTokenUsage(read.req, resolveAuth(read.req, read.url, read.url.pathname, 'GET', SHARED, true), 'GET', read.url.pathname, read.url)
+    expect(await identityRefusal(read.req)).toBeNull()
+    const write = faulty('PATCH', '/api/workspace/doc-1')
+    observeTokenUsage(write.req, resolveAuth(write.req, write.url, write.url.pathname, 'PATCH', SHARED, true), 'PATCH', write.url.pathname, write.url)
+    expect(await identityRefusal(write.req)).toMatchObject({ caller: 'alpha', undecided: true })
+  })
+})
