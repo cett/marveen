@@ -15,6 +15,9 @@ export interface BackgroundTask {
   output: string | null
 }
 
+// The count check and the insert share one transaction: the connection lock keeps a second caller's statements out
+// until COMMIT. On PostgreSQL (Phase 2) a plain READ COMMITTED transaction does not stop two callers from both seeing
+// count < max; that move needs a per-agent advisory lock or a SERIALIZABLE retry here.
 export async function createBackgroundTaskAtomic(id: string, agentId: string, prompt: string, tmuxSession: string, maxConcurrent: number): Promise<BackgroundTask | null> {
   const now = Math.floor(Date.now() / 1000)
   const result = await dbx.tx(async (tx) => {
