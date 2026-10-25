@@ -10,6 +10,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { initDatabase, getDb } from '../db.js'
+import { useTestDb } from './helpers/with-test-db.js'
 import { applyMigrations } from '../db-migrations.js'
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
@@ -74,8 +75,8 @@ describe('stripMarkup -- character references', () => {
 
 describe('crawlers decode entities end to end', () => {
   let tmpDir: string
+  useTestDb()
   beforeEach(() => {
-    initDatabase(':memory:')
     vi.clearAllMocks()
     tmpDir = mkdtempSync(join(tmpdir(), 'strip-entities-'))
   })
@@ -123,30 +124,30 @@ describe('crawlers decode entities end to end', () => {
 })
 
 describe('upsertImportMemory -- shadow embedding bookkeeping', () => {
-  beforeEach(() => { initDatabase(':memory:') })
+  useTestDb()
 
-  function seed() {
+  async function seed() {
     const now = 1_700_000_000
     getDb().prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id)
       VALUES ('s1', 'local', '/x', 4, 1, ?, ?, 'default')`).run(now, now)
-    upsertImportMemory('s1', '/x/a.html', 'a.html', 'h1', 'jegyz k nyv', 'kw', now, 'default')
+    await upsertImportMemory('s1', '/x/a.html', 'a.html', 'h1', 'jegyz k nyv', 'kw', now, 'default')
     const shadowId = (getDb().prepare("SELECT memory_shadow_id AS id FROM import_memories WHERE file_path = '/x/a.html'").get() as any).id
     getDb().prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(Buffer.from([1, 2, 3, 4]), shadowId)
     return shadowId as number
   }
   const blob = (id: number) => (getDb().prepare('SELECT embedding_blob AS b FROM memories WHERE id = ?').get(id) as any).b
 
-  it('drops the stale embedding when the text changed, and refreshes the shadow content and updated_at', () => {
-    const id = seed()
-    expect(upsertImportMemory('s1', '/x/a.html', 'a.html', 'h2', 'jegyzőkönyv', 'kw', 1_700_000_500, 'default')).toBe('updated')
+  it('drops the stale embedding when the text changed, and refreshes the shadow content and updated_at', async () => {
+    const id = await seed()
+    expect(await upsertImportMemory('s1', '/x/a.html', 'a.html', 'h2', 'jegyzőkönyv', 'kw', 1_700_000_500, 'default')).toBe('updated')
     expect(blob(id)).toBeNull()
     const m = getDb().prepare('SELECT content, updated_at FROM memories WHERE id = ?').get(id) as any
     expect(m).toEqual({ content: 'jegyzőkönyv', updated_at: 1_700_000_500 })
   })
 
-  it('keeps the embedding when only the hash changed and the extracted text is identical', () => {
-    const id = seed()
-    expect(upsertImportMemory('s1', '/x/a.html', 'a.html', 'h2', 'jegyz k nyv', 'kw', 1_700_000_500, 'default')).toBe('updated')
+  it('keeps the embedding when only the hash changed and the extracted text is identical', async () => {
+    const id = await seed()
+    expect(await upsertImportMemory('s1', '/x/a.html', 'a.html', 'h2', 'jegyz k nyv', 'kw', 1_700_000_500, 'default')).toBe('updated')
     expect(blob(id)).not.toBeNull()
   })
 })

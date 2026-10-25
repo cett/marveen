@@ -155,14 +155,14 @@ export async function extractContent(filePath: string, ext: string): Promise<str
 const runningScans = new Set<string>()
 
 // ── Total content size soft cap ───────────────────────────────────────────────
-function getTotalImportSize(): number {
+async function getTotalImportSize(): Promise<number> {
   return sumImportContentSize()
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 type ImportSource = ImportSourceRow
 
-function getEnabledSources(): ImportSource[] {
+async function getEnabledSources(): Promise<ImportSource[]> {
   return listEnabledImportSources()
 }
 
@@ -177,7 +177,7 @@ function getEnabledSources(): ImportSource[] {
 // permanently empty, with nothing in the logs explaining why. Catching and
 // logging loudly here means a future INSERT failure is visible instead of
 // silently vanishing, and can never get misrouted into the crawl-error path.
-function writeAuditLog(
+async function writeAuditLog(
   sourceId: string,
   runAt: number,
   counts: {
@@ -185,9 +185,9 @@ function writeAuditLog(
     skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number
   },
   error?: string,
-): void {
+): Promise<void> {
   try {
-    insertImportAuditLog(sourceId, runAt, counts, error)
+    await insertImportAuditLog(sourceId, runAt, counts, error)
   } catch (err) {
     logger.error({ sourceId, runAt, err }, 'Import crawl: failed to persist audit log row')
   }
@@ -307,7 +307,7 @@ async function crawlLocalSource(
       const hash = createHash('sha256').update(raw).digest('hex')
       const keywords = extractKeywords(content, basename(filePath))
 
-      const result = upsertImportMemory(source.id, filePath, basename(filePath), hash, content, keywords, now, source.tenant_id)
+      const result = await upsertImportMemory(source.id, filePath, basename(filePath), hash, content, keywords, now, source.tenant_id)
       if (result === 'added') { counts.added++; totalSize += content.length }
       else if (result === 'updated') { counts.updated++ }
       else { counts.skippedHash++ }
@@ -546,7 +546,7 @@ async function crawlConfluenceSource(
       const fileName = `${detail.title}.html`
       const keywords = `${space.key}, ${detail.title.split(' ').slice(0, 10).join(', ')}`
 
-      const result = upsertImportMemory(source.id, filePath, fileName, hash, content, keywords, now, source.tenant_id)
+      const result = await upsertImportMemory(source.id, filePath, fileName, hash, content, keywords, now, source.tenant_id)
       if (result === 'added') { counts.added++; totalSize += content.length }
       else if (result === 'updated') { counts.updated++ }
       else { counts.skippedHash++ }
@@ -563,15 +563,23 @@ export async function crawlSource(sourceId: string): Promise<void> {
     return
   }
 
-  const source = getImportSource(sourceId)
-  if (!source) { logger.warn({ sourceId }, 'Import source not found'); return }
-
+  // The guard is taken BEFORE the first await: the source lookup is asynchronous now, and two overlapping
+  // calls must not both pass the has() check above while one of them waits for it.
   runningScans.add(sourceId)
+  let source: Awaited<ReturnType<typeof getImportSource>>
+  try {
+    source = await getImportSource(sourceId)
+  } catch (err) {
+    runningScans.delete(sourceId)
+    throw err
+  }
+  if (!source) { runningScans.delete(sourceId); logger.warn({ sourceId }, 'Import source not found'); return }
+
   const runAt = Math.floor(Date.now() / 1000)
   let error: string | undefined
 
   try {
-    const totalSizeBefore = getTotalImportSize()
+    const totalSizeBefore = await getTotalImportSize()
     let counts: Awaited<ReturnType<typeof crawlLocalSource>>
 
     if (source.type === 'local') {
@@ -586,7 +594,7 @@ export async function crawlSource(sourceId: string): Promise<void> {
       throw new Error(`Unknown source type: ${source.type}`)
     }
 
-    writeAuditLog(source.id, runAt, {
+    await writeAuditLog(source.id, runAt, {
       scanned: counts.scanned,
       added: counts.added,
       updated: counts.updated,
@@ -619,16 +627,16 @@ export async function crawlSource(sourceId: string): Promise<void> {
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
     logger.error({ sourceId, err }, 'Import crawl error')
-    writeAuditLog(source.id, runAt, { scanned: 0, added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0 }, error)
+    await writeAuditLog(source.id, runAt, { scanned: 0, added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0 }, error)
   } finally {
     runningScans.delete(sourceId)
-    markImportSourceRun(sourceId, runAt)
+    await markImportSourceRun(sourceId, runAt)
   }
 }
 
 // ── Scheduler: check all enabled sources and run overdue ones ─────────────────
-export function runDueImports(): void {
-  const sources = getEnabledSources()
+export async function runDueImports(): Promise<void> {
+  const sources = await getEnabledSources()
   const now = Math.floor(Date.now() / 1000)
 
   for (const source of sources) {
@@ -647,9 +655,12 @@ let crawlerInterval: ReturnType<typeof setInterval> | null = null
 export function startImportCrawler(): void {
   if (crawlerInterval) return
   // Check every 15 minutes; individual sources compare against their own interval
-  crawlerInterval = setInterval(() => { void runDueImports() }, 15 * 60_000)
+  // runDueImports is asynchronous now (the source list is read through the db facade): a rejection of the
+  // timer callback must not escape as an unhandled rejection.
+  const runDue = (): void => { runDueImports().catch(err => logger.error({ err }, 'Import scheduling failed')) }
+  crawlerInterval = setInterval(runDue, 15 * 60_000)
   // Also run once shortly after startup to catch anything overdue
-  setTimeout(() => { void runDueImports() }, 30_000)
+  setTimeout(runDue, 30_000)
 }
 
 export function stopImportCrawler(): void {

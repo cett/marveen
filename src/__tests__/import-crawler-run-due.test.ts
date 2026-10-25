@@ -15,7 +15,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { initDatabase, getDb } from '../db.js'
+import { getDb } from '../db.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
 
@@ -53,8 +54,8 @@ async function waitForCrawl(db: ReturnType<typeof getDb>, id: string, seeded: nu
 describe('runDueImports', () => {
   let emptyDir: string
 
+  useTestDb()
   beforeEach(() => {
-    initDatabase(':memory:')
     emptyDir = mkdtempSync(join(tmpdir(), 'import-run-due-'))
   })
 
@@ -67,7 +68,7 @@ describe('runDueImports', () => {
     const seeded = Math.floor(Date.now() / 1000) - 7200 // 2h ago
     createSource(db, 'due-src', { intervalHours: 1, lastRunAt: seeded, path: emptyDir })
 
-    runDueImports()
+    await runDueImports()
     await waitForCrawl(db, 'due-src', seeded)
 
     expect(lastRunAt(db, 'due-src')).not.toBe(seeded)
@@ -77,7 +78,7 @@ describe('runDueImports', () => {
     const db = getDb()
     createSource(db, 'never-run-src', { intervalHours: 24, lastRunAt: null, path: emptyDir })
 
-    runDueImports()
+    await runDueImports()
     await waitForCrawl(db, 'never-run-src', null)
 
     expect(lastRunAt(db, 'never-run-src')).not.toBeNull()
@@ -88,7 +89,7 @@ describe('runDueImports', () => {
     const seeded = Math.floor(Date.now() / 1000) - 60 // 1 minute ago
     createSource(db, 'not-due-src', { intervalHours: 24, lastRunAt: seeded, path: emptyDir })
 
-    runDueImports()
+    await runDueImports()
     // No crawl should fire: give any errant async work a moment, then assert
     // the seeded value never moved.
     await new Promise((r) => setTimeout(r, 100))
@@ -101,13 +102,13 @@ describe('runDueImports', () => {
     const seeded = Math.floor(Date.now() / 1000) - 7200
     createSource(db, 'disabled-src', { intervalHours: 1, lastRunAt: seeded, path: emptyDir, enabled: 0 })
 
-    runDueImports()
+    await runDueImports()
     await new Promise((r) => setTimeout(r, 100))
 
     expect(lastRunAt(db, 'disabled-src')).toBe(seeded)
   })
 
-  it('no enabled sources: returns without throwing', () => {
-    expect(runDueImports()).toBeUndefined()
+  it('no enabled sources: returns without throwing', async () => {
+    expect(await runDueImports()).toBeUndefined()
   })
 })
