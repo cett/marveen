@@ -233,26 +233,26 @@ describe('propagateStatusForParent (auto status) clears the parent when it becom
 })
 
 describe('updateTenantKanbanCard clears it as well', () => {
-  it('a tenant-scoped status write out of in_progress', () => {
-    insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
+  it('a tenant-scoped status write out of in_progress', async () => {
+    await insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
     markKanbanCardDispatched('tenant-card')
-    expect(updateTenantKanbanCard('tenant-x', 'tenant-card', { status: 'done' })).toBe(true)
+    expect(await updateTenantKanbanCard('tenant-x', 'tenant-card', { status: 'done' })).toBe(true)
     expect(stamp('tenant-card')).toBeNull()
   })
 
-  it('a title-only patch or a write that stays in_progress keeps it', () => {
-    insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
+  it('a title-only patch or a write that stays in_progress keeps it', async () => {
+    await insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
     markKanbanCardDispatched('tenant-card')
     const before = stamp('tenant-card')
-    updateTenantKanbanCard('tenant-x', 'tenant-card', { title: 'Renamed' })
-    updateTenantKanbanCard('tenant-x', 'tenant-card', { status: 'in_progress' })
+    await updateTenantKanbanCard('tenant-x', 'tenant-card', { title: 'Renamed' })
+    await updateTenantKanbanCard('tenant-x', 'tenant-card', { status: 'in_progress' })
     expect(stamp('tenant-card')).toBe(before)
   })
 
-  it("a write for another tenant's id changes nothing", () => {
-    insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
+  it("a write for another tenant's id changes nothing", async () => {
+    await insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
     markKanbanCardDispatched('tenant-card')
-    expect(updateTenantKanbanCard('default', 'tenant-card', { status: 'done' })).toBe(false)
+    expect(await updateTenantKanbanCard('default', 'tenant-card', { status: 'done' })).toBe(false)
     expect(stamp('tenant-card')).not.toBeNull()
   })
 })

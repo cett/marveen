@@ -230,7 +230,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // keep their own lookups. `labels` is no card id: /api/kanban/labels/:id is the label registry.
   const cardIdRoute = path.match(/^\/api\/kanban\/([^/]+)\/(?:move|archive|unarchive|comments|events|labels|labels\/[^/]+|breakdown|breakdown\/accept|children|subtree|parent)$/)
   if (cardIdRoute && cardIdRoute[1] !== 'labels' && !isAdmin && effectiveTenantId !== null) {
-    if (!scopeToTenant(effectiveTenantId).kanban.get(decodeURIComponent(cardIdRoute[1]))) {
+    if (!await scopeToTenant(effectiveTenantId).kanban.get(decodeURIComponent(cardIdRoute[1]))) {
       json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
       return true
     }
@@ -263,8 +263,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       let items, total
       if (effectiveTenantId !== null) {
         const scoped = scopeToTenant(effectiveTenantId).kanban
-        items = scoped.list(status, limit, offset).map(embedLabels)
-        total = scoped.count(status)
+        items = (await scoped.list(status, limit, offset)).map(embedLabels)
+        total = await scoped.count(status)
       } else {
         items = listKanbanCards({ status, limit, offset }).map(embedLabels)
         total = countKanbanCards(status)
@@ -275,7 +275,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
     let cards
     if (effectiveTenantId !== null) {
-      cards = scopeToTenant(effectiveTenantId).kanban.list().map(embedLabels)
+      cards = (await scopeToTenant(effectiveTenantId).kanban.list()).map(embedLabels)
     } else {
       cards = listKanbanCards().map(embedLabels)
     }
@@ -428,7 +428,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // A parent_id in the body is a reference to another row: a non-admin caller may only hang a new card
     // under a card of its own tenant (a foreign parent answers like a missing one, as in PUT /:id).
     if (!isAdmin && effectiveTenantId !== null && typeof data.parent_id === 'string' && data.parent_id) {
-      if (!scopeToTenant(effectiveTenantId).kanban.get(data.parent_id)) {
+      if (!await scopeToTenant(effectiveTenantId).kanban.get(data.parent_id)) {
         json(res, { error: 'not_found', field: 'parent_id', hint: 'Szülő kártya nem található' }, 404)
         return true
       }
@@ -455,7 +455,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     // Non-admin callers may only update cards belonging to their own tenant.
     if (!isAdmin && effectiveTenantId !== null) {
-      const ownedCard = scopeToTenant(effectiveTenantId).kanban.get(id)
+      const ownedCard = await scopeToTenant(effectiveTenantId).kanban.get(id)
       if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
     const body = await readBody(req)
@@ -470,7 +470,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // across the tenant line even though the card itself is checked above. A foreign parent answers like a
     // missing one (404), so ids cannot be probed.
     if (!isAdmin && effectiveTenantId !== null && typeof data.parent_id === 'string' && data.parent_id) {
-      if (!scopeToTenant(effectiveTenantId).kanban.get(data.parent_id)) {
+      if (!await scopeToTenant(effectiveTenantId).kanban.get(data.parent_id)) {
         json(res, { error: 'not_found', field: 'parent_id', hint: 'Szülő kártya nem található' }, 404)
         return true
       }
@@ -488,7 +488,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     // Non-admin callers may only delete cards belonging to their own tenant.
     if (!isAdmin && effectiveTenantId !== null) {
-      const ownedCard = scopeToTenant(effectiveTenantId).kanban.get(id)
+      const ownedCard = await scopeToTenant(effectiveTenantId).kanban.get(id)
       if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
     revertIdeaFromKanban(id)
@@ -529,7 +529,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     let ordered: string[] | undefined = Array.isArray(orderedIds) ? orderedIds : undefined
     if (ordered && !isAdmin && effectiveTenantId !== null) {
       const own = scopeToTenant(effectiveTenantId).kanban
-      ordered = ordered.filter((cardId) => typeof cardId === 'string' && own.get(cardId))
+      // One lookup after the other, in order: an async predicate cannot go through Array.filter.
+      const owned: string[] = []
+      for (const cardId of ordered) if (typeof cardId === 'string' && await own.get(cardId)) owned.push(cardId)
+      ordered = owned
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, ordered, { expectedStatus })) {
       // Wake the assigned agent once when the card enters in_progress -- unless
@@ -617,7 +620,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // answers like a missing one (404).
   if (kanbanCardMatch && method === 'GET') {
     const id = decodeURIComponent(kanbanCardMatch[1])
-    const card = !isAdmin && effectiveTenantId !== null ? scopeToTenant(effectiveTenantId).kanban.get(id) : getKanbanCard(id)
+    const card = !isAdmin && effectiveTenantId !== null ? await scopeToTenant(effectiveTenantId).kanban.get(id) : getKanbanCard(id)
     if (!card) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     json(res, { ...card, labels: getLabelsForCard(card.id) })
     return true
@@ -671,7 +674,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const parent = getKanbanCard(parentId)
     if (!parent) { json(res, { error: 'not_found', hint: 'Szülő kártya nem található' }, 404); return true }
     // A non-admin caller may only break down a card of its own tenant; a foreign one answers like a missing one.
-    if (!isAdmin && effectiveTenantId !== null && !scopeToTenant(effectiveTenantId).kanban.get(parentId)) {
+    if (!isAdmin && effectiveTenantId !== null && !await scopeToTenant(effectiveTenantId).kanban.get(parentId)) {
       json(res, { error: 'not_found', hint: 'Szülő kártya nem található' }, 404)
       return true
     }
@@ -739,7 +742,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // either foreign id answers like a missing one (404), so ids cannot be probed across tenants.
     if (!isAdmin && effectiveTenantId !== null) {
       const own = scopeToTenant(effectiveTenantId).kanban
-      if (!own.get(id) || (parent_id && !own.get(parent_id))) {
+      if (!await own.get(id) || (parent_id && !await own.get(parent_id))) {
         json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
         return true
       }
