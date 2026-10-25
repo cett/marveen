@@ -105,3 +105,38 @@ describe('tryHandleIdeas: tenant-IDOR guard', () => {
     expect(out.status).toBe(200)
   })
 })
+
+// The ownership check of each route reads the idea first (`await getIdeaById`). A check that lost its `await` reads a
+// Promise: it is never "missing", and its tenant_id is undefined. These tests pin both directions: the owner is let in
+// (the broken check would 404 its own tenant) and a missing idea is a 404 for the admin as well (the broken check
+// lets the admin through to a 200 with an empty list).
+describe('tryHandleIdeas: ownership check reads the idea (await-dependent guard)', () => {
+  const ownRoutes: Array<[string, string, (id: string) => string, object | undefined]> = [
+    ['DELETE', 'DELETE idea', (id) => `/api/ideas/${id}`, undefined],
+    ['GET', 'GET comments', (id) => `/api/ideas/${id}/comments`, undefined],
+    ['POST', 'POST comment', (id) => `/api/ideas/${id}/comments`, { content: 'a comment' }],
+    ['GET', 'GET status-log', (id) => `/api/ideas/${id}/status-log`, undefined],
+  ]
+
+  for (const [method, label, pathOf, body] of ownRoutes) {
+    it(`${label}: the owning tenant is let in`, async () => {
+      const id = await createIdea('tenant-a', 'own idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(200)
+    })
+
+    it(`${label}: another tenant gets 404`, async () => {
+      const id = await createIdea('tenant-b', 'foreign idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
+
+    it(`${label}: an unknown id is 404 for the admin too`, async () => {
+      const { ctx, out } = makeCtx(method, pathOf('does-not-exist'), body, { role: 'admin' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
+  }
+})
