@@ -311,7 +311,7 @@ describe('token management with agent_id', () => {
   const admin = (body: unknown) => request('the-file-token', 'POST', '/api/admin/tokens', body)
 
   it('creates a fleet_agent token for a known agent, with the neutral tenant, and the raw token works once', async () => {
-    const r = await admin({ name: 'fleet-agent:beta-2', role: 'fleet_agent', agent_id: 'beta', tenant_id: 'acme' })
+    const r = await admin({ name: 'beta-ci-token', role: 'fleet_agent', agent_id: 'beta', tenant_id: 'acme' })
     expect(r.status).toBe(201)
     expect(r.body).toMatchObject({ role: 'fleet_agent', agent_id: 'beta', tenant_id: 'default' })
     const raw = r.body['token'] as string

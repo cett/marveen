@@ -21,6 +21,7 @@ import {
   replaceActiveApiToken, rotateSharedDashboardToken,
 } from './db.js'
 import { AsyncLock } from './db/tx-lock.js'
+import { FLEET_AGENT_TOKEN_PREFIX, MAIN_AGENT_TOKEN_PREFIX } from './reserved-token-names.js'
 import { readEnvFile } from './env.js'
 import { atomicWriteFileSync } from './web/atomic-write.js'
 import { agentConfigRoot } from './web/agent-config.js'
@@ -63,7 +64,7 @@ function agentSpec(agentId: string): Spec {
   const isMain = agentId === MAIN_AGENT_ID
   return {
     subject: agentId,
-    name: `${isMain ? 'main-agent' : 'fleet-agent'}:${agentId}`,
+    name: `${isMain ? MAIN_AGENT_TOKEN_PREFIX : FLEET_AGENT_TOKEN_PREFIX}${agentId}`,
     role: isMain ? 'admin' : 'fleet_agent',
     agentId,
     path: agentTokenPath(agentId),

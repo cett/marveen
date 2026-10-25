@@ -161,6 +161,55 @@ describe('POST /api/v1/admin/tokens', () => {
 
 // ── POST /api/v1/admin/tokens/:id/rotate ─────────────────────────────────────
 
+// The server's own token names are not for an admin API caller to pick: a second active row under one of them
+// is reported by `agent-tokens check` as multiple_active (and its `--rotate` fix revokes the real token too),
+// and the name is the audit principal.
+describe('POST /api/v1/admin/tokens: reserved names', () => {
+  const RESERVED = [
+    'operator', 'dashboard', 'main-agent:alpha', 'fleet-agent:alpha',
+    'Operator', 'OPERATOR', 'DASHBOARD', 'Main-Agent:Alpha', 'FLEET-AGENT:alpha',
+    ' operator ', '\toperator', 'oper ator', 'dash board', 'main-agent: alpha', 'fleet- agent :alpha',
+    'fleet-agent:', 'main-agent:',
+    'ｏｐｅｒａｔｏｒ', 'opera​tor', 'fleet-agent​:alpha',
+  ]
+
+  it.each(RESERVED)('refuses %j with 409 conflict (reserved_name) and writes nothing', async (name) => {
+    const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens', { name, role: 'admin' })
+    const handled = await tryHandleAdminTokens(ctx)
+
+    expect(handled).toBe(true)
+    expect(out.status).toBe(409)
+    expect(out.body).toMatchObject({ error: 'conflict', field: 'name', reason: 'reserved_name' })
+    expect(db.insertApiToken).not.toHaveBeenCalled()
+  })
+
+  it('refuses a reserved name with every role, a fleet_agent token included', async () => {
+    for (const body of [
+      { name: 'fleet-agent:alpha', role: 'fleet_agent', agent_id: 'alpha' },
+      { name: 'Operator', role: 'read_only' },
+      { name: 'dashboard', role: 'viewer', tenant_id: 'acme' },
+    ]) {
+      const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens', body)
+      await tryHandleAdminTokens(ctx)
+      expect(out.status).toBe(409)
+    }
+    expect(db.insertApiToken).not.toHaveBeenCalled()
+  })
+
+  it.each(['ci-token', 'operators', 'operator-2', 'ci-dashboard', 'dashboard-ci', 'main-agent', 'fleet-agent', 'browser 2026-10-25 ab12'])(
+    'a free name (%j) still creates the token: 201',
+    async (name) => {
+      vi.mocked(db.insertApiToken).mockResolvedValue({ ...SAMPLE_TOKEN_ROW, name })
+
+      const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens', { name, role: 'admin' })
+      await tryHandleAdminTokens(ctx)
+
+      expect(out.status).toBe(201)
+      expect(vi.mocked(db.insertApiToken).mock.calls[0][0].name).toBe(name)
+    },
+  )
+})
+
 describe('POST /api/v1/admin/tokens/:id/rotate', () => {
   it('rotates a valid token and returns new raw token', async () => {
     const newRow = { ...SAMPLE_TOKEN_ROW, id: 2, rotated_from: 1 }

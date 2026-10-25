@@ -221,3 +221,44 @@ describe('checkAgentTokens: the shared dashboard token', () => {
     expect((await checkAgentTokens(AGENTS)).ok).toBe(true)
   })
 })
+
+// multiple_active counts the rows that are ACTIVE at `now` (not revoked, not expired): an expired or a
+// revoked second row under the name is no finding. `now` is an option of the check, so the boundary is exact.
+describe('checkAgentTokens: multiple_active looks at the active rows only', () => {
+  const addRow = (name: string, secret: string, extra: { expiresAt?: number | null; revokedAt?: number | null } = {}) =>
+    getDb().prepare(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, revoked_at, agent_id)
+      VALUES (?, ?, 'fleet_agent', 'default', ?, ?, ?, 'alpha')`)
+      .run(sha(secret), name, NOW() - 100, extra.expiresAt ?? null, extra.revokedAt ?? null)
+  const alpha = async (now?: number) =>
+    (await checkAgentTokens(['alpha'], { includeOperator: false, includeShared: false, now })).rows[0]
+
+  it('a second row that has expired does not count', async () => {
+    await issueAgentToken('alpha')
+    addRow('fleet-agent:alpha', 'expired-secret', { expiresAt: NOW() - 10 })
+
+    expect(await alpha()).toMatchObject({ subject: 'alpha', status: 'ok' })
+  })
+
+  it('a second row that is still valid does: the same row counts before its expiry and not at it', async () => {
+    await issueAgentToken('alpha')
+    const expiresAt = NOW() + 1000
+    addRow('fleet-agent:alpha', 'later-secret', { expiresAt })
+
+    expect(await alpha(expiresAt - 1)).toMatchObject({ status: 'multiple_active', detail: 'fleet-agent:alpha: 2 active rows' })
+    expect(await alpha(expiresAt)).toMatchObject({ status: 'ok' })
+  })
+
+  it('a second row that was revoked does not count', async () => {
+    await issueAgentToken('alpha')
+    addRow('fleet-agent:alpha', 'revoked-secret', { revokedAt: NOW() - 5 })
+
+    expect(await alpha()).toMatchObject({ status: 'ok' })
+  })
+
+  it('an active row under another name does not count', async () => {
+    await issueAgentToken('alpha')
+    addRow('fleet-agent:beta', 'other-name-secret')
+
+    expect(await alpha()).toMatchObject({ status: 'ok' })
+  })
+})
