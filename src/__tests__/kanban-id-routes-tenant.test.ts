@@ -267,6 +267,9 @@ describe('a card with the id "labels" is held to its tenant like any other card'
   beforeEach(() => {
     createKanbanCard({ id: 'labels', title: 'Acme labels card', tenant_id: 'acme' })
     addKanbanComment('labels', 'someone', 'secret labels comment')
+    // A label on the card, so that a detach through the loose registry shape (DELETE
+    // /api/kanban/labels/labels/<labelId>, which is a card route) would have something to remove.
+    addLabelToCard('labels', 'lbl-acme')
   })
 
   for (const c of CASES) {
@@ -282,6 +285,14 @@ describe('a card with the id "labels" is held to its tenant like any other card'
     await callAs(alpha(), 'POST', '/api/kanban/labels/comments', { author: 'x', content: 'intruder' })
     expect(getKanbanCard('labels')?.archived_at ?? null).toBeNull()
     expect(getKanbanComments('labels').map((x) => x.content)).toEqual(['secret labels comment'])
+  })
+
+  it('a label is neither detached from nor attached to the foreign card', async () => {
+    const detach = await callAs(alpha(), 'DELETE', '/api/kanban/labels/labels/lbl-acme')
+    expect(detach.status).toBe(404)
+    const attach = await callAs(alpha(), 'POST', '/api/kanban/labels/labels', { labelId: 'lbl-default' })
+    expect(attach.status).toBe(404)
+    expect(getLabelsForCard('labels').map((l) => l.id)).toEqual(['lbl-acme'])
   })
 
   it('GET /api/kanban/labels is the label registry list, tenant-filtered, never the card', async () => {
@@ -313,9 +324,14 @@ describe('POST /api/kanban never takes the card id from the body', () => {
     const res = await callAs(alpha(), 'POST', '/api/kanban', { id: 'labels', title: 'picked id' })
     expect(res.status).toBe(200)
     const id = (res.body as { id: string }).id
+    expect(id).not.toBe('labels')
     expect(id).toMatch(/^[0-9a-f]{8}$/)
     expect(getKanbanCard('labels')).toBeUndefined()
+    // the id the response names is the stored one: the card is there under it, and readable
     expect(getKanbanCard(id)?.title).toBe('picked id')
+    const read = await callAs(alpha(), 'GET', `/api/kanban/${id}`)
+    expect(read.status).toBe(200)
+    expect((read.body as { id: string; title: string })).toMatchObject({ id, title: 'picked id' })
   })
 
   it('an id that exists in another tenant answers like any other create (no probing, nothing overwritten)', async () => {
