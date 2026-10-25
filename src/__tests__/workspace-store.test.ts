@@ -3,6 +3,7 @@ import { initDatabase, getDb } from '../db.js'
 import { generateEmbedding } from '../db/vector.js'
 import {
   saveWorkspaceDoc,
+  patchWorkspaceDoc,
   getWorkspaceDocUpdatedAtMs,
   sweepExpiredWorkspaceDocs,
   storeWorkspaceDocEmbedding,
@@ -88,6 +89,37 @@ describe('getWorkspaceDocUpdatedAtMs', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Interleaving: the module is asynchronous, so two calls started together run their statements alternately
+// unless each read-modify-write is one transaction.
+// ---------------------------------------------------------------------------
+
+describe('concurrent writers', () => {
+  it('two saves of one (agent_id, doc_key) started together both succeed and leave one row', async () => {
+    const base = { agent_id: 'agent-a', tenant_id: 'default', doc_key: 'race', content_type: 'text' as const, type: 'notes' as const }
+    const [first, second] = await Promise.all([
+      saveWorkspaceDoc({ ...base, title: 'first', content: 'one' }),
+      saveWorkspaceDoc({ ...base, title: 'second', content: 'two' }),
+    ])
+    expect(first.id).toBe(second.id)
+    const rows = getDb().prepare("SELECT title FROM workspace_docs WHERE agent_id = 'agent-a' AND doc_key = 'race'").all() as { title: string }[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].title).toBe('second')
+  })
+
+  it('two patches of different fields started together both land (no stale merge overwrites the other)', async () => {
+    const doc = await saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default', doc_key: 'merge', title: 'before', content: 'body', content_type: 'text', type: 'notes',
+    })
+    await Promise.all([
+      patchWorkspaceDoc(doc.id, { title: 'after' }),
+      patchWorkspaceDoc(doc.id, { task_ref: 'card-1' }),
+    ])
+    const row = getDb().prepare('SELECT title, task_ref FROM workspace_docs WHERE id = ?').get(doc.id) as { title: string; task_ref: string | null }
+    expect(row).toEqual({ title: 'after', task_ref: 'card-1' })
+  })
+})
+
+// ---------------------------------------------------------------------------
 // sweepExpiredWorkspaceDocs
 // ---------------------------------------------------------------------------
 
@@ -155,6 +187,28 @@ describe('storeWorkspaceDocEmbedding', () => {
     })
     await expect(storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', 'Embed-test some content to embed'))
       .resolves.toBeUndefined()
+  })
+
+  it('computes the embedding outside the transaction: another statement is not held up while it is pending', async () => {
+    const doc = await saveWorkspaceDoc({
+      agent_id: 'agent-a', tenant_id: 'default', doc_key: 'embed-lock',
+      title: 'Embed-lock', content: 'some content to embed', content_type: 'text', type: 'notes',
+    })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    vi.mocked(generateEmbedding).mockImplementationOnce(async () => {
+      await gate
+      return null
+    })
+    const pending = storeWorkspaceDocEmbedding(doc.id, 'agent-a', 'default', 'Embed-lock some content to embed')
+    // A transaction open across the embedding call would hold the connection lock, and this read would wait for it.
+    const probe = await Promise.race([
+      getWorkspaceDocUpdatedAtMs('agent-a', 'embed-lock').then(() => 'read'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('blocked'), 100)),
+    ])
+    release()
+    await pending
+    expect(probe).toBe('read')
   })
 
   it('does not throw for an unknown doc id', async () => {
