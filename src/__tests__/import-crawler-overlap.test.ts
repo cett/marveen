@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDb } from '../db.js'
+import { dbx } from '../db/facade.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
@@ -55,6 +56,17 @@ describe('crawlSource: one scan per source', () => {
     await crawlSource('src-late')
 
     expect(auditRows('src-late')).toBe(1)
+  })
+
+  it('a failing source lookup releases the guard: the next call for the same source still crawls', async () => {
+    createSource('src-a')
+    const lookup = vi.spyOn(dbx, 'get').mockRejectedValueOnce(new Error('db down'))
+
+    await expect(crawlSource('src-a')).rejects.toThrow('db down')
+    lookup.mockRestore()
+    await crawlSource('src-a')
+
+    expect(auditRows('src-a')).toBe(1)
   })
 
   it('a finished crawl releases the guard: the next call crawls again', async () => {

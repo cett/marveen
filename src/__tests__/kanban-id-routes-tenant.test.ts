@@ -124,6 +124,15 @@ describe("a foreign card id on a /api/kanban/:id/* route is a 404 for a non-admi
     })
   }
 
+  it('GET /api/kanban/:id: a foreign card is a 404, an own card is read, an admin reads any', async () => {
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}`)).status).toBe(404)
+    expect((await callAs(acmeUser(), 'GET', `/api/kanban/${DEFAULT_CARD}`)).status).toBe(404)
+    const own = await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}`)
+    expect(own.status).toBe(200)
+    expect((own.body as { id: string }).id).toBe(DEFAULT_CARD)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}`)).status).toBe(200)
+  })
+
   it('the 404 body is the same as for a card that does not exist (no id probing)', async () => {
     const foreign = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
     const missing = await callAs(await alpha(), 'GET', '/api/kanban/no-such-card/comments')

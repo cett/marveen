@@ -1,7 +1,7 @@
 // Direct checks of db/tenant-scoped.ts: the tenant is a required first
 // parameter and the only thing that decides which rows a call can see or
 // change. (tenant-scope.test.ts covers the same contract through the facade.)
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { getDb } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 import {
@@ -17,6 +17,13 @@ import {
   listTenantMessagesFor,
   insertTenantMessage,
 } from '../db/tenant-scoped.js'
+
+// The ANN index (vec0, raw handle) is not available in every test run; record the drop calls instead.
+const vec = vi.hoisted(() => ({ deleted: [] as number[] }))
+vi.mock('../db/vector.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db/vector.js')>()),
+  syncVecMemoryDelete: (id: number) => { vec.deleted.push(id) },
+}))
 
 useTestDb()
 beforeEach(() => {
@@ -113,6 +120,15 @@ describe('memories', () => {
     expect(await deleteTenantMemory('t-b', id)).toBe(false)
     expect(await listTenantMemories('t-a', 'agent-1')).toHaveLength(1)
     expect(await deleteTenantMemory('t-a', id)).toBe(true)
+  })
+
+  it('drops the ANN entry only for a row that was actually deleted', async () => {
+    const id = await insertTenantMemory('t-a', 'agent-1', 'warm', 'vec check')
+    vec.deleted.length = 0
+    expect(await deleteTenantMemory('t-b', id)).toBe(false)
+    expect(vec.deleted).toEqual([])
+    expect(await deleteTenantMemory('t-a', id)).toBe(true)
+    expect(vec.deleted).toEqual([id])
   })
 })
 
