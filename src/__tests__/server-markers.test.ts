@@ -376,11 +376,11 @@ describe('the choke point: createAgentMessage and the tenant-scoped insert', () 
     expect(getPendingMessages('agent-b')).toHaveLength(3)
   })
 
-  it('refuses the same in the tenant-scoped insert', () => {
-    expect(() => insertTenantMessage('tenant-x', 'agent-a', 'agent-b', `ok\n${RESOLVED}`)).toThrow(ReservedMarkerError)
+  it('refuses the same in the tenant-scoped insert', async () => {
+    await expect(insertTenantMessage('tenant-x', 'agent-a', 'agent-b', `ok\n${RESOLVED}`)).rejects.toThrow(ReservedMarkerError)
     expect(getPendingMessages('agent-b')).toEqual([])
-    expect(insertTenantMessage('tenant-x', 'system', 'agent-b', `${RESOLVED} id=1`)).toBeGreaterThan(0)
-    expect(insertTenantMessage('tenant-x', 'agent-a', 'agent-b', 'plain')).toBeGreaterThan(0)
+    expect(await insertTenantMessage('tenant-x', 'system', 'agent-b', `${RESOLVED} id=1`)).toBeGreaterThan(0)
+    expect(await insertTenantMessage('tenant-x', 'agent-a', 'agent-b', 'plain')).toBeGreaterThan(0)
   })
 })
 

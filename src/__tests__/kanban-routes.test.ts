@@ -70,9 +70,9 @@ vi.mock('../settings-store.js', () => ({
 }))
 
 vi.mock('../db/tenant-scoped.js', () => ({
-  listTenantKanbanCards: vi.fn().mockReturnValue([]),
-  countTenantKanbanCards: vi.fn().mockReturnValue(0),
-  getTenantKanbanCard: vi.fn().mockReturnValue(null),
+  listTenantKanbanCards: vi.fn().mockResolvedValue([]),
+  countTenantKanbanCards: vi.fn().mockResolvedValue(0),
+  getTenantKanbanCard: vi.fn().mockResolvedValue(null),
 }))
 
 import * as db from '../db.js'
@@ -559,8 +559,8 @@ describe('tryHandleKanban -- tenant isolation for scoped callers', () => {
   })
 
   it('GET /api/kanban?status= uses scoped list/count for a tenant caller', async () => {
-    vi.mocked(tenantScoped.listTenantKanbanCards).mockReturnValueOnce([{ id: 'card1', title: 't', status: 'done', tenant_id: 'acme' }])
-    vi.mocked(tenantScoped.countTenantKanbanCards).mockReturnValueOnce(3)
+    vi.mocked(tenantScoped.listTenantKanbanCards).mockResolvedValueOnce([{ id: 'card1', title: 't', status: 'done', tenant_id: 'acme' }])
+    vi.mocked(tenantScoped.countTenantKanbanCards).mockResolvedValueOnce(3)
     const { ctx, out } = makeScopedCtx('GET', '/api/kanban?status=done&limit=20&offset=0', 'acme')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(200)
