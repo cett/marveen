@@ -381,3 +381,25 @@ describe('DELETE /api/workspace/:id', () => {
     expect(vi.mocked(store.deleteWorkspaceDoc)).not.toHaveBeenCalled()
   })
 })
+
+describe('DELETE /api/workspace/:id answers only after the delete finished', () => {
+  it('a rejected delete is not reported as ok', async () => {
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    vi.mocked(store.deleteWorkspaceDoc).mockRejectedValue(new Error('disk full'))
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123')
+    await expect(tryHandleWorkspace(ctx)).rejects.toThrow('disk full')
+    expect(out.body?.ok).not.toBe(true)
+  })
+  it('the response waits for a pending delete', async () => {
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    let finish!: (v: boolean) => void
+    vi.mocked(store.deleteWorkspaceDoc).mockReturnValue(new Promise<boolean>((r) => { finish = r }))
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123')
+    const done = tryHandleWorkspace(ctx)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(out.body?.ok).not.toBe(true)
+    finish(true)
+    await done
+    expect(out.body.ok).toBe(true)
+  })
+})
