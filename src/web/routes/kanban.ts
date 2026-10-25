@@ -228,9 +228,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // cannot be probed across tenants and nothing is moved, archived, commented or read. This checks the
   // card named in the PATH only; an id carried in a request body (the new parent_id of a reparent, a
   // column list) is a reference to another row and is checked where the body is read. PUT/DELETE /:id
-  // keep their own lookups. `labels` is no card id: /api/kanban/labels/:id is the label registry.
+  // keep their own lookups. The one exception is the label registry, PUT/DELETE /api/kanban/labels/:labelId:
+  // its shape (two segments, those two methods) is not a card route, so `labels` there is no card id. Any
+  // other path under /api/kanban/labels/ is read as a card route, because a card can carry the id `labels`
+  // (the create route used to take the id from the body).
+  const labelRegistryRoute = (method === 'PUT' || method === 'DELETE') && /^\/api\/kanban\/labels\/[^/]+$/.test(path)
   const cardIdRoute = path.match(/^\/api\/kanban\/([^/]+)\/(?:move|archive|unarchive|comments|events|labels|labels\/[^/]+|breakdown|breakdown\/accept|children|subtree|parent|tokens)$/)
-  if (cardIdRoute && cardIdRoute[1] !== 'labels' && !isAdmin && effectiveTenantId !== null) {
+  if (cardIdRoute && !labelRegistryRoute && !isAdmin && effectiveTenantId !== null) {
     if (!scopeToTenant(effectiveTenantId).kanban.get(decodeURIComponent(cardIdRoute[1]))) {
       json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
       return true
@@ -434,9 +438,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // The id is always generated here: an `id` in the body is ignored. A caller-picked id could take a
+    // route word (`labels`, `search`, ...) and shadow a static route, and an id that exists in another
+    // tenant would answer differently from one that does not.
     const id = randomUUID().slice(0, 8)
     try {
-      createKanbanCard({ id, ...data, tenant_id: effectiveTenantId ?? 'default' })
+      createKanbanCard({ ...data, id, tenant_id: effectiveTenantId ?? 'default' })
     } catch (err) {
       logger.error({ err }, 'Failed to create kanban card')
       json(res, { error: 'internal_error', hint: 'Failed to create card' }, 500)

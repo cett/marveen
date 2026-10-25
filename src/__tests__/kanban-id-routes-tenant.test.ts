@@ -260,6 +260,72 @@ describe('POST /api/kanban: a parent_id in the body is held to the caller\'s ten
   })
 })
 
+// A card whose id is the route word `labels` (the create route used to take the id from the body, and an import
+// can carry one). The label registry lives under the same prefix, so the path-id gate must not wave `labels`
+// through for the card routes.
+describe('a card with the id "labels" is held to its tenant like any other card', () => {
+  beforeEach(() => {
+    createKanbanCard({ id: 'labels', title: 'Acme labels card', tenant_id: 'acme' })
+    addKanbanComment('labels', 'someone', 'secret labels comment')
+  })
+
+  for (const c of CASES) {
+    it(`${c.name}: a default-tenant token gets 404 for the acme card "labels"`, async () => {
+      expect((await callAs(alpha(), c.method, c.path('labels'), c.body)).status).toBe(404)
+    })
+  }
+
+  it('the foreign card is left as it was', async () => {
+    const read = await callAs(alpha(), 'GET', '/api/kanban/labels/comments')
+    expect(JSON.stringify(read.body)).not.toContain('secret labels comment')
+    await callAs(alpha(), 'POST', '/api/kanban/labels/archive')
+    await callAs(alpha(), 'POST', '/api/kanban/labels/comments', { author: 'x', content: 'intruder' })
+    expect(getKanbanCard('labels')?.archived_at ?? null).toBeNull()
+    expect(getKanbanComments('labels').map((x) => x.content)).toEqual(['secret labels comment'])
+  })
+
+  it('GET /api/kanban/labels is the label registry list, tenant-filtered, never the card', async () => {
+    const res = await callAs(alpha(), 'GET', '/api/kanban/labels')
+    expect(res.status).toBe(200)
+    expect(JSON.stringify(res.body)).not.toContain('Acme labels card')
+    expect(JSON.stringify(res.body)).not.toContain('acme-label')
+  })
+
+  it('the owning tenant and an admin reach it', async () => {
+    expect((await callAs(acmeUser(), 'GET', '/api/kanban/labels/comments')).status).toBe(200)
+    expect((await callAs(admin(), 'GET', '/api/kanban/labels/comments')).status).toBe(200)
+  })
+
+  it('the label registry still answers PUT/DELETE /api/kanban/labels/:labelId, also for a label id that is a card-route word', async () => {
+    // The caller's tenant (default) has no card "labels": without the registry exemption the gate would read
+    // these as card routes of a card "labels" and answer 404.
+    const defaultUser = session('agent', 'default')
+    createLabel({ id: 'comments', name: 'comments-label', color: '#3b82f6', tenant_id: 'default' })
+    createLabel({ id: 'archive', name: 'archive-label', color: '#3b82f6', tenant_id: 'default' })
+    expect((await callAs(defaultUser, 'PUT', '/api/kanban/labels/comments', { name: 'renamed' })).status).toBe(200)
+    expect((await callAs(defaultUser, 'DELETE', '/api/kanban/labels/archive')).status).toBe(200)
+    expect((await callAs(defaultUser, 'DELETE', '/api/kanban/labels/comments')).status).toBe(200)
+  })
+})
+
+describe('POST /api/kanban never takes the card id from the body', () => {
+  it('an id in the body is ignored: the card gets a generated id, which is the one returned', async () => {
+    const res = await callAs(alpha(), 'POST', '/api/kanban', { id: 'labels', title: 'picked id' })
+    expect(res.status).toBe(200)
+    const id = (res.body as { id: string }).id
+    expect(id).toMatch(/^[0-9a-f]{8}$/)
+    expect(getKanbanCard('labels')).toBeUndefined()
+    expect(getKanbanCard(id)?.title).toBe('picked id')
+  })
+
+  it('an id that exists in another tenant answers like any other create (no probing, nothing overwritten)', async () => {
+    const res = await callAs(alpha(), 'POST', '/api/kanban', { id: ACME_CARD, title: 'probe' })
+    expect(res.status).toBe(200)
+    expect((res.body as { id: string }).id).not.toBe(ACME_CARD)
+    expect(getKanbanCard(ACME_CARD)?.title).toBe('Acme card')
+  })
+})
+
 describe('an own card keeps working', () => {
   it('move, comments, labels, events, children and subtree answer 200 for the owning tenant', async () => {
     expect((await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
