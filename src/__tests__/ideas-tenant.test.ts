@@ -2,11 +2,13 @@
 // idea_box.tenant_id). Separate from
 // ideas-routes.test.ts, whose makeCtx defaults to role: 'admin' throughout
 // and predates tenant scoping -- this file exercises the non-admin path.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 import { initDatabase } from '../db.js'
 import { tryHandleIdeas } from '../web/routes/ideas.js'
+
+vi.mock('../web/llm-breakdown.js', () => ({ generateBreakdown: vi.fn(() => Promise.resolve({ subtasks: [] })) }))
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -133,6 +135,37 @@ describe('tryHandleIdeas: ownership check reads the idea (await-dependent guard)
       expect(out.status).toBe(404)
     })
 
+    it(`${label}: an unknown id is 404 for the admin too`, async () => {
+      const { ctx, out } = makeCtx(method, pathOf('does-not-exist'), body, { role: 'admin' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
+  }
+})
+
+// The other five idea routes read the idea the same way (PUT, promote, breakdown, promote-breakdown, revert); the same
+// three cases per route, so the CHANGELOG claim "on every route" holds.
+describe('tryHandleIdeas: ownership check of PUT, promote, breakdown, promote-breakdown and revert', () => {
+  const routes: Array<[string, string, (id: string) => string, object | undefined]> = [
+    ['PUT', 'PUT idea', (id) => `/api/ideas/${id}`, { title: 'renamed' }],
+    ['POST', 'POST promote', (id) => `/api/ideas/${id}/promote`, { phase: 'detail' }],
+    ['POST', 'POST breakdown', (id) => `/api/ideas/${id}/breakdown`, {}],
+    ['POST', 'POST promote-breakdown', (id) => `/api/ideas/${id}/promote-breakdown`, { subtasks: [{ title: 's' }] }],
+    ['POST', 'POST revert', (id) => `/api/ideas/${id}/revert`, {}],
+  ]
+  for (const [method, label, pathOf, body] of routes) {
+    it(`${label}: the owning tenant is not turned away with a 404`, async () => {
+      const id = await createIdea('tenant-a', 'own idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).not.toBe(404)
+    })
+    it(`${label}: another tenant gets 404`, async () => {
+      const id = await createIdea('tenant-b', 'foreign idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
     it(`${label}: an unknown id is 404 for the admin too`, async () => {
       const { ctx, out } = makeCtx(method, pathOf('does-not-exist'), body, { role: 'admin' })
       await tryHandleIdeas(ctx)

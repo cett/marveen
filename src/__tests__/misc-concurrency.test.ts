@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest'
 import {
   getDb, upsertChannelRequest, listPendingChannelRequests, finishBackgroundTask, getBackgroundTask,
   createBackgroundTaskAtomic, getBackgroundTasks, updateChannelRequestStatus,
+  revertIdeaFromKanban, addIdeaComment, getIdeaComments, updateIdeaWithStatusLog,
 } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
@@ -128,5 +129,88 @@ describe('B createBackgroundTaskAtomic', () => {
     expect(await createBackgroundTaskAtomic('F2', 'agent-a', 'p', 'bg-F2', 1)).toBeNull()
     expect(await finishBackgroundTask('F1', 'done', 'x')).toBe(true)
     expect(await createBackgroundTaskAtomic('F3', 'agent-a', 'p', 'bg-F3', 1)).not.toBeNull()
+  })
+})
+
+// ── idea box: multi-statement writes are one transaction ────────────────────────────────────────────────────────
+
+function seedIdea(id: string, status: 'new' | 'kanban' = 'kanban', kanbanId: string | null = 'card-1'): void {
+  getDb().prepare(
+    "INSERT INTO idea_box (id, title, category, status, source, kanban_id, tenant_id, created_at, updated_at) VALUES (?, 't', 'c', ?, 's', ?, 'default', 1, 1)",
+  ).run(id, status, kanbanId)
+}
+
+const logRows = (id: string) => getDb().prepare('SELECT from_status, to_status, actor FROM idea_status_log WHERE idea_id = ?').all(id) as
+  Array<{ from_status: string | null; to_status: string; actor: string }>
+const ideaRow = (id: string) => getDb().prepare('SELECT status, kanban_id, updated_at FROM idea_box WHERE id = ?').get(id) as
+  { status: string; kanban_id: string | null; updated_at: number }
+
+describe('revertIdeaFromKanban', () => {
+  it('two overlapping reverts of one card write exactly one log row and one of them returns the idea id', async () => {
+    seedIdea('I1')
+    const results = await Promise.all([revertIdeaFromKanban('card-1'), revertIdeaFromKanban('card-1')])
+    expect(results.filter((r) => r === 'I1')).toHaveLength(1)
+    expect(results.filter((r) => r === null)).toHaveLength(1)
+    expect(logRows('I1')).toEqual([{ from_status: 'kanban', to_status: 'reviewed', actor: 'system' }])
+    expect(ideaRow('I1')).toMatchObject({ status: 'reviewed', kanban_id: null })
+  })
+
+  it('a failed log write rolls the idea update back (the idea stays promoted)', async () => {
+    seedIdea('I2')
+    getDb().exec("CREATE TRIGGER fail_log BEFORE INSERT ON idea_status_log BEGIN SELECT RAISE(ABORT, 'log failed'); END")
+
+    await expect(revertIdeaFromKanban('card-1')).rejects.toThrow('log failed')
+
+    expect(ideaRow('I2')).toMatchObject({ status: 'kanban', kanban_id: 'card-1' })
+    expect(logRows('I2')).toEqual([])
+  })
+
+  it('an unknown card, or an idea that is not in the kanban status, is left alone', async () => {
+    seedIdea('I3', 'new', 'card-3')
+    expect(await revertIdeaFromKanban('card-3')).toBeNull()
+    expect(await revertIdeaFromKanban('nope')).toBeNull()
+    expect(ideaRow('I3').status).toBe('new')
+    expect(logRows('I3')).toEqual([])
+  })
+})
+
+describe('addIdeaComment', () => {
+  it('a failed updated_at write leaves no comment behind', async () => {
+    seedIdea('I4', 'new', null)
+    getDb().exec("CREATE TRIGGER fail_touch BEFORE UPDATE ON idea_box BEGIN SELECT RAISE(ABORT, 'touch failed'); END")
+
+    await expect(addIdeaComment('I4', 'a', 'text')).rejects.toThrow('touch failed')
+
+    expect(await getIdeaComments('I4')).toEqual([])
+  })
+
+  it('writes the comment and moves updated_at together', async () => {
+    seedIdea('I5', 'new', null)
+    const c = await addIdeaComment('I5', 'a', 'text')
+    expect(await getIdeaComments('I5')).toHaveLength(1)
+    expect(ideaRow('I5').updated_at).toBe(c.created_at)
+  })
+})
+
+describe('updateIdeaWithStatusLog', () => {
+  it('a failed log write rolls the status change back', async () => {
+    seedIdea('I6', 'new', null)
+    getDb().exec("CREATE TRIGGER fail_log2 BEFORE INSERT ON idea_status_log BEGIN SELECT RAISE(ABORT, 'log failed'); END")
+
+    await expect(updateIdeaWithStatusLog('I6', { status: 'reviewed' }, { from: 'new', to: 'reviewed', actor: 'a' })).rejects.toThrow('log failed')
+
+    expect(ideaRow('I6').status).toBe('new')
+  })
+
+  it('an unknown idea changes nothing and logs nothing', async () => {
+    expect(await updateIdeaWithStatusLog('nope', { status: 'reviewed' }, { from: 'new', to: 'reviewed', actor: 'a' })).toBe(false)
+    expect(logRows('nope')).toEqual([])
+  })
+
+  it('a change writes the idea row and one log row', async () => {
+    seedIdea('I7', 'new', null)
+    expect(await updateIdeaWithStatusLog('I7', { status: 'kanban', kanban_id: 'c9' }, { from: 'new', to: 'kanban', actor: 'a', note: 'n' })).toBe(true)
+    expect(ideaRow('I7')).toMatchObject({ status: 'kanban', kanban_id: 'c9' })
+    expect(logRows('I7')).toEqual([{ from_status: 'new', to_status: 'kanban', actor: 'a' }])
   })
 })

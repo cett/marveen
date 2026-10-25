@@ -129,6 +129,17 @@ describe('channel-request-watcher: start/stop lifecycle', () => {
     expect(mockListAgentNames).toHaveBeenCalledTimes(3)
   })
 
+  it('two start() calls that are not awaited run one interval (one scan per interval, not two)', async () => {
+    mockListAgentNames.mockReturnValue(['agent-a'])
+    const first = startChannelRequestWatcher(5_000)
+    const second = startChannelRequestWatcher(5_000)
+    await Promise.all([first, second])
+    mockListAgentNames.mockClear()
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mockListAgentNames).toHaveBeenCalledTimes(1)
+  })
+
   it('skips an interval tick while the previous scan is still waiting on the db', async () => {
     mockListAgentNames.mockReturnValue(['slack-agent'])
     mockReadAgentChannelProvider.mockReturnValue('slack')

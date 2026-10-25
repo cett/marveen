@@ -98,10 +98,10 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
   }
 })
 vi.mock('../db.js', () => ({
-  listPendingChannelRequests: vi.fn().mockReturnValue([
+  listPendingChannelRequests: vi.fn().mockResolvedValue([
     { id: 1, channel_id: 'C123', channel_name: 'test-channel', user_id: 'U456', status: 'pending' },
   ]),
-  updateChannelRequestStatus: vi.fn().mockReturnValue(true),
+  updateChannelRequestStatus: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('../web/plugin-ids.js', () => ({
   CHANNEL_PLUGIN_IDS: { telegram: 'plugin:telegram', slack: 'plugin:slack', discord: 'plugin:discord', googlechat: 'plugin:googlechat' },

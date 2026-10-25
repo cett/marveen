@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { listIdeas, getIdeaStatusCounts, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getIdeaById, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog } from '../../db.js'
+import { listIdeas, getIdeaStatusCounts, createIdea, updateIdea, updateIdeaWithStatusLog, deleteIdea, listIdeaCategories, createKanbanCard, getIdeaById, getIdeaComments, addIdeaComment, getIdeaStatusLog } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -124,10 +124,10 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     // caller can't distinguish "not mine" from "doesn't exist" (kanban.ts
     // update/delete guard follows the same convention).
     if (!current || (!isAdmin && current.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
-    if (await updateIdea(id, data)) {
-      if (data.status && data.status !== current.status) {
-        await logIdeaStatusChange(id, current.status, data.status, MAIN_AGENT_ID)
-      }
+    const changed = data.status && data.status !== current.status
+      ? await updateIdeaWithStatusLog(id, data, { from: current.status, to: data.status, actor: MAIN_AGENT_ID })
+      : await updateIdea(id, data)
+    if (changed) {
       json(res, { ok: true })
       return true
     }
@@ -192,8 +192,9 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       assignee: BOT_NAME,
       project: 'Fejlesztési ötletek',
     })
-    await logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote:${phase}`)
-    await updateIdea(ideaId, { status: 'kanban', kanban_id: cardId })
+    // The kanban card is created above through the synchronous kanban module (it joins a transaction when kanban
+    // moves onto the facade); the idea's own two writes are one transaction.
+    await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cardId }, { from: idea.status, to: 'kanban', actor: MAIN_AGENT_ID, note: `promote:${phase}` })
     json(res, { ok: true, kanban_id: cardId })
     return true
   }
@@ -261,8 +262,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       })
       childIds.push(childId)
     }
-    await logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote-breakdown:${childIds.length} subtasks`)
-    await updateIdea(ideaId, { status: 'kanban', kanban_id: parentId })
+    await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: parentId }, { from: idea.status, to: 'kanban', actor: MAIN_AGENT_ID, note: `promote-breakdown:${childIds.length} subtasks` })
     json(res, { ok: true, parent_id: parentId, child_count: childIds.length })
     return true
   }
@@ -274,8 +274,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const idea = await getIdeaById(id)
     if (!idea || (!isAdmin && idea.tenant_id !== effectiveTenantId)) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     if (idea.status !== 'kanban') { json(res, { error: 'invalid_value', field: 'status', hint: 'Csak kanban státuszú ötlet vonható vissza' }, 400); return true }
-    await updateIdea(id, { status: 'reviewed', kanban_id: null })
-    await logIdeaStatusChange(id, 'kanban', 'reviewed', MAIN_AGENT_ID, 'Manuális visszavonás')
+    await updateIdeaWithStatusLog(id, { status: 'reviewed', kanban_id: null }, { from: 'kanban', to: 'reviewed', actor: MAIN_AGENT_ID, note: 'Manuális visszavonás' })
     json(res, { ok: true })
     return true
   }

@@ -1,7 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 import { resolveWriteTenant } from './write-tenant.js'
 
 export interface BackgroundTask {
@@ -208,7 +208,9 @@ export async function createIdea(idea: Omit<IdeaBoxRow, 'created_at' | 'updated_
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, idea.id, idea.title, idea.description ?? null, idea.category, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, idea.tenant_id, now, now)
 }
 
-export async function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): Promise<boolean> {
+type IdeaPatch = Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id' | 'impact' | 'effort'>>
+
+async function updateIdeaOn(ops: SqlOps, id: string, patch: IdeaPatch): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
@@ -220,7 +222,28 @@ export async function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'ti
   if (patch.impact !== undefined) { sets.push('impact = ?'); params.push(patch.impact) }
   if (patch.effort !== undefined) { sets.push('effort = ?'); params.push(patch.effort) }
   params.push(id)
-  return (await dbx.run(`UPDATE idea_box SET ${sets.join(', ')} WHERE id = ?`, ...params)).changes > 0
+  return (await ops.run(`UPDATE idea_box SET ${sets.join(', ')} WHERE id = ?`, ...params)).changes > 0
+}
+
+export async function updateIdea(id: string, patch: IdeaPatch): Promise<boolean> {
+  return updateIdeaOn(dbx, id, patch)
+}
+
+/**
+ * The idea update and its status-log row in one transaction, so a failure of the log write does not leave a changed
+ * status without its audit row (and the reverse). The log row is written only when the idea row was changed.
+ * Returns whether the idea row was changed.
+ */
+export async function updateIdeaWithStatusLog(
+  id: string,
+  patch: IdeaPatch,
+  log: { from: string | null; to: string; actor: string; note?: string },
+): Promise<boolean> {
+  return dbx.tx(async (tx) => {
+    if (!(await updateIdeaOn(tx, id, patch))) return false
+    await logIdeaStatusChangeOn(tx, id, log.from, log.to, log.actor, log.note)
+    return true
+  })
 }
 
 export async function deleteIdea(id: string): Promise<boolean> {
@@ -245,9 +268,12 @@ export async function getIdeaComments(ideaId: string): Promise<IdeaComment[]> {
 
 export async function addIdeaComment(ideaId: string, author: string, content: string): Promise<IdeaComment> {
   const now = Math.floor(Date.now() / 1000)
-  const { id } = (await dbx.get('INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id', ideaId, author, content, now)) as { id: number }
-  await dbx.run('UPDATE idea_box SET updated_at = ? WHERE id = ?', now, ideaId)
-  return { id, idea_id: ideaId, author, content, created_at: now }
+  // The comment and the idea's updated_at move together: a failed second write must not leave the comment behind.
+  return dbx.tx(async (tx) => {
+    const { id } = (await tx.get('INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id', ideaId, author, content, now)) as { id: number }
+    await tx.run('UPDATE idea_box SET updated_at = ? WHERE id = ?', now, ideaId)
+    return { id, idea_id: ideaId, author, content, created_at: now }
+  })
 }
 
 export interface IdeaStatusLogRow {
@@ -260,7 +286,8 @@ export interface IdeaStatusLogRow {
   created_at: number
 }
 
-export async function logIdeaStatusChange(
+async function logIdeaStatusChangeOn(
+  ops: SqlOps,
   ideaId: string,
   fromStatus: string | null,
   toStatus: string,
@@ -268,7 +295,17 @@ export async function logIdeaStatusChange(
   note?: string,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run('INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?)', ideaId, fromStatus ?? null, toStatus, actor, note ?? null, now)
+  await ops.run('INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?)', ideaId, fromStatus ?? null, toStatus, actor, note ?? null, now)
+}
+
+export async function logIdeaStatusChange(
+  ideaId: string,
+  fromStatus: string | null,
+  toStatus: string,
+  actor: string,
+  note?: string,
+): Promise<void> {
+  await logIdeaStatusChangeOn(dbx, ideaId, fromStatus, toStatus, actor, note)
 }
 
 export async function getIdeaStatusLog(ideaId: string): Promise<IdeaStatusLogRow[]> {
@@ -276,14 +313,19 @@ export async function getIdeaStatusLog(ideaId: string): Promise<IdeaStatusLogRow
 }
 
 // Revert a promoted idea back to 'reviewed' when its kanban card is deleted or archived.
-// Returns the idea id if a matching idea was found and reverted, null otherwise.
+// Returns the idea id if a matching idea was found and reverted, null otherwise. The read, the update and the log row
+// are one transaction: two overlapping reverts of one card write exactly one log row, and a failed log write leaves
+// the idea promoted.
 export async function revertIdeaFromKanban(kanbanId: string): Promise<string | null> {
-  const idea = await dbx.get<{ id: string; status: string }>("SELECT id, status FROM idea_box WHERE kanban_id = ? AND status = 'kanban'", kanbanId)
-  if (!idea) return null
-  const now = Math.floor(Date.now() / 1000)
-  await dbx.run("UPDATE idea_box SET status = 'reviewed', kanban_id = NULL, updated_at = ? WHERE id = ?", now, idea.id)
-  await logIdeaStatusChange(idea.id, 'kanban', 'reviewed', 'system', `Kanban card removed: ${kanbanId}`)
-  return idea.id
+  return dbx.tx(async (tx) => {
+    const idea = await tx.get<{ id: string; status: string }>("SELECT id, status FROM idea_box WHERE kanban_id = ? AND status = 'kanban'", kanbanId)
+    if (!idea) return null
+    const now = Math.floor(Date.now() / 1000)
+    const info = await tx.run("UPDATE idea_box SET status = 'reviewed', kanban_id = NULL, updated_at = ? WHERE id = ? AND status = 'kanban'", now, idea.id)
+    if (info.changes === 0) return null
+    await logIdeaStatusChangeOn(tx, idea.id, 'kanban', 'reviewed', 'system', `Kanban card removed: ${kanbanId}`)
+    return idea.id
+  })
 }
 
 // ── Homoglyph journal (homoglyph_findings) ───────────────────────────
