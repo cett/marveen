@@ -320,6 +320,33 @@ export async function writeFederationConfig(cfg: FederationConfig): Promise<void
   cachedConfig = loadConfigFromDb()
 }
 
+/** Read-modify-write of the VALIDATED config that cannot lose a concurrent change (peer add / patch / remove /
+ *  rotate). The stored document is read from the database inside the write transaction (never from the cache),
+ *  `change` turns the config it sees into the next one -- pure code, no awaits -- and the write is part of the
+ *  same transaction; the cache is reset after the awaited commit. `change` returns `next` to write, or no `next`
+ *  to leave the store alone, and a `result` for the caller. A stored document that exists but fails validation
+ *  is not touched (writing the fail-closed view back would destroy its hand-recoverable peers): the outcome is
+ *  `{ unhealthy: true }`. An absent document counts as the disabled default. */
+export async function mutateFederationConfig<R>(
+  change: (cfg: FederationConfig) => { next?: FederationConfig; result: R },
+): Promise<{ result: R } | { unhealthy: true }> {
+  let outcome: { result: R } | { unhealthy: true } = { unhealthy: true }
+  await updateFederationConfigRaw((stored) => {
+    let current: FederationConfig = DISABLED
+    if (stored !== undefined) {
+      let validated: FederationConfig | string
+      try { validated = validateFederationConfig(JSON.parse(stored)) } catch { validated = 'unreadable' }
+      if (typeof validated === 'string') return undefined // the outcome stays unhealthy
+      current = validated
+    }
+    const step = change(current)
+    outcome = { result: step.result }
+    return step.next === undefined ? undefined : JSON.stringify(step.next, null, 2)
+  })
+  cachedConfig = loadConfigFromDb()
+  return outcome
+}
+
 /** Change the RAW stored document in one read-modify-write that cannot lose a
  *  concurrent change: the stored text is read from the database inside the
  *  write transaction, `change` edits the parsed object. Resolves to false (and
