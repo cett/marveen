@@ -40,7 +40,7 @@ import { randomBytes } from 'node:crypto'
 import { STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { isValidIdSegment } from './address.js'
-import { getFederationConfigRaw, setFederationConfigRaw, deleteFederationConfigRaw } from '../../db/federation.js'
+import { getFederationConfigRaw, setFederationConfigRaw, updateFederationConfigRaw, deleteFederationConfigRaw } from '../../db/federation.js'
 
 // Legacy round-1 shared-token file: no longer written or read for auth, but
 // the removal path still deletes it if a pre-round-2 store carries one. The
@@ -216,10 +216,13 @@ export function abandonWindowMsForPeer(cfg: FederationConfig, system: string): n
 // Single system_config row, read through the shared DB connection -- no
 // cross-process file watch needed (nothing outside this Node process reads
 // or writes federation.json anymore; unlike channel access.json, the config
-// has exactly one reader/writer: this module). Our own writes refresh the
-// cache synchronously (setFederationConfigRaw + cachedConfig reset happen in
-// the same call), so the auth gate never serves a request against a stale
-// pre-write enabled/token state.
+// has exactly one reader/writer: this module). Our own writes are awaited and
+// the cache is reset in the continuation right after the awaited write: the
+// database commit, the system_config row cache and `cachedConfig` all change
+// inside one chain of microtasks with no I/O callback between them, so the auth
+// gate (a request handler, a macrotask) never serves a request against a stale
+// pre-write enabled/token state. The reset must stay AFTER the await: a reset
+// before it would re-cache the pre-write document.
 //
 // D4 decision C (plan 984): a DB read failure is caught here and
 // logged at error level (not warn, unlike a merely invalid/garbage document
@@ -310,11 +313,59 @@ export function identifyFederationCaller(
 }
 
 /** Persist a validated config. Caller must pass an object that
- *  validateFederationConfig accepts. Synchronous write + synchronous cache
- *  refresh (no await window for concurrent writers). */
-export function writeFederationConfig(cfg: FederationConfig): void {
-  setFederationConfigRaw(JSON.stringify(cfg, null, 2))
+ *  validateFederationConfig accepts. Whole-document replace; the cache is
+ *  refreshed right after the awaited write (see the cache comment above). */
+export async function writeFederationConfig(cfg: FederationConfig): Promise<void> {
+  await setFederationConfigRaw(JSON.stringify(cfg, null, 2))
   cachedConfig = loadConfigFromDb()
+}
+
+/** Read-modify-write of the VALIDATED config that cannot lose a concurrent change (peer add / patch / remove /
+ *  rotate). The stored document is read from the database inside the write transaction (never from the cache),
+ *  `change` turns the config it sees into the next one -- pure code, no awaits -- and the write is part of the
+ *  same transaction; the cache is reset after the awaited commit. `change` returns `next` to write, or no `next`
+ *  to leave the store alone, and a `result` for the caller. A stored document that exists but fails validation
+ *  is not touched (writing the fail-closed view back would destroy its hand-recoverable peers): the outcome is
+ *  `{ unhealthy: true }`. An absent document counts as the disabled default. */
+export async function mutateFederationConfig<R>(
+  change: (cfg: FederationConfig) => { next?: FederationConfig; result: R },
+): Promise<{ result: R } | { unhealthy: true }> {
+  let outcome: { result: R } | { unhealthy: true } = { unhealthy: true }
+  await updateFederationConfigRaw((stored) => {
+    let current: FederationConfig = DISABLED
+    if (stored !== undefined) {
+      let validated: FederationConfig | string
+      try { validated = validateFederationConfig(JSON.parse(stored)) } catch { validated = 'unreadable' }
+      if (typeof validated === 'string') return undefined // the outcome stays unhealthy
+      current = validated
+    }
+    const step = change(current)
+    outcome = { result: step.result }
+    return step.next === undefined ? undefined : JSON.stringify(step.next, null, 2)
+  })
+  cachedConfig = loadConfigFromDb()
+  return outcome
+}
+
+/** Change the RAW stored document in one read-modify-write that cannot lose a
+ *  concurrent change: the stored text is read from the database inside the
+ *  write transaction, `change` edits the parsed object. Resolves to false (and
+ *  writes nothing) when the stored document is unreadable garbage; a document
+ *  that does not parse throws out of the transaction, which writes nothing. */
+async function changeStoredDocument(change: (raw: Record<string, unknown>) => void): Promise<boolean> {
+  let readable = true
+  await updateFederationConfigRaw((stored) => {
+    let raw: Record<string, unknown> = {}
+    if (stored !== undefined) {
+      const parsed = JSON.parse(stored)
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) { readable = false; return undefined }
+      raw = parsed as Record<string, unknown>
+    }
+    change(raw)
+    if (raw.systemId === undefined) raw.systemId = MAIN_AGENT_ID
+    return JSON.stringify(raw, null, 2)
+  })
+  return readable
 }
 
 /** Master-switch flip that never loses peer data (lossless disable/enable).
@@ -323,18 +374,9 @@ export function writeFederationConfig(cfg: FederationConfig): void {
  *  turn a view-loss into real data loss. Returns false when the stored
  *  document is unreadable garbage (nothing to flip -- the validator already
  *  fail-closes it). */
-export function setFederationEnabledPreservingFile(enabled: boolean): boolean {
+export async function setFederationEnabledPreservingFile(enabled: boolean): Promise<boolean> {
   try {
-    let raw: Record<string, unknown> = {}
-    const stored = getFederationConfigRaw()
-    if (stored !== undefined) {
-      const parsed = JSON.parse(stored)
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-      raw = parsed as Record<string, unknown>
-    }
-    raw.enabled = enabled === true
-    if (raw.systemId === undefined) raw.systemId = MAIN_AGENT_ID
-    setFederationConfigRaw(JSON.stringify(raw, null, 2))
+    if (!await changeStoredDocument((raw) => { raw.enabled = enabled === true })) return false
     cachedConfig = loadConfigFromDb()
     // Report whether the request actually took effect: enabling an
     // invalid-but-parseable document writes enabled:true but loadConfigFromDb
@@ -350,18 +392,9 @@ export function setFederationEnabledPreservingFile(enabled: boolean): boolean {
  *  stored document (peers, tokens, enabled) even when a stored peer is
  *  invalid -- same raw-document discipline as
  *  setFederationEnabledPreservingFile. Returns false on unreadable garbage. */
-export function setFederationRoutingModePreservingFile(mode: FederationRoutingMode): boolean {
+export async function setFederationRoutingModePreservingFile(mode: FederationRoutingMode): Promise<boolean> {
   try {
-    let raw: Record<string, unknown> = {}
-    const stored = getFederationConfigRaw()
-    if (stored !== undefined) {
-      const parsed = JSON.parse(stored)
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-      raw = parsed as Record<string, unknown>
-    }
-    raw.routingMode = mode
-    if (raw.systemId === undefined) raw.systemId = MAIN_AGENT_ID
-    setFederationConfigRaw(JSON.stringify(raw, null, 2))
+    if (!await changeStoredDocument((raw) => { raw.routingMode = mode })) return false
     cachedConfig = loadConfigFromDb()
     // The mode is now persisted. Unlike the enabled flip, routing mode is
     // orthogonal to peer validity: an invalid stored peer fail-closes the
@@ -375,11 +408,11 @@ export function setFederationRoutingModePreservingFile(mode: FederationRoutingMo
 }
 
 /** Full removal: delete the stored config row + the legacy token file, reset
- *  the cache SYNCHRONOUSLY. Idempotent (a second call has nothing left to
- *  remove). */
-export function removeFederationStore(): void {
+ *  the cache right after the awaited delete. Idempotent (a second call has
+ *  nothing left to remove). */
+export async function removeFederationStore(): Promise<void> {
   try {
-    deleteFederationConfigRaw()
+    await deleteFederationConfigRaw()
   } catch (err) {
     logger.warn({ err }, 'federation: store row delete failed')
   }
@@ -425,13 +458,13 @@ export function reloadFederationForTest(): void {
  *  tests construct invalid/garbage documents to exercise the fail-closed
  *  paths above. Pass a raw string for garbage-JSON cases, or an object for
  *  the common case. */
-export function _seedFederationConfigForTest(raw: string | Record<string, unknown>): void {
-  setFederationConfigRaw(typeof raw === 'string' ? raw : JSON.stringify(raw))
+export async function _seedFederationConfigForTest(raw: string | Record<string, unknown>): Promise<void> {
+  await setFederationConfigRaw(typeof raw === 'string' ? raw : JSON.stringify(raw))
   reloadFederationForTest()
 }
 
 /** Test-only: simulate "no federation.json" -- an absent system_config row. */
-export function _clearFederationConfigForTest(): void {
-  deleteFederationConfigRaw()
+export async function _clearFederationConfigForTest(): Promise<void> {
+  await deleteFederationConfigRaw()
   reloadFederationForTest()
 }

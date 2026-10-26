@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { runSigtermFlushes } from './web/sigterm-flush.js'
 import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile, retireGroup5StateFiles } from './db.js'
 import { flushLedgerSpool } from './conversation-ledger-spool.js'
 import { backfillWorkspaceDocs } from './db/workspace.js'
@@ -418,7 +419,13 @@ let webServer: HttpServer | null = null
 let shuttingDown = false
 let exitCode = 0
 
-const shutdown = (): void => {
+// SIGTERM flushes (src/web/sigterm-flush.ts) may take this long in total before the database is closed. Kept
+// under the process-lock takeover grace (DEFAULT_GRACE_MS in process-lock.ts): a replacing start SIGKILLs this
+// process once that grace has passed, so a longer flush would be cut off with the database still open.
+const SIGTERM_FLUSH_BUDGET_MS = 1000
+
+// `signal` is the name Node passes to a signal listener; the uncaughtException path calls it without one.
+const shutdown = (signal?: string): void => {
   if (shuttingDown) return
   try {
     shuttingDown = true
@@ -433,27 +440,43 @@ const shutdown = (): void => {
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
     if (scheduledRunSnapshotSweepInterval) clearInterval(scheduledRunSnapshotSweepInterval)
-    try { closeDatabase() } catch (err) { logger.warn({ err }, 'closeDatabase threw during shutdown') }
-
+    // Armed before anything awaits: a flush that hangs must not keep the process from exiting.
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
       releaseLock()
       process.exit(exitCode || 1)
     }, SHUTDOWN_HARD_KILL_MS)
 
-    if (webServer) {
-      try { webServer.closeIdleConnections?.() } catch { /* older node */ }
-      try { webServer.closeAllConnections?.() } catch { /* older node */ }
-      webServer.close(() => {
-        clearTimeout(hardKill)
+    const finish = (): void => {
+      try {
+        try { closeDatabase() } catch (err) { logger.warn({ err }, 'closeDatabase threw during shutdown') }
+
+        if (webServer) {
+          try { webServer.closeIdleConnections?.() } catch { /* older node */ }
+          try { webServer.closeAllConnections?.() } catch { /* older node */ }
+          webServer.close(() => {
+            clearTimeout(hardKill)
+            releaseLock()
+            process.exit(exitCode)
+          })
+        } else {
+          // Early shutdown, before startWebServer ran. Nothing to drain.
+          clearTimeout(hardKill)
+          releaseLock()
+          process.exit(exitCode)
+        }
+      } catch (err) {
+        logger.error({ err }, 'Shutdown threw, exiting anyway')
         releaseLock()
-        process.exit(exitCode)
-      })
+        process.exit(1)
+      }
+    }
+
+    if (signal === 'SIGTERM') {
+      // The desired run-state flush writes to the database: it runs (awaited) BEFORE the database closes.
+      void runSigtermFlushes(SIGTERM_FLUSH_BUDGET_MS).then(finish, finish)
     } else {
-      // Early shutdown, before startWebServer ran. Nothing to drain.
-      clearTimeout(hardKill)
-      releaseLock()
-      process.exit(exitCode)
+      finish()
     }
   } catch (err) {
     logger.error({ err }, 'Shutdown threw, exiting anyway')

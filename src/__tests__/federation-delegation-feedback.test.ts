@@ -19,8 +19,8 @@ const TMP = mkdtempSync(join(tmpdir(), 'fed-feedback-test-'))
 const IN_TOKEN = 'b'.repeat(64)
 const OUT_TOKEN = 'c'.repeat(64)
 
-function writeEnabledConfig(): void {
-  _seedFederationConfigForTest({
+async function writeEnabledConfig(): Promise<void> {
+  await _seedFederationConfigForTest({
     enabled: true, systemId: 'localsys',
     peers: [{ id: 'teodor', baseUrl: 'https://mini.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN }],
   })
@@ -57,9 +57,9 @@ beforeAll(() => {
   }
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   _setFederationStoreDirForTest(TMP)
-  writeEnabledConfig()
+  await writeEnabledConfig()
 })
 
 afterAll(() => {

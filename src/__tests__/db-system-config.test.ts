@@ -42,32 +42,32 @@ describe('system_config read/write helpers', () => {
     expect(dbMod.getSystemConfig('NOPE')).toBeUndefined()
   })
 
-  it('setSystemConfig inserts a row with the default source', () => {
-    dbMod.setSystemConfig('OLLAMA_URL', 'http://box:11434')
+  it('setSystemConfig inserts a row with the default source', async () => {
+    await dbMod.setSystemConfig('OLLAMA_URL', 'http://box:11434')
     const row = dbMod.getSystemConfig('OLLAMA_URL')
     expect(row?.value).toBe('http://box:11434')
     expect(row?.source).toBe('db')
     expect(row?.updated_at).toBeGreaterThan(0)
   })
 
-  it('setSystemConfig upserts: a second call updates value/updated_at in place', () => {
-    dbMod.setSystemConfig('OLLAMA_URL', 'http://first:11434')
+  it('setSystemConfig upserts: a second call updates value/updated_at in place', async () => {
+    await dbMod.setSystemConfig('OLLAMA_URL', 'http://first:11434')
     const first = dbMod.getSystemConfig('OLLAMA_URL')!
-    dbMod.setSystemConfig('OLLAMA_URL', 'http://second:11434')
+    await dbMod.setSystemConfig('OLLAMA_URL', 'http://second:11434')
     const second = dbMod.getSystemConfig('OLLAMA_URL')!
     expect(second.value).toBe('http://second:11434')
     expect(dbMod.listSystemConfig().filter(r => r.key === 'OLLAMA_URL')).toHaveLength(1)
     expect(second.updated_at).toBeGreaterThanOrEqual(first.updated_at)
   })
 
-  it('setSystemConfig accepts an explicit source', () => {
-    dbMod.setSystemConfig('DASHBOARD_PUBLIC_URL', 'https://box.example', 'migrated_from_json')
+  it('setSystemConfig accepts an explicit source', async () => {
+    await dbMod.setSystemConfig('DASHBOARD_PUBLIC_URL', 'https://box.example', 'migrated_from_json')
     expect(dbMod.getSystemConfig('DASHBOARD_PUBLIC_URL')?.source).toBe('migrated_from_json')
   })
 
-  it('listSystemConfig returns all rows ordered by key', () => {
-    dbMod.setSystemConfig('B_KEY', '2')
-    dbMod.setSystemConfig('A_KEY', '1')
+  it('listSystemConfig returns all rows ordered by key', async () => {
+    await dbMod.setSystemConfig('B_KEY', '2')
+    await dbMod.setSystemConfig('A_KEY', '1')
     // schedule_last_tick_ms is baked into migration 0057's own seed (#985
     // group 2/8), present in every fresh DB regardless of this test's writes.
     expect(dbMod.listSystemConfig().map(r => r.key)).toEqual(['A_KEY', 'B_KEY', 'schedule_last_tick_ms'])
@@ -95,13 +95,13 @@ describe('migrateConfigOverridesToSystemConfig', () => {
     expect(dbMod.getSystemConfig('KANBAN_WIP_WARN_PCT')?.value).toBe('90')
   })
 
-  it('is idempotent: a second run does not duplicate or overwrite an existing row', () => {
+  it('is idempotent: a second run does not duplicate or overwrite an existing row', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(overridesPath(), JSON.stringify({ OLLAMA_URL: 'http://box:11434' }))
     dbMod.migrateConfigOverridesToSystemConfig()
 
     // Simulate an operator having since edited the value directly in the DB.
-    dbMod.setSystemConfig('OLLAMA_URL', 'http://operator-set:11434', 'db')
+    await dbMod.setSystemConfig('OLLAMA_URL', 'http://operator-set:11434', 'db')
 
     const secondRunCount = dbMod.migrateConfigOverridesToSystemConfig()
 
@@ -193,12 +193,12 @@ describe('migrateGroup5StateFromFiles', () => {
     expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(JSON.stringify(['agent-a']))
   })
 
-  it('is idempotent: a second run does not overwrite an operator-set row', () => {
+  it('is idempotent: a second run does not overwrite an operator-set row', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(join(storeDir, 'terminal-input.json'), JSON.stringify({ enabled: true }))
     dbMod.migrateGroup5StateFromFiles()
 
-    dbMod.setSystemConfig('terminal_input_enabled', '0', 'db')
+    await dbMod.setSystemConfig('terminal_input_enabled', '0', 'db')
     const secondRun = dbMod.migrateGroup5StateFromFiles()
 
     expect(secondRun).toBe(0)

@@ -21,7 +21,7 @@
 // -- the same protection vault_bindings' migration note relies on.
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getSystemConfig, setSystemConfig, deleteSystemConfig } from './system-config.js'
+import { getSystemConfig, setSystemConfig, setSystemConfigSync, updateSystemConfig, deleteSystemConfig } from './system-config.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
@@ -31,12 +31,23 @@ export function getFederationConfigRaw(): string | undefined {
   return getSystemConfig(FEDERATION_CONFIG_KEY)?.value
 }
 
-export function setFederationConfigRaw(json: string, source: string = 'db'): void {
-  setSystemConfig(FEDERATION_CONFIG_KEY, json, source)
+export async function setFederationConfigRaw(json: string, source: string = 'db'): Promise<void> {
+  await setSystemConfig(FEDERATION_CONFIG_KEY, json, source)
 }
 
-export function deleteFederationConfigRaw(): void {
-  deleteSystemConfig(FEDERATION_CONFIG_KEY)
+/**
+ * Read-modify-write of the raw document that cannot lose an update (see updateSystemConfig): `mutate` gets the
+ * stored text read from the database and returns the next text, or `undefined` to leave it as it is.
+ */
+export function updateFederationConfigRaw(
+  mutate: (current: string | undefined) => string | undefined,
+  source: string = 'db',
+): Promise<boolean> {
+  return updateSystemConfig(FEDERATION_CONFIG_KEY, mutate, source)
+}
+
+export async function deleteFederationConfigRaw(): Promise<void> {
+  await deleteSystemConfig(FEDERATION_CONFIG_KEY)
 }
 
 // One-time backfill of an existing install's store/federation.json into
@@ -49,6 +60,9 @@ export function deleteFederationConfigRaw(): void {
 // raw bytes, validate only at read time" contract the file gave
 // loadConfigFromDisk() in web/federation/config.ts. Safe to call on every
 // boot.
+// Boot twin: initDatabase() runs it before anything can await, so it writes through the synchronous twin of
+// setFederationConfigRaw. Only db/index.ts calls it (db-boot-sync-twins.test.ts).
+// @boot-sync-twin
 export function migrateFederationConfigFromFile(): boolean {
   if (getSystemConfig(FEDERATION_CONFIG_KEY) !== undefined) return false
   const filePath = join(STORE_DIR, 'federation.json')
@@ -60,6 +74,6 @@ export function migrateFederationConfigFromFile(): boolean {
     logger.warn({ err, filePath }, 'federation migration: failed to read federation.json, skipping')
     return false
   }
-  setFederationConfigRaw(content, 'migrated_from_json')
+  setSystemConfigSync(FEDERATION_CONFIG_KEY, content, 'migrated_from_json')
   return true
 }

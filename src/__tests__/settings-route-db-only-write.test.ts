@@ -220,3 +220,64 @@ describe('POST /api/settings: env-only keys (OTLP headers)', () => {
     expect(row).toMatchObject({ value: '***', secret: true, envOnly: true })
   })
 })
+
+// setOverride is an awaited async write: the route must answer only after the row is committed, and a failed
+// write must surface as an error, not as a 200 for a value that never reached the database.
+describe('POST /api/settings: the answer follows the awaited write', () => {
+  const rowValue = async (key: string): Promise<string | undefined> => {
+    const { db } = await import('../db/connection.js')
+    return (db.prepare('SELECT value FROM system_config WHERE key = ?').get(key) as { value: string } | undefined)?.value
+  }
+
+  it('while the connection is busy the route waits: no 200 before the value is in the database', async () => {
+    const { dbx } = await import('../db/facade.js')
+    let openGate: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { openGate = resolve })
+    let inTx: () => void = () => {}
+    const entered = new Promise<void>((resolve) => { inTx = resolve })
+    const holder = dbx.tx(async () => { inTx(); await gate })
+    await entered
+
+    const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'WEB_PORT', value: 8081 } })
+    const handled = routesMod.tryHandleSettings(ctx)
+    await new Promise((r) => setTimeout(r, 30))
+    expect(body()).toBe('') // nothing answered yet
+    expect(await rowValue('WEB_PORT')).toBeUndefined()
+
+    openGate()
+    await holder
+    expect(await handled).toBe(true)
+    expect(status()).toBe(200)
+    expect(await rowValue('WEB_PORT')).toBe('8081')
+    expect(dbMod.getSystemConfig('WEB_PORT')?.value).toBe('8081')
+  })
+
+  it('a database write that fails answers 500 and stores nothing (never a 200 for a lost value)', async () => {
+    const conn = await import('../db/connection.js')
+    const realPrepare = conn.db.prepare.bind(conn.db)
+    const spy = vi.spyOn(conn.db, 'prepare').mockImplementation(((sql: string) => {
+      if (/INSERT INTO system_config/.test(sql)) throw new Error('disk I/O error')
+      return realPrepare(sql)
+    }) as never)
+    try {
+      const { ctx, status } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'WEB_PORT', value: 8082 } })
+      expect(await routesMod.tryHandleSettings(ctx)).toBe(true)
+      expect(status()).toBe(500)
+    } finally {
+      spy.mockRestore()
+    }
+    expect(await rowValue('WEB_PORT')).toBeUndefined()
+  })
+
+  it('an invalid value answers 400 and the write is never attempted; a valid one answers 200 with the value in the database', async () => {
+    const bad = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'WEB_PORT', value: 'not-a-port' } })
+    expect(await routesMod.tryHandleSettings(bad.ctx)).toBe(true)
+    expect(bad.status()).toBe(400)
+    expect(await rowValue('WEB_PORT')).toBeUndefined()
+
+    const good = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'WEB_PORT', value: 8083 } })
+    expect(await routesMod.tryHandleSettings(good.ctx)).toBe(true)
+    expect(good.status()).toBe(200)
+    expect(await rowValue('WEB_PORT')).toBe('8083')
+  })
+})

@@ -1406,18 +1406,18 @@ export async function importFleet(
     // DB-backed (system_config 'agents_desired') -- whole-value replace, not a
     // file write. Array.isArray guards a pre-migration snapshot that still has
     // the old `{}` empty-object shape (nothing to import from that).
-    if (Array.isArray(s.agentsDesired)) setDesiredAgents(s.agentsDesired as string[])
+    if (Array.isArray(s.agentsDesired)) await setDesiredAgents(s.agentsDesired as string[])
     if (s.norbertPersonal && Object.keys(s.norbertPersonal).length)
       trackedWrite(join(STORE_DIR, 'norbert-personal.json'), JSON.stringify(s.norbertPersonal, null, 2), tracker)
     // DB-backed (system_config 'model_fallback_*') -- see the field-level doc
     // comment on writeModelFallbackFieldsRaw() for why this only sets the
     // fields the source snapshot actually carries, not a file write.
     if (s.modelFallback && Object.keys(s.modelFallback).length)
-      writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>)
+      await writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>)
     // DB-backed (system_config 'terminal_input_enabled') -- see
     // readTerminalInputEnabledRaw()'s doc comment for why an absent field must
     // leave the target's current value untouched rather than defaulting it.
-    if (typeof s.terminalInputEnabled === 'boolean') writeTerminalInputEnabled(s.terminalInputEnabled)
+    if (typeof s.terminalInputEnabled === 'boolean') await writeTerminalInputEnabled(s.terminalInputEnabled)
     // DB-backed (system_config 'federation_config_json') -- whole-value
     // replace via the raw setter, not a file write, then an explicit cache
     // invalidation (see invalidateFederationConfigCache()'s doc comment for
@@ -1434,7 +1434,7 @@ export async function importFleet(
       if (typeof result === 'string') {
         applyWarnings.push(`federáció: a forrás konfig érvénytelen (${result}) -- kihagyva, a célgép saját federációs beállításai megmaradtak.`)
       } else {
-        setFederationConfigRaw(JSON.stringify(s.federation, null, 2))
+        await setFederationConfigRaw(JSON.stringify(s.federation, null, 2))
         invalidateFederationConfigCache()
       }
     }

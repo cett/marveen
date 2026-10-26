@@ -54,7 +54,7 @@ import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
-import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfig } from './system-config.js'
+import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfigSync } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
 import { getAgentStateSync, setAgentStateSync, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
@@ -383,7 +383,7 @@ function migrateScheduleStateFromFiles(): void {
       try {
         const raw = JSON.parse(readFileSync(tickStatePath, 'utf-8')) as { lastTickMs?: unknown }
         if (typeof raw?.lastTickMs === 'number' && Number.isFinite(raw.lastTickMs)) {
-          setSystemConfig('schedule_last_tick_ms', String(raw.lastTickMs))
+          setSystemConfigSync('schedule_last_tick_ms', String(raw.lastTickMs))
         }
       } catch (err) {
         logger.warn({ err }, 'schedule state migration: failed to parse schedule-tick-state.json, skipping')

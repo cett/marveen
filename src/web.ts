@@ -128,6 +128,7 @@ import { getDb } from './db.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
+import { registerSigtermFlush } from './web/sigterm-flush.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 
@@ -672,10 +673,8 @@ export function startWebServer(port = 3420): http.Server {
     // On SIGTERM: flush which agents are running so the next startup has
     // accurate desired-state data even after an unclean shutdown. One-time
     // registration inside server.listen so it only fires on the live instance,
-    // not on WEB_ONLY staging.
-    process.once('SIGTERM', () => {
-      try { flushRunningStateToDesired() } catch { /* best effort */ }
-    })
+    // not on WEB_ONLY staging. index.ts's shutdown() runs it before it closes the database.
+    registerSigtermFlush('desired-run-state', flushRunningStateToDesired)
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the

@@ -104,7 +104,7 @@ beforeEach(() => {
 describe('exportFleet -- store/*.json config fields', () => {
   it('reads federation from system_config and the remaining file-backed field (costopsConfig) from disk', async () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')
-    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
+    await setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
     writeStoreJson('costops-config.json', { version: 1, currency: 'USD', budgets: [] })
 
     const result = await exportFleet()
@@ -126,10 +126,10 @@ describe('exportFleet -- store/*.json config fields', () => {
 describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () => {
   it('overwrites the existing target system_config row wholesale with the source value', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
-    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
+    await setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
     const exported = await exportFleet()
 
-    setFederationConfigRaw(JSON.stringify({ enabled: false, systemId: 'target-own-system' }))
+    await setFederationConfigRaw(JSON.stringify({ enabled: false, systemId: 'target-own-system' }))
 
     const applied = await importFleet(exported.data, { apply: true }) as any
     expect(applied.ok).toBe(true)
@@ -138,7 +138,7 @@ describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () 
 
   it('does not touch the target row when the source value is empty', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
+    await setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
     const fleetJson = JSON.stringify(baseFleetWith({ federation: {} }))
     await importFleet(fleetJson, { apply: true })
     expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'target-keeps-this' })
@@ -150,7 +150,7 @@ describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () 
   // read. A "successful" import that quietly kills the target's federation.
   it('an invalid source config is not written -- the target keeps its own config, and a warning is reported', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
+    await setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
     const fleetJson = JSON.stringify(baseFleetWith({
       federation: { enabled: true, peers: [{ id: 'x', baseUrl: 'https://peer.example', inboundToken: 'too-short' }] },
     }))
@@ -162,7 +162,7 @@ describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () 
 
   it('root-is-not-an-object source config is likewise refused, not written', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
+    await setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'target-keeps-this' }))
     const fleetJson = JSON.stringify(baseFleetWith({ federation: { enabled: true, peers: 'not-an-array' } }))
     const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(JSON.parse(getFederationConfigRaw()!)).toEqual({ enabled: true, systemId: 'target-keeps-this' })
@@ -178,7 +178,7 @@ describe('importFleet apply -- overwrite fields (federation/costopsConfig)', () 
   // since the cache would otherwise keep serving the pre-import value.
   it('a valid import invalidates the getFederationConfig() cache, not just the DB row', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
-    setFederationConfigRaw(JSON.stringify({ enabled: false, systemId: 'target-own-system' }))
+    await setFederationConfigRaw(JSON.stringify({ enabled: false, systemId: 'target-own-system' }))
     invalidateFederationConfigCache()
     expect(getFederationConfig()).toEqual(expect.objectContaining({ enabled: false, systemId: 'target-own-system' }))
 
@@ -293,14 +293,14 @@ describe('exportFleet/importFleet -- autonomy (DB-backed)', () => {
 describe('exportFleet/importFleet -- agentsDesired/modelFallback/terminalInputEnabled (DB-backed)', () => {
   it('exports agentsDesired as a sorted name array', async () => {
     const { setDesiredAgents } = await import('../web/agent-desired-state.js')
-    setDesiredAgents(['agent-b', 'agent-a'])
+    await setDesiredAgents(['agent-b', 'agent-a'])
     const { exportFleet } = await import('../web/fleet-transfer.js')
     expect(JSON.parse((await exportFleet()).data).dashboardSettings.agentsDesired).toEqual(['agent-a', 'agent-b'])
   })
 
   it('import replaces the target agentsDesired set wholesale', async () => {
     const { setDesiredAgents, getDesiredAgents } = await import('../web/agent-desired-state.js')
-    setDesiredAgents(['target-only'])
+    await setDesiredAgents(['target-only'])
     const fleetJson = JSON.stringify(baseFleetWith({ agentsDesired: ['agent-a', 'agent-b'] }))
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any
@@ -310,15 +310,15 @@ describe('exportFleet/importFleet -- agentsDesired/modelFallback/terminalInputEn
 
   it('exports only the modelFallback fields an operator actually set, no code-level defaults', async () => {
     const { setSystemConfig } = await import('../db.js')
-    setSystemConfig('model_fallback_enabled', '1')
-    setSystemConfig('model_fallback_chain', JSON.stringify(['a', 'b']))
+    await setSystemConfig('model_fallback_enabled', '1')
+    await setSystemConfig('model_fallback_chain', JSON.stringify(['a', 'b']))
     const { exportFleet } = await import('../web/fleet-transfer.js')
     expect(JSON.parse((await exportFleet()).data).dashboardSettings.modelFallback).toEqual({ enabled: true, chain: ['a', 'b'] })
   })
 
   it('import sets only the fields the source snapshot carries, leaving the rest of the target untouched', async () => {
     const { writeModelFallbackFieldsRaw, readModelFallbackFieldsRaw } = await import('../web/model-fallback-store.js')
-    writeModelFallbackFieldsRaw({ enabled: false, chain: ['target-own-chain-a', 'target-own-chain-b'], revertAfterMinutes: 5 })
+    await writeModelFallbackFieldsRaw({ enabled: false, chain: ['target-own-chain-a', 'target-own-chain-b'], revertAfterMinutes: 5 })
     const fleetJson = JSON.stringify(baseFleetWith({ modelFallback: { enabled: true, revertAfterMinutes: 999 } }))
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any
@@ -339,7 +339,7 @@ describe('exportFleet/importFleet -- agentsDesired/modelFallback/terminalInputEn
 
   it('exports terminalInputEnabled once explicitly set, and import applies it', async () => {
     const { writeTerminalInputEnabled } = await import('../web/terminal-input-store.js')
-    writeTerminalInputEnabled(true)
+    await writeTerminalInputEnabled(true)
     const { exportFleet } = await import('../web/fleet-transfer.js')
     expect(JSON.parse((await exportFleet()).data).dashboardSettings.terminalInputEnabled).toBe(true)
 
@@ -355,7 +355,7 @@ describe('exportFleet/importFleet -- agentsDesired/modelFallback/terminalInputEn
 
   it('import leaves the target toggle untouched when the source snapshot omits it', async () => {
     const { writeTerminalInputEnabled, readTerminalInputEnabled } = await import('../web/terminal-input-store.js')
-    writeTerminalInputEnabled(true)
+    await writeTerminalInputEnabled(true)
     const fleetJson = JSON.stringify(baseFleetWith({}))
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = await importFleet(fleetJson, { apply: true }) as any

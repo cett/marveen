@@ -699,9 +699,9 @@ export function computeTickStatus(
   return { lastTickMs, ageSeconds: Math.round(ageMs / 1000), stale: ageMs > thresholdMs }
 }
 
-function persistLastTickMs(nowMs: number): void {
+async function persistLastTickMs(nowMs: number): Promise<void> {
   try {
-    setSystemConfig('schedule_last_tick_ms', String(nowMs))
+    await setSystemConfig('schedule_last_tick_ms', String(nowMs))
   } catch (err) {
     logger.warn({ err }, 'schedule-runner: failed to persist tick liveness stamp')
   }
@@ -1880,7 +1880,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // after the scan so a crash mid-tick leaves the older (wider) stamp behind
     // and the occurrences of the crashed tick get re-scanned rather than lost.
     if (now - lastPersistedTickMs >= TICK_STATE_PERSIST_INTERVAL_MS) {
-      persistLastTickMs(now)
+      await persistLastTickMs(now)
       lastPersistedTickMs = now
     }
     } finally {

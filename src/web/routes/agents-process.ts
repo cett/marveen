@@ -149,7 +149,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     const result = startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
-    if (result.ok || result.error === 'conflict') addDesiredAgent(name)
+    if (result.ok || result.error === 'conflict') await addDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true
@@ -164,7 +164,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     }
     const result = stopAgentProcess(name)
     // Explicit stop clears intent so the monitor will not resurrect it.
-    removeDesiredAgent(name)
+    await removeDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true

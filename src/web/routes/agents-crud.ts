@@ -963,7 +963,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // Clear the desired run-state so the reconciler stops trying to start a
     // non-existent agent (#857). A stale entry also starts a same-named new
     // agent immediately on next create -- unasked.
-    removeDesiredAgent(name)
+    await removeDesiredAgent(name)
     // A deleted agent keeps no credential (its token file goes with the directory).
     await revokeApiTokensForAgent(name, Math.floor(Date.now() / 1000))
     rmSync(dir, { recursive: true, force: true })

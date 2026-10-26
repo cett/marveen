@@ -55,14 +55,14 @@ describe('settings-store', () => {
     expect(() => settingsMod.getEffectiveSettingValue('NOT_A_REAL_KEY')).toThrow()
   })
 
-  it('persists a valid override and resolves it ahead of the default', () => {
-    const result = settingsMod.setOverride('KANBAN_WIP_WARN_PCT', 42)
+  it('persists a valid override and resolves it ahead of the default', async () => {
+    const result = await settingsMod.setOverride('KANBAN_WIP_WARN_PCT', 42)
     expect(result.ok).toBe(true)
     expect(settingsMod.getEffectiveSettingValue('KANBAN_WIP_WARN_PCT')).toBe(42)
   })
 
-  it('writes ONLY to system_config -- config-overrides.json is never touched', () => {
-    settingsMod.setOverride('KANBAN_WIP_OK_COLOR', '#112233')
+  it('writes ONLY to system_config -- config-overrides.json is never touched', async () => {
+    await settingsMod.setOverride('KANBAN_WIP_OK_COLOR', '#112233')
 
     expect(existsSync(legacyOverridesPath())).toBe(false)
 
@@ -83,35 +83,35 @@ describe('settings-store', () => {
     expect(settingsMod.getEffectiveSettingValue('KANBAN_WIP_OK_COLOR')).toBe('#6b7280')
   })
 
-  it('a DB value resolves correctly even while an unrelated legacy config-overrides.json file exists on disk', () => {
+  it('a DB value resolves correctly even while an unrelated legacy config-overrides.json file exists on disk', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(legacyOverridesPath(), JSON.stringify({ KANBAN_WIP_OK_COLOR: '#111111' }))
 
-    settingsMod.setOverride('KANBAN_WIP_OK_COLOR', '#222222')
+    await settingsMod.setOverride('KANBAN_WIP_OK_COLOR', '#222222')
 
     expect(settingsMod.getEffectiveSettingValue('KANBAN_WIP_OK_COLOR')).toBe('#222222')
   })
 
-  it('rejects an invalid value and does not change the effective value', () => {
-    settingsMod.setOverride('KANBAN_WIP_WARN_PCT', 50) // baseline valid override
-    const result = settingsMod.setOverride('KANBAN_WIP_WARN_PCT', 0) // 0 disallowed (min: 1)
+  it('rejects an invalid value and does not change the effective value', async () => {
+    await settingsMod.setOverride('KANBAN_WIP_WARN_PCT', 50) // baseline valid override
+    const result = await settingsMod.setOverride('KANBAN_WIP_WARN_PCT', 0) // 0 disallowed (min: 1)
     expect(result.ok).toBe(false)
     // rollback: the earlier valid override must still be in effect, not 0
     // and not silently reset to the registry default either.
     expect(settingsMod.getEffectiveSettingValue('KANBAN_WIP_WARN_PCT')).toBe(50)
   })
 
-  it('rejects an unknown key without writing to system_config', () => {
-    const result = settingsMod.setOverride('NOT_A_REAL_KEY', 'x')
+  it('rejects an unknown key without writing to system_config', async () => {
+    const result = await settingsMod.setOverride('NOT_A_REAL_KEY', 'x')
     expect(result.ok).toBe(false)
     expect(dbMod.getSystemConfig('NOT_A_REAL_KEY')).toBeUndefined()
   })
 
-  it('setOverride does not write to config-overrides.json even when an unrelated legacy file exists', () => {
+  it('setOverride does not write to config-overrides.json even when an unrelated legacy file exists', async () => {
     mkdirSync(storeDir, { recursive: true })
     writeFileSync(legacyOverridesPath(), JSON.stringify({ KANBAN_WIP_WARN_PCT: 33 }))
 
-    settingsMod.setOverride('KANBAN_WIP_OK_COLOR', '#abcdef')
+    await settingsMod.setOverride('KANBAN_WIP_OK_COLOR', '#abcdef')
 
     const onDisk = JSON.parse(readFileSync(legacyOverridesPath(), 'utf-8'))
     expect(onDisk).toEqual({ KANBAN_WIP_WARN_PCT: 33 })

@@ -11,7 +11,7 @@ const { dbx } = useTestDb()
 describe('useTestDb (the tests run in this order on purpose)', () => {
   it('first test: leaves a transaction open, counters, a config row and a table behind', async () => {
     await dbx.exec('CREATE TABLE leftover (id INTEGER)')
-    setSystemConfig('leftover_key', '1')
+    await setSystemConfig('leftover_key', '1')
     void dbx.tx(() => new Promise<void>(() => { /* never settles */ }))
     await new Promise((r) => setTimeout(r, 2))
     expect(lockFor(db).busy).toBe(true)
