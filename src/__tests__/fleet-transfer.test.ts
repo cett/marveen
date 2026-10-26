@@ -90,15 +90,15 @@ vi.mock('../db/vault-bindings.js', () => ({
 
 // The fleet SQL lives in db/fleet-transfer.ts; an empty destination database.
 vi.mock('../db/fleet-transfer.js', () => ({
-  exportTableRows: () => [],
-  exportMemoryRows: () => [],
-  exportDailyLogRows: () => [],
-  fleetRowIdExists: () => false,
-  fleetRowExists: () => false,
-  importFleetRows: () => 0,
-  listEnabledTenantIds: () => [],
-  rebuildMemoriesFts: () => {},
-  inFleetImportTransaction: (fn: () => void) => fn(),
+  exportTableRows: () => Promise.resolve([]),
+  exportMemoryRows: () => Promise.resolve([]),
+  exportDailyLogRows: () => Promise.resolve([]),
+  fleetRowIdExists: () => Promise.resolve(false),
+  fleetRowExists: () => Promise.resolve(false),
+  importFleetRows: vi.fn(() => Promise.resolve(0)),
+  listEnabledTenantIds: vi.fn(() => Promise.resolve([] as string[])),
+  rebuildMemoriesFts: vi.fn(() => Promise.resolve()),
+  inFleetImportTransaction: vi.fn((fn: () => Promise<void>) => fn()),
 }))
 
 vi.mock('../web/agent-config.js', () => ({
@@ -517,5 +517,105 @@ describe('importFleet: skill import writes SQL rows (not just files)', () => {
       tenant_id: 'fleet',
       is_global: false,
     })
+  })
+})
+
+// The DB part of the import is one awaited transaction. These pin the awaits that the type checker cannot:
+// a write that is refused inside the body must fail the whole import (no vault, no .env, no "completed"), and the
+// schedule tenant must come from the awaited tenant read (a Promise in its place would not even be a Set).
+describe('importFleet: the import transaction is awaited', () => {
+  const FLEET_WITH_SCHEDULES = JSON.stringify({
+    schemaVersion: 1,
+    exportedAt: '2026-01-01T00:00:00.000Z',
+    sourceHost: 'source',
+    mainAgent: { agentId: 'atlas', identity: { MAIN_AGENT_ID: 'atlas' }, claudeMd: '', soulMd: '', config: {}, mcp: {}, settings: {}, channelsAccess: {} },
+    agents: [], skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+    schedules: [
+      { id: 's-known', schedule: '* * * * *', agent: 'atlas', type: 'task', tenant_id: 't-local', enabled: 1 },
+      { id: 's-foreign', schedule: '* * * * *', agent: 'atlas', type: 'task', tenant_id: 't-elsewhere', enabled: 1 },
+    ],
+    kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+    ideaBox: { ideas: [], comments: [], statusLog: [] },
+    dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+  })
+
+  beforeEach(async () => {
+    const t = await import('../db/fleet-transfer.js')
+    vi.mocked(t.importFleetRows).mockReset().mockImplementation(() => Promise.resolve(0))
+    vi.mocked(t.listEnabledTenantIds).mockReset().mockImplementation(() => Promise.resolve(['t-local']))
+    vi.mocked(t.rebuildMemoriesFts).mockReset().mockImplementation(() => Promise.resolve())
+    vi.mocked(t.inFleetImportTransaction).mockReset().mockImplementation((fn) => fn())
+    const { updateEnvFile } = await import('../env.js')
+    vi.mocked(updateEnvFile).mockClear()
+  })
+
+  it('a write refused inside the body fails the import before the .env mirror', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    vi.mocked(t.importFleetRows).mockImplementation((table) =>
+      table === 'idea_status_log' ? Promise.reject(new Error('insert refused')) : Promise.resolve(0))
+
+    await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow('insert refused')
+    expect(updateEnvFile).not.toHaveBeenCalled()
+  })
+
+  it('every write of the body is awaited: a refusal on any one table fails the import', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    await importFleet(FLEET_WITH_SCHEDULES, { apply: true })
+    const tables = vi.mocked(t.importFleetRows).mock.calls.map((c) => c[0] as string)
+    expect(tables).toHaveLength(14)
+    for (const failing of tables) {
+      vi.mocked(t.importFleetRows).mockImplementation((table) =>
+        table === failing ? Promise.reject(new Error(`refused ${failing}`)) : Promise.resolve(0))
+      await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow(`refused ${failing}`)
+    }
+  })
+
+  it('the memory index rebuild is awaited too', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    vi.mocked(t.rebuildMemoriesFts).mockImplementation(() => Promise.reject(new Error('rebuild refused')))
+    await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow('rebuild refused')
+  })
+
+  it('a transaction that cannot commit fails the import before the .env mirror', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    vi.mocked(t.inFleetImportTransaction).mockImplementation(() => Promise.reject(new Error('commit lost')))
+
+    await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow('commit lost')
+    expect(updateEnvFile).not.toHaveBeenCalled()
+  })
+
+  it('imports a schedule disabled, with its tenant only when the awaited tenant read lists it', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+
+    await importFleet(FLEET_WITH_SCHEDULES, { apply: true })
+
+    const call = vi.mocked(t.importFleetRows).mock.calls.find((c) => c[0] === 'schedules')
+    expect(call).toBeDefined()
+    const rows = call![1] as Array<{ id: string; tenant_id: string; enabled: number }>
+    expect(rows.map((r) => [r.id, r.tenant_id, r.enabled])).toEqual([['s-known', 't-local', 0], ['s-foreign', 'default', 0]])
+  })
+
+  it('runs the memory index rebuild after the last table, inside the same transaction', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const order: string[] = []
+    vi.mocked(t.importFleetRows).mockImplementation((table) => { order.push(`insert:${table}`); return Promise.resolve(0) })
+    vi.mocked(t.rebuildMemoriesFts).mockImplementation(() => { order.push('fts'); return Promise.resolve() })
+    vi.mocked(t.inFleetImportTransaction).mockImplementation(async (fn) => { order.push('begin'); await fn(); order.push('commit') })
+
+    await importFleet(FLEET_WITH_SCHEDULES, { apply: true })
+
+    expect(order[0]).toBe('begin')
+    expect(order.at(-1)).toBe('commit')
+    expect(order.at(-2)).toBe('fts')
+    expect(order.at(-3)).toBe('insert:idea_status_log')
+    expect(order.indexOf('insert:labels')).toBeLessThan(order.indexOf('insert:kanban_cards'))
   })
 })
