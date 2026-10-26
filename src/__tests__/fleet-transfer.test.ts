@@ -543,6 +543,7 @@ describe('importFleet: the import transaction is awaited', () => {
     const t = await import('../db/fleet-transfer.js')
     vi.mocked(t.importFleetRows).mockReset().mockImplementation(() => Promise.resolve(0))
     vi.mocked(t.listEnabledTenantIds).mockReset().mockImplementation(() => Promise.resolve(['t-local']))
+    vi.mocked(t.rebuildMemoriesFts).mockReset().mockImplementation(() => Promise.resolve())
     vi.mocked(t.inFleetImportTransaction).mockReset().mockImplementation((fn) => fn())
     const { updateEnvFile } = await import('../env.js')
     vi.mocked(updateEnvFile).mockClear()
@@ -557,6 +558,26 @@ describe('importFleet: the import transaction is awaited', () => {
 
     await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow('insert refused')
     expect(updateEnvFile).not.toHaveBeenCalled()
+  })
+
+  it('every write of the body is awaited: a refusal on any one table fails the import', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    await importFleet(FLEET_WITH_SCHEDULES, { apply: true })
+    const tables = vi.mocked(t.importFleetRows).mock.calls.map((c) => c[0] as string)
+    expect(tables).toHaveLength(14)
+    for (const failing of tables) {
+      vi.mocked(t.importFleetRows).mockImplementation((table) =>
+        table === failing ? Promise.reject(new Error(`refused ${failing}`)) : Promise.resolve(0))
+      await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow(`refused ${failing}`)
+    }
+  })
+
+  it('the memory index rebuild is awaited too', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    vi.mocked(t.rebuildMemoriesFts).mockImplementation(() => Promise.reject(new Error('rebuild refused')))
+    await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow('rebuild refused')
   })
 
   it('a transaction that cannot commit fails the import before the .env mirror', async () => {
