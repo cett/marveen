@@ -499,7 +499,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const ownedCard = await scopeToTenant(effectiveTenantId).kanban.get(id)
       if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
-    revertIdeaFromKanban(id)
+    await revertIdeaFromKanban(id)
     if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
@@ -572,7 +572,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanArchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/archive$/)
   if (kanbanArchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
-    revertIdeaFromKanban(id)
+    await revertIdeaFromKanban(id)
     if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true

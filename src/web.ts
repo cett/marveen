@@ -817,11 +817,8 @@ export function startWebServer(port = 3420): http.Server {
     }
   }
 
-  try {
-    sweepOrphanedBackgroundTasks()
-  } catch (err) {
-    logger.warn({ err }, 'Background task sweep skipped')
-  }
+  // Not awaited: the server is already up and the sweep only re-arms timers for tasks that survived the restart.
+  sweepOrphanedBackgroundTasks().catch((err) => logger.warn({ err }, 'Background task sweep skipped'))
 
   try {
     const swept = sweepOrphanTaskStates(Date.now())

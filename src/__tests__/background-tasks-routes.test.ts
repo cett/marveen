@@ -5,9 +5,9 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const mocks = vi.hoisted(() => ({
   createBackgroundTaskAtomic: vi.fn(),
-  getBackgroundTasks: vi.fn().mockReturnValue([]),
-  getBackgroundTask: vi.fn().mockReturnValue(null),
-  getRunningBackgroundTasks: vi.fn().mockReturnValue([]),
+  getBackgroundTasks: vi.fn().mockResolvedValue([]),
+  getBackgroundTask: vi.fn().mockResolvedValue(null),
+  getRunningBackgroundTasks: vi.fn().mockResolvedValue([]),
   finishBackgroundTask: vi.fn(),
   markMessageFailed: vi.fn(),
   claimPendingForAgent: vi.fn().mockReturnValue([]),
@@ -60,7 +60,7 @@ function makeCtx(opts: { method: string; path: string; body?: object | string })
 describe('background-tasks routes -- status dispatch (B11b)', () => {
   it('returns 429 when concurrent limit hit (limit_exceeded)', async () => {
     // createBackgroundTaskAtomic returns null -> spawnBackgroundTask returns limit_exceeded
-    mocks.createBackgroundTaskAtomic.mockReturnValueOnce(null)
+    mocks.createBackgroundTaskAtomic.mockResolvedValueOnce(null)
     const { ctx, status, body } = makeCtx({
       method: 'POST',
       path: '/api/background-tasks',
@@ -73,7 +73,7 @@ describe('background-tasks routes -- status dispatch (B11b)', () => {
 
   it('returns 500 when tmux spawn fails (internal_error)', async () => {
     // createBackgroundTaskAtomic returns a task, execFileSync throws -> internal_error
-    mocks.createBackgroundTaskAtomic.mockReturnValueOnce({
+    mocks.createBackgroundTaskAtomic.mockResolvedValueOnce({
       id: 'ABCD1234', agent_id: 'agent-a', prompt: 'do something',
       status: 'running', tmux_session: 'bg-ABCD1234',
       started_at: Math.floor(Date.now() / 1000), finished_at: null, output: null,
@@ -117,7 +117,7 @@ describe('background-tasks routes -- status dispatch (B11b)', () => {
     // during the test run -- only the synchronous response matters here.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     try {
-      mocks.createBackgroundTaskAtomic.mockReturnValueOnce({
+      mocks.createBackgroundTaskAtomic.mockResolvedValueOnce({
         id: 'ABCD1234', agent_id: 'agent-a', prompt: 'do something',
         status: 'running', tmux_session: 'bg-ABCD1234',
         started_at: Math.floor(Date.now() / 1000), finished_at: null, output: null,
@@ -139,7 +139,7 @@ describe('background-tasks routes -- status dispatch (B11b)', () => {
 
 describe('background-tasks routes -- GET list', () => {
   it('returns the formatted task list', async () => {
-    mocks.getBackgroundTasks.mockReturnValueOnce([
+    mocks.getBackgroundTasks.mockResolvedValueOnce([
       { id: 'AAAA1111', agent_id: 'agent-a', prompt: 'p1', status: 'done', tmux_session: null, started_at: 1700000000, finished_at: 1700000100, output: 'ok' },
     ])
     const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/background-tasks' })
@@ -153,14 +153,14 @@ describe('background-tasks routes -- GET list', () => {
   })
 
   it('passes the agent and all query params through to getBackgroundTasks', async () => {
-    mocks.getBackgroundTasks.mockReturnValueOnce([])
+    mocks.getBackgroundTasks.mockResolvedValueOnce([])
     const { ctx } = makeCtx({ method: 'GET', path: '/api/background-tasks?agent=agent-b&all=true' })
     await tryHandleBackgroundTasks(ctx)
     expect(mocks.getBackgroundTasks).toHaveBeenCalledWith('agent-b', true)
   })
 
   it('a task with no finished_at gets a null finished_label', async () => {
-    mocks.getBackgroundTasks.mockReturnValueOnce([
+    mocks.getBackgroundTasks.mockResolvedValueOnce([
       { id: 'BBBB2222', agent_id: 'agent-a', prompt: 'p2', status: 'running', tmux_session: 'bg-BBBB2222', started_at: 1700000000, finished_at: null, output: null },
     ])
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/background-tasks' })
@@ -171,7 +171,7 @@ describe('background-tasks routes -- GET list', () => {
 
 describe('background-tasks routes -- GET by id', () => {
   it('returns 404 when the task does not exist', async () => {
-    mocks.getBackgroundTask.mockReturnValueOnce(null)
+    mocks.getBackgroundTask.mockResolvedValueOnce(null)
     const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/background-tasks/DEADBEEF' })
     await tryHandleBackgroundTasks(ctx)
     expect(status()).toBe(404)
@@ -179,7 +179,7 @@ describe('background-tasks routes -- GET by id', () => {
   })
 
   it('includes live pane output for a running task', async () => {
-    mocks.getBackgroundTask.mockReturnValueOnce({
+    mocks.getBackgroundTask.mockResolvedValueOnce({
       id: 'DEADBEEF', agent_id: 'agent-a', prompt: 'p', status: 'running', tmux_session: 'bg-DEADBEEF',
       started_at: 1700000000, finished_at: null, output: null,
     })
@@ -191,7 +191,7 @@ describe('background-tasks routes -- GET by id', () => {
   })
 
   it('omits live pane output for a finished task', async () => {
-    mocks.getBackgroundTask.mockReturnValueOnce({
+    mocks.getBackgroundTask.mockResolvedValueOnce({
       id: 'DEADBEEF', agent_id: 'agent-a', prompt: 'p', status: 'done', tmux_session: 'bg-DEADBEEF',
       started_at: 1700000000, finished_at: 1700000200, output: 'final output',
     })
@@ -204,14 +204,14 @@ describe('background-tasks routes -- GET by id', () => {
 
 describe('background-tasks routes -- DELETE', () => {
   it('returns 404 when the task does not exist', async () => {
-    mocks.getBackgroundTask.mockReturnValueOnce(null)
+    mocks.getBackgroundTask.mockResolvedValueOnce(null)
     const { ctx, status } = makeCtx({ method: 'DELETE', path: '/api/background-tasks/DEADBEEF' })
     await tryHandleBackgroundTasks(ctx)
     expect(status()).toBe(404)
   })
 
   it('kills the tmux session and marks a running task failed', async () => {
-    mocks.getBackgroundTask.mockReturnValueOnce({
+    mocks.getBackgroundTask.mockResolvedValueOnce({
       id: 'DEADBEEF', agent_id: 'agent-a', prompt: 'p', status: 'running', tmux_session: 'bg-DEADBEEF',
       started_at: 1700000000, finished_at: null, output: null,
     })
@@ -226,7 +226,7 @@ describe('background-tasks routes -- DELETE', () => {
   })
 
   it('does not attempt to kill a session for an already-finished task', async () => {
-    mocks.getBackgroundTask.mockReturnValueOnce({
+    mocks.getBackgroundTask.mockResolvedValueOnce({
       id: 'DEADBEEF', agent_id: 'agent-a', prompt: 'p', status: 'done', tmux_session: 'bg-DEADBEEF',
       started_at: 1700000000, finished_at: 1700000100, output: 'old output',
     })
@@ -238,7 +238,7 @@ describe('background-tasks routes -- DELETE', () => {
   })
 
   it('falls back to "(cancelled)" output when there is no tmux session', async () => {
-    mocks.getBackgroundTask.mockReturnValueOnce({
+    mocks.getBackgroundTask.mockResolvedValueOnce({
       id: 'DEADBEEF', agent_id: 'agent-a', prompt: 'p', status: 'done', tmux_session: null,
       started_at: 1700000000, finished_at: 1700000100, output: 'old output',
     })
@@ -259,40 +259,40 @@ describe('background-tasks routes -- unmatched', () => {
 })
 
 describe('sweepOrphanedBackgroundTasks', () => {
-  it('does nothing when there are no running tasks', () => {
-    mocks.getRunningBackgroundTasks.mockReturnValueOnce([])
-    sweepOrphanedBackgroundTasks()
+  it('does nothing when there are no running tasks', async () => {
+    mocks.getRunningBackgroundTasks.mockResolvedValueOnce([])
+    await sweepOrphanedBackgroundTasks()
     expect(mocks.finishBackgroundTask).not.toHaveBeenCalled()
   })
 
-  it('marks a task failed when its tmux session is gone (orphaned on restart)', () => {
-    mocks.getRunningBackgroundTasks.mockReturnValueOnce([
+  it('marks a task failed when its tmux session is gone (orphaned on restart)', async () => {
+    mocks.getRunningBackgroundTasks.mockResolvedValueOnce([
       { id: 'ORPH0001', agent_id: 'agent-a', prompt: 'p', status: 'running', tmux_session: 'bg-ORPH0001', started_at: 1700000000, finished_at: null, output: null },
     ])
     // list-sessions (isBgSessionAlive) -> empty output, session not found
     mocks.execFileSync.mockReturnValueOnce('')
-    sweepOrphanedBackgroundTasks()
+    await sweepOrphanedBackgroundTasks()
     expect(mocks.finishBackgroundTask).toHaveBeenCalledWith('ORPH0001', 'failed', '(orphaned on restart)')
   })
 
-  it('treats a task with no tmux_session as orphaned without touching tmux', () => {
-    mocks.getRunningBackgroundTasks.mockReturnValueOnce([
+  it('treats a task with no tmux_session as orphaned without touching tmux', async () => {
+    mocks.getRunningBackgroundTasks.mockResolvedValueOnce([
       { id: 'ORPH0002', agent_id: 'agent-a', prompt: 'p', status: 'running', tmux_session: null, started_at: 1700000000, finished_at: null, output: null },
     ])
-    sweepOrphanedBackgroundTasks()
+    await sweepOrphanedBackgroundTasks()
     expect(mocks.execFileSync).not.toHaveBeenCalled()
     expect(mocks.finishBackgroundTask).toHaveBeenCalledWith('ORPH0002', 'failed', '(orphaned on restart)')
   })
 
-  it('resumes polling (no finish call) when the tmux session is still alive', () => {
+  it('resumes polling (no finish call) when the tmux session is still alive', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     try {
-      mocks.getRunningBackgroundTasks.mockReturnValueOnce([
+      mocks.getRunningBackgroundTasks.mockResolvedValueOnce([
         { id: 'ALIVE001', agent_id: 'agent-a', prompt: 'p', status: 'running', tmux_session: 'bg-ALIVE001', started_at: 1700000000, finished_at: null, output: null },
       ])
       // list-sessions (isBgSessionAlive) -> session name present in output
       mocks.execFileSync.mockReturnValueOnce('bg-ALIVE001\n')
-      sweepOrphanedBackgroundTasks()
+      await sweepOrphanedBackgroundTasks()
       expect(mocks.finishBackgroundTask).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()

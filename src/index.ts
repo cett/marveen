@@ -653,7 +653,7 @@ async function main(): Promise<void> {
   startInviteMonitor(MAIN_AGENT_ID, AGENTS_BASE_DIR)
 
   // Slack channel request watcher (audit.jsonl -> pending_channel_requests).
-  startChannelRequestWatcher()
+  startChannelRequestWatcher().catch((err) => logger.warn({ err }, 'Channel request watcher failed to start'))
 
   // Store file audit watcher
   startStoreWatcher()

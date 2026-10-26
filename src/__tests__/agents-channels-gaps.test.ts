@@ -98,10 +98,10 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
   }
 })
 vi.mock('../db.js', () => ({
-  listPendingChannelRequests: vi.fn().mockReturnValue([
+  listPendingChannelRequests: vi.fn().mockResolvedValue([
     { id: 1, channel_id: 'C123', channel_name: 'test-channel', user_id: 'U456', status: 'pending' },
   ]),
-  updateChannelRequestStatus: vi.fn().mockReturnValue(true),
+  updateChannelRequestStatus: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('../web/plugin-ids.js', () => ({
   CHANNEL_PLUGIN_IDS: { telegram: 'plugin:telegram', slack: 'plugin:slack', discord: 'plugin:discord', googlechat: 'plugin:googlechat' },
@@ -301,7 +301,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
   describe('Channel request approval options', () => {
     it('POST approve channel request with requireMention=true and allowFromAll=false', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
+      vi.mocked(db.listPendingChannelRequests).mockResolvedValueOnce([
         { id: 1, agent: 'test-agent', channel_id: 'C123', channel_name: 'test-channel', user_id: 'U456', requested_at: Date.now(), status: 'pending' },
       ])
       const config = await import('../web/agent-config.js')
@@ -318,7 +318,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
 
     it('POST approve channel request with allowFromAll=true skips user filter', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
+      vi.mocked(db.listPendingChannelRequests).mockResolvedValueOnce([
         { id: 2, agent: 'test-agent', channel_id: 'C456', channel_name: 'public-channel', user_id: null, requested_at: Date.now(), status: 'pending' },
       ])
       const config = await import('../web/agent-config.js')
@@ -335,7 +335,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
 
     it('POST approve channel request returns 400 when not slack provider', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
+      vi.mocked(db.listPendingChannelRequests).mockResolvedValueOnce([
         { id: 4, agent: 'test-agent', channel_id: 'C999', channel_name: 'test', user_id: 'U999', requested_at: Date.now(), status: 'pending' },
       ])
       const config = await import('../web/agent-config.js')
@@ -440,7 +440,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
   describe('Channel request denial', () => {
     it('POST deny channel request returns ok when request found', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.updateChannelRequestStatus).mockReturnValueOnce(true)
+      vi.mocked(db.updateChannelRequestStatus).mockResolvedValueOnce(true)
       const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channel-requests/1/deny')
       expect(await tryHandleAgentsChannels(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -449,7 +449,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
 
     it('POST deny channel request returns 404 when request not found', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.updateChannelRequestStatus).mockReturnValueOnce(false)
+      vi.mocked(db.updateChannelRequestStatus).mockResolvedValueOnce(false)
       const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channel-requests/999/deny')
       expect(await tryHandleAgentsChannels(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -479,7 +479,7 @@ describe('tryHandleAgentsChannels (gaps)', () => {
   describe('Main agent channel requests', () => {
     it('GET channel-requests for main agent (marveen) returns list', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.listPendingChannelRequests).mockReturnValueOnce([
+      vi.mocked(db.listPendingChannelRequests).mockResolvedValueOnce([
         { id: 1, agent: 'marveen', channel_id: 'C1', channel_name: 'ch1', user_id: 'U1', requested_at: Date.now(), status: 'pending' },
       ])
       const { ctx, out } = makeCtx('GET', '/api/agents/marveen/channel-requests')
