@@ -31,7 +31,7 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
     if (!data.content?.trim()) { json(res, { error: 'required', field: 'content', hint: 'Content required' }, 400); return true }
     const agentId = actingAgentId(ctx, data.agent_id, MAIN_AGENT_ID)
     if (tenantBlocked(ctx, agentId)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
-    appendDailyLog(agentId, data.content.trim())
+    await appendDailyLog(agentId, data.content.trim())
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816) -- see memories.ts.
     const homoglyphs = detectHomoglyphs(data.content)
     if (homoglyphs.length > 0) {
@@ -50,14 +50,14 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
     // The default day is the one entries are filed under (the app time zone's), not the UTC day: between local
     // midnight and UTC midnight a bare GET would otherwise read yesterday's, empty, log.
     const date = url.searchParams.get('date') || appLocalDate()
-    json(res, getDailyLog(agent, date))
+    json(res, await getDailyLog(agent, date))
     return true
   }
 
   if (path === '/api/daily-log/dates' && method === 'GET') {
     const agent = actingAgentId(ctx, url.searchParams.get('agent'), MAIN_AGENT_ID)
     if (tenantBlocked(ctx, agent)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
-    json(res, getDailyLogDates(agent))
+    json(res, await getDailyLogDates(agent))
     return true
   }
 

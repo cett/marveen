@@ -22,10 +22,10 @@ import { hashPassword } from '../web/password-hash.js'
 let realHash: string
 beforeAll(async () => { realHash = await hashPassword('correct-horse-battery-1') })
 
-beforeEach(() => {
+beforeEach(async () => {
   flags.enforce = false
   initDatabase(':memory:')
-  createDashboardUser('person-a', realHash)
+  await createDashboardUser('person-a', realHash)
 })
 
 type Auth = RouteContext['auth']

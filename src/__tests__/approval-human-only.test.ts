@@ -38,22 +38,22 @@ const FULLWIDTH_E = String.fromCodePoint(0xff45) // NFKC folds it to a Latin e
 const HASH = '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5'
 let cookies: Record<string, string>
 
-function makeUser(name: string, role: string, tenant: string | null): string {
-  const u = createDashboardUser(name, HASH)
+async function makeUser(name: string, role: string, tenant: string | null): Promise<string> {
+  const u = await createDashboardUser(name, HASH)
   db.prepare('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?').run(role, tenant, u.id)
   return createSession({ userId: u.id, username: u.username })
 }
 
 useTestDb()
 
-beforeEach(() => {
+beforeEach(async () => {
   flags.enforce = true
   _clearSessionCacheForTest()
   cookies = {
-    owner: makeUser('owner', 'admin', null), // the first user: global admin
-    viewer: makeUser('viewer', 'viewer', null),
-    tadmin: makeUser('tadmin', 'admin', 'tenant-b'), // an admin, but of one tenant
-    tagent: makeUser('tagent', 'agent', 'tenant-b'),
+    owner: await makeUser('owner', 'admin', null), // the first user: global admin
+    viewer: await makeUser('viewer', 'viewer', null),
+    tadmin: await makeUser('tadmin', 'admin', 'tenant-b'), // an admin, but of one tenant
+    tagent: await makeUser('tagent', 'agent', 'tenant-b'),
   }
 })
 

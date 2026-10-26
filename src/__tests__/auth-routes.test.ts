@@ -281,7 +281,7 @@ describe('users CRUD', () => {
     const token = cookieToken(login.res)
     const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
     expect(del.res.statusCode).toBe(200)
-    expect(getDashboardUser('alice')).toBeUndefined()
+    expect(await getDashboardUser('alice')).toBeUndefined()
     expect(resolveSession(token)).toBeNull()
   })
 
@@ -315,10 +315,10 @@ describe('credential-kind allowlists (default-deny for future kinds)', () => {
       expect(list.res.statusCode).toBe(403)
       const create = await call('POST', '/api/auth/users', { auth, body: { username: 'mallory', password: GOOD_PW } })
       expect(create.res.statusCode).toBe(403)
-      expect(getDashboardUser('mallory')).toBeUndefined()
+      expect(await getDashboardUser('mallory')).toBeUndefined()
       const del = await call('DELETE', '/api/auth/users/alice', { auth })
       expect(del.res.statusCode).toBe(403)
-      expect(getDashboardUser('alice')).toBeDefined()
+      expect(await getDashboardUser('alice')).toBeDefined()
       const reset = await call('POST', '/api/auth/password', { auth, body: { username: 'alice', new_password: 'stolen-reset-pw' } })
       expect(reset.res.statusCode).toBe(403)
       // the old password must still work after the denied reset attempt

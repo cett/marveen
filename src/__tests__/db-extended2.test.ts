@@ -67,29 +67,29 @@ afterAll(() => {
 // --- Session management ---
 
 describe('session functions', () => {
-  it('setSession + getSession roundtrip', () => {
-    setSession('test-sess-1', 'sess-abc', 3)
-    const s = getSession('test-sess-1')
+  it('setSession + getSession roundtrip', async () => {
+    await setSession('test-sess-1', 'sess-abc', 3)
+    const s = await getSession('test-sess-1')
     expect(s?.sessionId).toBe('sess-abc')
     expect(s?.messageCount).toBe(3)
   })
 
-  it('getSession returns undefined for unknown chatId', () => {
-    expect(getSession('test-sess-unknown-x99')).toBeUndefined()
+  it('getSession returns undefined for unknown chatId', async () => {
+    expect(await getSession('test-sess-unknown-x99')).toBeUndefined()
   })
 
-  it('incrementSessionCount increments and returns new count', () => {
-    setSession('test-sess-2', 'sess-def', 0)
-    const count = incrementSessionCount('test-sess-2')
+  it('incrementSessionCount increments and returns new count', async () => {
+    await setSession('test-sess-2', 'sess-def', 0)
+    const count = await incrementSessionCount('test-sess-2')
     expect(count).toBe(1)
-    const count2 = incrementSessionCount('test-sess-2')
+    const count2 = await incrementSessionCount('test-sess-2')
     expect(count2).toBe(2)
   })
 
-  it('clearSession removes the session', () => {
-    setSession('test-sess-3', 'sess-ghi', 5)
-    clearSession('test-sess-3')
-    expect(getSession('test-sess-3')).toBeUndefined()
+  it('clearSession removes the session', async () => {
+    await setSession('test-sess-3', 'sess-ghi', 5)
+    await clearSession('test-sess-3')
+    expect(await getSession('test-sess-3')).toBeUndefined()
   })
 })
 
@@ -260,23 +260,23 @@ describe('getAgentMemories / getMemoriesForChat pagination', () => {
 // --- Daily logs ---
 
 describe('daily log functions', () => {
-  it('appendDailyLog + getDailyLog roundtrip', () => {
-    appendDailyLog('db2-test-logs', 'First log entry')
-    appendDailyLog('db2-test-logs', 'Second log entry')
+  it('appendDailyLog + getDailyLog roundtrip', async () => {
+    await appendDailyLog('db2-test-logs', 'First log entry')
+    await appendDailyLog('db2-test-logs', 'Second log entry')
     const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
-    const logs = getDailyLog('db2-test-logs', today)
+    const logs = await getDailyLog('db2-test-logs', today)
     expect(logs.length).toBeGreaterThanOrEqual(2)
     expect(logs[0].content).toBe('First log entry')
   })
 
-  it('getDailyLogDates returns distinct dates', () => {
-    const dates = getDailyLogDates('db2-test-logs')
+  it('getDailyLogDates returns distinct dates', async () => {
+    const dates = await getDailyLogDates('db2-test-logs')
     expect(Array.isArray(dates)).toBe(true)
     expect(dates.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('getDailyLog returns empty array for unknown agent', () => {
-    const logs = getDailyLog('unknown-agent-x99', '2020-01-01')
+  it('getDailyLog returns empty array for unknown agent', async () => {
+    const logs = await getDailyLog('unknown-agent-x99', '2020-01-01')
     expect(logs).toEqual([])
   })
 })

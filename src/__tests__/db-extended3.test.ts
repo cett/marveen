@@ -61,32 +61,32 @@ function getTodayDate(): string {
 }
 
 describe('recallByDateRange', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     // Insert with today's date so recallByDateRange with today's range finds them
-    appendDailyLog('recall-agent-a', 'Worked on coverage recall test')
-    appendDailyLog('recall-agent-a', 'More coverage recall work')
-    appendDailyLog('recall-agent-f', 'agent-f log entry recall test')
+    await appendDailyLog('recall-agent-a', 'Worked on coverage recall test')
+    await appendDailyLog('recall-agent-a', 'More coverage recall work')
+    await appendDailyLog('recall-agent-f', 'agent-f log entry recall test')
     saveAgentMemory('recall-agent-a', 'Coverage memory recall', 'warm', 'coverage')
   })
 
-  it('returns logs in date range', () => {
+  it('returns logs in date range', async () => {
     const today = getTodayDate()
-    const result = recallByDateRange(today, today)
+    const result = await recallByDateRange(today, today)
     expect(Array.isArray(result.logs)).toBe(true)
     expect(result.logs.length).toBeGreaterThanOrEqual(2)
     expect(result.dateRange.from).toBe(today)
     expect(result.dateRange.to).toBe(today)
   })
 
-  it('filters by agentId', () => {
+  it('filters by agentId', async () => {
     const today = getTodayDate()
-    const result = recallByDateRange(today, today, 'recall-agent-f')
+    const result = await recallByDateRange(today, today, 'recall-agent-f')
     expect(result.logs.every(l => l.agent_id === 'recall-agent-f')).toBe(true)
   })
 
-  it('returns memories in range', () => {
+  it('returns memories in range', async () => {
     const today = getTodayDate()
-    const result = recallByDateRange(today, today)
+    const result = await recallByDateRange(today, today)
     expect(Array.isArray(result.memories)).toBe(true)
   })
 })
@@ -96,24 +96,24 @@ describe('recallByDateRange', () => {
 // ---------------------------------------------------------------------------
 
 describe('recallSearch', () => {
-  beforeAll(() => {
-    appendDailyLog('recall-agent-a', 'Unique phrase xyzzy coverage alpha')
+  beforeAll(async () => {
+    await appendDailyLog('recall-agent-a', 'Unique phrase xyzzy coverage alpha')
     saveAgentMemory('recall-agent-a', 'Unique xyzzy memory content', 'cold', 'xyzzy')
   })
 
-  it('returns matching logs and memories', () => {
-    const result = recallSearch('xyzzy')
+  it('returns matching logs and memories', async () => {
+    const result = await recallSearch('xyzzy')
     expect(Array.isArray(result.logs)).toBe(true)
     expect(Array.isArray(result.memories)).toBe(true)
   })
 
-  it('filters by agentId', () => {
-    const result = recallSearch('xyzzy', 'recall-agent-a', 20)
+  it('filters by agentId', async () => {
+    const result = await recallSearch('xyzzy', 'recall-agent-a', 20)
     expect(result.memories.every(m => m.agent_id === 'recall-agent-a' || m.category === 'shared')).toBe(true)
   })
 
-  it('returns empty dateRange when no logs match', () => {
-    const result = recallSearch('zzz-no-match-ever-1234567')
+  it('returns empty dateRange when no logs match', async () => {
+    const result = await recallSearch('zzz-no-match-ever-1234567')
     expect(result.logs).toHaveLength(0)
     expect(result.dateRange.from).toBe('')
     expect(result.dateRange.to).toBe('')

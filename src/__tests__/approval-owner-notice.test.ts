@@ -49,13 +49,13 @@ function fakeApproval(over: Partial<Approval> = {}): Approval {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   flags.enforce = true
   deliver.mockReset()
   deliver.mockResolvedValue(true)
   initDatabase(':memory:')
   _clearSessionCacheForTest()
-  const u = createDashboardUser('person-a', HASH)
+  const u = await createDashboardUser('person-a', HASH)
   db.prepare('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?').run('admin', null, u.id)
   ownerCookie = createSession({ userId: u.id, username: u.username })
 })

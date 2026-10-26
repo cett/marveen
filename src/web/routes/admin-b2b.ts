@@ -21,7 +21,7 @@ import {
   deleteTenant,
   provisionDashboardUser,
   getDashboardUserById,
-  deleteDashboardUser,
+  deleteDashboardUserKeepingLastAdmin,
   listDashboardUsersFiltered,
   adminPatchDashboardUser,
   countActiveAdmins,
@@ -201,7 +201,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   // ── Users ──────────────────────────────────────────────────────────────────
 
   if (path === '/api/admin/users' && method === 'POST') {
-    if (denyUnlessHumanSession(ctx, 'admin.user.create')) return true
+    if (await denyUnlessHumanSession(ctx, 'admin.user.create')) return true
     const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
     const username = typeof body.username === 'string' ? body.username.trim() : ''
     const password = typeof body.password === 'string' ? body.password : ''
@@ -240,7 +240,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
 
     // Duplicate check (UNIQUE on username, case-insensitive).
-    const dup = getDashboardUser(username)
+    const dup = await getDashboardUser(username)
     if (dup) { json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true }
 
     const hash = await hashPassword(password)
@@ -260,7 +260,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
   const userPatchMatch = path.match(/^\/api\/admin\/users\/(\d+)$/)
   if (userPatchMatch && method === 'PATCH') {
-    if (denyUnlessHumanSession(ctx, 'admin.user.update')) return true
+    if (await denyUnlessHumanSession(ctx, 'admin.user.update')) return true
     const userId = parseInt(userPatchMatch[1], 10)
     const existing = getDashboardUserById(userId)
     if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
@@ -341,7 +341,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   }
 
   if (userPatchMatch && method === 'DELETE') {
-    if (denyUnlessHumanSession(ctx, 'admin.user.delete')) return true
+    if (await denyUnlessHumanSession(ctx, 'admin.user.delete')) return true
     const userId = parseInt(userPatchMatch[1], 10)
     const existing = getDashboardUserById(userId)
     if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
@@ -354,8 +354,10 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
     }
 
-    const deleted = deleteDashboardUser(existing.username)
-    if (!deleted) { json(res, { error: 'not_found', hint: 'User not found' }, 404); return true }
+    // The check above is a fast path; the DELETE itself refuses to remove the last admin (compare-and-set).
+    const outcome = await deleteDashboardUserKeepingLastAdmin(existing.username)
+    if (outcome === 'last_admin') { json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true }
+    if (outcome === 'not_found') { json(res, { error: 'not_found', hint: 'User not found' }, 404); return true }
     auditAdmin(ctx, 'admin.user.delete', userId, { username: existing.username, role: existing.role })
     json(res, { ok: true })
     return true

@@ -79,7 +79,7 @@ describe('bearer lane (byte-identical, users absent AND present)', () => {
   })
 
   it('accepts the SAME valid bearer once a user EXISTS (no behavior drift)', async () => {
-    createDashboardUser('operator', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    await createDashboardUser('operator', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const r = await resolveAuth(mkReq({ authorization: `Bearer ${TOKEN}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'token' })
   })
@@ -110,7 +110,7 @@ describe('SSE pane-stream ?token= lane', () => {
     expect(r).toEqual({ kind: 'none' })
   })
   it('accepts a session cookie on the SSE path (cookie-only EventSource)', async () => {
-    const u = createDashboardUser('sse-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    const u = await createDashboardUser('sse-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl(path), path, 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'session', user: 'sse-user' })
@@ -119,7 +119,7 @@ describe('SSE pane-stream ?token= lane', () => {
 
 describe('session cookie lane', () => {
   it('resolves a valid session cookie to its user', async () => {
-    const u = createDashboardUser('alice', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    const u = await createDashboardUser('alice', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
     expect(r).toEqual({ kind: 'session', user: 'alice' })
@@ -130,7 +130,7 @@ describe('session cookie lane', () => {
   // Fleet API callers (curl, notify.sh, channels probe) never carry a session
   // cookie so their bearer-only flows are unaffected -- see regression tests below.
   it('session cookie wins over legacy file-token when both are present', async () => {
-    const u = createDashboardUser('bob', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    const u = await createDashboardUser('bob', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(
       mkReq({ authorization: `Bearer ${TOKEN}`, cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
@@ -198,7 +198,7 @@ describe('SSE pane-stream ?token= and device-key unaffected by session-priority'
   })
 
   it('SSE path: valid session cookie wins over ?token= (browser EventSource with session)', async () => {
-    const u = createDashboardUser('sse-session-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    const u = await createDashboardUser('sse-session-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(
       mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
@@ -247,7 +247,7 @@ describe('DB-backed lookups (dbLookups = true)', () => {
   const NOW = Math.floor(Date.now() / 1000)
 
   it('a session resolves its role and tenant from dashboard_users', async () => {
-    const u = createDashboardUser('lookup-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    const u = await createDashboardUser('lookup-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     adminPatchDashboardUser(u.id, { role: 'agent', tenant_id: null })
     const cookie = createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
@@ -255,7 +255,7 @@ describe('DB-backed lookups (dbLookups = true)', () => {
   })
 
   it('a disabled user keeps the session identity but gets no role', async () => {
-    const u = createDashboardUser('disabled-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    const u = await createDashboardUser('disabled-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     adminPatchDashboardUser(u.id, { disabled: true })
     const cookie = createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)

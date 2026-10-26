@@ -9,7 +9,7 @@ vi.mock('../web/password-hash.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
-  getDashboardUser: vi.fn().mockReturnValue(undefined),
+  getDashboardUser: vi.fn().mockResolvedValue(undefined),
   writeAdminAuditLog: vi.fn(),
   createTenant: vi.fn(),
   getTenant: vi.fn(),
@@ -19,7 +19,7 @@ vi.mock('../db.js', () => ({
   getDashboardUserById: vi.fn(),
   listDashboardUsersFiltered: vi.fn(),
   adminPatchDashboardUser: vi.fn(),
-  deleteDashboardUser: vi.fn(),
+  deleteDashboardUserKeepingLastAdmin: vi.fn(),
   countActiveAdmins: vi.fn(),
   listPartnerSenders: vi.fn(),
   createPartnerSender: vi.fn(),
@@ -92,7 +92,7 @@ const SAMPLE_USER = { id: 5, username: 'acme-viewer', role: 'agent', tenant_id: 
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(db.getDashboardUser).mockReturnValue(undefined)
+  vi.mocked(db.getDashboardUser).mockResolvedValue(undefined)
 })
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ describe('POST /api/v1/admin/users', () => {
 
   it('returns 409 for duplicate username', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'acme-viewer', password: 'supersecret123', role: 'agent', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(409)
@@ -426,12 +426,12 @@ describe('PATCH /api/v1/admin/users/:id -- profile fields', () => {
 describe('DELETE /api/v1/admin/users/:id', () => {
   it('hard-deletes user and returns 200', async () => {
     vi.mocked(db.getDashboardUserById).mockReturnValue(SAMPLE_USER as any)
-    vi.mocked(db.deleteDashboardUser).mockReturnValue(true)
+    vi.mocked(db.deleteDashboardUserKeepingLastAdmin).mockResolvedValue('deleted')
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
     expect(out.body.ok).toBe(true)
-    expect(vi.mocked(db.deleteDashboardUser)).toHaveBeenCalledWith(SAMPLE_USER.username)
+    expect(vi.mocked(db.deleteDashboardUserKeepingLastAdmin)).toHaveBeenCalledWith(SAMPLE_USER.username)
   })
 
   it('returns 404 for unknown user', async () => {
@@ -449,6 +449,24 @@ describe('DELETE /api/v1/admin/users/:id', () => {
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(403)
     expect(out.body.error).toBe('forbidden')
+  })
+
+  it('returns 403 when the delete itself refuses the last admin (the count moved after the pre-check)', async () => {
+    vi.mocked(db.getDashboardUserById).mockReturnValue({ ...SAMPLE_USER, role: 'admin', tenant_id: null } as any)
+    vi.mocked(db.countActiveAdmins).mockReturnValue(2)
+    vi.mocked(db.deleteDashboardUserKeepingLastAdmin).mockResolvedValue('last_admin')
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
+  })
+
+  it('returns 404 when the user vanished between the lookup and the delete', async () => {
+    vi.mocked(db.getDashboardUserById).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.deleteDashboardUserKeepingLastAdmin).mockResolvedValue('not_found')
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(404)
   })
 
   it('returns 403 when deleting the last admin', async () => {

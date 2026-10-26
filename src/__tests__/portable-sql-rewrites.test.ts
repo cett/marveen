@@ -149,9 +149,9 @@ describe('failPendingFederatedMessages without instr()', () => {
 describe('INSERT OR REPLACE became an explicit upsert', () => {
   it('setSession replaces session id, timestamp and count of an existing chat in place', async () => {
     const { setSession, getSession } = await import('../db.js')
-    setSession('rw-chat', 'sess-1', 3)
-    setSession('rw-chat', 'sess-2', 0)
-    expect(getSession('rw-chat')).toEqual({ sessionId: 'sess-2', messageCount: 0 })
+    await setSession('rw-chat', 'sess-1', 3)
+    await setSession('rw-chat', 'sess-2', 0)
+    expect(await getSession('rw-chat')).toEqual({ sessionId: 'sess-2', messageCount: 0 })
     const n = getDb().prepare("SELECT COUNT(*) AS n FROM sessions WHERE chat_id = 'rw-chat'").get() as { n: number }
     expect(n.n).toBe(1)
   })
