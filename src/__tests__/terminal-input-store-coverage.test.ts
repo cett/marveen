@@ -31,33 +31,33 @@ describe('terminal-input-store', () => {
     expect(store.readTerminalInputEnabled()).toBe(false)
   })
 
-  it('readTerminalInputEnabled returns true when the row value is 1', () => {
-    dbMod.setSystemConfig('terminal_input_enabled', '1')
+  it('readTerminalInputEnabled returns true when the row value is 1', async () => {
+    await dbMod.setSystemConfig('terminal_input_enabled', '1')
     expect(store.readTerminalInputEnabled()).toBe(true)
   })
 
-  it('readTerminalInputEnabled returns false when the row value is 0', () => {
-    dbMod.setSystemConfig('terminal_input_enabled', '0')
+  it('readTerminalInputEnabled returns false when the row value is 0', async () => {
+    await dbMod.setSystemConfig('terminal_input_enabled', '0')
     expect(store.readTerminalInputEnabled()).toBe(false)
   })
 
-  it('readTerminalInputEnabled returns false for a malformed stored value (fail-closed)', () => {
-    dbMod.setSystemConfig('terminal_input_enabled', 'not-a-flag')
+  it('readTerminalInputEnabled returns false for a malformed stored value (fail-closed)', async () => {
+    await dbMod.setSystemConfig('terminal_input_enabled', 'not-a-flag')
     expect(store.readTerminalInputEnabled()).toBe(false)
   })
 
-  it('writeTerminalInputEnabled sets enabled:true and returns true', () => {
-    const result = store.writeTerminalInputEnabled(true)
+  it('writeTerminalInputEnabled sets enabled:true and returns true', async () => {
+    const result = await store.writeTerminalInputEnabled(true)
     expect(result).toBe(true)
   })
 
-  it('writeTerminalInputEnabled sets enabled:false and returns false', () => {
-    const result = store.writeTerminalInputEnabled(false)
+  it('writeTerminalInputEnabled sets enabled:false and returns false', async () => {
+    const result = await store.writeTerminalInputEnabled(false)
     expect(result).toBe(false)
   })
 
-  it('writeTerminalInputEnabled persists state readable by readTerminalInputEnabled', () => {
-    store.writeTerminalInputEnabled(true)
+  it('writeTerminalInputEnabled persists state readable by readTerminalInputEnabled', async () => {
+    await store.writeTerminalInputEnabled(true)
     expect(store.readTerminalInputEnabled()).toBe(true)
   })
 })

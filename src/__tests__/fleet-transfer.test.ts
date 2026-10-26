@@ -68,7 +68,7 @@ vi.mock('../db.js', () => ({
 // -- exportDashboardSettings() now touches all three via that path.
 vi.mock('../db/system-config.js', () => ({
   getSystemConfig: vi.fn().mockReturnValue(undefined),
-  setSystemConfig: vi.fn(),
+  setSystemConfig: vi.fn(() => Promise.resolve()),
 }))
 
 // fleet-transfer.ts (#985 group 6/8) imports listCostBudgets/replaceCostBudgets

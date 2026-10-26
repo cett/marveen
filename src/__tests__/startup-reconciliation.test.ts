@@ -11,7 +11,7 @@ const mockRestartAgentProcess = vi.fn<(name: string) => { ok: boolean; error?: s
 const mockCapturePane = vi.fn<(session: string) => string | null>()
 const mockDetectPaneState = vi.fn<(pane: string) => string>()
 const mockGetDesiredAgents = vi.fn<() => Set<string>>()
-const mockAddDesiredAgent = vi.fn<(name: string) => void>()
+const mockAddDesiredAgent = vi.fn<(name: string) => Promise<void>>()
 const mockReadAllAutoRestartConfigs = vi.fn<() => Record<string, { enabled: boolean }>>()
 const mockListAgentNames = vi.fn<() => string[]>()
 
@@ -61,7 +61,7 @@ beforeEach(() => {
   mockDetectPaneState.mockReturnValue('idle')
   mockStartAgentProcess.mockReturnValue({ ok: true })
   mockRestartAgentProcess.mockReturnValue({ ok: true })
-  mockAddDesiredAgent.mockReturnValue(undefined)
+  mockAddDesiredAgent.mockResolvedValue(undefined)
 })
 
 // ── tmuxSessionExists ────────────────────────────────────────────────────────
@@ -232,45 +232,77 @@ describe('reconcileAgentsOnStartup', () => {
 // ── flushRunningStateToDesired ───────────────────────────────────────────────
 
 describe('flushRunningStateToDesired', () => {
-  it('adds a running agent that is absent from desired set', () => {
+  it('adds a running agent that is absent from desired set', async () => {
     mockListAgentNames.mockReturnValue(['agent-a'])
     mockGetDesiredAgents.mockReturnValue(new Set())
     mockSessionExistsOnHost.mockReturnValue(true)
 
-    flushRunningStateToDesired()
+    await flushRunningStateToDesired()
 
     expect(mockAddDesiredAgent).toHaveBeenCalledWith('agent-a')
   })
 
-  it('does not add an already-desired running agent', () => {
+  it('does not add an already-desired running agent', async () => {
     mockListAgentNames.mockReturnValue(['agent-a'])
     mockGetDesiredAgents.mockReturnValue(new Set(['agent-a']))
     mockSessionExistsOnHost.mockReturnValue(true)
 
-    flushRunningStateToDesired()
+    await flushRunningStateToDesired()
 
     expect(mockAddDesiredAgent).not.toHaveBeenCalled()
   })
 
-  it('does not add a stopped agent', () => {
+  it('does not add a stopped agent', async () => {
     mockListAgentNames.mockReturnValue(['agent-a'])
     mockGetDesiredAgents.mockReturnValue(new Set())
     mockSessionExistsOnHost.mockReturnValue(false)
 
-    flushRunningStateToDesired()
+    await flushRunningStateToDesired()
 
     expect(mockAddDesiredAgent).not.toHaveBeenCalled()
   })
 
-  it('does not throw if sessionExistsOnHost throws', () => {
+  it('does not throw if sessionExistsOnHost throws', async () => {
     mockListAgentNames.mockReturnValue(['agent-a'])
     mockGetDesiredAgents.mockReturnValue(new Set())
     mockSessionExistsOnHost.mockImplementation(() => { throw new Error('tmux error') })
 
-    expect(() => flushRunningStateToDesired()).not.toThrow()
+    await expect(flushRunningStateToDesired()).resolves.toBeUndefined()
+    expect(mockAddDesiredAgent).not.toHaveBeenCalled()
   })
 
-  it('handles multiple agents correctly', () => {
+  it('waits for the desired-set write of each agent before it resolves (the database closes right after)', async () => {
+    mockListAgentNames.mockReturnValue(['agent-a', 'agent-b'])
+    mockGetDesiredAgents.mockReturnValue(new Set())
+    mockSessionExistsOnHost.mockReturnValue(true)
+    const finished: string[] = []
+    let releaseA: () => void = () => {}
+    mockAddDesiredAgent.mockImplementation((name: string) => new Promise<void>((resolve) => {
+      const done = () => { finished.push(name); resolve() }
+      if (name === 'agent-a') releaseA = done
+      else done()
+    }))
+
+    let resolved = false
+    const flush = flushRunningStateToDesired().then(() => { resolved = true })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(resolved).toBe(false) // agent-a's write is still pending
+    expect(mockAddDesiredAgent).toHaveBeenCalledTimes(1) // one after the other
+    releaseA()
+    await flush
+    expect(finished).toEqual(['agent-a', 'agent-b'])
+  })
+
+  it('a failed desired-set write for one agent does not stop the others', async () => {
+    mockListAgentNames.mockReturnValue(['agent-a', 'agent-b'])
+    mockGetDesiredAgents.mockReturnValue(new Set())
+    mockSessionExistsOnHost.mockReturnValue(true)
+    mockAddDesiredAgent.mockImplementationOnce(() => Promise.reject(new Error('write failed')))
+    await expect(flushRunningStateToDesired()).resolves.toBeUndefined()
+    expect(mockAddDesiredAgent).toHaveBeenCalledWith('agent-b')
+  })
+
+  it('handles multiple agents correctly', async () => {
     mockListAgentNames.mockReturnValue(['agent-a', 'agent-b', 'agent-c'])
     mockGetDesiredAgents.mockReturnValue(new Set(['agent-b']))
     // agent-a: running, not desired -> add
@@ -278,7 +310,7 @@ describe('flushRunningStateToDesired', () => {
     // agent-c: stopped -> skip
     mockSessionExistsOnHost.mockImplementation((_host, session) => session !== 'agent-agent-c')
 
-    flushRunningStateToDesired()
+    await flushRunningStateToDesired()
 
     expect(mockAddDesiredAgent).toHaveBeenCalledWith('agent-a')
     expect(mockAddDesiredAgent).not.toHaveBeenCalledWith('agent-b')

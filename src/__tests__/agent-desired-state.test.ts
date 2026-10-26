@@ -31,33 +31,33 @@ describe('getDesiredAgents', () => {
     expect(store.getDesiredAgents().size).toBe(0)
   })
 
-  it('returns empty Set when the stored row is invalid JSON', () => {
-    dbMod.setSystemConfig('agents_desired', '{bad}')
+  it('returns empty Set when the stored row is invalid JSON', async () => {
+    await dbMod.setSystemConfig('agents_desired', '{bad}')
     expect(store.getDesiredAgents().size).toBe(0)
   })
 
-  it('returns empty Set when the stored row is non-array JSON', () => {
-    dbMod.setSystemConfig('agents_desired', '{"key":"val"}')
+  it('returns empty Set when the stored row is non-array JSON', async () => {
+    await dbMod.setSystemConfig('agents_desired', '{"key":"val"}')
     expect(store.getDesiredAgents().size).toBe(0)
   })
 })
 
 describe('addDesiredAgent', () => {
-  it('creates the row and adds the agent', () => {
-    store.addDesiredAgent('agent-a')
+  it('creates the row and adds the agent', async () => {
+    await store.addDesiredAgent('agent-a')
     const set = store.getDesiredAgents()
     expect(set.has('agent-a')).toBe(true)
   })
 
-  it('is idempotent -- adding twice does not duplicate', () => {
-    store.addDesiredAgent('agent-a')
-    store.addDesiredAgent('agent-a')
+  it('is idempotent -- adding twice does not duplicate', async () => {
+    await store.addDesiredAgent('agent-a')
+    await store.addDesiredAgent('agent-a')
     expect(store.getDesiredAgents().size).toBe(1)
   })
 
-  it('accumulates multiple agents', () => {
-    store.addDesiredAgent('agent-a')
-    store.addDesiredAgent('agent-d')
+  it('accumulates multiple agents', async () => {
+    await store.addDesiredAgent('agent-a')
+    await store.addDesiredAgent('agent-d')
     const set = store.getDesiredAgents()
     expect(set.has('agent-a')).toBe(true)
     expect(set.has('agent-d')).toBe(true)
@@ -65,22 +65,70 @@ describe('addDesiredAgent', () => {
 })
 
 describe('removeDesiredAgent', () => {
-  it('removes an existing agent', () => {
-    store.addDesiredAgent('agent-a')
-    store.removeDesiredAgent('agent-a')
+  it('removes an existing agent', async () => {
+    await store.addDesiredAgent('agent-a')
+    await store.removeDesiredAgent('agent-a')
     expect(store.getDesiredAgents().has('agent-a')).toBe(false)
   })
 
-  it('is idempotent -- removing a non-present agent does not throw', () => {
-    expect(() => store.removeDesiredAgent('nonexistent')).not.toThrow()
+  it('is idempotent -- removing a non-present agent does not throw', async () => {
+    await expect(store.removeDesiredAgent('nonexistent')).resolves.toBeUndefined()
+    expect(store.getDesiredAgents().size).toBe(0)
   })
 
-  it('does not remove other agents', () => {
-    store.addDesiredAgent('agent-a')
-    store.addDesiredAgent('agent-d')
-    store.removeDesiredAgent('agent-a')
+  it('does not remove other agents', async () => {
+    await store.addDesiredAgent('agent-a')
+    await store.addDesiredAgent('agent-d')
+    await store.removeDesiredAgent('agent-a')
     const set = store.getDesiredAgents()
     expect(set.has('agent-a')).toBe(false)
     expect(set.has('agent-d')).toBe(true)
+  })
+})
+
+describe('overlapping writes (read-modify-write that cannot lose an update)', () => {
+  it('four overlapping addDesiredAgent calls all land', async () => {
+    await Promise.all(['agent-a', 'agent-b', 'agent-c', 'agent-d'].map((n) => store.addDesiredAgent(n)))
+    expect([...store.getDesiredAgents()].sort()).toEqual(['agent-a', 'agent-b', 'agent-c', 'agent-d'])
+  })
+
+  it('overlapping add and remove of different agents: neither is lost', async () => {
+    await store.addDesiredAgent('agent-keep')
+    await store.addDesiredAgent('agent-drop')
+    await Promise.all([
+      store.addDesiredAgent('agent-new1'),
+      store.removeDesiredAgent('agent-drop'),
+      store.addDesiredAgent('agent-new2'),
+      store.removeDesiredAgent('agent-never-there'),
+    ])
+    expect([...store.getDesiredAgents()].sort()).toEqual(['agent-keep', 'agent-new1', 'agent-new2'])
+  })
+
+  it('the stored row (not only the cache) holds every overlapping change', async () => {
+    await Promise.all(['agent-a', 'agent-b', 'agent-c'].map((n) => store.addDesiredAgent(n)))
+    const stored = JSON.parse(dbMod.getSystemConfig('agents_desired')!.value) as string[]
+    expect(stored).toEqual(['agent-a', 'agent-b', 'agent-c']) // sorted, no duplicate, nothing lost
+  })
+
+  it('an unparseable stored value counts as empty for the next add (as getDesiredAgents reads it)', async () => {
+    await dbMod.setSystemConfig('agents_desired', '{bad}')
+    await store.addDesiredAgent('agent-a')
+    expect([...store.getDesiredAgents()]).toEqual(['agent-a'])
+  })
+
+  it('a failed write is answered, not thrown (start/stop paths): the set is unchanged', async () => {
+    await store.addDesiredAgent('agent-a')
+    const failing = vi.spyOn(await import('../db/connection.js').then((m) => m.db), 'exec').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    await expect(store.addDesiredAgent('agent-b')).resolves.toBeUndefined()
+    failing.mockRestore()
+    expect([...store.getDesiredAgents()]).toEqual(['agent-a'])
+  })
+
+  it('setDesiredAgents replaces the whole set (sorted, deduplicated) after the write resolves', async () => {
+    await store.addDesiredAgent('agent-old')
+    await store.setDesiredAgents(['agent-z', 'agent-a', 'agent-z'])
+    expect([...store.getDesiredAgents()]).toEqual(['agent-a', 'agent-z'])
   })
 })

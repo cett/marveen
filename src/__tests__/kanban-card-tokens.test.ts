@@ -247,16 +247,16 @@ describe('getCardTokenUsage expired data', () => {
     expect(getCardTokenUsage('c2', { ...OPTS, now: NOW, retentionDays: 7 })!.dataExpired).toBe(false)
   })
 
-  it('a stored retention of zero, a negative or a non-number is not a retention: no flag, retentionDays null', () => {
+  it('a stored retention of zero, a negative or a non-number is not a retention: no flag, retentionDays null', async () => {
     createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 1)
     for (const bad of ['0', '-5', 'abc']) {
-      setSystemConfig('TOKEN_USAGE_RETENTION_DAYS', bad)
+      await setSystemConfig('TOKEN_USAGE_RETENTION_DAYS', bad)
       const u = getCardTokenUsage('c1', { ...OPTS, now: 40 * DAY })!
       expect(u.retentionDays, bad).toBeNull()
       expect(u.dataExpired, bad).toBe(false)
     }
-    setSystemConfig('TOKEN_USAGE_RETENTION_DAYS', '7') // a real one is used, and flags the old window
+    await setSystemConfig('TOKEN_USAGE_RETENTION_DAYS', '7') // a real one is used, and flags the old window
     const ok = getCardTokenUsage('c1', { ...OPTS, now: 40 * DAY })!
     expect(ok.retentionDays).toBe(7)
     expect(ok.dataExpired).toBe(true)

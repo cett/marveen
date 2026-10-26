@@ -78,10 +78,10 @@ async function seedSourceFleet() {
   }), 'utf-8')
 
   // model-fallback is DB-backed now (system_config, #985 group 5/8), not a file.
-  setSystemConfig('model_fallback_enabled', '1')
-  setSystemConfig('model_fallback_chain', JSON.stringify(['source-chain', 'source-chain-2']))
-  setSystemConfig('model_fallback_revert_after_minutes', '60')
-  setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
+  await setSystemConfig('model_fallback_enabled', '1')
+  await setSystemConfig('model_fallback_chain', JSON.stringify(['source-chain', 'source-chain-2']))
+  await setSystemConfig('model_fallback_revert_after_minutes', '60')
+  await setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
   writeFileSync(join(STORE_DIR, 'costops-config.json'), JSON.stringify({ version: 1, currency: 'USD', budgets: [] }), 'utf-8')
   // egress_allowlist is DB-backed (migration 0056) -- every fresh initDatabase()
   // call above already seeded the 199 baseline domains; these two are this

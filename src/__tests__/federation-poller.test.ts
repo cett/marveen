@@ -19,12 +19,12 @@ const OUT_TOKEN = 'a'.repeat(64)
 const IN_TOKEN = 'b'.repeat(64)
 const NOW = 1_750_000_000_000
 
-function writeConfigFile(obj: unknown): void {
-  _seedFederationConfigForTest(obj as Record<string, unknown>)
+async function writeConfigFile(obj: unknown): Promise<void> {
+  await _seedFederationConfigForTest(obj as Record<string, unknown>)
 }
 
-function enabledConfig(peerOverrides: Record<string, unknown> = {}): void {
-  writeConfigFile({
+async function enabledConfig(peerOverrides: Record<string, unknown> = {}): Promise<void> {
+  await writeConfigFile({
     enabled: true,
     systemId: 'localsys',
     peers: [{ id: 'teodor', baseUrl: 'https://mini.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN, ...peerOverrides }],
@@ -45,8 +45,8 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
-  _clearFederationConfigForTest()
+beforeEach(async () => {
+  await _clearFederationConfigForTest()
   _setFederationStoreDirForTest(TMP)
   resetFederationPollerCache()
 })
@@ -153,7 +153,7 @@ describe('sanitizeManifest (pure)', () => {
 
 describe('pollPeerManifests state machine', () => {
   it('200 + valid manifest -> ok with lastOkAt', async () => {
-    enabledConfig()
+    await enabledConfig()
     await pollPeerManifests(NOW, fetchReturning(200, GOOD_MANIFEST))
     const [st] = getFederationStatus()
     expect(st).toMatchObject({ id: 'teodor', state: 'ok', lastChecked: NOW, lastOkAt: NOW })
@@ -161,7 +161,7 @@ describe('pollPeerManifests state machine', () => {
   })
 
   it('401/403 -> auth-or-disabled (ONE honest state; the wire cannot distinguish)', async () => {
-    enabledConfig()
+    await enabledConfig()
     await pollPeerManifests(NOW, fetchReturning(401, { error: 'Unauthorized' }))
     expect(getFederationStatus()[0].state).toBe('auth-or-disabled')
     await pollPeerManifests(NOW + 1, fetchReturning(403, { error: 'Federation disabled' }))
@@ -169,7 +169,7 @@ describe('pollPeerManifests state machine', () => {
   })
 
   it('network failure -> unreachable, and the last known manifest is RETAINED', async () => {
-    enabledConfig()
+    await enabledConfig()
     await pollPeerManifests(NOW, fetchReturning(200, GOOD_MANIFEST))
     const failing = (async () => { throw new Error('ECONNREFUSED') }) as unknown as typeof fetch
     await pollPeerManifests(NOW + 60_000, failing)
@@ -180,7 +180,7 @@ describe('pollPeerManifests state machine', () => {
   })
 
   it('oversized manifest -> error without buffering it (Content-Length precheck)', async () => {
-    enabledConfig()
+    await enabledConfig()
     const huge = (async () => new Response('x', {
       status: 200,
       headers: { 'content-length': String(MANIFEST_MAX_BODY_BYTES + 1) },
@@ -192,7 +192,7 @@ describe('pollPeerManifests state machine', () => {
   })
 
   it('unpaired peer (empty outboundToken) is reported without a network attempt', async () => {
-    enabledConfig({ outboundToken: '' })
+    await enabledConfig({ outboundToken: '' })
     let calls = 0
     const counting = (async () => { calls++; return new Response('{}', { status: 200 }) }) as typeof fetch
     await pollPeerManifests(NOW, counting)
@@ -201,9 +201,9 @@ describe('pollPeerManifests state machine', () => {
   })
 
   it('disabled config clears the cache and does no network', async () => {
-    enabledConfig()
+    await enabledConfig()
     await pollPeerManifests(NOW, fetchReturning(200, GOOD_MANIFEST))
-    writeConfigFile({ enabled: false, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: false, systemId: 'localsys', peers: [] })
     let calls = 0
     const counting = (async () => { calls++; return new Response('{}', { status: 200 }) }) as typeof fetch
     const out = await pollPeerManifests(NOW + 1, counting)
@@ -212,9 +212,9 @@ describe('pollPeerManifests state machine', () => {
   })
 
   it('removed peers are dropped from the cache; unknown state for never-polled peers', async () => {
-    enabledConfig()
+    await enabledConfig()
     await pollPeerManifests(NOW, fetchReturning(200, GOOD_MANIFEST))
-    writeConfigFile({
+    await writeConfigFile({
       enabled: true, systemId: 'localsys',
       peers: [{ id: 'cecil', baseUrl: 'https://c.example', outboundToken: OUT_TOKEN, inboundToken: 'c'.repeat(64) }],
     })
@@ -225,7 +225,7 @@ describe('pollPeerManifests state machine', () => {
 
 describe('refreshFederationStatus single-flight', () => {
   it('concurrent refreshes share one round', async () => {
-    enabledConfig()
+    await enabledConfig()
     let calls = 0
     const slow = (async () => {
       calls++

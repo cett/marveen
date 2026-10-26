@@ -92,7 +92,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // an audit label only and never decides a tenant.
       setStoreWriteActor(resolvedActor, null)
       const oldValue = getEffectiveSettingValue(key)
-      const result = setOverride(key, value)
+      const result = await setOverride(key, value)
       if (!result.ok) {
         json(res, { error: 'internal_error', hint: result.error }, 500)
         return true

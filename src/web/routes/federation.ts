@@ -491,7 +491,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       // loss).
       const wantsDisable = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled !== true
       if (wantsDisable) {
-        setFederationEnabledPreservingFile(false)
+        await setFederationEnabledPreservingFile(false)
         resetPeerBackoff()
         resetFederationPollerCache()
         const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
@@ -510,7 +510,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const removedByPut = getFederationConfig().peers
       .map((p) => p.id)
       .filter((id) => !validated.peers.some((p) => p.id === id))
-    writeFederationConfig(validated)
+    await writeFederationConfig(validated)
     // A full-document PUT can drop peers just like DELETE; run the same
     // per-peer purges so a re-added peer's fresh low message ids are not
     // replay-acked by stale dedup entries (and backoff/poller state is clean).
@@ -541,7 +541,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const payload = await readJsonBody(ctx)
     if (isErr(payload)) return true
     const enabled = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled === true
-    const flipped = setFederationEnabledPreservingFile(enabled)
+    const flipped = await setFederationEnabledPreservingFile(enabled)
     if (!flipped) { json(res, { error: 'conflict', hint: 'federation config failed validation -- federation stays disabled; fix or remove it' }, 409); return true }
     if (!enabled) {
       resetPeerBackoff()
@@ -565,7 +565,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (typeof mode !== 'string' || !FEDERATION_ROUTING_MODES.includes(mode as FederationRoutingMode)) {
       json(res, { error: 'invalid_value', field: 'mode', hint: `invalid mode (${FEDERATION_ROUTING_MODES.join('|')})` }, 400); return true
     }
-    if (!setFederationRoutingModePreservingFile(mode as FederationRoutingMode)) {
+    if (!await setFederationRoutingModePreservingFile(mode as FederationRoutingMode)) {
       json(res, { error: 'conflict', hint: 'federation config unreadable -- routing mode not persisted' }, 409); return true
     }
     ensureFederationClaudeMdSection()
@@ -619,7 +619,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const next: FederationConfig = { enabled: cfg.enabled, systemId: cfg.systemId || MAIN_AGENT_ID, routingMode: cfg.routingMode, peers: [...cfg.peers, peer] }
     const validated = validateFederationConfig(next)
     if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid peer: ${validated}` }, 400); return true }
-    writeFederationConfig(validated)
+    await writeFederationConfig(validated)
     ensureFederationClaudeMdSection()
     logger.warn({ fed: true, peer: id }, 'federation: peer added, inbound token minted')
     json(res, { peer: peerView(peer), inboundToken }, 201)
@@ -668,7 +668,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? updated : peer)) }
       const validated = validateFederationConfig(next)
       if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid peer update: ${validated}` }, 400); return true }
-      writeFederationConfig(validated)
+      await writeFederationConfig(validated)
       resetPeerBackoff(id) // a token/url fix should get a fresh attempt now, not after the old backoff
       ensureFederationClaudeMdSection()
       logger.warn({ fed: true, peer: id }, 'federation: peer updated')
@@ -683,7 +683,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const next: FederationConfig = { ...cfg, peers: cfg.peers.filter((peer) => peer.id !== id) }
     const validated = validateFederationConfig(next)
     if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid config after removal: ${validated}` }, 400); return true }
-    writeFederationConfig(validated)
+    await writeFederationConfig(validated)
     const failed = failPendingFederatedMessages(id, `Federation peer '${id}' removed while pending`)
     purgeInboxDedup(id)
     resetPeerBackoff(id)
@@ -721,7 +721,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? { ...peer, inboundToken: fresh } : peer)) }
     const validated = validateFederationConfig(next)
     if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid config after rotation: ${validated}` }, 400); return true }
-    writeFederationConfig(validated)
+    await writeFederationConfig(validated)
     logger.warn({ fed: true, peer: id }, 'federation: inbound token rotated -- the peer must update its outbound token')
     json(res, { id, inboundToken: fresh })
     return true
@@ -733,9 +733,9 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   // the config module (cache cleared without trusting fs.watch), (4) memory
   // purges. Later commits extend this with poller-cache + CLAUDE.md steps.
   if (path === '/api/federation/remove' && method === 'POST') {
-    setFederationEnabledPreservingFile(false)
+    await setFederationEnabledPreservingFile(false)
     const failed = failPendingFederatedMessages(undefined, 'Federation removed while pending')
-    removeFederationStore()
+    await removeFederationStore()
     purgeInboxDedup()
     resetPeerBackoff()
     resetFederationPollerCache()
