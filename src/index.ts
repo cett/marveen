@@ -419,8 +419,10 @@ let webServer: HttpServer | null = null
 let shuttingDown = false
 let exitCode = 0
 
-// SIGTERM flushes (src/web/sigterm-flush.ts) may take this long in total before the database is closed.
-const SIGTERM_FLUSH_BUDGET_MS = 3000
+// SIGTERM flushes (src/web/sigterm-flush.ts) may take this long in total before the database is closed. Kept
+// under the process-lock takeover grace (DEFAULT_GRACE_MS in process-lock.ts): a replacing start SIGKILLs this
+// process once that grace has passed, so a longer flush would be cut off with the database still open.
+const SIGTERM_FLUSH_BUDGET_MS = 1000
 
 // `signal` is the name Node passes to a signal listener; the uncaughtException path calls it without one.
 const shutdown = (signal?: string): void => {

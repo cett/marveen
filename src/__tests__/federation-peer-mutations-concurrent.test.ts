@@ -10,8 +10,10 @@ import {
   _seedFederationConfigForTest,
   _clearFederationConfigForTest,
   getFederationConfig,
+  identifyFederationCaller,
 } from '../web/federation/config.js'
 import { getFederationConfigRaw } from '../db/federation.js'
+import { checkBearerToken } from '../web/dashboard-auth.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 // The peer mutations (add, patch, remove, rotate) are read-modify-writes of the whole stored document. Since the
@@ -170,5 +172,29 @@ describe('a stored document that fails validation is left alone', () => {
     const r = await run()
     expect(r.statusCode).toBe(409)
     expect(getFederationConfigRaw()).toBe(before)
+  })
+})
+
+describe('PUT /api/federation/peers with an invalid body that asks for "off"', () => {
+  it('answers the state AFTER the awaited flag flip, and the gate refuses at once', async () => {
+    await _seedFederationConfigForTest({ enabled: true, peers: [peer('arthur', { inboundToken: IN_TOKEN })] })
+    expect(getFederationConfig().enabled).toBe(true) // cache primed with the enabled document
+    const r = await call('PUT', '/api/federation/peers', { enabled: false, peers: 'not-a-list' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json.enabled).toBe(false) // the response was built after the write, not from the stale cache
+    expect(getFederationConfig().enabled).toBe(false)
+    const raw = JSON.parse(getFederationConfigRaw()!)
+    expect(raw.enabled).toBe(false)
+    expect(raw.peers).toHaveLength(1) // lossless: the flag flipped, the peer is still stored
+    expect(identifyFederationCaller(`Bearer ${IN_TOKEN}`, checkBearerToken)).toBeNull()
+  })
+
+  it('a body that is invalid and does not ask for "off" is refused with 400 and changes nothing', async () => {
+    await _seedFederationConfigForTest({ enabled: true, peers: [peer('arthur')] })
+    const before = getFederationConfigRaw()
+    const r = await call('PUT', '/api/federation/peers', { enabled: true, peers: 'not-a-list' })
+    expect(r.statusCode).toBe(400)
+    expect(getFederationConfigRaw()).toBe(before)
+    expect(getFederationConfig().enabled).toBe(true)
   })
 })

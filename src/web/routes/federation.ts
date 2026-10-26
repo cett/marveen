@@ -10,10 +10,12 @@
 //     federation-token carve-out is an exact path+method whitelist).
 //
 // Config-mutating handlers follow one hard rule: the read->mutate->write
-// section is fully SYNCHRONOUS (body is awaited BEFORE it starts). Any await
-// inside that window would let a concurrent rotate/DELETE interleave and
-// resurrect a removed peer with its old token -- a security regression, not
-// just a lost update.
+// of a peer change (add, patch, remove, rotate) is ONE transaction on the
+// stored document (mutateFederationConfig in federation/config.ts): the body
+// is awaited BEFORE it starts and the step inside is pure code. Building the
+// next document from the cached config and writing it back after an await
+// would let a concurrent rotate/DELETE interleave and resurrect a removed
+// peer with its old token -- a security regression, not just a lost update.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
@@ -531,8 +533,9 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', hint: `Invalid federation config: ${validated}` }, 400)
       return true
     }
-    // Synchronous validate->write->cache (no await in between). Well-formed
-    // enabled:false documents are persisted AS GIVEN: peers stay editable
+    // Whole-document replace (last write wins by design; the peer routes use
+    // mutateFederationConfig for the changes that must not lose each other).
+    // Well-formed enabled:false documents are persisted AS GIVEN: peers stay editable
     // while the master switch is off (pairing naturally precedes opening the
     // perimeter).
     const removedByPut = getFederationConfig().peers
@@ -771,8 +774,8 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   }
 
   // Full removal: the built-in counterpart of the manual round-1 teardown.
-  // Ordering is load-bearing: (1) flag off + cache refreshed synchronously
-  // (gate closes immediately), (2) queued rows failed, (3) files deleted via
+  // Ordering is load-bearing: (1) flag off, awaited, cache refreshed right
+  // after the write (gate closes before the next step), (2) queued rows failed, (3) files deleted via
   // the config module (cache cleared without trusting fs.watch), (4) memory
   // purges. Later commits extend this with poller-cache + CLAUDE.md steps.
   if (path === '/api/federation/remove' && method === 'POST') {

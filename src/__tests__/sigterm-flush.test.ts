@@ -10,6 +10,7 @@ vi.mock('../logger.js', () => ({
 
 import { logger } from '../logger.js'
 import { registerSigtermFlush, runSigtermFlushes } from '../web/sigterm-flush.js'
+import { DEFAULT_GRACE_MS } from '../process-lock.js'
 
 describe('sigterm-flush registry', () => {
   const unregister: Array<() => void> = []
@@ -168,11 +169,14 @@ describe('shutdown wiring (source pin)', () => {
     expect(src).toMatch(/const shutdown = \(signal\?: string\): void =>/)
   })
 
-  it('the flush budget fits inside the hard-kill timer (a hung flush cannot outlive it)', () => {
+  it('the flush budget fits inside the process-lock takeover grace and the hard-kill timer', () => {
     const src = stripComments(read('../index.ts'))
     const budget = Number(/const SIGTERM_FLUSH_BUDGET_MS = (\d+)/.exec(src)?.[1])
     const hardKill = Number(/const SHUTDOWN_HARD_KILL_MS = (\d+)/.exec(src)?.[1])
     expect(budget).toBeGreaterThan(0)
+    // A replacing start SIGKILLs this process once the takeover grace has passed: the flush (then closeDatabase)
+    // must be done before that, with room left for the close itself. The hard-kill timer is the outer bound.
+    expect(budget).toBeLessThan(DEFAULT_GRACE_MS)
     expect(hardKill).toBeGreaterThan(budget)
   })
 
