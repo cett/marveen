@@ -64,6 +64,94 @@ describe('the CLI add / reset-password / remove commands', () => {
     expect(rows()).toEqual([])
   }, 180_000)
 
+  it('list prints each login (the awaited listing is iterated, not a Promise)', async () => {
+    expect((await cli(['add', 'person-a', '--password-stdin'], PASSWORD)).status).toBe(0)
+    const out = await cli(['list'])
+    expect(out.status, out.stderr).toBe(0)
+    expect(out.stdout).toMatch(/^person-a {2}role=admin /)
+  }, 180_000)
+
+  describe('sessions:clear <user>', () => {
+    function seedSessions(): void {
+      const db = new Database(join(storeDir, 'claudeclaw.db'))
+      try {
+        const ids = db.prepare('SELECT id, username FROM dashboard_users').all() as { id: number; username: string }[]
+        const ins = db.prepare('INSERT INTO auth_sessions (id_hash, user_id, username, created_at, last_seen_at) VALUES (?, ?, ?, 1, 1)')
+        for (const u of ids) { ins.run(`hash-${u.username}-1`, u.id, u.username); ins.run(`hash-${u.username}-2`, u.id, u.username) }
+      } finally { db.close() }
+    }
+    function sessionUsers(): string[] {
+      const db = new Database(join(storeDir, 'claudeclaw.db'), { readonly: true })
+      try {
+        return (db.prepare('SELECT username FROM auth_sessions ORDER BY id_hash').all() as { username: string }[]).map((r) => r.username)
+      } finally { db.close() }
+    }
+
+    it('deletes that user\'s browser sessions and leaves the others', async () => {
+      expect((await cli(['add', 'person-a', '--password-stdin'], PASSWORD)).status).toBe(0)
+      expect((await cli(['add', 'user-b', '--password-stdin'], PASSWORD)).status).toBe(0)
+      seedSessions()
+      expect(sessionUsers()).toHaveLength(4)
+
+      const out = await cli(['sessions:clear', 'person-a'])
+      expect(out.status, out.stderr).toBe(0)
+      expect(out.stdout).toContain('Cleared all sessions for "person-a"')
+      expect(sessionUsers()).toEqual(['user-b', 'user-b'])
+    }, 180_000)
+
+    it('names an unknown user and deletes nothing', async () => {
+      expect((await cli(['add', 'person-a', '--password-stdin'], PASSWORD)).status).toBe(0)
+      seedSessions()
+      const out = await cli(['sessions:clear', 'nobody'])
+      expect(out.status).toBe(1)
+      expect(out.stderr).toContain('not found')
+      expect(sessionUsers()).toHaveLength(2)
+    }, 180_000)
+  })
+
+  // A write the database refuses has to reach the exit code. On SQLite a call left without its await still runs
+  // before the process ends, so the happy path above cannot tell; a refused write can: awaited, it is the error
+  // the CLI prints and exits 1 on, un-awaited it is lost (or the command reports success).
+  describe('a write the database refuses', () => {
+    function refuseWrites(on: 'INSERT' | 'UPDATE' | 'DELETE'): void {
+      const db = new Database(join(storeDir, 'claudeclaw.db'))
+      try {
+        db.exec(`CREATE TRIGGER refuse_${on.toLowerCase()} BEFORE ${on} ON dashboard_users BEGIN SELECT RAISE(ABORT, 'refused-by-test'); END`)
+      } finally { db.close() }
+    }
+
+    it('add reports it and exits 1', async () => {
+      expect((await cli(['list'])).status).toBe(0) // creates the store and the schema
+      refuseWrites('INSERT')
+      const out = await cli(['add', 'person-a', '--password-stdin'], PASSWORD)
+      expect(out.status).toBe(1)
+      expect(out.stderr).toContain('refused-by-test')
+      expect(out.stdout).not.toContain('Created dashboard login')
+      expect(rows()).toEqual([])
+    }, 180_000)
+
+    it('reset-password reports it, exits 1 and keeps the old hash', async () => {
+      expect((await cli(['add', 'person-a', '--password-stdin'], PASSWORD)).status).toBe(0)
+      const before = rows()[0]!.password_hash
+      refuseWrites('UPDATE')
+      const out = await cli(['reset-password', 'person-a', '--password-stdin'], NEW_PASSWORD)
+      expect(out.status).toBe(1)
+      expect(out.stderr).toContain('refused-by-test')
+      expect(out.stdout).not.toContain('Password reset for')
+      expect(rows()[0]!.password_hash).toBe(before)
+    }, 180_000)
+
+    it('remove reports it, exits 1 and keeps the row', async () => {
+      expect((await cli(['add', 'person-a', '--password-stdin'], PASSWORD)).status).toBe(0)
+      refuseWrites('DELETE')
+      const out = await cli(['remove', 'person-a'])
+      expect(out.status).toBe(1)
+      expect(out.stderr).toContain('refused-by-test')
+      expect(out.stdout).not.toContain('Removed')
+      expect(rows()).toHaveLength(1)
+    }, 180_000)
+  })
+
   it('refuses a second add of the same name and a reset or remove of an unknown one', async () => {
     expect((await cli(['add', 'person-a', '--password-stdin'], PASSWORD)).status).toBe(0)
     const again = await cli(['add', 'person-a', '--password-stdin'], PASSWORD)

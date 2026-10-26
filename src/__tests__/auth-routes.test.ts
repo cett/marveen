@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { logger } from '../logger.js'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, getDashboardUser } from '../db.js'
@@ -279,10 +280,14 @@ describe('users CRUD', () => {
     await seedUser('alice')
     const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     const token = cookieToken(login.res)
+    const info = vi.spyOn(logger, 'info')
     const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
     expect(del.res.statusCode).toBe(200)
     expect(await getDashboardUser('alice')).toBeUndefined()
     expect(resolveSession(token)).toBeNull()
+    // The log line carries the settled count (a number), not a pending Promise.
+    expect(info).toHaveBeenCalledWith({ username: 'alice', remaining: 0 }, 'dashboard user deleted')
+    info.mockRestore()
   })
 
   it('still allows a SESSION principal to manage users (existing behavior)', async () => {

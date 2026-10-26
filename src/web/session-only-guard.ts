@@ -7,7 +7,7 @@
 // guard lives in each route because the RBAC table cannot say "a session, and not a token".
 //
 // Both helpers write the refusal themselves and return true when they did, so a route reads:
-//   if (denyUnlessHumanSession(ctx, 'auth.user.create')) return true
+//   if (await denyUnlessHumanSession(ctx, 'auth.user.create')) return true
 
 import { APPROVAL_HUMAN_ONLY_ENFORCE } from '../config.js'
 import { countDashboardUsers, writeAdminAuditLog } from '../db.js'
