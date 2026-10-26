@@ -778,28 +778,28 @@ export async function exportFleet(options: { vaultPassword?: string } = {}): Pro
   const scheduledTasks = exportScheduledTasks()
 
   // Export ALL memories and daily_logs across every agent_id
-  const memories = exportMemoryRows<MemoryRow>()
+  const memories = await exportMemoryRows<MemoryRow>()
 
-  const dailyLogs = exportDailyLogRows<DailyLogRow>()
+  const dailyLogs = await exportDailyLogRows<DailyLogRow>()
 
   const kanban: KanbanExport = {
-    cards: exportTableRows('kanban_cards'),
-    comments: exportTableRows('kanban_comments'),
-    cardEvents: exportTableRows('kanban_card_events'),
-    labels: exportTableRows('labels'),
-    cardLabels: exportTableRows('kanban_card_labels'),
+    cards: await exportTableRows('kanban_cards'),
+    comments: await exportTableRows('kanban_comments'),
+    cardEvents: await exportTableRows('kanban_card_events'),
+    labels: await exportTableRows('labels'),
+    cardLabels: await exportTableRows('kanban_card_labels'),
   }
 
   const ideaBox: IdeaBoxExport = {
-    ideas: exportTableRows('idea_box'),
-    comments: exportTableRows('idea_comments'),
-    statusLog: exportTableRows('idea_status_log'),
+    ideas: await exportTableRows('idea_box'),
+    comments: await exportTableRows('idea_comments'),
+    statusLog: await exportTableRows('idea_status_log'),
   }
 
   // DB-based schedules (dashboard-schedule-crud API), distinct from the file-based
   // scheduledTasks[] above. Force-disabled at export time, same as scheduledTasks,
   // so an imported fleet never starts firing a source fleet's cron jobs unreviewed.
-  const schedules = exportTableRows('schedules')
+  const schedules = (await exportTableRows('schedules'))
     .map(row => ({ ...row, enabled: 0 }))
 
   // Import-pipeline source configs (local/gdrive/sharepoint/confluence). Only the
@@ -811,7 +811,7 @@ export async function exportFleet(options: { vaultPassword?: string } = {}): Pro
   // leaving last_run_at set would make the next crawl treat itself as incremental
   // and silently skip everything older than that cutoff -- content the target
   // never actually has, since import_memories didn't come along for the ride.
-  const importSources = exportTableRows('import_sources')
+  const importSources = (await exportTableRows('import_sources'))
     .map(row => ({ ...row, enabled: 0, last_run_at: null }))
 
   // SSH key-pool metadata (P4). Neither table has a private-key column -- the
@@ -819,8 +819,8 @@ export async function exportFleet(options: { vaultPassword?: string } = {}): Pro
   // vault_key_id, and is included ONLY when the vault section below is (i.e.
   // only in an encrypted, password-protected export). This metadata alone is
   // safe in plaintext: public key, fingerprint, host/port/username, no secret.
-  const vaultSshKeys = exportTableRows('vault_ssh_keys')
-  const vaultSshServers = exportTableRows('vault_ssh_servers')
+  const vaultSshKeys = await exportTableRows('vault_ssh_keys')
+  const vaultSshServers = await exportTableRows('vault_ssh_servers')
 
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
   const vault = withSecrets ? await exportVault() : undefined
@@ -950,11 +950,11 @@ function importedScheduleTenant(localTenants: ReadonlySet<string>, raw: unknown)
   return typeof raw === 'string' && localTenants.has(raw) ? raw : 'default'
 }
 
-function enabledLocalTenantIds(): Set<string> {
-  return new Set<string>(['default', ...listEnabledTenantIds()])
+async function enabledLocalTenantIds(): Promise<Set<string>> {
+  return new Set<string>(['default', ...await listEnabledTenantIds()])
 }
 
-function buildDiffReport(fleet: FleetJson): DiffReport {
+async function buildDiffReport(fleet: FleetJson): Promise<DiffReport> {
   const warnings: string[] = []
 
   const existingAgents = new Set(listAgentNames())
@@ -962,38 +962,38 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newMemories = 0
   for (const mem of fleet.memories ?? []) {
-    if (!fleetRowExists('memories', mem)) {
+    if (!await fleetRowExists('memories', mem)) {
       newMemories++
     }
   }
 
   let newCards = 0
   for (const card of fleet.kanban?.cards ?? []) {
-    if (!fleetRowIdExists('kanban_cards', (card as any).id)) newCards++
+    if (!await fleetRowIdExists('kanban_cards', (card as any).id)) newCards++
   }
 
   let newLabels = 0
   for (const label of fleet.kanban?.labels ?? []) {
-    if (!fleetRowIdExists('labels', (label as any).id)) newLabels++
+    if (!await fleetRowIdExists('labels', (label as any).id)) newLabels++
   }
 
   let newDailyLogs = 0
   for (const log of fleet.dailyLogs ?? []) {
-    if (!fleetRowExists('daily_logs', log)) {
+    if (!await fleetRowExists('daily_logs', log)) {
       newDailyLogs++
     }
   }
 
   let newComments = 0
   for (const c of fleet.kanban?.comments ?? []) {
-    if (!fleetRowExists('kanban_comments', c as any)) newComments++
+    if (!await fleetRowExists('kanban_comments', c as any)) newComments++
   }
 
   let newSchedules = 0
   let rehomedSchedules = 0
-  const localTenants = enabledLocalTenantIds()
+  const localTenants = await enabledLocalTenantIds()
   for (const sch of fleet.schedules ?? []) {
-    if (fleetRowIdExists('schedules', (sch as any).id)) continue
+    if (await fleetRowIdExists('schedules', (sch as any).id)) continue
     newSchedules++
     const exported = (sch as any).tenant_id
     if (exported != null && importedScheduleTenant(localTenants, exported) !== exported) rehomedSchedules++
@@ -1007,7 +1007,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newImportSources = 0
   for (const src of fleet.importSources ?? []) {
-    if (!fleetRowIdExists('import_sources', (src as any).id)) newImportSources++
+    if (!await fleetRowIdExists('import_sources', (src as any).id)) newImportSources++
   }
   if (newImportSources > 0) {
     warnings.push(
@@ -1018,11 +1018,11 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newVaultSshKeys = 0
   for (const key of fleet.vaultSshKeys ?? []) {
-    if (!fleetRowIdExists('vault_ssh_keys', (key as any).id)) newVaultSshKeys++
+    if (!await fleetRowIdExists('vault_ssh_keys', (key as any).id)) newVaultSshKeys++
   }
   let newVaultSshServers = 0
   for (const srv of fleet.vaultSshServers ?? []) {
-    if (!fleetRowIdExists('vault_ssh_servers', (srv as any).id)) newVaultSshServers++
+    if (!await fleetRowIdExists('vault_ssh_servers', (srv as any).id)) newVaultSshServers++
   }
 
   if (!fleet.vault) {
@@ -1318,7 +1318,7 @@ export async function importFleet(
   }
 
   if (!options.apply) {
-    const report = buildDiffReport(fleet)
+    const report = await buildDiffReport(fleet)
     // M1: vault present in export but no password at import -> warning (apply would skip vault)
     if (fleet.vault && !options.vaultPassword) {
       report.warnings.push('vault szekció jelen van, de nem adtál meg jelszót -- a vault-titkok kihagyásra kerülnek.')
@@ -1510,16 +1510,16 @@ export async function importFleet(
     // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
     // The row-level policy (required fields, enums, forced values) lives here;
     // the SQL itself is in db/fleet-transfer.ts.
-    const importTx = () => inFleetImportTransaction(() => {
+    const importTx = () => inFleetImportTransaction(async () => {
       // labels first (FK dep for kanban_card_labels)
       // M3: skip rows with missing required fields to avoid SQLite constraint errors -> 500
-      importFleetRows('labels', (fleet.kanban?.labels ?? []).filter((label) => {
+      await importFleetRows('labels', (fleet.kanban?.labels ?? []).filter((label) => {
         const l = label as any
         if (!l.id || !l.name || breaksTableRules(l, ['color', 'created_at'])) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); return false }
         return true
       }))
 
-      importFleetRows('kanban_cards', (fleet.kanban?.cards ?? []).filter((card) => {
+      await importFleetRows('kanban_cards', (fleet.kanban?.cards ?? []).filter((card) => {
         const c = card as any
         if (!c.id || !c.title || !c.status || !c.priority || c.sort_order == null
           || breaksTableRules(c, ['created_at', 'updated_at'], {
@@ -1532,18 +1532,18 @@ export async function importFleet(
       }))
 
       // kanban comments (idempotent: card_id + content)
-      importFleetRows('kanban_comments', (fleet.kanban?.comments ?? []).filter((comment) => {
+      await importFleetRows('kanban_comments', (fleet.kanban?.comments ?? []).filter((comment) => {
         const c = comment as any
         return !!c.card_id && !!c.content
       }))
 
       // kanban card events -- idempotent on (card_id, created_at, to_status)
-      importFleetRows('kanban_card_events', (fleet.kanban?.cardEvents ?? []).filter((ev) => {
+      await importFleetRows('kanban_card_events', (fleet.kanban?.cardEvents ?? []).filter((ev) => {
         const e = ev as any
         return !!e.card_id && !!e.to_status
       }))
 
-      importFleetRows('kanban_card_labels', (fleet.kanban?.cardLabels ?? []).filter((cl) => {
+      await importFleetRows('kanban_card_labels', (fleet.kanban?.cardLabels ?? []).filter((cl) => {
         const c = cl as any
         return !!c.card_id && !!c.label_id && c.created_at != null
       }))
@@ -1552,7 +1552,7 @@ export async function importFleet(
       // exported value (defense in depth -- mirrors the file-based scheduledTasks
       // pause-on-import above): a migrated fleet must never start firing a source
       // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
-      const scheduleTenants = enabledLocalTenantIds()
+      const scheduleTenants = await enabledLocalTenantIds()
       const scheduleRows: Record<string, unknown>[] = []
       for (const sch of fleet.schedules ?? []) {
         const s = sch as any
@@ -1567,7 +1567,7 @@ export async function importFleet(
           skip_if_busy: s.skip_if_busy ?? 0, force_send: s.force_send ?? 0,
         })
       }
-      importFleetRows('schedules', scheduleRows)
+      await importFleetRows('schedules', scheduleRows)
 
       // import_sources -- idempotent on id. Always imported disabled with
       // last_run_at cleared, regardless of the exported values (defense in
@@ -1590,13 +1590,13 @@ export async function importFleet(
           tenant_id: s.tenant_id ?? 'default',
         })
       }
-      importFleetRows('import_sources', importSourceRows)
+      await importFleetRows('import_sources', importSourceRows)
 
       // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
       // inserted before vault_ssh_servers below since a server's ssh_key_id refers
       // to it (foreign_keys is on for this connection, so the insert order matters:
       // keys before servers).
-      importFleetRows('vault_ssh_keys', (fleet.vaultSshKeys ?? []).filter((key) => {
+      await importFleetRows('vault_ssh_keys', (fleet.vaultSshKeys ?? []).filter((key) => {
         const k = key as any
         if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type
           || breaksTableRules(k, ['created_at'])) {
@@ -1606,7 +1606,7 @@ export async function importFleet(
       }).map((key) => ({ ...(key as any), tenant_id: (key as any).tenant_id ?? 'default' })))
 
       // vault_ssh_servers -- idempotent on id.
-      importFleetRows('vault_ssh_servers', (fleet.vaultSshServers ?? []).filter((srv) => {
+      await importFleetRows('vault_ssh_servers', (fleet.vaultSshServers ?? []).filter((srv) => {
         const s2 = srv as any
         if (!s2.id || !s2.name || !s2.host || !s2.username || breaksTableRules(s2, ['created_at', 'updated_at'])) {
           logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); return false
@@ -1617,15 +1617,15 @@ export async function importFleet(
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
-      importFleetRows('memories', (fleet.memories ?? []).map((mem) => ({
+      await importFleetRows('memories', (fleet.memories ?? []).map((mem) => ({
         ...mem, chat_id: '', accessed_at: mem.accessed_at ?? now, auto_generated: mem.auto_generated ?? 0,
       })))
 
       // daily logs -- idempotent on (agent_id, date, content); multiple rows per date are preserved
-      importFleetRows('daily_logs', fleet.dailyLogs ?? [])
+      await importFleetRows('daily_logs', fleet.dailyLogs ?? [])
 
       // idea_box -- idempotent on id
-      importFleetRows('idea_box', (fleet.ideaBox?.ideas ?? []).filter((idea) => {
+      await importFleetRows('idea_box', (fleet.ideaBox?.ideas ?? []).filter((idea) => {
         const i = idea as any
         if (!i.id || breaksTableRules(i, ['title', 'category', 'created_at', 'updated_at'], { status: ['new', 'reviewed', 'kanban', 'rejected'] })) {
           logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); return false
@@ -1634,16 +1634,16 @@ export async function importFleet(
       }).map((idea) => ({ ...(idea as any), source: (idea as any).source ?? '' })))
 
       // idea_comments -- M5: idempotent on (idea_id, created_at, content)
-      importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [])
+      await importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [])
 
       // idea_status_log -- M5: idempotent on (idea_id, created_at, to_status)
-      importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [])
+      await importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [])
 
       // FTS rebuild after all memory inserts
-      rebuildMemoriesFts()
+      await rebuildMemoriesFts()
     })
 
-    importTx()
+    await importTx()
 
     // 6. Vault -- LAST: vault data is plaintext (decrypted at the top of importFleet)
     if (fleet.vault) {
