@@ -203,6 +203,9 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   `.import-new` left by a crash is overwritten by the next import, not cleaned up on its own. A `.import-bak` left
   behind is never overwritten: the next import that would stage the same file is refused (409 `conflict`) until the
   backup is restored onto its file or removed by hand. Applies are not serialized across processes.
+- **A failed fleet import can leave empty parent directories.** The staging step tracks only the deepest directory it
+  created (`trackedMkdir`), so after a failed import the missing parent directories above it may remain, empty. In
+  practice this is harmless: `~/.claude` always exists, and an empty directory changes no behaviour.
 - **The federation disable branches ignore the result of `setFederationEnabledPreservingFile`.** A `false` return
   (the file could not be written) is not looked at, so the switch can read as off while the gate stays on.
 - **Creating a dashboard user twice in parallel** ends with a UNIQUE error answered as 500 for the second request
