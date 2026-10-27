@@ -33,7 +33,7 @@ vi.mock('../web/rbac-mode.js', () => ({
   notifyRbacMode: vi.fn(),
   describeRbacMode: vi.fn(),
 }))
-vi.mock('../web/session-only-guard.js', () => ({ denyUnlessHumanSessionAlways: () => false }))
+vi.mock('../web/session-only-guard.js', () => ({ denyUnlessHumanSessionAlways: () => false, denyUnlessHumanOnlyEnforced: () => false }))
 
 import { tryHandleSettings } from '../web/routes/settings.js'
 

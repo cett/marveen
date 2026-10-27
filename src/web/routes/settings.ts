@@ -6,7 +6,7 @@ import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { RBAC_MODE_KEY, parseRbacMode, refreshRbacMode, describeRbacMode } from '../rbac-mode.js'
-import { denyUnlessHumanSessionAlways } from '../session-only-guard.js'
+import { denyUnlessHumanSessionAlways, denyUnlessHumanOnlyEnforced } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 const SECRET_MASK = '***'
@@ -100,6 +100,18 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // to any admin caller. Checked before anything is written.
       const isRbacMode = key === RBAC_MODE_KEY
       const looseningRbac = isRbacMode && parseRbacMode(validation.value) === 'shadow'
+      // A human session proves a person only while a token cannot mint one: with the human-only switch
+      // off a token can create the dashboard admin that would loosen the gate, so loosening is refused then.
+      if (
+        looseningRbac &&
+        denyUnlessHumanOnlyEnforced(
+          ctx,
+          'settings.rbac_mode.loosen',
+          'Switching the RBAC gate to shadow is only possible while APPROVAL_HUMAN_ONLY_ENFORCE is on; with it off a token can create the dashboard user that would do it',
+        )
+      ) {
+        return true
+      }
       if (
         looseningRbac &&
         denyUnlessHumanSessionAlways(

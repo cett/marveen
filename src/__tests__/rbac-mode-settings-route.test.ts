@@ -1,7 +1,10 @@
 // Who may change RBAC_MODE through POST /api/settings, against a real in-memory database and real
-// dashboard sessions. Tightening (shadow -> enforce) is open to any admin caller; LOOSENING (-> shadow) is
-// a global-admin human session only, with the switch APPROVAL_HUMAN_ONLY_ENFORCE off, with no dashboard
-// user at all, and for every kind of token. A refusal leaves system_config untouched and is journalled.
+// dashboard sessions. Tightening (shadow -> enforce) is open to any admin caller, whatever the human-only
+// switch says. LOOSENING (-> shadow) is a global-admin human session only, with no dashboard user at all
+// and for every kind of token, AND only while APPROVAL_HUMAN_ONLY_ENFORCE is on: with it off a token can
+// create the dashboard admin that would loosen the gate, so a human session proves nothing (the chain is
+// tested in both switch positions). A refusal leaves system_config untouched and is journalled. The switch
+// is flipped per test through a live getter on the config mock.
 //
 // ISOLATION: initDatabase(':memory:') only. A shadow row in the shared store would loosen the live gate.
 
@@ -13,11 +16,15 @@ import { fileURLToPath } from 'node:url'
 import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
 
-// The human-only switch is deliberately OFF: the loosening guard must not depend on it.
+const flags = vi.hoisted(() => ({ enforce: true, unreadable: false }))
+
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   MAIN_AGENT_ID: 'main-agent',
-  APPROVAL_HUMAN_ONLY_ENFORCE: false,
+  get APPROVAL_HUMAN_ONLY_ENFORCE() {
+    if (flags.unreadable) throw new Error('switch unreadable')
+    return flags.enforce
+  },
 }))
 
 import { initDatabase, createDashboardUser, getSystemConfig, setSystemConfig, logConfigChange } from '../db.js'
@@ -26,6 +33,7 @@ import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.j
 import { SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import type { AuthResult } from '../web/auth-gate.js'
 import { tryHandleSettings } from '../web/routes/settings.js'
+import { tryHandleAdminB2b } from '../web/routes/admin-b2b.js'
 import { getRbacMode, refreshRbacMode, stopRbacModeRefresh } from '../web/rbac-mode.js'
 import { runRbacGate } from '../web/rbac-shadow-log.js'
 
@@ -119,6 +127,8 @@ function noticesToMainAgent(): string[] {
 }
 
 beforeEach(() => {
+  flags.enforce = true
+  flags.unreadable = false
   initDatabase(':memory:')
   _clearSessionCacheForTest()
   stopRbacModeRefresh()
@@ -199,6 +209,119 @@ describe('loosening RBAC_MODE', () => {
     expect(r.status).toBe(400)
     expect(storedValue()).toBe('enforce')
     expect(refusals()).toHaveLength(0)
+  })
+})
+
+// The user-creation route a token reaches while the human-only switch is off.
+async function createUserAs(caller: Caller, body: object): Promise<{ status: number; body: any }> {
+  const raw = JSON.stringify(body)
+  const em = new EventEmitter() as any
+  em.headers = {}
+  setImmediate(() => { em.emit('data', Buffer.from(raw)); em.emit('end') })
+  let status = 200
+  let out = ''
+  const res = { writeHead: (c: number) => { status = c }, setHeader: () => {}, end: (d?: string) => { out = d ?? '' } }
+  const url = new URL('http://localhost/api/admin/users')
+  const ctx = {
+    req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: 'POST', url,
+    auth: caller.auth, role: caller.role, tokenAgentId: caller.tokenAgentId,
+  } as unknown as RouteContext
+  await tryHandleAdminB2b(ctx)
+  return { status, body: out ? JSON.parse(out) : undefined }
+}
+
+function switchRefusals(): number {
+  return (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = 'security.human_only_enforce_required' AND entity_id = 'settings.rbac_mode.loosen'")
+      .get() as { n: number }
+  ).n
+}
+
+describe('loosening needs the human-only switch on', () => {
+  const ownerSession = (): Caller => ({ auth: { kind: 'session', user: 'owner' } as AuthResult, role: 'admin', cookie: cookies['owner'] })
+
+  it('is refused for a global admin human session while the switch is off', async () => {
+    flags.enforce = false
+    const r = await post(ownerSession(), loosen)
+    expect(r.status).toBe(403)
+    expect(r.body.code).toBe('human_only_enforce_required')
+    expect(storedValue()).toBe('enforce')
+    expect(getRbacMode()).toBe('enforce')
+    expect(switchRefusals()).toBe(1)
+    expect(noticesToMainAgent()).toHaveLength(0)
+    expect(lastJournal()).toBeUndefined()
+  })
+
+  it.each(Object.keys(CALLERS))('is refused for %j while the switch is off, with the switch code', async (name) => {
+    flags.enforce = false
+    const r = await post(CALLERS[name]!, loosen)
+    expect(r.status).toBe(403)
+    expect(r.body.code).toBe('human_only_enforce_required')
+    expect(storedValue()).toBe('enforce')
+  })
+
+  it('fails closed when the switch cannot be read', async () => {
+    flags.unreadable = true
+    const r = await post(ownerSession(), loosen)
+    expect(r.status).toBe(403)
+    expect(r.body.code).toBe('human_only_enforce_required')
+    expect(storedValue()).toBe('enforce')
+  })
+
+  it('passes for the same session once the switch is on', async () => {
+    flags.enforce = false
+    expect((await post(ownerSession(), loosen)).status).toBe(403)
+    flags.enforce = true
+    expect((await post(ownerSession(), loosen)).status).toBe(200)
+    expect(getRbacMode()).toBe('shadow')
+  })
+
+  it('does not hold tightening back: an admin token tightens with the switch off', async () => {
+    setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
+    refreshRbacMode(undefined)
+    flags.enforce = false
+    expect((await post(CALLERS['adminToken']!, tighten)).status).toBe(200)
+    expect(storedValue()).toBe('enforce')
+    expect(getRbacMode()).toBe('enforce')
+  })
+
+  describe('the chain: token creates a user, the user logs in, the user loosens', () => {
+    const NEW_USER = { username: 'minted-admin', password: 'correct-horse-battery-1', role: 'admin' }
+
+    function loginAs(username: string): Caller {
+      // The login route only verifies the password and then issues exactly this session.
+      const u = db.prepare('SELECT id, username FROM dashboard_users WHERE username = ?').get(username) as { id: number; username: string }
+      return { auth: { kind: 'session', user: username } as AuthResult, role: 'admin', cookie: createSession({ userId: u.id, username: u.username }) }
+    }
+
+    it('switch OFF: the token does mint a global admin, and that admin still cannot loosen', async () => {
+      flags.enforce = false
+      for (const who of ['mainAgentToken', 'adminToken']) {
+        const minted = await createUserAs(CALLERS[who]!, { ...NEW_USER, username: `minted-${who}` })
+        expect(minted.status, who).toBe(201)
+        const row = db.prepare('SELECT role, tenant_id FROM dashboard_users WHERE username = ?').get(`minted-${who}`) as { role: string; tenant_id: string | null }
+        expect(row).toEqual({ role: 'admin', tenant_id: null })
+        const r = await post(loginAs(`minted-${who}`), loosen)
+        expect(r.status, who).toBe(403)
+        expect(r.body.code).toBe('human_only_enforce_required')
+      }
+      expect(storedValue()).toBe('enforce')
+      expect(getRbacMode()).toBe('enforce')
+    })
+
+    it('switch ON: the token cannot mint the user at all, so there is no session to loosen with', async () => {
+      const before = (db.prepare('SELECT COUNT(*) AS n FROM dashboard_users').get() as { n: number }).n
+      for (const who of ['mainAgentToken', 'adminToken', 'operatorToken']) {
+        const minted = await createUserAs(CALLERS[who]!, { ...NEW_USER, username: `minted-${who}` })
+        expect(minted.status, who).toBe(403)
+        expect(minted.body.code).toBe('human_session_required')
+      }
+      expect((db.prepare('SELECT COUNT(*) AS n FROM dashboard_users').get() as { n: number }).n).toBe(before)
+      expect((await post({ ...CALLERS['mainAgentToken']!, cookie: 'forged' }, loosen)).status).toBe(403)
+      expect(storedValue()).toBe('enforce')
+    })
   })
 })
 
