@@ -193,7 +193,9 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   failure before it leaves nothing applied (see "The fleet import is two-phase"). What remains: a process killed
   between the commit and the last rename leaves the database applied and some files not; a file that could not be
   restored after a failed finish stays as it is and is named in the error (its `.import-bak` copy is kept); and a
-  `.import-new` or `.import-bak` left by a crash is overwritten by the next import, not cleaned up on its own.
+  `.import-new` left by a crash is overwritten by the next import, not cleaned up on its own. A `.import-bak` left
+  behind is never overwritten: the next import that would stage the same file is refused (409 `conflict`) until the
+  backup is restored onto its file or removed by hand.
 - **The federation disable branches ignore the result of `setFederationEnabledPreservingFile`.** A `false` return
   (the file could not be written) is not looked at, so the switch can read as off while the gate stays on.
 - **Creating a dashboard user twice in parallel** ends with a UNIQUE error answered as 500 for the second request

@@ -120,7 +120,7 @@ vi.mock('../db/fleet-transfer.js', async (importOriginal) => {
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { importFleet, type FleetJson } from '../web/fleet-transfer.js'
+import { importFleet, StaleBackupError, type FleetJson } from '../web/fleet-transfer.js'
 
 // ---------------------------------------------------------------------------
 // Fixture: a target that already has its own values, and a bundle that would replace every one of them.
@@ -545,6 +545,51 @@ describe('a failure after the commit', () => {
 
     expect(error!.message).toMatch(/could not be restored, take them from their \.import-bak backups: .*CLAUDE\.md/)
     expect(readFileSync(join(PROJECT, 'CLAUDE.md.import-bak'), 'utf-8')).toBe(OLD.claude)
+  })
+})
+
+describe('a backup left by an earlier import', () => {
+  const PRECIOUS = 'PRECIOUS previous content that only this backup holds\n'
+
+  async function refused(stale: string): Promise<void> {
+    mkdirSync(join(stale, '..'), { recursive: true })
+    writeFileSync(stale, PRECIOUS)
+    const before = await snapshotProbes()
+    const filesBefore = tree()
+
+    const error = await apply(bundle()).then(() => undefined, (e: unknown) => e as Error)
+
+    expect(error).toBeInstanceOf(StaleBackupError)
+    expect(error!.message).toContain(stale)
+    expect(error!.message).toMatch(/restore it onto .* or remove it/i)
+    expect(readFileSync(stale, 'utf-8')).toBe(PRECIOUS)
+    // nothing else changed: no other file, no staged file or backup of this import, no directory, no row, no cache
+    expect(tree()).toEqual(filesBefore)
+    expect(await snapshotProbes()).toEqual(before)
+    expect(probe.events).toEqual([])
+    expect(updateEnvFile).not.toHaveBeenCalled()
+    expectCachesMatchTables()
+  }
+
+  it('refuses the import and keeps the backup, for a file that exists', async () => {
+    await refused(join(PROJECT, 'CLAUDE.md.import-bak'))
+  })
+
+  it('refuses the import for a file that does not exist yet, after earlier files were staged', async () => {
+    // staged late: the skill file comes after CLAUDE.md, SOUL.md, .mcp.json and the agent files
+    await refused(join(HOME, '.claude', 'skills', 'skill-g', 'SKILL.md.import-bak'))
+  })
+
+  it('the import goes through once the backup is gone', async () => {
+    const stale = join(PROJECT, 'CLAUDE.md.import-bak')
+    writeFileSync(stale, PRECIOUS)
+    await expect(apply(bundle())).rejects.toBeInstanceOf(StaleBackupError)
+
+    rmSync(stale)
+    await apply(bundle())
+
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('new claude\n')
+    expect(strays()).toEqual([])
   })
 })
 

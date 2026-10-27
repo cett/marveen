@@ -57,6 +57,16 @@ export class UserFacingError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// StaleBackupError -- an import found a `.import-bak` left by an earlier one; route maps to 409 (not 500).
+// ---------------------------------------------------------------------------
+export class StaleBackupError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StaleBackupError'
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Name validation (used to guard all import-side path joins -- B1)
 // ---------------------------------------------------------------------------
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/
@@ -1133,6 +1143,14 @@ function trackedMkdir(path: string, tracker: WriteTracker): void {
 function stagedWrite(path: string, content: string | Buffer, tracker: WriteTracker, opts?: { mode?: number }): WriteEntry {
   let entry = tracker.files.find((e) => e.path === path)
   if (!entry) {
+    // A backup that is already there was left by an earlier import that could not restore this file: it may be the
+    // only copy of the previous content, and the backup of this import would overwrite it. Refuse, touch nothing.
+    if (existsSync(`${path}${BACKUP_SUFFIX}`)) {
+      throw new StaleBackupError(
+        `A backup left by an earlier import exists: ${path}${BACKUP_SUFFIX}. It may hold the only copy of the previous ` +
+        `content. Restore it onto ${path} or remove it, then import again. Nothing was imported.`,
+      )
+    }
     // Tracked before the write, so a write that fails half way is still cleaned up.
     entry = { path, staged: `${path}${STAGE_SUFFIX}`, backup: null, renamed: false }
     tracker.files.push(entry)
