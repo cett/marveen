@@ -2,10 +2,10 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import { logger } from '../logger.js'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { initDatabase, getDb, getDashboardUser } from '../db.js'
+import { initDatabase, getDb, getDashboardUser, dbx } from '../db.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import { requiresAuth, parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
-import { resolveSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
+import { resolveSession, _clearSessionCacheForTest, _cacheForTest } from '../web/auth-sessions.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -135,6 +135,34 @@ describe('POST /api/auth/login', () => {
       body: { username: 'alice', password: GOOD_PW },
     })
     expect(cookieHeader(res)).toContain('Secure')
+  })
+
+  // The row is written before the cache entry and before the cookie: a failed insert must leave neither, or the
+  // cookie would work until the next restart and then vanish.
+  it('a failed session insert sets no cookie and leaves no cache entry', async () => {
+    await seedUser('alice')
+    const original = dbx.run.bind(dbx)
+    const seen: string[] = []
+    const spy = vi.spyOn(dbx, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
+      seen.push(sql)
+      if (/INSERT INTO auth_sessions/.test(sql)) throw new Error('database unavailable')
+      return original(sql, ...params)
+    })
+    const res = mkRes()
+    const ctx: RouteContext = {
+      req: mkReq({ body: { username: 'alice', password: GOOD_PW } }),
+      res: res as unknown as http.ServerResponse,
+      path: '/api/auth/login',
+      method: 'POST',
+      url: new URL('http://127.0.0.1:3420/api/auth/login'),
+      auth: undefined,
+    }
+    await expect(tryHandleAuth(ctx)).rejects.toThrow('database unavailable')
+    spy.mockRestore()
+    expect(seen.at(-1)).toMatch(/INSERT INTO auth_sessions/)
+    expect(res.headers['Set-Cookie']).toBeUndefined()
+    expect(_cacheForTest.size).toBe(0)
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM auth_sessions').get()).toEqual({ c: 0 })
   })
 
   it('mints a fresh session id on every login (fixation defence)', async () => {
