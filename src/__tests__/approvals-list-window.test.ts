@@ -35,10 +35,10 @@ async function list(caller: Caller, query = '') {
   return out
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createApproval({ id: 'a-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x' })
-  createApproval({ id: 'b-1', agent_id: 'worker', category: 'deploy', action_description: 'y', tenant_id: 'tenant-b' })
+  await createApproval({ id: 'a-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x' })
+  await createApproval({ id: 'b-1', agent_id: 'worker', category: 'deploy', action_description: 'y', tenant_id: 'tenant-b' })
 })
 
 describe('GET /api/approvals window_s', () => {

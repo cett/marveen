@@ -315,8 +315,8 @@ describe('GET /api/overview — pendingApprovals', () => {
 
   it('counts only pending approvals', async () => {
     // Fix-revert proof: removing the pendingApprovals COUNT query returns 0.
-    createApproval({ id: 'ap-1', agent_id: 'agent-a', category: 'test', action_description: 'do something' })
-    createApproval({ id: 'ap-2', agent_id: 'agent-a', category: 'test', action_description: 'do something else' })
+    await createApproval({ id: 'ap-1', agent_id: 'agent-a', category: 'test', action_description: 'do something' })
+    await createApproval({ id: 'ap-2', agent_id: 'agent-a', category: 'test', action_description: 'do something else' })
     // Resolve one
     getDb().prepare("UPDATE approvals SET status='approved', resolved_at=? WHERE id='ap-2'").run(Math.floor(Date.now() / 1000))
 
@@ -327,8 +327,8 @@ describe('GET /api/overview — pendingApprovals', () => {
 
   it('admin with ?tenant filter counts only that tenant\'s pending approvals', async () => {
     // Fix-revert proof: without tenant scoping this would return 2, not 1.
-    createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
-    createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
+    await createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
+    await createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
 
     const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
@@ -336,8 +336,8 @@ describe('GET /api/overview — pendingApprovals', () => {
   })
 
   it('admin without ?tenant filter counts pending approvals across all tenants', async () => {
-    createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
-    createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
+    await createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
+    await createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
 
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
@@ -415,7 +415,7 @@ describe('GET /api/overview — activity feed 4h filter', () => {
 
 describe('GET /api/overview, activity feed approvals', () => {
   it('includes a recent approval with its status', async () => {
-    createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
+    await createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
 
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
@@ -424,7 +424,7 @@ describe('GET /api/overview, activity feed approvals', () => {
   })
 
   it('a failing approvals read leaves the feed without them, answers 200 and logs the error', async () => {
-    createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
+    await createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
     getDb().exec('ALTER TABLE approvals RENAME COLUMN requested_at TO requested_at_gone')
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
     try {

@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockGetPendingMessages = vi.fn()
 const mockUpsertOtelSpan = vi.fn()
-const mockStampMessageTrace = vi.fn((..._a: unknown[]) => true)
+const mockStampMessageTrace = vi.fn((..._a: unknown[]) => Promise.resolve(true))
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -91,7 +91,7 @@ function makePending() {
 describe('message-router: inter-agent span attributes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockStampMessageTrace.mockReturnValue(true)
+    mockStampMessageTrace.mockResolvedValue(true)
   })
 
   it('fills upsertOtelSpan attributes with msg_id/from/to as JSON', async () => {
@@ -106,7 +106,7 @@ describe('message-router: inter-agent span attributes', () => {
   })
 
   it('does not call upsertOtelSpan when stampMessageTrace reports already-stamped', async () => {
-    mockStampMessageTrace.mockReturnValue(false)
+    mockStampMessageTrace.mockResolvedValue(false)
     mockGetPendingMessages.mockReturnValue(makePending())
 
     await runMessageRouterTick()

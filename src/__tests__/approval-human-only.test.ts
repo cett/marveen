@@ -154,8 +154,8 @@ describe('deciding a human-only approval (enforce)', () => {
       const out = await patch(id, TOKEN, { status, resolved_by: 'owner' })
       expect(out.status).toBe(403)
       expect(out.body).toMatchObject({ error: 'forbidden', code: 'human_only_category' })
-      expect(getApproval(id)?.status).toBe('pending')
-      expect(listApprovalEvents(id).map((e) => [e.event, e.reason, e.actor])).toEqual([['bearer_denied', 'human_only_category', 'main-agent']])
+      expect((await getApproval(id))?.status).toBe('pending')
+      expect((await listApprovalEvents(id)).map((e) => [e.event, e.reason, e.actor])).toEqual([['bearer_denied', 'human_only_category', 'main-agent']])
     }
   })
 
@@ -164,8 +164,8 @@ describe('deciding a human-only approval (enforce)', () => {
     expect((await patch(id, { auth: { kind: 'token' }, role: 'admin' })).status).toBe(403)
     expect((await patch(id, { auth: { kind: 'device', device: 'phone' } as any, role: 'admin' })).status).toBe(403)
     expect((await patch(id, { auth: { kind: 'token', tokenName: 'a' }, role: 'fleet_agent', tokenAgentId: 'agent-d' })).status).toBe(403)
-    expect(getApproval(id)?.status).toBe('pending')
-    expect(listApprovalEvents(id)).toHaveLength(3)
+    expect((await getApproval(id))?.status).toBe('pending')
+    expect(await listApprovalEvents(id)).toHaveLength(3)
   })
 
   it('refuses a session that is not a global admin: a viewer, a tenant admin, a tenant agent', async () => {
@@ -173,7 +173,7 @@ describe('deciding a human-only approval (enforce)', () => {
     expect((await patch(id, sessionOf('viewer', 'viewer'))).status).toBe(403)
     expect((await patch(id, sessionOf('tadmin', 'admin', 'tenant-b'))).status).toBe(403)
     expect((await patch(id, sessionOf('tagent', 'agent', 'tenant-b'))).status).toBe(403)
-    expect(getApproval(id)?.status).toBe('pending')
+    expect((await getApproval(id))?.status).toBe('pending')
   })
 
   it('refuses a request whose cookie is forged, with a token that is otherwise good', async () => {
@@ -185,29 +185,29 @@ describe('deciding a human-only approval (enforce)', () => {
     const id = await request('email_standing_recipient')
     const out = await patch(id, sessionOf('owner', 'admin'), { status: 'approved', resolved_by: 'main-agent' })
     expect(out.status).toBe(200)
-    expect(getApproval(id)).toMatchObject({ status: 'approved', resolved_by: 'human:session:owner', resolved_via: 'dashboard_session' })
+    expect(await getApproval(id)).toMatchObject({ status: 'approved', resolved_by: 'human:session:owner', resolved_via: 'dashboard_session' })
   })
 
   it('lets the browser that sends a token and its session cookie decide', async () => {
     const id = await request('email_standing_recipient')
     const out = await patch(id, { ...TOKEN, cookie: cookies.owner })
     expect(out.status).toBe(200)
-    expect(getApproval(id)).toMatchObject({ resolved_by: 'human:session:owner', resolved_via: 'dashboard_session' })
+    expect(await getApproval(id)).toMatchObject({ resolved_by: 'human:session:owner', resolved_via: 'dashboard_session' })
   })
 
   it('does not let the requester of a human-only approval decide it by calling it a person', async () => {
     const id = await request('email_standing_recipient', 'owner')
     const out = await patch(id, sessionOf('owner', 'admin'))
     expect(out.status).toBe(200) // a session is a person, whoever the requesting agent is called
-    expect(getApproval(id)?.resolved_by).toBe('human:session:owner')
+    expect((await getApproval(id))?.resolved_by).toBe('human:session:owner')
   })
 
   it('leaves a category that is not human-only to a token, and records how it arrived', async () => {
     const id = await request('file_write')
     const out = await patch(id, TOKEN)
     expect(out.status).toBe(200)
-    expect(getApproval(id)).toMatchObject({ status: 'approved', resolved_by: 'main-agent', resolved_via: 'bearer', human_only: 0 })
-    expect(listApprovalEvents(id)).toHaveLength(0)
+    expect(await getApproval(id)).toMatchObject({ status: 'approved', resolved_by: 'main-agent', resolved_via: 'bearer', human_only: 0 })
+    expect(await listApprovalEvents(id)).toHaveLength(0)
   })
 
   it('treats a request as human-only by its snapshot when the set shrinks, and by the category when it grows', async () => {
@@ -223,9 +223,9 @@ describe('deciding a human-only approval (enforce)', () => {
 describe('asking for an approval (enforce)', () => {
   it('stores the canonical category and the human-only snapshot', async () => {
     const id = await request('  File_Write ')
-    expect(getApproval(id)).toMatchObject({ category: 'file_write', human_only: 0 })
+    expect(await getApproval(id)).toMatchObject({ category: 'file_write', human_only: 0 })
     const email = await request('email_standing_recipient')
-    expect(getApproval(email)).toMatchObject({ category: 'email_standing_recipient', human_only: 1 })
+    expect(await getApproval(email)).toMatchObject({ category: 'email_standing_recipient', human_only: 1 })
   })
 
   it.each([['Email_Send'], [' email_send'], ['emailsend'], ['email_send' + ZWSP], ['email-send'], [CYRILLIC_E + 'mail_send'], ['email_send;x']])('refuses %j', async (category) => {
@@ -242,13 +242,13 @@ describe('without enforcement (the default)', () => {
   it('lets a token decide a human-only approval, and journals that it would have been refused', async () => {
     const id = await request('email_standing_recipient')
     expect((await patch(id, TOKEN)).status).toBe(200)
-    expect(getApproval(id)).toMatchObject({ status: 'approved', resolved_by: 'main-agent', resolved_via: 'bearer', human_only: 1 })
-    expect(listApprovalEvents(id).map((e) => e.reason)).toEqual(['human_only_category_advisory'])
+    expect(await getApproval(id)).toMatchObject({ status: 'approved', resolved_by: 'main-agent', resolved_via: 'bearer', human_only: 1 })
+    expect((await listApprovalEvents(id)).map((e) => e.reason)).toEqual(['human_only_category_advisory'])
   })
 
   it('stores the category as sent, takes the snapshot, and does not refuse a twin spelling', async () => {
     const id = await request('Email_Standing_Recipient')
-    expect(getApproval(id)).toMatchObject({ category: 'Email_Standing_Recipient', human_only: 1 })
+    expect(await getApproval(id)).toMatchObject({ category: 'Email_Standing_Recipient', human_only: 1 })
   })
 })
 

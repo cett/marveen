@@ -303,12 +303,12 @@ describe('pruneConversationLog / pruneAgentMessages', () => {
 // --- Message Trace Stamping ---
 
 describe('stampMessageTrace', () => {
-  it('stamps trace on a pending message', () => {
+  it('stamps trace on a pending message', async () => {
     const msg = createAgentMessage('test-from', 'test-to', 'trace test')
-    const ok = stampMessageTrace(msg.id, 'trace-test-001', 'span-001', null)
+    const ok = await stampMessageTrace(msg.id, 'trace-test-001', 'span-001', null)
     expect(ok).toBe(true)
     // Second stamp on same message returns false (already has trace_id)
-    const ok2 = stampMessageTrace(msg.id, 'trace-test-002', 'span-002', null)
+    const ok2 = await stampMessageTrace(msg.id, 'trace-test-002', 'span-002', null)
     expect(ok2).toBe(false)
   })
 })
@@ -316,13 +316,13 @@ describe('stampMessageTrace', () => {
 // --- Approval Expiry ---
 
 describe('expireTimedOutApprovals', () => {
-  it('expires approvals past their timeout', () => {
+  it('expires approvals past their timeout', async () => {
     const pastTimeout = Math.floor(Date.now() / 1000) - 10
     getDb().prepare(
       `INSERT INTO approvals (id, agent_id, category, action_description, status, timeout_at, requested_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run('test-exp-1', 'test-agent-approvals', 'code_exec', 'run tests', 'pending', pastTimeout, pastTimeout - 100)
-    const count = expireTimedOutApprovals()
+    const count = await expireTimedOutApprovals()
     expect(count).toBeGreaterThanOrEqual(1)
     const row = getDb().prepare("SELECT status FROM approvals WHERE id = 'test-exp-1'").get() as any
     expect(row.status).toBe('timeout')
