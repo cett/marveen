@@ -143,8 +143,8 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
 
   const common = { content_hash: body.content_hash, principal, tenant_id: tenantOf(ctx), window_s: APPROVAL_CONSUME_WINDOW_S, ref: body.ref, consumer: body.consumer }
   const outcome = id !== null
-    ? consumeApproval({ ...common, id })
-    : claimApproval({ ...common, category: body.category as string, ...(body.mode === 'send' ? { mode: 'send' as const } : {}) })
+    ? await consumeApproval({ ...common, id })
+    : await claimApproval({ ...common, category: body.category as string, ...(body.mode === 'send' ? { mode: 'send' as const } : {}) })
   auditUse(principal, id !== null ? 'id' : 'claim', outcome, id ?? undefined, body.content_hash)
 
   if (outcome.ok) {

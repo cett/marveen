@@ -113,7 +113,7 @@ describe('recordApprovalEvent', () => {
   it('the journal row of a consume (the synchronous twin) carries the tenant of the approval', async () => {
     await createApproval({ id: 'ap-2', agent_id: 'agent-a', category: 'email_send', action_description: 'x', content_hash: HASH, tenant_id: 'tenant-b' })
     expect(await resolveApproval('ap-2', 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
-    const out = consumeApproval({ id: 'ap-2', content_hash: HASH, principal: 'agent-a', tenant_id: 'tenant-b', window_s: 600, ref: 'r1', consumer: 'test' })
+    const out = await consumeApproval({ id: 'ap-2', content_hash: HASH, principal: 'agent-a', tenant_id: 'tenant-b', window_s: 600, ref: 'r1', consumer: 'test' })
     expect(out.ok).toBe(true)
     const events = await listApprovalEvents('ap-2')
     expect(events.map((e) => [e.event, e.tenant_id])).toEqual([['consumed', 'tenant-b']])
