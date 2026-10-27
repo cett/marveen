@@ -84,6 +84,32 @@ during the call (`helpers/single-transaction.ts`), and expects exactly one trans
 `getDb().prepare(...)` in such a function is covered by the `db-outside-sql` ratchet, not by this test.
 A new read-then-write function is one more case in that table.
 
+## The fleet import is two-phase
+
+`importFleet` (`web/fleet-transfer.ts`) writes files and database rows, and a failing import must leave nothing half
+applied. The rule: **files are staged before the transaction and renamed after it; every database write is in one
+transaction; the vault step and the `.env` mirror come last.**
+
+1. Everything pure is decided first (the cost budgets and the federation document are validated, the `.env` identity
+   is picked, the skill rows are listed).
+2. Each file is written as `<path>.import-new`; a file it would replace is copied to `<path>.import-bak`. No final
+   path changes (only directories that did not exist are created, and removed again on a failure).
+3. ONE `dbx.tx` holds all the database writes: the settings (autonomy, model profiles, auto-restart, desired agents,
+   model fallback, terminal input, federation, cost budgets, egress allowlist), the skill rows (an error there fails
+   the import) and the per-table rows. The body holds no file I/O, network or timer. `seedSkillIfAbsent()` still
+   writes on the raw connection; on the one SQLite connection that statement runs inside the open transaction and
+   rolls back with it (see the raw-writer limit below), which `fleet-transfer-two-phase.test.ts` pins.
+4. After the commit: the staged files are renamed into place, the model-profile, agent-settings and system-config
+   caches are re-read (and the federation cache dropped), then the vault step (its two files and the bindings), then
+   the `.env` mirror.
+
+A failure before the commit removes the staged files and the backups and re-reads the caches (a write-through cache
+shows a new value inside the transaction and keeps it after the rollback); every final path is as it was. A failure
+after the commit cannot roll the database back: the renamed files are restored from their `.import-bak` copies (the
+backups stay for the operator), the error says that the database changes remain, and a file that could not be
+restored is named in the message. A successful import removes every backup. The remaining risk is that second case:
+a process killed between the commit and the last rename leaves the database applied and some files not.
+
 ## The authentication path fails closed
 
 A function that decides who a caller is (`resolveAuth`, the device-key and API-token lookups) answers *deny* when
