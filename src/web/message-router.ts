@@ -264,12 +264,12 @@ function generateSpanId(): string { return randomUUID().replace(/-/g, '').slice(
 
 // Stamps a trace context onto an unstamped pending message, using either an
 // inherited context (propagation) or a freshly generated root trace.
-function stampTraceOnMessage(msg: AgentMessage, nowMs: number): { trace_id: string; span_id: string; parent_span_id: string | null } {
+async function stampTraceOnMessage(msg: AgentMessage, nowMs: number): Promise<{ trace_id: string; span_id: string; parent_span_id: string | null }> {
   const inherited = deliveredTraceCtx.get(msg.from_agent)
   const trace_id = inherited?.trace_id ?? generateTraceId()
   const span_id  = generateSpanId()
   const parent_span_id = inherited?.span_id ?? null
-  const stamped = stampMessageTrace(msg.id, trace_id, span_id, parent_span_id)
+  const stamped = await stampMessageTrace(msg.id, trace_id, span_id, parent_span_id)
   if (stamped) {
     const operation = `${msg.from_agent}->${msg.to_agent}`
     // Fill attributes so the Grafana/Tempo export
@@ -705,7 +705,7 @@ export async function runMessageRouterTick(): Promise<void> {
       if (!isChannelInbound) {
         const effective = msg.trace_id && msg.span_id
           ? { trace_id: msg.trace_id, span_id: msg.span_id }
-          : stampTraceOnMessage(msg, now)
+          : await stampTraceOnMessage(msg, now)
         traceCtx = effective
       }
 

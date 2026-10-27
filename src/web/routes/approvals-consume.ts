@@ -185,19 +185,19 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
 }
 
 /** GET /api/approvals/:id/events -- the journal of one approval, for diagnosis and the Approvals page. */
-function handleEvents(ctx: RouteContext, id: string): true {
+async function handleEvents(ctx: RouteContext, id: string): Promise<true> {
   // The journal names the principals that touched the row: a person's or the admin's view, not an agent's.
   if (ctx.role === 'fleet_agent') {
     json(ctx.res, { error: 'forbidden', hint: 'The approval journal is read by the owner, not by a fleet agent token' }, 403)
     return true
   }
-  const approval = getApproval(id)
+  const approval = await getApproval(id)
   const foreignTenant = approval !== undefined && ctx.auth?.kind === 'session' && ctx.role !== 'admin' && approval.tenant_id !== ctx.tenantId
   if (!approval || foreignTenant) {
     json(ctx.res, { error: 'not_found', hint: 'Not found' }, 404)
     return true
   }
-  json(ctx.res, { approval_id: approval.id, items: listApprovalEvents(approval.id) })
+  json(ctx.res, { approval_id: approval.id, items: await listApprovalEvents(approval.id) })
   return true
 }
 

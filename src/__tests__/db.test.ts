@@ -101,7 +101,7 @@ describe('memories', () => {
 })
 
 describe('approvals', () => {
-  it('listApprovals tenant filter is SQL-level (not post-LIMIT application filter)', () => {
+  it('listApprovals tenant filter is SQL-level (not post-LIMIT application filter)', async () => {
     // Mutation guard: if tenant_id = ? were applied after LIMIT instead of inside
     // the WHERE clause, a query for 4 tenant-a rows from a pool of 8 mixed rows
     // (4+4) would return fewer than 4 results. The SQL-level filter must come
@@ -119,14 +119,14 @@ describe('approvals', () => {
          VALUES (?, ?, 'cat', 'desc', 'pending', ?, ?)`
       ).run(`appr-b-${i}`, chatId, now + i, 'tenant-b')
     }
-    const results = listApprovals({ limit: 4, tenantId: 'tenant-a' })
+    const results = await listApprovals({ limit: 4, tenantId: 'tenant-a' })
     // Must get exactly 4 tenant-a rows even though the table has 8 mixed rows
     expect(results.length).toBe(4)
     expect(results.every((a) => a.tenant_id === 'tenant-a')).toBe(true)
   })
 
-  it('createApproval stores tenant_id and listApprovals returns it', () => {
-    const appr = createApproval({
+  it('createApproval stores tenant_id and listApprovals returns it', async () => {
+    const appr = await createApproval({
       id: 'appr-t-create',
       agent_id: 'agent-x',
       category: 'test',
@@ -135,20 +135,20 @@ describe('approvals', () => {
     })
     expect(appr.tenant_id).toBe('tenant-create-test')
 
-    const found = listApprovals({ tenantId: 'tenant-create-test' })
+    const found = await listApprovals({ tenantId: 'tenant-create-test' })
     expect(found.length).toBeGreaterThan(0)
     expect(found[0].tenant_id).toBe('tenant-create-test')
   })
 
-  it('createApproval with no tenant_id stores the default tenant (the column is NOT NULL)', () => {
-    const appr = createApproval({
+  it('createApproval with no tenant_id stores the default tenant (the column is NOT NULL)', async () => {
+    const appr = await createApproval({
       id: 'appr-t-null',
       agent_id: 'agent-y',
       category: 'test',
       action_description: 'fleet action without tenant',
     })
     expect(appr.tenant_id).toBe('default')
-    expect(listApprovals({ tenantId: 'default' }).map((a) => a.id)).toContain('appr-t-null')
+    expect((await listApprovals({ tenantId: 'default' })).map((a) => a.id)).toContain('appr-t-null')
   })
 })
 

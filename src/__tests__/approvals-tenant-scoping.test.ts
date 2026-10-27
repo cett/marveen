@@ -75,13 +75,13 @@ function makeCtx(
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(db.getApproval).mockReturnValue(undefined)
-  vi.mocked(db.listApprovals).mockReturnValue([])
-  vi.mocked(db.countApprovals).mockReturnValue(0)
-  vi.mocked(db.getApprovalStatusCounts).mockReturnValue({ pending: 0, approved: 0, rejected: 0, timeout: 0 })
-  vi.mocked(db.getOldestPendingApproval).mockReturnValue(undefined)
-  vi.mocked(db.resolveApproval).mockReturnValue(true)
-  vi.mocked(db.expireTimedOutApprovals).mockReturnValue(0)
+  vi.mocked(db.getApproval).mockResolvedValue(undefined)
+  vi.mocked(db.listApprovals).mockResolvedValue([])
+  vi.mocked(db.countApprovals).mockResolvedValue(0)
+  vi.mocked(db.getApprovalStatusCounts).mockResolvedValue({ pending: 0, approved: 0, rejected: 0, timeout: 0 })
+  vi.mocked(db.getOldestPendingApproval).mockResolvedValue(undefined)
+  vi.mocked(db.resolveApproval).mockResolvedValue(true)
+  vi.mocked(db.expireTimedOutApprovals).mockResolvedValue(0)
 })
 
 describe('approvals tenant scoping -- GET', () => {
@@ -159,7 +159,7 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
   // second layer for a mode where the gate does not refuse (RBAC_MODE=shadow).
   it('non-admin session gets 404 for cross-tenant approval (anti-enumeration)', async () => {
     // Approval belongs to tenant-y, caller is in tenant-x -> 404, not 403
-    vi.mocked(db.getApproval).mockReturnValue({
+    vi.mocked(db.getApproval).mockResolvedValue({
       id: 'appr-1',
       agent_id: 'agent-a',
       category: 'cat',
@@ -188,7 +188,7 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
 
   it('non-admin session gets 404 when approval does not exist (anti-enumeration, mutation-proof)', async () => {
     // getApproval returns undefined (id not found at all) -> same 404 as cross-tenant
-    vi.mocked(db.getApproval).mockReturnValue(undefined)
+    vi.mocked(db.getApproval).mockResolvedValue(undefined)
     const { ctx, out } = makeCtx('PATCH', '/api/approvals/nonexistent', {
       authKind: 'session',
       role: 'viewer',
@@ -204,7 +204,7 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
 
   it('non-admin session with no tenantId gets 403 (config fail-closed, not anti-enum)', async () => {
     // Session user has no tenant assignment -- this is a config error, not a cross-tenant attempt
-    vi.mocked(db.getApproval).mockReturnValue({
+    vi.mocked(db.getApproval).mockResolvedValue({
       id: 'appr-cfg',
       agent_id: 'agent-a',
       category: 'cat',
@@ -233,7 +233,7 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
 
   it('non-admin session can resolve an approval that belongs to their own tenant', async () => {
     vi.mocked(db.getApproval)
-      .mockReturnValueOnce({
+      .mockResolvedValueOnce({
         id: 'appr-2',
         agent_id: 'agent-b',
         category: 'cat',
@@ -247,7 +247,7 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
         requested_at: 0,
         tenant_id: 'tenant-x',
       })
-      .mockReturnValueOnce({
+      .mockResolvedValueOnce({
         id: 'appr-2',
         agent_id: 'agent-b',
         category: 'cat',
@@ -276,7 +276,7 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
 
   it('admin session can resolve any tenant approval without IDOR check', async () => {
     vi.mocked(db.getApproval)
-      .mockReturnValueOnce({
+      .mockResolvedValueOnce({
         id: 'appr-3',
         agent_id: 'agent-c',
         category: 'cat',
@@ -290,7 +290,7 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
         requested_at: 0,
         tenant_id: 'tenant-z',
       })
-      .mockReturnValueOnce({
+      .mockResolvedValueOnce({
         id: 'appr-3',
         agent_id: 'agent-c',
         category: 'cat',

@@ -42,7 +42,7 @@ vi.mock('../db.js', () => ({
   markMessageNoSession: (..._a: unknown[]) => true,
   createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
   // card def5a189: OTel trace stubs -- no-ops in this test
-  stampMessageTrace: (..._a: unknown[]) => false,
+  stampMessageTrace: (..._a: unknown[]) => Promise.resolve(false),
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
 }))

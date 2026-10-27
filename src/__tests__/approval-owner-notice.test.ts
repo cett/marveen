@@ -263,7 +263,7 @@ describe('a new human-only request (enforce on)', () => {
     await new Promise(r => setImmediate(r))
     await new Promise(r => setImmediate(r))
     expect(inbox('main-agent').some(c => c.includes('OWNER_UNREACHED'))).toBe(false)
-    expect(listApprovalEvents(getPendingFirstId()).some(e => e.event === 'owner_unreached')).toBe(false)
+    expect((await listApprovalEvents(getPendingFirstId())).some(e => e.event === 'owner_unreached')).toBe(false)
   })
 
   it.each([
@@ -273,14 +273,14 @@ describe('a new human-only request (enforce on)', () => {
     arrange()
     const out = await ask('agent-b', 'email_standing_recipient')
     expect(out.status).toBe(201)
-    expect(getApproval(out.body.id)?.status).toBe('pending')
+    expect((await getApproval(out.body.id))?.status).toBe('pending')
 
     await vi.waitFor(() => expect(inbox('main-agent').some(c => c.startsWith('[OWNER_UNREACHED]'))).toBe(true))
     const line = inbox('main-agent').find(c => c.startsWith('[OWNER_UNREACHED]'))!
     expect(line).toContain(`id=${out.body.id}`)
     expect(line).toContain('NE PATCH-eld')
     expect(line).not.toContain('Send the weekly digest') // the agent's text is not repeated here
-    expect(listApprovalEvents(out.body.id).map(e => e.event)).toContain('owner_unreached')
+    expect((await listApprovalEvents(out.body.id)).map(e => e.event)).toContain('owner_unreached')
   })
 
   it('reports OWNER_UNREACHED even when the main agent is the requester (it is the one who can speak up)', async () => {

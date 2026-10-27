@@ -107,6 +107,29 @@ describe('tryHandleVaultSsh', () => {
     expect(await tryHandleVaultSsh(ctx)).toBe(false)
   })
 
+  it('the list, the key assignment and generate-key all answer with the assigned key type and fingerprint', async () => {
+    await createServer({ body: { name: 'key-fields-srv' } })
+    const gen = makeCtx('POST', '/api/vault/ssh-servers/key-fields-srv/generate-key', { role: 'user', tenantId: 'default' })
+    expect(await tryHandleVaultSsh(gen.ctx)).toBe(true)
+    expect(gen.out.status).toBe(200)
+    expect(gen.out.body.server.keyType).toBe('ed25519')
+    expect(typeof gen.out.body.server.fingerprint).toBe('string')
+
+    const ls = makeCtx('GET', '/api/vault/ssh-servers', { role: 'user', tenantId: 'default' })
+    expect(await tryHandleVaultSsh(ls.ctx)).toBe(true)
+    expect(ls.out.status).toBe(200)
+    const listed = ls.out.body.servers.find((s: any) => s.id === 'key-fields-srv')
+    expect(listed.keyStatus).toBe('ok')
+    expect(listed.keyType).toBe('ed25519')
+    expect(typeof listed.fingerprint).toBe('string')
+
+    const put = makeCtx('PUT', '/api/vault/ssh-servers/key-fields-srv', { role: 'user', tenantId: 'default', body: { sshKeyId: listed.sshKeyId } })
+    expect(await tryHandleVaultSsh(put.ctx)).toBe(true)
+    expect(put.out.status).toBe(200)
+    expect(put.out.body.server.keyType).toBe('ed25519')
+    expect(typeof put.out.body.server.fingerprint).toBe('string')
+  })
+
   describe('GET /api/vault/ssh-servers', () => {
     it('lists only the caller tenant\'s servers for a non-admin', async () => {
       await createServer({ body: { name: 'tenant-a-srv' }, tenantId: 'tenant-a' })

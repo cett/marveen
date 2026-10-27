@@ -588,8 +588,8 @@ describe('vault SSH functions', () => {
     expect(computeSshKeyStatus(server)).toBe('ok')
   })
 
-  it('createVaultSshKey + getVaultSshKey roundtrip', () => {
-    const key = createVaultSshKey({
+  it('createVaultSshKey + getVaultSshKey roundtrip', async () => {
+    const key = await createVaultSshKey({
       id: 'db2-key-1',
       label: 'Test Key',
       username: 'root',
@@ -600,17 +600,17 @@ describe('vault SSH functions', () => {
       tenant_id: 'default',
     })
     expect(key.id).toBe('db2-key-1')
-    const retrieved = getVaultSshKey('db2-key-1')
+    const retrieved = await getVaultSshKey('db2-key-1')
     expect(retrieved?.label).toBe('Test Key')
   })
 
-  it('listVaultSshKeys returns created key', () => {
-    const keys = listVaultSshKeys()
+  it('listVaultSshKeys returns created key', async () => {
+    const keys = await listVaultSshKeys()
     expect(keys.some(k => k.id === 'db2-key-1')).toBe(true)
   })
 
-  it('listVaultSshKeys(tenantId) filters to that tenant only', () => {
-    createVaultSshKey({
+  it('listVaultSshKeys(tenantId) filters to that tenant only', async () => {
+    await createVaultSshKey({
       id: 'db2-key-tenant',
       label: 'Tenant Key',
       username: 'deploy',
@@ -620,21 +620,21 @@ describe('vault SSH functions', () => {
       key_type: 'ed25519',
       tenant_id: 'eszter',
     })
-    expect(listVaultSshKeys('eszter').every(k => k.id === 'db2-key-tenant')).toBe(true)
-    expect(listVaultSshKeys('default').some(k => k.id === 'db2-key-tenant')).toBe(false)
-    expect(listVaultSshKeys(null).some(k => k.id === 'db2-key-tenant')).toBe(true)
-    deleteVaultSshKey('db2-key-tenant')
+    expect((await listVaultSshKeys('eszter')).every(k => k.id === 'db2-key-tenant')).toBe(true)
+    expect((await listVaultSshKeys('default')).some(k => k.id === 'db2-key-tenant')).toBe(false)
+    expect((await listVaultSshKeys(null)).some(k => k.id === 'db2-key-tenant')).toBe(true)
+    await deleteVaultSshKey('db2-key-tenant')
   })
 
-  it('deleteVaultSshKey removes key and unassigns servers', () => {
-    const result = deleteVaultSshKey('db2-key-1')
+  it('deleteVaultSshKey removes key and unassigns servers', async () => {
+    const result = await deleteVaultSshKey('db2-key-1')
     expect(result.deleted).toBe(true)
     expect(result.unassigned).toBeGreaterThanOrEqual(0)
-    expect(getVaultSshKey('db2-key-1')).toBeUndefined()
+    expect(await getVaultSshKey('db2-key-1')).toBeUndefined()
   })
 
-  it('createVaultSshServer + getVaultSshServer roundtrip', () => {
-    const server = createVaultSshServer({
+  it('createVaultSshServer + getVaultSshServer roundtrip', async () => {
+    const server = await createVaultSshServer({
       id: 'db2-srv-1',
       name: 'Test Server',
       host: '192.168.1.1',
@@ -646,17 +646,17 @@ describe('vault SSH functions', () => {
     expect(server.id).toBe('db2-srv-1')
     expect(server.ssh_key_id).toBeNull()
     expect(server.tenant_id).toBe('default')
-    const retrieved = getVaultSshServer('db2-srv-1')
+    const retrieved = await getVaultSshServer('db2-srv-1')
     expect(retrieved?.name).toBe('Test Server')
   })
 
-  it('listVaultSshServers returns created server', () => {
-    const servers = listVaultSshServers()
+  it('listVaultSshServers returns created server', async () => {
+    const servers = await listVaultSshServers()
     expect(servers.some(s => s.id === 'db2-srv-1')).toBe(true)
   })
 
-  it('listVaultSshServers(tenantId) filters by tenant', () => {
-    createVaultSshServer({
+  it('listVaultSshServers(tenantId) filters by tenant', async () => {
+    await createVaultSshServer({
       id: 'db2-srv-eszter',
       name: 'Eszter Server',
       host: '192.168.1.2',
@@ -665,23 +665,23 @@ describe('vault SSH functions', () => {
       description: null,
       tenant_id: 'eszter',
     })
-    expect(listVaultSshServers('eszter').map(s => s.id)).toEqual(['db2-srv-eszter'])
-    expect(listVaultSshServers('default').some(s => s.id === 'db2-srv-eszter')).toBe(false)
-    expect(listVaultSshServers(null).some(s => s.id === 'db2-srv-eszter')).toBe(true)
-    deleteVaultSshServer('db2-srv-eszter')
+    expect((await listVaultSshServers('eszter')).map(s => s.id)).toEqual(['db2-srv-eszter'])
+    expect((await listVaultSshServers('default')).some(s => s.id === 'db2-srv-eszter')).toBe(false)
+    expect((await listVaultSshServers(null)).some(s => s.id === 'db2-srv-eszter')).toBe(true)
+    await deleteVaultSshServer('db2-srv-eszter')
   })
 
-  it('updateVaultSshServer updates fields', () => {
-    const ok = updateVaultSshServer('db2-srv-1', { port: 2222, description: 'Updated' })
+  it('updateVaultSshServer updates fields', async () => {
+    const ok = await updateVaultSshServer('db2-srv-1', { port: 2222, description: 'Updated' })
     expect(ok).toBe(true)
-    const srv = getVaultSshServer('db2-srv-1')
+    const srv = await getVaultSshServer('db2-srv-1')
     expect(srv?.port).toBe(2222)
     expect(srv?.description).toBe('Updated')
   })
 
-  it('deleteVaultSshServer removes server', () => {
-    const ok = deleteVaultSshServer('db2-srv-1')
+  it('deleteVaultSshServer removes server', async () => {
+    const ok = await deleteVaultSshServer('db2-srv-1')
     expect(ok).toBe(true)
-    expect(getVaultSshServer('db2-srv-1')).toBeUndefined()
+    expect(await getVaultSshServer('db2-srv-1')).toBeUndefined()
   })
 })
