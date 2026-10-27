@@ -154,21 +154,23 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
     "name": "partner-token",
     "role": "agent",
     "tenant_id": "acme-corp",
-    "expires_at": "2027-01-01T00:00:00Z"
+    "expires_in_days": 90
   }'
 ```
 
 ```bash
 # Revoke a token
-bash scripts/agent-api.sh --token operator PATCH /api/v1/admin/tokens/<id> '{"revoked": true}'
+bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/revoke
 ```
+
+(`POST /api/v1/admin/tokens/<id>/rotate` issues a replacement; there is no `PATCH` on a token.)
 
 ### Onboarding a B2B partner
 
 An external partner (B2B tenant) receives an `agent`-role token scoped to their own `tenant_id` and can only see data in that scope. Onboarding steps:
 
 1. Create the tenant in the admin UI (Settings > Tenants)
-2. Generate an `agent` token with an expiry (`expires_at`, e.g. 90 days)
+2. Generate an `agent` token with an expiry (`expires_in_days`, e.g. 90)
 3. Deliver the token over a secure channel (not in plaintext email)
 4. Isolation test: a query for a `default` tenant memory using the new token must return an empty list
 5. Agree on a rotation process: the partner should request a new token at least 2 weeks before expiry
