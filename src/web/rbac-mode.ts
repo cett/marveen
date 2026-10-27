@@ -36,12 +36,35 @@ export function parseRbacMode(raw: unknown): RbacMode {
 
 // Starts as enforce: until loadRbacMode() has run nothing is loosened.
 let cached: RbacMode = 'enforce'
+// Why the stored row and the live mode differ, when they do (see RbacModeReason).
+let cachedReason: RbacModeReason | null = null
 let unloggedShadowAlarmed = false
 let timer: NodeJS.Timeout | undefined
+
+/**
+ * Why a stored shadow is not the live mode: the journal does not confirm it (unlogged_shadow), the env
+ * file forces enforce (env_enforce), or the row could not be read (read_error).
+ */
+export type RbacModeReason = 'unlogged_shadow' | 'env_enforce' | 'read_error'
 
 /** The mode the gate applies. Synchronous and never throws. */
 export function getRbacMode(): RbacMode {
   return cached
+}
+
+/**
+ * The live mode next to what is stored, for the Settings screen: `effective` is what the gate uses
+ * (getRbacMode), `stored` the raw system_config value (null: no row or unreadable) and `reason` is set
+ * when a stored shadow is NOT what is in force. Never throws.
+ */
+export function describeRbacMode(): { effective: RbacMode; stored: string | null; reason: RbacModeReason | null } {
+  let stored: string | null = null
+  try {
+    stored = getSystemConfig(RBAC_MODE_KEY)?.value ?? null
+  } catch {
+    stored = null
+  }
+  return { effective: cached, stored, reason: cachedReason }
 }
 
 /** Tell the main agent (and through it the owner). Never throws: a notice fault must not change the mode. */
@@ -66,30 +89,43 @@ function alarmUnloggedShadow(): void {
   )
 }
 
-// unlogged = the row says shadow and the journal does not (the alarm case).
-function readStoredMode(envMode: RbacMode | undefined): { mode: RbacMode; unlogged: boolean } {
+// reason = why a stored shadow is not in force; unlogged_shadow is the alarm case (the row says shadow and
+// the journal does not).
+function readStoredMode(envMode: RbacMode | undefined): { mode: RbacMode; reason: RbacModeReason | null } {
   try {
     const row = getSystemConfig(RBAC_MODE_KEY)
-    if (!row || parseRbacMode(row.value) !== 'shadow') return { mode: 'enforce', unlogged: false }
+    if (!row || parseRbacMode(row.value) !== 'shadow') return { mode: 'enforce', reason: null }
     // The env file tightens only: an explicit enforce there is the emergency brake.
-    if (envMode === 'enforce') return { mode: 'enforce', unlogged: false }
+    if (envMode === 'enforce') return { mode: 'enforce', reason: 'env_enforce' }
     const last = getLastConfigChangeValue(RBAC_MODE_KEY)
-    if (typeof last !== 'string' || parseRbacMode(last) !== 'shadow') return { mode: 'enforce', unlogged: true }
-    return { mode: 'shadow', unlogged: false }
+    if (typeof last !== 'string' || parseRbacMode(last) !== 'shadow') return { mode: 'enforce', reason: 'unlogged_shadow' }
+    return { mode: 'shadow', reason: null }
   } catch (err) {
     logger.warn({ err }, 'Could not read RBAC_MODE from system_config, using enforce')
-    return { mode: 'enforce', unlogged: false }
+    return { mode: 'enforce', reason: 'read_error' }
   }
 }
 
 /** Re-read the row and replace the cached mode. envMode defaults to the process environment. */
 export function refreshRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV): RbacMode {
-  const { mode, unlogged } = readStoredMode(envMode)
+  const { mode, reason } = readStoredMode(envMode)
+  const unlogged = reason === 'unlogged_shadow'
   // One alarm per episode: the flag clears as soon as the row stops being an unlogged shadow.
   if (unlogged && !unloggedShadowAlarmed) alarmUnloggedShadow()
   unloggedShadowAlarmed = unlogged
-  if (mode !== cached) logger.warn({ from: cached, to: mode }, 'RBAC mode changed')
+  if (mode !== cached) {
+    logger.warn({ from: cached, to: mode }, 'RBAC mode changed')
+    // Every switch to shadow is announced, whoever wrote the rows (this process's route, a hand-edited
+    // pair of rows, another process): the journal match is a check, not proof of who wrote it.
+    if (mode === 'shadow') {
+      notifyRbacMode(
+        '[SECURITY] The RBAC gate is now in shadow mode (system_config RBAC_MODE): it only records would-deny ' +
+          'entries and blocks nothing. Switch back to enforce on the Settings page if this was not intended.',
+      )
+    }
+  }
   cached = mode
+  cachedReason = reason
   return cached
 }
 

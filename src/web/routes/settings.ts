@@ -5,7 +5,7 @@ import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.j
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
-import { RBAC_MODE_KEY, parseRbacMode, refreshRbacMode, notifyRbacMode } from '../rbac-mode.js'
+import { RBAC_MODE_KEY, parseRbacMode, refreshRbacMode, describeRbacMode } from '../rbac-mode.js'
 import { denyUnlessHumanSessionAlways } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
@@ -22,20 +22,26 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
     // row fields; the filter runs BEFORE the values are read, so nothing else is even resolved for them.
     const isAdmin = ctx.role === 'admin'
     const visible = isAdmin ? SETTINGS_REGISTRY : SETTINGS_REGISTRY.filter((def) => NON_ADMIN_SETTING_KEYS.includes(def.key))
-    const rows = visible.map((def) => ({
-      key: def.key,
-      type: def.type,
-      value: def.secret ? SECRET_MASK : getEffectiveSettingValue(def.key),
-      default: def.default,
-      description: def.description,
-      module: def.module,
-      requiresRestart: def.requiresRestart,
-      valueSet: def.valueSet,
-      min: def.min,
-      max: def.max,
-      secret: def.secret,
-      envOnly: def.envOnly === true,
-    }))
+    const rows = visible.map((def) => {
+      // RBAC_MODE reports what the gate actually applies (not the raw row): `value` is the live mode,
+      // `stored` the row and `reason` why a stored shadow is not in force (null when they agree).
+      const rbac = def.key === RBAC_MODE_KEY ? describeRbacMode() : null
+      return {
+        key: def.key,
+        type: def.type,
+        value: rbac ? rbac.effective : def.secret ? SECRET_MASK : getEffectiveSettingValue(def.key),
+        ...(rbac ? { stored: rbac.stored, reason: rbac.reason } : {}),
+        default: def.default,
+        description: def.description,
+        module: def.module,
+        requiresRestart: def.requiresRestart,
+        valueSet: def.valueSet,
+        min: def.min,
+        max: def.max,
+        secret: def.secret,
+        envOnly: def.envOnly === true,
+      }
+    })
     json(res, { settings: isAdmin ? rows : rows.map((r) => pickFields(r, NON_ADMIN_SETTING_ROW_FIELDS)) })
     return true
   }
@@ -130,12 +136,9 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       if (isRbacMode) {
         // The write and its journal row are both in: the cache can now read a consistent pair.
         refreshRbacMode()
+        // The notice to the main agent comes from refreshRbacMode (every switch to shadow); the actor is in the journal.
         if (looseningRbac) {
           logger.warn({ actor: resolvedActor, oldValue }, 'RBAC_MODE set to shadow: the RBAC gate no longer blocks')
-          notifyRbacMode(
-            `[SECURITY] RBAC_MODE was switched to shadow from the dashboard (${resolvedActor}). ` +
-              'The RBAC gate now only records would-deny entries and blocks nothing. Switch back to enforce on the Settings page.',
-          )
         }
       }
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })

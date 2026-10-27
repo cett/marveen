@@ -31,6 +31,7 @@ vi.mock('../web/rbac-mode.js', () => ({
   parseRbacMode: () => 'enforce',
   refreshRbacMode: vi.fn(),
   notifyRbacMode: vi.fn(),
+  describeRbacMode: vi.fn(),
 }))
 vi.mock('../web/session-only-guard.js', () => ({ denyUnlessHumanSessionAlways: () => false }))
 

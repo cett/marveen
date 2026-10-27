@@ -54,6 +54,20 @@ const CALLERS: Record<string, Caller> = {
   federationPeer: { auth: { kind: 'federation', peer: 'peer-1' } as unknown as AuthResult, role: 'admin' },
 }
 
+async function getRows(caller: Caller): Promise<Record<string, any>[]> {
+  const em = new EventEmitter() as any
+  em.headers = {}
+  let out = ''
+  const res = { writeHead: () => {}, setHeader: () => {}, end: (d?: string) => { out = d ?? '' } }
+  const url = new URL('http://localhost/api/settings')
+  const ctx = {
+    req: em as http.IncomingMessage, res: res as unknown as http.ServerResponse, path: url.pathname, method: 'GET', url,
+    auth: caller.auth, role: caller.role, tokenAgentId: caller.tokenAgentId,
+  } as unknown as RouteContext
+  await tryHandleSettings(ctx)
+  return JSON.parse(out).settings
+}
+
 async function post(caller: Caller, body: object): Promise<{ status: number; body: any }> {
   const raw = JSON.stringify(body)
   const em = new EventEmitter() as any
@@ -197,12 +211,13 @@ describe('tightening RBAC_MODE', () => {
   })
 
   it.each(['adminToken', 'mainAgentToken', 'operatorToken'])('is open to %j and takes effect at once', async (name) => {
+    const noticesBefore = noticesToMainAgent().length
     const r = await post(CALLERS[name]!, tighten)
     expect(r.status).toBe(200)
     expect(storedValue()).toBe('enforce')
     expect(getRbacMode()).toBe('enforce')
     expect(lastJournal()?.new_value).toBe('enforce')
-    expect(noticesToMainAgent()).toHaveLength(0)
+    expect(noticesToMainAgent()).toHaveLength(noticesBefore)
   })
 
   it('is open to a global admin session too', async () => {
@@ -242,5 +257,46 @@ describe('the gate follows the mode without a restart', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'web.ts'), 'utf-8')
     expect(src).toContain('runRbacGate(auth, method, path, res, getRbacMode())')
     expect(src).not.toMatch(/\bRBAC_MODE\b\s*[,}]/)
+  })
+})
+
+describe('GET /api/settings reports what the gate applies for RBAC_MODE', () => {
+  const rbacRow = async (caller: Caller = CALLERS['adminToken']!) => (await getRows(caller)).find((r) => r.key === 'RBAC_MODE')!
+
+  it('a plain enforce: value enforce, stored enforce, no reason', async () => {
+    const row = await rbacRow()
+    expect(row).toMatchObject({ value: 'enforce', stored: 'enforce', reason: null })
+  })
+
+  it('a journalled shadow: value shadow, no reason', async () => {
+    setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
+    refreshRbacMode(undefined)
+    expect(await rbacRow()).toMatchObject({ value: 'shadow', stored: 'shadow', reason: null })
+  })
+
+  it('an unlogged hand-written shadow: value enforce (what the gate uses), stored shadow, reason says why', async () => {
+    setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    refreshRbacMode(undefined)
+    expect(getRbacMode()).toBe('enforce')
+    expect(await rbacRow()).toMatchObject({ value: 'enforce', stored: 'shadow', reason: 'unlogged_shadow' })
+  })
+
+  it('the env brake over a stored shadow: value enforce, stored shadow, reason env_enforce', async () => {
+    setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
+    refreshRbacMode('enforce')
+    expect(await rbacRow()).toMatchObject({ value: 'enforce', stored: 'shadow', reason: 'env_enforce' })
+  })
+
+  it('other rows carry no stored/reason fields', async () => {
+    const row = (await getRows(CALLERS['adminToken']!)).find((r) => r.key === 'DASHBOARD_LANG')!
+    expect(row).not.toHaveProperty('stored')
+    expect(row).not.toHaveProperty('reason')
+  })
+
+  it('a non-admin caller does not get the RBAC_MODE row at all', async () => {
+    const rows = await getRows({ auth: { kind: 'session', user: 'viewer' } as AuthResult, role: 'viewer' })
+    expect(rows.find((r) => r.key === 'RBAC_MODE')).toBeUndefined()
   })
 })

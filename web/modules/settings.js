@@ -1317,6 +1317,15 @@ function buildSettingRow(def, isAdmin) {
   desc.textContent = t('settings.desc.' + def.key) || def.description
   info.appendChild(desc)
 
+  // A stored RBAC_MODE shadow that is not what the gate runs (an unlogged row, the env brake, a read
+  // error): the row reports the live mode as its value and says why the stored one is not in force.
+  if (def.reason) {
+    const diverges = document.createElement('div')
+    diverges.className = 'settings-row-error'
+    diverges.textContent = t('settings.rbac_mode.diverges.' + def.reason, { stored: def.stored ?? '' })
+    info.appendChild(diverges)
+  }
+
   const meta = document.createElement('div')
   meta.className = 'settings-row-meta'
   const metaParts = []

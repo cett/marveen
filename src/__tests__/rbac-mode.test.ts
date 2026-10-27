@@ -17,6 +17,7 @@ import { logger } from '../logger.js'
 import {
   parseRbacMode,
   getRbacMode,
+  describeRbacMode,
   refreshRbacMode,
   loadRbacMode,
   startRbacModeRefresh,
@@ -303,5 +304,88 @@ describe('the refresh timer', () => {
     expect(vi.getTimerCount()).toBe(1)
     stopRbacModeRefresh()
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('describeRbacMode: the live mode next to what is stored', () => {
+  it('no row: enforce, nothing stored, no reason', () => {
+    refreshRbacMode(undefined)
+    expect(describeRbacMode()).toEqual({ effective: 'enforce', stored: null, reason: null })
+  })
+
+  it('a journalled shadow: shadow in force, nothing to explain', () => {
+    storeLogged('shadow')
+    refreshRbacMode(undefined)
+    expect(describeRbacMode()).toEqual({ effective: 'shadow', stored: 'shadow', reason: null })
+  })
+
+  it('a stored enforce: nothing to explain', () => {
+    storeLogged('enforce')
+    refreshRbacMode(undefined)
+    expect(describeRbacMode()).toEqual({ effective: 'enforce', stored: 'enforce', reason: null })
+  })
+
+  it('an unlogged shadow: enforce in force, stored shadow, reason unlogged_shadow', () => {
+    setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    refreshRbacMode(undefined)
+    expect(describeRbacMode()).toEqual({ effective: 'enforce', stored: 'shadow', reason: 'unlogged_shadow' })
+  })
+
+  it('the env brake over a journalled shadow: reason env_enforce', () => {
+    storeLogged('shadow')
+    refreshRbacMode('enforce')
+    expect(describeRbacMode()).toEqual({ effective: 'enforce', stored: 'shadow', reason: 'env_enforce' })
+  })
+
+  it('an unreadable row: enforce, reason read_error, stored unknown', () => {
+    storeLogged('shadow')
+    refreshRbacMode(undefined)
+    db.exec('DROP TABLE system_config')
+    refreshRbacMode(undefined)
+    expect(describeRbacMode()).toEqual({ effective: 'enforce', stored: null, reason: 'read_error' })
+  })
+
+  it('the reason goes away once the row is fixed', () => {
+    setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    refreshRbacMode(undefined)
+    expect(describeRbacMode().reason).toBe('unlogged_shadow')
+    setSystemConfig('RBAC_MODE', 'enforce', 'db')
+    refreshRbacMode(undefined)
+    expect(describeRbacMode()).toEqual({ effective: 'enforce', stored: 'enforce', reason: null })
+  })
+})
+
+describe('every switch to shadow is announced', () => {
+  it('a journalled shadow picked up by a refresh notifies the main agent once, not on every refresh', () => {
+    expect(mainAgentNotices()).toBe(0)
+    storeLogged('shadow')
+    refreshRbacMode(undefined)
+    expect(mainAgentNotices()).toBe(1)
+    refreshRbacMode(undefined)
+    refreshRbacMode(undefined)
+    expect(mainAgentNotices()).toBe(1)
+  })
+
+  it('a hand-written pair of rows (value and journal) is announced too, through the timer', () => {
+    vi.useFakeTimers()
+    startRbacModeRefresh(undefined)
+    storeLogged('shadow')
+    vi.advanceTimersByTime(5000)
+    expect(getRbacMode()).toBe('shadow')
+    expect(mainAgentNotices()).toBe(1)
+  })
+
+  it('tightening, and an unlogged shadow that stays enforce, send no shadow notice', () => {
+    storeLogged('shadow')
+    refreshRbacMode(undefined)
+    const before = mainAgentNotices()
+    setSystemConfig('RBAC_MODE', 'enforce', 'db')
+    refreshRbacMode(undefined)
+    expect(mainAgentNotices()).toBe(before)
+  })
+
+  it('the boot seed from an env shadow is announced', () => {
+    loadRbacMode('shadow')
+    expect(mainAgentNotices()).toBe(1)
   })
 })
