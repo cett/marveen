@@ -1407,7 +1407,25 @@ const EMPTY_DIFF: DiffReport = {
   errors: [],
 }
 
+// Applying imports one at a time. The staged files carry fixed names (`<path>.import-new`, `<path>.import-bak`), so two
+// applies that overlap (a double click on the import button) would stage onto the same files and one of them would
+// fail its rename after its transaction had committed; and the database and the files of two different bundles could
+// end up mixed. The second apply waits for the first, then runs on the state the first left. A dry run writes
+// nothing and does not wait.
+let applyChain: Promise<unknown> = Promise.resolve()
+
 export async function importFleet(
+  rawBody: string,
+  options: { vaultPassword?: string; apply: boolean },
+): Promise<DiffReport | ImportResult> {
+  if (!options.apply) return runImportFleet(rawBody, options)
+  const run = applyChain.then(() => runImportFleet(rawBody, options))
+  // The chain only orders the runs: a failed run must not stop the next one, and its error goes to its own caller.
+  applyChain = run.catch(() => undefined)
+  return run
+}
+
+async function runImportFleet(
   rawBody: string,
   options: { vaultPassword?: string; apply: boolean },
 ): Promise<DiffReport | ImportResult> {

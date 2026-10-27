@@ -547,3 +547,65 @@ describe('a failure after the commit', () => {
     expect(readFileSync(join(PROJECT, 'CLAUDE.md.import-bak'), 'utf-8')).toBe(OLD.claude)
   })
 })
+
+describe('two imports applied at once', () => {
+  const withClaude = (text: string): FleetJson => {
+    const b = bundle()
+    ;(b.mainAgent as { claudeMd?: string }).claudeMd = text
+    return b
+  }
+
+  it('the same import twice (a double click): both succeed, nothing is left behind', async () => {
+    const out = await Promise.allSettled([apply(bundle()), apply(bundle())])
+
+    expect(out.map((o) => o.status)).toEqual(['fulfilled', 'fulfilled'])
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('new claude\n')
+    expect(strays()).toEqual([])
+    expectCachesMatchTables()
+  })
+
+  it('two different bundles: they run one after the other, so the last one wins in the files and in the database', async () => {
+    const out = await Promise.allSettled([apply(withClaude('claude ONE\n')), apply(withClaude('claude TWO\n'))])
+
+    expect(out.map((o) => o.status)).toEqual(['fulfilled', 'fulfilled'])
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('claude TWO\n')
+    // the two transactions did not interleave with the renames of the other import
+    expect(probe.events.filter((e) => e === 'begin' || e === 'commit')).toEqual(['begin', 'commit', 'begin', 'commit'])
+    expect(probe.events.indexOf('final:project/CLAUDE.md')).toBeLessThan(probe.events.lastIndexOf('begin'))
+    expect(strays()).toEqual([])
+  })
+
+  it('a failing import does not stop the one queued behind it, and does not leak its error to it', async () => {
+    const failing = bundle({ comments: [BROKEN_COMMENT] })
+    const out = await Promise.allSettled([apply(failing), apply(withClaude('claude AFTER\n'))])
+
+    expect(out[0]!.status).toBe('rejected')
+    expect(out[1]!.status).toBe('fulfilled')
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('claude AFTER\n')
+    expect(strays()).toEqual([])
+  })
+})
+
+describe('the same path staged twice', () => {
+  it('a global skill name that appears twice in the bundle is staged and renamed once', async () => {
+    const b = bundle()
+    b.skills = [...(b.skills ?? []), ...(b.skills ?? [])]
+
+    await apply(b)
+
+    expect(readFileSync(join(HOME, '.claude', 'skills', 'skill-g', 'SKILL.md'), 'utf-8')).toBe(SKILL_MD)
+    expect(strays()).toEqual([])
+    expect(probe.events.filter((e) => e === 'final:home/.claude/skills/skill-g/SKILL.md')).toHaveLength(1)
+  })
+
+  it('an agent skill name that appears twice in the agent is staged and renamed once', async () => {
+    const b = bundle()
+    const agent = b.agents![0]!
+    agent.agentSkills = [...(agent.agentSkills ?? []), ...(agent.agentSkills ?? [])]
+
+    await apply(b)
+
+    expect(readFileSync(join(AGENTS, 'agent-b', '.claude', 'skills', 'skill-a', 'SKILL.md'), 'utf-8')).toBe(AGENT_SKILL_MD)
+    expect(strays()).toEqual([])
+  })
+})
