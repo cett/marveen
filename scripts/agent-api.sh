@@ -72,27 +72,36 @@ read_token() { # read_token FILE -> trimmed content, empty on any problem (never
 }
 
 MAIN="${MAIN_AGENT_ID:-$(env_file_value MAIN_AGENT_ID)}"
+# The agent this session was launched as, read from its config directory: <install>/agents/<id>/.claude-config
+# is that agent's, <install>/.channels-config the main agent's. Empty when the directory names nobody (a system
+# script, cron). It is sent as X-Caller-Config below: a measurement signal, never a credential.
+CFG_AGENT=""
+CFG="${CLAUDE_CONFIG_DIR:-}"
+case "$CFG" in
+  "$BASE"/agents/*)
+    CFG_REST="${CFG#"$BASE"/agents/}"; CFG_ID="${CFG_REST%%/*}"
+    case "${CFG_REST#"$CFG_ID"/}" in .claude-config|.claude-config/*) CFG_AGENT="$CFG_ID" ;; esac ;;
+  "$BASE"/.channels-config|"$BASE"/.channels-config/*) CFG_AGENT="$MAIN" ;;
+esac
+case "$CFG_AGENT" in */*|.*) CFG_AGENT="" ;; esac
+
+# How the acting agent was named: explicit (--agent or MARVEEN_AGENT_ID: the caller said so), root (the install
+# root as cwd), cwd (an agent directory), config (the config directory), token-main (--token main).
+AGENT_BY="explicit"
 if [ -z "$AGENT" ]; then
   case "$PWD" in
-    "$BASE"/agents/*) AGENT="${PWD#"$BASE"/agents/}"; AGENT="${AGENT%%/*}" ;;
-    "$BASE") AGENT="$MAIN" ;;
+    "$BASE"/agents/*) AGENT="${PWD#"$BASE"/agents/}"; AGENT="${AGENT%%/*}"; AGENT_BY="cwd" ;;
+    "$BASE") AGENT="$MAIN"; AGENT_BY="root" ;;
   esac
 fi
-if [ -z "$AGENT" ]; then
+if [ -z "$AGENT" ] && [ -n "$CFG_AGENT" ]; then
   # A working directory that names nobody (a worktree, a scratch directory): the config directory
-  # the session was launched with does. <install>/agents/<id>/.claude-config is that agent's,
-  # <install>/.channels-config the main agent's.
-  CFG="${CLAUDE_CONFIG_DIR:-}"
-  case "$CFG" in
-    "$BASE"/agents/*)
-      CFG_REST="${CFG#"$BASE"/agents/}"; CFG_ID="${CFG_REST%%/*}"
-      case "${CFG_REST#"$CFG_ID"/}" in .claude-config|.claude-config/*) AGENT="$CFG_ID" ;; esac ;;
-    "$BASE"/.channels-config|"$BASE"/.channels-config/*) AGENT="$MAIN" ;;
-  esac
+  # the session was launched with does.
+  AGENT="$CFG_AGENT"; AGENT_BY="config"
 fi
 case "$AGENT" in */*|.*) AGENT="" ;; esac
 
-if [ "$KIND" = "main" ]; then AGENT="$MAIN"; KIND="agent"; fi
+if [ "$KIND" = "main" ]; then AGENT="$MAIN"; KIND="agent"; AGENT_BY="token-main"; fi
 if [ "$KIND" = "admin" ]; then
   if [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; then KIND="agent"
   else
@@ -123,6 +132,12 @@ else
   exit 3
 fi
 [ "${AGENT_API_VERBOSE:-}" = "1" ] && echo "agent-api: token source=$SOURCE agent=${AGENT:-?}" >&2
+# The acting agent came from the install-root working directory or from --token main, and it is not the agent
+# this session was launched as (a sub-agent that cd'd to the install root, or asked for the main agent's token):
+# the call goes out on that token as before. A notice only, nothing about the request changes.
+if [ -n "$CFG_AGENT" ] && [ -n "$AGENT" ] && [ "$AGENT" != "$CFG_AGENT" ] && { [ "$AGENT_BY" = "root" ] || [ "$AGENT_BY" = "token-main" ]; }; then
+  echo "agent-api: warning: acting as $AGENT (resolved from $AGENT_BY) but this session was launched as $CFG_AGENT; pass --agent $CFG_AGENT to act as yourself" >&2
+fi
 
 PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(env_file_value WEB_PORT)}}"
 URL="${DASHBOARD_BASE_URL:-http://localhost:${PORT:-3420}}${APIPATH}"
@@ -133,6 +148,7 @@ chmod 700 "$TMP"
 
 ARGS=(-sS -X "$METHOD" -w $'\n%{http_code}' -H "Content-Type: application/json")
 [ -n "$AGENT" ] && ARGS+=(-H "X-Agent-Id: $AGENT")
+[ -n "$CFG_AGENT" ] && ARGS+=(-H "X-Caller-Config: $CFG_AGENT")
 case "$MAXTIME" in ""|*[!0-9]*) [ -z "$MAXTIME" ] || { echo "agent-api: --max-time takes whole seconds" >&2; exit 2; } ;; *) ARGS+=(--max-time "$MAXTIME") ;; esac
 if [ -n "$BODY" ]; then
   if [ "$BODY" = "-" ]; then cat > "$TMP/body"; ARGS+=(--data-binary "@$TMP/body")

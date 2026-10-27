@@ -170,6 +170,43 @@ check "DASHBOARD_BASE_URL honoured" grep -qx 'http://example.invalid:9/api/x' "$
 reset; echo own-a > "$INSTALL/agents/a/.agent-token"; WEB_PORT=4999 bash "$W" GET /api/x >/dev/null 2>&1
 check "WEB_PORT honoured" grep -qx 'http://localhost:4999/api/x' "$T/argv"
 
+# 13 X-Caller-Config: the agent the session was launched as, from CLAUDE_CONFIG_DIR, sent whatever the wrapper
+# resolves as the acting agent. A measurement signal only: the token, the exit code and the acting agent stay
+# exactly what the cwd / --token rules gave before. A stderr warning when the acting agent came from the install
+# root or from --token main and is not the launched agent.
+mkdir -p "$T/scratch" "$INSTALL/agents/a/.claude-config" "$INSTALL/.channels-config"
+matrix() { # matrix NAME CWD CONFIG KIND EXPECT_TOKEN EXPECT_HEADER(a|m|none) EXPECT_WARN(yes|no)
+  local name="$1" cwd="$2" cfg="$3" kind="$4" tok="$5" hdr="$6" warn="$7"
+  reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
+  local err rc; unset MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE
+  if [ -n "$cfg" ]; then export CLAUDE_CONFIG_DIR="$cfg"; else unset CLAUDE_CONFIG_DIR; fi
+  err="$(cd "$cwd" && bash "$W" --token "$kind" GET /api/x 2>&1 >/dev/null)"; rc=$?
+  unset CLAUDE_CONFIG_DIR
+  check "$name: exit 0" test "$rc" -eq 0
+  check "$name: token $tok" grep -q "Bearer own-$tok" "$T/stdin"
+  if [ "$hdr" = none ]; then check "$name: no X-Caller-Config" bash -c "! grep -q 'X-Caller-Config' '$T/argv'"
+  else check "$name: X-Caller-Config: $hdr" grep -qx "X-Caller-Config: $hdr" "$T/argv"; fi
+  if [ "$warn" = yes ]; then check "$name: warns" bash -c "echo \"\$1\" | grep -q 'warning: acting as'" _ "$err"
+  else check "$name: no warning" bash -c "! echo \"\$1\" | grep -q 'warning'" _ "$err"; fi
+}
+CFG_A="$INSTALL/agents/a/.claude-config"; CFG_M="$INSTALL/.channels-config"
+#      name                               cwd                 config   kind   token header warn
+matrix "root cwd, sub-agent config"       "$INSTALL"          "$CFG_A" agent  m     a      yes
+matrix "root cwd, main config"            "$INSTALL"          "$CFG_M" agent  m     m      no
+matrix "root cwd, no config"              "$INSTALL"          ""       agent  m     none   no
+matrix "agent cwd, sub-agent config"      "$INSTALL/agents/a" "$CFG_A" agent  a     a      no
+matrix "agent cwd, main config"           "$INSTALL/agents/a" "$CFG_M" agent  a     m      no
+matrix "scratch cwd, sub-agent config"    "$T/scratch"        "$CFG_A" agent  a     a      no
+matrix "scratch cwd, main config"         "$T/scratch"        "$CFG_M" agent  m     m      no
+matrix "--token main, sub-agent config"   "$T/scratch"        "$CFG_A" main   m     a      yes
+matrix "--token main, main config"        "$T/scratch"        "$CFG_M" main   m     m      no
+matrix "--token main, no config"          "$T/scratch"        ""       main   m     none   no
+# negative control: a sub-agent config with the install root as cwd must never be given a token it did not have
+# before (it was the main agent's, and still is: this change only reports it).
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
+OUT="$(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" --agent a GET /api/x 2>&1 >/dev/null)"
+check "explicit --agent with a sub-agent config: own token, no warning" bash -c "grep -q 'Bearer own-a' '$T/stdin' && ! echo \"\$1\" | grep -q warning" _ "$OUT"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
