@@ -35,7 +35,7 @@ export async function tryHandleBrowserEnroll(ctx: RouteContext): Promise<boolean
   const { path, method, req, res } = ctx
 
   if (method === 'POST' && path === '/api/admin/browser-enroll-codes') {
-    if (denyAgentCredentialIssue(ctx, 'admin.browser_enroll_code.create')) return true
+    if (await denyAgentCredentialIssue(ctx, 'admin.browser_enroll_code.create')) return true
     if (!isGlobalAdmin(ctx)) {
       json(res, { error: 'forbidden', hint: 'Only a global admin can issue a browser enrollment code' }, 403)
       return true

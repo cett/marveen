@@ -132,18 +132,18 @@ describe('the category check', () => {
 describe('humanSessionOf', () => {
   const reqWith = (cookie?: string) => ({ headers: cookie ? { cookie: `${SESSION_COOKIE_NAME}=${cookie}` } : {} }) as any
 
-  it('is the global admin and nobody else', () => {
-    expect(humanSessionOf(reqWith(cookies.owner))).toEqual({ user: 'owner' })
-    expect(humanSessionOf(reqWith(cookies.viewer))).toBeNull()
-    expect(humanSessionOf(reqWith(cookies.tadmin))).toBeNull()
-    expect(humanSessionOf(reqWith(cookies.tagent))).toBeNull()
-    expect(humanSessionOf(reqWith('forged-cookie'))).toBeNull()
-    expect(humanSessionOf(reqWith())).toBeNull()
+  it('is the global admin and nobody else', async () => {
+    expect(await humanSessionOf(reqWith(cookies.owner))).toEqual({ user: 'owner' })
+    expect(await humanSessionOf(reqWith(cookies.viewer))).toBeNull()
+    expect(await humanSessionOf(reqWith(cookies.tadmin))).toBeNull()
+    expect(await humanSessionOf(reqWith(cookies.tagent))).toBeNull()
+    expect(await humanSessionOf(reqWith('forged-cookie'))).toBeNull()
+    expect(await humanSessionOf(reqWith())).toBeNull()
   })
 
-  it('stops being a person when the user is disabled', () => {
+  it('stops being a person when the user is disabled', async () => {
     db.prepare("UPDATE dashboard_users SET disabled = 1 WHERE username = 'owner'").run()
-    expect(humanSessionOf(reqWith(cookies.owner))).toBeNull()
+    expect(await humanSessionOf(reqWith(cookies.owner))).toBeNull()
   })
 })
 

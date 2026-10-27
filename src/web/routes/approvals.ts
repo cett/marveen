@@ -454,7 +454,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // before, and the journal records that it would have been refused.
     let resolvedVia: ApprovalResolvedVia | null = ctx.auth?.kind === 'session' ? 'dashboard_session' : ctx.auth ? 'bearer' : null
     if (target && await isHumanOnlyApproval(target)) {
-      const human = humanSessionOf(req)
+      const human = await humanSessionOf(req)
       if (human) {
         resolvedVia = 'dashboard_session'
         if (APPROVAL_HUMAN_ONLY_ENFORCE) effectiveResolvedBy = `human:session:${human.user}`

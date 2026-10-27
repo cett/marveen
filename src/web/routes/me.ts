@@ -42,7 +42,7 @@ export async function tryHandleMe(ctx: RouteContext): Promise<boolean> {
 
   if (method === 'GET') {
     const tenant = user.tenant_id ? getTenant(user.tenant_id) : undefined
-    const sessions = listUserSessions(user.id)
+    const sessions = await listUserSessions(user.id)
     json(res, {
       username: user.username,
       display_name: user.display_name ?? null,

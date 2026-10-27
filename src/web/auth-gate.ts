@@ -185,10 +185,10 @@ export async function resolveAuth(
   //    When DB lookups are on, look up role and tenant scope for RBAC.
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
-    const session = resolveSession(cookieValue)
+    const session = await resolveSession(cookieValue)
     if (session) {
       if (dbLookups) {
-        const userRow = getDashboardUserAuthRow(session.username)
+        const userRow = await getDashboardUserAuthRow(session.username)
         if (userRow) {
           return { kind: 'session', user: session.username, role: userRow.role as Role, tenantId: userRow.tenant_id }
         }

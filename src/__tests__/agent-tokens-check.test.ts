@@ -98,6 +98,20 @@ describe('checkAgentTokens', () => {
     expect(statusOf((await checkAgentTokens(AGENTS)).rows).beta).toBe('revoked')
   })
 
+  // The expiry branch of the row check, at the boundary: `now` is an option of the check, so the instant is exact.
+  // A row is expired AT its expires_at (`<=`), and still good one second before it; a `<` would keep it `ok`
+  // for the one second the database already refuses it, and a missing branch would never report it.
+  it('a row is `revoked` at its expiry instant and `ok` one second before it', async () => {
+    await issueAgentToken('beta')
+    const expiresAt = NOW() + 1000
+    getDb().prepare("UPDATE api_tokens SET expires_at = ? WHERE agent_id = 'beta'").run(expiresAt)
+    const beta = async (now: number) =>
+      (await checkAgentTokens(['beta'], { includeOperator: false, includeShared: false, now })).rows[0]
+    expect(await beta(expiresAt - 1)).toMatchObject({ subject: 'beta', status: 'ok' })
+    expect(await beta(expiresAt)).toMatchObject({ subject: 'beta', status: 'revoked' })
+    expect(await beta(expiresAt + 1)).toMatchObject({ subject: 'beta', status: 'revoked' })
+  })
+
   it('a valid token of ANOTHER subject in the file is `wrong_role`', async () => {
     await issueAll()
     // beta's path holds alpha's token; the operator's path holds a fleet agent's token

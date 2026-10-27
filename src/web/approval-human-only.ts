@@ -99,13 +99,13 @@ export function isHumanOnlyFloorKey(key: string): boolean {
  * Authorization header says: a browser that sends both is still the person, and a script with a token
  * and no cookie is not.
  */
-export function humanSessionOf(req: http.IncomingMessage): { user: string } | null {
+export async function humanSessionOf(req: http.IncomingMessage): Promise<{ user: string } | null> {
   try {
     const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     if (!cookie) return null
-    const session = resolveSession(cookie)
+    const session = await resolveSession(cookie)
     if (!session) return null
-    const row = getDashboardUserAuthRow(session.username)
+    const row = await getDashboardUserAuthRow(session.username)
     if (!row || row.role !== 'admin' || row.tenant_id !== null) return null
     return { user: session.username }
   } catch (err) {
