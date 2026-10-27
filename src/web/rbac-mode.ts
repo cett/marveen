@@ -42,6 +42,19 @@ let unloggedShadowAlarmed = false
 let timer: NodeJS.Timeout | undefined
 
 /**
+ * Run bookkeeping (a log line, an audit row, a notice) that must never change the mode: a failing sink
+ * is swallowed. The mode is always decided and stored BEFORE any of this runs, so a throwing logger can
+ * never keep an older, looser mode in force.
+ */
+function safely(step: () => void): void {
+  try {
+    step()
+  } catch {
+    // Nothing to do: the logger itself may be what failed.
+  }
+}
+
+/**
  * Why a stored shadow is not the live mode: the journal does not confirm it (unlogged_shadow), the env
  * file forces enforce (env_enforce), or the row could not be read (read_error).
  */
@@ -72,16 +85,17 @@ export function notifyRbacMode(content: string): void {
   try {
     createAgentMessage('system', MAIN_AGENT_ID, content)
   } catch (err) {
-    logger.warn({ err }, 'Could not notify the main agent about the RBAC mode')
+    safely(() => logger.warn({ err }, 'Could not notify the main agent about the RBAC mode'))
   }
 }
 
+// Each step on its own: a failing log line must not skip the audit row or the notice.
 function alarmUnloggedShadow(): void {
-  logger.warn('system_config RBAC_MODE says shadow but the change journal does not; treating it as enforce')
+  safely(() => logger.warn('system_config RBAC_MODE says shadow but the change journal does not; treating it as enforce'))
   try {
     writeAdminAuditLog('system', 'security.rbac_shadow_unlogged', RBAC_MODE_KEY, {})
   } catch (err) {
-    logger.warn({ err }, 'Could not journal the unlogged RBAC_MODE value')
+    safely(() => logger.warn({ err }, 'Could not journal the unlogged RBAC_MODE value'))
   }
   notifyRbacMode(
     '[SECURITY] system_config RBAC_MODE was set to shadow without a Settings-page change in the journal. ' +
@@ -101,20 +115,28 @@ function readStoredMode(envMode: RbacMode | undefined): { mode: RbacMode; reason
     if (typeof last !== 'string' || parseRbacMode(last) !== 'shadow') return { mode: 'enforce', reason: 'unlogged_shadow' }
     return { mode: 'shadow', reason: null }
   } catch (err) {
-    logger.warn({ err }, 'Could not read RBAC_MODE from system_config, using enforce')
+    safely(() => logger.warn({ err }, 'Could not read RBAC_MODE from system_config, using enforce'))
     return { mode: 'enforce', reason: 'read_error' }
   }
 }
 
-/** Re-read the row and replace the cached mode. envMode defaults to the process environment. */
+/**
+ * Re-read the row and replace the cached mode. envMode defaults to the process environment. Never throws.
+ * Order matters: the new mode is stored first, the log line, the alarm and the notice come after and
+ * each cannot change it (a throwing logger on a tightening must not leave the old shadow in force).
+ */
 export function refreshRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV): RbacMode {
   const { mode, reason } = readStoredMode(envMode)
+  const previous = cached
   const unlogged = reason === 'unlogged_shadow'
   // One alarm per episode: the flag clears as soon as the row stops being an unlogged shadow.
-  if (unlogged && !unloggedShadowAlarmed) alarmUnloggedShadow()
+  const alarm = unlogged && !unloggedShadowAlarmed
+  cached = mode
+  cachedReason = reason
   unloggedShadowAlarmed = unlogged
-  if (mode !== cached) {
-    logger.warn({ from: cached, to: mode }, 'RBAC mode changed')
+  if (alarm) alarmUnloggedShadow()
+  if (mode !== previous) {
+    safely(() => logger.warn({ from: previous, to: mode }, 'RBAC mode changed'))
     // Every switch to shadow is announced, whoever wrote the rows (this process's route, a hand-edited
     // pair of rows, another process): the journal match is a check, not proof of who wrote it.
     if (mode === 'shadow') {
@@ -124,8 +146,6 @@ export function refreshRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV): 
       )
     }
   }
-  cached = mode
-  cachedReason = reason
   return cached
 }
 
@@ -139,12 +159,12 @@ export function loadRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV): Rba
     const value: RbacMode = envMode ?? 'enforce'
     if (insertSystemConfigIfAbsent(RBAC_MODE_KEY, value, 'migrated_from_env')) {
       logConfigChange(RBAC_MODE_KEY, envMode ?? null, value, 'system:migration')
-      logger.info({ value }, 'RBAC_MODE seeded into system_config from the environment')
+      safely(() => logger.info({ value }, 'RBAC_MODE seeded into system_config from the environment'))
     } else if (envMode === 'shadow') {
-      logger.warn('env RBAC_MODE=shadow ignored, use the Settings page')
+      safely(() => logger.warn('env RBAC_MODE=shadow ignored, use the Settings page'))
     }
   } catch (err) {
-    logger.warn({ err }, 'RBAC_MODE seed into system_config failed')
+    safely(() => logger.warn({ err }, 'RBAC_MODE seed into system_config failed'))
   }
   return refreshRbacMode(envMode)
 }
@@ -152,7 +172,16 @@ export function loadRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV): Rba
 /** Start the periodic re-read. The timer is unref'd, so it never keeps the process alive. */
 export function startRbacModeRefresh(envMode: RbacMode | undefined = RBAC_MODE_ENV): void {
   stopRbacModeRefresh()
-  timer = setInterval(() => refreshRbacMode(envMode), REFRESH_INTERVAL_MS)
+  timer = setInterval(() => {
+    // refreshRbacMode does not throw; the catch is the last line of defence: whatever goes wrong, the
+    // gate falls back to enforce and the interval keeps running.
+    try {
+      refreshRbacMode(envMode)
+    } catch {
+      cached = 'enforce'
+      cachedReason = 'read_error'
+    }
+  }, REFRESH_INTERVAL_MS)
   timer.unref()
 }
 
