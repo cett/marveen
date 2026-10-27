@@ -7,7 +7,7 @@
 // guard lives in each route because the RBAC table cannot say "a session, and not a token".
 //
 // Both helpers write the refusal themselves and return true when they did, so a route reads:
-//   if (denyUnlessHumanSession(ctx, 'auth.user.create')) return true
+//   if (await denyUnlessHumanSession(ctx, 'auth.user.create')) return true
 
 import { APPROVAL_HUMAN_ONLY_ENFORCE } from '../config.js'
 import { countDashboardUsers, writeAdminAuditLog } from '../db.js'
@@ -44,9 +44,9 @@ function refuse(ctx: RouteContext, action: string, hint: string): true {
  * (first run) the bearer stays the way to create the first one, and with the switch off nothing changes.
  * Returns true when it refused (the response is written).
  */
-export function denyUnlessHumanSession(ctx: RouteContext, action: string): boolean {
+export async function denyUnlessHumanSession(ctx: RouteContext, action: string): Promise<boolean> {
   if (!APPROVAL_HUMAN_ONLY_ENFORCE) return false
-  if (countDashboardUsers(false) === 0) return false
+  if (await countDashboardUsers(false) === 0) return false
   if (humanSessionOf(ctx.req)) return false
   return refuse(ctx, action, 'Managing dashboard users needs a person logged in to the dashboard as a global admin')
 }

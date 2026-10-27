@@ -199,8 +199,8 @@ describe('other own-agent endpoints', () => {
   it('daily log: an omitted agent_id is the token agent, not the main agent; a foreign one is 403', async () => {
     expect((await request('tok-alpha', 'POST', '/api/daily-log', { content: 'from alpha' })).status).toBe(200)
     const date = appLocalDate()
-    expect(getDailyLog('alpha', date).map(e => e.content)).toEqual(['from alpha'])
-    expect(getDailyLog('main-agent', date)).toEqual([])
+    expect((await getDailyLog('alpha', date)).map(e => e.content)).toEqual(['from alpha'])
+    expect(await getDailyLog('main-agent', date)).toEqual([])
     expect((await request('tok-alpha', 'POST', '/api/daily-log', { agent_id: 'beta', content: 'forged' })).status).toBe(403)
     expect((await request('tok-alpha', 'GET', '/api/daily-log?agent=beta')).status).toBe(403)
     expect((await request('tok-alpha', 'GET', '/api/daily-log')).status).toBe(200)

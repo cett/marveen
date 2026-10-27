@@ -3,33 +3,34 @@
 
 import { APP_TZ } from '../config.js'
 import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
 
-export function getSession(chatId: string): { sessionId: string; messageCount: number } | undefined {
-  const row = db
-    .prepare('SELECT session_id, message_count FROM sessions WHERE chat_id = ?')
-    .get(chatId) as { session_id: string; message_count: number } | undefined
+export async function getSession(chatId: string): Promise<{ sessionId: string; messageCount: number } | undefined> {
+  const row = await dbx.get<{ session_id: string; message_count: number }>('SELECT session_id, message_count FROM sessions WHERE chat_id = ?', chatId)
   if (!row) return undefined
   return { sessionId: row.session_id, messageCount: row.message_count }
 }
 
-export function setSession(chatId: string, sessionId: string, messageCount = 0): void {
-  db.prepare(
-    `INSERT INTO sessions (chat_id, session_id, updated_at, message_count) VALUES (?, ?, ?, ?)
+export async function setSession(chatId: string, sessionId: string, messageCount = 0): Promise<void> {
+  await dbx.run(`INSERT INTO sessions (chat_id, session_id, updated_at, message_count) VALUES (?, ?, ?, ?)
      ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id,
-       updated_at = excluded.updated_at, message_count = excluded.message_count`
-  ).run(chatId, sessionId, Math.floor(Date.now() / 1000), messageCount)
+       updated_at = excluded.updated_at, message_count = excluded.message_count`, chatId, sessionId, Math.floor(Date.now() / 1000), messageCount)
 }
 
-export function incrementSessionCount(chatId: string): number {
-  db.prepare('UPDATE sessions SET message_count = message_count + 1 WHERE chat_id = ?').run(chatId)
-  const row = db.prepare('SELECT message_count FROM sessions WHERE chat_id = ?').get(chatId) as { message_count: number } | undefined
+// One statement: the new count is the one this call wrote (two overlapping calls get two different counts), and 0
+// means there is no session for the chat.
+export async function incrementSessionCount(chatId: string): Promise<number> {
+  const row = await dbx.get<{ message_count: number }>(
+    'UPDATE sessions SET message_count = message_count + 1 WHERE chat_id = ? RETURNING message_count',
+    chatId,
+  )
   return row?.message_count ?? 0
 }
 
-export function clearSession(chatId: string): void {
-  db.prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId)
+export async function clearSession(chatId: string): Promise<void> {
+  await dbx.run('DELETE FROM sessions WHERE chat_id = ?', chatId)
 }
 
 export interface DashboardUser {
@@ -47,50 +48,68 @@ export interface DashboardUser {
 
 export type DashboardUserPublic = Omit<DashboardUser, 'password_hash'>
 
-export function createDashboardUser(username: string, passwordHash: string): DashboardUser {
+export async function createDashboardUser(username: string, passwordHash: string): Promise<DashboardUser> {
   const now = Math.floor(Date.now() / 1000)
-  // First-user-wins bootstrap: if the table is currently empty, the first user
-  // becomes the global admin (role=admin, tenant_id=NULL). All subsequent users
-  // start as viewer so they can only read until an admin grants them higher access.
-  const isFirst = (db.prepare('SELECT COUNT(*) AS c FROM dashboard_users').get() as { c: number }).c === 0
-  const role = isFirst ? 'admin' : 'viewer'
   const tenantId = null  // NULL = global scope; tenant-scoped users are created via the admin provisioning API
-  const { id } = db
-    .prepare(
-      'INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
-    )
-    .get(username, passwordHash, role, tenantId, now, now) as { id: number }
+  // First-user-wins bootstrap: if the table is empty, the first user becomes the global admin (role=admin,
+  // tenant_id=NULL). All subsequent users start as viewer so they can only read until an admin grants them higher
+  // access. The emptiness check and the insert are ONE statement: a count read first and an insert after it would
+  // let two overlapping first sign-ups both see an empty table and both become admin.
+  const { id, role } = (await dbx.get<{ id: number; role: string }>(
+    `INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at)
+     VALUES (?, ?, CASE WHEN (SELECT COUNT(*) FROM dashboard_users) = 0 THEN 'admin' ELSE 'viewer' END, ?, ?, ?)
+     RETURNING id, role`,
+    username, passwordHash, tenantId, now, now,
+  ))!
   return { id, username, password_hash: passwordHash, role, tenant_id: tenantId, email: null, display_name: null, created_at: now, updated_at: now, disabled: 0 }
 }
 
-export function getDashboardUser(username: string): DashboardUser | undefined {
-  return db
-    .prepare('SELECT * FROM dashboard_users WHERE username = ? COLLATE NOCASE')
-    .get(username) as DashboardUser | undefined
+export async function getDashboardUser(username: string): Promise<DashboardUser | undefined> {
+  return dbx.get<DashboardUser>('SELECT * FROM dashboard_users WHERE username = ? COLLATE NOCASE', username)
 }
 
-export function listDashboardUsers(): DashboardUserPublic[] {
-  return db
-    .prepare('SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
-    .all() as DashboardUserPublic[]
+export async function listDashboardUsers(): Promise<DashboardUserPublic[]> {
+  return dbx.all<DashboardUserPublic>('SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
 }
 
 // enabled-only count feeds `login_available`; total count feeds `setup_required`.
-export function countDashboardUsers(includeDisabled = false): number {
+export async function countDashboardUsers(includeDisabled = false): Promise<number> {
   const sql = includeDisabled
     ? 'SELECT COUNT(*) AS c FROM dashboard_users'
     : 'SELECT COUNT(*) AS c FROM dashboard_users WHERE disabled = 0'
-  return (db.prepare(sql).get() as { c: number }).c
+  return ((await dbx.get(sql)) as { c: number }).c
 }
 
-export function updateDashboardUserPassword(userId: number, passwordHash: string): void {
-  db.prepare('UPDATE dashboard_users SET password_hash = ?, updated_at = ? WHERE id = ?')
-    .run(passwordHash, Math.floor(Date.now() / 1000), userId)
+export async function updateDashboardUserPassword(userId: number, passwordHash: string): Promise<void> {
+  await dbx.run('UPDATE dashboard_users SET password_hash = ?, updated_at = ? WHERE id = ?', passwordHash, Math.floor(Date.now() / 1000), userId)
 }
 
-export function deleteDashboardUser(username: string): boolean {
-  const info = db.prepare('DELETE FROM dashboard_users WHERE username = ? COLLATE NOCASE').run(username)
+export async function deleteDashboardUser(username: string): Promise<boolean> {
+  const info = await dbx.run('DELETE FROM dashboard_users WHERE username = ? COLLATE NOCASE', username)
   return info.changes > 0
+}
+
+export type DeleteUserOutcome = 'deleted' | 'last_admin' | 'not_found'
+
+/**
+ * Delete a user unless that would remove the last administrator: the check is part of the DELETE (a compare-and-set
+ * on the admin count), so two overlapping deletions of the only two admins cannot both go through. An `admin` row is
+ * deleted only while more than one active admin (role admin, not disabled) exists. `deleteDashboardUser` stays the
+ * unguarded variant (removing the last user is the documented way back to token-only mode).
+ */
+export async function deleteDashboardUserKeepingLastAdmin(username: string): Promise<DeleteUserOutcome> {
+  // The name is resolved once (case-insensitively, by getDashboardUser); the guarded delete then goes by id.
+  const user = await getDashboardUser(username)
+  if (!user) return 'not_found'
+  const info = await dbx.run(
+    `DELETE FROM dashboard_users
+     WHERE id = ?
+       AND NOT (role = 'admin' AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)`,
+    user.id,
+  )
+  if (info.changes > 0) return 'deleted'
+  // Nothing deleted: either the guard held or the user went away since the lookup. Only the answer depends on this read.
+  return (await dbx.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', user.id)) ? 'last_admin' : 'not_found'
 }
 
 /**
@@ -101,21 +120,20 @@ export function appLocalDate(at: Date = new Date()): string {
   return at.toLocaleDateString('en-CA', { timeZone: APP_TZ })
 }
 
-export function appendDailyLog(agentId: string, content: string): void {
+export async function appendDailyLog(agentId: string, content: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
   // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
   // local time lands on the previous day and the "ma" recall query misses it.
   const today = appLocalDate()
-  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)')
-    .run(agentId, today, content, now, resolveWriteTenant(agentId))
+  await dbx.run('INSERT INTO daily_logs (agent_id, date, content, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)', agentId, today, content, now, resolveWriteTenant(agentId))
 }
 
-export function getDailyLog(agentId: string, date: string): { id: number; content: string; created_at: number }[] {
-  return db.prepare('SELECT id, content, created_at FROM daily_logs WHERE agent_id = ? AND date = ? ORDER BY created_at ASC').all(agentId, date) as { id: number; content: string; created_at: number }[]
+export async function getDailyLog(agentId: string, date: string): Promise<{ id: number; content: string; created_at: number }[]> {
+  return (await dbx.all('SELECT id, content, created_at FROM daily_logs WHERE agent_id = ? AND date = ? ORDER BY created_at ASC', agentId, date)) as { id: number; content: string; created_at: number }[]
 }
 
-export function getDailyLogDates(agentId: string, limit: number = 14): string[] {
-  return (db.prepare('SELECT DISTINCT date FROM daily_logs WHERE agent_id = ? ORDER BY date DESC LIMIT ?').all(agentId, limit) as { date: string }[]).map(r => r.date)
+export async function getDailyLogDates(agentId: string, limit: number = 14): Promise<string[]> {
+  return ((await dbx.all('SELECT DISTINCT date FROM daily_logs WHERE agent_id = ? ORDER BY date DESC LIMIT ?', agentId, limit)) as { date: string }[]).map(r => r.date)
 }
 
 export interface ArtifactPointer {
@@ -153,12 +171,12 @@ function escapeLike(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
 
-export function recallByDateRange(from: string, to: string, agentId?: string, tenantId?: string): RecallResult {
+export async function recallByDateRange(from: string, to: string, agentId?: string, tenantId?: string): Promise<RecallResult> {
   const logSql = agentId
     ? 'SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE date >= ? AND date <= ? AND agent_id = ? ORDER BY date ASC, created_at ASC'
     : 'SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE date >= ? AND date <= ? ORDER BY date ASC, created_at ASC'
   const logParams = agentId ? [from, to, agentId] : [from, to]
-  const logs = db.prepare(logSql).all(...logParams) as RecallResult['logs']
+  const logs = (await dbx.all(logSql, ...logParams)) as RecallResult['logs']
 
   const fromTs = toBudapestTs(from, false)
   const toTs = toBudapestTs(to, true)
@@ -169,12 +187,12 @@ export function recallByDateRange(from: string, to: string, agentId?: string, te
     ? `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared')${tc} ORDER BY created_at ASC`
     : `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ?${tc} ORDER BY created_at ASC`
   const memParams = agentId ? [fromTs, toTs, agentId, ...tp] : [fromTs, toTs, ...tp]
-  const memories = db.prepare(memSql).all(...memParams) as Memory[]
+  const memories = await dbx.all<Memory>(memSql, ...memParams)
 
   return { logs, memories, dateRange: { from, to } }
 }
 
-export function recallSearch(query: string, agentId?: string, limit = 50, tenantId?: string): RecallResult {
+export async function recallSearch(query: string, agentId?: string, limit = 50, tenantId?: string): Promise<RecallResult> {
   const terms = buildFtsMatchExpression(query)
   let memories: Memory[] = []
   const escaped = escapeLike(query)
@@ -190,8 +208,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50, tenant
         ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${tc} ORDER BY rank LIMIT ?`
         : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ?${tc} ORDER BY rank LIMIT ?`
       const candidates = agentId
-        ? db.prepare(sql).all(terms, agentId, ...tp, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-        : db.prepare(sql).all(terms, ...tp, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+        ? (await dbx.all(sql, terms, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+        : (await dbx.all(sql, terms, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
       memories = withoutRank(reRankByRecency(candidates, limit)) as Memory[]
     } catch {
       const sql = agentId
@@ -199,8 +217,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50, tenant
         : `SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${tcFb} ORDER BY created_at DESC LIMIT ?`
       const pat = `%${escaped}%`
       memories = agentId
-        ? db.prepare(sql).all(agentId, pat, pat, ...tp, limit) as Memory[]
-        : db.prepare(sql).all(pat, pat, ...tp, limit) as Memory[]
+        ? await dbx.all<Memory>(sql, agentId, pat, pat, ...tp, limit)
+        : await dbx.all<Memory>(sql, pat, pat, ...tp, limit)
     }
   }
 
@@ -209,8 +227,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50, tenant
     : "SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE content LIKE ? ESCAPE '\\' ORDER BY date DESC, created_at DESC LIMIT ?"
   const logPat = `%${escaped}%`
   const logs = agentId
-    ? db.prepare(logSql).all(logPat, agentId, limit) as RecallResult['logs']
-    : db.prepare(logSql).all(logPat, limit) as RecallResult['logs']
+    ? (await dbx.all(logSql, logPat, agentId, limit)) as RecallResult['logs']
+    : (await dbx.all(logSql, logPat, limit)) as RecallResult['logs']
 
   const dates = logs.map(l => l.date)
   const from = dates.length ? dates[dates.length - 1] : ''

@@ -54,8 +54,8 @@ let seededTokenId: number
 
 beforeAll(async () => { realHash = await hashPassword(PASSWORD) })
 
-function makeUser(name: string, role: string, tenant: string | null): void {
-  const u = createDashboardUser(name, realHash)
+async function makeUser(name: string, role: string, tenant: string | null): Promise<void> {
+  const u = await createDashboardUser(name, realHash)
   db.prepare('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?').run(role, tenant, u.id)
   cookies[name] = createSession({ userId: u.id, username: u.username })
   ids[name] = u.id
@@ -69,9 +69,9 @@ beforeEach(async () => {
   createTenant('tenant-b', 'Tenant B')
   cookies = {}
   ids = {}
-  makeUser('owner', 'admin', null) // the first user: global admin
-  makeUser('tadmin', 'admin', 'tenant-b') // an admin, but of one tenant
-  makeUser('tagent', 'agent', 'tenant-b') // the target of the user-management calls
+  await makeUser('owner', 'admin', null) // the first user: global admin
+  await makeUser('tadmin', 'admin', 'tenant-b') // an admin, but of one tenant
+  await makeUser('tagent', 'agent', 'tenant-b') // the target of the user-management calls
   seededTokenId = (await insertApiToken({ tokenHash: 'a'.repeat(64), name: 'seeded', role: 'viewer', tenantId: 'default', createdAt: 1, expiresAt: null })).id
 })
 
@@ -273,7 +273,7 @@ describe('first run: no enabled dashboard user', () => {
   })
 
   it('treats a table of disabled users as first run', async () => {
-    createDashboardUser('dormant', realHash)
+    await createDashboardUser('dormant', realHash)
     db.prepare('UPDATE dashboard_users SET disabled = 1').run()
     const out = await call('POST', '/api/auth/users', MAIN, { username: 'woken', password: NEW_PASSWORD })
     expect(out.status).toBe(201)

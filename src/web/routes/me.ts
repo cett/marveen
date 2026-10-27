@@ -34,7 +34,7 @@ export async function tryHandleMe(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const user = getDashboardUser(auth.user)
+  const user = await getDashboardUser(auth.user)
   if (!user) {
     json(res, { error: 'not_found', field: 'user' }, 404)
     return true

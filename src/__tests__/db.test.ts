@@ -35,27 +35,27 @@ beforeAll(() => {
 })
 
 describe('sessions', () => {
-  it('munkamenetet ment es visszaolvas', () => {
-    setSession('test-chat-1', 'session-abc')
-    const s = getSession('test-chat-1')
+  it('munkamenetet ment es visszaolvas', async () => {
+    await setSession('test-chat-1', 'session-abc')
+    const s = await getSession('test-chat-1')
     expect(s?.sessionId).toBe('session-abc')
     expect(s?.messageCount).toBe(0)
   })
 
-  it('munkamenetet felulir', () => {
-    setSession('test-chat-2', 'old-session')
-    setSession('test-chat-2', 'new-session')
-    expect(getSession('test-chat-2')?.sessionId).toBe('new-session')
+  it('munkamenetet felulir', async () => {
+    await setSession('test-chat-2', 'old-session')
+    await setSession('test-chat-2', 'new-session')
+    expect((await getSession('test-chat-2'))?.sessionId).toBe('new-session')
   })
 
-  it('munkamenetet torol', () => {
-    setSession('test-chat-3', 'session-xyz')
-    clearSession('test-chat-3')
-    expect(getSession('test-chat-3')).toBeUndefined()
+  it('munkamenetet torol', async () => {
+    await setSession('test-chat-3', 'session-xyz')
+    await clearSession('test-chat-3')
+    expect(await getSession('test-chat-3')).toBeUndefined()
   })
 
-  it('undefined ad vissza ha nem letezik', () => {
-    expect(getSession('nem-letezik')).toBeUndefined()
+  it('undefined ad vissza ha nem letezik', async () => {
+    expect(await getSession('nem-letezik')).toBeUndefined()
   })
 })
 

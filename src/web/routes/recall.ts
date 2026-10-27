@@ -196,7 +196,7 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
     const recallTenantId = tenantParam ?? (isAdmin ? undefined : (ctx.tenantId ?? 'default'))
 
     if (query && !dateExpr) {
-      const result = recallSearch(query, agent, limit, recallTenantId)
+      const result = await recallSearch(query, agent, limit, recallTenantId)
       const formatted = formatRecallResult(result)
       json(res, formatted)
       return true
@@ -208,7 +208,7 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const result = recallByDateRange(range.from, range.to, agent, recallTenantId)
+    const result = await recallByDateRange(range.from, range.to, agent, recallTenantId)
 
     if (query) {
       const escaped = escapeLike(query)
@@ -224,7 +224,7 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/recall/dates' && method === 'GET') {
     const agent = url.searchParams.get('agent') || enforcedSelfScope(ctx) || MAIN_AGENT_ID
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '90', 10), 365)
-    json(res, getDailyLogDates(agent, limit))
+    json(res, await getDailyLogDates(agent, limit))
     return true
   }
 

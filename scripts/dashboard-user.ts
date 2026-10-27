@@ -25,6 +25,7 @@
 import { createInterface } from 'node:readline'
 import { initDatabase, getDb, createDashboardUser, getDashboardUser, listDashboardUsers, deleteDashboardUser, updateDashboardUserPassword, logConfigChange } from '../src/db.js'
 import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/web/password-hash.js'
+import { runAs } from '../src/db/context.js'
 import { revokeAllForUser } from '../src/web/auth-sessions.js'
 import { securityReset } from '../src/web/security-reset.js'
 import { notifySecurityEvent } from '../src/notify.js'
@@ -105,27 +106,27 @@ async function main(): Promise<void> {
         process.stderr.write('Invalid username (1-64 chars: letters, digits, . _ -).\n')
         process.exit(1)
       }
-      if (getDashboardUser(username)) {
+      if (await getDashboardUser(username)) {
         process.stderr.write(`User "${username}" already exists.\n`)
         process.exit(1)
       }
       const pw = await acquirePassword(fromStdin)
       const hash = await hashPassword(pw)
-      createDashboardUser(username, hash)
+      await createDashboardUser(username, hash)
       process.stdout.write(`Created dashboard login "${username}".\n`)
       break
     }
     case 'reset-password': {
       const username = positional[0]
       if (!username) usage()
-      const user = getDashboardUser(username)
+      const user = await getDashboardUser(username)
       if (!user) {
         process.stderr.write(`User "${username}" not found.\n`)
         process.exit(1)
       }
       const pw = await acquirePassword(fromStdin)
       const hash = await hashPassword(pw)
-      updateDashboardUserPassword(user.id, hash)
+      await updateDashboardUserPassword(user.id, hash)
       revokeAllForUser(user.id)
       // Same audit + channel ping as the HTTP break-glass: a password reset
       // that skipped the current-password proof must always leave a trace.
@@ -135,7 +136,7 @@ async function main(): Promise<void> {
       break
     }
     case 'list': {
-      const users = listDashboardUsers()
+      const users = await listDashboardUsers()
       if (users.length === 0) {
         process.stdout.write('No dashboard users (token-only mode).\n')
         break
@@ -146,14 +147,14 @@ async function main(): Promise<void> {
     case 'remove': {
       const username = positional[0]
       if (!username) usage()
-      const user = getDashboardUser(username)
+      const user = await getDashboardUser(username)
       if (!user) {
         process.stderr.write(`User "${username}" not found.\n`)
         process.exit(1)
       }
       revokeAllForUser(user.id)
-      deleteDashboardUser(username)
-      const remaining = listDashboardUsers().length
+      await deleteDashboardUser(username)
+      const remaining = (await listDashboardUsers()).length
       process.stdout.write(`Removed "${username}".${remaining === 0 ? ' No users left -- back to token-only mode.' : ''}\n`)
       break
     }
@@ -169,7 +170,7 @@ async function main(): Promise<void> {
     case 'sessions:clear': {
       const username = positional[0]
       if (username) {
-        const user = getDashboardUser(username)
+        const user = await getDashboardUser(username)
         if (!user) {
           process.stderr.write(`User "${username}" not found.\n`)
           process.exit(1)
@@ -187,7 +188,8 @@ async function main(): Promise<void> {
   }
 }
 
-main()
+// The db facade asks every call for a context (src/db/context.ts); this is a job of the machine owner's CLI.
+runAs.system('dashboard-user-cli', () => main())
   .then(() => process.exit(0))
   .catch((err) => {
     if (err instanceof PasswordPolicyError) {

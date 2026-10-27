@@ -64,7 +64,7 @@ beforeEach(() => { vi.clearAllMocks() })
 
 describe('GET /api/v1/me', () => {
   it('returns profile for session caller', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT as any)
     vi.mocked(sessions.listUserSessions).mockReturnValue([{} as any, {} as any, {} as any])
 
@@ -83,7 +83,7 @@ describe('GET /api/v1/me', () => {
 
   it('returns null tenant_display_name for global admin (no tenant)', async () => {
     const globalAdminUser = { ...SAMPLE_USER, tenant_id: null }
-    vi.mocked(db.getDashboardUser).mockReturnValue(globalAdminUser as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(globalAdminUser as any)
     vi.mocked(sessions.listUserSessions).mockReturnValue([])
 
     const { ctx, out } = makeCtx('GET', '/api/v1/me')
@@ -102,7 +102,7 @@ describe('GET /api/v1/me', () => {
   })
 
   it('returns 404 if user not found in db', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(undefined)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(undefined)
     const { ctx, out } = makeCtx('GET', '/api/v1/me')
     await tryHandleMe(ctx)
     expect(out.status).toBe(404)
@@ -119,7 +119,7 @@ describe('GET /api/v1/me', () => {
 
 describe('PATCH /api/v1/me', () => {
   it('updates display_name', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
     vi.mocked(db.adminPatchDashboardUser).mockReturnValue({ ...SAMPLE_USER, display_name: 'Jane Updated' } as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { display_name: 'Jane Updated' })
@@ -131,7 +131,7 @@ describe('PATCH /api/v1/me', () => {
   })
 
   it('updates email', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
     vi.mocked(db.adminPatchDashboardUser).mockReturnValue({ ...SAMPLE_USER, email: 'new@acme.com' } as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { email: 'New@Acme.com' })
@@ -143,7 +143,7 @@ describe('PATCH /api/v1/me', () => {
   })
 
   it('clears display_name when null', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
     vi.mocked(db.adminPatchDashboardUser).mockReturnValue({ ...SAMPLE_USER, display_name: null } as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { display_name: null })
@@ -154,7 +154,7 @@ describe('PATCH /api/v1/me', () => {
   })
 
   it('rejects invalid email', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { email: 'not-an-email' })
     await tryHandleMe(ctx)
@@ -164,7 +164,7 @@ describe('PATCH /api/v1/me', () => {
   })
 
   it('rejects display_name over 128 chars', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { display_name: 'x'.repeat(129) })
     await tryHandleMe(ctx)
@@ -174,7 +174,7 @@ describe('PATCH /api/v1/me', () => {
   })
 
   it('rejects empty patch body', async () => {
-    vi.mocked(db.getDashboardUser).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', {})
     await tryHandleMe(ctx)

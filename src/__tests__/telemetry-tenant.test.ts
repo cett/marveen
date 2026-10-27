@@ -196,8 +196,8 @@ describe('the writers stamp the tenant', () => {
   })
 
   it('daily_logs, background_tasks, skill_usage', async () => {
-    appendDailyLog('solo', 'a')
-    appendDailyLog('shared', 'b')
+    await appendDailyLog('solo', 'a')
+    await appendDailyLog('shared', 'b')
     expect(tenantsOf('daily_logs')).toEqual(['acme', 'beta'])
     await createBackgroundTaskAtomic('b1', 'shared', 'p', 'tmux', 5)
     expect(tenantsOf('background_tasks')).toEqual(['beta'])
