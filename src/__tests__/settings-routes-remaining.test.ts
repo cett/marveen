@@ -40,6 +40,16 @@ vi.mock('../settings-store.js', () => ({
 vi.mock('../db.js', () => ({ logConfigChange: mocks.logConfigChange }))
 vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: mocks.setStoreWriteActor }))
 vi.mock('../logger.js', () => ({ logger: mocks.logger }))
+// The RBAC_MODE branch of the route is covered by rbac-mode-settings-route.test.ts; these files only
+// exercise the generic settings branches, so the RBAC helpers are inert here.
+vi.mock('../web/rbac-mode.js', () => ({
+  RBAC_MODE_KEY: 'RBAC_MODE',
+  parseRbacMode: () => 'enforce',
+  refreshRbacMode: vi.fn(),
+  notifyRbacMode: vi.fn(),
+  describeRbacMode: vi.fn(),
+}))
+vi.mock('../web/session-only-guard.js', () => ({ denyUnlessHumanSessionAlways: () => false, denyUnlessHumanOnlyEnforced: () => false }))
 
 import { tryHandleSettings } from '../web/routes/settings.js'
 

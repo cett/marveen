@@ -22,6 +22,7 @@ import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } 
 import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
+import { loadRbacMode, startRbacModeRefresh } from './web/rbac-mode.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -492,6 +493,11 @@ async function main(): Promise<void> {
   // Database
   initDatabase()
   logger.info('Adatbazis inicializalva')
+
+  // RBAC_MODE: seed the system_config row from the env once (idempotent), read the live mode and keep
+  // it fresh. Called here, not from initDatabase(): that also runs from every test against the shared store.
+  loadRbacMode()
+  startRbacModeRefresh()
 
   // S8B: retire store/config-overrides.json (rename to .deprecated) now that
   // initDatabase() above has guaranteed every key it held is a system_config

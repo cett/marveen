@@ -353,15 +353,17 @@ export const WEB_PORT = parseInt(process.env['WEB_PORT'] ?? env['WEB_PORT'] ?? '
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 
-// RBAC enforcement mode. Controls whether the top-level RBAC gate in web.ts
-// blocks denied requests (enforce) or only logs a would-deny (shadow).
-// Default: enforce. Shadow is a loss-of-protection mode and has to be asked for by name:
-// RBAC_MODE=shadow (process environment or .env). Any other value, an empty one or a
-// misspelling included, is enforce -- a typo must never switch the gate off.
-export const RBAC_MODE: 'shadow' | 'enforce' =
-  (process.env['RBAC_MODE'] ?? env['RBAC_MODE'] ?? 'enforce').trim().toLowerCase() === 'shadow'
-    ? 'shadow'
-    : 'enforce'
+// RBAC mode requested through the process environment or .env, read once at start. This is NOT the
+// live mode: the gate asks getRbacMode() (web/rbac-mode.ts), which reads the system_config row
+// RBAC_MODE. The env value only seeds that row on the first boot (see loadRbacMode) and afterwards
+// can only tighten: RBAC_MODE=enforce here wins over a stored shadow, RBAC_MODE=shadow is ignored.
+// undefined = nothing requested (unset or blank). Any other value, a misspelling included, is
+// enforce: only the exact word shadow loosens, so a typo can never switch the gate off.
+export const RBAC_MODE_ENV: 'shadow' | 'enforce' | undefined = (() => {
+  const raw = (process.env['RBAC_MODE'] ?? env['RBAC_MODE'] ?? '').trim().toLowerCase()
+  if (raw === '') return undefined
+  return raw === 'shadow' ? 'shadow' : 'enforce'
+})()
 
 // Human-only approval categories. Off by default: the rules (a category an agent may never decide for
 // itself, the dashboard-session-only decision on such a request, the category name checks on

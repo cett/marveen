@@ -5,6 +5,8 @@ import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.j
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
+import { RBAC_MODE_KEY, parseRbacMode, refreshRbacMode, describeRbacMode } from '../rbac-mode.js'
+import { denyUnlessHumanSessionAlways, denyUnlessHumanOnlyEnforced } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 const SECRET_MASK = '***'
@@ -20,20 +22,26 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
     // row fields; the filter runs BEFORE the values are read, so nothing else is even resolved for them.
     const isAdmin = ctx.role === 'admin'
     const visible = isAdmin ? SETTINGS_REGISTRY : SETTINGS_REGISTRY.filter((def) => NON_ADMIN_SETTING_KEYS.includes(def.key))
-    const rows = visible.map((def) => ({
-      key: def.key,
-      type: def.type,
-      value: def.secret ? SECRET_MASK : getEffectiveSettingValue(def.key),
-      default: def.default,
-      description: def.description,
-      module: def.module,
-      requiresRestart: def.requiresRestart,
-      valueSet: def.valueSet,
-      min: def.min,
-      max: def.max,
-      secret: def.secret,
-      envOnly: def.envOnly === true,
-    }))
+    const rows = visible.map((def) => {
+      // RBAC_MODE reports what the gate actually applies (not the raw row): `value` is the live mode,
+      // `stored` the row and `reason` why a stored shadow is not in force (null when they agree).
+      const rbac = def.key === RBAC_MODE_KEY ? describeRbacMode() : null
+      return {
+        key: def.key,
+        type: def.type,
+        value: rbac ? rbac.effective : def.secret ? SECRET_MASK : getEffectiveSettingValue(def.key),
+        ...(rbac ? { stored: rbac.stored, reason: rbac.reason } : {}),
+        default: def.default,
+        description: def.description,
+        module: def.module,
+        requiresRestart: def.requiresRestart,
+        valueSet: def.valueSet,
+        min: def.min,
+        max: def.max,
+        secret: def.secret,
+        envOnly: def.envOnly === true,
+      }
+    })
     json(res, { settings: isAdmin ? rows : rows.map((r) => pickFields(r, NON_ADMIN_SETTING_ROW_FIELDS)) })
     return true
   }
@@ -87,6 +95,34 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
+      // Loosening the RBAC gate is the one write that switches a protection off, so it needs a person:
+      // a token, the main agent's included, must not be able to open its own gate. Tightening is open
+      // to any admin caller. Checked before anything is written.
+      const isRbacMode = key === RBAC_MODE_KEY
+      const looseningRbac = isRbacMode && parseRbacMode(validation.value) === 'shadow'
+      // A human session proves a person only while a token cannot mint one: with the human-only switch
+      // off a token can create the dashboard admin that would loosen the gate, so loosening is refused then.
+      if (
+        looseningRbac &&
+        denyUnlessHumanOnlyEnforced(
+          ctx,
+          'settings.rbac_mode.loosen',
+          'Switching the RBAC gate to shadow is only possible while APPROVAL_HUMAN_ONLY_ENFORCE is on; with it off a token can create the dashboard user that would do it',
+        )
+      ) {
+        return true
+      }
+      if (
+        looseningRbac &&
+        denyUnlessHumanSessionAlways(
+          ctx,
+          'settings.rbac_mode.loosen',
+          'Switching the RBAC gate to shadow needs a person logged in to the dashboard as a global admin',
+        )
+      ) {
+        return true
+      }
+
       const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
       // A setting is fleet-wide: no tenant. The actor string comes from the request body, so it is
       // an audit label only and never decides a tenant.
@@ -109,6 +145,14 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       const loggedNewValue = def.secret ? SECRET_MASK : validation.value!
       logConfigChange(key, loggedOldValue, loggedNewValue, resolvedActor)
       logger.info({ key, oldValue: loggedOldValue, newValue: loggedNewValue }, 'Setting updated')
+      if (isRbacMode) {
+        // The write and its journal row are both in: the cache can now read a consistent pair.
+        refreshRbacMode()
+        // The notice to the main agent comes from refreshRbacMode (every switch to shadow); the actor is in the journal.
+        if (looseningRbac) {
+          logger.warn({ actor: resolvedActor, oldValue }, 'RBAC_MODE set to shadow: the RBAC gate no longer blocks')
+        }
+      }
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {
       logger.error({ err }, 'Failed to update setting')
