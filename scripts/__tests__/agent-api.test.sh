@@ -207,6 +207,36 @@ reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.ag
 OUT="$(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" --agent a GET /api/x 2>&1 >/dev/null)"
 check "explicit --agent with a sub-agent config: own token, no warning" bash -c "grep -q 'Bearer own-a' '$T/stdin' && ! echo \"\$1\" | grep -q warning" _ "$OUT"
 
+# 14 a hostile config directory (the variable is the caller's own text): the agent segment is dropped whole, so no
+# extra header line, no raw control character on stderr, no header and no warning at all. The call itself goes out
+# as it would without a config directory (here: the main agent, from the install root).
+hostile() { # hostile NAME SEGMENT
+  local name="$1" seg="$2" err
+  reset; echo own-m > "$INSTALL/.agent-token"
+  err="$(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/$seg/.claude-config" bash "$W" GET /api/x 2>&1 >/dev/null)"
+  check "hostile config ($name): the call still goes out on the main agent's token" grep -q 'Bearer own-m' "$T/stdin"
+  check "hostile config ($name): no X-Caller-Config header" bash -c "! grep -q 'X-Caller-Config' '$T/argv'"
+  check "hostile config ($name): no injected header line" bash -c "! grep -qi 'X-Evil' '$T/argv'"
+  check "hostile config ($name): nothing raw on stderr" bash -c "[ -z \"\$1\" ]" _ "$err"
+}
+hostile "CRLF" "$(printf 'a\r\nX-Evil: 1')"
+hostile "LF" "$(printf 'a\nX-Evil: 1')"
+hostile "colon" "a: b"
+hostile "TAB and ESC" "$(printf 'a\t\033[31m')"
+hostile "3000 characters" "$(printf 'a%.0s' $(seq 1 3000))"
+hostile "65 characters" "$(printf 'a%.0s' $(seq 1 65))"
+# the acting agent printed in the warning is filtered too (here the main agent id itself carries an escape sequence)
+reset; echo own-m > "$INSTALL/.agent-token"
+err="$(cd "$INSTALL" && MAIN_AGENT_ID="$(printf 'm\033[31m')" CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" GET /api/x 2>&1 >/dev/null)"
+check "the warning prints no raw control character of the acting agent" bash -c "echo \"\$1\" | grep -q 'warning: acting as ?' && ! printf '%s' \"\$1\" | grep -q \$'\\033'" _ "$err"
+# the allowlist keeps a plain id of the longest allowed length, and the id the fleet really uses
+reset; echo own-m > "$INSTALL/.agent-token"; LONG="$(printf 'a%.0s' $(seq 1 64))"
+(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/$LONG/.claude-config" bash "$W" GET /api/x >/dev/null 2>&1)
+check "a 64 character id is still sent" grep -qx "X-Caller-Config: $LONG" "$T/argv"
+reset; echo own-m > "$INSTALL/.agent-token"
+(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/agent-b_2/.claude-config" bash "$W" GET /api/x >/dev/null 2>&1)
+check "an id with a hyphen, an underscore and a digit is still sent" grep -qx "X-Caller-Config: agent-b_2" "$T/argv"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

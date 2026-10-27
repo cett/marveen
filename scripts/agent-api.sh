@@ -83,7 +83,10 @@ case "$CFG" in
     case "${CFG_REST#"$CFG_ID"/}" in .claude-config|.claude-config/*) CFG_AGENT="$CFG_ID" ;; esac ;;
   "$BASE"/.channels-config|"$BASE"/.channels-config/*) CFG_AGENT="$MAIN" ;;
 esac
-case "$CFG_AGENT" in */*|.*) CFG_AGENT="" ;; esac
+# The value is derived from an environment variable and ends up in a header line and on stderr: letters, digits,
+# '-' and '_' only, at most 64 characters, anything else (CR, LF, TAB, ESC, ':', a path segment) is dropped whole.
+case "$CFG_AGENT" in *[!A-Za-z0-9_-]*|"") CFG_AGENT="" ;; esac
+[ "${#CFG_AGENT}" -le 64 ] || CFG_AGENT=""
 
 # How the acting agent was named: explicit (--agent or MARVEEN_AGENT_ID: the caller said so), root (the install
 # root as cwd), cwd (an agent directory), config (the config directory), token-main (--token main).
@@ -136,7 +139,8 @@ fi
 # this session was launched as (a sub-agent that cd'd to the install root, or asked for the main agent's token):
 # the call goes out on that token as before. A notice only, nothing about the request changes.
 if [ -n "$CFG_AGENT" ] && [ -n "$AGENT" ] && [ "$AGENT" != "$CFG_AGENT" ] && { [ "$AGENT_BY" = "root" ] || [ "$AGENT_BY" = "token-main" ]; }; then
-  echo "agent-api: warning: acting as $AGENT (resolved from $AGENT_BY) but this session was launched as $CFG_AGENT; pass --agent $CFG_AGENT to act as yourself" >&2
+  case "$AGENT" in *[!A-Za-z0-9_-]*) SHOWN_AGENT="?" ;; *) SHOWN_AGENT="$AGENT" ;; esac # CFG_AGENT is filtered already
+  echo "agent-api: warning: acting as $SHOWN_AGENT (resolved from $AGENT_BY) but this session was launched as $CFG_AGENT; pass --agent $CFG_AGENT to act as yourself" >&2
 fi
 
 PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(env_file_value WEB_PORT)}}"
