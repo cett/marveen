@@ -227,8 +227,36 @@ hostile "3000 characters" "$(printf 'a%.0s' $(seq 1 3000))"
 hostile "65 characters" "$(printf 'a%.0s' $(seq 1 65))"
 # the acting agent printed in the warning is filtered too (here the main agent id itself carries an escape sequence)
 reset; echo own-m > "$INSTALL/.agent-token"
-err="$(cd "$INSTALL" && MAIN_AGENT_ID="$(printf 'm\033[31m')" CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" GET /api/x 2>&1 >/dev/null)"
-check "the warning prints no raw control character of the acting agent" bash -c "echo \"\$1\" | grep -q 'warning: acting as ?' && ! printf '%s' \"\$1\" | grep -q \$'\\033'" _ "$err"
+err="$(cd "$INSTALL" && MAIN_AGENT_ID="$(printf 'm\033[31m')" CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" GET /api/x 2>&1 >/dev/null)"; rc=$?
+check "a main agent id with an escape sequence: no request, no raw control character on stderr" bash -c "[ \"\$1\" -eq 3 ] && [ ! -e '$T/calls' ] && ! printf '%s' \"\$2\" | grep -q \$'\\033'" _ "$rc" "$err"
+
+# 15 the acting agent (the X-Agent-Id header and the token path) takes the same allowlist, whichever way it was named:
+# --agent, MARVEEN_AGENT_ID, the working directory, the config directory, --token main. A value that fails it ends
+# in the "no token for an unknown agent" exit (3), no request made, nothing raw on stderr.
+hostile_agent() { # hostile_agent NAME VALUE HOW(flag|env|cwd|main)
+  local name="$1" val="$2" how="$3" err rc
+  reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
+  # the hostile id has a token of its own, so only the filter (not a missing token file) can end the call
+  mkdir -p "$INSTALL/agents/$val" && echo own-x > "$INSTALL/agents/$val/.agent-token"
+  case "$how" in
+    flag) err="$(cd "$T/scratch" && bash "$W" --agent "$val" GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+    env)  err="$(cd "$T/scratch" && MARVEEN_AGENT_ID="$val" bash "$W" GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+    cwd)  mkdir -p "$INSTALL/agents/$val"; err="$(cd "$INSTALL/agents/$val" && bash "$W" GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+    main) err="$(cd "$T/scratch" && MAIN_AGENT_ID="$val" bash "$W" --token main GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+  esac
+  check "hostile acting agent ($name, $how): exit 3 and no request" bash -c "[ \"\$1\" -eq 3 ] && [ ! -e '$T/calls' ]" _ "$rc"
+  check "hostile acting agent ($name, $how): no raw control character on stderr" bash -c "! printf '%s' \"\$1\" | grep -q \$'[\\001-\\037]'" _ "$err"
+}
+for how in flag env cwd main; do
+  hostile_agent "CRLF" "$(printf 'a\r\nX-Evil: 1')" "$how"
+  hostile_agent "colon" "a: b" "$how"
+  hostile_agent "ESC" "$(printf 'a\033[31m')" "$how"
+  hostile_agent "65 characters" "$(printf 'a%.0s' $(seq 1 65))" "$how"
+done
+# a plain id still works through every door (here: the flag and the working directory)
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"
+(cd "$T/scratch" && bash "$W" --agent a GET /api/x >/dev/null 2>&1)
+check "a plain --agent id still sends X-Agent-Id" grep -qx "X-Agent-Id: a" "$T/argv"
 # the allowlist keeps a plain id of the longest allowed length, and the id the fleet really uses
 reset; echo own-m > "$INSTALL/.agent-token"; LONG="$(printf 'a%.0s' $(seq 1 64))"
 (cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/$LONG/.claude-config" bash "$W" GET /api/x >/dev/null 2>&1)

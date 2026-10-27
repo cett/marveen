@@ -102,9 +102,17 @@ if [ -z "$AGENT" ] && [ -n "$CFG_AGENT" ]; then
   # the session was launched with does.
   AGENT="$CFG_AGENT"; AGENT_BY="config"
 fi
-case "$AGENT" in */*|.*) AGENT="" ;; esac
+# The acting agent goes into a header line (X-Agent-Id) and a token path: the same allowlist as the launched agent
+# above (letters, digits, '-' and '_', at most 64 characters), whichever way it was named. Anything else is
+# dropped whole, which ends in the "no token for an unknown agent" exit below, with no request made.
+case "$AGENT" in *[!A-Za-z0-9_-]*) AGENT="" ;; esac
+[ "${#AGENT}" -le 64 ] || AGENT=""
 
-if [ "$KIND" = "main" ]; then AGENT="$MAIN"; KIND="agent"; AGENT_BY="token-main"; fi
+if [ "$KIND" = "main" ]; then
+  AGENT="$MAIN"; KIND="agent"; AGENT_BY="token-main"
+  case "$AGENT" in *[!A-Za-z0-9_-]*) AGENT="" ;; esac
+  [ "${#AGENT}" -le 64 ] || AGENT=""
+fi
 if [ "$KIND" = "admin" ]; then
   if [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; then KIND="agent"
   else
@@ -139,8 +147,7 @@ fi
 # this session was launched as (a sub-agent that cd'd to the install root, or asked for the main agent's token):
 # the call goes out on that token as before. A notice only, nothing about the request changes.
 if [ -n "$CFG_AGENT" ] && [ -n "$AGENT" ] && [ "$AGENT" != "$CFG_AGENT" ] && { [ "$AGENT_BY" = "root" ] || [ "$AGENT_BY" = "token-main" ]; }; then
-  case "$AGENT" in *[!A-Za-z0-9_-]*) SHOWN_AGENT="?" ;; *) SHOWN_AGENT="$AGENT" ;; esac # CFG_AGENT is filtered already
-  echo "agent-api: warning: acting as $SHOWN_AGENT (resolved from $AGENT_BY) but this session was launched as $CFG_AGENT; pass --agent $CFG_AGENT to act as yourself" >&2
+  echo "agent-api: warning: acting as $AGENT (resolved from $AGENT_BY) but this session was launched as $CFG_AGENT; pass --agent $CFG_AGENT to act as yourself" >&2
 fi
 
 PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(env_file_value WEB_PORT)}}"
