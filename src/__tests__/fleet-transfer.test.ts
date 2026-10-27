@@ -101,6 +101,11 @@ vi.mock('../db/fleet-transfer.js', () => ({
   inFleetImportTransaction: vi.fn((fn: () => Promise<void>) => fn()),
 }))
 
+// The caches the import re-reads after the commit belong to the real connection, which these tests do not open.
+vi.mock('../db/config-cache.js', () => ({ reloadSystemConfigCache: vi.fn() }))
+vi.mock('../db/model-profile-map-cache.js', () => ({ reloadModelProfileMapCache: vi.fn() }))
+vi.mock('../db/agent-settings-cache.js', () => ({ reloadAgentSettingsCache: vi.fn() }))
+
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
   listAgentNames: () => [],
@@ -116,6 +121,9 @@ vi.mock('node:fs', async (importOriginal) => {
     unlinkSync: () => undefined,
     rmSync: () => undefined,
     readdirSync: () => [],
+    // The import stages files and renames them after the commit; the writes are mocked, so are these.
+    renameSync: () => undefined,
+    copyFileSync: () => undefined,
   }
 })
 
