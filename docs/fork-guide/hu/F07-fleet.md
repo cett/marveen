@@ -160,7 +160,7 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
 
 ```bash
 # Token visszavonása
-bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/revoke
+bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
 
 (A `POST /api/v1/admin/tokens/<id>/rotate` új tokent ad a régi helyett; tokenre nincs `PATCH`.)

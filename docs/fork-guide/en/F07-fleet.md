@@ -160,7 +160,7 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
 
 ```bash
 # Revoke a token
-bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/revoke
+bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
 
 (`POST /api/v1/admin/tokens/<id>/rotate` issues a replacement; there is no `PATCH` on a token.)

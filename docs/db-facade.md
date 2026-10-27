@@ -149,9 +149,9 @@ order of the journal row against the answer would change).
 
 **A measurement, not a rule.** `@typescript-eslint/no-unnecessary-condition` would flag `await x() !== null`
 written without the `await` (a Promise is never `null`). Run over the production `src/` with
-`tools/eslint/eslint.measure.mjs`, it gives 302 findings in 88 files: 130 `??` on a non-nullish left side, 106
+`tools/eslint/eslint.measure.mjs`, it gives 298 findings in 85 files (plus 4 messages about disable comments with no effect): 130 `??` on a non-nullish left side, 106
 optional chains on a non-nullish value, and 60 about a value that is always truthy, always falsy or a comparison
-without overlap. None of the 60 is on a line with an `await`, an `async` function or a Promise, so it would not
+without overlap (and 2 of other shapes). None of the 60 is on a line with an `await`, an `async` function or a Promise, so it would not
 have found a missing `await` the four async rules miss, and the defensive `??` and `?.` of the codebase would
 drown it. It is NOT enabled; the four async rules stay the lint guard.
 
