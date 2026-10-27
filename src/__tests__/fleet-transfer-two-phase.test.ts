@@ -187,8 +187,8 @@ function bundle(extra: { comments?: Record<string, unknown>[] } = {}): FleetJson
     vaultSshKeys: [],
     vaultSshServers: [],
     dashboardSettings: {
-      autonomy: [{ key: 'category-new', label: 'Category New', level: 2, locked: 0, max_level: 3, timeout_minutes: 30, updated_by: 'import' }],
-      modelProfileMap: [{ profile_id: 'build_strong', model_id: 'model-new', updated_by: 'import' }],
+      autonomy: [{ key: 'category-new', label: 'Category New', level: 2, locked: 0, max_level: 3, timeout_minutes: 30, updated_by: 'import', updated_at: 0 }],
+      modelProfileMap: [{ profile_id: 'build_strong', model_id: 'model-new', updated_by: 'import', updated_at: 0 }],
       autoRestart: { 'agent-b': { enabled: true } },
       agentsDesired: ['agent-new'],
       norbertPersonal: {},
