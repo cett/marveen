@@ -365,8 +365,8 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     ])
   })
   it('memories: a write that claims another agent, and a row owned by another agent', async () => {
-    const mine = saveAgentMemory('agent-a', 'c1', 'warm').id
-    const theirs = saveAgentMemory('agent-b', 'c2', 'warm').id
+    const mine = (await saveAgentMemory('agent-a', 'c1', 'warm')).id
+    const theirs = (await saveAgentMemory('agent-b', 'c2', 'warm')).id
     await drain(await observe(fleetAuth('agent-a'), 'POST', '/api/memories', {}, { agent_id: 'agent-b', content: 'x' }))
     await drain(await observe(fleetAuth('agent-a'), 'PUT', `/api/memories/${theirs}`, {}, { content: 'y' }))
     await observe(fleetAuth('agent-a'), 'DELETE', `/api/memories/${mine}`)
@@ -378,8 +378,8 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     ])
   })
   it('memories: only the shared tier is readable across agents, nothing else of another agent is', async () => {
-    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
-    const privateRow = saveAgentMemory('agent-b', 'mine alone', 'warm').id
+    const sharedRow = (await saveAgentMemory('agent-b', 'for everyone', 'shared')).id
+    const privateRow = (await saveAgentMemory('agent-b', 'mine alone', 'warm')).id
     await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=shared')
     await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&tier=shared&category=shared')
     await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
@@ -407,7 +407,7 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     expect(total('foreign_row_access')).toBe(8)
   })
   it('memories: a shared row by id is exempt only as a plain read, not with its history or on behalf of an agent', async () => {
-    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
+    const sharedRow = (await saveAgentMemory('agent-b', 'for everyone', 'shared')).id
     await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
     await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?include=versions`)
     await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent_id=agent-c`)
@@ -416,7 +416,7 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     expect(total('foreign_row_access')).toBe(5) // include=versions: the owner; agent_id / agent: the owner and the named agent
   })
   it('memories: a write is never exempt, even when it says category=shared', async () => {
-    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
+    const sharedRow = (await saveAgentMemory('agent-b', 'for everyone', 'shared')).id
     await observe(fleetAuth('agent-a'), 'PUT', `/api/memories/${sharedRow}?category=shared`)
     await observe(fleetAuth('agent-a'), 'DELETE', `/api/memories/${sharedRow}`)
     expect(total('foreign_row_read')).toBe(0)
@@ -435,8 +435,8 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     expect(normalizeRoute('/api/agents/export-all')).toBe('/api/agents/export-all')
   })
   it('kanban: the card assignee and the assignee filter', async () => {
-    createKanbanCard({ id: 'card-own', title: 't', assignee: 'agent-a' })
-    createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
+    await createKanbanCard({ id: 'card-own', title: 't', assignee: 'agent-a' })
+    await createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
     await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-own')
     await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-foreign')
     await observe(fleetAuth('agent-a'), 'GET', '/api/kanban?assignee=agent-b')
@@ -477,12 +477,12 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     ])
   })
   it('a shared-token request is held to the same rule, by its self-declared caller', async () => {
-    createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
+    await createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
     await observe(sharedAuth, 'PATCH', '/api/kanban/card-foreign', { 'x-agent-id': 'agent-a' })
     expect(rows('foreign_row_read').map((r) => [r.caller, r.caller_source, r.target])).toEqual([['agent-a', 'self_declared', 'agent-b']])
   })
   it('a row that does not exist, or has no owner, is not a hit', async () => {
-    createKanbanCard({ id: 'card-nobody', title: 't' })
+    await createKanbanCard({ id: 'card-nobody', title: 't' })
     await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-missing')
     await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-nobody')
     await observe(fleetAuth('agent-a'), 'PUT', '/api/memories/999999')
@@ -514,13 +514,13 @@ describe('unscoped_read', () => {
 })
 
 describe('tenant context', () => {
-  it('a fleet token refused for a shared agent with no tenant context is counted by the web gate', () => {
-    recordTenantContextRefusal(fakeReq({ 'user-agent': 'node' }), { kind: 'token', role: 'fleet_agent', tokenName: 'fleet_agent:agent-shared', agentId: 'agent-shared', tenantContextMissing: true }, 'GET', '/api/memories')
+  it('a fleet token refused for a shared agent with no tenant context is counted by the web gate', async () => {
+    await recordTenantContextRefusal(fakeReq({ 'user-agent': 'node' }), { kind: 'token', role: 'fleet_agent', tokenName: 'fleet_agent:agent-shared', agentId: 'agent-shared', tenantContextMissing: true }, 'GET', '/api/memories')
     expect(rows('missing_tenant_context').map((r) => [r.route, r.caller, r.caller_source, r.client, r.target, r.count])).toEqual([['/api/memories', 'agent-shared', 'token', 'node', 'no_row', 1]])
   })
-  it('the refusal counter ignores a credential that is not a token naming an agent', () => {
-    recordTenantContextRefusal(fakeReq(), sharedAuth, 'GET', '/api/memories')
-    recordTenantContextRefusal(fakeReq(), sessionAuth, 'GET', '/api/memories')
+  it('the refusal counter ignores a credential that is not a token naming an agent', async () => {
+    await recordTenantContextRefusal(fakeReq(), sharedAuth, 'GET', '/api/memories')
+    await recordTenantContextRefusal(fakeReq(), sessionAuth, 'GET', '/api/memories')
     expect(total('missing_tenant_context')).toBe(0)
   })
   it('a shared-token request declaring a shared agent without ?tenant= is counted, with it or for another agent it is not', async () => {

@@ -17,10 +17,10 @@ beforeAll(() => { initDatabase(':memory:') })
 describe('getPendingBacklogByAgent', () => {
   const uniq = () => 'backlog-' + Date.now() + '-' + Math.floor(performance.now() * 1000)
 
-  it('counts only pending rows, and reports the oldest wait', () => {
+  it('counts only pending rows, and reports the oldest wait', async () => {
     const busy = uniq()
-    const m1 = createAgentMessage('a', busy, 'régi')
-    createAgentMessage('b', busy, 'újabb')
+    const m1 = await createAgentMessage('a', busy, 'régi')
+    await createAgentMessage('b', busy, 'újabb')
     // backdate the first one so "oldest" is a real measurement, not a tie
     getDb().exec(`UPDATE agent_messages SET created_at = created_at - 3600 WHERE id = ${m1.id}`)
 
@@ -29,26 +29,26 @@ describe('getPendingBacklogByAgent', () => {
     expect(row?.oldestAgeSeconds).toBeGreaterThanOrEqual(3600)
   })
 
-  it('drops an agent off the list once its queue is drained', () => {
+  it('drops an agent off the list once its queue is drained', async () => {
     const quiet = uniq()
-    const m = createAgentMessage('a', quiet, 'egyetlen')
+    const m = await createAgentMessage('a', quiet, 'egyetlen')
     expect(getPendingBacklogByAgent().some(r => r.agent === quiet)).toBe(true)
 
     markMessageDelivered(m.id)
     expect(getPendingBacklogByAgent().some(r => r.agent === quiet)).toBe(false)
   })
 
-  it('puts the longest-waiting agent first', () => {
+  it('puts the longest-waiting agent first', async () => {
     // Whoever has been waiting longest is the one worth looking at, not whoever
     // happens to have the most messages -- a big fresh queue is just a busy
     // agent, one old message is an agent that will never pick it up.
     const stale = uniq() + '-stale'
     const fresh = uniq() + '-fresh'
-    const old = createAgentMessage('a', stale, 'két órája vár')
+    const old = await createAgentMessage('a', stale, 'két órája vár')
     getDb().exec(`UPDATE agent_messages SET created_at = created_at - 7200 WHERE id = ${old.id}`)
-    createAgentMessage('a', fresh, 'most jött')
-    createAgentMessage('b', fresh, 'ez is most jött')
-    createAgentMessage('c', fresh, 'meg ez is')
+    await createAgentMessage('a', fresh, 'most jött')
+    await createAgentMessage('b', fresh, 'ez is most jött')
+    await createAgentMessage('c', fresh, 'meg ez is')
 
     const list = getPendingBacklogByAgent().filter(r => r.agent === stale || r.agent === fresh)
     expect(list[0].agent).toBe(stale)

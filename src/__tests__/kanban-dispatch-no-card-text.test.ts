@@ -89,9 +89,9 @@ beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('acme', 'Acme')
   await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
-  createKanbanCard({ id: CARD, title: HOSTILE_TITLE, description: HOSTILE_DESC, assignee: 'alpha', priority: 'urgent', tenant_id: 'default' })
-  createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', description: 'default text', assignee: 'beta', tenant_id: 'default' })
-  createKanbanCard({ id: ACME_CARD, title: 'Acme card', description: 'secret acme text', assignee: 'beta', tenant_id: 'acme' })
+  await createKanbanCard({ id: CARD, title: HOSTILE_TITLE, description: HOSTILE_DESC, assignee: 'alpha', priority: 'urgent', tenant_id: 'default' })
+  await createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', description: 'default text', assignee: 'beta', tenant_id: 'default' })
+  await createKanbanCard({ id: ACME_CARD, title: 'Acme card', description: 'secret acme text', assignee: 'beta', tenant_id: 'acme' })
   createLabel({ id: 'lbl-default', name: 'default-label', color: '#10b981', tenant_id: 'default' })
   addLabelToCard(DEFAULT_CARD, 'lbl-default')
 })
@@ -121,7 +121,7 @@ describe('the dispatch message does not carry the card text', () => {
 
   it('a card whose id is not a plain token sends nothing and is not marked as dispatched', async () => {
     const odd = 'a;b c'
-    createKanbanCard({ id: odd, title: 'imported', assignee: 'alpha', tenant_id: 'default' })
+    await createKanbanCard({ id: odd, title: 'imported', assignee: 'alpha', tenant_id: 'default' })
     const res = await callAs(await admin(), 'POST', `/api/kanban/${encodeURIComponent(odd)}/move`, { status: 'in_progress' })
     expect(res.status).toBe(200)
     expect(messages()).toEqual([])

@@ -558,7 +558,7 @@ async function main(): Promise<void> {
   retireGroup5StateFiles()
 
   // Turns the ledger hooks spooled while the dashboard was down.
-  flushLedgerSpool()
+  await flushLedgerSpool()
 
   if (IS_ISOLATED_MODE) {
     // Isolated mode: serve the web dashboard only, no background tasks or agent management.

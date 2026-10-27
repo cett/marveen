@@ -51,14 +51,14 @@ export const LEDGER_RECENT_MAX = 200
 /** Idempotent on (agent_id, chat_id, direction, message_id): a repeat of the
  *  same inbound/outbound is ignored. A NULL message_id never conflicts (NULL
  *  != NULL in SQL). Returns true when a row was inserted. */
-export function logLedgerTurn(turn: LedgerTurnInput): boolean {
+export async function logLedgerTurn(turn: LedgerTurnInput): Promise<boolean> {
   const createdAt = turn.created_at ?? Math.floor(Date.now() / 1000)
   const ts = turn.ts ?? (turn.direction === 'out' ? new Date(createdAt * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z') : null)
   // The tenant comes from the chat's channel binding, resolved here and not taken from the caller
   // or from agent_tenant_context: the capture hook and the tenant-context hook both run on
   // UserPromptSubmit in no guaranteed order, so the context row may still hold the PREVIOUS prompt's
   // tenant. An unbound chat is NULL (unknown), not 'default'.
-  const tenantId = getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
+  const tenantId = await getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
   const info = db.prepare(
     `INSERT INTO conversation_log
        (agent_id, chat_id, direction, message_id, text, ts, created_at, tenant_id)
@@ -87,11 +87,11 @@ export function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT
  * agent_tenant_context): without a context, or with a stale/unknown one, there is no answer rather
  * than a guess across tenants. Rows of other tenants (and unresolved NULL rows) are invisible to it.
  */
-export function openLedgerQuestion(agentId: string): LedgerOpenQuestion | null {
+export async function openLedgerQuestion(agentId: string): Promise<LedgerOpenQuestion | null> {
   let tenantFilter = ''
   const params: (string | number)[] = [agentId]
   if (isSharedLedgerAgent(agentId)) {
-    const tenant = getServingTenant(agentId)
+    const tenant = await getServingTenant(agentId)
     if (tenant === null) return null
     tenantFilter = ' AND tenant_id = ?'
     params.push(tenant)

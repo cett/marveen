@@ -233,8 +233,8 @@ describe('enforce: which endpoints refuse what (T0 matrix)', () => {
   })
 
   it('memories: a shared row by id is readable, another agent\'s private row and its sub-routes are not', async () => {
-    const shared = saveAgentMemory('beta', 'for all', 'shared').id
-    const priv = saveAgentMemory('beta', 'private', 'warm').id
+    const shared = (await saveAgentMemory('beta', 'for all', 'shared')).id
+    const priv = (await saveAgentMemory('beta', 'private', 'warm')).id
     expect((await send('alpha', 'GET', `/api/memories/${shared}`)).refusal).toBeNull()
     expect((await send('alpha', 'GET', `/api/memories/${priv}`)).refusal?.target).toBe('beta')
     expect((await send('alpha', 'GET', `/api/memories/${shared}/detail`)).refusal?.target).toBe('beta')

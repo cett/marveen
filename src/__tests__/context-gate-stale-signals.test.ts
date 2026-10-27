@@ -30,8 +30,8 @@ const uniq = (p: string) => `${p}-${Date.now()}-${Math.floor(performance.now() *
 const HOUR_MS = 3_600_000
 const CUTOFF_MS = 2 * HOUR_MS
 
-function addMessage(from: string, to: string, content: string, opts: { ageSeconds?: number; deliver?: boolean } = {}): number {
-  const m = createAgentMessage(from, to, content)
+async function addMessage(from: string, to: string, content: string, opts: { ageSeconds?: number; deliver?: boolean } = {}): Promise<number> {
+  const m = await createAgentMessage(from, to, content)
   if (opts.deliver !== false) markMessageDelivered(m.id)
   if (opts.ageSeconds) getDb().exec(`UPDATE agent_messages SET created_at = created_at - ${opts.ageSeconds} WHERE id = ${m.id}`)
   return m.id
@@ -40,41 +40,41 @@ function addMessage(from: string, to: string, content: string, opts: { ageSecond
 describe('getDispatchedPendingStats: only messages that await a result', () => {
   const now = () => Date.now()
 
-  it('a delivered delegation counts', () => {
+  it('a delivered delegation counts', async () => {
     const exec = uniq('exec')
-    addMessage(exec, uniq('peer'), 'please review this')
+    await addMessage(exec, uniq('peer'), 'please review this')
     expect(getDispatchedPendingStats(exec, now(), CUTOFF_MS, { coordinatorAgentId: 'coord' }).count).toBe(1)
   })
 
-  it('an executor\'s status reports TO the coordinator do not count (a burst used to block for the whole stale window)', () => {
+  it('an executor\'s status reports TO the coordinator do not count (a burst used to block for the whole stale window)', async () => {
     const exec = uniq('exec')
-    for (let i = 0; i < 6; i++) addMessage(exec, 'coord', `status report ${i}`)
+    for (let i = 0; i < 6; i++) await addMessage(exec, 'coord', `status report ${i}`)
     expect(getDispatchedPendingStats(exec, now(), CUTOFF_MS, { coordinatorAgentId: 'coord' }).count).toBe(0)
     // Without the coordinator hint the old behaviour is unchanged.
     expect(getDispatchedPendingStats(exec, now(), CUTOFF_MS).count).toBe(6)
   })
 
-  it('the coordinator\'s own outbound is real delegation and still counts', () => {
-    addMessage('coord-x', uniq('worker'), 'do the thing')
+  it('the coordinator\'s own outbound is real delegation and still counts', async () => {
+    await addMessage('coord-x', uniq('worker'), 'do the thing')
     expect(getDispatchedPendingStats('coord-x', now(), CUTOFF_MS, { coordinatorAgentId: 'coord-x' }).count).toBe(1)
   })
 
-  it('completion reports never count, whoever they go to', () => {
+  it('completion reports never count, whoever they go to', async () => {
     const exec = uniq('exec')
-    addMessage(exec, uniq('peer'), '[Eredmény] msg_id:5 status:done\n\nall good')
+    await addMessage(exec, uniq('peer'), '[Eredmény] msg_id:5 status:done\n\nall good')
     expect(getDispatchedPendingStats(exec, now(), CUTOFF_MS, { coordinatorAgentId: 'coord' }).count).toBe(0)
     expect(getDispatchedPendingStats(exec, now(), CUTOFF_MS).count).toBe(0)
   })
 
-  it('the exclusions hold for the stale side too (an old report is not "stale work")', () => {
+  it('the exclusions hold for the stale side too (an old report is not "stale work")', async () => {
     const exec = uniq('exec')
-    addMessage(exec, 'coord', 'old report', { ageSeconds: 5 * 3600 })
-    addMessage(exec, uniq('peer'), 'old delegation', { ageSeconds: 5 * 3600 })
+    await addMessage(exec, 'coord', 'old report', { ageSeconds: 5 * 3600 })
+    await addMessage(exec, uniq('peer'), 'old delegation', { ageSeconds: 5 * 3600 })
     const stats = getDispatchedPendingStats(exec, now(), CUTOFF_MS, { coordinatorAgentId: 'coord' })
     expect(stats.count).toBe(0)
     expect(stats.hasStale).toBe(true) // only the delegation
     const onlyReport = uniq('exec')
-    addMessage(onlyReport, 'coord', 'old report', { ageSeconds: 5 * 3600 })
+    await addMessage(onlyReport, 'coord', 'old report', { ageSeconds: 5 * 3600 })
     expect(getDispatchedPendingStats(onlyReport, now(), CUTOFF_MS, { coordinatorAgentId: 'coord' }).hasStale).toBe(false)
   })
 })

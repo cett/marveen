@@ -512,11 +512,11 @@ function pruneThrottled(nowSec: number): void {
 const tenantless = new Map<string, { v: boolean; at: number }>()
 
 /** True when `agentId` has no tenant to act in right now (a shared agent with no fresh context). Cached 5 s. */
-function agentHasNoTenant(agentId: string): boolean {
+async function agentHasNoTenant(agentId: string): Promise<boolean> {
   const now = Date.now()
   const hit = tenantless.get(agentId)
   if (hit && now - hit.at < TENANTLESS_TTL_MS) return hit.v
-  const v = resolveWriteTenant(agentId) === null
+  const v = await resolveWriteTenant(agentId) === null
   if (tenantless.size > 200) tenantless.clear()
   tenantless.set(agentId, { v, at: now })
   return v
@@ -749,13 +749,13 @@ export async function observeTokenUsage(
     // (4) tenant context. A counting side effect only: a fault in it must not skip the identity check below.
     try {
       // A shared-token request that declares a shared agent and names no tenant.
-      if (who.shared && who.source === 'self_declared' && !hasTenantParam && agentHasNoTenant(who.caller)) {
-        recordTokenShadow(base, { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) })
+      if (who.shared && who.source === 'self_declared' && !hasTenantParam && await agentHasNoTenant(who.caller)) {
+        recordTokenShadow(base, { category: 'missing_tenant_context', target: await explainServingTenantMiss(who.caller) })
       }
       // The memory read of a shared agent from a caller that has no tenant of its own to scope it by.
       if (spec?.prefix === '/api/memories' && method === 'GET' && !hasTenantParam && (who.shared || who.fleetAgent)) {
         const named = cleanAgentId(url.searchParams.get('agent') ?? url.searchParams.get('agent_id'))
-        if (named && named !== INVALID && agentHasNoTenant(named)) {
+        if (named && named !== INVALID && await agentHasNoTenant(named)) {
           recordTokenShadow(base, { category: 'shared_agent_memories_no_tenant', target: named })
         }
       }
@@ -874,7 +874,7 @@ export function observeRequestBody(req: http.IncomingMessage, body: Buffer, main
 setRequestBodyObserver((req, body) => observeRequestBody(req, body))
 
 /** A fleet-agent token of a shared agent was refused 403 for lack of tenant context (web.ts). */
-export function recordTenantContextRefusal(req: http.IncomingMessage, auth: AuthResult, method: string, rawPath: string): void {
+export async function recordTenantContextRefusal(req: http.IncomingMessage, auth: AuthResult, method: string, rawPath: string): Promise<void> {
   try {
     const who = resolveShadowCaller(auth, undefined)
     if (!who || who.source !== 'token') return
@@ -882,7 +882,7 @@ export function recordTenantContextRefusal(req: http.IncomingMessage, auth: Auth
       { method, route: normalizeRoute(rawPath), client: classifyClient(req.headers['user-agent']), caller: who.caller, callerSource: 'token' },
       // target = why there was no tenant (no_row | unknown | conflict | stale | not_serving | error):
       // the counter says what to fix, not only that something failed.
-      { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) },
+      { category: 'missing_tenant_context', target: await explainServingTenantMiss(who.caller) },
     )
   } catch (err) {
     warnThrottled(err, 'token-shadow: refusal record failed')

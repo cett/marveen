@@ -87,8 +87,8 @@ beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('tenant-x', 'Tenant X')
   await insertApiToken({ tokenHash: sha('tok-agent-a'), name: 'fleet:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'agent-a' })
-  createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
-  createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
 })
 
 afterEach(() => {
@@ -158,10 +158,10 @@ describe('a write that stays in in_progress keeps the stamp (the once-only guard
     expect(stamp(CARD)).toBe(before)
   })
 
-  it('editing other fields of an in_progress card through the full-card update', () => {
+  it('editing other fields of an in_progress card through the full-card update', async () => {
     inProgressStamped()
     const before = stamp(CARD)
-    expect(updateKanbanCard(CARD, { title: 'Renamed', priority: 'high' })).toBe(true)
+    expect(await updateKanbanCard(CARD, { title: 'Renamed', priority: 'high' })).toBe(true)
     expect(stamp(CARD)).toBe(before)
   })
 
@@ -173,24 +173,24 @@ describe('a write that stays in in_progress keeps the stamp (the once-only guard
 })
 
 describe('updateKanbanCard (the full-card PUT) clears it when the final status is not in_progress', () => {
-  it.each(['done', 'waiting', 'planned'] as const)('PUT status %s', (target) => {
+  it.each(['done', 'waiting', 'planned'] as const)('PUT status %s', async (target) => {
     inProgressStamped()
-    expect(updateKanbanCard(CARD, { status: target })).toBe(true)
+    expect(await updateKanbanCard(CARD, { status: target })).toBe(true)
     expect(stamp(CARD)).toBeNull()
   })
 
-  it('also when the PUT only edits other fields of a card that is not in_progress (a stale stamp heals)', () => {
+  it('also when the PUT only edits other fields of a card that is not in_progress (a stale stamp heals)', async () => {
     getDb().prepare("UPDATE kanban_cards SET status = 'done', dispatched_at = 1700000000 WHERE id = ?").run(CARD)
-    expect(updateKanbanCard(CARD, { title: 'Closed out' })).toBe(true)
+    expect(await updateKanbanCard(CARD, { title: 'Closed out' })).toBe(true)
     expect(stamp(CARD)).toBeNull()
   })
 })
 
 describe('propagateStatusForParent (auto status) clears the parent when it becomes done', () => {
-  beforeEach(() => {
-    createKanbanCard({ id: PARENT, title: 'Parent', assignee: 'agent-b', tenant_id: 'default' })
-    createKanbanCard({ id: CHILD_1, title: 'Child one', parent_id: PARENT, tenant_id: 'default' })
-    createKanbanCard({ id: CHILD_2, title: 'Child two', parent_id: PARENT, tenant_id: 'default' })
+  beforeEach(async () => {
+    await createKanbanCard({ id: PARENT, title: 'Parent', assignee: 'agent-b', tenant_id: 'default' })
+    await createKanbanCard({ id: CHILD_1, title: 'Child one', parent_id: PARENT, tenant_id: 'default' })
+    await createKanbanCard({ id: CHILD_2, title: 'Child two', parent_id: PARENT, tenant_id: 'default' })
   })
 
   it('every child done -> the parent turns done and loses its stamp', () => {

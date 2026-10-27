@@ -79,7 +79,7 @@ export async function tryHandleAgentInflightTurn(ctx: RouteContext): Promise<boo
   if (typeof head !== 'string') return bad(ctx, 'prompt_head', 'prompt_head must be a string')
   if (head.length > INFLIGHT_HEAD_MAX) return bad(ctx, 'prompt_head', `prompt_head must be at most ${INFLIGHT_HEAD_MAX} characters`)
   if (typeof hash !== 'string' || !HASH_RE.test(hash)) return bad(ctx, 'prompt_hash', 'prompt_hash must be 8-64 lowercase hex characters')
-  const turn = beginInflightTurn(agentId, { head, prompt_hash: hash })
+  const turn = await beginInflightTurn(agentId, { head, prompt_hash: hash })
   json(res, { ok: true, turn_id: turn.turn_id, source: turn.source, msg_id: turn.msg_id })
   return true
 }

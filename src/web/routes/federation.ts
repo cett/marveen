@@ -392,7 +392,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // Content is stored VERBATIM: normalizeKanbanRefs must not run here -- it
     // would rewrite the PEER's #hex card refs against the LOCAL board
     // (content corruption + a card-id oracle for the peer).
-    const msg = createAgentMessage(verdict.from, verdict.to, verdict.content)
+    const msg = await createAgentMessage(verdict.from, verdict.to, verdict.content)
     if (callerPeerId !== null && verdict.ref !== null) rememberRef(`${callerPeerId}:${verdict.ref}`, msg.id)
     logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, from: verdict.from, to: verdict.to, ref: verdict.ref }, 'federation inbox: message accepted')
     json(res, { id: msg.id, ref: verdict.ref }, 202)

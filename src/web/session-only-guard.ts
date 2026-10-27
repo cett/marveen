@@ -17,10 +17,10 @@ import { humanSessionOf } from './approval-human-only.js'
 import type { RouteContext } from './routes/types.js'
 
 /** Journal a refused attempt. Never throws: an audit fault must not change the answer. */
-function auditRefusal(ctx: RouteContext, action: string): void {
+async function auditRefusal(ctx: RouteContext, action: string): Promise<void> {
   try {
     const actor = ctx.auth?.tokenName ?? ctx.auth?.user ?? ctx.tokenAgentId ?? ctx.auth?.kind ?? 'unknown'
-    writeAdminAuditLog(actor, 'security.human_session_required', action, {
+    await writeAdminAuditLog(actor, 'security.human_session_required', action, {
       path: ctx.path,
       method: ctx.method,
       kind: ctx.auth?.kind ?? null,
@@ -32,8 +32,8 @@ function auditRefusal(ctx: RouteContext, action: string): void {
   }
 }
 
-function refuse(ctx: RouteContext, action: string, hint: string): true {
-  auditRefusal(ctx, action)
+async function refuse(ctx: RouteContext, action: string, hint: string): Promise<true> {
+  await auditRefusal(ctx, action)
   json(ctx.res, { error: 'forbidden', code: 'human_session_required', hint }, 403)
   return true
 }

@@ -89,10 +89,10 @@ beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('tenant-x', 'Tenant X')
   await insertApiToken({ tokenHash: sha('tok-agent-a'), name: 'fleet:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'agent-a' })
-  createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
-  createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
-  createKanbanCard({ id: THIRD, title: 'Card three', assignee: 'agent-b', tenant_id: 'default' })
-  createKanbanCard({ id: FOREIGN, title: 'Foreign card', assignee: 'agent-b', tenant_id: 'tenant-x' })
+  await createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: THIRD, title: 'Card three', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: FOREIGN, title: 'Foreign card', assignee: 'agent-b', tenant_id: 'tenant-x' })
 })
 
 afterEach(() => {
@@ -157,8 +157,8 @@ describe('expected_status does not match -> 409 status_conflict, nothing written
   })
 
   it('does not update the parent card', async () => {
-    createKanbanCard({ id: 'parent-1', title: 'Parent', tenant_id: 'default' })
-    createKanbanCard({ id: 'child-1', title: 'Child', parent_id: 'parent-1', tenant_id: 'default' })
+    await createKanbanCard({ id: 'parent-1', title: 'Parent', tenant_id: 'default' })
+    await createKanbanCard({ id: 'child-1', title: 'Child', parent_id: 'parent-1', tenant_id: 'default' })
     // Positive control: an unconditional move of the only child to done pulls the parent along.
     const parentBefore = card('parent-1').status
     expect((await move('child-1', { status: 'done', actor: 'agent-b' })).status).toBe(200)

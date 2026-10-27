@@ -42,13 +42,13 @@ function makeCtx(path: string, searchParams: Record<string, string> = {}): { ctx
   }
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   initDatabase(':memory:')
   // agent-a memory -- canonical owner
-  saveAgentMemory('agent-a', 'alpha contract detail', 'warm', 'contract')
+  await saveAgentMemory('agent-a', 'alpha contract detail', 'warm', 'contract')
   // agent-b memory with overlapping keyword -- without the fix, the global search
   // would return this row too, causing the same-results test to diverge.
-  saveAgentMemory('agent-b', 'alpha data owned by b', 'warm', 'contract')
+  await saveAgentMemory('agent-b', 'alpha data owned by b', 'warm', 'contract')
 })
 
 afterAll(() => {

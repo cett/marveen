@@ -634,8 +634,8 @@ describe('GET /api/overview — non-admin response omits fleet-level fields', ()
 // ---------------------------------------------------------------------------
 
 describe('GET /api/overview — errorSpans', () => {
-  function span(id: string, over: Partial<Parameters<typeof upsertOtelSpan>[0]> = {}) {
-    upsertOtelSpan({
+  async function span(id: string, over: Partial<Parameters<typeof upsertOtelSpan>[0]> = {}) {
+    await upsertOtelSpan({
       trace_id: `t-${id}`, span_id: id, parent_span_id: null, agent_id: 'agent-a', operation: 'schedule.run',
       start_ms: Date.now() - 60_000, end_ms: Date.now() - 59_000, status: 'error',
       attributes: JSON.stringify({ schedule: 'nightly', schedule_type: 'command' }), ...over,
@@ -651,13 +651,13 @@ describe('GET /api/overview — errorSpans', () => {
 
   it('lists the 4-hour error and timeout spans newest first, with a short label', async () => {
     const now = Date.now()
-    span('a', { start_ms: now - 3_000_000, end_ms: now - 2_999_000 })
-    span('b', {
+    await span('a', { start_ms: now - 3_000_000, end_ms: now - 2_999_000 })
+    await span('b', {
       operation: 'http.server', agent_id: 'dashboard', start_ms: now - 1_000_000, end_ms: now - 999_000, status: 'timeout',
       attributes: JSON.stringify({ http_method: 'POST', http_route: '/api/messages', http_status: 500 }),
     })
-    span('old', { start_ms: now - 5 * 3_600_000, end_ms: now - 5 * 3_600_000 + 10 })
-    span('fine', { status: 'ok' })
+    await span('old', { start_ms: now - 5 * 3_600_000, end_ms: now - 5 * 3_600_000 + 10 })
+    await span('fine', { status: 'ok' })
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(out.body.errors4h).toBe(2)
@@ -669,7 +669,7 @@ describe('GET /api/overview — errorSpans', () => {
   })
 
   it('shows at most 20 spans while errors4h keeps the full count', async () => {
-    for (let i = 0; i < 25; i++) span(`s${i}`, { start_ms: Date.now() - 1000 - i })
+    for (let i = 0; i < 25; i++) await span(`s${i}`, { start_ms: Date.now() - 1000 - i })
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(out.body.errors4h).toBe(25)
@@ -677,7 +677,7 @@ describe('GET /api/overview — errorSpans', () => {
   })
 
   it('never returns the raw attributes', async () => {
-    span('x', { attributes: JSON.stringify({ schedule: 'nightly', secret: 'TOKEN-VALUE' }) })
+    await span('x', { attributes: JSON.stringify({ schedule: 'nightly', secret: 'TOKEN-VALUE' }) })
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(JSON.stringify(out.body.errorSpans)).not.toContain('TOKEN-VALUE')

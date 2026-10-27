@@ -308,7 +308,7 @@ export function startWebServer(port = 3420): http.Server {
     // no tenant to act in. Refused here, before the RBAC gate, so it holds in shadow mode too.
     if (requiresAuth(path, method) && auth.kind === 'token' && auth.tenantContextMissing) {
       logger.warn({ path, method, agent: auth.agentId }, 'fleet agent token refused: no fresh tenant context for a shared agent')
-      recordTenantContextRefusal(req, auth, method, path) // shadow counter: measures only, never throws
+      await recordTenantContextRefusal(req, auth, method, path) // shadow counter: measures only, never throws
       res.writeHead(403, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'forbidden', hint: 'No fresh tenant context for this shared agent' }))
       return
@@ -730,7 +730,9 @@ export function startWebServer(port = 3420): http.Server {
       // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
       // route. Inside the hook-registration branch on purpose: only the instance that owns the
       // hooks watches the shared store, a worktree / WEB_ONLY instance does not.
-      watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)
+      watchEgressAllowlistBaseline(STORE_DIR, (report) => {
+        queueAllowlistReport(report).catch((err: unknown) => logger.warn({ err }, 'egress allowlist baseline: could not queue the change report'))
+      })
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')

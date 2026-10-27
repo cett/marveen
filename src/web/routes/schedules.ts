@@ -159,7 +159,7 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
     // not theirs to enumerate otherwise); an admin sees every agent, or those of the
     // tenant picked with ?tenant=.
     const scope = effectiveTenant(ctx)
-    const allowed = new Set(scheduleAgentNamesForTenant(scope))
+    const allowed = new Set(await scheduleAgentNamesForTenant(scope))
     const agents = [
       { name: MAIN_AGENT_ID, label: currentBotName(), avatar: '/api/marveen/avatar' },
       ...listAgentNames().map(n => ({ name: n, label: n, avatar: `/api/agents/${encodeURIComponent(n)}/avatar` }))
@@ -305,7 +305,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!isAdmin) tenantId = ctx.tenantId ?? DEFAULT_SCHEDULE_TENANT
     else if (typeof data.tenant_id === 'string' && data.tenant_id.trim()) tenantId = data.tenant_id.trim()
     else if (isHumanAdmin(ctx)) tenantId = DEFAULT_SCHEDULE_TENANT
-    else tenantId = claimedAgent ? creatorTenant(claimedAgent) : null
+    else tenantId = claimedAgent ? await creatorTenant(claimedAgent) : null
     if (!tenantId) {
       json(res, {
         error: 'tenant_required', field: 'tenant_id',
@@ -323,7 +323,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // fallback -- so a fleet agent creating its own tenant's task needs no `agent` field.
     const agent = actingAgentId(ctx, data.agent, tenantId === DEFAULT_SCHEDULE_TENANT ? MAIN_AGENT_ID : '')
     if (!agent) { json(res, { error: 'required', field: 'agent', hint: 'A task of a non-default tenant needs an agent that serves it' }, 400); return true }
-    if (!scheduleAgentServesTenant(agent, tenantId)) {
+    if (!await scheduleAgentServesTenant(agent, tenantId)) {
       json(res, { error: 'invalid_value', field: 'agent', hint: `Agent '${agent}' does not serve tenant '${tenantId}'` }, 400)
       return true
     }
@@ -360,8 +360,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       tenantId,
       status,
     })
-    auditScheduleWrite(ctx, 'create', name, tenantId, { status, type: data.type || 'task', agent })
-    if (status === 'draft') notifyScheduleReview({ name, tenant: tenantId, reason: 'created', by: scheduleActor(ctx).agentId })
+    await auditScheduleWrite(ctx, 'create', name, tenantId, { status, type: data.type || 'task', agent })
+    if (status === 'draft') await notifyScheduleReview({ name, tenant: tenantId, reason: 'created', by: scheduleActor(ctx).agentId })
     logger.info({ name, schedule: data.schedule, tenantId, status }, 'Scheduled task created')
     json(res, { ok: true, name, status })
     return true
@@ -394,7 +394,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     const row = activateSchedule(name)
     if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
-    auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
+    await auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
       status_before: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
     })
     // Mirror to file (same pattern as toggle's file-mirror call) so a
@@ -453,7 +453,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const newAgent = ctx.role === 'admin' && typeof data.agent === 'string' && data.agent !== dbRow?.agent ? data.agent : undefined
     if (newAgent !== undefined || newTenant !== undefined) {
       const agent = newAgent ?? dbRow?.agent
-      if (agent && !scheduleAgentServesTenant(agent, newTenant ?? currentTenant)) {
+      if (agent && !await scheduleAgentServesTenant(agent, newTenant ?? currentTenant)) {
         json(res, {
           error: 'invalid_value', field: newAgent !== undefined ? 'agent' : 'tenant_id',
           hint: `Agent '${agent}' does not serve tenant '${newTenant ?? currentTenant}'`,
@@ -520,12 +520,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       after_sha256: reviewValueSha256(update[f]),
       preview: typeof update[f] === 'string' ? (update[f] as string).trim().slice(0, 200) : update[f],
     }]))
-    auditScheduleWrite(ctx, demote ? 'review_requested' : 'update', name, tenantOfTask, {
+    await auditScheduleWrite(ctx, demote ? 'review_requested' : 'update', name, tenantOfTask, {
       changed, fields: fieldDetail,
       ...(newTenant !== undefined ? { moved_to_tenant: newTenant } : {}),
     })
     if (demote) {
-      notifyScheduleReview({ name, tenant: tenantOfTask, reason: 'edited', changed, by: scheduleActor(ctx).agentId })
+      await notifyScheduleReview({ name, tenant: tenantOfTask, reason: 'edited', changed, by: scheduleActor(ctx).agentId })
     }
     logger.info({ name, ...(newTenant !== undefined ? { tenantId: newTenant } : {}), ...(demote ? { reviewRequired: true, changed } : {}) }, 'Scheduled task updated')
     json(res, {
@@ -549,7 +549,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (useDb) deleteSchedule(name)
     // Always remove files too (keeps FS in sync with DB; noop if files missing)
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-    auditScheduleWrite(ctx, 'delete', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: dbRow?.status ?? null })
+    await auditScheduleWrite(ctx, 'delete', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: dbRow?.status ?? null })
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
     return true
@@ -582,7 +582,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       newEnabled = !(config.enabled !== false)
       writeScheduledTask(name, { enabled: newEnabled })
     }
-    auditScheduleWrite(ctx, 'toggle', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { enabled: newEnabled })
+    await auditScheduleWrite(ctx, 'toggle', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { enabled: newEnabled })
     logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
     json(res, { ok: true, enabled: newEnabled })
     return true

@@ -26,8 +26,8 @@ beforeEach(() => {
 })
 
 describe('deleteKanbanCard transactional FK safety', () => {
-  it('deletes a card with no comments and no children', () => {
-    createKanbanCard({ id: 'card-a', title: 'Solo card' })
+  it('deletes a card with no comments and no children', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Solo card' })
     const deleted = deleteKanbanCard('card-a')
     expect(deleted).toBe(true)
     expect(getKanbanCard('card-a')).toBeUndefined()
@@ -38,8 +38,8 @@ describe('deleteKanbanCard transactional FK safety', () => {
     expect(deleted).toBe(false)
   })
 
-  it('deletes comments together with the card', () => {
-    createKanbanCard({ id: 'card-b', title: 'Card with comments' })
+  it('deletes comments together with the card', async () => {
+    await createKanbanCard({ id: 'card-b', title: 'Card with comments' })
     addKanbanComment('card-b', 'author', 'first comment')
     addKanbanComment('card-b', 'author', 'second comment')
 
@@ -50,11 +50,11 @@ describe('deleteKanbanCard transactional FK safety', () => {
     expect(getKanbanComments('card-b')).toHaveLength(0)
   })
 
-  it('nullifies parent_id on children instead of leaving dangling references', () => {
+  it('nullifies parent_id on children instead of leaving dangling references', async () => {
     // Create a parent card and two children pointing to it.
-    createKanbanCard({ id: 'parent-1', title: 'Parent' })
-    createKanbanCard({ id: 'child-1', title: 'Child A', parent_id: 'parent-1' })
-    createKanbanCard({ id: 'child-2', title: 'Child B', parent_id: 'parent-1' })
+    await createKanbanCard({ id: 'parent-1', title: 'Parent' })
+    await createKanbanCard({ id: 'child-1', title: 'Child A', parent_id: 'parent-1' })
+    await createKanbanCard({ id: 'child-2', title: 'Child B', parent_id: 'parent-1' })
 
     const deleted = deleteKanbanCard('parent-1')
     expect(deleted).toBe(true)

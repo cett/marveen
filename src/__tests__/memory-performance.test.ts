@@ -48,15 +48,15 @@ describe('SQLite performance pragmas', () => {
 describe('getAgentMemories in-process cache', () => {
   const AGENT = 'cache-test-agent'
 
-  it('cold miss: returns data from DB, cache is populated', () => {
-    saveAgentMemory(AGENT, 'First memory', 'warm', 'keyword1')
+  it('cold miss: returns data from DB, cache is populated', async () => {
+    await saveAgentMemory(AGENT, 'First memory', 'warm', 'keyword1')
     const before = getMemoryCacheSize()
     getAgentMemories(AGENT, 5)
     expect(getMemoryCacheSize()).toBe(before + 1)
   })
 
-  it('warm hit: second call returns same object from cache (no DB round-trip)', () => {
-    saveAgentMemory(AGENT, 'Cache hit check', 'warm', 'keyword2')
+  it('warm hit: second call returns same object from cache (no DB round-trip)', async () => {
+    await saveAgentMemory(AGENT, 'Cache hit check', 'warm', 'keyword2')
     const first = getAgentMemories(AGENT, 5)
     const second = getAgentMemories(AGENT, 5)
     // Same array reference means the cache was hit.
@@ -70,9 +70,9 @@ describe('getAgentMemories in-process cache', () => {
     expect(getMemoryCacheSize()).toBeGreaterThanOrEqual(2)
   })
 
-  it('saveAgentMemory invalidates the cache for that agent', () => {
+  it('saveAgentMemory invalidates the cache for that agent', async () => {
     const before = getAgentMemories(AGENT, 5)
-    saveAgentMemory(AGENT, 'Invalidation trigger', 'hot', 'new')
+    await saveAgentMemory(AGENT, 'Invalidation trigger', 'hot', 'new')
     // After write the cache for this agent should be gone.
     expect(getMemoryCacheSize()).toBe(0)
     const after = getAgentMemories(AGENT, 5)
@@ -82,23 +82,23 @@ describe('getAgentMemories in-process cache', () => {
     expect(after.some(m => m.content === 'Invalidation trigger')).toBe(true)
   })
 
-  it('updateMemory with agentId invalidates the cache', () => {
-    const { id } = saveAgentMemory(AGENT, 'Update me', 'warm', 'upd')
+  it('updateMemory with agentId invalidates the cache', async () => {
+    const { id } = await saveAgentMemory(AGENT, 'Update me', 'warm', 'upd')
     getAgentMemories(AGENT, 5) // warm the cache
     const sizeBefore = getMemoryCacheSize()
-    updateMemory(id, 'Updated content', 'warm', AGENT, 'upd')
+    await updateMemory(id, 'Updated content', 'warm', AGENT, 'upd')
     expect(getMemoryCacheSize()).toBeLessThan(sizeBefore)
   })
 
-  it('cache is isolated between agents', () => {
+  it('cache is isolated between agents', async () => {
     const OTHER = 'other-agent'
-    saveAgentMemory(AGENT, 'Agent A memory', 'cold', 'a')
-    saveAgentMemory(OTHER, 'Agent B memory', 'cold', 'b')
+    await saveAgentMemory(AGENT, 'Agent A memory', 'cold', 'a')
+    await saveAgentMemory(OTHER, 'Agent B memory', 'cold', 'b')
     getAgentMemories(AGENT, 5)
     getAgentMemories(OTHER, 5)
     const sizeBefore = getMemoryCacheSize()
     // Write to AGENT should not evict OTHER's cache entry.
-    saveAgentMemory(AGENT, 'New for agent A', 'hot')
+    await saveAgentMemory(AGENT, 'New for agent A', 'hot')
     const sizeAfter = getMemoryCacheSize()
     // At least one entry (OTHER's) should survive.
     expect(sizeAfter).toBeGreaterThan(0)

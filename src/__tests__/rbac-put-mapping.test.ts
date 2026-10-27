@@ -81,8 +81,8 @@ beforeEach(async () => {
   }
   cardDefault = 'card-default'
   cardAcme = 'card-acme'
-  createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
-  createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
+  await createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
+  await createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
 })
 
 describe('the endpoint table maps every PUT it should', () => {
@@ -139,7 +139,7 @@ describe('PUT /api/kanban/:id by role', () => {
   })
 
   it("a non-admin cannot move a card under ANOTHER tenant's parent (404), but can under its own tenant's", async () => {
-    createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
+    await createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
     expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(404)
     expect(getKanbanCard(cardDefault)?.parent_id ?? null).toBeNull()
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { parent_id: 'parent-default' })).status).toBe(404)
@@ -193,9 +193,9 @@ describe('the audit row of a card edit names the caller', () => {
 describe('PUT /api/memories/:id by role', () => {
   let memDefault = 0
   let memAcme = 0
-  beforeEach(() => {
-    memDefault = saveAgentMemory('alpha', 'default memory', 'warm', undefined, false, 'default').id
-    memAcme = saveAgentMemory('x', 'acme memory', 'warm', undefined, false, 'acme').id
+  beforeEach(async () => {
+    memDefault = (await saveAgentMemory('alpha', 'default memory', 'warm', undefined, false, 'default')).id
+    memAcme = (await saveAgentMemory('x', 'acme memory', 'warm', undefined, false, 'acme')).id
   })
 
   it('a fleet token and a tenant user edit a memory of their tenant (200)', async () => {
@@ -223,10 +223,10 @@ describe('PUT /api/messages/:id by role', () => {
   let toAlpha = 0
   let toBeta = 0
   let inAcme = 0
-  beforeEach(() => {
-    toAlpha = createAgentMessage('main-agent', 'alpha', 'task for alpha').id
-    toBeta = createAgentMessage('main-agent', 'beta', 'task for beta').id
-    inAcme = createAgentMessage('main-agent', 'alpha', 'acme task', null, null, 'acme', null, true).id
+  beforeEach(async () => {
+    toAlpha = (await createAgentMessage('main-agent', 'alpha', 'task for alpha')).id
+    toBeta = (await createAgentMessage('main-agent', 'beta', 'task for beta')).id
+    inAcme = (await createAgentMessage('main-agent', 'alpha', 'acme task', null, null, 'acme', null, true)).id
   })
 
   it('a fleet token closes a message addressed to its own agent (200)', async () => {

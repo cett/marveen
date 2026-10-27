@@ -179,7 +179,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (reservedMarker) {
       logger.warn({ from: from.trim(), to: to.trim(), marker: reservedMarker }, 'Rejected /api/messages POST: content starts a line with a server-only marker')
       try {
-        writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from) || 'unknown', entity: 'message', action: 'reserved_marker_denied',
+        await writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from) || 'unknown', entity: 'message', action: 'reserved_marker_denied',
           detail: { from: from.trim(), to: to.trim(), marker: reservedMarker, principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not turn a refusal into an acceptance */ }
       json(res, reservedMarkerRefusal(reservedMarker), 400)
@@ -249,7 +249,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       const cleanFrom = sanitizeAgentIdent(from)
       const allowed = isAuthorizedPartnerSender(cleanFrom, ctx.tenantId!)
       if (!allowed) {
-        writeAgentAuditLog({ agent_id: cleanFrom, entity: 'message', action: 'create',
+        await writeAgentAuditLog({ agent_id: cleanFrom, entity: 'message', action: 'create',
           detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
         logger.warn({ from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId }, 'Rejected partner /api/messages POST: sender not in allowlist')
         json(res, { error: 'sender_not_in_allowlist', hint: `sender '${from.trim()}' is not in the allowlist for tenant '${ctx.tenantId}'` }, 403)
@@ -335,7 +335,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (no_pii_scrub === true && !piiScrubBypassed) {
       logger.warn({ from: from.trim(), authKind: ctx.auth?.kind }, 'no_pii_scrub ignored: requires human admin session')
       try {
-        writeAgentAuditLog({ agent_id: from.trim(), entity: 'message', action: 'pii_scrub_attempt_denied',
+        await writeAgentAuditLog({ agent_id: from.trim(), entity: 'message', action: 'pii_scrub_attempt_denied',
           detail: { from: from.trim(), authKind: ctx.auth?.kind ?? 'unknown', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
@@ -345,7 +345,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, effectiveTenantId, envelope)
+    const msg = await createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, effectiveTenantId, envelope)
     // Warn-only (never blocking) signal for the config-loss bug
     // class this closes -- an explicit assign:true delegation with no
     // envelope attached is not an error, just worth noticing in the logs.
@@ -353,23 +353,23 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'assign:true message sent without an envelope')
     }
     if (isPartnerTenant) {
-      writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from), entity: 'message', action: 'create', entity_id: msg.id,
+      await writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from), entity: 'message', action: 'create', entity_id: msg.id,
         detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
     } else if (ctx.auth?.kind === 'session' && ctx.auth.user) {
       try {
-        writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'message', action: 'create', entity_id: msg.id })
+        await writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'message', action: 'create', entity_id: msg.id })
       } catch { /* audit failure must not abort message creation */ }
     }
     const declaredFrom = declaredFromOfAgentBoundAdmin(ctx, from)
     if (declaredFrom !== null) {
       try {
-        writeAgentAuditLog({ agent_id: ctx.tokenAgentId ?? 'unknown', entity: 'message', action: 'create', entity_id: msg.id,
+        await writeAgentAuditLog({ agent_id: ctx.tokenAgentId ?? 'unknown', entity: 'message', action: 'create', entity_id: msg.id,
           detail: { declared_from: declaredFrom, to: storedTo, principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
     if (piiScrubBypassed) {
       try {
-        writeAgentAuditLog({ agent_id: ctx.auth?.user || from.trim(), entity: 'message', action: 'pii_scrub_bypass',
+        await writeAgentAuditLog({ agent_id: ctx.auth?.user || from.trim(), entity: 'message', action: 'pii_scrub_bypass',
           entity_id: msg.id, detail: { from: from.trim(), to: storedTo, principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not abort message creation */ }
     }
@@ -499,7 +499,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const existing = getAgentMessage(id)
     if (!isAdmin) {
       if (existing && (existing.tenant_id ?? 'default') !== effectiveTenantId) {
-        writeAgentAuditLog({ agent_id: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', entity: 'message', action: 'update', entity_id: id,
+        await writeAgentAuditLog({ agent_id: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', entity: 'message', action: 'update', entity_id: id,
           detail: { status: newStatus, caller_tenant_id: effectiveTenantId, message_tenant_id: existing.tenant_id ?? 'default', reason: 'cross_tenant_denied', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
         logger.warn({ id, callerTenant: effectiveTenantId, messageTenant: existing.tenant_id }, 'Rejected cross-tenant PUT /api/messages/:id')
         json(res, { error: 'not_found', field: 'messageId', hint: 'Message not found or invalid status' }, 404)
@@ -511,7 +511,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // inside one tenant an agent could otherwise close, fail or refuse a colleague's task and fire the
     // [Eredmény] notification for it. The other principals keep the tenant check above only.
     if (ctx.role === 'fleet_agent' && existing && sanitizeAgentIdent(existing.to_agent) !== sanitizeAgentIdent(ctx.tokenAgentId ?? '')) {
-      writeAgentAuditLog({ agent_id: ctx.tokenAgentId ?? 'unknown', entity: 'message', action: 'update', entity_id: id,
+      await writeAgentAuditLog({ agent_id: ctx.tokenAgentId ?? 'unknown', entity: 'message', action: 'update', entity_id: id,
         detail: { status: newStatus, message_to: existing.to_agent, reason: 'not_recipient_denied', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       logger.warn({ id, tokenAgent: ctx.tokenAgentId, messageTo: existing.to_agent }, 'Rejected PUT /api/messages/:id: the token agent is not the recipient')
       json(res, { error: 'forbidden', hint: 'Only the recipient agent can write the outcome of a message' }, 403)
@@ -525,7 +525,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (reservedInResult) {
       logger.warn({ id, marker: reservedInResult }, 'Rejected PUT /api/messages/:id: result starts a line with a server-only marker')
       try {
-        writeAgentAuditLog({ agent_id: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', entity: 'message', action: 'reserved_marker_denied', entity_id: id,
+        await writeAgentAuditLog({ agent_id: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', entity: 'message', action: 'reserved_marker_denied', entity_id: id,
           detail: { marker: reservedInResult, field: 'result', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
       } catch { /* audit failure must not turn a refusal into an acceptance */ }
       json(res, { ...reservedMarkerRefusal(reservedInResult), field: 'result' }, 400)
@@ -571,7 +571,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // when the original content is already a completion report).
       if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
         const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
-        createAgentMessage(
+        await createAgentMessage(
           done.to_agent,
           done.from_agent,
           `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,

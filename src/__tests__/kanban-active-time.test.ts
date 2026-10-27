@@ -82,23 +82,23 @@ describe('opening event row for a card created outside planned', () => {
     initDatabase(':memory:')
   })
 
-  it('a card created into in_progress gets an opening event with no from_status, so it is measurable', () => {
-    createKanbanCard({ id: 'born-ip', title: 'Born in progress', status: 'in_progress', assignee: 'worker' })
+  it('a card created into in_progress gets an opening event with no from_status, so it is measurable', async () => {
+    await createKanbanCard({ id: 'born-ip', title: 'Born in progress', status: 'in_progress', assignee: 'worker' })
     const events = getKanbanCardEvents('born-ip')
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ card_id: 'born-ip', from_status: null, to_status: 'in_progress', actor: 'worker' })
     expect(sumInProgressSeconds(events, events[0].created_at + 90, { status: 'in_progress' })).toBe(90)
   })
 
-  it('a card created into planned gets none (the first move writes the first event)', () => {
-    createKanbanCard({ id: 'born-planned', title: 'Planned card' })
+  it('a card created into planned gets none (the first move writes the first event)', async () => {
+    await createKanbanCard({ id: 'born-planned', title: 'Planned card' })
     expect(getKanbanCardEvents('born-planned')).toHaveLength(0)
     moveKanbanCard('born-planned', 'in_progress', 0, 'worker')
     expect(getKanbanCardEvents('born-planned')).toHaveLength(1)
   })
 
-  it('a card created into waiting gets the opening event too, and it is a measured zero', () => {
-    createKanbanCard({ id: 'born-wait', title: 'Waiting card', status: 'waiting' })
+  it('a card created into waiting gets the opening event too, and it is a measured zero', async () => {
+    await createKanbanCard({ id: 'born-wait', title: 'Waiting card', status: 'waiting' })
     const events = getKanbanCardEvents('born-wait')
     expect(events.map((e) => e.to_status)).toEqual(['waiting'])
     expect(sumInProgressSeconds(events, events[0].created_at + 500)).toBe(0)

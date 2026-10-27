@@ -20,10 +20,10 @@ const points = (name: string) => {
 const attrMap = (p: any) => Object.fromEntries(p.attributes.map((a: any) => [a.key, a.value.stringValue]))
 
 describe('scheduled runs', () => {
-  it('appendTaskRun counts each occurrence by schedule and status', () => {
-    appendTaskRun('nightly', 'agent-a', 'fired')
-    appendTaskRun('nightly', 'agent-a', 'fired')
-    appendTaskRun('nightly', 'agent-a', 'error')
+  it('appendTaskRun counts each occurrence by schedule and status', async () => {
+    await appendTaskRun('nightly', 'agent-a', 'fired')
+    await appendTaskRun('nightly', 'agent-a', 'fired')
+    await appendTaskRun('nightly', 'agent-a', 'error')
     const byStatus = Object.fromEntries(points('marveen.schedule.runs').map((p) => [attrMap(p).status, p.asInt]))
     expect(byStatus).toEqual({ fired: '2', error: '1' })
     expect(attrMap(points('marveen.schedule.runs')[0]).schedule).toBe('nightly')
@@ -55,8 +55,8 @@ describe('inter-agent messages', () => {
     expect(points('marveen.agent_messages.delivered')[0].asInt).toBe('1')
   })
 
-  it('a failed message is counted by reason and its span is closed as error (abandoned/inject-failed spans never stay open)', () => {
-    upsertOtelSpan({
+  it('a failed message is counted by reason and its span is closed as error (abandoned/inject-failed spans never stay open)', async () => {
+    await upsertOtelSpan({
       trace_id: 'trace-sig-1', span_id: 'span-sig-1', parent_span_id: null, agent_id: 'a',
       operation: 'a->b', start_ms: 1000, attributes: null,
     })

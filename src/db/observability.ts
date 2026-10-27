@@ -202,7 +202,7 @@ export interface InterAgentSpanAttributes {
   to: string
 }
 
-export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): void {
+export async function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): Promise<void> {
   db.prepare(`
     INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -218,7 +218,7 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
     span.trace_id, span.span_id, span.parent_span_id ?? null,
     span.agent_id, span.operation, span.start_ms,
     span.end_ms ?? null, span.status ?? 'running', span.attributes ?? null,
-    resolveWriteTenant(span.agent_id),
+    await resolveWriteTenant(span.agent_id),
   )
 }
 

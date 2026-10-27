@@ -99,8 +99,8 @@ describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
     expect(getKanbanCard('genuinely-old')!.archived_at).not.toBeNull()
   })
 
-  it('does not archive a done card moved via the production entry point (createKanbanCard + status: done)', () => {
-    createKanbanCard({ id: 'prod-done', title: 'created done today', status: 'done' })
+  it('does not archive a done card moved via the production entry point (createKanbanCard + status: done)', async () => {
+    await createKanbanCard({ id: 'prod-done', title: 'created done today', status: 'done' })
 
     listKanbanCards()
 

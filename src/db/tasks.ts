@@ -84,12 +84,12 @@ export interface TaskRunHistoryEntry { ts: number; status: string; tokens_est: n
 
 const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
-export function appendTaskRun(name: string, agent: string, status = 'fired'): void {
+export async function appendTaskRun(name: string, agent: string, status = 'fired'): Promise<void> {
   const now = Date.now()
   // A scheduled run belongs to the tenant of its schedule; a name with no schedule row (an ad-hoc
   // or legacy task) falls back to the tenant the agent is working for.
   const schedule = db.prepare('SELECT tenant_id FROM schedules WHERE id = ?').get(name) as { tenant_id: string | null } | undefined
-  const tenantId = schedule?.tenant_id ?? resolveWriteTenant(agent)
+  const tenantId = schedule?.tenant_id ?? await resolveWriteTenant(agent)
   db.prepare('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)').run(name, agent, now, status, tenantId)
   countScheduleRun(name, status)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.

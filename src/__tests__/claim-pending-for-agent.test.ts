@@ -9,11 +9,11 @@ beforeAll(() => { initDatabase(':memory:') }) // fresh, isolated schema'd DB
 //   - NEVER double-claims (a single atomic UPDATE ... WHERE status='pending'
 //     RETURNING, so two concurrent drains can't return the same message).
 describe('claimPendingForAgent', () => {
-  it('claims FIFO up to the cap, marks delivered, and never double-claims', () => {
+  it('claims FIFO up to the cap, marks delivered, and never double-claims', async () => {
     const to = 'claimtest-' + Date.now() + '-' + Math.floor(performance.now())
-    const m1 = createAgentMessage('subA', to, 'first')
-    const m2 = createAgentMessage('subB', to, 'second')
-    createAgentMessage('subC', to, 'third')
+    const m1 = await createAgentMessage('subA', to, 'first')
+    const m2 = await createAgentMessage('subB', to, 'second')
+    await createAgentMessage('subC', to, 'third')
 
     // cap=2 -> the two OLDEST, in FIFO order
     const batch1 = claimPendingForAgent(to, 2)

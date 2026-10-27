@@ -1,7 +1,7 @@
 // Read/write access to tenant_channel_bindings (migration 0064): which tenant an
 // incoming source (Telegram chat, dashboard chat, inter-agent sender, ...) belongs to,
 // per agent. The use-time skill isolation resolves the active tenant from here.
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 export interface TenantChannelBinding {
   agent_id: string
@@ -19,16 +19,14 @@ const COLUMNS = 'agent_id, channel, external_id, tenant_id, created_by, created_
 export const UNBOUND_SOURCE_TENANT = 'default'
 
 /** The bound tenant of a source, or null when the source has no binding. */
-export function getChannelBindingTenant(agentId: string, channel: string, externalId: string): string | null {
-  const row = db
-    .prepare('SELECT tenant_id FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?')
-    .get(agentId, channel.toLowerCase(), externalId) as { tenant_id: string } | undefined
+export async function getChannelBindingTenant(agentId: string, channel: string, externalId: string): Promise<string | null> {
+  const row = await dbx.get<{ tenant_id: string }>('SELECT tenant_id FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?', agentId, channel.toLowerCase(), externalId)
   return row?.tenant_id ?? null
 }
 
 /** Tenant of an incoming source: its binding, else the default tenant. Never inferred from another source. */
-export function resolveSourceTenant(agentId: string, channel: string, externalId: string): string {
-  return getChannelBindingTenant(agentId, channel, externalId) ?? UNBOUND_SOURCE_TENANT
+export async function resolveSourceTenant(agentId: string, channel: string, externalId: string): Promise<string> {
+  return await getChannelBindingTenant(agentId, channel, externalId) ?? UNBOUND_SOURCE_TENANT
 }
 
 /**
@@ -37,42 +35,38 @@ export function resolveSourceTenant(agentId: string, channel: string, externalId
  * at once: with no context row the use-time gate fails closed until the agent's next prompt
  * re-resolves the source.
  */
-export function invalidateAgentTenantContext(agentId: string): void {
-  db.prepare('DELETE FROM agent_tenant_context WHERE agent_id = ?').run(agentId)
+export async function invalidateAgentTenantContext(agentId: string): Promise<void> {
+  await dbx.run('DELETE FROM agent_tenant_context WHERE agent_id = ?', agentId)
 }
 
-export function listChannelBindings(filter: { tenantId?: string; agentId?: string } = {}): TenantChannelBinding[] {
+export async function listChannelBindings(filter: { tenantId?: string; agentId?: string } = {}): Promise<TenantChannelBinding[]> {
   const where: string[] = []
   const params: string[] = []
   if (filter.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId) }
   if (filter.agentId) { where.push('agent_id = ?'); params.push(filter.agentId) }
   const sql = `SELECT ${COLUMNS} FROM tenant_channel_bindings${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY agent_id, channel, external_id`
-  return db.prepare(sql).all(...params) as TenantChannelBinding[]
+  return dbx.all<TenantChannelBinding>(sql, ...params)
 }
 
 /** Bind a source to a tenant; re-binding an existing source moves it to the new tenant. */
-export function setChannelBinding(agentId: string, channel: string, externalId: string, tenantId: string, createdBy: string): TenantChannelBinding {
+export async function setChannelBinding(agentId: string, channel: string, externalId: string, tenantId: string, createdBy: string): Promise<TenantChannelBinding> {
   const ch = channel.toLowerCase()
-  const previous = getChannelBindingTenant(agentId, ch, externalId)
-  db.prepare(`
+  const previous = await getChannelBindingTenant(agentId, ch, externalId)
+  await dbx.run(`
     INSERT INTO tenant_channel_bindings (agent_id, channel, external_id, tenant_id, created_by, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
     ON CONFLICT(agent_id, channel, external_id) DO UPDATE SET
       tenant_id  = excluded.tenant_id,
       updated_at = excluded.updated_at
-  `).run(agentId, ch, externalId, tenantId, createdBy)
-  if (previous !== tenantId) invalidateAgentTenantContext(agentId)
-  return db
-    .prepare(`SELECT ${COLUMNS} FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?`)
-    .get(agentId, ch, externalId) as TenantChannelBinding
+  `, agentId, ch, externalId, tenantId, createdBy)
+  if (previous !== tenantId) await invalidateAgentTenantContext(agentId)
+  return (await dbx.get(`SELECT ${COLUMNS} FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?`, agentId, ch, externalId)) as TenantChannelBinding
 }
 
 /** True iff a binding existed and was removed (the source then falls back to the default tenant). */
-export function deleteChannelBinding(agentId: string, channel: string, externalId: string): boolean {
-  const removed = db
-    .prepare('DELETE FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?')
-    .run(agentId, channel.toLowerCase(), externalId).changes > 0
-  if (removed) invalidateAgentTenantContext(agentId)
+export async function deleteChannelBinding(agentId: string, channel: string, externalId: string): Promise<boolean> {
+  const removed = (await dbx.run('DELETE FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?', agentId, channel.toLowerCase(), externalId)).changes > 0
+  if (removed) await invalidateAgentTenantContext(agentId)
   return removed
 }
 
@@ -81,15 +75,13 @@ export function deleteChannelBinding(agentId: string, channel: string, externalI
  * main agent or is enabled for it in tenant_agent_availability. Same rule as _serves() in
  * scripts/hooks/tenant_context_lib.py (keep the two in step).
  */
-export function agentServesTenant(agentId: string, tenantId: string): boolean {
-  return db
-    .prepare(`
+export async function agentServesTenant(agentId: string, tenantId: string): Promise<boolean> {
+  return await dbx.get(`
       SELECT 1 FROM tenants t
       WHERE t.id = ? AND t.disabled_at IS NULL
         AND (t.main_agent_id = ? OR EXISTS (
           SELECT 1 FROM tenant_agent_availability a WHERE a.tenant_id = t.id AND a.agent_id = ? AND a.enabled = 1))
-    `)
-    .get(tenantId, agentId, agentId) !== undefined
+    `, tenantId, agentId, agentId) !== undefined
 }
 
 const DEFAULT_CONTEXT_MAX_AGE_SECONDS = 43200
@@ -101,17 +93,15 @@ const DEFAULT_CONTEXT_MAX_AGE_SECONDS = 43200
  * conflict, stale, the agent no longer serving the tenant, a DB error) is null: the caller
  * must not guess. Unlike getDelegationTenant this does not fold those cases into 'default'.
  */
-export function getServingTenant(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): string | null {
+export async function getServingTenant(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): Promise<string | null> {
   try {
-    const row = db
-      .prepare('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?')
-      .get(agentId) as { tenant_id: string | null; status: string; updated_at: number } | undefined
+    const row = await dbx.get<{ tenant_id: string | null; status: string; updated_at: number }>('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?', agentId)
     if (!row || (row.status !== 'bound' && row.status !== 'default') || !row.tenant_id) return null
     const parsed = Number.parseInt(process.env['TENANT_CONTEXT_MAX_AGE_SECONDS'] ?? '', 10)
     const maxAge = Number.isFinite(parsed) ? parsed : DEFAULT_CONTEXT_MAX_AGE_SECONDS
     if (maxAge > 0 && nowSeconds - (row.updated_at ?? 0) > maxAge) return null
     if (row.status === 'default') return row.tenant_id
-    return agentServesTenant(agentId, row.tenant_id) ? row.tenant_id : null
+    return await agentServesTenant(agentId, row.tenant_id) ? row.tenant_id : null
   } catch {
     return null
   }
@@ -123,18 +113,16 @@ export function getServingTenant(agentId: string, nowSeconds: number = Math.floo
  * could not be proven), stale (older than the max age), not_serving (the agent no longer serves the
  * tenant of its bound context), error. 'fresh' when the context does answer.
  */
-export function explainServingTenantMiss(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): string {
+export async function explainServingTenantMiss(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): Promise<string> {
   try {
-    const row = db
-      .prepare('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?')
-      .get(agentId) as { tenant_id: string | null; status: string; updated_at: number } | undefined
+    const row = await dbx.get<{ tenant_id: string | null; status: string; updated_at: number }>('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?', agentId)
     if (!row) return 'no_row'
     if ((row.status !== 'bound' && row.status !== 'default') || !row.tenant_id) return row.status === 'conflict' ? 'conflict' : 'unknown'
     const parsed = Number.parseInt(process.env['TENANT_CONTEXT_MAX_AGE_SECONDS'] ?? '', 10)
     const maxAge = Number.isFinite(parsed) ? parsed : DEFAULT_CONTEXT_MAX_AGE_SECONDS
     if (maxAge > 0 && nowSeconds - (row.updated_at ?? 0) > maxAge) return 'stale'
     if (row.status === 'default') return 'fresh'
-    return agentServesTenant(agentId, row.tenant_id) ? 'fresh' : 'not_serving'
+    return await agentServesTenant(agentId, row.tenant_id) ? 'fresh' : 'not_serving'
   } catch {
     return 'error'
   }
@@ -147,16 +135,14 @@ export function explainServingTenantMiss(agentId: string, nowSeconds: number = M
  * least-privileged stamp: a receiver never gains tenant skills from it.
  * Staleness uses the same TENANT_CONTEXT_MAX_AGE_SECONDS as the use-time gate.
  */
-export function getDelegationTenant(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): string {
+export async function getDelegationTenant(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): Promise<string> {
   try {
-    const row = db
-      .prepare('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?')
-      .get(agentId) as { tenant_id: string | null; status: string; updated_at: number } | undefined
+    const row = await dbx.get<{ tenant_id: string | null; status: string; updated_at: number }>('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?', agentId)
     if (!row || row.status !== 'bound' || !row.tenant_id || row.tenant_id === UNBOUND_SOURCE_TENANT) return UNBOUND_SOURCE_TENANT
     const parsed = Number.parseInt(process.env['TENANT_CONTEXT_MAX_AGE_SECONDS'] ?? '', 10)
     const maxAge = Number.isFinite(parsed) ? parsed : DEFAULT_CONTEXT_MAX_AGE_SECONDS
     if (maxAge > 0 && nowSeconds - (row.updated_at ?? 0) > maxAge) return UNBOUND_SOURCE_TENANT
-    return agentServesTenant(agentId, row.tenant_id) ? row.tenant_id : UNBOUND_SOURCE_TENANT
+    return await agentServesTenant(agentId, row.tenant_id) ? row.tenant_id : UNBOUND_SOURCE_TENANT
   } catch {
     return UNBOUND_SOURCE_TENANT
   }

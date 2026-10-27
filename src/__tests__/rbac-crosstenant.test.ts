@@ -700,15 +700,15 @@ describe('/api/memories/stale isolation -- real getStaleMemories', () => {
     initDatabase(':memory:')
   })
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const d = getDb()
     d.exec('DELETE FROM memories')
     d.exec('DELETE FROM span_reads')
     // tenant-a shared memory -- would leak to tenant-b without the tenant filter
-    const r1 = saveAgentMemory('agent-a', 'tenant-a stale shared', 'shared', undefined, false, 'tenant-a')
+    const r1 = await saveAgentMemory('agent-a', 'tenant-a stale shared', 'shared', undefined, false, 'tenant-a')
     d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r1.id)
     // tenant-b own warm memory
-    const r2 = saveAgentMemory('agent-a', 'tenant-b warm memory', 'warm', undefined, false, 'tenant-b')
+    const r2 = await saveAgentMemory('agent-a', 'tenant-b warm memory', 'warm', undefined, false, 'tenant-b')
     d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r2.id)
   })
 

@@ -144,10 +144,10 @@ describe('GET /api/skill-usage', () => {
 })
 
 describe('60 second dedup', () => {
-  it('the same agent, skill, session and source inside the window is one row', () => {
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(true)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(false)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(false)
+  it('the same agent, skill, session and source inside the window is one row', async () => {
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(false)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(false)
     expect(rows('src-d')).toHaveLength(1)
   })
 
@@ -158,50 +158,50 @@ describe('60 second dedup', () => {
     expect(rows('src-d')).toHaveLength(1)
   })
 
-  it('a different session, source, skill or agent is a new row', () => {
-    logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's2', 'bash_script')).toBe(true)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_read')).toBe(true)
-    expect(logSkillUsage('src-d', 'y', 'skill_read', 's1', 'bash_script')).toBe(true)
-    expect(logSkillUsage('src-d2', 'x', 'skill_read', 's1', 'bash_script')).toBe(true)
+  it('a different session, source, skill or agent is a new row', async () => {
+    await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's2', 'bash_script')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_read')).toBe(true)
+    expect(await logSkillUsage('src-d', 'y', 'skill_read', 's1', 'bash_script')).toBe(true)
+    expect(await logSkillUsage('src-d2', 'x', 'skill_read', 's1', 'bash_script')).toBe(true)
     getDb().exec("DELETE FROM skill_usage WHERE agent_id = 'src-d2'")
     expect(rows('src-d')).toHaveLength(4)
   })
 
-  it('writes again once the window has passed', () => {
+  it('writes again once the window has passed', async () => {
     insertRaw('src-d', 'x', 'skill_read', 's1', now() - 61, 'bash_script')
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(true)
     expect(rows('src-d')).toHaveLength(2)
   })
 
-  it('still dedups right at the edge of the window', () => {
+  it('still dedups right at the edge of the window', async () => {
     insertRaw('src-d', 'x', 'skill_read', 's1', now() - 59, 'bash_script')
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(false)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_script')).toBe(false)
   })
 
-  it('a missing session_id dedups against a missing session_id', () => {
-    expect(logSkillUsage('src-d', 'x', 'skill_read', null, 'bash_read')).toBe(true)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', undefined, 'bash_read')).toBe(false)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_read')).toBe(true)
+  it('a missing session_id dedups against a missing session_id', async () => {
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', null, 'bash_read')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', undefined, 'bash_read')).toBe(false)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_read')).toBe(true)
   })
 
-  it('the Skill-tool row and the SKILL.md read of one invocation both persist', () => {
-    expect(logSkillUsage('src-d', 'x', 'tool_call', 's1', 'skill_tool')).toBe(true)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'read_tool')).toBe(true)
+  it('the Skill-tool row and the SKILL.md read of one invocation both persist', async () => {
+    expect(await logSkillUsage('src-d', 'x', 'tool_call', 's1', 'skill_tool')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'read_tool')).toBe(true)
     expect(rows('src-d')).toHaveLength(2)
   })
 
-  it('an old hook (no source) keeps that pair apart: dedup keys on the derived source, not on NULL', () => {
-    expect(logSkillUsage('src-d', 'x', 'tool_call', 's1')).toBe(true)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1')).toBe(true)
-    expect(logSkillUsage('src-d', 'x', 'tool_call', 's1')).toBe(false)
+  it('an old hook (no source) keeps that pair apart: dedup keys on the derived source, not on NULL', async () => {
+    expect(await logSkillUsage('src-d', 'x', 'tool_call', 's1')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'tool_call', 's1')).toBe(false)
     expect(rows('src-d')).toHaveLength(2)
   })
 
-  it('an old-hook row and a new-hook row of the same path dedup each other', () => {
+  it('an old-hook row and a new-hook row of the same path dedup each other', async () => {
     insertRaw('src-d', 'x', 'skill_read', 's1', now(), null)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'read_tool')).toBe(false)
-    expect(logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_read')).toBe(true)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'read_tool')).toBe(false)
+    expect(await logSkillUsage('src-d', 'x', 'skill_read', 's1', 'bash_read')).toBe(true)
   })
 })
 

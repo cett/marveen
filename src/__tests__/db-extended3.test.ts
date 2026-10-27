@@ -66,7 +66,7 @@ describe('recallByDateRange', () => {
     await appendDailyLog('recall-agent-a', 'Worked on coverage recall test')
     await appendDailyLog('recall-agent-a', 'More coverage recall work')
     await appendDailyLog('recall-agent-f', 'agent-f log entry recall test')
-    saveAgentMemory('recall-agent-a', 'Coverage memory recall', 'warm', 'coverage')
+    await saveAgentMemory('recall-agent-a', 'Coverage memory recall', 'warm', 'coverage')
   })
 
   it('returns logs in date range', async () => {
@@ -98,7 +98,7 @@ describe('recallByDateRange', () => {
 describe('recallSearch', () => {
   beforeAll(async () => {
     await appendDailyLog('recall-agent-a', 'Unique phrase xyzzy coverage alpha')
-    saveAgentMemory('recall-agent-a', 'Unique xyzzy memory content', 'cold', 'xyzzy')
+    await saveAgentMemory('recall-agent-a', 'Unique xyzzy memory content', 'cold', 'xyzzy')
   })
 
   it('returns matching logs and memories', async () => {
@@ -149,8 +149,8 @@ describe('getBackgroundTasks without agentId', () => {
 describe('listArchivedKanbanCards with filters', () => {
   const archivedCardId = 'arch-flt-' + Date.now().toString(16)
 
-  beforeAll(() => {
-    createKanbanCard({ id: archivedCardId, title: 'Test Archived Card Filter', status: 'done', priority: 'high', project: 'proj-alpha', assignee: 'test-user' })
+  beforeAll(async () => {
+    await createKanbanCard({ id: archivedCardId, title: 'Test Archived Card Filter', status: 'done', priority: 'high', project: 'proj-alpha', assignee: 'test-user' })
     archiveKanbanCard(archivedCardId)
   })
 
@@ -178,9 +178,9 @@ describe('getKanbanSeqByIdPrefix', () => {
     expect(getKanbanSeqByIdPrefix('zzzzzzzz')).toBeNull()
   })
 
-  it('returns seq for known card id', () => {
+  it('returns seq for known card id', async () => {
     const seqId = 'seq-tst-' + Date.now().toString(16)
-    createKanbanCard({ id: seqId, title: 'Seq Test Card', status: 'planned' })
+    await createKanbanCard({ id: seqId, title: 'Seq Test Card', status: 'planned' })
     const seq = getKanbanSeqByIdPrefix(seqId)
     expect(typeof seq).toBe('number')
     expect(seq).toBeGreaterThan(0)
@@ -205,29 +205,29 @@ describe('getHeartbeatKanbanSummary', () => {
 // ---------------------------------------------------------------------------
 
 describe('updateKanbanCard branches', () => {
-  it('returns false for nonexistent card', () => {
-    expect(updateKanbanCard('card-nonexistent', { title: 'New Title' })).toBe(false)
+  it('returns false for nonexistent card', async () => {
+    expect(await updateKanbanCard('card-nonexistent', { title: 'New Title' })).toBe(false)
   })
 
-  it('returns false when new parent is not found', () => {
+  it('returns false when new parent is not found', async () => {
     const cid = 'upd-card-' + Date.now().toString(16)
-    createKanbanCard({ id: cid, title: 'Card for reparent test', status: 'planned' })
-    expect(updateKanbanCard(cid, { parent_id: 'nonexistent-parent' })).toBe(false)
+    await createKanbanCard({ id: cid, title: 'Card for reparent test', status: 'planned' })
+    expect(await updateKanbanCard(cid, { parent_id: 'nonexistent-parent' })).toBe(false)
   })
 
-  it('updates parent_id to null (top-level)', () => {
+  it('updates parent_id to null (top-level)', async () => {
     const parentId = 'upd-par-' + Date.now().toString(16)
     const childId = 'upd-child-' + Date.now().toString(16)
-    createKanbanCard({ id: parentId, title: 'Parent card', status: 'planned' })
-    createKanbanCard({ id: childId, title: 'Child card', status: 'planned', parent_id: parentId })
-    const ok = updateKanbanCard(childId, { parent_id: null })
+    await createKanbanCard({ id: parentId, title: 'Parent card', status: 'planned' })
+    await createKanbanCard({ id: childId, title: 'Child card', status: 'planned', parent_id: parentId })
+    const ok = await updateKanbanCard(childId, { parent_id: null })
     expect(ok).toBe(true)
   })
 
-  it('round-trips blocked_by/blocked_reason/waiting_for/resolved_by', () => {
+  it('round-trips blocked_by/blocked_reason/waiting_for/resolved_by', async () => {
     const cid = 'upd-wait-' + Date.now().toString(16)
-    createKanbanCard({ id: cid, title: 'Waiting card', status: 'planned' })
-    const ok = updateKanbanCard(cid, {
+    await createKanbanCard({ id: cid, title: 'Waiting card', status: 'planned' })
+    const ok = await updateKanbanCard(cid, {
       status: 'waiting', blocked_by: 'agent-a', blocked_reason: 'stuck on deploy', waiting_for: 'PR review',
     })
     expect(ok).toBe(true)
@@ -238,7 +238,7 @@ describe('updateKanbanCard branches', () => {
     expect(card.waiting_for).toBe('PR review')
     expect(card.resolved_by).toBeNull()
 
-    const closed = updateKanbanCard(cid, { status: 'done', resolved_by: 'agent-b' })
+    const closed = await updateKanbanCard(cid, { status: 'done', resolved_by: 'agent-b' })
     expect(closed).toBe(true)
     const closedCard = getKanbanCard(cid)!
     expect(closedCard.status).toBe('done')
@@ -260,16 +260,16 @@ describe('reparentKanbanCard branches', () => {
     }
   })
 
-  it('returns ok:true for top-level reparent', () => {
+  it('returns ok:true for top-level reparent', async () => {
     const rid = 'rep-top-' + Date.now().toString(16)
-    createKanbanCard({ id: rid, title: 'Top-level reparent card', status: 'planned' })
+    await createKanbanCard({ id: rid, title: 'Top-level reparent card', status: 'planned' })
     const result = reparentKanbanCard(rid, null)
     expect(result.ok).toBe(true)
   })
 
-  it('returns error for self-parenting', () => {
+  it('returns error for self-parenting', async () => {
     const selfId = 'rep-self-' + Date.now().toString(16)
-    createKanbanCard({ id: selfId, title: 'Self-parent test', status: 'planned' })
+    await createKanbanCard({ id: selfId, title: 'Self-parent test', status: 'planned' })
     const result = reparentKanbanCard(selfId, selfId)
     expect(result.ok).toBe(false)
     if (!result.ok) {
@@ -289,13 +289,13 @@ describe('analyzeWorkflowCandidates', () => {
     expect(result).toEqual([])
   })
 
-  it('finds workflow candidates when many tool calls exist in a session', () => {
+  it('finds workflow candidates when many tool calls exist in a session', async () => {
     const sessionId = 'wf-test-session-' + Date.now()
     const now = Math.floor(Date.now() / 1000)
     for (let i = 0; i < 6; i++) {
       // otel_spans PK is (trace_id, span_id) -- trace_id is the shared
       // session_id here, so span_id (traceId arg) must be unique per call.
-      logToolCall(sessionId, 'Bash', null, true, 'agent-a', `toolu_wf_${i}`, 100)
+      await logToolCall(sessionId, 'Bash', null, true, 'agent-a', `toolu_wf_${i}`, 100)
     }
     const result = analyzeWorkflowCandidates(3600, 5, 300)
     expect(Array.isArray(result)).toBe(true)
@@ -340,8 +340,8 @@ describe('queryAuditLog with idea source', () => {
 })
 
 describe('queryAuditLog with store source', () => {
-  beforeAll(() => {
-    logStoreFileEvent('config/test.json', 'write', 0, 1024, 'agent-a')
+  beforeAll(async () => {
+    await logStoreFileEvent('config/test.json', 'write', 0, 1024, 'agent-a')
   })
 
   it('returns store audit entries', () => {
@@ -386,8 +386,8 @@ describe('queryAuditLog with diary source', () => {
 })
 
 describe('queryAuditLog with hook source', () => {
-  beforeAll(() => {
-    insertHookAuditLog({ agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'deny', tool_name: 'Bash', reason: 'audit_test_reason' })
+  beforeAll(async () => {
+    await insertHookAuditLog({ agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'deny', tool_name: 'Bash', reason: 'audit_test_reason' })
   })
 
   it('returns hook audit entries with the shared AuditLogEntry shape (ts aliased to created_at)', () => {
@@ -413,9 +413,9 @@ describe('queryAuditLog with hook source', () => {
 })
 
 describe('queryAuditLog with agent source: blackboard/approval entities', () => {
-  beforeAll(() => {
-    writeAgentAuditLog({ agent_id: 'agent-a', entity: 'blackboard', action: 'update', entity_id: 'bb-audit-test', detail: { status: 'active' } })
-    writeAgentAuditLog({ agent_id: 'agent-a', entity: 'approval', action: 'create', entity_id: 'appr-audit-test', detail: { category: 'file_write' } })
+  beforeAll(async () => {
+    await writeAgentAuditLog({ agent_id: 'agent-a', entity: 'blackboard', action: 'update', entity_id: 'bb-audit-test', detail: { status: 'active' } })
+    await writeAgentAuditLog({ agent_id: 'agent-a', entity: 'approval', action: 'create', entity_id: 'appr-audit-test', detail: { category: 'file_write' } })
   })
 
   it('merges blackboard and approval agent-audit entries', () => {
@@ -463,14 +463,14 @@ describe('updateIdea patch branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('logStoreFileEvent and getRecentStoreFileEvents', () => {
-  it('logs and retrieves store file events', () => {
-    logStoreFileEvent('store/test.db', 'read', 1, 512, 'agent-h')
+  it('logs and retrieves store file events', async () => {
+    await logStoreFileEvent('store/test.db', 'read', 1, 512, 'agent-h')
     const events = getRecentStoreFileEvents(10)
     expect(events.some(e => e.rel_path === 'store/test.db')).toBe(true)
   })
 
-  it('logs event without agent', () => {
-    logStoreFileEvent('store/anon.db', 'create', 0, null, null)
+  it('logs event without agent', async () => {
+    await logStoreFileEvent('store/anon.db', 'create', 0, null, null)
     const events = getRecentStoreFileEvents(10)
     expect(events.some(e => e.rel_path === 'store/anon.db')).toBe(true)
   })
@@ -481,8 +481,8 @@ describe('logStoreFileEvent and getRecentStoreFileEvents', () => {
 // ---------------------------------------------------------------------------
 
 describe('getPendingMessages without toAgent', () => {
-  it('returns all pending messages', () => {
-    createAgentMessage('test-sender', 'test-receiver', 'ping from test')
+  it('returns all pending messages', async () => {
+    await createAgentMessage('test-sender', 'test-receiver', 'ping from test')
     const msgs = getPendingMessages()
     expect(Array.isArray(msgs)).toBe(true)
     expect(msgs.some(m => m.content === 'ping from test')).toBe(true)
@@ -490,8 +490,8 @@ describe('getPendingMessages without toAgent', () => {
 })
 
 describe('setMessageResult', () => {
-  it('sets result on an existing message', () => {
-    const msg = createAgentMessage('result-sender', 'result-recv', 'test msg for result')
+  it('sets result on an existing message', async () => {
+    const msg = await createAgentMessage('result-sender', 'result-recv', 'test msg for result')
     const ok = setMessageResult(msg.id, 'result-text')
     expect(ok).toBe(true)
   })

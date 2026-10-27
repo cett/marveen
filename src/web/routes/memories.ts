@@ -79,7 +79,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const claimedAgentId = actingAgentId(ctx, data.agent_id, MAIN_AGENT_ID)
-    const result = saveAgentMemory(
+    const result = await saveAgentMemory(
       claimedAgentId,
       data.content.trim(),
       category,
@@ -89,7 +89,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     )
     try {
       if (ctx.auth?.kind === 'session' && ctx.auth.user) {
-        writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'memory', action: 'create', entity_id: result.id })
+        await writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'memory', action: 'create', entity_id: result.id })
       }
     } catch { /* audit failure must not abort the save */ }
     const mismatch = ownerMismatch(ctx, claimedAgentId)
@@ -301,7 +301,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       const chunk = chunks[i]
 
       if (!categorizeModel) {
-        saveAgentMemory(agentId, chunk, 'warm', '', true)
+        await saveAgentMemory(agentId, chunk, 'warm', '', true)
         stats.warm++
         imported++
         continue
@@ -349,7 +349,7 @@ Respond ONLY with JSON, nothing else:
           // Default to warm if parsing fails
         }
 
-        saveAgentMemory(agentId, chunk, tier, keywords, true)
+        await saveAgentMemory(agentId, chunk, tier, keywords, true)
         stats[tier as keyof typeof stats]++
         imported++
 
@@ -357,7 +357,7 @@ Respond ONLY with JSON, nothing else:
           await new Promise(r => setTimeout(r, 200))
         }
       } catch {
-        saveAgentMemory(agentId, chunk, 'warm', '', true)
+        await saveAgentMemory(agentId, chunk, 'warm', '', true)
         stats.warm++
         imported++
       }
@@ -726,7 +726,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { error: 'required', field: 'content', hint: 'content is required and must be a non-empty string' }, 400)
       return true
     }
-    if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    if (await updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found' }, 404)
     return true
   }
@@ -746,7 +746,7 @@ Respond ONLY with JSON, nothing else:
       syncVecMemoryDelete(id)
       clearMemoryCache()
       try {
-        writeAgentAuditLog({ agent_id: row?.agent_id || 'unknown', entity: 'memory', action: 'delete', entity_id: id })
+        await writeAgentAuditLog({ agent_id: row?.agent_id || 'unknown', entity: 'memory', action: 'delete', entity_id: id })
       } catch { /* audit failure must not abort the delete */ }
       json(res, { ok: true })
       return true

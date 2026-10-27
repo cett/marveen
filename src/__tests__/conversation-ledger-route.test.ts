@@ -140,7 +140,7 @@ describe('flushLedgerSpool', () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'ledger-spool-')) })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-  it('inserts valid lines, skips junk, and removes the file', () => {
+  it('inserts valid lines, skips junk, and removes the file', async () => {
     writeFileSync(join(dir, 'agent-a.jsonl'), [
       JSON.stringify(inbound({ message_id: '1' })),
       'not json',
@@ -148,17 +148,17 @@ describe('flushLedgerSpool', () => {
       JSON.stringify(inbound({ message_id: '2' })),
       '',
     ].join('\n'))
-    expect(flushLedgerSpool(dir)).toBe(2)
+    expect(await flushLedgerSpool(dir)).toBe(2)
     expect(readdirSync(dir)).toEqual([])
     expect((db.prepare('SELECT COUNT(*) AS n FROM conversation_log').get() as { n: number }).n).toBe(2)
   })
 
-  it('is a no-op for a missing directory and idempotent on replays', () => {
-    expect(flushLedgerSpool(join(dir, 'missing'))).toBe(0)
+  it('is a no-op for a missing directory and idempotent on replays', async () => {
+    expect(await flushLedgerSpool(join(dir, 'missing'))).toBe(0)
     writeFileSync(join(dir, 'a.jsonl'), JSON.stringify(inbound()) + '\n')
-    expect(flushLedgerSpool(dir)).toBe(1)
+    expect(await flushLedgerSpool(dir)).toBe(1)
     writeFileSync(join(dir, 'a.jsonl'), JSON.stringify(inbound()) + '\n')
-    expect(flushLedgerSpool(dir)).toBe(0)
+    expect(await flushLedgerSpool(dir)).toBe(0)
     expect(existsSync(join(dir, 'a.jsonl'))).toBe(false)
   })
 })

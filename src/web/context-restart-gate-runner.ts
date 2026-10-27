@@ -656,7 +656,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           await sendClear(session)
           logger.warn({ agent: name, blockedSinceMin, reason: decision.reason },
             'context-restart-gate: force-restart after persistent block')
-          createAgentMessage(
+          await createAgentMessage(
             name,
             MAIN_AGENT_ID,
             `[CONTEXT-RESTART-GATE] force-restart after 4h persistent block: a(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt (utolso ok: ${decision.reason}), a pane idle es nincs elo munka-jel -- /clear elkuldve.`,
@@ -693,7 +693,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
               childInfo = ` Blokkolo gyerekfolyamatok: ${workArgs.slice(0, 5).join('; ')}`
             }
           }
-          createAgentMessage(
+          await createAgentMessage(
             name,
             MAIN_AGENT_ID,
             persistentBlockAlertText({

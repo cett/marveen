@@ -72,11 +72,11 @@ describe('searchAgentMemories recency tie-break (integration, in-memory FTS5)', 
     initDatabase(':memory:')
   })
 
-  it('azonos kulcsszavú régi és új memóriából az új jön előrébb', () => {
+  it('azonos kulcsszavú régi és új memóriából az új jön előrébb', async () => {
     const now = Math.floor(Date.now() / 1000)
     // Same content shape -> near-identical bm25; only the age differs.
-    const oldId = saveAgentMemory('tester', 'A dizel generátor állapota: LEÁLLT tegnap óta.', 'hot', 'generátor, státusz').id
-    const newId = saveAgentMemory('tester', 'A dizel generátor állapota: ÚJRA MŰKÖDIK mostantól.', 'hot', 'generátor, státusz').id
+    const oldId = (await saveAgentMemory('tester', 'A dizel generátor állapota: LEÁLLT tegnap óta.', 'hot', 'generátor, státusz')).id
+    const newId = (await saveAgentMemory('tester', 'A dizel generátor állapota: ÚJRA MŰKÖDIK mostantól.', 'hot', 'generátor, státusz')).id
     // Backdate the first memory by 30 days directly in the DB.
     getDb().prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(now - 30 * DAY, oldId)
 

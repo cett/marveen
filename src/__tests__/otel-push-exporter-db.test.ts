@@ -21,8 +21,8 @@ afterEach(() => {
   db.exec("DELETE FROM token_usage WHERE agent LIKE 'agent-push-test-%'")
 })
 
-function seedSpan(traceId: string, spanId: string, closed = true) {
-  upsertOtelSpan({
+async function seedSpan(traceId: string, spanId: string, closed = true) {
+  await upsertOtelSpan({
     trace_id: traceId, span_id: spanId, parent_span_id: null,
     agent_id: 'agent-push-test-a', operation: 'test.op', start_ms: 1000,
     attributes: null,
@@ -31,19 +31,19 @@ function seedSpan(traceId: string, spanId: string, closed = true) {
 }
 
 describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
-  it('returns only closed spans with exported_at IS NULL', () => {
-    seedSpan('trace-push-test-1', 'span-1', true)
-    seedSpan('trace-push-test-2', 'span-2', false) // still open (running)
+  it('returns only closed spans with exported_at IS NULL', async () => {
+    await seedSpan('trace-push-test-1', 'span-1', true)
+    await seedSpan('trace-push-test-2', 'span-2', false) // still open (running)
     const rows = getUnexportedOtelSpans(100)
     const traceIds = rows.map(r => r.trace_id)
     expect(traceIds).toContain('trace-push-test-1')
     expect(traceIds).not.toContain('trace-push-test-2')
   })
 
-  it('holds back a running span whose end_ms still moves (agent.turn), exporting it only after it closed or went idle', () => {
+  it('holds back a running span whose end_ms still moves (agent.turn), exporting it only after it closed or went idle', async () => {
     const now = 10_000_000
     // agent.turn shape: running, end_ms rolled forward by the hook on every tool call
-    upsertOtelSpan({
+    await upsertOtelSpan({
       trace_id: 'trace-push-test-turn', span_id: 'turn-1', parent_span_id: null,
       agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 60_000, end_ms: now - 1000,
       status: 'running', attributes: null,
@@ -51,7 +51,7 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     expect(getUnexportedOtelSpans(100, now).map(r => r.span_id)).not.toContain('turn-1')
 
     // the next tool call moves end_ms: still held back, so no truncated duration is ever shipped
-    upsertOtelSpan({
+    await upsertOtelSpan({
       trace_id: 'trace-push-test-turn', span_id: 'turn-1', parent_span_id: null,
       agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 60_000, end_ms: now,
       status: 'running', attributes: null,
@@ -66,9 +66,9 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     expect(getUnexportedOtelSpans(100, now + 1000).map(r => r.span_id)).toContain('turn-1')
   })
 
-  it('re-exports a span whose final state arrives after it was exported idle (upsert and close both clear exported_at)', () => {
+  it('re-exports a span whose final state arrives after it was exported idle (upsert and close both clear exported_at)', async () => {
     const now = 10_000_000
-    const seedRunning = () => upsertOtelSpan({
+    const seedRunning = async () => upsertOtelSpan({
       trace_id: 'trace-push-test-late', span_id: 'late-1', parent_span_id: null,
       agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 3_600_000, end_ms: now - 2_000_000,
       status: 'running', attributes: null,
@@ -76,17 +76,17 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     const pending = (at: number) => getUnexportedOtelSpans(100, at).map(r => r.span_id)
 
     // exported as idle-running ...
-    seedRunning()
+    await seedRunning()
     expect(pending(now)).toContain('late-1')
     markOtelSpansExported([{ trace_id: 'trace-push-test-late', span_id: 'late-1' }], now)
     expect(pending(now)).not.toContain('late-1')
 
     // ... the same write again changes nothing, so nothing is re-sent
-    seedRunning()
+    await seedRunning()
     expect(pending(now)).not.toContain('late-1')
 
     // ... the turn went on: upsert moves end_ms, then it is closed for real
-    upsertOtelSpan({
+    await upsertOtelSpan({
       trace_id: 'trace-push-test-late', span_id: 'late-1', parent_span_id: null,
       agent_id: 'agent-push-test-a', operation: 'agent.turn', start_ms: now - 3_600_000, end_ms: now - 1000,
       status: 'running', attributes: null,
@@ -101,9 +101,9 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     expect(pending(now)).not.toContain('late-1')
   })
 
-  it('a close without an earlier export is exported once, and the re-export rule does not touch other spans', () => {
-    seedSpan('trace-push-test-plain', 'plain-1', true)
-    seedSpan('trace-push-test-other', 'other-1', true)
+  it('a close without an earlier export is exported once, and the re-export rule does not touch other spans', async () => {
+    await seedSpan('trace-push-test-plain', 'plain-1', true)
+    await seedSpan('trace-push-test-other', 'other-1', true)
     markOtelSpansExported([{ trace_id: 'trace-push-test-other', span_id: 'other-1' }], Date.now())
     closeOtelSpan('trace-push-test-plain', 'plain-1', 2000, 'ok') // unchanged values
     const ids = getUnexportedOtelSpans(100).map(r => r.span_id)
@@ -111,8 +111,8 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     expect(ids).not.toContain('other-1')
   })
 
-  it('excludes a span once markOtelSpansExported has run for it', () => {
-    seedSpan('trace-push-test-3', 'span-3', true)
+  it('excludes a span once markOtelSpansExported has run for it', async () => {
+    await seedSpan('trace-push-test-3', 'span-3', true)
     const before = getUnexportedOtelSpans(1000).map(r => r.trace_id)
     expect(before).toContain('trace-push-test-3')
 
@@ -126,8 +126,8 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     expect(() => markOtelSpansExported([], Date.now())).not.toThrow()
   })
 
-  it('respects the limit argument', () => {
-    for (let i = 0; i < 5; i++) seedSpan('trace-push-test-limit', `span-limit-${i}`, true)
+  it('respects the limit argument', async () => {
+    for (let i = 0; i < 5; i++) await seedSpan('trace-push-test-limit', `span-limit-${i}`, true)
     const rows = getUnexportedOtelSpans(2)
     expect(rows.length).toBeLessThanOrEqual(2)
   })

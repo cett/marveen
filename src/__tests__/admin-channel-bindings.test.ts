@@ -127,7 +127,7 @@ describe('GET /api/admin/channel-bindings', () => {
   })
 
   it('no filters -> everything', async () => {
-    vi.mocked(db.listChannelBindings).mockReturnValue([])
+    vi.mocked(db.listChannelBindings).mockResolvedValue([])
     const { ctx } = makeCtx('GET', '/api/v1/admin/channel-bindings')
     await tryHandleAdminB2b(ctx)
     expect(db.listChannelBindings).toHaveBeenCalledWith({ tenantId: undefined, agentId: undefined })
@@ -136,7 +136,7 @@ describe('GET /api/admin/channel-bindings', () => {
 
 describe('DELETE /api/admin/channel-bindings', () => {
   it('removes a binding', async () => {
-    vi.mocked(db.deleteChannelBinding).mockReturnValue(true)
+    vi.mocked(db.deleteChannelBinding).mockResolvedValue(true)
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/channel-bindings?agent_id=agent-a&channel=Telegram&external_id=111')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
@@ -144,7 +144,7 @@ describe('DELETE /api/admin/channel-bindings', () => {
   })
 
   it('404 when there is no such binding, 400 when a parameter is missing', async () => {
-    vi.mocked(db.deleteChannelBinding).mockReturnValue(false)
+    vi.mocked(db.deleteChannelBinding).mockResolvedValue(false)
     let r = makeCtx('DELETE', '/api/v1/admin/channel-bindings?agent_id=agent-a&channel=telegram&external_id=9')
     await tryHandleAdminB2b(r.ctx)
     expect(r.out.status).toBe(404)

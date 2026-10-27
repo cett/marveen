@@ -70,8 +70,8 @@ describe('tokenAgentForAssignee', () => {
 })
 
 describe('getCardTokenUsage', () => {
-  it('sums only the rows inside the windows, per model', () => {
-    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'Dex' })
+  it('sums only the rows inside the windows, per model', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Work', assignee: 'Dex' })
     event('c1', 'planned', 'in_progress', 100)
     event('c1', 'in_progress', 'done', 200)
     tokens('dex', 50, 1000, 10) // before
@@ -89,10 +89,10 @@ describe('getCardTokenUsage', () => {
     expect(u.dataUntil).toBe(250)
   })
 
-  it('counts the other in_progress cards of the same agent, without splitting', () => {
-    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
-    createKanbanCard({ id: 'c2', title: 'Other', assignee: 'Dex' })
-    createKanbanCard({ id: 'c3', title: 'Later', assignee: 'dex' })
+  it('counts the other in_progress cards of the same agent, without splitting', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
+    await createKanbanCard({ id: 'c2', title: 'Other', assignee: 'Dex' })
+    await createKanbanCard({ id: 'c3', title: 'Later', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 100)
     event('c1', 'in_progress', 'done', 200)
     event('c2', 'planned', 'in_progress', 150)
@@ -103,8 +103,8 @@ describe('getCardTokenUsage', () => {
     expect(u.totalTokens).toBe(110)
   })
 
-  it('the bot-named main agent card reads the main agent rows', () => {
-    createKanbanCard({ id: 'c1', title: 'Main', assignee: 'Orin' })
+  it('the bot-named main agent card reads the main agent rows', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Main', assignee: 'Orin' })
     event('c1', 'planned', 'in_progress', 100)
     tokens('orin', 150, 10, 5)
     const u = getCardTokenUsage('c1', OPTS)!
@@ -113,10 +113,10 @@ describe('getCardTokenUsage', () => {
     expect(u.totalCalls).toBe(1)
   })
 
-  it('no assignee or never in_progress: empty, no crash; missing card is null', () => {
-    createKanbanCard({ id: 'c1', title: 'Nobody' })
+  it('no assignee or never in_progress: empty, no crash; missing card is null', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Nobody' })
     expect(getCardTokenUsage('c1', OPTS)!.agent).toBeNull()
-    createKanbanCard({ id: 'c2', title: 'Idle', assignee: 'dex' })
+    await createKanbanCard({ id: 'c2', title: 'Idle', assignee: 'dex' })
     const u = getCardTokenUsage('c2', OPTS)!
     expect(u.windows).toEqual([])
     expect(u.totalCalls).toBe(0)
@@ -125,8 +125,8 @@ describe('getCardTokenUsage', () => {
 })
 
 describe('getCardTokenUsage breakdown', () => {
-  it('splits fresh input from cache reads and drops zero-token model rows', () => {
-    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
+  it('splits fresh input from cache reads and drops zero-token model rows', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 100)
     getDb().prepare(`
       INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, model)
@@ -142,8 +142,8 @@ describe('getCardTokenUsage breakdown', () => {
 })
 
 describe('getCardTokenUsage with a repeated in_progress event', () => {
-  it('the rows between the first opening and the repeat still count', () => {
-    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
+  it('the rows between the first opening and the repeat still count', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 100)
     event('c1', 'in_progress', 'in_progress', 150)
     event('c1', 'in_progress', 'done', 200)
@@ -157,8 +157,8 @@ describe('getCardTokenUsage with a repeated in_progress event', () => {
 })
 
 describe('getCardTokenUsage window boundaries', () => {
-  it('a window is [from, to): a row at from counts, a row at to does not', () => {
-    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
+  it('a window is [from, to): a row at from counts, a row at to does not', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 100)
     event('c1', 'in_progress', 'done', 200)
     tokens('dex', 99, 1, 1)
@@ -170,8 +170,8 @@ describe('getCardTokenUsage window boundaries', () => {
     expect(u.freshInputTokens).toBe(110)
   })
 
-  it('a row on the boundary shared by two windows is counted once', () => {
-    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
+  it('a row on the boundary shared by two windows is counted once', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 100)
     event('c1', 'in_progress', 'waiting', 200)
     event('c1', 'waiting', 'in_progress', 200) // moved back in the same second
@@ -183,8 +183,8 @@ describe('getCardTokenUsage window boundaries', () => {
     expect(u.freshInputTokens).toBe(10)
   })
 
-  it('an open window runs up to now, and a row at now is not in it yet', () => {
-    createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
+  it('an open window runs up to now, and a row at now is not in it yet', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Work', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 100)
     tokens('dex', 9_999, 10, 1)
     tokens('dex', 10_000, 1000, 1) // OPTS.now
@@ -194,18 +194,18 @@ describe('getCardTokenUsage window boundaries', () => {
     expect(u.freshInputTokens).toBe(10)
   })
 
-  it('another card of the agent that only touches the window at its edge does not overlap; one second of overlap does', () => {
-    createKanbanCard({ id: 'c1', title: 'This', assignee: 'dex' })
+  it('another card of the agent that only touches the window at its edge does not overlap; one second of overlap does', async () => {
+    await createKanbanCard({ id: 'c1', title: 'This', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 100)
     event('c1', 'in_progress', 'done', 200)
-    createKanbanCard({ id: 'before', title: 'Ends where this starts', assignee: 'dex' })
+    await createKanbanCard({ id: 'before', title: 'Ends where this starts', assignee: 'dex' })
     event('before', 'planned', 'in_progress', 50)
     event('before', 'in_progress', 'done', 100)
-    createKanbanCard({ id: 'after', title: 'Starts where this ends', assignee: 'dex' })
+    await createKanbanCard({ id: 'after', title: 'Starts where this ends', assignee: 'dex' })
     event('after', 'planned', 'in_progress', 200)
     event('after', 'in_progress', 'done', 300)
     expect(getCardTokenUsage('c1', OPTS)!.overlappingCards).toBe(0)
-    createKanbanCard({ id: 'one-second', title: 'One second inside', assignee: 'dex' })
+    await createKanbanCard({ id: 'one-second', title: 'One second inside', assignee: 'dex' })
     event('one-second', 'planned', 'in_progress', 199)
     event('one-second', 'in_progress', 'done', 400)
     expect(getCardTokenUsage('c1', OPTS)!.overlappingCards).toBe(1)
@@ -218,8 +218,8 @@ describe('getCardTokenUsage expired data', () => {
   const NOW = 10 * DAY
   const CUT = 3 * DAY
 
-  it('a window that starts before the retention cut-off is marked expired, with the retention it used', () => {
-    createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
+  it('a window that starts before the retention cut-off is marked expired, with the retention it used', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', CUT - 1)
     event('c1', 'in_progress', 'done', CUT + 100)
     const u = getCardTokenUsage('c1', { ...OPTS, now: NOW, retentionDays: 7 })!
@@ -228,8 +228,8 @@ describe('getCardTokenUsage expired data', () => {
     expect(u.totalCalls).toBe(0) // the rows are gone, and that is not a measurement
   })
 
-  it('a window that starts exactly at the cut-off is not expired (the prune keeps timestamp >= cut-off)', () => {
-    createKanbanCard({ id: 'c1', title: 'Edge', assignee: 'dex' })
+  it('a window that starts exactly at the cut-off is not expired (the prune keeps timestamp >= cut-off)', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Edge', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', CUT)
     tokens('dex', CUT, 10, 1)
     const u = getCardTokenUsage('c1', { ...OPTS, now: NOW, retentionDays: 7 })!
@@ -237,18 +237,18 @@ describe('getCardTokenUsage expired data', () => {
     expect(u.totalCalls).toBe(1)
   })
 
-  it('only one old window among several is enough; a card with no window is never expired', () => {
-    createKanbanCard({ id: 'c1', title: 'Mixed', assignee: 'dex' })
+  it('only one old window among several is enough; a card with no window is never expired', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Mixed', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', CUT - 50)
     event('c1', 'in_progress', 'waiting', CUT - 10)
     event('c1', 'waiting', 'in_progress', 9 * DAY)
     expect(getCardTokenUsage('c1', { ...OPTS, now: NOW, retentionDays: 7 })!.dataExpired).toBe(true)
-    createKanbanCard({ id: 'c2', title: 'Never', assignee: 'dex' })
+    await createKanbanCard({ id: 'c2', title: 'Never', assignee: 'dex' })
     expect(getCardTokenUsage('c2', { ...OPTS, now: NOW, retentionDays: 7 })!.dataExpired).toBe(false)
   })
 
   it('a stored retention of zero, a negative or a non-number is not a retention: no flag, retentionDays null', async () => {
-    createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
+    await createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 1)
     for (const bad of ['0', '-5', 'abc']) {
       await setSystemConfig('TOKEN_USAGE_RETENTION_DAYS', bad)
@@ -262,16 +262,16 @@ describe('getCardTokenUsage expired data', () => {
     expect(ok.dataExpired).toBe(true)
   })
 
-  it('the flag comes from the windows alone, so a card with no assignee reports it too', () => {
-    createKanbanCard({ id: 'c1', title: 'Nobody' })
+  it('the flag comes from the windows alone, so a card with no assignee reports it too', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Nobody' })
     event('c1', 'planned', 'in_progress', CUT - 1)
     const u = getCardTokenUsage('c1', { ...OPTS, now: NOW, retentionDays: 7 })!
     expect(u.agent).toBeNull()
     expect(u.dataExpired).toBe(true)
   })
 
-  it('an unusable retention setting never marks anything expired; the setting default is read when none is passed', () => {
-    createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
+  it('an unusable retention setting never marks anything expired; the setting default is read when none is passed', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Old', assignee: 'dex' })
     event('c1', 'planned', 'in_progress', 1)
     expect(getCardTokenUsage('c1', { ...OPTS, now: NOW, retentionDays: null })!.dataExpired).toBe(false)
     // default 30 days: a window from second 1 is expired at a "now" 40 days on, not at 10 days

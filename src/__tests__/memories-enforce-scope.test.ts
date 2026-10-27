@@ -38,15 +38,15 @@ async function call(handler: (c: RouteContext) => Promise<boolean>, path: string
 const fleetA = (identityEnforced: boolean): Ctx => ({ role: 'fleet_agent', tokenAgentId: 'agent-a', identityEnforced })
 const contents = (body: any): string[] => (Array.isArray(body) ? body : body.memories).map((m: any) => m.content).sort()
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  saveAgentMemory('agent-a', 'a warm', 'warm')
-  saveAgentMemory('agent-a', 'a cold', 'cold')
-  saveAgentMemory('agent-b', 'b warm', 'warm')
-  saveAgentMemory('agent-b', 'b hot', 'hot')
-  saveAgentMemory('agent-b', 'b shared', 'shared')
-  saveAgentMemory('agent-c', 'c shared', 'shared')
-  saveAgentMemory('agent-c', 'c warm', 'warm')
+  await saveAgentMemory('agent-a', 'a warm', 'warm')
+  await saveAgentMemory('agent-a', 'a cold', 'cold')
+  await saveAgentMemory('agent-b', 'b warm', 'warm')
+  await saveAgentMemory('agent-b', 'b hot', 'hot')
+  await saveAgentMemory('agent-b', 'b shared', 'shared')
+  await saveAgentMemory('agent-c', 'c shared', 'shared')
+  await saveAgentMemory('agent-c', 'c warm', 'warm')
 })
 
 describe('enforcedSelfScope', () => {

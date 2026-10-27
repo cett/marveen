@@ -87,7 +87,7 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
       return true
     }
     let inserted = 0
-    for (const turn of turns) if (logLedgerTurn(turn)) inserted++
+    for (const turn of turns) if (await logLedgerTurn(turn)) inserted++
     json(res, { ok: true, received: turns.length, inserted })
     return true
   }
@@ -115,6 +115,6 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
     return true
   }
 
-  json(res, { open_question: openLedgerQuestion(agentId) })
+  json(res, { open_question: await openLedgerQuestion(agentId) })
   return true
 }

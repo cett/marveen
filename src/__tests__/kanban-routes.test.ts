@@ -157,7 +157,7 @@ describe('tryHandleKanban', () => {
 
   it('PUT /api/kanban/:id returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.updateKanbanCard).mockReturnValueOnce(false)
+    vi.mocked(db.updateKanbanCard).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('PUT', '/api/kanban/ghost', { title: 'x' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)
@@ -171,7 +171,7 @@ describe('tryHandleKanban', () => {
 
   it('DELETE /api/kanban/:id returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.deleteKanbanCard).mockReturnValueOnce(false)
+    vi.mocked(db.deleteKanbanCard).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('DELETE', '/api/kanban/ghost')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)

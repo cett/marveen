@@ -186,7 +186,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const cardId = randomUUID().slice(0, 8)
     const status = phase === 'plan' ? 'planned' : 'waiting'
     const title = phase === 'plan' ? idea.title : `[Részlet kidolgozás] ${idea.title}`
-    createKanbanCard({
+    await createKanbanCard({
       id: cardId,
       title,
       description: idea.description ?? '',
@@ -240,7 +240,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       ? `${baseDesc}\n\n## Siker-kritérium\n${success_criteria.trim()}`.trimStart()
       : baseDesc
     const parentId = randomUUID().slice(0, 8)
-    createKanbanCard({
+    await createKanbanCard({
       id: parentId,
       title: idea.title,
       description: parentDesc,
@@ -253,7 +253,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     for (const st of subtasks) {
       if (!st.title) continue
       const childId = randomUUID().slice(0, 8)
-      createKanbanCard({
+      await createKanbanCard({
         id: childId,
         title: String(st.title).slice(0, 120),
         description: (st.description ?? '').slice(0, 500),

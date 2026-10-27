@@ -81,7 +81,7 @@ export interface BeginInput {
 }
 
 /** Records the start of a turn; replaces the agent's previous row (a new prompt supersedes it). */
-export function beginInflightTurn(agentId: string, input: BeginInput): InflightTurn {
+export async function beginInflightTurn(agentId: string, input: BeginInput): Promise<InflightTurn> {
   const now = input.now ?? Math.floor(Date.now() / 1000)
   const head = input.head.slice(0, INFLIGHT_HEAD_MAX)
   const turn: InflightTurn = {
@@ -96,7 +96,7 @@ export function beginInflightTurn(agentId: string, input: BeginInput): InflightT
     prompt_hash: input.prompt_hash,
     started_at: now,
     consumed_at: null,
-    tenant_id: resolveWriteTenant(agentId),
+    tenant_id: await resolveWriteTenant(agentId),
   }
   // Orphans of agents that never came back go on every begin; one indexed DELETE on a tiny table.
   sweepInflightTurns(now)

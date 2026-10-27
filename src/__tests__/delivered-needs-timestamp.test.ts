@@ -18,8 +18,8 @@ beforeAll(() => { initDatabase(':memory:') })
 describe('delivered rows always carry a timestamp', () => {
   const to = () => 'inv-' + Date.now() + '-' + Math.floor(performance.now() * 1000)
 
-  it('records a timestamp on a genuine delivery', () => {
-    const m = createAgentMessage('a', to(), 'valódi kézbesítés')
+  it('records a timestamp on a genuine delivery', async () => {
+    const m = await createAgentMessage('a', to(), 'valódi kézbesítés')
     expect(markMessageDelivered(m.id)).toBe(true)
 
     const row = getAgentMessage(m.id)
@@ -30,10 +30,10 @@ describe('delivered rows always carry a timestamp', () => {
     expect(row?.result ?? null).toBeNull()
   })
 
-  it('marks an operator close with both a timestamp and a reason', () => {
+  it('marks an operator close with both a timestamp and a reason', async () => {
     const target = to()
-    const m1 = createAgentMessage('a', target, 'elavult')
-    const m2 = createAgentMessage('b', target, 'szintén elavult')
+    const m1 = await createAgentMessage('a', target, 'elavult')
+    const m2 = await createAgentMessage('b', target, 'szintén elavult')
 
     expect(closeMessagesWithoutDelivery([m1.id, m2.id], 'stale backlog after restart')).toBe(2)
 
@@ -47,8 +47,8 @@ describe('delivered rows always carry a timestamp', () => {
     }
   })
 
-  it('does not reopen or re-close a row that is no longer pending', () => {
-    const m = createAgentMessage('a', to(), 'már kézbesítve')
+  it('does not reopen or re-close a row that is no longer pending', async () => {
+    const m = await createAgentMessage('a', to(), 'már kézbesítve')
     markMessageDelivered(m.id)
     const before = getAgentMessage(m.id)
 
@@ -59,12 +59,12 @@ describe('delivered rows always carry a timestamp', () => {
     expect(after?.result ?? null).toBeNull()   // the close must not overwrite a real delivery
   })
 
-  it('repairs a raw-SQL status flip that skipped the timestamp', () => {
+  it('repairs a raw-SQL status flip that skipped the timestamp', async () => {
     // This is the incident itself, not an approximation of it: bypass every
     // helper and drive the same UPDATE an operator's `sqlite3` session would,
     // straight at the connection. A shell has no other guard, so the trigger
     // is the only thing standing between a cleanup and a dishonest log.
-    const m = createAgentMessage('a', to(), 'nyers SQL-lel lezárva')
+    const m = await createAgentMessage('a', to(), 'nyers SQL-lel lezárva')
 
     getDb().exec(`UPDATE agent_messages SET status = 'delivered' WHERE id = ${m.id}`)
 
@@ -74,15 +74,15 @@ describe('delivered rows always carry a timestamp', () => {
     expect(row?.result).toBe('closed-without-delivery')  // and said why
   })
 
-  it('leaves a genuine delivery untouched when other rows are flipped', () => {
+  it('leaves a genuine delivery untouched when other rows are flipped', async () => {
     // The trigger fires per row and must not rewrite the result of a message
     // that really was delivered -- otherwise the repair destroys the very
     // distinction it exists to preserve.
-    const real = createAgentMessage('a', to(), 'valódi')
+    const real = await createAgentMessage('a', to(), 'valódi')
     markMessageDelivered(real.id)
     const stamp = getAgentMessage(real.id)?.delivered_at
 
-    const flipped = createAgentMessage('a', to(), 'nyersen lezárva')
+    const flipped = await createAgentMessage('a', to(), 'nyersen lezárva')
     getDb().exec(`UPDATE agent_messages SET status = 'delivered' WHERE id = ${flipped.id}`)
 
     const after = getAgentMessage(real.id)

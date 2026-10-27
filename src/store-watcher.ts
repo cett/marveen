@@ -164,11 +164,10 @@ export function startStoreWatcher(): void {
       knownFiles.add(rel)
       const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
 
-      try {
-        logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent, tenantId)
-      } catch (err) {
+      // A watch callback is synchronous: the write is left to run, and its failure is logged here.
+      logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent, tenantId).catch((err: unknown) => {
         logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
-      }
+      })
     })
     logger.info({ dir: STORE_DIR, knownCount: knownFiles.size }, 'Store file watcher started')
   } catch (err) {

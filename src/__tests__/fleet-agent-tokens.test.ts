@@ -135,9 +135,9 @@ describe('resolveAuth with a fleet_agent token', () => {
 })
 
 describe('conversation ledger: the identity comes from the token', () => {
-  beforeEach(() => {
-    logLedgerTurn(turn('beta', 'b1'))
-    logLedgerTurn(turn('alpha', 'r1'))
+  beforeEach(async () => {
+    await logLedgerTurn(turn('beta', 'b1'))
+    await logLedgerTurn(turn('alpha', 'r1'))
   })
 
   it("agent A's token against agent B's ledger is a 403 (read)", async () => {
@@ -268,7 +268,7 @@ describe('a shared agent has no tenant on the token: the serving context decides
     setTenantAgentAvailability('default', 'shared', true)
     setTenantAgentAvailability('acme', 'shared', true)
     await mint('tok-shared', 'shared')
-    logLedgerTurn(turn('shared', 's1'))
+    await logLedgerTurn(turn('shared', 's1'))
   })
 
   it('is refused (403) without a tenant context, even on its own ledger', async () => {

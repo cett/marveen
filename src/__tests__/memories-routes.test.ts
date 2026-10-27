@@ -264,7 +264,7 @@ describe('tryHandleMemories', () => {
   it('PUT /api/memories/1 updates memory and returns ok', async () => {
     const { vi: viLocal } = await import('vitest')
     const db = await import('../db.js')
-    viLocal.mocked(db.updateMemory).mockReturnValueOnce(true)
+    viLocal.mocked(db.updateMemory).mockResolvedValueOnce(true)
     const { ctx, out } = makeCtx('PUT', '/api/memories/1', { content: 'updated', category: 'warm' })
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
@@ -273,7 +273,7 @@ describe('tryHandleMemories', () => {
 
   it('PUT /api/memories/999 returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.updateMemory).mockReturnValueOnce(false)
+    vi.mocked(db.updateMemory).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('PUT', '/api/memories/999', { content: 'x' })
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)

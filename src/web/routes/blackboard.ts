@@ -216,7 +216,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       const hadExisting = blackboardRowExistsForAgent(agent_id)
       const row = upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by })
       try {
-        writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })
+        await writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })
       } catch { /* audit failure must not abort the write */ }
       json(res, { ok: true, row })
     } catch (err) {
@@ -254,7 +254,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     })
     if (!updated) { json(res, { error: 'not_found', hint: 'not found' }, 404); return true }
     try {
-      writeAgentAuditLog({ agent_id: updated.agent_id, entity: 'blackboard', action: 'update', entity_id: updated.id, detail: { status: updated.status, task_ref: updated.task_ref } })
+      await writeAgentAuditLog({ agent_id: updated.agent_id, entity: 'blackboard', action: 'update', entity_id: updated.id, detail: { status: updated.status, task_ref: updated.task_ref } })
     } catch { /* audit failure must not abort the write */ }
     json(res, { ok: true, row: updated })
     return true

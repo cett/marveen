@@ -15,7 +15,8 @@ import {
   getHeartbeatKanbanSummary,
   countNewHotMemories,
   countPlannedKanbanCards,
-  writeAgentAuditLog,
+  writeAgentAuditLog, insertKanbanCardRows, writeKanbanCreateAudit,
+  type KanbanCreateAudit,
   type KanbanCard,
   type KanbanAuditActor,
 } from '../../db.js'
@@ -134,7 +135,7 @@ export function buildKanbanDispatchContent(card: { id: string; priority?: string
 // dispatched_at is the once-only guard; errors never block the card move.
 // `actor` is the mover reported by the caller: an agent that moves its own card
 // to in_progress must not be woken with an assignment for work it just started.
-function fireKanbanDispatch(id: string, actor?: string | null): void {
+async function fireKanbanDispatch(id: string, actor?: string | null): Promise<void> {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
@@ -151,7 +152,7 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
       logger.warn({ id }, 'Kanban dispatch skipped: the card id is not a plain token')
       return
     }
-    createAgentMessage(MAIN_AGENT_ID, target, buildKanbanDispatchContent(card, target))
+    await createAgentMessage(MAIN_AGENT_ID, target, buildKanbanDispatchContent(card, target))
     markKanbanCardDispatched(id)
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
@@ -443,7 +444,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // tenant would answer differently from one that does not.
     const id = randomUUID().slice(0, 8)
     try {
-      createKanbanCard({ ...data, id, tenant_id: effectiveTenantId ?? 'default' })
+      await createKanbanCard({ ...data, id, tenant_id: effectiveTenantId ?? 'default' })
     } catch (err) {
       logger.error({ err }, 'Failed to create kanban card')
       json(res, { error: 'internal_error', hint: 'Failed to create card' }, 500)
@@ -451,7 +452,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     try {
       if (ctx.auth?.kind === 'session' && ctx.auth.user) {
-        writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'kanban', action: 'create', entity_id: id })
+        await writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'kanban', action: 'create', entity_id: id })
       }
     } catch { /* audit failure must not abort card creation */ }
     json(res, { ok: true, id })
@@ -484,7 +485,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     // updateKanbanCard writes the audit row itself, attributed to the caller.
-    if (updateKanbanCard(id, data, kanbanAuditActor(ctx))) {
+    if (await updateKanbanCard(id, data, kanbanAuditActor(ctx))) {
       json(res, { ok: true })
       return true
     }
@@ -500,7 +501,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
     await revertIdeaFromKanban(id)
-    if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
+    if (await deleteKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
   }
@@ -545,7 +546,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, ordered, { expectedStatus })) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
-      if (status === 'in_progress') fireKanbanDispatch(id, actor)
+      if (status === 'in_progress') await fireKanbanDispatch(id, actor)
       propagateStatus(id)
       json(res, { ok: true })
       return true
@@ -709,11 +710,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const db = getDb()
+    // The rows are written in one synchronous transaction; the audit entries are written after the commit (an
+    // `await` inside a synchronous transaction would end it early).
+    const audits: KanbanCreateAudit[] = []
     const created = db.transaction(() => {
       const ids: string[] = []
       for (const st of subtasks) {
         const id = randomUUID().slice(0, 8).toUpperCase()
-        createKanbanCard({
+        audits.push(insertKanbanCardRows({
           id,
           title: st.title,
           description: st.description,
@@ -723,12 +727,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
           parent_id: parentId,
           // the subtasks belong to the tenant of the card they hang under
           tenant_id: parent.tenant_id,
-        })
+        }))
         ids.push(id)
       }
       addKanbanComment(parentId, BOT_NAME, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
       return ids
     })()
+    for (const entry of audits) await writeKanbanCreateAudit(entry)
     json(res, { ok: true, created })
     return true
   }

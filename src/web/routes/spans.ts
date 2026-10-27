@@ -76,7 +76,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
           json(res, { error: 'not_found', hint: 'span not found; provide agent_id, operation, start_ms to create and close in one call' }, 404)
           return true
         }
-        upsertOtelSpan({
+        await upsertOtelSpan({
           trace_id: data.trace_id, span_id: data.span_id,
           parent_span_id: data.parent_span_id ?? null,
           agent_id: data.agent_id, operation: data.operation,
@@ -91,7 +91,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'required', hint: 'agent_id, operation, and start_ms required to open a span' }, 400)
         return true
       }
-      upsertOtelSpan({
+      await upsertOtelSpan({
         trace_id: data.trace_id, span_id: data.span_id,
         parent_span_id: data.parent_span_id ?? null,
         agent_id: data.agent_id, operation: data.operation,

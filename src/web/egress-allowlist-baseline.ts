@@ -187,7 +187,7 @@ export function watchEgressAllowlistBaseline(
  * change is seen. Its value is exactly that it is ALREADY QUEUED: a history directory rewritten
  * later (same OS user) does not take back a message that has been sent.
  */
-export function queueAllowlistReport(report: string): void {
+export async function queueAllowlistReport(report: string): Promise<void> {
   logger.warn({ report }, 'egress config changed (allowlist or vendor hosts)')
-  createAgentMessage('system', MAIN_AGENT_ID, report)
+  await createAgentMessage('system', MAIN_AGENT_ID, report)
 }

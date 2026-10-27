@@ -96,10 +96,10 @@ describe('session functions', () => {
 // --- Memory functions ---
 
 describe('memory functions', () => {
-  beforeAll(() => {
-    saveAgentMemory('db2-test-memo', 'Active task about integration tests', 'hot', 'testing,unit')
-    saveAgentMemory('db2-test-memo', 'Config preference: use vitest', 'warm', 'vitest,config')
-    saveAgentMemory('db2-test-memo', 'Old decision log', 'cold', 'history')
+  beforeAll(async () => {
+    await saveAgentMemory('db2-test-memo', 'Active task about integration tests', 'hot', 'testing,unit')
+    await saveAgentMemory('db2-test-memo', 'Config preference: use vitest', 'warm', 'vitest,config')
+    await saveAgentMemory('db2-test-memo', 'Old decision log', 'cold', 'history')
   })
 
   it('searchMemories returns results for matching query', () => {
@@ -108,9 +108,9 @@ describe('memory functions', () => {
     expect(Array.isArray(results)).toBe(true)
   })
 
-  it('touchMemory updates accessed_at', () => {
+  it('touchMemory updates accessed_at', async () => {
     const mems = getMemoriesForChat('chat-x', 10)
-    saveAgentMemory('db2-test-touch', 'Touchable memory', 'hot', '')
+    await saveAgentMemory('db2-test-touch', 'Touchable memory', 'hot', '')
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-touch'").all() as { id: number }[]
     if (all.length > 0) {
       expect(() => touchMemory(all[0].id)).not.toThrow()
@@ -146,10 +146,10 @@ describe('memory functions', () => {
     expect(stats.total).toBeGreaterThan(0)
   })
 
-  it('getMemoryStats(tenantId) scopes total/byTier/importCount to that tenant only', () => {
+  it('getMemoryStats(tenantId) scopes total/byTier/importCount to that tenant only', async () => {
     const globalBefore = getMemoryStats()
-    saveAgentMemory('stat-tenant-a', 'tenant A memory', 'hot', undefined, false, 'stat-tenant-a-id')
-    saveAgentMemory('stat-tenant-b', 'tenant B memory', 'hot', undefined, false, 'stat-tenant-b-id')
+    await saveAgentMemory('stat-tenant-a', 'tenant A memory', 'hot', undefined, false, 'stat-tenant-a-id')
+    await saveAgentMemory('stat-tenant-b', 'tenant B memory', 'hot', undefined, false, 'stat-tenant-b-id')
 
     const statsA = getMemoryStats('stat-tenant-a-id')
     expect(statsA.total).toBe(1)
@@ -178,16 +178,16 @@ describe('memory functions', () => {
     expect(getMemoryStats().withEmbedding).toBe(before + 1)
   })
 
-  it('updateMemory updates content and returns true', () => {
+  it('updateMemory updates content and returns true', async () => {
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-memo' LIMIT 1").all() as { id: number }[]
     if (all.length > 0) {
-      const ok = updateMemory(all[0].id, 'Updated content text', 'warm', 'db2-test-memo', 'updated')
+      const ok = await updateMemory(all[0].id, 'Updated content text', 'warm', 'db2-test-memo', 'updated')
       expect(ok).toBe(true)
     }
   })
 
-  it('updateMemory returns false for non-existent id', () => {
-    const ok = updateMemory(999999, 'no such mem', 'hot')
+  it('updateMemory returns false for non-existent id', async () => {
+    const ok = await updateMemory(999999, 'no such mem', 'hot')
     expect(ok).toBe(false)
   })
 })
@@ -197,9 +197,9 @@ describe('memory functions', () => {
 describe('getAgentMemories / getMemoriesForChat pagination', () => {
   const AGENT = 'db2-page-agent'
 
-  beforeAll(() => {
+  beforeAll(async () => {
     for (let i = 0; i < 25; i++) {
-      saveAgentMemory(AGENT, `page memory ${i}`, 'warm', '')
+      await saveAgentMemory(AGENT, `page memory ${i}`, 'warm', '')
     }
   })
 
@@ -398,8 +398,8 @@ describe('scheduled task functions', () => {
 // --- Kanban extended ---
 
 describe('kanban extended functions', () => {
-  it('listKanbanCardsSummary returns cards with required fields', () => {
-    createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal' })
+  it('listKanbanCardsSummary returns cards with required fields', async () => {
+    await createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal' })
     const summary = listKanbanCardsSummary()
     expect(Array.isArray(summary)).toBe(true)
     const card = summary.find(c => c.id === 'db2-card-1')
@@ -433,8 +433,8 @@ describe('kanban extended functions', () => {
     expect(archived.some(c => c.id === 'db2-card-1')).toBe(true)
   })
 
-  it('listKanbanProjects returns project list', () => {
-    createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', project: 'my-project' })
+  it('listKanbanProjects returns project list', async () => {
+    await createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', project: 'my-project' })
     const projects = listKanbanProjects()
     expect(projects).toContain('my-project')
   })
@@ -443,8 +443,8 @@ describe('kanban extended functions', () => {
 // --- Task runs ---
 
 describe('task run functions', () => {
-  it('appendTaskRun inserts a run entry', () => {
-    appendTaskRun('db2-task-heartbeat', 'agent-a', 'fired')
+  it('appendTaskRun inserts a run entry', async () => {
+    await appendTaskRun('db2-task-heartbeat', 'agent-a', 'fired')
     const history = listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history.length).toBeGreaterThanOrEqual(1)
     expect(history[0].status).toBe('fired')

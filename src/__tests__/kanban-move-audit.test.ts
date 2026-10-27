@@ -18,8 +18,8 @@ beforeEach(() => {
 })
 
 describe('kanban move audit trail', () => {
-  it('records exactly one event with correct from/to status and actor on a status change', () => {
-    createKanbanCard({ id: 'card-a', title: 'Audited card' })
+  it('records exactly one event with correct from/to status and actor on a status change', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Audited card' })
 
     const moved = moveKanbanCard('card-a', 'in_progress', 1, 'marveen')
     expect(moved).toBe(true)
@@ -33,8 +33,8 @@ describe('kanban move audit trail', () => {
     expect(typeof events[0].created_at).toBe('number')
   })
 
-  it('records no event when the status is unchanged (pure reorder)', () => {
-    createKanbanCard({ id: 'card-b', title: 'Reordered card' })
+  it('records no event when the status is unchanged (pure reorder)', async () => {
+    await createKanbanCard({ id: 'card-b', title: 'Reordered card' })
 
     // Same status (planned), only sort_order differs -> not a transition.
     const moved = moveKanbanCard('card-b', 'planned', 5, 'marveen')
@@ -48,8 +48,8 @@ describe('kanban move audit trail', () => {
     expect(getKanbanCardEvents('nonexistent-card')).toHaveLength(0)
   })
 
-  it('leaves actor null when none is supplied (backward-compatible callers)', () => {
-    createKanbanCard({ id: 'card-c', title: 'No actor' })
+  it('leaves actor null when none is supplied (backward-compatible callers)', async () => {
+    await createKanbanCard({ id: 'card-c', title: 'No actor' })
 
     const moved = moveKanbanCard('card-c', 'waiting', 0)
     expect(moved).toBe(true)
@@ -59,8 +59,8 @@ describe('kanban move audit trail', () => {
     expect(events[0].actor).toBeNull()
   })
 
-  it('returns events in chronological order across multiple moves', () => {
-    createKanbanCard({ id: 'card-d', title: 'Multi-move card' })
+  it('returns events in chronological order across multiple moves', async () => {
+    await createKanbanCard({ id: 'card-d', title: 'Multi-move card' })
 
     moveKanbanCard('card-d', 'in_progress', 0, 'marveen')
     moveKanbanCard('card-d', 'waiting', 0, 'samu')
