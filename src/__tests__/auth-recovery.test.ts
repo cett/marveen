@@ -92,14 +92,14 @@ describe('securityReset', () => {
   it('revokes all device keys and sessions, keeps users, audits the counts', async () => {
     const u = await createDashboardUser('op', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const key = await createDeviceKey('phone')
-    const cookie = createSession({ userId: u.id, username: u.username })
+    const cookie = await createSession({ userId: u.id, username: u.username })
     expect(await resolveDeviceKey(key.key)).not.toBeNull()
-    expect(resolveSession(cookie)).not.toBeNull()
+    expect(await resolveSession(cookie)).not.toBeNull()
 
     const r = await securityReset('test')
     expect(r).toEqual({ deviceKeysRevoked: 1, sessionsCleared: 1 })
     expect(await resolveDeviceKey(key.key)).toBeNull()
-    expect(resolveSession(cookie)).toBeNull()
+    expect(await resolveSession(cookie)).toBeNull()
     expect(await listDeviceKeys()).toHaveLength(0)
     // The user (and their password hash) survive: this is not a factory reset.
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM dashboard_users').get()).toEqual({ c: 1 })
@@ -175,11 +175,11 @@ describe('out-of-band revocation reaches a live cache (CLI -> running server)', 
 
   it('a cached session stops resolving after its row is deleted out-of-band', async () => {
     const u = await createDashboardUser('op2', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
-    const cookie = createSession({ userId: u.id, username: u.username })
-    expect(resolveSession(cookie)).not.toBeNull()
+    const cookie = await createSession({ userId: u.id, username: u.username })
+    expect(await resolveSession(cookie)).not.toBeNull()
     getDb().prepare('DELETE FROM auth_sessions').run()
     ageSessionCacheStamp(cookie, 120)
-    expect(resolveSession(cookie)).toBeNull()
+    expect(await resolveSession(cookie)).toBeNull()
   })
 })
 

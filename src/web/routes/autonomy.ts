@@ -75,7 +75,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
           json(res, { error: 'forbidden', code: 'human_only_floor', hint: `Category "${key}" is human-only by design and cannot be lowered` }, 403)
           return true
         }
-        if (!human_only && !humanSessionOf(req)) {
+        if (!human_only && !await humanSessionOf(req)) {
           json(res, { error: 'forbidden', code: 'human_session_required', hint: 'Taking a category out of the human-only set needs a person logged in to the dashboard' }, 403)
           return true
         }

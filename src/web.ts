@@ -611,7 +611,7 @@ export function startWebServer(port = 3420): http.Server {
   // the timer callback stays synchronous (no floating Promise) and a failed sweep is still only a warning.
   const sweepAuthState = async (): Promise<void> => {
     try {
-      const swept = sweepExpiredSessions()
+      const swept = await sweepExpiredSessions()
       if (swept > 0) logger.info({ swept }, 'Expired auth sessions swept')
       const sweptKeys = await sweepExpiredDeviceKeys()
       if (sweptKeys > 0) logger.info({ swept: sweptKeys }, 'Expired device keys swept')

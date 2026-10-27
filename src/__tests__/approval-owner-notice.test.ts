@@ -57,7 +57,7 @@ beforeEach(async () => {
   _clearSessionCacheForTest()
   const u = await createDashboardUser('person-a', HASH)
   db.prepare('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?').run('admin', null, u.id)
-  ownerCookie = createSession({ userId: u.id, username: u.username })
+  ownerCookie = await createSession({ userId: u.id, username: u.username })
 })
 
 interface Caller { auth?: RouteContext['auth']; role?: RouteContext['role']; tokenAgentId?: string; cookie?: string }

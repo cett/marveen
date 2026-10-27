@@ -57,7 +57,7 @@ beforeAll(async () => { realHash = await hashPassword(PASSWORD) })
 async function makeUser(name: string, role: string, tenant: string | null): Promise<void> {
   const u = await createDashboardUser(name, realHash)
   db.prepare('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?').run(role, tenant, u.id)
-  cookies[name] = createSession({ userId: u.id, username: u.username })
+  cookies[name] = await createSession({ userId: u.id, username: u.username })
   ids[name] = u.id
 }
 

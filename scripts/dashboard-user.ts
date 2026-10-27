@@ -127,7 +127,7 @@ async function main(): Promise<void> {
       const pw = await acquirePassword(fromStdin)
       const hash = await hashPassword(pw)
       await updateDashboardUserPassword(user.id, hash)
-      revokeAllForUser(user.id)
+      await revokeAllForUser(user.id)
       // Same audit + channel ping as the HTTP break-glass: a password reset
       // that skipped the current-password proof must always leave a trace.
       logConfigChange('security.break_glass_password_reset', null, user.username, 'cli')
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
         process.stderr.write(`User "${username}" not found.\n`)
         process.exit(1)
       }
-      revokeAllForUser(user.id)
+      await revokeAllForUser(user.id)
       await deleteDashboardUser(username)
       const remaining = (await listDashboardUsers()).length
       process.stdout.write(`Removed "${username}".${remaining === 0 ? ' No users left -- back to token-only mode.' : ''}\n`)
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
           process.stderr.write(`User "${username}" not found.\n`)
           process.exit(1)
         }
-        revokeAllForUser(user.id)
+        await revokeAllForUser(user.id)
         process.stdout.write(`Cleared all sessions for "${username}".\n`)
       } else {
         getDb().exec('DELETE FROM auth_sessions')

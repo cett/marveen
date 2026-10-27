@@ -200,8 +200,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // Session fixation defence: if a (valid) session cookie accompanied the
     // login, revoke it -- login always mints a fresh id.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
-    if (presented) revokeSession(presented)
-    const token = createSession(
+    if (presented) await revokeSession(presented)
+    const token = await createSession(
       { userId: user.id, username: user.username },
       { userAgent: str(req.headers['user-agent']) || null, remoteNote: isHttps(req) ? 'https' : 'loopback' },
     )
@@ -212,7 +212,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/auth/logout' && method === 'POST') {
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
-    if (presented) revokeSession(presented)
+    if (presented) await revokeSession(presented)
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': clearCookie(req), 'Cache-Control': 'private, no-store' })
     res.end(JSON.stringify({ ok: true }))
     return true
@@ -224,7 +224,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const user = await getDashboardUser(auth.user)
-    if (user) revokeAllForUser(user.id)
+    if (user) await revokeAllForUser(user.id)
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': clearCookie(req), 'Cache-Control': 'private, no-store' })
     res.end(JSON.stringify({ ok: true }))
     return true
@@ -240,7 +240,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'not_found', field: 'user' }, 404)
       return true
     }
-    json(res, { sessions: listUserSessions(user.id) })
+    json(res, { sessions: await listUserSessions(user.id) })
     return true
   }
 
@@ -294,7 +294,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     await updateDashboardUserPassword(user.id, hash)
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
-    revokeAllForUser(user.id, presented ?? undefined)
+    await revokeAllForUser(user.id, presented ?? undefined)
     if (auth?.kind === 'token') {
       // Break-glass reset (no current_password proven): leave a durable audit
       // row and ping the operator's channel. Only the username goes into the
@@ -368,7 +368,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (denyAgentCredentialIssue(ctx, 'auth.device_key.create')) return true
+    if (await denyAgentCredentialIssue(ctx, 'auth.device_key.create')) return true
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -452,7 +452,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     await deleteDashboardUser(username)
-    revokeAllForUser(user.id)
+    await revokeAllForUser(user.id)
     // Deleting the last user is the documented way to return to token-only mode.
     logger.info({ username, remaining: await countDashboardUsers(true) }, 'dashboard user deleted')
     json(res, { ok: true })

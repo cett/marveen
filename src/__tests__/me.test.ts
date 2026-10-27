@@ -66,7 +66,7 @@ describe('GET /api/v1/me', () => {
   it('returns profile for session caller', async () => {
     vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT as any)
-    vi.mocked(sessions.listUserSessions).mockReturnValue([{} as any, {} as any, {} as any])
+    vi.mocked(sessions.listUserSessions).mockResolvedValue([{} as any, {} as any, {} as any])
 
     const { ctx, out } = makeCtx('GET', '/api/v1/me')
     await tryHandleMe(ctx)
@@ -84,7 +84,7 @@ describe('GET /api/v1/me', () => {
   it('returns null tenant_display_name for global admin (no tenant)', async () => {
     const globalAdminUser = { ...SAMPLE_USER, tenant_id: null }
     vi.mocked(db.getDashboardUser).mockResolvedValue(globalAdminUser as any)
-    vi.mocked(sessions.listUserSessions).mockReturnValue([])
+    vi.mocked(sessions.listUserSessions).mockResolvedValue([])
 
     const { ctx, out } = makeCtx('GET', '/api/v1/me')
     await tryHandleMe(ctx)

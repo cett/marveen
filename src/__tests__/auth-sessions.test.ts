@@ -39,22 +39,22 @@ afterAll(() => {
 describe('createSession / resolveSession', () => {
   it('mints a token that resolves to its user', async () => {
     const u = await makeUser('alice')
-    const token = createSession({ userId: u.id, username: u.username })
-    expect(resolveSession(token)).toEqual({ userId: u.id, username: 'alice' })
+    const token = await createSession({ userId: u.id, username: u.username })
+    expect(await resolveSession(token)).toEqual({ userId: u.id, username: 'alice' })
   })
 
   it('stores only sha256(token) at rest, never the raw token', async () => {
     const u = await makeUser('alice')
-    const token = createSession({ userId: u.id, username: u.username })
+    const token = await createSession({ userId: u.id, username: u.username })
     const rows = getDb().prepare('SELECT id_hash FROM auth_sessions').all() as { id_hash: string }[]
     expect(rows.length).toBe(1)
     expect(rows[0].id_hash).not.toBe(token)
     expect(rows[0].id_hash).toMatch(/^[0-9a-f]{64}$/)
   })
 
-  it('returns null for an unknown/empty token', () => {
-    expect(resolveSession('nope')).toBeNull()
-    expect(resolveSession('')).toBeNull()
+  it('returns null for an unknown/empty token', async () => {
+    expect(await resolveSession('nope')).toBeNull()
+    expect(await resolveSession('')).toBeNull()
   })
 })
 
@@ -63,9 +63,9 @@ describe('TTLs', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     const u = await makeUser('idle')
-    const token = createSession({ userId: u.id, username: u.username })
+    const token = await createSession({ userId: u.id, username: u.username })
     vi.setSystemTime(new Date('2026-01-08T00:00:01Z')) // > 7 days later
-    expect(resolveSession(token)).toBeNull()
+    expect(await resolveSession(token)).toBeNull()
     // expired row is cleaned up
     expect(getDb().prepare('SELECT COUNT(*) c FROM auth_sessions').get()).toEqual({ c: 0 })
   })
@@ -74,29 +74,29 @@ describe('TTLs', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     const u = await makeUser('active')
-    const token = createSession({ userId: u.id, username: u.username })
+    const token = await createSession({ userId: u.id, username: u.username })
     // Keep touching it every 5 days (within idle TTL) for 31 days.
     for (let d = 5; d <= 29; d += 5) {
       vi.setSystemTime(new Date(2026, 0, 1 + d))
-      expect(resolveSession(token)).not.toBeNull()
+      expect(await resolveSession(token)).not.toBeNull()
     }
     vi.setSystemTime(new Date('2026-02-01T00:00:01Z')) // > 30 days from creation
-    expect(resolveSession(token)).toBeNull()
+    expect(await resolveSession(token)).toBeNull()
   })
 
   it('debounces last_seen writes to >= 60s apart', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     const u = await makeUser('deb')
-    const token = createSession({ userId: u.id, username: u.username })
+    const token = await createSession({ userId: u.id, username: u.username })
     const initial = (getDb().prepare('SELECT last_seen_at c FROM auth_sessions').get() as { c: number }).c
     // 30s later: within debounce window -> no DB write
     vi.setSystemTime(new Date('2026-01-01T00:00:30Z'))
-    resolveSession(token)
+    await resolveSession(token)
     expect((getDb().prepare('SELECT last_seen_at c FROM auth_sessions').get() as { c: number }).c).toBe(initial)
     // 61s later: past debounce -> DB write
     vi.setSystemTime(new Date('2026-01-01T00:01:01Z'))
-    resolveSession(token)
+    await resolveSession(token)
     expect((getDb().prepare('SELECT last_seen_at c FROM auth_sessions').get() as { c: number }).c).toBeGreaterThan(initial)
   })
 })
@@ -104,39 +104,39 @@ describe('TTLs', () => {
 describe('revocation', () => {
   it('revokes a single session', async () => {
     const u = await makeUser('rev')
-    const token = createSession({ userId: u.id, username: u.username })
-    revokeSession(token)
-    expect(resolveSession(token)).toBeNull()
+    const token = await createSession({ userId: u.id, username: u.username })
+    await revokeSession(token)
+    expect(await resolveSession(token)).toBeNull()
   })
 
   it('revokes all sessions of a user', async () => {
     const u = await makeUser('multi')
-    const a = createSession({ userId: u.id, username: u.username })
-    const b = createSession({ userId: u.id, username: u.username })
-    revokeAllForUser(u.id)
-    expect(resolveSession(a)).toBeNull()
-    expect(resolveSession(b)).toBeNull()
+    const a = await createSession({ userId: u.id, username: u.username })
+    const b = await createSession({ userId: u.id, username: u.username })
+    await revokeAllForUser(u.id)
+    expect(await resolveSession(a)).toBeNull()
+    expect(await resolveSession(b)).toBeNull()
   })
 
   it('revokes all EXCEPT the caller when a token is spared', async () => {
     const u = await makeUser('spare')
-    const keep = createSession({ userId: u.id, username: u.username })
-    const drop = createSession({ userId: u.id, username: u.username })
-    revokeAllForUser(u.id, keep)
-    expect(resolveSession(keep)).not.toBeNull()
-    expect(resolveSession(drop)).toBeNull()
+    const keep = await createSession({ userId: u.id, username: u.username })
+    const drop = await createSession({ userId: u.id, username: u.username })
+    await revokeAllForUser(u.id, keep)
+    expect(await resolveSession(keep)).not.toBeNull()
+    expect(await resolveSession(drop)).toBeNull()
   })
 })
 
 describe('restart rehydration', () => {
   it('resolves an existing session after a fresh DB handle + empty cache', async () => {
     const u = await makeUser('persist')
-    const token = createSession({ userId: u.id, username: u.username })
+    const token = await createSession({ userId: u.id, username: u.username })
     // Simulate a dashboard restart: reopen the SAME file with a new handle and
     // drop the in-memory cache. The durable row must still resolve.
     initDatabase(DB_PATH)
     _clearSessionCacheForTest()
-    expect(resolveSession(token)).toEqual({ userId: u.id, username: 'persist' })
+    expect(await resolveSession(token)).toEqual({ userId: u.id, username: 'persist' })
   })
 })
 
@@ -145,19 +145,19 @@ describe('sweep + listing', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     const u = await makeUser('sweeper')
-    const fresh = createSession({ userId: u.id, username: u.username })
+    const fresh = await createSession({ userId: u.id, username: u.username })
     // Insert a stale row directly (created + last_seen 40 days ago).
     const stale = Math.floor(new Date('2025-11-22T00:00:00Z').getTime() / 1000)
     getDb().prepare('INSERT INTO auth_sessions (id_hash, user_id, username, created_at, last_seen_at) VALUES (?,?,?,?,?)')
       .run('f'.repeat(64), u.id, u.username, stale, stale)
-    expect(sweepExpiredSessions()).toBe(1)
-    expect(resolveSession(fresh)).not.toBeNull()
+    expect(await sweepExpiredSessions()).toBe(1)
+    expect(await resolveSession(fresh)).not.toBeNull()
   })
 
   it('lists a user sessions with hashed prefix only', async () => {
     const u = await makeUser('lister')
-    createSession({ userId: u.id, username: u.username }, { userAgent: 'test-agent' })
-    const list = listUserSessions(u.id)
+    await createSession({ userId: u.id, username: u.username }, { userAgent: 'test-agent' })
+    const list = await listUserSessions(u.id)
     expect(list.length).toBe(1)
     expect(list[0].idHashPrefix).toHaveLength(12)
     expect(list[0].userAgent).toBe('test-agent')

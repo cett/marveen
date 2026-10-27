@@ -149,12 +149,12 @@ describe('POST /api/auth/login', () => {
     await seedUser('alice')
     const first = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     const oldToken = cookieToken(first.res)
-    expect(resolveSession(oldToken)).not.toBeNull()
+    expect(await resolveSession(oldToken)).not.toBeNull()
     await call('POST', '/api/auth/login', {
       headers: { cookie: `${SESSION_COOKIE_NAME}=${oldToken}` },
       body: { username: 'alice', password: GOOD_PW },
     })
-    expect(resolveSession(oldToken)).toBeNull()
+    expect(await resolveSession(oldToken)).toBeNull()
   })
 
   it('returns IDENTICAL 401 bodies for bad user vs bad password', async () => {
@@ -190,7 +190,7 @@ describe('POST /api/auth/logout', () => {
     })
     expect(out.res.statusCode).toBe(200)
     expect(cookieHeader(out.res)).toContain('Max-Age=0')
-    expect(resolveSession(token)).toBeNull()
+    expect(await resolveSession(token)).toBeNull()
   })
 })
 
@@ -234,8 +234,8 @@ describe('POST /api/auth/password', () => {
       headers: { cookie: `${SESSION_COOKIE_NAME}=${callerToken}` },
       body: { current_password: GOOD_PW, new_password: 'rotated-password' },
     })
-    expect(resolveSession(otherToken)).toBeNull()
-    expect(resolveSession(callerToken)).not.toBeNull()
+    expect(await resolveSession(otherToken)).toBeNull()
+    expect(await resolveSession(callerToken)).not.toBeNull()
   })
 
   it('enforces the password policy on the new password', async () => {
@@ -284,7 +284,7 @@ describe('users CRUD', () => {
     const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
     expect(del.res.statusCode).toBe(200)
     expect(await getDashboardUser('alice')).toBeUndefined()
-    expect(resolveSession(token)).toBeNull()
+    expect(await resolveSession(token)).toBeNull()
     // The log line carries the settled count (a number), not a pending Promise.
     expect(info).toHaveBeenCalledWith({ username: 'alice', remaining: 0 }, 'dashboard user deleted')
     info.mockRestore()
