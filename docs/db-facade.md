@@ -110,13 +110,12 @@ backups stay for the operator), the error says that the database changes remain,
 restored is named in the message. A successful import removes every backup. The remaining risk is that second case:
 a process killed between the commit and the last rename leaves the database applied and some files not.
 
-The staged files have fixed names, so the applies in a process run **one after the other, in the order they
-arrived: the last bundle wins**, in the files and in the database. A second apply (a double click on the import
-button) waits for the first, logs one `info` line that it does, and then runs on the state the first left; a failed
-apply does not stop the one behind it, and its error goes to its own caller. A dry run writes nothing and does not
-wait. Two dashboard processes on one store are not covered.
+The staged files have fixed names, so one apply runs at a time in the process: a second apply (a double click on the
+import button) is refused at once with `ImportInProgressError`, answered as 409 `conflict`; it does not wait and
+touches nothing. The flag is released when the first apply ends, whether it succeeded or failed. A dry run writes
+nothing and is not limited. Two dashboard processes on one store are not covered.
 
-An import refuses to start staging a file whose `.import-bak` already exists (`StaleBackupError`, answered as 409
+An import also refuses to start staging a file whose `.import-bak` already exists (`StaleBackupError`, 409
 `conflict`): that backup was left by an import that could not restore the file, it may be the only copy of the
 previous content, and the backup of the new import would overwrite it. Restore it onto its file or remove it, then
 import again. A `.import-new` left behind by a crashed process is harmless (the next import overwrites it) but is not

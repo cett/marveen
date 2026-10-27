@@ -1,6 +1,6 @@
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, StaleBackupError, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { exportFleet, importFleet, ImportConflictError, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
@@ -63,7 +63,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
         json(res, result, 200)
       }
     } catch (err: any) {
-      if (err instanceof StaleBackupError) {
+      if (err instanceof ImportConflictError) {
         json(res, { error: 'conflict', hint: err.message }, 409)
       } else {
         logger.error({ err }, 'Fleet import failed')
