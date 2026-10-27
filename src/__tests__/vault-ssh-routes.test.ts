@@ -13,7 +13,7 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { initDatabase } from '../db.js'
+import { initDatabase, dbx } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 const ED25519_PUB = 'ssh-ed25519 ' + Buffer.from('ed25519-fixture-bytes').toString('base64') + ' test@marveen'
@@ -59,9 +59,13 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
+// One database for the file, so every test starts from empty tables: a test that needs servers creates them itself
+// (the order of the tests does not matter, `--sequence.shuffle` included).
+beforeEach(async () => {
   execFileSync.mockClear().mockImplementation(() => ED25519_PUB)
   setSecret.mockClear()
+  await dbx.run('DELETE FROM vault_ssh_servers')
+  await dbx.run('DELETE FROM vault_ssh_keys')
 })
 
 function makeCtx(
@@ -141,6 +145,8 @@ describe('tryHandleVaultSsh', () => {
     })
 
     it('admin without ?tenant sees every tenant', async () => {
+      await createServer({ body: { name: 'tenant-a-srv' }, tenantId: 'tenant-a' })
+      await createServer({ body: { name: 'tenant-b-srv' }, tenantId: 'tenant-b' })
       const { ctx, out } = makeCtx('GET', '/api/vault/ssh-servers', { role: 'admin' })
       expect(await tryHandleVaultSsh(ctx)).toBe(true)
       const names = out.body.servers.map((s: any) => s.name)
@@ -149,12 +155,15 @@ describe('tryHandleVaultSsh', () => {
     })
 
     it('admin with ?tenant= narrows to that tenant', async () => {
+      await createServer({ body: { name: 'tenant-a-srv' }, tenantId: 'tenant-a' })
+      await createServer({ body: { name: 'tenant-b-srv' }, tenantId: 'tenant-b' })
       const { ctx, out } = makeCtx('GET', '/api/vault/ssh-servers?tenant=tenant-b', { role: 'admin' })
       expect(await tryHandleVaultSsh(ctx)).toBe(true)
       expect(out.body.servers.map((s: any) => s.name)).toEqual(['tenant-b-srv'])
     })
 
     it('returns keyStatus "missing" with no key assigned, and API-shape fields', async () => {
+      await createServer({ body: { name: 'tenant-a-srv' }, tenantId: 'tenant-a' })
       const { ctx, out } = makeCtx('GET', '/api/vault/ssh-servers?tenant=tenant-a', { role: 'admin' })
       await tryHandleVaultSsh(ctx)
       const s = out.body.servers[0]
