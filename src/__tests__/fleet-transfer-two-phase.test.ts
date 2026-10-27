@@ -20,6 +20,7 @@ import { cachedAgentSettingsByKey } from '../db/agent-settings-cache.js'
 import { listModelProfileMap } from '../db/model-profile-map.js'
 import { listAgentSettingsByKey } from '../db/agent-settings.js'
 import { updateEnvFile } from '../env.js'
+import { logger } from '../logger.js'
 
 const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS, probe } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -120,7 +121,7 @@ vi.mock('../db/fleet-transfer.js', async (importOriginal) => {
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { ImportInProgressError, importFleet, StaleBackupError, type FleetJson } from '../web/fleet-transfer.js'
+import { importFleet, StaleBackupError, type FleetJson } from '../web/fleet-transfer.js'
 
 // ---------------------------------------------------------------------------
 // Fixture: a target that already has its own values, and a bundle that would replace every one of them.
@@ -600,54 +601,59 @@ describe('two imports applied at once', () => {
     return b
   }
 
-  it('a second apply while one runs is refused at once: one import, one ImportInProgressError, the files of the first bundle', async () => {
-    const out = await Promise.allSettled([apply(withClaude('claude ONE\n')), apply(withClaude('claude TWO\n'))])
+  it('an import that waits behind another says so in the log; one that does not wait stays silent', async () => {
+    vi.mocked(logger.info).mockClear()
+    await apply(bundle())
+    const silent = vi.mocked(logger.info).mock.calls.filter((c) => String(c[1]).includes('another import is running'))
+    expect(silent).toHaveLength(0)
 
-    expect(out[0]!.status).toBe('fulfilled')
-    expect(out[1]!.status).toBe('rejected')
-    expect((out[1] as PromiseRejectedResult).reason).toBeInstanceOf(ImportInProgressError)
-    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('claude ONE\n')
-    expect(probe.events.filter((e) => e === 'begin' || e === 'commit')).toEqual(['begin', 'commit'])
+    await Promise.all([apply(withClaude('claude ONE\n')), apply(withClaude('claude TWO\n')), apply(withClaude('claude THREE\n'))])
+    const waits = vi.mocked(logger.info).mock.calls.filter((c) => String(c[1]).includes('another import is running'))
+    expect(waits.map((c) => (c[0] as { ahead: number }).ahead)).toEqual([1, 2])
+
+    // the count went back to zero: a later apply does not wait and does not log
+    vi.mocked(logger.info).mockClear()
+    await apply(bundle())
+    expect(vi.mocked(logger.info).mock.calls.filter((c) => String(c[1]).includes('another import is running'))).toHaveLength(0)
+  })
+
+  it('the last bundle of overlapping applies wins in the files and in the database', async () => {
+    await Promise.all([apply(withClaude('claude ONE\n')), apply(withClaude('claude TWO\n')), apply(withClaude('claude THREE\n'))])
+
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('claude THREE\n')
+    expect(probe.events.filter((e) => e === 'begin' || e === 'commit')).toEqual(['begin', 'commit', 'begin', 'commit', 'begin', 'commit'])
     expect(strays()).toEqual([])
     expectCachesMatchTables()
   })
 
-  it('the same import twice (a double click): one succeeds, the other is refused, nothing is left behind', async () => {
+  it('the same import twice (a double click): both succeed, nothing is left behind', async () => {
     const out = await Promise.allSettled([apply(bundle()), apply(bundle())])
 
-    expect(out.map((o) => o.status)).toEqual(['fulfilled', 'rejected'])
-    // the reason matters: without the lock the second call also rejects, with a rename error after its commit
-    expect((out[1] as PromiseRejectedResult).reason).toBeInstanceOf(ImportInProgressError)
+    expect(out.map((o) => o.status)).toEqual(['fulfilled', 'fulfilled'])
     expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('new claude\n')
     expect(strays()).toEqual([])
+    expectCachesMatchTables()
   })
 
-  it('the refused apply touches nothing: no staged file, no backup, no row of its own', async () => {
-    const running = apply(withClaude('claude ONE\n'))
-    const refused = apply(withClaude('claude TWO\n')).then(() => undefined, (e: unknown) => e)
-    expect(await refused).toBeInstanceOf(ImportInProgressError)
-    await running
+  it('two different bundles: they run one after the other, so the last one wins in the files and in the database', async () => {
+    const out = await Promise.allSettled([apply(withClaude('claude ONE\n')), apply(withClaude('claude TWO\n'))])
 
-    expect(probe.events.filter((e) => e === 'begin')).toHaveLength(1)
-    expect(probe.events.filter((e) => e === 'env')).toHaveLength(1)
+    expect(out.map((o) => o.status)).toEqual(['fulfilled', 'fulfilled'])
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('claude TWO\n')
+    // the two transactions did not interleave with the renames of the other import
+    expect(probe.events.filter((e) => e === 'begin' || e === 'commit')).toEqual(['begin', 'commit', 'begin', 'commit'])
+    expect(probe.events.indexOf('final:project/CLAUDE.md')).toBeLessThan(probe.events.lastIndexOf('begin'))
     expect(strays()).toEqual([])
   })
 
-  it('the next apply runs after a finished one and after a failed one', async () => {
-    await apply(withClaude('claude ONE\n'))
-    await expect(apply(bundle({ comments: [BROKEN_COMMENT] }))).rejects.toThrow()
-    await apply(withClaude('claude THREE\n'))
+  it('a failing import does not stop the one queued behind it, and does not leak its error to it', async () => {
+    const failing = bundle({ comments: [BROKEN_COMMENT] })
+    const out = await Promise.allSettled([apply(failing), apply(withClaude('claude AFTER\n'))])
 
-    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('claude THREE\n')
+    expect(out[0]!.status).toBe('rejected')
+    expect(out[1]!.status).toBe('fulfilled')
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('claude AFTER\n')
     expect(strays()).toEqual([])
-  })
-
-  it('a dry run is not refused while an apply runs', async () => {
-    const applying = apply(bundle())
-    const dry = await importFleet(JSON.stringify(bundle()), { apply: false })
-
-    expect('dryRun' in dry).toBe(true)
-    await applying
   })
 })
 
