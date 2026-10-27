@@ -25,8 +25,11 @@ WHAT IS BLOCKED (exit 2):
      login), also when the command is hidden behind a wrapper.
   3. A write (INSERT/UPDATE/DELETE/REPLACE/DROP/ALTER/RENAME TO/.import/.restore) on an
      auth table: dashboard_users, auth_sessions, api_tokens, device_keys (+ their _old
-     and _seq shadows), and approvals / approval_events (an agent must not approve its
-     own request by writing the row). sqlite3 / sqlite / litecli / sqlite-utils /
+     and _seq shadows), approvals / approval_events (an agent must not approve its
+     own request by writing the row) and system_config (the runtime config; it holds the
+     RBAC gate mode, so an agent must not switch its own gate off by writing the row: it
+     goes through the dashboard settings route, where loosening needs a human session).
+     sqlite3 / sqlite / litecli / sqlite-utils /
      duckdb / psql ...: only when the database is the live store (path-aware: a copy in
      /tmp is the QA instances' own business) or cannot be resolved. python / node / perl /
      ruby / php code (-c / -e / heredoc / here-string / pipe) has no visible path, so a
@@ -92,6 +95,11 @@ AUTH_TABLES = (
     'dashboard_users', 'auth_sessions', 'api_tokens', 'device_keys',
     'api_tokens_old', 'api_tokens_seq', 'device_keys_old', 'device_keys_seq',
     'approvals', 'approvals_old', 'approval_events',
+    # the runtime config the server reads while it runs: a row of it can switch a protection off (the RBAC
+    # gate mode), and the only legitimate writer is the dashboard settings route (human-session rule for a
+    # loosening, journal row). Matched by TABLE, not by key: a key name can be spelled around (hex, concat,
+    # a bound parameter), the table name cannot.
+    'system_config',
     # the schema table: rewriting a row of it (PRAGMA writable_schema) edits or drops an auth table's
     # definition and can leave the whole database unreadable
     'sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'sqlite_temp_schema',
