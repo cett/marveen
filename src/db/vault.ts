@@ -1,8 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
-import { db } from './connection.js'
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 
 export interface VaultSshKey {
   id: string
@@ -176,26 +175,15 @@ const INSERT_APPROVAL_SQL = `
 const insertApprovalArgs = (a: Approval): unknown[] =>
   [a.id, a.agent_id, a.category, a.action_description, a.action_payload, a.timeout_at, a.requested_at, a.tenant_id, a.human_only, a.content_hash]
 
-export async function createApproval(params: CreateApprovalParams): Promise<Approval> {
+// `ops` is the handle the statement runs on: the facade by default, the `tx` handle inside a transaction body.
+export async function createApproval(params: CreateApprovalParams, ops: SqlOps = dbx): Promise<Approval> {
   const approval = pendingApproval(params, Math.floor(Date.now() / 1000))
-  await dbx.run(INSERT_APPROVAL_SQL, ...insertApprovalArgs(approval))
+  await ops.run(INSERT_APPROVAL_SQL, ...insertApprovalArgs(approval))
   return approval
 }
 
-export async function getApproval(id: string): Promise<Approval | undefined> {
-  return dbx.get<Approval>('SELECT * FROM approvals WHERE id = ?', id)
-}
-
-// The synchronous twins below are for the claim / consume / open-once transactions, which stay on the raw connection
-// (a synchronous transaction body) until the vault approvals step moves them onto dbx.tx; that step deletes the twins.
-function createApprovalSync(params: CreateApprovalParams): Approval {
-  const approval = pendingApproval(params, Math.floor(Date.now() / 1000))
-  db.prepare(INSERT_APPROVAL_SQL).run(...insertApprovalArgs(approval))
-  return approval
-}
-
-function getApprovalSync(id: string): Approval | undefined {
-  return db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Approval | undefined
+export async function getApproval(id: string, ops: SqlOps = dbx): Promise<Approval | undefined> {
+  return ops.get<Approval>('SELECT * FROM approvals WHERE id = ?', id)
 }
 
 // Approving or rejecting a request whose deadline has passed is refused even in the up-to-60 s window
@@ -232,8 +220,8 @@ export type ApprovalEventKind = 'consumed' | 'used' | 'consume_refused' | 'beare
  * failure to write it must not turn a refusal into a success, so the caller decides what to do with a
  * throw (the callers on a refusal path catch it).
  */
-export async function recordApprovalEvent(params: ApprovalEventParams): Promise<void> {
-  await dbx.run(INSERT_APPROVAL_EVENT_SQL, ...approvalEventArgs(params))
+export async function recordApprovalEvent(params: ApprovalEventParams, ops: SqlOps = dbx): Promise<void> {
+  await ops.run(INSERT_APPROVAL_EVENT_SQL, ...approvalEventArgs(params))
 }
 
 interface ApprovalEventParams {
@@ -259,11 +247,6 @@ const approvalEventArgs = (params: ApprovalEventParams): unknown[] => [
   params.ref ?? null,
   Math.floor(Date.now() / 1000),
 ]
-
-// Synchronous twin for the claim / consume / open-once transactions (see createApprovalSync).
-function recordApprovalEventSync(params: ApprovalEventParams): void {
-  db.prepare(INSERT_APPROVAL_EVENT_SQL).run(...approvalEventArgs(params))
-}
 
 export interface ApprovalEvent {
   id: number
@@ -344,10 +327,14 @@ function consumerLabel(consumer: string | null | undefined): string | null {
   return label || null
 }
 
-/** Journal a refused consume. Never throws: a journal fault must not turn a refusal into a success. */
-function journalConsumeRefusal(approval: Approval, reason: string, principal: string, ref: string | null): void {
+/**
+ * Journal a refused consume. Never rejects: a journal fault must not turn a refusal into a success. The write is
+ * awaited INSIDE the try: a call that is started and not awaited would reject outside the catch (an unhandled
+ * rejection, which ends the process by default).
+ */
+export async function journalConsumeRefusal(approval: Approval, reason: string, principal: string, ref: string | null): Promise<void> {
   try {
-    recordApprovalEventSync({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'consume_refused', reason, actor: principal, ref })
+    await recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'consume_refused', reason, actor: principal, ref })
   } catch { /* the refusal stands without its journal row */ }
 }
 
@@ -357,7 +344,7 @@ function journalConsumeRefusal(approval: Approval, reason: string, principal: st
 // session, whatever the human_only snapshot of the row says.
 // With `seal`, the same write also stamps the effect (used_at / used_ref): the official sender, when no gate
 // reserved the approval before it, reserves and seals in one step.
-function consumeStatement(seal = false): string {
+export function consumeStatement(seal = false): string {
   const marks = CONSUMABLE_APPROVAL_CATEGORIES.map(() => '?').join(', ')
   return `
     UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?${seal ? ', used_at = ?, used_ref = ?' : ''}
@@ -368,10 +355,11 @@ function consumeStatement(seal = false): string {
 }
 
 /** Run the guarded write for one row. True when this call is the one that used the approval up. */
-function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null, seal = false): boolean {
-  return db.prepare(consumeStatement(seal)).run(
+export async function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null, seal = false, ops: SqlOps = dbx): Promise<boolean> {
+  return (await ops.run(
+    consumeStatement(seal),
     now, p.principal, ref, ...(seal ? [now, ref] : []), id, ...CONSUMABLE_APPROVAL_CATEGORIES, p.content_hash, p.tenant_id, p.principal, now - p.window_s,
-  ).changes > 0
+  )).changes > 0
 }
 
 // The sender's write: it takes over the reservation the gate made for this very mail and seals it. Every
@@ -379,10 +367,11 @@ function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | 
 // changes the row. Nothing here creates, decides or re-opens an approval: it only stamps a row a person decided in
 // a dashboard session and the SAME agent's gate already reserved FOR THE OFFICIAL SENDER (a `gate-send-` ref: the
 // gate only writes that prefix when it read the call as gmail-send.py), a moment ago, and not sealed yet.
-// The SELECT that picks the candidate repeats these conditions, and inside one synchronous transaction on one
-// connection nothing can change between the two statements, so a test through claimApproval() cannot tell the
-// UPDATE's WHERE from the SELECT's. This WHERE is the second line (a second connection or process would make it the
-// only one), and adoptReservation() is exported so a test can run it alone against rows that break one condition.
+// The SELECT that picks the candidate repeats these conditions, and inside one transaction on one connection (the
+// facade's transaction lock keeps every other facade caller out of the body) nothing can change between the two
+// statements, so a test through claimApproval() cannot tell the UPDATE's WHERE from the SELECT's. This WHERE is the
+// second line (a second connection or process would make it the only one), and adoptReservation() is exported so a
+// test can run it alone against rows that break one condition.
 const ADOPT_STATEMENT = `
   UPDATE approvals SET used_at = ?, used_ref = ?
   WHERE id = ? AND category = ? AND status = 'approved' AND content_hash = ? AND tenant_id = ? AND agent_id = ?
@@ -392,12 +381,14 @@ const ADOPT_STATEMENT = `
 `
 
 /** Stamp the gate's reservation `id` as sealed by the sender's `ref`; false when any adoption condition does not hold. */
-export function adoptReservation(
+export async function adoptReservation(
   id: string, p: Pick<ConsumeParams, 'principal' | 'tenant_id' | 'content_hash'> & { category: string }, adoptSince: number, now: number, ref: string,
-): boolean {
-  return db.prepare(ADOPT_STATEMENT).run(
+  ops: SqlOps = dbx,
+): Promise<boolean> {
+  return (await ops.run(
+    ADOPT_STATEMENT,
     now, ref, id, p.category, p.content_hash, p.tenant_id, p.principal, adoptSince, p.principal,
-  ).changes > 0
+  )).changes > 0
 }
 
 /** The ref prefix by which the gate marks a reservation made for the official sender (the intent the sender may adopt). */
@@ -426,18 +417,20 @@ function isReplay(row: Approval, p: ConsumeParams, now: number): boolean {
  * the window. The success and its journal row are one transaction; a refusal is classified from the row
  * afterwards (the write itself never says why it matched nothing) and journalled best-effort.
  */
-export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutcome {
+export async function consumeApproval(p: ConsumeParams & { id: string }): Promise<ConsumeOutcome> {
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
   const hashOk = isContentHash(p.content_hash)
-  const outcome = db.transaction((): ConsumeOutcome => {
+  // The default (deferred) transaction mode, as the synchronous transaction it replaces: the guarded write below
+  // is the line that decides, and the body holds database calls and pure policy only.
+  const outcome = await dbx.tx(async (tx): Promise<ConsumeOutcome> => {
     // A malformed hash skips the guarded write; it is then refused below as a mismatch.
-    if (hashOk && useUpApproval(p.id, p, now, ref)) {
-      const approval = getApprovalSync(p.id) as Approval
-      recordApprovalEventSync({ approval_id: p.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
+    if (hashOk && await useUpApproval(p.id, p, now, ref, false, tx)) {
+      const approval = await getApproval(p.id, tx) as Approval
+      await recordApprovalEvent({ approval_id: p.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref }, tx)
       return { ok: true, replayed: false, approval }
     }
-    const row = getApprovalSync(p.id)
+    const row = await getApproval(p.id, tx)
     // Another tenant's row answers exactly like a missing one.
     if (!row || row.tenant_id !== p.tenant_id) return { ok: false, reason: 'not_found' }
     if (row.agent_id !== p.principal) return { ok: false, reason: 'agent_mismatch', approval: row }
@@ -451,8 +444,8 @@ export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutco
     if (row.content_hash !== p.content_hash) return { ok: false, reason: 'hash_mismatch', approval: row }
     if (row.resolved_at == null || row.resolved_at < now - p.window_s) return { ok: false, reason: 'expired', approval: row }
     return { ok: false, reason: 'not_human_decided', approval: row }
-  })()
-  if (!outcome.ok && outcome.approval) journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
+  })
+  if (!outcome.ok && outcome.approval) await journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
   return outcome
 }
 
@@ -469,7 +462,7 @@ export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutco
  * the latest-decision lookup only names the reason once nothing is usable), so the id only has to make
  * the pick deterministic; it does not need to be the insertion order.
  */
-export function claimApproval(p: ConsumeParams & { category: string; mode?: ClaimMode }): ClaimOutcome {
+export async function claimApproval(p: ConsumeParams & { category: string; mode?: ClaimMode }): Promise<ClaimOutcome> {
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
   const send = p.mode === 'send'
@@ -479,65 +472,65 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
   if (!isContentHash(p.content_hash)) return { ok: false, reason: 'hash_mismatch' }
   // The sender seals under its own reference: without one there would be nothing to retry or audit with.
   if (send && ref === null) throw new Error("claimApproval: mode 'send' needs a ref")
-  const outcome = db.transaction((): ClaimOutcome => {
+  const outcome = await dbx.tx(async (tx): Promise<ClaimOutcome> => {
     const scope = [p.principal, p.tenant_id, p.category, p.content_hash]
     if (send) {
       // A retry of the sender's own lost answer: the row it sealed under this ref a moment ago.
-      const sealed = db.prepare(`
+      const sealed = await tx.get<Approval>(`
         SELECT * FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND used_ref = ? AND used_at >= ?
         ORDER BY used_at DESC, id DESC LIMIT 1
-      `).get(...scope, ref, now - CONSUME_REPLAY_WINDOW_S) as Approval | undefined
+      `, ...scope, ref, now - CONSUME_REPLAY_WINDOW_S)
       if (sealed) return { ok: true, replayed: true, adopted: sealed.consumed_ref !== sealed.used_ref, approval: sealed }
       // The gate reserved this very mail a moment ago: take that reservation over instead of asking for a second approval.
-      const reserved = db.prepare(`
+      const reserved = await tx.get<{ id: string }>(`
         SELECT id FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND status = 'approved' AND resolved_via = 'dashboard_session'
           AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%' AND used_at IS NULL
         ORDER BY consumed_at DESC, id DESC LIMIT 1
-      `).get(...scope, adoptSince, p.principal) as { id: string } | undefined
-      if (reserved && adoptReservation(reserved.id, p, adoptSince, now, ref as string)) {   // send implies a ref (checked above)
-        const approval = getApprovalSync(reserved.id) as Approval
-        recordApprovalEventSync({ approval_id: reserved.id, tenant_id: approval.tenant_id, event: 'used', reason: 'adopted_gate_reservation', actor: p.principal, ref })
+      `, ...scope, adoptSince, p.principal)
+      if (reserved && await adoptReservation(reserved.id, p, adoptSince, now, ref as string, tx)) {   // send implies a ref (checked above)
+        const approval = await getApproval(reserved.id, tx) as Approval
+        await recordApprovalEvent({ approval_id: reserved.id, tenant_id: approval.tenant_id, event: 'used', reason: 'adopted_gate_reservation', actor: p.principal, ref }, tx)
         return { ok: true, replayed: false, adopted: true, approval }
       }
     } else if (typeof p.ref === 'string' && p.ref !== '') {
-      const again = db.prepare(`
+      const again = await tx.get<Approval>(`
         SELECT * FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
         ORDER BY consumed_at DESC, id DESC LIMIT 1
-      `).get(...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S) as Approval | undefined
+      `, ...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S)
       if (again) return { ok: true, replayed: true, approval: again }
     }
-    const usable = db.prepare(`
+    const usable = await tx.get<{ id: string }>(`
       SELECT id FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'approved' AND consumed_at IS NULL AND resolved_at >= ? AND resolved_via = 'dashboard_session'
       ORDER BY resolved_at DESC, id DESC LIMIT 1
-    `).get(...scope, now - p.window_s) as { id: string } | undefined
-    if (usable && useUpApproval(usable.id, p, now, ref, send)) {
-      const approval = getApprovalSync(usable.id) as Approval
-      recordApprovalEventSync({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
-      if (send) recordApprovalEventSync({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'used', reason: 'reserved_and_sealed', actor: p.principal, ref })
+    `, ...scope, now - p.window_s)
+    if (usable && await useUpApproval(usable.id, p, now, ref, send, tx)) {
+      const approval = await getApproval(usable.id, tx) as Approval
+      await recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref }, tx)
+      if (send) await recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'used', reason: 'reserved_and_sealed', actor: p.principal, ref }, tx)
       return send ? { ok: true, replayed: false, adopted: false, approval } : { ok: true, replayed: false, approval }
     }
     // A request still open (its deadline not passed, even if the sweeper has not marked it yet) beats any old decision.
-    const open = db.prepare(`
+    const open = await tx.get<Approval>(`
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
       ORDER BY requested_at DESC, id DESC LIMIT 1
-    `).get(...scope, now) as Approval | undefined
+    `, ...scope, now)
     if (open) return { ok: false, reason: 'pending', approval: open }
-    const last = db.prepare(`
+    const last = await tx.get<Approval>(`
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status != 'pending' AND resolved_at IS NOT NULL
       ORDER BY resolved_at DESC, id DESC LIMIT 1
-    `).get(...scope) as Approval | undefined
+    `, ...scope)
     if (!last) return { ok: false, reason: 'none' }
     if (last.status === 'rejected') return { ok: false, reason: 'rejected', approval: last }
     // A request that timed out unanswered leaves nothing to use: the caller starts over.
@@ -546,9 +539,9 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
     if (last.consumed_at != null) return { ok: false, reason: send && last.used_at != null ? 'already_used' : 'already_consumed', approval: last }
     if (last.resolved_at != null && last.resolved_at < now - p.window_s) return { ok: false, reason: 'expired', approval: last }
     return { ok: false, reason: 'not_human_decided', approval: last }
-  })()
+  })
   if (!outcome.ok && outcome.approval && outcome.reason !== 'pending' && outcome.reason !== 'none') {
-    journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
+    await journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
   }
   return outcome
 }
@@ -577,28 +570,28 @@ export type OpenOnceOutcome =
  * means pending with its deadline not passed: an expired row the sweeper has not marked yet neither
  * answers a new request nor counts against the cap.
  */
-export function createApprovalOnce(params: Parameters<typeof createApproval>[0] & { content_hash: string; max_pending: number }): OpenOnceOutcome {
+export async function createApprovalOnce(params: Parameters<typeof createApproval>[0] & { content_hash: string; max_pending: number }): Promise<OpenOnceOutcome> {
   const tenant = params.tenant_id ?? 'default'
   if (!isContentHash(params.content_hash)) return { ok: false, reason: 'hash_mismatch' }
-  const outcome = db.transaction((): OpenOnceOutcome => {
+  const outcome = await dbx.tx(async (tx): Promise<OpenOnceOutcome> => {
     const now = nowSeconds()
-    const same = db.prepare(`
+    const same = await tx.get<Approval>(`
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
       ORDER BY requested_at DESC, id DESC LIMIT 1
-    `).get(params.agent_id, tenant, params.category, params.content_hash, now) as Approval | undefined
+    `, params.agent_id, tenant, params.category, params.content_hash, now)
     if (same) return { ok: true, approval: same, deduplicated: true }
-    const open = db.prepare(`
+    const open = await tx.get<{ n: number }>(`
       SELECT COUNT(*) AS n FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
-    `).get(params.agent_id, tenant, params.category, now) as { n: number }
+    `, params.agent_id, tenant, params.category, now) as { n: number }
     if (open.n >= params.max_pending) return { ok: false, reason: 'too_many_pending' }
-    return { ok: true, approval: createApprovalSync(params), deduplicated: false }
-  }).immediate()
+    return { ok: true, approval: await createApproval(params, tx), deduplicated: false }
+  }, { mode: 'immediate' })
   if (outcome.ok && outcome.deduplicated) {
     try {
-      recordApprovalEventSync({ approval_id: outcome.approval.id, tenant_id: tenant, event: 'created_deduplicated', actor: params.agent_id })
+      await recordApprovalEvent({ approval_id: outcome.approval.id, tenant_id: tenant, event: 'created_deduplicated', actor: params.agent_id })
     } catch { /* the request stands without its journal row */ }
   }
   return outcome

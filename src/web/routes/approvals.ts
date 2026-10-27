@@ -300,7 +300,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const opened = createApprovalOnce({
+    const opened = await createApprovalOnce({
       id: randomUUID(),
       agent_id: requester,
       category: EMAIL_SEND_CATEGORY,
