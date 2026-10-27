@@ -57,12 +57,28 @@ export class UserFacingError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// StaleBackupError -- an import found a `.import-bak` left by an earlier one; route maps to 409 (not 500).
+// ImportConflictError -- the import cannot run now, and nothing was applied; route maps to 409 (not 500).
+//   StaleBackupError    an earlier import left a `.import-bak` that this one would overwrite
+//   ImportInProgressError  another apply is running in this process
 // ---------------------------------------------------------------------------
-export class StaleBackupError extends Error {
+export class ImportConflictError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ImportConflictError'
+  }
+}
+
+export class StaleBackupError extends ImportConflictError {
   constructor(message: string) {
     super(message)
     this.name = 'StaleBackupError'
+  }
+}
+
+export class ImportInProgressError extends ImportConflictError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ImportInProgressError'
   }
 }
 
@@ -1425,22 +1441,27 @@ const EMPTY_DIFF: DiffReport = {
   errors: [],
 }
 
-// Applying imports one at a time. The staged files carry fixed names (`<path>.import-new`, `<path>.import-bak`), so two
-// applies that overlap (a double click on the import button) would stage onto the same files and one of them would
-// fail its rename after its transaction had committed; and the database and the files of two different bundles could
-// end up mixed. The second apply waits for the first, then runs on the state the first left. A dry run writes
-// nothing and does not wait.
-let applyChain: Promise<unknown> = Promise.resolve()
+// One apply at a time. The staged files carry fixed names (`<path>.import-new`, `<path>.import-bak`), so two applies
+// that overlap (a double click on the import button) would stage onto the same files, one of them would fail its
+// rename after its transaction had committed, and the database and the files of two different bundles could end up
+// mixed. A second apply is refused at once (409), it does not wait. A dry run writes nothing and is not limited.
+// The flag is per process: two dashboard processes on one store are not covered.
+let applyInProgress = false
 
 export async function importFleet(
   rawBody: string,
   options: { vaultPassword?: string; apply: boolean },
 ): Promise<DiffReport | ImportResult> {
   if (!options.apply) return runImportFleet(rawBody, options)
-  const run = applyChain.then(() => runImportFleet(rawBody, options))
-  // The chain only orders the runs: a failed run must not stop the next one, and its error goes to its own caller.
-  applyChain = run.catch(() => undefined)
-  return run
+  if (applyInProgress) {
+    throw new ImportInProgressError('A fleet import is already in progress. Wait for it to finish, then import again.')
+  }
+  applyInProgress = true
+  try {
+    return await runImportFleet(rawBody, options)
+  } finally {
+    applyInProgress = false
+  }
 }
 
 async function runImportFleet(

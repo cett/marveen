@@ -110,9 +110,16 @@ backups stay for the operator), the error says that the database changes remain,
 restored is named in the message. A successful import removes every backup. The remaining risk is that second case:
 a process killed between the commit and the last rename leaves the database applied and some files not.
 
-The staged files have fixed names, so applies are serialized in the process: a second apply (a double click on the
-import button) waits for the first and then runs on the state the first left; a failed apply does not stop the one
-behind it. A dry run writes nothing and does not wait. Two dashboard processes on one store are not covered.
+The staged files have fixed names, so one apply runs at a time in the process: a second apply (a double click on the
+import button) is refused at once with `ImportInProgressError`, answered as 409 `conflict`; it does not wait and
+touches nothing. The flag is released when the first apply ends, whether it succeeded or failed. A dry run writes
+nothing and is not limited. Two dashboard processes on one store are not covered.
+
+An import also refuses to start staging a file whose `.import-bak` already exists (`StaleBackupError`, 409
+`conflict`): that backup was left by an import that could not restore the file, it may be the only copy of the
+previous content, and the backup of the new import would overwrite it. Restore it onto its file or remove it, then
+import again. A `.import-new` left behind by a crashed process is harmless (the next import overwrites it) but is not
+cleaned up on its own; a cleanup at start-up is a separate card.
 
 ## The authentication path fails closed
 
@@ -195,7 +202,7 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   restored after a failed finish stays as it is and is named in the error (its `.import-bak` copy is kept); and a
   `.import-new` left by a crash is overwritten by the next import, not cleaned up on its own. A `.import-bak` left
   behind is never overwritten: the next import that would stage the same file is refused (409 `conflict`) until the
-  backup is restored onto its file or removed by hand.
+  backup is restored onto its file or removed by hand. Applies are not serialized across processes.
 - **The federation disable branches ignore the result of `setFederationEnabledPreservingFile`.** A `false` return
   (the file could not be written) is not looked at, so the switch can read as off while the gate stays on.
 - **Creating a dashboard user twice in parallel** ends with a UNIQUE error answered as 500 for the second request
