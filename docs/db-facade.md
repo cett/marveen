@@ -84,6 +84,46 @@ during the call (`helpers/single-transaction.ts`), and expects exactly one trans
 `getDb().prepare(...)` in such a function is covered by the `db-outside-sql` ratchet, not by this test.
 A new read-then-write function is one more case in that table.
 
+## The fleet import is two-phase
+
+`importFleet` (`web/fleet-transfer.ts`) writes files and database rows, and a failing import must leave nothing half
+applied. The rule: **files are staged before the transaction and renamed after it; every database write is in one
+transaction; the vault step and the `.env` mirror come last.**
+
+1. Everything pure is decided first (the cost budgets and the federation document are validated, the `.env` identity
+   is picked, the skill rows are listed).
+2. Each file is written as `<path>.import-new`; a file it would replace is copied to `<path>.import-bak`. No final
+   path changes (only directories that did not exist are created, and removed again on a failure).
+3. ONE `dbx.tx` holds all the database writes: the settings (autonomy, model profiles, auto-restart, desired agents,
+   model fallback, terminal input, federation, cost budgets, egress allowlist), the skill rows (an error there fails
+   the import) and the per-table rows. The body holds no file I/O, network or timer. `seedSkillIfAbsent()` still
+   writes on the raw connection; on the one SQLite connection that statement runs inside the open transaction and
+   rolls back with it (see the raw-writer limit below), which `fleet-transfer-two-phase.test.ts` pins.
+4. After the commit: the staged files are renamed into place, the model-profile, agent-settings and system-config
+   caches are re-read (and the federation cache dropped), then the vault step (its two files and the bindings), then
+   the `.env` mirror.
+
+A failure before the commit removes the staged files and the backups and re-reads the caches (a write-through cache
+shows a new value inside the transaction and keeps it after the rollback); every final path is as it was. A failure
+after the commit cannot roll the database back: each renamed file is restored from its `.import-bak` copy, and that
+backup is removed once the restored file was read again and equals it; the error says that the database changes
+remain. A file whose restore fails (or reads back different) keeps its backup, is named in the message, and its
+backup is what makes the next import refuse to stage that file (`StaleBackupError`); the backups of the other files
+are gone, so a cleanly restored failure blocks nothing. A successful import removes every backup. The remaining risk
+is that second case: a process killed between the commit and the last rename leaves the database applied and some
+files not.
+
+The staged files have fixed names, so one apply runs at a time in the process: a second apply (a double click on the
+import button) is refused at once with `ImportInProgressError`, answered as 409 `conflict`; it does not wait and
+touches nothing. The flag is released when the first apply ends, whether it succeeded or failed. A dry run writes
+nothing and is not limited. Two dashboard processes on one store are not covered.
+
+An import also refuses to start staging a file whose `.import-bak` already exists (`StaleBackupError`, 409
+`conflict`): that backup was left by an import that could not restore the file, it may be the only copy of the
+previous content, and the backup of the new import would overwrite it. Restore it onto its file or remove it, then
+import again. A `.import-new` left behind by a crashed process is harmless (the next import overwrites it) but is not
+cleaned up on its own; a cleanup at start-up is a separate card.
+
 ## The authentication path fails closed
 
 A function that decides who a caller is (`resolveAuth`, the device-key and API-token lookups) answers *deny* when
@@ -159,10 +199,19 @@ drown it. It is NOT enabled; the four async rules stay the lint guard.
 
 These are behaviours of the code today, listed so that nobody mistakes them for a promise:
 
-- **The fleet import writes some state before its transaction.** The autonomy rows, the model profiles, the cost
-  budgets, the egress allowlist and the system-config values are written before the import's own transaction, and
-  the agent files are written outside it: when the transaction fails, they are NOT rolled back. A two-phase import
-  (stage the files, one transaction for every database write, rename and reload after the commit) is a separate card.
+- **The fleet import cannot undo a failure after its commit.** Every database write is in the one transaction and a
+  failure before it leaves nothing applied (see "The fleet import is two-phase"). What remains: a process killed
+  between the commit and the last rename leaves the database applied and some files not; a file that could not be
+  restored after a failed finish stays as it is and is named in the error (its `.import-bak` copy is kept); and a
+  `.import-new` left by a crash is overwritten by the next import, not cleaned up on its own. A `.import-bak` left
+  behind is never overwritten: the next import that would stage the same file is refused (409 `conflict`) until the
+  backup is restored onto its file or removed by hand. The one-apply-at-a-time flag lives in the process memory and
+  assumes a single dashboard process: PostgreSQL phase 2 with several processes (or a background worker running an
+  import) needs a database-level lock instead (an advisory lock or a lock row), because the flag does not see another
+  process.
+- **A failed fleet import can leave empty parent directories.** The staging step tracks only the deepest directory it
+  created (`trackedMkdir`), so after a failed import the missing parent directories above it may remain, empty. In
+  practice this is harmless: `~/.claude` always exists, and an empty directory changes no behaviour.
 - **The federation disable branches ignore the result of `setFederationEnabledPreservingFile`.** A `false` return
   (the file could not be written) is not looked at, so the switch can read as off while the gate stays on.
 - **Creating a dashboard user twice in parallel** ends with a UNIQUE error answered as 500 for the second request

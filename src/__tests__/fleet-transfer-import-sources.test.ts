@@ -27,9 +27,15 @@ afterAll(() => {
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
 
+// The main agent's channel pairing is written under the home directory: keep it in the throwaway root, not the real one.
+vi.mock('node:os', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:os')>()), homedir: () => TMP_ROOT }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [], invalidateModelProfileMapCache: () => {} }))
-vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn() }))
+// A real write: the import stages each file and renames it into place after the commit.
+vi.mock('../web/atomic-write.js', async () => {
+  const { writeFileSync } = await import('node:fs')
+  return { atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8') }
+})
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: TASKS_DIR }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
