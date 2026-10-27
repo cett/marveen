@@ -39,46 +39,46 @@ beforeEach(() => {
 })
 
 describe('createPairOrphanChecker', () => {
-  it('a pair that holds is not an orphan', () => {
+  it('a pair that holds is not an orphan', async () => {
     const orphan = createPairOrphanChecker()
-    expect(orphan('default', 'agent-a')).toBe(false)
-    expect(orphan('tenant-b', 'agent-a')).toBe(false)
+    expect(await orphan('default', 'agent-a')).toBe(false)
+    expect(await orphan('tenant-b', 'agent-a')).toBe(false)
   })
 
-  it('a non-default tenant whose agent no longer serves it is an orphan', () => {
+  it('a non-default tenant whose agent no longer serves it is an orphan', async () => {
     mockServes.mockImplementation((agent, tenant) => !(agent === 'agent-a' && tenant === 'tenant-b'))
     const orphan = createPairOrphanChecker()
-    expect(orphan('tenant-b', 'agent-a')).toBe(true)
-    expect(orphan('tenant-b', 'agent-b')).toBe(false)
+    expect(await orphan('tenant-b', 'agent-a')).toBe(true)
+    expect(await orphan('tenant-b', 'agent-b')).toBe(false)
   })
 
-  it('the fleet main agent in a non-default tenant, and "all" there, are orphans (policy, no lookup needed)', () => {
+  it('the fleet main agent in a non-default tenant, and "all" there, are orphans (policy, no lookup needed)', async () => {
     const orphan = createPairOrphanChecker()
-    expect(orphan('tenant-b', 'main-agent')).toBe(true)
-    expect(orphan('tenant-b', 'all')).toBe(true)
+    expect(await orphan('tenant-b', 'main-agent')).toBe(true)
+    expect(await orphan('tenant-b', 'all')).toBe(true)
   })
 
-  it('an agent enabled only for other tenants no longer serves the default tenant', () => {
+  it('an agent enabled only for other tenants no longer serves the default tenant', async () => {
     mockEnabledFor.mockReturnValue(['tenant-b'])
-    expect(createPairOrphanChecker()('default', 'agent-a')).toBe(true)
+    expect(await createPairOrphanChecker()('default', 'agent-a')).toBe(true)
   })
 
-  it('no tenant counts as the default tenant, no agent as the main agent', () => {
+  it('no tenant counts as the default tenant, no agent as the main agent', async () => {
     const orphan = createPairOrphanChecker()
-    expect(orphan(undefined, undefined)).toBe(false)
-    expect(orphan(null, 'agent-a')).toBe(false)
+    expect(await orphan(undefined, undefined)).toBe(false)
+    expect(await orphan(null, 'agent-a')).toBe(false)
   })
 
-  it('answers once per distinct pair for the life of the checker (one tick)', () => {
+  it('answers once per distinct pair for the life of the checker (one tick)', async () => {
     mockServes.mockReturnValue(true)
     const orphan = createPairOrphanChecker()
-    for (let i = 0; i < 20; i++) orphan('tenant-b', 'agent-a')
+    for (let i = 0; i < 20; i++) await orphan('tenant-b', 'agent-a')
     expect(mockServes).toHaveBeenCalledTimes(1)
   })
 
-  it('a failed lookup never stops a task from firing', () => {
+  it('a failed lookup never stops a task from firing', async () => {
     mockServes.mockImplementation(() => { throw new Error('db gone') })
-    expect(createPairOrphanChecker()('tenant-b', 'agent-a')).toBe(false)
+    expect(await createPairOrphanChecker()('tenant-b', 'agent-a')).toBe(false)
   })
 })
 
@@ -177,7 +177,7 @@ describe('schedule-runner: the fire loop refuses an orphan task', () => {
   const loopStart = SRC.indexOf('for (const task of tasks) {\n      if (!task.enabled || !isTaskLive(task))')
 
   it('the orphan set covers runnable, non-command tasks only', () => {
-    expect(SRC).toMatch(/t\.enabled && isTaskLive\(t\) && t\.type !== 'command' && pairOrphan\(t\.tenantId, t\.agent\)/)
+    expect(SRC).toMatch(/t\.enabled && isTaskLive\(t\) && t\.type !== 'command' && await pairOrphan\(t\.tenantId, t\.agent\)/)
   })
 
   it('the ledger is told which tasks are orphans', () => {

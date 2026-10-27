@@ -93,9 +93,9 @@ describe('card <-> label associations', () => {
     expect(map.has('card-c')).toBe(false)
   })
 
-  it('drops a card label association when the card is deleted', () => {
+  it('drops a card label association when the card is deleted', async () => {
     addLabelToCard('card-a', 'lbl-bug')
-    expect(deleteKanbanCard('card-a')).toBe(true)
+    expect(await deleteKanbanCard('card-a')).toBe(true)
     // The label itself must survive -- only the association is gone.
     expect(getLabel('lbl-bug')).toBeDefined()
     expect(getLabelsForAllCards().has('card-a')).toBe(false)

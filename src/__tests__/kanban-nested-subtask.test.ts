@@ -58,15 +58,15 @@ describe('createKanbanCard: depth', () => {
     await createKanbanCard({ id: 'card-a', title: 'Root' })
     await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
     await createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
-    expect(() =>
+    await expect(
       createKanbanCard({ id: 'card-d', title: 'Great-grandchild', parent_id: 'card-c' })
-    ).toThrow(/max depth/)
+    ).rejects.toThrow(/max depth/)
   })
 
-  it('throws when parent card does not exist', () => {
-    expect(() =>
+  it('throws when parent card does not exist', async () => {
+    await expect(
       createKanbanCard({ id: 'card-b', title: 'Orphan', parent_id: 'nonexistent' })
-    ).toThrow(/not found/)
+    ).rejects.toThrow(/not found/)
   })
 })
 
@@ -137,7 +137,7 @@ describe('deleteKanbanCard: promote children to grandparent', () => {
     await createKanbanCard({ id: 'card-b', title: 'Parent', parent_id: 'card-a' })
     await createKanbanCard({ id: 'card-c', title: 'Child', parent_id: 'card-b' })
 
-    deleteKanbanCard('card-b')
+    await deleteKanbanCard('card-b')
 
     const child = getKanbanCard('card-c')
     expect(child).toBeDefined()
@@ -149,7 +149,7 @@ describe('deleteKanbanCard: promote children to grandparent', () => {
     await createKanbanCard({ id: 'card-a', title: 'Parent' })
     await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
 
-    deleteKanbanCard('card-a')
+    await deleteKanbanCard('card-a')
 
     const child = getKanbanCard('card-b')
     expect(child).toBeDefined()
@@ -163,7 +163,7 @@ describe('deleteKanbanCard: promote children to grandparent', () => {
     await createKanbanCard({ id: 'card-c', title: 'Child of Mid', parent_id: 'card-b' })
 
     // Delete card-a (top-level). card-b becomes top-level, card-c goes to depth 1.
-    deleteKanbanCard('card-a')
+    await deleteKanbanCard('card-a')
 
     const mid = getKanbanCard('card-b')
     expect(mid!.parent_id).toBeNull()

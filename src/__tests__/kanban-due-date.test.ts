@@ -41,9 +41,9 @@ describe('the db layer', () => {
   })
 
   it('throws on an invalid value instead of writing it', async () => {
-    expect(() => createKanbanCard({ id: 'c2', title: 't', due_date: 'tomorrow' })).toThrow(/due_date/)
+    await expect(createKanbanCard({ id: 'c2', title: 't', due_date: 'tomorrow' })).rejects.toThrow(/due_date/)
     await createKanbanCard({ id: 'c3', title: 't' })
-    expect(() => updateKanbanCard('c3', { due_date: 'soon' as unknown as number })).toThrow(/due_date/)
+    await expect(updateKanbanCard('c3', { due_date: 'soon' as unknown as number })).rejects.toThrow(/due_date/)
     expect(stored('c3').t).toBe('null')
   })
 })

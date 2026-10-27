@@ -57,7 +57,7 @@ beforeEach(() => {
   })
   mockStatSync.mockReset()
   mockReaddirSync.mockReset().mockReturnValue([]) // empty store by default at scan time
-  mockLogStoreFileEvent.mockReset()
+  mockLogStoreFileEvent.mockReset().mockResolvedValue(undefined)
   mockLoggerInfo.mockReset()
   mockLoggerWarn.mockReset()
 })
@@ -284,14 +284,15 @@ describe('watch callback: event classification', () => {
 
   it('a logStoreFileEvent failure is caught and logged as a warning', async () => {
     mockStatSync.mockReturnValue({ size: 5 })
-    mockLogStoreFileEvent.mockImplementationOnce(() => { throw new Error('db locked') })
+    mockLogStoreFileEvent.mockRejectedValueOnce(new Error('db locked'))
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     expect(() => capturedCallback!('rename', 'c.md')).not.toThrow()
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
+    // The write is async: its failure reaches the logger a few microtasks after the callback returned.
+    await vi.waitFor(() => expect(mockLoggerWarn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error), rel: 'c.md' }),
       'store-watcher: failed to log new file event',
-    )
+    ))
   })
 
   it('normalizes a Windows-style backslash path to forward slashes', async () => {

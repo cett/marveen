@@ -28,13 +28,13 @@ beforeEach(() => {
 describe('deleteKanbanCard transactional FK safety', () => {
   it('deletes a card with no comments and no children', async () => {
     await createKanbanCard({ id: 'card-a', title: 'Solo card' })
-    const deleted = deleteKanbanCard('card-a')
+    const deleted = await deleteKanbanCard('card-a')
     expect(deleted).toBe(true)
     expect(getKanbanCard('card-a')).toBeUndefined()
   })
 
-  it('returns false when the card does not exist', () => {
-    const deleted = deleteKanbanCard('nonexistent-card')
+  it('returns false when the card does not exist', async () => {
+    const deleted = await deleteKanbanCard('nonexistent-card')
     expect(deleted).toBe(false)
   })
 
@@ -43,7 +43,7 @@ describe('deleteKanbanCard transactional FK safety', () => {
     addKanbanComment('card-b', 'author', 'first comment')
     addKanbanComment('card-b', 'author', 'second comment')
 
-    const deleted = deleteKanbanCard('card-b')
+    const deleted = await deleteKanbanCard('card-b')
     expect(deleted).toBe(true)
     expect(getKanbanCard('card-b')).toBeUndefined()
     // Comments must be gone too, not left as orphans.
@@ -56,7 +56,7 @@ describe('deleteKanbanCard transactional FK safety', () => {
     await createKanbanCard({ id: 'child-1', title: 'Child A', parent_id: 'parent-1' })
     await createKanbanCard({ id: 'child-2', title: 'Child B', parent_id: 'parent-1' })
 
-    const deleted = deleteKanbanCard('parent-1')
+    const deleted = await deleteKanbanCard('parent-1')
     expect(deleted).toBe(true)
     expect(getKanbanCard('parent-1')).toBeUndefined()
 
