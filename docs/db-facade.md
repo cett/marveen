@@ -122,3 +122,16 @@ The tests that open the database by hand are moved over module by module.
 
 The migration runner (`db-migrations.ts`) and `config.ts` use their own connections and do not go through the
 lock. The channel coordinator is a separate process. Neither is serialized by `dbx.tx`.
+
+A write on the RAW connection (`db.prepare(...).run()`, `db.transaction(...)()`) is not serialized by the lock
+either. On the one SQLite connection it does not wait: while a `dbx.tx` is open (between its awaits) such a write
+runs INSIDE that transaction, a raw transaction becomes a savepoint of it, and both are rolled back with it.
+`src/__tests__/approval-vault-statements.test.ts` pins this. Until the tenant delete (`deleteTenant` in
+`db/observability.ts`, which still writes `approvals` on the raw connection) moves onto `dbx`, treat the approval
+transactions (`consumeApproval`, `claimApproval`, `createApprovalOnce`) as exposed to it; on PostgreSQL (several
+connections) the raw writer would no longer be inside the transaction at all.
+
+The approval transactions keep the modes of the synchronous transactions they replaced: `consumeApproval` and
+`claimApproval` the default (deferred) one, `createApprovalOnce` `immediate`. Their guarded `UPDATE ... WHERE` is
+the line that decides when another connection or process writes between the read and the write; the lock only
+keeps other facade callers out of the body.
