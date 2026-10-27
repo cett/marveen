@@ -82,6 +82,29 @@ describe('boot-synchronous twins stay inside the boot chain', () => {
     expect(taggedTwins(SOURCES)).toEqual(Object.keys(BOOT_SYNC_TWINS).sort())
   })
 
+  // A synchronous twin of ANY db function is declared with a name ending in `Sync`. Every such declaration in
+  // src/db (private ones included) must be one of the tagged boot twins above: the private `createApprovalSync`,
+  // `getApprovalSync` and `recordApprovalEventSync` of the vault module (removed with the approvals step) were
+  // exactly this shape and were not in the table, because they were not exported.
+  it('src/db declares no *Sync function that is not a boot twin', () => {
+    const declared: string[] = []
+    for (const [rel, src] of SOURCES) {
+      if (!rel.startsWith('db/')) continue
+      for (const m of stripComments(src).matchAll(/\bfunction\s+(\w+Sync)\b/g)) declared.push(m[1]!)
+    }
+    expect(declared.length).toBeGreaterThan(0) // the scan sees the real twins
+    expect(declared.sort()).toEqual(declared.filter((n) => n in BOOT_SYNC_TWINS).sort())
+  })
+
+  // The modules that have moved completely onto the facade keep no raw statement: the vault module (SSH keys,
+  // servers, the approvals and their journal) and the session module. A raw `db.prepare(...)` or a raw
+  // `db.transaction(...)` there would run beside the facade's transaction lock.
+  it.each(['db/vault.ts', 'db/sessions.ts'])('%s has no statement on the raw connection', (rel) => {
+    const src = stripComments(SOURCES.get(rel) ?? '')
+    expect(src.length).toBeGreaterThan(1000)
+    expect(src).not.toMatch(/\bdb\s*\.\s*(prepare|exec|transaction|pragma)\b/)
+  })
+
   // Negative controls for the detector: without them a regex that matches nothing would pass every row above.
   describe('the detector', () => {
     const sources = new Map<string, string>([
