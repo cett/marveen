@@ -110,6 +110,10 @@ backups stay for the operator), the error says that the database changes remain,
 restored is named in the message. A successful import removes every backup. The remaining risk is that second case:
 a process killed between the commit and the last rename leaves the database applied and some files not.
 
+The staged files have fixed names, so applies are serialized in the process: a second apply (a double click on the
+import button) waits for the first and then runs on the state the first left; a failed apply does not stop the one
+behind it. A dry run writes nothing and does not wait. Two dashboard processes on one store are not covered.
+
 ## The authentication path fails closed
 
 A function that decides who a caller is (`resolveAuth`, the device-key and API-token lookups) answers *deny* when
@@ -185,10 +189,11 @@ drown it. It is NOT enabled; the four async rules stay the lint guard.
 
 These are behaviours of the code today, listed so that nobody mistakes them for a promise:
 
-- **The fleet import writes some state before its transaction.** The autonomy rows, the model profiles, the cost
-  budgets, the egress allowlist and the system-config values are written before the import's own transaction, and
-  the agent files are written outside it: when the transaction fails, they are NOT rolled back. A two-phase import
-  (stage the files, one transaction for every database write, rename and reload after the commit) is a separate card.
+- **The fleet import cannot undo a failure after its commit.** Every database write is in the one transaction and a
+  failure before it leaves nothing applied (see "The fleet import is two-phase"). What remains: a process killed
+  between the commit and the last rename leaves the database applied and some files not; a file that could not be
+  restored after a failed finish stays as it is and is named in the error (its `.import-bak` copy is kept); and a
+  `.import-new` or `.import-bak` left by a crash is overwritten by the next import, not cleaned up on its own.
 - **The federation disable branches ignore the result of `setFederationEnabledPreservingFile`.** A `false` return
   (the file could not be written) is not looked at, so the switch can read as off while the gate stays on.
 - **Creating a dashboard user twice in parallel** ends with a UNIQUE error answered as 500 for the second request
