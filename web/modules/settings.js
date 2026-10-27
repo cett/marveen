@@ -1401,6 +1401,9 @@ function buildSettingRow(def, isAdmin) {
 
 async function saveAllSettings() {
   if (settingsDirty.size === 0) return
+  // Switching the RBAC gate to shadow turns a protection off: never without an explicit confirmation.
+  const rbacEntry = settingsDirty.get('RBAC_MODE')
+  if (rbacEntry && settingInputValue(rbacEntry.input, rbacEntry.type) === 'shadow' && !confirm(t('settings.rbac_mode.confirm_loosen'))) return
   const btn = document.getElementById('settingsSaveAllBtn')
   if (btn) { btn.disabled = true; btn.textContent = t('settings.save_btn.saving') }
 

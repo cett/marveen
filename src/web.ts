@@ -4,9 +4,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE, STORE_DIR, TOKEN_IDENTITY_MODE } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR, TOKEN_IDENTITY_MODE } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { loadOrCreateClaimSigningKey } from './web/claim-signature.js'
+import { getRbacMode } from './web/rbac-mode.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -312,13 +313,13 @@ export function startWebServer(port = 3420): http.Server {
       return
     }
     // RBAC gate: role + permission enforcement, hard or shadow, controlled by
-    // RBAC_MODE env ('enforce' default). In shadow mode (RBAC_MODE=shadow, asked for by name)
-    // the gate only records would-deny entries and blocks nothing.
+    // the RBAC_MODE system_config row (getRbacMode(), enforce unless shadow was asked for by name on
+    // the Settings page). In shadow mode the gate only records would-deny entries and blocks nothing.
     // runRbacGate also persists the decisions worth observing to rbac_shadow_log
     // (in BOTH modes), so the observation window is measurable from the database.
     // Runs only for gated, authenticated requests (kind !== 'none').
     if (requiresAuth(path, method) && auth.kind !== 'none') {
-      if (!runRbacGate(auth, method, path, res, RBAC_MODE)) return
+      if (!runRbacGate(auth, method, path, res, getRbacMode())) return
     }
 
     const role = auth.kind !== 'none' ? resolveRole(auth) : undefined

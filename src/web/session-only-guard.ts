@@ -52,6 +52,17 @@ export function denyUnlessHumanSession(ctx: RouteContext, action: string): boole
 }
 
 /**
+ * Unconditional variant for a change that switches a protection off (RBAC_MODE -> shadow): only a person
+ * logged in to the dashboard as a global admin passes, whatever APPROVAL_HUMAN_ONLY_ENFORCE says and
+ * whether or not a dashboard user exists. Every token (the main agent's and the operator's included), a
+ * device key and a federation peer is refused, and the attempt is journalled. Returns true when it refused.
+ */
+export function denyUnlessHumanSessionAlways(ctx: RouteContext, action: string, hint: string): boolean {
+  if (humanSessionOf(ctx.req)) return false
+  return refuse(ctx, action, hint)
+}
+
+/**
  * Guard for the routes that hand out a credential (API token, browser enrollment code, device key).
  * With the switch on, a fleet agent token, any token that carries an agent identity (the main agent's
  * included) and any caller that is neither a token nor a session (a device key, a federation peer) is

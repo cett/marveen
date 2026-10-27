@@ -5,6 +5,8 @@ import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.j
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
+import { RBAC_MODE_KEY, parseRbacMode, refreshRbacMode, notifyRbacMode } from '../rbac-mode.js'
+import { denyUnlessHumanSessionAlways } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
 
 const SECRET_MASK = '***'
@@ -87,6 +89,22 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
+      // Loosening the RBAC gate is the one write that switches a protection off, so it needs a person:
+      // a token, the main agent's included, must not be able to open its own gate. Tightening is open
+      // to any admin caller. Checked before anything is written.
+      const isRbacMode = key === RBAC_MODE_KEY
+      const looseningRbac = isRbacMode && parseRbacMode(validation.value) === 'shadow'
+      if (
+        looseningRbac &&
+        denyUnlessHumanSessionAlways(
+          ctx,
+          'settings.rbac_mode.loosen',
+          'Switching the RBAC gate to shadow needs a person logged in to the dashboard as a global admin',
+        )
+      ) {
+        return true
+      }
+
       const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
       // A setting is fleet-wide: no tenant. The actor string comes from the request body, so it is
       // an audit label only and never decides a tenant.
@@ -109,6 +127,17 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       const loggedNewValue = def.secret ? SECRET_MASK : validation.value!
       logConfigChange(key, loggedOldValue, loggedNewValue, resolvedActor)
       logger.info({ key, oldValue: loggedOldValue, newValue: loggedNewValue }, 'Setting updated')
+      if (isRbacMode) {
+        // The write and its journal row are both in: the cache can now read a consistent pair.
+        refreshRbacMode()
+        if (looseningRbac) {
+          logger.warn({ actor: resolvedActor, oldValue }, 'RBAC_MODE set to shadow: the RBAC gate no longer blocks')
+          notifyRbacMode(
+            `[SECURITY] RBAC_MODE was switched to shadow from the dashboard (${resolvedActor}). ` +
+              'The RBAC gate now only records would-deny entries and blocks nothing. Switch back to enforce on the Settings page.',
+          )
+        }
+      }
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {
       logger.error({ err }, 'Failed to update setting')

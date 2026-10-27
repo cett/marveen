@@ -941,6 +941,8 @@ window._i18n.en = {
   'settings.col.description':    'Description',
   'settings.col.restart':        'Restart',
   'settings.desc.MAIN_AGENT_ISOLATED_CONFIG':  'macOS only: give the main channels agent its own isolated CLAUDE_CONFIG_DIR (like the sub-agents), so it authenticates from the stable fleet setup-token instead of the rotating macOS Keychain (which periodically expires and 401s -> "Please run /login"). No effect without a token or on non-macOS; takes effect on the next channels restart.',
+  'settings.desc.RBAC_MODE':                   'Mode of the RBAC gate. enforce = the gate refuses unauthorised requests (default). shadow = the gate only logs what it would refuse but lets everything through: a loss of protection, for an observation period only. Takes effect without a restart, within 5 seconds. Tightening is open to any admin; loosening (shadow) needs a person logged in as a global admin, and only takes effect when the change is in the change log as well. A typo, an empty or unknown value, or a read error means enforce. The environment value RBAC_MODE=enforce always overrides a shadow set here.',
+  'settings.rbac_mode.confirm_loosen':        'Switch the RBAC gate to shadow? From now on it only logs what it would refuse and blocks nothing. Switch back to enforce as soon as the observation period is over.',
   'settings.desc.KANBAN_WIP_PLANNED':          'WIP limit for the "planned" column (max. card count). 0 = unlimited.',
   'settings.desc.KANBAN_WIP_IN_PROGRESS':      'WIP limit for the "in_progress" column (max. card count). 0 = unlimited.',
   'settings.desc.KANBAN_WIP_TESTING':          'WIP limit for the "testing" column (max. card count). 0 = unlimited.',

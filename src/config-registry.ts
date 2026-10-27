@@ -719,6 +719,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'RBAC_MODE',
+    type: 'string',
+    default: 'enforce',
+    valueSet: ['enforce', 'shadow'],
+    description: 'Az RBAC kapu módja. enforce = a kapu elutasítja a jogosulatlan kéréseket (alapértelmezés). shadow = a kapu csak naplózza, mit utasítana el (rbac_shadow_log), de mindent átenged: védelem-vesztés, csak megfigyelési időszakra. Újraindítás nélkül, legfeljebb 5 másodpercen belül érvényes. A szigorítás (shadow -> enforce) bármely admin hívónak engedett; a lazítás (enforce -> shadow) csak bejelentkezett, globális admin emberi munkamenetnek (token, a főágens és az operátor tokenje sem), és csak akkor lép életbe, ha a config_change_log utolsó RBAC_MODE sora is shadow. Elgépelés, üres vagy ismeretlen érték, olvasási hiba: enforce. A környezet RBAC_MODE=enforce értéke mindig felülírja az itteni shadow-t (vészfék).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Observability module (OTel push exporter, #800/#802) ---
   {
     key: 'OTEL_EXPORT_ENABLED',

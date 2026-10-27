@@ -400,6 +400,15 @@ export function logConfigChange(
   ).run(key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now)
 }
 
+// Newest journalled value for one key, or undefined when the key was never journalled. The same
+// created_at/id ordering as getRecentConfigChanges: two saves in one second still resolve to the later one.
+export function getLastConfigChangeValue(key: string): string | null | undefined {
+  const row = db
+    .prepare('SELECT new_value FROM config_change_log WHERE key = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+    .get(key) as { new_value: string | null } | undefined
+  return row === undefined ? undefined : row.new_value
+}
+
 export interface ConfigChangeLogRow {
   id: number
   key: string

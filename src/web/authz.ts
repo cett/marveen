@@ -145,7 +145,7 @@ export function resolveTenantId(auth: AuthResult): string | null {
 // unit-testable without spinning up an HTTP server.
 //
 //   shadow  -- logs a would-deny via `onWouldDeny`, never writes a 4xx response.
-//              The request always proceeds. Only when RBAC_MODE=shadow is set by name.
+//              The request always proceeds. Only when the RBAC_MODE setting is shadow, asked for by name.
 //   enforce -- calls enforcePermission, writes 401/403/503, returns false on deny.
 //              `onDenied` fires (with the reason) just before the refusal is written,
 //              so the refusal can be recorded durably.
