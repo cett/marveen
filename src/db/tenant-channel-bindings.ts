@@ -51,23 +51,30 @@ export async function listChannelBindings(filter: { tenantId?: string; agentId?:
 /** Bind a source to a tenant; re-binding an existing source moves it to the new tenant. */
 export async function setChannelBinding(agentId: string, channel: string, externalId: string, tenantId: string, createdBy: string): Promise<TenantChannelBinding> {
   const ch = channel.toLowerCase()
-  const previous = await getChannelBindingTenant(agentId, ch, externalId)
-  await dbx.run(`
-    INSERT INTO tenant_channel_bindings (agent_id, channel, external_id, tenant_id, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
-    ON CONFLICT(agent_id, channel, external_id) DO UPDATE SET
-      tenant_id  = excluded.tenant_id,
-      updated_at = excluded.updated_at
-  `, agentId, ch, externalId, tenantId, createdBy)
-  if (previous !== tenantId) await invalidateAgentTenantContext(agentId)
-  return (await dbx.get(`SELECT ${COLUMNS} FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?`, agentId, ch, externalId)) as TenantChannelBinding
+  // ONE transaction: the binding and the drop of the active-tenant context change together. As two statements, a
+  // failure between them would leave the new binding with the old context, an agent serving the previous tenant.
+  return await dbx.tx(async (tx) => {
+    const previous = (await tx.get<{ tenant_id: string }>('SELECT tenant_id FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?', agentId, ch, externalId))?.tenant_id ?? null
+    await tx.run(`
+      INSERT INTO tenant_channel_bindings (agent_id, channel, external_id, tenant_id, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
+      ON CONFLICT(agent_id, channel, external_id) DO UPDATE SET
+        tenant_id  = excluded.tenant_id,
+        updated_at = excluded.updated_at
+    `, agentId, ch, externalId, tenantId, createdBy)
+    if (previous !== tenantId) await tx.run('DELETE FROM agent_tenant_context WHERE agent_id = ?', agentId)
+    return (await tx.get(`SELECT ${COLUMNS} FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?`, agentId, ch, externalId)) as TenantChannelBinding
+  })
 }
 
 /** True iff a binding existed and was removed (the source then falls back to the default tenant). */
 export async function deleteChannelBinding(agentId: string, channel: string, externalId: string): Promise<boolean> {
-  const removed = (await dbx.run('DELETE FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?', agentId, channel.toLowerCase(), externalId)).changes > 0
-  if (removed) await invalidateAgentTenantContext(agentId)
-  return removed
+  // ONE transaction, for the same reason as setChannelBinding.
+  return await dbx.tx(async (tx) => {
+    const removed = (await tx.run('DELETE FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?', agentId, channel.toLowerCase(), externalId)).changes > 0
+    if (removed) await tx.run('DELETE FROM agent_tenant_context WHERE agent_id = ?', agentId)
+    return removed
+  })
 }
 
 /**
