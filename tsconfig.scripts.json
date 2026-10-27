@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "incremental": false
+  },
+  "include": [
+    "scripts/agent-tokens.ts",
+    "scripts/budget-alert-check.ts",
+    "scripts/dashboard-user.ts",
+    "scripts/install-seed-tenant.ts",
+    "scripts/materialize-skills.ts",
+    "scripts/migrate-legacy-store-docs.ts",
+    "scripts/migrate-schedules-to-db.ts",
+    "scripts/regen-skills.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}
