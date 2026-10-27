@@ -105,10 +105,13 @@ transaction; the vault step and the `.env` mirror come last.**
 
 A failure before the commit removes the staged files and the backups and re-reads the caches (a write-through cache
 shows a new value inside the transaction and keeps it after the rollback); every final path is as it was. A failure
-after the commit cannot roll the database back: the renamed files are restored from their `.import-bak` copies (the
-backups stay for the operator), the error says that the database changes remain, and a file that could not be
-restored is named in the message. A successful import removes every backup. The remaining risk is that second case:
-a process killed between the commit and the last rename leaves the database applied and some files not.
+after the commit cannot roll the database back: each renamed file is restored from its `.import-bak` copy, and that
+backup is removed once the restored file was read again and equals it; the error says that the database changes
+remain. A file whose restore fails (or reads back different) keeps its backup, is named in the message, and its
+backup is what makes the next import refuse to stage that file (`StaleBackupError`); the backups of the other files
+are gone, so a cleanly restored failure blocks nothing. A successful import removes every backup. The remaining risk
+is that second case: a process killed between the commit and the last rename leaves the database applied and some
+files not.
 
 The staged files have fixed names, so one apply runs at a time in the process: a second apply (a double click on the
 import button) is refused at once with `ImportInProgressError`, answered as 409 `conflict`; it does not wait and
@@ -202,7 +205,10 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   restored after a failed finish stays as it is and is named in the error (its `.import-bak` copy is kept); and a
   `.import-new` left by a crash is overwritten by the next import, not cleaned up on its own. A `.import-bak` left
   behind is never overwritten: the next import that would stage the same file is refused (409 `conflict`) until the
-  backup is restored onto its file or removed by hand. Applies are not serialized across processes.
+  backup is restored onto its file or removed by hand. The one-apply-at-a-time flag lives in the process memory and
+  assumes a single dashboard process: PostgreSQL phase 2 with several processes (or a background worker running an
+  import) needs a database-level lock instead (an advisory lock or a lock row), because the flag does not see another
+  process.
 - **A failed fleet import can leave empty parent directories.** The staging step tracks only the deepest directory it
   created (`trackedMkdir`), so after a failed import the missing parent directories above it may remain, empty. In
   practice this is harmless: `~/.claude` always exists, and an empty directory changes no behaviour.

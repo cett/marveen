@@ -1125,9 +1125,10 @@ async function buildDiffReport(fleet: FleetJson): Promise<DiffReport> {
 //      step and the `.env` mirror (the vault stays last, as before).
 //
 // Backup rule. A failure before the commit never touched a final path, so the staged files AND the backups (a
-// redundant copy of files that are still in place) are removed. A failure after the commit restores the renamed
-// files from their backups and KEEPS those backups (they are the only copy of the previous content if a restore
-// itself fails); the backups of files that were never renamed are removed. A successful import removes every backup.
+// redundant copy of files that are still in place) are removed. A failure after the commit restores each renamed
+// file from its backup and removes that backup once the restored file is verified; a file whose restore fails keeps
+// its backup (the only copy of the previous content), and that backup makes the next import refuse to stage the
+// file. The backups of files that were never renamed are removed. A successful import removes every backup.
 
 const STAGE_SUFFIX = '.import-new'
 const BACKUP_SUFFIX = '.import-bak'
@@ -1210,9 +1211,10 @@ function finalizeStaged(entries: readonly WriteEntry[]): void {
 
 /**
  * Failure after the commit: put the final paths back as they were. A renamed file that replaced an existing one is
- * copied back from its backup (the backup stays, see the rule above); a renamed file that is new is removed; a file
- * that was never renamed loses its staged copy and its backup. Best effort and logged: returns the paths that could
- * not be restored.
+ * copied back from its backup, and once the copy is verified its backup is removed (a backup that stays is the sign
+ * of a file that is NOT back, see the rule above); a renamed file that is new is removed; a file that was never
+ * renamed loses its staged copy and its backup. Best effort and logged: returns the paths that could not be
+ * restored, and their backups remain.
  */
 function restoreFinalized(tracker: WriteTracker): string[] {
   const failed: string[] = []
@@ -1223,8 +1225,16 @@ function restoreFinalized(tracker: WriteTracker): string[] {
       continue
     }
     try {
-      if (e.backup) copyFileSync(e.backup, e.path)
-      else unlinkSync(e.path)
+      if (e.backup) {
+        copyFileSync(e.backup, e.path)
+        // The backup is the only copy of the previous content until the file is back, so it goes only after the
+        // restored file was read again and equals it. A restore that fails or differs keeps THIS backup (and only
+        // this one), which also makes the next import refuse to stage this file (StaleBackupError).
+        if (!readFileSync(e.path).equals(readFileSync(e.backup))) throw new Error('the restored file differs from its backup')
+        unlinkSync(e.backup)
+      } else {
+        unlinkSync(e.path)
+      }
     } catch (err: any) {
       failed.push(e.path)
       logger.error({ path: e.path, err: err?.message }, 'Fleet import: could not restore a file after a failed finish')
@@ -1892,7 +1902,7 @@ async function runImportFleet(
     throw new Error(
       `Fleet import: the database changes were committed and stay in place, but applying the files failed (${err.message}). ` +
       (notRestored.length === 0
-        ? 'The files were restored from their .import-bak backups.'
+        ? 'The files were restored to their previous content (their .import-bak backups are removed).'
         : `These files could not be restored, take them from their .import-bak backups: ${notRestored.join(', ')}.`),
       { cause: err },
     )

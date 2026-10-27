@@ -45,6 +45,8 @@ const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS, probe } = vi.hoisted(() => {
       events: [] as string[],
       /** A rename onto exactly this path throws. */
       failRenameTo: null as string | null,
+      /** A copy onto exactly this path ends with other content than the source: a restore that "succeeds" wrongly. */
+      corruptCopyTo: null as string | null,
     },
   }
 })
@@ -85,7 +87,11 @@ vi.mock('node:fs', async (importOriginal) => {
     mkdirSync: watch('mkdirSync', real.mkdirSync),
     writeFileSync: watch('writeFileSync', real.writeFileSync),
     readFileSync: watch('readFileSync', real.readFileSync),
-    copyFileSync: watch('copyFileSync', real.copyFileSync),
+    copyFileSync: (from: string, to: string) => {
+      if (probe.inTx) probe.ioInTx.push(`copyFileSync ${String(from)}`)
+      real.copyFileSync(from, to)
+      if (probe.corruptCopyTo !== null && String(to) === probe.corruptCopyTo) real.writeFileSync(to, 'not the previous content')
+    },
     unlinkSync: watch('unlinkSync', real.unlinkSync),
     rmSync: watch('rmSync', real.rmSync),
     renameSync: (from: string, to: string) => {
@@ -118,7 +124,7 @@ vi.mock('../db/fleet-transfer.js', async (importOriginal) => {
   }
 })
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { ImportInProgressError, importFleet, StaleBackupError, type FleetJson } from '../web/fleet-transfer.js'
 
@@ -336,6 +342,7 @@ beforeEach(async () => {
   probe.ioInTx = []
   probe.events = []
   probe.failRenameTo = null
+  probe.corruptCopyTo = null
   vi.mocked(updateEnvFile).mockClear()
   vi.mocked(updateEnvFile).mockImplementation(() => { probe.events.push('env') })
   await seedTarget()
@@ -474,7 +481,7 @@ describe('a successful import', () => {
 })
 
 describe('a failure after the commit', () => {
-  it('restores the files already renamed from their backups, keeps the database, and says so', async () => {
+  it('restores the files already renamed from their backups, removes those backups, keeps the database, and says so', async () => {
     probe.failRenameTo = join(PROJECT, 'SOUL.md') // CLAUDE.md is renamed first, SOUL.md is the second rename
 
     const error = await apply(bundle()).then(() => undefined, (e: unknown) => e as Error)
@@ -482,7 +489,7 @@ describe('a failure after the commit', () => {
     expect(error).toBeInstanceOf(Error)
     expect(error!.message).toMatch(/database changes were committed and stay in place/)
     expect(error!.message).toMatch(/rename refused/)
-    expect(error!.message).toMatch(/restored from their \.import-bak backups/)
+    expect(error!.message).toMatch(/restored to their previous content \(their \.import-bak backups are removed\)/)
     // the first file went back to its previous content, the second never changed
     expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe(OLD.claude)
     expect(readFileSync(join(PROJECT, 'SOUL.md'), 'utf-8')).toBe(OLD.soul)
@@ -496,11 +503,34 @@ describe('a failure after the commit', () => {
     expect(readFileSync(join(STORE, '.vault-key'), 'utf-8')).toBe(OLD.vaultKey)
     expect(await listVaultBindings('default')).toEqual([])
     expect(updateEnvFile).not.toHaveBeenCalled()
-    // the staged files are gone; the backup of the restored file stays for the operator
-    expect(strays()).toEqual(['project/CLAUDE.md.import-bak'])
-    expect(readFileSync(join(PROJECT, 'CLAUDE.md.import-bak'), 'utf-8')).toBe(OLD.claude)
+    // the staged files are gone, and so is the backup of the restored file: a restored file leaves nothing behind
+    expect(strays()).toEqual([])
     // a file that was new is not left behind either
     expect(existsSync(join(TASKS, 'task-a'))).toBe(false)
+  })
+
+  it('a cleanly restored failure does not block the next import', async () => {
+    probe.failRenameTo = join(PROJECT, 'SOUL.md')
+    await expect(apply(bundle())).rejects.toThrow(/committed and stay in place/)
+    expect(strays()).toEqual([])
+    probe.failRenameTo = null
+
+    await apply(bundle())
+
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('new claude\n')
+    expect(readFileSync(join(PROJECT, 'SOUL.md'), 'utf-8')).toBe('new soul\n')
+    expect(strays()).toEqual([])
+  })
+
+  it('a restore that copies back different content counts as not restored, and its backup stays', async () => {
+    probe.failRenameTo = join(PROJECT, 'SOUL.md')
+    probe.corruptCopyTo = join(PROJECT, 'CLAUDE.md')
+
+    const error = await apply(bundle()).then(() => undefined, (e: unknown) => e as Error)
+
+    expect(error!.message).toMatch(/could not be restored, take them from their \.import-bak backups: .*CLAUDE\.md/)
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md.import-bak'), 'utf-8')).toBe(OLD.claude)
+    expect(strays()).toEqual(['project/CLAUDE.md.import-bak'])
   })
 
   it('a failure in the vault step restores every file renamed before it, the vault files included', async () => {
@@ -545,6 +575,32 @@ describe('a failure after the commit', () => {
 
     expect(error!.message).toMatch(/could not be restored, take them from their \.import-bak backups: .*CLAUDE\.md/)
     expect(readFileSync(join(PROJECT, 'CLAUDE.md.import-bak'), 'utf-8')).toBe(OLD.claude)
+    // only the backup of the file that is not back stays: the other renamed files were restored and left nothing
+    expect(strays()).toEqual(['project/CLAUDE.md.import-bak'])
+    expect(readFileSync(join(STORE, '.vault-key'), 'utf-8')).toBe(OLD.vaultKey)
+  })
+
+  it('the next import is refused for the file whose backup stayed, and goes through once the operator removes it', async () => {
+    vi.mocked(updateEnvFile).mockImplementationOnce(() => {
+      rmSync(join(PROJECT, 'CLAUDE.md'))
+      mkdirSync(join(PROJECT, 'CLAUDE.md'))
+      throw new Error('env refused')
+    })
+    await expect(apply(bundle())).rejects.toThrow(/could not be restored/)
+    rmSync(join(PROJECT, 'CLAUDE.md'), { recursive: true }) // the operator clears the directory in the way
+
+    const refusal = await apply(bundle()).then(() => undefined, (e: unknown) => e as Error)
+
+    expect(refusal).toBeInstanceOf(StaleBackupError)
+    expect(refusal!.message).toContain(join(PROJECT, 'CLAUDE.md.import-bak'))
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md.import-bak'), 'utf-8')).toBe(OLD.claude)
+
+    copyFileSync(join(PROJECT, 'CLAUDE.md.import-bak'), join(PROJECT, 'CLAUDE.md'))
+    rmSync(join(PROJECT, 'CLAUDE.md.import-bak'))
+    await apply(bundle())
+
+    expect(readFileSync(join(PROJECT, 'CLAUDE.md'), 'utf-8')).toBe('new claude\n')
+    expect(strays()).toEqual([])
   })
 })
 
