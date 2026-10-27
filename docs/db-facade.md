@@ -102,6 +102,75 @@ and the cache entry together, and a lookup that read the row across that revoke 
 security:reset`) cannot reach the cache and is noticed by the next debounced `last_used` write: within
 `LAST_USED_DEBOUNCE_SEC` (60 s).
 
+The browser session lane follows the same rules (`web/auth-sessions.ts`, `db/sessions.ts`). A table error in the
+session lookup, the user lookup or the `last_seen` write rejects (no fall-through to another lane). A revoke deletes
+the table row FIRST and the cache entry after it, and a revoke counter (`revokeEpoch`) keeps a lookup that was
+reading the same row from putting a revoked session back in the cache; `auth-session-lane.test.ts` pins both
+orders of the overlap for all three revoke paths. A session revoked by ANOTHER process is noticed at the next
+debounced `last_seen` write (`touchAuthSessionLastSeen` returns the changed-row count, so it must be awaited).
+
+## Transactions with a rule of their own
+
+**The system-config document (read-modify-write).** A change to one stored document (the federation config is the
+example, `mutateFederationConfig`) reads the cached document, changes it and writes it back inside ONE `dbx.tx`:
+two overlapping requests that each read the old document and each wrote a changed copy would lose one change. The
+write goes to the database first and the cache is refreshed from the row afterwards (see "Configuration reads stay
+synchronous").
+
+**The vault approvals.** The body of `consumeApproval`, `claimApproval` and `createApprovalOnce` holds database
+calls on the `tx` handle and pure policy, nothing else (no `fetch`, no file, no `setTimeout`, no model call): the
+transaction lock is held for as long as the body runs. The guarded `UPDATE ... WHERE` is the line that decides; the
+lock only keeps other FACADE callers out of the body, so the WHERE is the only protection against another
+connection or process (`approval-vault-statements.test.ts` breaks one condition per row, and runs a second writer
+between the deciding read and the write). The transaction modes are those of the synchronous transactions that
+were replaced: `consumeApproval` and `claimApproval` run in the default (deferred) mode, `createApprovalOnce` in
+`immediate` mode (an earlier plan said "all immediate"; that was a mistake, and the modes are pinned). The refusal
+journal and the `created_deduplicated` event are best-effort and run AFTER the transaction, with the write awaited
+INSIDE the `try`: a started-but-not-awaited write rejects outside the `catch` as an unhandled rejection.
+
+## What holds an `await`
+
+Three kinds of guard exist, and a statement about an `await` must say which one holds it:
+
+- **A test that fails without it.** Behavioural, for example a garbage session cookie getting 401 over HTTP, or a
+  revoke refused on the very next request.
+- **The lint** (`no-floating-promises`, `no-misused-promises`, `await-thenable`). It fails the build for
+  production code, but only where the Promise is visibly dropped or used as a value.
+- **A source pin** (a test that reads the file and expects `await` on every call line). It is the last resort where
+  the synchronous SQLite facade cannot show the difference: the logout `revokeSession` and the password-change
+  `revokeAllForUser` route calls are held this way and by the lint, and a behavioural test belongs to the step that
+  moves the facade onto a pooled backend.
+
+Held by the lint alone, or by a pin alone, and worth knowing: the `try/catch` of a timer body (the hourly session
+sweep, the approval timeout sweeper, the other sweepers): the lint allows `void sweep()`, and without the
+`catch` a failed sweep is only logged by the process-level unhandled rejection handler. A journal call turned into
+`void journalConsumeRefusal(...)` is held by the source pin only; it is harmless (the helper never rejects, only the
+order of the journal row against the answer would change).
+
+**A measurement, not a rule.** `@typescript-eslint/no-unnecessary-condition` would flag `await x() !== null`
+written without the `await` (a Promise is never `null`). Run over the production `src/` with
+`tools/eslint/eslint.measure.mjs`, it gives 298 findings in 85 files (plus 4 messages about disable comments with no effect): 130 `??` on a non-nullish left side, 106
+optional chains on a non-nullish value, and 60 about a value that is always truthy, always falsy or a comparison
+without overlap (and 2 of other shapes). None of the 60 is on a line with an `await`, an `async` function or a Promise, so it would not
+have found a missing `await` the four async rules miss, and the defensive `??` and `?.` of the codebase would
+drown it. It is NOT enabled; the four async rules stay the lint guard.
+
+## Known limits
+
+These are behaviours of the code today, listed so that nobody mistakes them for a promise:
+
+- **The fleet import writes some state before its transaction.** The autonomy rows, the model profiles, the cost
+  budgets, the egress allowlist and the system-config values are written before the import's own transaction, and
+  the agent files are written outside it: when the transaction fails, they are NOT rolled back. A two-phase import
+  (stage the files, one transaction for every database write, rename and reload after the commit) is a separate card.
+- **The federation disable branches ignore the result of `setFederationEnabledPreservingFile`.** A `false` return
+  (the file could not be written) is not looked at, so the switch can read as off while the gate stays on.
+- **Creating a dashboard user twice in parallel** ends with a UNIQUE error answered as 500 for the second request
+  (it should be 409). Only the first user becomes the global admin (one statement), so this is a status code issue.
+- **The PUT import route** answers 500 when a concurrent request deletes a row between the import's read and its
+  write (an old window that was kept, not widened by the facade).
+- **A `sweepExpiredSessions` or other timer body without its `catch`** is not noticed by a test (see above).
+
 ## Tests
 
 ```ts

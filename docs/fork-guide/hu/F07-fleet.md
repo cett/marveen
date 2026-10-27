@@ -154,21 +154,23 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
     "name": "partner-token",
     "role": "agent",
     "tenant_id": "acme-corp",
-    "expires_at": "2027-01-01T00:00:00Z"
+    "expires_in_days": 90
   }'
 ```
 
 ```bash
 # Token visszavonása
-bash scripts/agent-api.sh --token operator PATCH /api/v1/admin/tokens/<id> '{"revoked": true}'
+bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
+
+(A `POST /api/v1/admin/tokens/<id>/rotate` új tokent ad a régi helyett; tokenre nincs `PATCH`.)
 
 ### B2B partner beléptetése
 
 Egy külső partner (B2B tenant) alapvetően az `agent` szerepkörrel kap tokent, és a saját `tenant_id`-jére szűrt adatokat lát. A beléptetési folyamat:
 
 1. Tenant felvétele az admin felületen (Beállítások > Tenantok)
-2. `agent` token generálása a partner számára (lejárattal, `expires_at`)
+2. `agent` token generálása a partner számára (lejárattal, `expires_in_days`, pl. 90)
 3. A tokent biztonságos csatornán kell átadni (nem emailben nyílt szövegként)
 4. Izolációs teszt: az új tokennel egy `default` tenant memória lekérdezésének üres listát kell adnia
 5. Rotációs folyamat egyeztetése: új token igénylése lejárat előtt legalább 2 héttel
