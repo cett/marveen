@@ -19,6 +19,7 @@ import {
   revokeSession,
   revokeAllForUser,
   revokeAllSessions,
+  sweepExpiredSessions,
   _clearSessionCacheForTest,
   _cacheForTest,
 } from '../web/auth-sessions.js'
@@ -218,26 +219,35 @@ describe('a revoke and a concurrent lookup of the same session', () => {
     ['revokeAllSessions', () => revokeAllSessions()],
   ]
 
-  function holdAfter(method: 'get' | 'run', match: RegExp) {
+  // Holds the first `count` matching statements, each right after it ran, behind a gate of its own. One spy per
+  // method: a second spy on the same method would wrap the first.
+  function holdAfter(method: 'get' | 'run', match: RegExp, count = 1) {
     const original = dbx[method].bind(dbx)
-    let release!: () => void
-    const gate = new Promise<void>((r) => { release = r })
-    let reached!: () => void
-    const reachedPromise = new Promise<void>((r) => { reached = r })
-    let held = false
+    const gates = Array.from({ length: count }, () => {
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      let reached!: () => void
+      const reachedPromise = new Promise<void>((r) => { reached = r })
+      return { release, reached: reachedPromise, gate, signal: reached }
+    })
+    let matches = 0
     vi.spyOn(dbx, method).mockImplementation(async (sql: string, ...params: unknown[]) => {
       const result = await original(sql, ...params)
-      if (!held && match.test(sql)) { held = true; reached(); await gate }
+      if (match.test(sql) && matches < count) {
+        const g = gates[matches++]!
+        g.signal()
+        await g.gate
+      }
       return result
     })
-    return { release, reached: reachedPromise }
+    return gates
   }
 
   it.each(revokers)('%s that finishes between the read and the cache write: the lookup answers null and caches nothing', async (_name, revoke) => {
     const u = await makeUser('alice', 'admin')
     const token = await createSession({ userId: u.id, username: u.username })
     _clearSessionCacheForTest()
-    const read = holdAfter('get', /FROM auth_sessions WHERE id_hash/)
+    const [read] = holdAfter('get', /FROM auth_sessions WHERE id_hash/)
     const pending = resolveSession(token)
     await read.reached
     await revoke(token, u.id)
@@ -247,12 +257,32 @@ describe('a revoke and a concurrent lookup of the same session', () => {
     expect(await resolveSession(token)).toBeNull()
   })
 
+  // The lookup that sees a revoke finish asks the table again and must NOT cache that answer: a revoke of the
+  // same session can finish while the second read is in flight, and the answer is then already stale.
+  it('the second read after a finished revoke is not cached when the session is revoked meanwhile', async () => {
+    const u = await makeUser('alice', 'admin')
+    const other = await makeUser('bob', 'viewer')
+    const token = await createSession({ userId: u.id, username: u.username })
+    _clearSessionCacheForTest()
+    const [first, second] = holdAfter('get', /FROM auth_sessions WHERE id_hash/, 2)
+    const pending = resolveSession(token)
+    await first.reached
+    await revokeAllForUser(other.id) // bumps the counter, leaves alice's row alone
+    first.release()
+    await second.reached // the second read found the row and is held
+    await revokeSession(token) // the session is revoked while that answer is in flight
+    second.release()
+    await pending
+    expect(_cacheForTest.size).toBe(0)
+    expect(await resolveSession(token)).toBeNull()
+  })
+
   it.each(revokers)('%s still deleting the row while the lookup puts the entry in: the entry is gone when the revoke ends', async (_name, revoke) => {
     const u = await makeUser('alice', 'admin')
     const token = await createSession({ userId: u.id, username: u.username })
     _clearSessionCacheForTest()
-    const read = holdAfter('get', /FROM auth_sessions WHERE id_hash/)
-    const del = holdAfter('run', /^DELETE FROM auth_sessions/)
+    const [read] = holdAfter('get', /FROM auth_sessions WHERE id_hash/)
+    const [del] = holdAfter('run', /^DELETE FROM auth_sessions/)
     const pendingLookup = resolveSession(token)
     await read.reached
     const pendingRevoke = revoke(token, u.id)
@@ -278,6 +308,37 @@ describe('a session row deleted outside this process', () => {
     for (const entry of _cacheForTest.values()) entry.lastSeenAt -= 120
     expect(await resolveSession(token)).toBeNull()
     expect(_cacheForTest.size).toBe(0)
+  })
+})
+
+describe('revokeAllForUser with an excepted session', () => {
+  // The caller's own row must stay in the TABLE, not only in the cache: with the exception branch gone the
+  // password change would delete the caller's own row and the session would end at the next last_seen write or
+  // restart. A cold cache shows it.
+  it('keeps the excepted row (a cold cache still resolves it) and removes the others', async () => {
+    const u = await makeUser('alice', 'admin')
+    const keep = await createSession({ userId: u.id, username: u.username })
+    const drop = await createSession({ userId: u.id, username: u.username })
+    await revokeAllForUser(u.id, keep)
+    expect(await dbx.get('SELECT COUNT(*) AS n FROM auth_sessions')).toEqual({ n: 1 })
+    _clearSessionCacheForTest()
+    expect(await resolveSession(keep)).not.toBeNull()
+    expect(await resolveSession(drop)).toBeNull()
+  })
+})
+
+describe('sweepExpiredSessions cache prune', () => {
+  it('drops the cache entries past either TTL and keeps the live ones', async () => {
+    const u = await makeUser('alice', 'admin')
+    await createSession({ userId: u.id, username: u.username }) // live
+    await createSession({ userId: u.id, username: u.username }) // idle past 7 days
+    await createSession({ userId: u.id, username: u.username }) // older than 30 days
+    const entries = [..._cacheForTest.values()]
+    entries[1]!.lastSeenAt -= 8 * 24 * 3600
+    entries[2]!.createdAt -= 31 * 24 * 3600
+    await sweepExpiredSessions()
+    expect(_cacheForTest.size).toBe(1)
+    expect(_cacheForTest.values().next().value).toBe(entries[0])
   })
 })
 
