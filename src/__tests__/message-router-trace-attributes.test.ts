@@ -113,4 +113,19 @@ describe('message-router: inter-agent span attributes', () => {
 
     expect(mockUpsertOtelSpan).not.toHaveBeenCalled()
   })
+
+  it('the span stamped on one message becomes the parent of the next message of the chain', async () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const link = (id: number, from: string, to: string) => ({ id, from_agent: from, to_agent: to, content: 'x', created_at: nowSec, trace_id: null, span_id: null })
+    mockGetPendingMessages.mockReturnValue([link(51, 'orin', 'dex'), link(52, 'dex', 'cat')])
+
+    await runMessageRouterTick()
+
+    expect(mockStampMessageTrace).toHaveBeenCalledTimes(2)
+    const [, traceA, spanA] = mockStampMessageTrace.mock.calls[0] as [number, string, string, string | null]
+    const [, traceB, , parentB] = mockStampMessageTrace.mock.calls[1] as [number, string, string, string | null]
+    expect(typeof spanA).toBe('string')
+    expect(parentB).toBe(spanA)
+    expect(traceB).toBe(traceA)
+  })
 })

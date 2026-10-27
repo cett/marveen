@@ -6,7 +6,7 @@ import { useTestDb } from './helpers/with-test-db.js'
 import {
   db, createVaultSshKey, createVaultSshServer, updateVaultSshServer, deleteVaultSshKey, getVaultSshServer,
   createApproval, getApproval, resolveApproval, expireTimedOutApprovals, recordApprovalEvent, listApprovalEvents,
-  createAgentMessage, stampMessageTrace,
+  createAgentMessage, markMessageDelivered, stampMessageTrace, consumeApproval,
 } from '../db.js'
 
 useTestDb()
@@ -15,6 +15,20 @@ const KEY = { label: 'k', username: 'root', vault_key_id: 'vk-1', public_key: 's
 const SERVER = { name: 's', host: 'h', port: 22, username: 'root', description: null, tenant_id: 'default' }
 const request = (id: string, extra: Partial<Parameters<typeof createApproval>[0]> = {}) =>
   createApproval({ id, agent_id: 'agent-a', category: 'file_write', action_description: 'x', ...extra })
+
+const HASH = 'a'.repeat(64)
+
+describe('createApproval', () => {
+  it('stores every field it returns (payload, hash, human-only flag, deadline, tenant)', async () => {
+    const returned = await createApproval({
+      id: 'ap-1', agent_id: 'agent-a', category: 'file_write', action_description: 'x',
+      action_payload: '{"k":1}', content_hash: HASH, human_only: true, timeout_at: Math.floor(Date.now() / 1000) + 600, tenant_id: 'tenant-b',
+    })
+    expect(await getApproval('ap-1')).toMatchObject({
+      action_payload: '{"k":1}', content_hash: HASH, human_only: 1, tenant_id: 'tenant-b', timeout_at: returned.timeout_at, status: 'pending',
+    })
+  })
+})
 
 describe('deleteVaultSshKey', () => {
   it('unassigns the servers and deletes the key in one transaction: a failing delete leaves the assignment in place', async () => {
@@ -95,9 +109,26 @@ describe('recordApprovalEvent', () => {
     const events = await listApprovalEvents('ap-1')
     expect(events.map((e) => [e.event, e.tenant_id])).toEqual([['bearer_denied', 'default'], ['owner_unreached', 'tenant-b']])
   })
+
+  it('the journal row of a consume (the synchronous twin) carries the tenant of the approval', async () => {
+    await createApproval({ id: 'ap-2', agent_id: 'agent-a', category: 'email_send', action_description: 'x', content_hash: HASH, tenant_id: 'tenant-b' })
+    expect(await resolveApproval('ap-2', 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
+    const out = consumeApproval({ id: 'ap-2', content_hash: HASH, principal: 'agent-a', tenant_id: 'tenant-b', window_s: 600, ref: 'r1', consumer: 'test' })
+    expect(out.ok).toBe(true)
+    const events = await listApprovalEvents('ap-2')
+    expect(events.map((e) => [e.event, e.tenant_id])).toEqual([['consumed', 'tenant-b']])
+  })
 })
 
 describe('stampMessageTrace', () => {
+  it('leaves a message that is no longer pending alone', async () => {
+    const msg = createAgentMessage('from-a', 'to-b', 'hello')
+    expect(markMessageDelivered(msg.id)).toBe(true)
+    expect(await stampMessageTrace(msg.id, 'trace-1', 'span-1', null)).toBe(false)
+    const row = db.prepare('SELECT trace_id FROM agent_messages WHERE id = ?').get(msg.id) as { trace_id: string | null }
+    expect(row.trace_id).toBeNull()
+  })
+
   it('of two overlapping stamps on one pending message exactly one wins, and the message keeps its trace', async () => {
     const msg = createAgentMessage('from-a', 'to-b', 'hello')
     const results = await Promise.all([
