@@ -54,9 +54,9 @@ beforeEach(async () => {
   dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
 
   const base = { description: 'Daily', prompt: 'Summarise the day', schedule: '0 9 * * *', enabled: true, skip_if_busy: false, force_send: false }
-  dbMod.upsertSchedule('t-live', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
-  dbMod.upsertSchedule('t-draft', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'draft' })
-  dbMod.upsertSchedule('t-other', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: 'default', status: 'live' })
+  await dbMod.upsertSchedule('t-live', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
+  await dbMod.upsertSchedule('t-draft', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'draft' })
+  await dbMod.upsertSchedule('t-other', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: 'default', status: 'live' })
 })
 
 afterEach(() => {
@@ -87,10 +87,10 @@ async function call(method: string, pathAndQuery: string, body: object | undefin
 }
 const put = (name: string, body: object, who: Principal) => call('PUT', `/api/schedules/${name}`, body, who)
 
-const stored = (name: string) => dbMod.getScheduleFromDb(name)!
+const stored = async (name: string) => (await dbMod.getScheduleFromDb(name))!
 // The runner's own question, asked of the real task listing: would this task be fired?
-const runnerWouldFire = (name: string) => {
-  const task = io.listScheduledTasks().find(t => t.name === name)
+const runnerWouldFire = async (name: string) => {
+  const task = (await io.listScheduledTasks()).find(t => t.name === name)
   return !!task && io.isTaskLive(task)
 }
 const auditRows = (name: string) => dbMod.getDb()
@@ -115,34 +115,34 @@ describe('a non-human edit of what a live task executes sends it back to review'
     ['forceSend', { forceSend: true }],
     ['targetSession', { targetSession: 'agent-main' }],
   ])('%s, by a tenant user: pending_review and the runner will not fire it', async (field, patch) => {
-    expect(runnerWouldFire('t-live')).toBe(true)
+    expect(await runnerWouldFire('t-live')).toBe(true)
     const out = await put('t-live', patch, tenantUser('tenant-b'))
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, status: 'pending_review', review_required: true, changed: [field] })
-    expect(stored('t-live').status).toBe('pending_review')
-    expect(runnerWouldFire('t-live')).toBe(false)
+    expect((await stored('t-live')).status).toBe('pending_review')
+    expect(await runnerWouldFire('t-live')).toBe(false)
   })
 
   it('a command task: a new command by a scoped token needs review', async () => {
-    dbMod.upsertSchedule('t-cmd', {
+    await dbMod.upsertSchedule('t-cmd', {
       description: 'Backup', prompt: '', schedule: '0 3 * * *', agent: 'tenant-agent', type: 'command',
       command: 'echo ok', enabled: true, skip_if_busy: false, force_send: false, tenant_id: 'tenant-b', status: 'live',
     })
     const out = await put('t-cmd', { command: 'echo changed', timeoutMs: 20000 }, scopedToken('tenant-b'))
     expect(out.body).toMatchObject({ review_required: true, changed: ['command', 'timeoutMs'] })
-    expect(runnerWouldFire('t-cmd')).toBe(false)
+    expect(await runnerWouldFire('t-cmd')).toBe(false)
   })
 
   it('an agent on the shared token (not a human) is held to the same rule, agent change included', async () => {
     const out = await put('t-live', { agent: 'shared-agent' }, sharedToken('shared-agent'))
     expect(out.body).toMatchObject({ status: 'pending_review', changed: ['agent'] })
-    expect(stored('t-live').agent).toBe('shared-agent')
-    expect(runnerWouldFire('t-live')).toBe(false)
+    expect((await stored('t-live')).agent).toBe('shared-agent')
+    expect(await runnerWouldFire('t-live')).toBe(false)
   })
 
   it('the edit itself lands, so an admin reviews the new content, not a lost one', async () => {
     await put('t-live', { prompt: 'Summarise the week' }, tenantUser('tenant-b'))
-    expect(stored('t-live').prompt).toBe('Summarise the week')
+    expect((await stored('t-live')).prompt).toBe('Summarise the week')
   })
 })
 
@@ -150,37 +150,37 @@ describe('edits that must NOT send a task to review', () => {
   it('the dashboard re-sending every unchanged field is a no-op: still live, plain {ok:true}, no message', async () => {
     const out = await put('t-live', dashboardSave(), tenantUser('tenant-b'))
     expect(out.body).toEqual({ ok: true })
-    expect(stored('t-live').status).toBe('live')
-    expect(runnerWouldFire('t-live')).toBe(true)
+    expect((await stored('t-live')).status).toBe('live')
+    expect(await runnerWouldFire('t-live')).toBe(true)
     expect(reviewMessages()).toHaveLength(0)
   })
 
   it('description and enabled alone', async () => {
     const out = await put('t-live', { description: 'Renamed label', enabled: false }, tenantUser('tenant-b'))
     expect(out.body).toEqual({ ok: true })
-    expect(stored('t-live')).toMatchObject({ status: 'live', description: 'Renamed label', enabled: 0 })
+    expect(await stored('t-live')).toMatchObject({ status: 'live', description: 'Renamed label', enabled: 0 })
   })
 
   it('a human admin editing every executed field', async () => {
     const out = await put('t-live', { prompt: 'x', schedule: '1 1 * * *', agent: 'shared-agent', type: 'heartbeat' }, human)
     expect(out.body).toEqual({ ok: true })
-    expect(stored('t-live').status).toBe('live')
-    expect(runnerWouldFire('t-live')).toBe(true)
+    expect((await stored('t-live')).status).toBe('live')
+    expect(await runnerWouldFire('t-live')).toBe(true)
   })
 
   it('a task that is not live: the edit lands, the status does not move, nobody is told again', async () => {
     const out = await put('t-draft', { prompt: 'edited while a draft' }, tenantUser('tenant-b'))
     expect(out.body).toEqual({ ok: true })
-    expect(stored('t-draft')).toMatchObject({ status: 'draft', prompt: 'edited while a draft' })
+    expect(await stored('t-draft')).toMatchObject({ status: 'draft', prompt: 'edited while a draft' })
     expect(reviewMessages()).toHaveLength(0)
     expect(auditRows('t-draft').map(r => r.action)).toEqual(['update'])
   })
 
   it("another tenant's task is a 404 and is not touched", async () => {
-    const before = stored('t-other')
+    const before = await stored('t-other')
     const out = await put('t-other', { prompt: 'hijack' }, tenantUser('tenant-b'))
     expect(out.status).toBe(404)
-    expect(stored('t-other')).toEqual(before)
+    expect(await stored('t-other')).toEqual(before)
     expect(auditRows('t-other')).toHaveLength(0)
   })
 })
@@ -227,7 +227,7 @@ describe('audit trail and notification', () => {
     expect(msg!.content).toBe('[SCHEDULE_REVIEW] task=t-live tenant=tenant-b reason=edited changed=[prompt] by=tenant-user')
 
     // An admin activates it, the tenant edits again within the hour: held again, not announced again.
-    dbMod.activateSchedule('t-live')
+    await dbMod.activateSchedule('t-live')
     const second = await put('t-live', { prompt: 'p3' }, tenantUser('tenant-b'))
     expect(second.body).toMatchObject({ status: 'pending_review' })
     expect(reviewMessages()).toHaveLength(1)
@@ -239,7 +239,7 @@ describe('audit trail and notification', () => {
     const out = await put('t-live', { prompt: 'p2' }, tenantUser('tenant-b'))
     spy.mockRestore()
     expect(out.status).toBe(200)
-    expect(stored('t-live').status).toBe('pending_review')
+    expect((await stored('t-live')).status).toBe('pending_review')
   })
 })
 
@@ -262,8 +262,8 @@ describe('activation checks the content the admin looked at', () => {
     const hash = await listedHash('t-draft')
     const out = await call('POST', `/api/schedules/t-draft/activate?expected_hash=${hash}`, undefined, human)
     expect(out.status).toBe(200)
-    expect(stored('t-draft').status).toBe('live')
-    expect(runnerWouldFire('t-draft')).toBe(true)
+    expect((await stored('t-draft')).status).toBe('live')
+    expect(await runnerWouldFire('t-draft')).toBe(true)
   })
 
   it('a draft edited after the admin opened it is refused with 409 stale_revision and stays a draft', async () => {
@@ -272,18 +272,18 @@ describe('activation checks the content the admin looked at', () => {
     const out = await call('POST', `/api/schedules/t-draft/activate?expected_hash=${hash}`, undefined, human)
     expect(out.status).toBe(409)
     expect(out.body).toMatchObject({ error: 'stale_revision', content_hash: await listedHash('t-draft') })
-    expect(stored('t-draft').status).toBe('draft')
-    expect(runnerWouldFire('t-draft')).toBe(false)
+    expect((await stored('t-draft')).status).toBe('draft')
+    expect(await runnerWouldFire('t-draft')).toBe(false)
   })
 
   it('a held (pending_review) task is covered the same way, and the fresh hash then activates it', async () => {
     const seen = await listedHash('t-live')
     await put('t-live', { prompt: 'first edit' }, tenantUser('tenant-b'))
     expect((await call('POST', `/api/schedules/t-live/activate?expected_hash=${seen}`, undefined, human)).status).toBe(409)
-    expect(stored('t-live').status).toBe('pending_review')
+    expect((await stored('t-live')).status).toBe('pending_review')
     const fresh = await listedHash('t-live')
     expect((await call('POST', `/api/schedules/t-live/activate?expected_hash=${fresh}`, undefined, human)).status).toBe(200)
-    expect(stored('t-live').status).toBe('live')
+    expect((await stored('t-live')).status).toBe('live')
   })
 
   it('without an expected_hash activation still works (a caller with no screen, e.g. the CRUD recipe)', async () => {
@@ -294,7 +294,7 @@ describe('activation checks the content the admin looked at', () => {
     const hash = await listedHash('t-draft')
     expect((await call('POST', `/api/schedules/t-draft/activate?expected_hash=${hash}`, undefined, tenantUser('tenant-b'))).status).toBe(403)
     expect((await call('POST', '/api/schedules/t-draft/activate', undefined, sharedToken('x'))).status).toBe(403)
-    expect(stored('t-draft').status).toBe('draft')
+    expect((await stored('t-draft')).status).toBe('draft')
   })
 })
 
@@ -315,7 +315,7 @@ describe('every other schedule write is audited too', () => {
     await call('POST', '/api/schedules/t-other/toggle', undefined, tenantUser('tenant-b'))
     await call('DELETE', '/api/schedules/t-other', undefined, tenantUser('tenant-b'))
     expect(auditRows('t-other')).toHaveLength(0)
-    expect(stored('t-other')).toBeDefined()
+    expect(await stored('t-other')).toBeDefined()
   })
 
   it('a non-human create is a draft, is audited, and tells the main agent; a human create does not', async () => {

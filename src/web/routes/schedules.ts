@@ -18,6 +18,7 @@ import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask, isTaskLive,
 } from '../scheduled-tasks-io.js'
+import { withScheduleLock } from '../schedule-lock.js'
 import { REVIEWED_FIELDS, reviewTriggerFields, reviewValueSha256, scheduleContentHash } from '../schedule-review.js'
 import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor } from '../schedule-review-effects.js'
 import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
@@ -230,10 +231,10 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   }
 
   if (path === '/api/schedules' && method === 'GET') {
-    const useDb = countSchedules() > 0
+    const useDb = await countSchedules() > 0
     if (useDb) {
       const scope = effectiveTenant(ctx)
-      const rows = scope === null ? listSchedulesFromDb() : listSchedulesFromDb({ tenantId: scope })
+      const rows = scope === null ? await listSchedulesFromDb() : await listSchedulesFromDb({ tenantId: scope })
       // DB rows key on `id`; the frontend (and the file-based branch below)
       // expect `name` -- without this mapping, delete/toggle/run/edit send
       // requests to /api/schedules/undefined and silently 404.
@@ -286,8 +287,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!data.schedule?.trim()) { json(res, { error: 'required', field: 'schedule', hint: 'Schedule is required' }, 400); return true }
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'invalid_value', field: 'schedule', hint: 'Invalid cron expression' }, 400); return true }
 
-    const useDb = countSchedules() > 0
-    const existing = useDb ? getScheduleFromDb(name) : existsSync(join(SCHEDULED_TASKS_DIR, name))
+    const useDb = await countSchedules() > 0
+    const existing = useDb ? await getScheduleFromDb(name) : existsSync(join(SCHEDULED_TASKS_DIR, name))
     if (existing) { json(res, { error: 'conflict', hint: 'Schedule already exists' }, 409); return true }
 
     // Which tenant owns the task, first match wins:
@@ -336,7 +337,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // will ever fire it.
     const status: 'draft' | 'live' = isHumanAdmin(ctx) ? 'live' : 'draft'
     if (status === 'draft') {
-      const open = listSchedulesFromDb({ tenantId }).filter(r => r.status !== 'live').length
+      const open = (await listSchedulesFromDb({ tenantId })).filter(r => r.status !== 'live').length
       if (open >= MAX_OPEN_REVIEW_PER_TENANT) {
         json(res, {
           error: 'limit_exceeded', field: 'name',
@@ -346,7 +347,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       }
     }
 
-    writeScheduledTask(name, {
+    await writeScheduledTask(name, {
       description: data.description || '',
       prompt: (data.prompt ?? '').trim(),
       schedule: data.schedule.trim(),
@@ -377,31 +378,35 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleActivateMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name } = resolved
-    const current = getScheduleFromDb(name)
-    if (!current) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
-    // The admin's screen was rendered from a content hash (see the list above). If the task
-    // changed since -- the tenant edited the draft or the held task before the click --
-    // activating would approve content nobody looked at. Optional so a caller that has no
-    // screen (the CRUD recipe) keeps working; it is a human-only route either way.
-    const currentHash = scheduleContentHash({ ...rowToTask(current) }, REVIEWED_FIELDS)
-    const expectedHash = ctx.url.searchParams.get('expected_hash')
-    if (expectedHash !== null && expectedHash !== currentHash) {
-      json(res, {
-        error: 'stale_revision', content_hash: currentHash,
-        hint: 'The schedule changed since it was loaded; review the current content and activate again',
-      }, 409)
-      return true
-    }
-    const row = activateSchedule(name)
-    if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
-    await auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
-      status_before: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+    // Read, hash check, activation and mirror are one step: a save between the hash check and the
+    // activation would approve content nobody reviewed (the db is async, nothing else orders them).
+    await withScheduleLock(name, async () => {
+      const current = await getScheduleFromDb(name)
+      if (!current) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      // The admin's screen was rendered from a content hash (see the list above). If the task
+      // changed since -- the tenant edited the draft or the held task before the click --
+      // activating would approve content nobody looked at. Optional so a caller that has no
+      // screen (the CRUD recipe) keeps working; it is a human-only route either way.
+      const currentHash = scheduleContentHash({ ...rowToTask(current) }, REVIEWED_FIELDS)
+      const expectedHash = ctx.url.searchParams.get('expected_hash')
+      if (expectedHash !== null && expectedHash !== currentHash) {
+        json(res, {
+          error: 'stale_revision', content_hash: currentHash,
+          hint: 'The schedule changed since it was loaded; review the current content and activate again',
+        }, 409)
+        return true
+      }
+      const row = await activateSchedule(name)
+      if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      await auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
+        status_before: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+      })
+      // Mirror to file (same pattern as toggle's file-mirror call) so a
+      // rollback to the file-based fallback keeps the activated state.
+      await writeScheduledTask(name, { status: 'live' })
+      logger.info({ name }, 'Scheduled task activated')
+      json(res, { ok: true, status: 'live' })
     })
-    // Mirror to file (same pattern as toggle's file-mirror call) so a
-    // rollback to the file-based fallback keeps the activated state.
-    writeScheduledTask(name, { status: 'live' })
-    logger.info({ name }, 'Scheduled task activated')
-    json(res, { ok: true, status: 'live' })
     return true
   }
 
@@ -411,8 +416,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
 
-    const useDb = countSchedules() > 0
-    const dbRow = useDb ? getScheduleFromDb(name) : null
+    const useDb = await countSchedules() > 0
+    const dbRow = useDb ? await getScheduleFromDb(name) : null
     if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
@@ -501,16 +506,25 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // Re-review: a caller that is not a human admin cannot change what a live task executes
     // without a person approving it again. The comparison is against the row as it is NOW:
     // dbRow above was read before the body arrived, so a concurrent save may have moved it.
-    // Nothing below awaits until the write, and the DB driver is synchronous, so the row
-    // read here is the row that gets overwritten.
-    const before = useDb ? getScheduleFromDb(name) : undefined
-    const beforeTask: Record<string, unknown> = before ? { ...rowToTask(before) } : {}
-    const changed = before ? reviewTriggerFields(beforeTask, update) : []
-    const demote = !!before && newTenant === undefined && !isHumanAdmin(ctx)
-      && isTaskLive(rowToTask(before)) && changed.length > 0
-    if (demote) update.status = 'pending_review'
+    // The db is async, so the read, the decision and the write run under the schedule lock:
+    // the row read here is the row that gets overwritten, and a concurrent activation or edit
+    // of this schedule waits for the write instead of interleaving with it.
+    const locked = await withScheduleLock(name, async () => {
+      const before = useDb ? await getScheduleFromDb(name) : undefined
+      // A delete or a tenant move that ran since the checks above must not be written over: an edit never creates
+      // the row (writeScheduledTask would upsert one from defaults) and is judged against the tenant as it is now.
+      if (useDb && (!before || crossTenantBlocked(ctx, before.tenant_id ?? null))) return null
+      const beforeTask: Record<string, unknown> = before ? { ...rowToTask(before) } : {}
+      const changed = before ? reviewTriggerFields(beforeTask, update) : []
+      const demote = !!before && newTenant === undefined && !isHumanAdmin(ctx)
+        && isTaskLive(rowToTask(before)) && changed.length > 0
+      if (demote) update.status = 'pending_review'
 
-    writeScheduledTask(name, update)
+      await writeScheduledTask(name, update)
+      return { before, beforeTask, changed, demote }
+    })
+    if (!locked) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    const { before, beforeTask, changed, demote } = locked
 
     const tenantOfTask = newTenant ?? before?.tenant_id ?? DEFAULT_SCHEDULE_TENANT
     // Per changed field: a fingerprint before and after plus a short preview of the new
@@ -541,15 +555,29 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
 
-    const useDb = countSchedules() > 0
-    const dbRow = useDb ? getScheduleFromDb(name) : null
+    const useDb = await countSchedules() > 0
+    const dbRow = useDb ? await getScheduleFromDb(name) : null
     if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
-    if (useDb) deleteSchedule(name)
-    // Always remove files too (keeps FS in sync with DB; noop if files missing)
-    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-    await auditScheduleWrite(ctx, 'delete', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: dbRow?.status ?? null })
+    // Row and files go under the schedule lock: a write of this schedule that is still running would
+    // otherwise recreate the files (or the row) after the delete. Like the edit and the toggle, the tenant is
+    // judged again under the lock: a row that moved to another tenant (or is gone) since the checks above
+    // is not deleted, and the audit entry names the tenant the row had when it was deleted.
+    const deleted = await withScheduleLock(name, async () => {
+      let fresh: typeof dbRow = null
+      if (useDb) {
+        fresh = await getScheduleFromDb(name)
+        if (!fresh || crossTenantBlocked(ctx, fresh.tenant_id ?? null)) return null
+        await deleteSchedule(name)
+      }
+      // Always remove files too (keeps FS in sync with DB; noop if files missing)
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+      return { fresh }
+    })
+    if (!deleted) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    const gone = deleted.fresh ?? dbRow
+    await auditScheduleWrite(ctx, 'delete', name, gone?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: gone?.status ?? null })
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
     return true
@@ -561,17 +589,26 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
 
-    const useDb = countSchedules() > 0
-    const dbRow = useDb ? getScheduleFromDb(name) : null
+    const useDb = await countSchedules() > 0
+    const dbRow = useDb ? await getScheduleFromDb(name) : null
     if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
     let newEnabled: boolean
     if (useDb && dbRow) {
-      newEnabled = dbRow.enabled === 0
-      setScheduleEnabled(name, newEnabled)
-      // Mirror to file
-      writeScheduledTask(name, { enabled: newEnabled })
+      // The toggle flips the stored value, so it is read under the schedule lock: two quick clicks flip it twice.
+      const flipped = await withScheduleLock(name, async () => {
+        const fresh = await getScheduleFromDb(name)
+        // Gone (deleted) or moved to another tenant since the checks above: nothing is written.
+        if (!fresh || crossTenantBlocked(ctx, fresh.tenant_id ?? null)) return null
+        const next = fresh.enabled === 0
+        await setScheduleEnabled(name, next)
+        // Mirror to file
+        await writeScheduledTask(name, { enabled: next })
+        return next
+      })
+      if (flipped === null) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      newEnabled = flipped
     } else {
       const configPath = join(dir, 'task-config.json')
       let config: Record<string, unknown> = {}
@@ -580,7 +617,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         config = JSON.parse(rfo(configPath, '{}'))
       } catch { /* use empty */ }
       newEnabled = !(config.enabled !== false)
-      writeScheduledTask(name, { enabled: newEnabled })
+      await writeScheduledTask(name, { enabled: newEnabled })
     }
     await auditScheduleWrite(ctx, 'toggle', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { enabled: newEnabled })
     logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
@@ -594,8 +631,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
 
-    const useDb = countSchedules() > 0
-    const dbRow = useDb ? getScheduleFromDb(name) : null
+    const useDb = await countSchedules() > 0
+    const dbRow = useDb ? await getScheduleFromDb(name) : null
     if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
@@ -618,8 +655,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // A retry belongs to the tenant of its schedule; one whose schedule is gone, or in
     // another tenant, is not a tenant caller's to see.
     const scope = effectiveTenant(ctx)
-    const rows = listPendingTaskRetries()
-      .filter(r => scope === null || scheduleTenantMatches(scope, getScheduleFromDb(r.task_name)))
+    const pending = await listPendingTaskRetries()
+    // the schedule row is read per retry, so the tenant check settles before the filter (an async predicate would be always truthy)
+    const visible = await Promise.all(pending.map(async r => scope === null || scheduleTenantMatches(scope, await getScheduleFromDb(r.task_name))))
+    const rows = pending
+      .filter((_, i) => visible[i])
       .map(r => toPendingRetryView(r, now))
     json(res, rows)
     return true
@@ -631,12 +671,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
 
-    const useDb = countSchedules() > 0
-    const dbRow = useDb ? getScheduleFromDb(name) : null
+    const useDb = await countSchedules() > 0
+    const dbRow = useDb ? await getScheduleFromDb(name) : null
     if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
-    const runs = listTaskRunHistory(name, 10)
+    const runs = await listTaskRunHistory(name, 10)
     json(res, runs)
     return true
   }
@@ -645,12 +685,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   if (pendingCancelMatch && method === 'DELETE') {
     const id = parseInt(pendingCancelMatch[1], 10)
     if (!Number.isFinite(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'Invalid id' }, 400); return true }
-    const pending = listPendingTaskRetries().find(r => r.id === id)
-    if (pending && ctx.role !== 'admin' && !scheduleTenantMatches(effectiveTenant(ctx), getScheduleFromDb(pending.task_name))) {
+    const pending = (await listPendingTaskRetries()).find(r => r.id === id)
+    if (pending && ctx.role !== 'admin' && !scheduleTenantMatches(effectiveTenant(ctx), await getScheduleFromDb(pending.task_name))) {
       json(res, { error: 'not_found', hint: 'Pending retry not found' }, 404)
       return true
     }
-    const removed = deletePendingTaskRetryById(id)
+    const removed = await deletePendingTaskRetryById(id)
     if (!removed) { json(res, { error: 'not_found', hint: 'Pending retry not found' }, 404); return true }
     logger.info({ id }, 'Pending scheduled-task retry cancelled via API')
     json(res, { ok: true })

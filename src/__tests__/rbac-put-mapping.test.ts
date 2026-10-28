@@ -110,12 +110,12 @@ describe('PUT /api/kanban/:id by role', () => {
   it('a fleet_agent token edits a card of its tenant (200) and the card changes', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { description: 'edited' })
     expect(r.status).toBe(200)
-    expect(getKanbanCard(cardDefault)?.description).toBe('edited')
+    expect((await getKanbanCard(cardDefault))?.description).toBe('edited')
   })
 
   it('a tenant user (role agent) edits a card of its own tenant (200)', async () => {
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'renamed' })).status).toBe(200)
-    expect(getKanbanCard(cardAcme)?.title).toBe('renamed')
+    expect((await getKanbanCard(cardAcme))?.title).toBe('renamed')
   })
 
   it('the shared admin token and an admin session still edit any card', async () => {
@@ -128,25 +128,25 @@ describe('PUT /api/kanban/:id by role', () => {
       const r = await callAs(session(role, 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'nope' })
       expect(r.status).toBe(403)
     }
-    expect(getKanbanCard(cardAcme)?.title).toBe('Acme card')
+    expect((await getKanbanCard(cardAcme))?.title).toBe('Acme card')
   })
 
   it("another tenant's card is a 404 for a fleet token and a tenant user, and stays untouched", async () => {
     expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'cross' })).status).toBe(404)
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardDefault}`, { title: 'cross' })).status).toBe(404)
-    expect(getKanbanCard(cardAcme)?.title).toBe('Acme card')
-    expect(getKanbanCard(cardDefault)?.title).toBe('Default card')
+    expect((await getKanbanCard(cardAcme))?.title).toBe('Acme card')
+    expect((await getKanbanCard(cardDefault))?.title).toBe('Default card')
   })
 
   it("a non-admin cannot move a card under ANOTHER tenant's parent (404), but can under its own tenant's", async () => {
     await createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
     expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(404)
-    expect(getKanbanCard(cardDefault)?.parent_id ?? null).toBeNull()
+    expect((await getKanbanCard(cardDefault))?.parent_id ?? null).toBeNull()
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { parent_id: 'parent-default' })).status).toBe(404)
-    expect(getKanbanCard(cardAcme)?.parent_id ?? null).toBeNull()
+    expect((await getKanbanCard(cardAcme))?.parent_id ?? null).toBeNull()
 
     expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: 'parent-default' })).status).toBe(200)
-    expect(getKanbanCard(cardDefault)?.parent_id).toBe('parent-default')
+    expect((await getKanbanCard(cardDefault))?.parent_id).toBe('parent-default')
     // admin keeps the cross-tenant reach, and null (detach) is not a reference
     expect((await callAs(await tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(200)
     expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: null })).status).toBe(200)
@@ -232,7 +232,7 @@ describe('PUT /api/messages/:id by role', () => {
   it('a fleet token closes a message addressed to its own agent (200)', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toAlpha}`, { status: 'done', result: 'ok' })
     expect(r.status).toBe(200)
-    expect(getAgentMessage(toAlpha)?.status).toBe('done')
+    expect((await getAgentMessage(toAlpha))?.status).toBe('done')
   })
 
   it("a fleet token cannot close, fail or refuse a colleague's message (403) and the message stays open", async () => {
@@ -240,8 +240,8 @@ describe('PUT /api/messages/:id by role', () => {
       const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toBeta}`, { status, result: 'not mine' })
       expect(r.status, status).toBe(403)
     }
-    expect(getAgentMessage(toBeta)?.status).not.toBe('done')
-    expect(getAgentMessage(toBeta)?.status).not.toBe('failed')
+    expect((await getAgentMessage(toBeta))?.status).not.toBe('done')
+    expect((await getAgentMessage(toBeta))?.status).not.toBe('failed')
   })
 
   it('the refusal is audited with the reason', async () => {
@@ -253,7 +253,7 @@ describe('PUT /api/messages/:id by role', () => {
 
   it("another tenant's message is a 404 even for its recipient's name, and stays open", async () => {
     expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${inAcme}`, { status: 'done' })).status).toBe(404)
-    expect(getAgentMessage(inAcme)?.status).not.toBe('done')
+    expect((await getAgentMessage(inAcme))?.status).not.toBe('done')
   })
 
   it('the shared admin token and an admin session still close any message', async () => {

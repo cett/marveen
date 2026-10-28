@@ -35,7 +35,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
 // The skill routes mirror every write to <project>/agents/<name>/.claude/skills on disk: keep the test off the real tree.
 vi.mock('../web/skill-regen.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/skill-regen.js')>()),
-  regenSingleSkillFile: () => ({ written: false, reason: 'test' }),
+  regenSingleSkillFile: () => Promise.resolve({ written: false, reason: 'test' }),
   removeGeneratedSkillFile: () => {},
   removeGeneratedCompanionFile: () => {},
 }))

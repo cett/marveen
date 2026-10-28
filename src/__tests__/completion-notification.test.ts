@@ -20,7 +20,7 @@ describe('completion-notification contract', () => {
   it('getAgentMessage returns the saved message after markMessageDone', async () => {
     const msg = await createAgentMessage('orin', 'dex', 'Research something')
     expect(markMessageDone(msg.id, 'Done: result')).toBe(true)
-    const fetched = getAgentMessage(msg.id)
+    const fetched = await getAgentMessage(msg.id)
     expect(fetched).toBeDefined()
     expect(fetched!.from_agent).toBe('orin')
     expect(fetched!.to_agent).toBe('dex')
@@ -30,14 +30,14 @@ describe('completion-notification contract', () => {
 
   it('completion sentinel prefix is detectable (ping-pong guard)', async () => {
     const notif = await createAgentMessage('dex', 'orin', '[Eredmény] msg_id:42 status:done\n\nreply')
-    const fetched = getAgentMessage(notif.id)!
+    const fetched = (await getAgentMessage(notif.id))!
     expect(fetched.content.startsWith('[Eredmény]')).toBe(true)
   })
 
   it('notification message has correct from/to/content and is pending', async () => {
     const msg = await createAgentMessage('orin', 'rex', 'Do something')
     markMessageDone(msg.id, 'PR opened')
-    const done = getAgentMessage(msg.id)!
+    const done = (await getAgentMessage(msg.id))!
 
     // Simulate what routes/messages.ts does after marking done
     expect(done.content.startsWith('[Eredmény]')).toBe(false) // not a notification
@@ -57,7 +57,7 @@ describe('completion-notification contract', () => {
   it('failed message also triggers notification with status:failed', async () => {
     const msg = await createAgentMessage('orin', 'lex', 'Some task')
     markMessageFailed(msg.id, 'Network error')
-    const failed = getAgentMessage(msg.id)!
+    const failed = (await getAgentMessage(msg.id))!
     expect(failed.status).toBe('failed')
 
     const summary = (failed.result ?? '').slice(0, 500) || '(nincs eredmény)'

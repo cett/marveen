@@ -30,8 +30,8 @@ const check  = process.argv.includes('--check')
 // Initialize DB before any queries.
 initDatabase()
 
-function reportGaps(): number {
-  const gaps = findSkillFileGaps()
+async function reportGaps(): Promise<number> {
+  const gaps = await findSkillFileGaps()
   const groups: Array<[string, string[]]> = [
     ['SKILL.md missing', gaps.skillFiles],
     ['companion file missing', gaps.companionFiles],
@@ -46,7 +46,7 @@ function reportGaps(): number {
 }
 
 if (check) {
-  const n = reportGaps()
+  const n = await reportGaps()
   console.log(n === 0 ? 'All skills, companion files and tenant copies in the DB are present on disk.' : `\n${n} item(s) in the DB are missing on disk. Run without --check (add --force if SKILL_SQL_REGEN=0).`)
   process.exit(n === 0 ? 0 : 1)
 }
@@ -56,11 +56,11 @@ if (!dryRun && !force && !SKILL_SQL_REGEN) {
   process.exit(1)
 }
 
-const totalRows = countSkills()
+const totalRows = await countSkills()
 console.log(`SQL skills table: ${totalRows} row(s) total.`)
 console.log(dryRun ? '[dry-run] Simulating regen...' : `Running regen (force=${force}, kill-switch=${SKILL_SQL_REGEN})...`)
 
-const result = regenSkillFilesFromSQL(dryRun, force || SKILL_SQL_REGEN)
+const result = await regenSkillFilesFromSQL(dryRun, force || SKILL_SQL_REGEN)
 
 console.log(`\nResult: enabled=${result.enabled}, written=${result.written}, skipped=${result.skipped}, errors=${result.errors}`)
 
@@ -70,7 +70,7 @@ if (result.errors > 0) {
 }
 
 if (!dryRun && result.enabled) {
-  const missing = reportGaps()
+  const missing = await reportGaps()
   if (missing > 0) {
     console.error(`\nWARN: ${missing} item(s) in the DB still have no file on disk (see above).`)
     process.exit(1)

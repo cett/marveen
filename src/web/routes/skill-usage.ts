@@ -46,14 +46,14 @@ export async function tryHandleSkillUsage(ctx: RouteContext): Promise<boolean> {
 
   // GET /api/skill-usage/summary -- per-skill last_used_at + 30d/90d/all-time counts
   if (path === '/api/skill-usage/summary' && method === 'GET') {
-    json(res, getSkillUsageSummary())
+    json(res, await getSkillUsageSummary())
     return true
   }
 
   // GET /api/skill-usage/stats -- aggregated counts per skill (for dream-engine health)
   if (path === '/api/skill-usage/stats' && method === 'GET') {
     const since = url.searchParams.get('since') ? parseInt(url.searchParams.get('since')!) : undefined
-    json(res, getSkillUsageStats(since))
+    json(res, await getSkillUsageStats(since))
     return true
   }
 
@@ -63,7 +63,7 @@ export async function tryHandleSkillUsage(ctx: RouteContext): Promise<boolean> {
     const agentId = url.searchParams.get('agent_id') ?? undefined
     const skillName = url.searchParams.get('skill_name') ?? undefined
     const limit = url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!) : 500
-    json(res, getSkillUsageRows({ since, agentId, skillName, limit }))
+    json(res, await getSkillUsageRows({ since, agentId, skillName, limit }))
     return true
   }
 

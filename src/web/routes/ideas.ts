@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { listIdeas, getIdeaStatusCounts, createIdea, updateIdea, updateIdeaWithStatusLog, deleteIdea, listIdeaCategories, createKanbanCard, getIdeaById, getIdeaComments, addIdeaComment, getIdeaStatusLog } from '../../db.js'
+import { listIdeas, getIdeaStatusCounts, createIdea, updateIdea, updateIdeaWithStatusLog, deleteIdea, listIdeaCategories, promoteIdeaToKanban, getIdeaById, getIdeaComments, addIdeaComment, getIdeaStatusLog, type NewKanbanCard } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -186,7 +186,8 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const cardId = randomUUID().slice(0, 8)
     const status = phase === 'plan' ? 'planned' : 'waiting'
     const title = phase === 'plan' ? idea.title : `[Részlet kidolgozás] ${idea.title}`
-    await createKanbanCard({
+    // The card and the idea's status change are one transaction: no orphan card when the second step fails.
+    const promoted = await promoteIdeaToKanban(ideaId, [{
       id: cardId,
       title,
       description: idea.description ?? '',
@@ -194,10 +195,8 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       priority: 'normal',
       assignee: BOT_NAME,
       project: 'Fejlesztési ötletek',
-    })
-    // The kanban card is created above through the synchronous kanban module (it joins a transaction when kanban
-    // moves onto the facade); the idea's own two writes are one transaction.
-    await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cardId }, { from: idea.status, to: 'kanban', actor: MAIN_AGENT_ID, note: `promote:${phase}` })
+    }], { from: idea.status, actor: MAIN_AGENT_ID, note: `promote:${phase}` })
+    if (!promoted) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     json(res, { ok: true, kanban_id: cardId })
     return true
   }
@@ -240,7 +239,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       ? `${baseDesc}\n\n## Siker-kritérium\n${success_criteria.trim()}`.trimStart()
       : baseDesc
     const parentId = randomUUID().slice(0, 8)
-    await createKanbanCard({
+    const cards: NewKanbanCard[] = [{
       id: parentId,
       title: idea.title,
       description: parentDesc,
@@ -248,13 +247,11 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       priority: 'normal',
       assignee: BOT_NAME,
       project: 'Fejlesztési ötletek',
-    })
-    const childIds: string[] = []
+    }]
     for (const st of subtasks) {
       if (!st.title) continue
-      const childId = randomUUID().slice(0, 8)
-      await createKanbanCard({
-        id: childId,
+      cards.push({
+        id: randomUUID().slice(0, 8),
         title: String(st.title).slice(0, 120),
         description: (st.description ?? '').slice(0, 500),
         status: 'planned',
@@ -263,10 +260,12 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
         project: 'Fejlesztési ötletek',
         parent_id: parentId,
       })
-      childIds.push(childId)
     }
-    await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: parentId }, { from: idea.status, to: 'kanban', actor: MAIN_AGENT_ID, note: `promote-breakdown:${childIds.length} subtasks` })
-    json(res, { ok: true, parent_id: parentId, child_count: childIds.length })
+    const childCount = cards.length - 1
+    // Parent, children and the idea's status change are one transaction: one failing child leaves nothing behind.
+    const promoted = await promoteIdeaToKanban(ideaId, cards, { from: idea.status, actor: MAIN_AGENT_ID, note: `promote-breakdown:${childCount} subtasks` })
+    if (!promoted) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
+    json(res, { ok: true, parent_id: parentId, child_count: childCount })
     return true
   }
 

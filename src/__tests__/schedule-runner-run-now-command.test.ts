@@ -49,7 +49,7 @@ beforeEach(() => {
 
 describe('runScheduledTaskNow: type=command', () => {
   it('runs the shell command directly and stamps the last run, without touching any agent session', async () => {
-    listTasksMock.mockReturnValue([task()])
+    listTasksMock.mockResolvedValue([task()])
     const r = await runScheduledTaskNow('nightly-backup')
     expect(r.ok).toBe(true)
     expect(r.result).toMatch(/^command: started/)
@@ -62,16 +62,16 @@ describe('runScheduledTaskNow: type=command', () => {
   })
 
   it('still honours the disabled and not-live gates before running anything', async () => {
-    listTasksMock.mockReturnValue([task({ enabled: false })])
+    listTasksMock.mockResolvedValue([task({ enabled: false })])
     expect(await runScheduledTaskNow('nightly-backup')).toMatchObject({ ok: false, error: 'disabled' })
-    listTasksMock.mockReturnValue([task({ status: 'draft' })])
+    listTasksMock.mockResolvedValue([task({ status: 'draft' })])
     expect(await runScheduledTaskNow('nightly-backup')).toMatchObject({ ok: false, error: 'not_live' })
     expect(runCommandTaskMock).not.toHaveBeenCalled()
     expect(updateLastRunMock).not.toHaveBeenCalled()
   })
 
   it('a non-command task is never run as a shell command', async () => {
-    listTasksMock.mockReturnValue([task({ type: 'task', command: undefined })])
+    listTasksMock.mockResolvedValue([task({ type: 'task', command: undefined })])
     // the session path needs a real DB/tmux; only the routing decision matters here
     await runScheduledTaskNow('nightly-backup').catch(() => undefined)
     expect(runCommandTaskMock).not.toHaveBeenCalled()

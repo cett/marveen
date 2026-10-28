@@ -362,7 +362,7 @@ const WATCHED: readonly WatchSpec[] = [
   {
     prefix: '/api/kanban', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     paramLiterals: new Set(['labels', 'heartbeat-summary', 'assignees', 'archived', 'search']),
-    owner: (p) => getKanbanCard(p)?.assignee,
+    owner: async (p) => (await getKanbanCard(p))?.assignee,
     queryKeys: ['assignee'], bodyKeys: ['assignee'], enforce: 'none',
   },
   {
@@ -374,7 +374,7 @@ const WATCHED: readonly WatchSpec[] = [
   {
     prefix: '/api/schedules', kind: 'unscoped', paramSeg: 0, paramName: ':name',
     paramLiterals: new Set(['tick-status', 'agents', 'expand-questions', 'expand-prompt', 'pending']),
-    owner: (p) => getScheduleFromDb(p)?.agent,
+    owner: async (p) => (await getScheduleFromDb(p))?.agent,
     queryKeys: AGENT_QUERY, bodyKeys: ['agent'], bodyMaxBytes: SCHEDULE_BODY_MAX_BYTES, enforce: 'any', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent' },
   },
 ]

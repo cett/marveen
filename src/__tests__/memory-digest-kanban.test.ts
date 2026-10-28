@@ -12,8 +12,8 @@ vi.mock('../db.js', () => ({
   touchMemory: vi.fn(),
   saveMemory: vi.fn(),
   decayMemories: vi.fn().mockReturnValue(undefined),
-  pruneAuditLogs: vi.fn().mockReturnValue(undefined),
-  pruneTokenUsage: vi.fn().mockReturnValue({ pruned: 0 }),
+  pruneAuditLogs: vi.fn().mockResolvedValue(undefined),
+  pruneTokenUsage: vi.fn().mockResolvedValue({ pruned: 0 }),
   pruneBlackboardHistory: vi.fn().mockReturnValue(0),
   pruneConversationLog: vi.fn().mockReturnValue(0),
   pruneAgentMessages: vi.fn().mockReturnValue(0),
@@ -74,18 +74,18 @@ beforeEach(() => {
 })
 
 describe('buildKanbanContext', () => {
-  it('returns an empty string when there are no cards', () => {
-    mockListKanbanCardsSummary.mockReturnValue([])
-    expect(buildKanbanContext()).toBe('')
+  it('returns an empty string when there are no cards', async () => {
+    mockListKanbanCardsSummary.mockResolvedValue([])
+    expect(await buildKanbanContext()).toBe('')
   })
 
-  it('groups cards by their Hungarian status label, with priority emoji and assignee', () => {
+  it('groups cards by their Hungarian status label, with priority emoji and assignee', async () => {
     mockListKanbanCardsSummary.mockReturnValue([
       { id: 'c1', title: 'Fix the thing', status: 'in_progress', priority: 'urgent', assignee: 'agent-a' },
       { id: 'c2', title: 'Write docs', status: 'planned', priority: 'low', assignee: null },
     ] as unknown as ReturnType<typeof db.listKanbanCardsSummary>)
 
-    const out = buildKanbanContext()
+    const out = await buildKanbanContext()
 
     expect(out).toContain('[Kanban tabla]')
     expect(out).toContain('Folyamatban:')
@@ -94,12 +94,12 @@ describe('buildKanbanContext', () => {
     expect(out).toContain('🔵 Write docs [c2]')
   })
 
-  it('falls back to the raw status string and a neutral priority dot for unknown values', () => {
+  it('falls back to the raw status string and a neutral priority dot for unknown values', async () => {
     mockListKanbanCardsSummary.mockReturnValue([
       { id: 'c3', title: 'Mystery card', status: 'archived', priority: 'weird', assignee: null },
     ] as unknown as ReturnType<typeof db.listKanbanCardsSummary>)
 
-    const out = buildKanbanContext()
+    const out = await buildKanbanContext()
 
     expect(out).toContain('archived:')
     expect(out).toContain('⚪ Mystery card [c3]')
@@ -143,7 +143,7 @@ describe('saveConversationTurn', () => {
 
 describe('runDecaySweep', () => {
   it('runs every prune/decay step and logs a combined summary', async () => {
-    vi.mocked(db.pruneTokenUsage).mockReturnValue({ pruned: 3 } as unknown as ReturnType<typeof db.pruneTokenUsage>)
+    vi.mocked(db.pruneTokenUsage).mockResolvedValue({ pruned: 3 } as unknown as Awaited<ReturnType<typeof db.pruneTokenUsage>>)
     vi.mocked(db.pruneBlackboardHistory).mockReturnValue(2 as unknown as ReturnType<typeof db.pruneBlackboardHistory>)
     vi.mocked(db.pruneConversationLog).mockReturnValue(1 as unknown as ReturnType<typeof db.pruneConversationLog>)
     vi.mocked(db.pruneAgentMessages).mockReturnValue(4 as unknown as ReturnType<typeof db.pruneAgentMessages>)

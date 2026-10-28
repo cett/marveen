@@ -19,105 +19,105 @@ function insertTaskRun(name: string, agent: string, ts: number, status = 'fired'
 }
 
 describe('countTaskRunsBetween', () => {
-  it('counts every run at or after fromTs when no upper bound or tenant filter is given', () => {
+  it('counts every run at or after fromTs when no upper bound or tenant filter is given', async () => {
     insertTaskRun('t1', 'agent-a', 1000)
     insertTaskRun('t2', 'agent-b', 2000)
     insertTaskRun('t3', 'agent-a', 500) // before fromTs, excluded
-    expect(countTaskRunsBetween(1000)).toBe(2)
+    expect(await countTaskRunsBetween(1000)).toBe(2)
   })
 
-  it('excludes runs at or after toTs when an upper bound is given', () => {
+  it('excludes runs at or after toTs when an upper bound is given', async () => {
     insertTaskRun('t1', 'agent-a', 1000)
     insertTaskRun('t2', 'agent-a', 1999)
     insertTaskRun('t3', 'agent-a', 2000) // >= toTs, excluded
-    expect(countTaskRunsBetween(1000, 2000)).toBe(2)
+    expect(await countTaskRunsBetween(1000, 2000)).toBe(2)
   })
 
-  it('narrows to runs of the given tenant\'s schedules, whatever agent ran them', () => {
+  it('narrows to runs of the given tenant\'s schedules, whatever agent ran them', async () => {
     insertSchedule('s-a', 'tenant-a'); insertSchedule('s-a2', 'tenant-a'); insertSchedule('s-b', 'tenant-b')
     insertTaskRun('s-a', 'agent-a', 1000)
     insertTaskRun('s-a2', 'shared-agent', 1000) // a shared agent counts for the schedule's tenant
     insertTaskRun('s-b', 'shared-agent', 1000)
-    expect(countTaskRunsBetween(0, undefined, 'tenant-a')).toBe(2)
-    expect(countTaskRunsBetween(0, undefined, 'tenant-b')).toBe(1)
+    expect(await countTaskRunsBetween(0, undefined, 'tenant-a')).toBe(2)
+    expect(await countTaskRunsBetween(0, undefined, 'tenant-b')).toBe(1)
   })
 
-  it('a tenant with no schedules counts 0', () => {
+  it('a tenant with no schedules counts 0', async () => {
     insertSchedule('s-a', 'tenant-a')
     insertTaskRun('s-a', 'agent-a', 1000)
-    expect(countTaskRunsBetween(0, undefined, 'tenant-empty')).toBe(0)
+    expect(await countTaskRunsBetween(0, undefined, 'tenant-empty')).toBe(0)
   })
 
-  it('a run whose schedule is gone belongs to no tenant (fleet-wide count only)', () => {
+  it('a run whose schedule is gone belongs to no tenant (fleet-wide count only)', async () => {
     insertTaskRun('deleted-task', 'agent-a', 1000)
-    expect(countTaskRunsBetween(0, undefined, 'tenant-a')).toBe(0)
-    expect(countTaskRunsBetween(0)).toBe(1)
+    expect(await countTaskRunsBetween(0, undefined, 'tenant-a')).toBe(0)
+    expect(await countTaskRunsBetween(0)).toBe(1)
   })
 
-  it('the tenant filter composes with the time window', () => {
+  it('the tenant filter composes with the time window', async () => {
     insertSchedule('s-a', 'tenant-a')
     insertTaskRun('s-a', 'agent-a', 500)
     insertTaskRun('s-a', 'agent-a', 1500)
     insertTaskRun('s-a', 'agent-a', 2500)
-    expect(countTaskRunsBetween(1000, 2000, 'tenant-a')).toBe(1)
+    expect(await countTaskRunsBetween(1000, 2000, 'tenant-a')).toBe(1)
   })
 
-  it('no tenant means unfiltered, fleet-wide', () => {
+  it('no tenant means unfiltered, fleet-wide', async () => {
     insertTaskRun('t1', 'agent-a', 1000)
     insertTaskRun('t2', 'agent-b', 1000)
-    expect(countTaskRunsBetween(0, undefined, undefined)).toBe(2)
+    expect(await countTaskRunsBetween(0, undefined, undefined)).toBe(2)
   })
 })
 
 describe('countSkills', () => {
-  it('is 0 on an empty table', () => {
-    expect(countSkills()).toBe(0)
+  it('is 0 on an empty table', async () => {
+    expect(await countSkills()).toBe(0)
   })
 
-  it('counts every row regardless of tenant or global flag', () => {
-    createSkill({ id: 's1', name: 'One', content: 'x', tenant_id: 'tenant-a' })
-    createSkill({ id: 's2', name: 'Two', content: 'x', tenant_id: 'fleet', is_global: true })
-    expect(countSkills()).toBe(2)
+  it('counts every row regardless of tenant or global flag', async () => {
+    await createSkill({ id: 's1', name: 'One', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 's2', name: 'Two', content: 'x', tenant_id: 'fleet', is_global: true })
+    expect(await countSkills()).toBe(2)
   })
 })
 
 describe('listAgentOwnedSkills', () => {
-  it('returns only skills whose id is prefixed agent/<agentId>/, ordered by name', () => {
-    createSkill({ id: 'agent/agent-a/zeta', name: 'Zeta', content: 'x', tenant_id: 'tenant-a' })
-    createSkill({ id: 'agent/agent-a/alpha', name: 'Alpha', content: 'x', tenant_id: 'tenant-a' })
-    createSkill({ id: 'agent/agent-b/other', name: 'Other', content: 'x', tenant_id: 'tenant-b' })
-    createSkill({ id: 'global-skill', name: 'Global', content: 'x', tenant_id: 'fleet', is_global: true })
+  it('returns only skills whose id is prefixed agent/<agentId>/, ordered by name', async () => {
+    await createSkill({ id: 'agent/agent-a/zeta', name: 'Zeta', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'agent/agent-a/alpha', name: 'Alpha', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'agent/agent-b/other', name: 'Other', content: 'x', tenant_id: 'tenant-b' })
+    await createSkill({ id: 'global-skill', name: 'Global', content: 'x', tenant_id: 'fleet', is_global: true })
 
-    const rows = listAgentOwnedSkills('agent-a')
+    const rows = await listAgentOwnedSkills('agent-a')
     expect(rows.map((r) => r.id)).toEqual(['agent/agent-a/alpha', 'agent/agent-a/zeta'])
   })
 
-  it('a prefix must match a FULL path segment, not just a string prefix', () => {
+  it('a prefix must match a FULL path segment, not just a string prefix', async () => {
     // agent-a's prefix must not accidentally match agent-ab's skills.
-    createSkill({ id: 'agent/agent-ab/x', name: 'X', content: 'x', tenant_id: 'tenant-a' })
-    const rows = listAgentOwnedSkills('agent-a')
+    await createSkill({ id: 'agent/agent-ab/x', name: 'X', content: 'x', tenant_id: 'tenant-a' })
+    const rows = await listAgentOwnedSkills('agent-a')
     expect(rows).toHaveLength(0)
   })
 
-  it('returns an empty array when the agent owns no skills', () => {
-    expect(listAgentOwnedSkills('nobody')).toEqual([])
+  it('returns an empty array when the agent owns no skills', async () => {
+    expect(await listAgentOwnedSkills('nobody')).toEqual([])
   })
 })
 
 describe('listGlobalFleetSkills', () => {
-  it('returns only is_global=1 skills scoped to the fleet tenant', () => {
-    createSkill({ id: 'g1', name: 'Fleet A', content: 'x', tenant_id: 'fleet', is_global: true })
-    createSkill({ id: 'g2', name: 'Fleet B', content: 'x', tenant_id: 'fleet', is_global: true })
-    createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a', is_global: false })
+  it('returns only is_global=1 skills scoped to the fleet tenant', async () => {
+    await createSkill({ id: 'g1', name: 'Fleet A', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'g2', name: 'Fleet B', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a', is_global: false })
     // is_global=1 but NOT tenant_id='fleet': must not qualify.
-    createSkill({ id: 'stray-global', name: 'Stray', content: 'x', tenant_id: 'tenant-b', is_global: true })
+    await createSkill({ id: 'stray-global', name: 'Stray', content: 'x', tenant_id: 'tenant-b', is_global: true })
 
-    const rows = listGlobalFleetSkills()
+    const rows = await listGlobalFleetSkills()
     expect(rows.map((r) => r.id).sort()).toEqual(['g1', 'g2'])
   })
 
-  it('returns an empty array when no fleet-global skills exist', () => {
-    createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a' })
-    expect(listGlobalFleetSkills()).toEqual([])
+  it('returns an empty array when no fleet-global skills exist', async () => {
+    await createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a' })
+    expect(await listGlobalFleetSkills()).toEqual([])
   })
 })

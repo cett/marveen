@@ -17,8 +17,8 @@ const directForm = (root = ROOT): string =>
   `bash ${root}/scripts/agent-api.sh --max-time 120 POST /api/memories/resort '{}' | grep -q '"ok":true' && `
   + `bash ${root}/scripts/agent-api.sh --max-time 300 POST /api/memories/links/maintain '{}' | grep -q '"ok":true'`
 
-function seedRow(command: string, over: Partial<Parameters<typeof upsertSchedule>[1]> = {}): void {
-  upsertSchedule('memory-maintenance', {
+async function seedRow(command: string, over: Partial<Parameters<typeof upsertSchedule>[1]> = {}): Promise<void> {
+  await upsertSchedule('memory-maintenance', {
     prompt: '', description: 'Nightly memory maintenance', schedule: '15 3 * * *', agent: 'main-agent', type: 'command',
     enabled: true, skip_if_busy: false, force_send: false, command, timeout_ms: 480000, fail_threshold: 1,
     status: 'live', tenant_id: 'default', ...over,
@@ -57,64 +57,64 @@ describe('isStockInlineMemoryMaintenanceCommand', () => {
 })
 
 describe('ensureMemoryMaintenanceCommand', () => {
-  it.each([['variable form', variableForm()], ['direct form', directForm()]])('moves a %s row to the script, keeping the rest of the row', (_n, command) => {
-    seedRow(command)
-    expect(ensureMemoryMaintenanceCommand(ROOT, 4567)).toBe(true)
-    expect(getScheduleFromDb('memory-maintenance')).toMatchObject({
+  it.each([['variable form', variableForm()], ['direct form', directForm()]])('moves a %s row to the script, keeping the rest of the row', async (_n, command) => {
+    await seedRow(command)
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 4567)).toBe(true)
+    expect(await getScheduleFromDb('memory-maintenance')).toMatchObject({
       command: "export DASHBOARD_BASE_URL='http://localhost:4567'; bash '/opt/marveen/scripts/memory-maintenance.sh' main-agent",
       schedule: '15 3 * * *', agent: 'main-agent', enabled: 1, timeout_ms: 480000, fail_threshold: 1, status: 'live',
     })
   })
 
-  it('uses the agent of the row, not the main agent', () => {
-    seedRow(directForm(), { agent: 'second-agent' })
-    ensureMemoryMaintenanceCommand(ROOT, 3420)
-    expect(getScheduleFromDb('memory-maintenance')?.command).toContain('memory-maintenance.sh\' second-agent')
+  it('uses the agent of the row, not the main agent', async () => {
+    await seedRow(directForm(), { agent: 'second-agent' })
+    await ensureMemoryMaintenanceCommand(ROOT, 3420)
+    expect((await getScheduleFromDb('memory-maintenance'))?.command).toContain('memory-maintenance.sh\' second-agent')
   })
 
-  it('moves a row whose inline --agent is the row\'s own agent', () => {
-    seedRow(variableForm('second-agent'), { agent: 'second-agent' })
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(true)
-    expect(getScheduleFromDb('memory-maintenance')?.command).toContain('memory-maintenance.sh\' second-agent')
+  it('moves a row whose inline --agent is the row\'s own agent', async () => {
+    await seedRow(variableForm('second-agent'), { agent: 'second-agent' })
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(true)
+    expect((await getScheduleFromDb('memory-maintenance'))?.command).toContain('memory-maintenance.sh\' second-agent')
   })
 
-  it('leaves a row alone whose inline --agent differs from the row\'s agent (the operator chose it)', () => {
+  it('leaves a row alone whose inline --agent differs from the row\'s agent (the operator chose it)', async () => {
     const custom = variableForm('operator-chosen')
-    seedRow(custom, { agent: 'main-agent' })
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
-    expect(getScheduleFromDb('memory-maintenance')?.command).toBe(custom)
+    await seedRow(custom, { agent: 'main-agent' })
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
+    expect((await getScheduleFromDb('memory-maintenance'))?.command).toBe(custom)
   })
 
-  it('is idempotent: the migrated row is left alone on the next start', () => {
-    seedRow(variableForm())
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(true)
-    const after = getScheduleFromDb('memory-maintenance')
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
-    expect(getScheduleFromDb('memory-maintenance')).toEqual(after)
+  it('is idempotent: the migrated row is left alone on the next start', async () => {
+    await seedRow(variableForm())
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(true)
+    const after = await getScheduleFromDb('memory-maintenance')
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
+    expect(await getScheduleFromDb('memory-maintenance')).toEqual(after)
   })
 
-  it('never touches an operator command, even one that looks similar', () => {
+  it('never touches an operator command, even one that looks similar', async () => {
     const custom = `${variableForm()} && curl -s https://example.invalid/ping`
-    seedRow(custom)
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
-    expect(getScheduleFromDb('memory-maintenance')?.command).toBe(custom)
+    await seedRow(custom)
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
+    expect((await getScheduleFromDb('memory-maintenance'))?.command).toBe(custom)
   })
 
-  it('leaves a disabled stock row disabled', () => {
-    seedRow(variableForm(), { enabled: false })
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(true)
-    expect(getScheduleFromDb('memory-maintenance')?.enabled).toBe(0)
+  it('leaves a disabled stock row disabled', async () => {
+    await seedRow(variableForm(), { enabled: false })
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(true)
+    expect((await getScheduleFromDb('memory-maintenance'))?.enabled).toBe(0)
   })
 
-  it('does nothing without a row, for a non-command row, or for an agent id it cannot quote safely', () => {
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
-    seedRow(variableForm(), { type: 'task', command: null, prompt: 'x' })
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
+  it('does nothing without a row, for a non-command row, or for an agent id it cannot quote safely', async () => {
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
+    await seedRow(variableForm(), { type: 'task', command: null, prompt: 'x' })
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
   })
 
-  it('refuses an agent id with shell metacharacters', () => {
-    seedRow(directForm(), { agent: 'a; rm -rf /' })
-    expect(ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
-    expect(getScheduleFromDb('memory-maintenance')?.command).toBe(directForm())
+  it('refuses an agent id with shell metacharacters', async () => {
+    await seedRow(directForm(), { agent: 'a; rm -rf /' })
+    expect(await ensureMemoryMaintenanceCommand(ROOT, 3420)).toBe(false)
+    expect((await getScheduleFromDb('memory-maintenance'))?.command).toBe(directForm())
   })
 })

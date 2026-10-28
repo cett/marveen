@@ -40,7 +40,7 @@ describe('RETURNING id replaces lastInsertRowid', () => {
 
   it('addKanbanComment returns the id of the comment it wrote', async () => {
     await createKanbanCard({ id: 'rw-card', title: 'rw card' })
-    const c = addKanbanComment('rw-card', 'someone', 'hello')
+    const c = await addKanbanComment('rw-card', 'someone', 'hello')
     const row = getDb().prepare('SELECT content FROM kanban_comments WHERE id = ?').get(c.id) as { content: string }
     expect(row.content).toBe('hello')
   })
@@ -64,8 +64,8 @@ describe('ON CONFLICT DO NOTHING keeps the insert-if-absent behaviour', () => {
     const db = getDb()
     await createKanbanCard({ id: 'rw-label-card', title: 'label card' })
     db.prepare("INSERT INTO labels (id, name, color, created_at) VALUES ('rw-l', 'rw-l', '#fff', 1)").run()
-    addLabelToCard('rw-label-card', 'rw-l')
-    addLabelToCard('rw-label-card', 'rw-l')
+    await addLabelToCard('rw-label-card', 'rw-l')
+    await addLabelToCard('rw-label-card', 'rw-l')
     const n = db.prepare('SELECT COUNT(*) AS n FROM kanban_card_labels WHERE card_id = ?').get('rw-label-card') as { n: number }
     expect(n.n).toBe(1)
   })
@@ -77,31 +77,31 @@ describe('ON CONFLICT DO NOTHING keeps the insert-if-absent behaviour', () => {
     expect(n.n).toBe(1)
   })
 
-  it('seedScheduleIfAbsent inserts once and reports an existing row as false', () => {
-    expect(seedScheduleIfAbsent('rw-sched', seedOpts)).toBe(true)
-    expect(seedScheduleIfAbsent('rw-sched', { ...seedOpts, prompt: 'changed' })).toBe(false)
+  it('seedScheduleIfAbsent inserts once and reports an existing row as false', async () => {
+    expect(await seedScheduleIfAbsent('rw-sched', seedOpts)).toBe(true)
+    expect(await seedScheduleIfAbsent('rw-sched', { ...seedOpts, prompt: 'changed' })).toBe(false)
     const row = getDb().prepare("SELECT prompt FROM schedules WHERE id = 'rw-sched'").get() as { prompt: string }
     expect(row.prompt).toBe('p')
   })
 })
 
 describe('file-fed seeds still skip a row the table would reject', () => {
-  it('a schedule with an unknown type is skipped, not thrown', () => {
-    expect(seedScheduleIfAbsent('rw-bad-type', { ...seedOpts, type: 'weekly' as never })).toBe(false)
+  it('a schedule with an unknown type is skipped, not thrown', async () => {
+    expect(await seedScheduleIfAbsent('rw-bad-type', { ...seedOpts, type: 'weekly' as never })).toBe(false)
     expect(getDb().prepare("SELECT 1 FROM schedules WHERE id = 'rw-bad-type'").get()).toBeUndefined()
   })
 
-  it('a schedule without a cron expression or agent is skipped', () => {
-    expect(seedScheduleIfAbsent('rw-no-cron', { ...seedOpts, schedule: undefined as never })).toBe(false)
-    expect(seedScheduleIfAbsent('rw-no-agent', { ...seedOpts, agent: undefined as never })).toBe(false)
+  it('a schedule without a cron expression or agent is skipped', async () => {
+    expect(await seedScheduleIfAbsent('rw-no-cron', { ...seedOpts, schedule: undefined as never })).toBe(false)
+    expect(await seedScheduleIfAbsent('rw-no-agent', { ...seedOpts, agent: undefined as never })).toBe(false)
   })
 
-  it('a skill without a name or content is skipped', () => {
+  it('a skill without a name or content is skipped', async () => {
     const ok = { id: 'rw-skill', name: 'n', description: 'd', content: 'c', tenant_id: 'default', is_global: false }
-    expect(seedSkillIfAbsent({ ...ok, id: 'rw-skill-1', name: undefined as never })).toBe(false)
-    expect(seedSkillIfAbsent({ ...ok, id: 'rw-skill-2', content: undefined as never })).toBe(false)
-    expect(seedSkillIfAbsent(ok)).toBe(true)
-    expect(seedSkillIfAbsent(ok)).toBe(false)
+    expect(await seedSkillIfAbsent({ ...ok, id: 'rw-skill-1', name: undefined as never })).toBe(false)
+    expect(await seedSkillIfAbsent({ ...ok, id: 'rw-skill-2', content: undefined as never })).toBe(false)
+    expect(await seedSkillIfAbsent(ok)).toBe(true)
+    expect(await seedSkillIfAbsent(ok)).toBe(false)
   })
 })
 

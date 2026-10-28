@@ -120,13 +120,13 @@ describe('pruneTokenUsage', () => {
     db.exec("DELETE FROM token_usage_monthly WHERE agent = 'test-prune'")
   })
 
-  it('deletes rows older than the retention window (default 30 days), keeps recent ones', () => {
+  it('deletes rows older than the retention window (default 30 days), keeps recent ones', async () => {
     insertRow('sess-old-1', 200)   // well past 30d
     insertRow('sess-old-2', 31)    // just past 30d
     insertRow('sess-recent-1', 29) // just inside 30d
     insertRow('sess-recent-2', 1)  // recent
 
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(2)
 
     const remaining = getDb()
@@ -135,15 +135,15 @@ describe('pruneTokenUsage', () => {
     expect(remaining.map((r) => r.session_id)).toEqual(['sess-recent-1', 'sess-recent-2'])
   })
 
-  it('is a no-op when nothing is older than the window', () => {
+  it('is a no-op when nothing is older than the window', async () => {
     insertRow('sess-fresh', 5)
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(0)
     const cnt = getDb().prepare("SELECT COUNT(*) c FROM token_usage WHERE agent = 'test-prune'").get() as { c: number }
     expect(cnt.c).toBe(1)
   })
 
-  it('aggregates old rows into token_usage_daily before deleting them', () => {
+  it('aggregates old rows into token_usage_daily before deleting them', async () => {
     // Snap to today's UTC noon, then subtract 60 days.
     // This makes the timestamp always land at 12:00 UTC, avoiding midnight boundary
     // issues when CI runs at 22-24 UTC (= 00-02 Budapest next day). 60 days keeps
@@ -160,7 +160,7 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-agg-2', ?, 200, 75, 0, 0)`,
     ).run(oldTs + 3600) // same day, 1h later
 
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(2)
     expect(result.dailyUpserted).toBeGreaterThanOrEqual(1)
 
@@ -174,7 +174,7 @@ describe('pruneTokenUsage', () => {
     expect(daily[0].row_count).toBe(2)
   })
 
-  it('aggregates old rows into token_usage_monthly before deleting them', () => {
+  it('aggregates old rows into token_usage_monthly before deleting them', async () => {
     const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
     const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
@@ -182,7 +182,7 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-month-1', ?, 500, 100, 0, 0)`,
     ).run(oldTs)
 
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(1)
     expect(result.monthlyUpserted).toBeGreaterThanOrEqual(1)
 
@@ -195,7 +195,7 @@ describe('pruneTokenUsage', () => {
     expect(monthly[0].row_count).toBe(1)
   })
 
-  it('is idempotent: running pruneTokenUsage twice does not duplicate aggregated rows', () => {
+  it('is idempotent: running pruneTokenUsage twice does not duplicate aggregated rows', async () => {
     const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
     const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
@@ -203,8 +203,8 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-idem-1', ?, 100, 50, 0, 0)`,
     ).run(oldTs)
 
-    pruneTokenUsage()  // first run: aggregates + deletes
-    pruneTokenUsage()  // second run: nothing to delete, no phantom duplicates
+    await pruneTokenUsage()  // first run: aggregates + deletes
+    await pruneTokenUsage()  // second run: nothing to delete, no phantom duplicates
 
     const dailyCount = getDb()
       .prepare("SELECT COUNT(*) c FROM token_usage_daily WHERE agent = 'test-prune'")
@@ -218,7 +218,7 @@ describe('pruneTokenUsage', () => {
     expect(monthlyCount.c).toBe(1)
   })
 
-  it('preserves aggregated totals across repeated prune runs', () => {
+  it('preserves aggregated totals across repeated prune runs', async () => {
     const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
     const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
@@ -226,8 +226,8 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-persist-1', ?, 400, 200, 0, 0)`,
     ).run(oldTs)
 
-    pruneTokenUsage()  // aggregates and deletes the row
-    pruneTokenUsage()  // second run: raw table empty for this agent; upsert re-applies same zero
+    await pruneTokenUsage()  // aggregates and deletes the row
+    await pruneTokenUsage()  // second run: raw table empty for this agent; upsert re-applies same zero
 
     const daily = getDb()
       .prepare("SELECT input_tokens, output_tokens FROM token_usage_daily WHERE agent = 'test-prune'")

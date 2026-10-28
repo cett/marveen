@@ -130,7 +130,7 @@ async function main(): Promise<void> {
       await revokeAllForUser(user.id)
       // Same audit + channel ping as the HTTP break-glass: a password reset
       // that skipped the current-password proof must always leave a trace.
-      logConfigChange('security.break_glass_password_reset', null, user.username, 'cli')
+      await logConfigChange('security.break_glass_password_reset', null, user.username, 'cli')
       await notifySecurityEvent(`🔑 Jelszó-reset a dashboard CLI-ből (break-glass): "${user.username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
       process.stdout.write(`Password reset for "${username}"; all their sessions were revoked.\n`)
       break

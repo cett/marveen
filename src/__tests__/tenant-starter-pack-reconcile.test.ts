@@ -60,7 +60,7 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true })
 })
 
-const row = (name = NAME) => dbMod.getScheduleFromDb(name)
+const row = async (name = NAME) => dbMod.getScheduleFromDb(name)
 const mirror = (name = NAME) => JSON.parse(readFileSync(join(tmp, '.claude', 'scheduled-tasks', name, 'task-config.json'), 'utf-8')) as Record<string, unknown>
 const count = (sql: string) => (dbMod.getDb().prepare(sql).get() as { n: number }).n
 const retargetAudits = () => count("SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = 'retarget'")
@@ -69,8 +69,8 @@ const reviewMessages = () => (dbMod.getDb().prepare("SELECT content FROM agent_m
 /** A live, enabled starter task on acme-lead that a person has already approved. */
 async function approvedStarter() {
   await pack.createStarterPack(human(), 'acme')
-  io.writeScheduledTask(NAME, { status: 'live', enabled: true })
-  expect(row()).toMatchObject({ status: 'live', enabled: 1, agent: 'acme-lead' })
+  await io.writeScheduledTask(NAME, { status: 'live', enabled: true })
+  expect(await row()).toMatchObject({ status: 'live', enabled: 1, agent: 'acme-lead' })
 }
 
 describe('main agent change', () => {
@@ -80,7 +80,7 @@ describe('main agent change', () => {
     const r = await pack.reconcileStarterPack(human(), 'acme')
     expect(r.state).toBe('retargeted')
     expect(r.retargeted).toEqual([{ name: NAME, from: 'acme-lead', to: 'acme-aux' }])
-    const after = row()!
+    const after = (await row())!
     expect(after.agent).toBe('acme-aux')
     expect(after.status).toBe('draft')
     expect(after.enabled).toBe(0)
@@ -88,10 +88,10 @@ describe('main agent change', () => {
 
   it('keeps what a person edited: prompt and schedule', async () => {
     await approvedStarter()
-    io.writeScheduledTask(NAME, { prompt: 'my own prompt', schedule: '7 7 * * *' })
+    await io.writeScheduledTask(NAME, { prompt: 'my own prompt', schedule: '7 7 * * *' })
     dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(human(), 'acme')
-    expect(row()).toMatchObject({ prompt: 'my own prompt', schedule: '7 7 * * *' })
+    expect(await row()).toMatchObject({ prompt: 'my own prompt', schedule: '7 7 * * *' })
   })
 
   it('writes the file mirror with the new agent and draft', async () => {
@@ -105,11 +105,11 @@ describe('main agent change', () => {
     await approvedStarter()
     dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(agentToken(), 'acme')
-    const stamp = row()!.updated_at
+    const stamp = (await row())!.updated_at
     const again = await pack.reconcileStarterPack(agentToken(), 'acme')
     expect(again.state).toBe('ok')
     expect(again.retargeted).toEqual([])
-    expect(row()!.updated_at).toBe(stamp)
+    expect((await row())!.updated_at).toBe(stamp)
     expect(retargetAudits()).toBe(1)
     expect(reviewMessages()).toHaveLength(1)
   })
@@ -119,21 +119,21 @@ describe('main agent change', () => {
     dbMod.updateTenant('acme', { main_agent_id: 'shared-agent' })
     const r = await pack.reconcileStarterPack(human(), 'acme')
     expect(r.state).toBe('ok')
-    expect(row()).toMatchObject({ agent: 'acme-lead', status: 'live', enabled: 1 })
+    expect(await row()).toMatchObject({ agent: 'acme-lead', status: 'live', enabled: 1 })
   })
 })
 
 describe('no definite agent', () => {
   async function gammaApproved() {
     await pack.createStarterPack(human(), 'gamma', { agentId: 'g-two' })
-    io.writeScheduledTask('gamma-starter-daily-summary', { status: 'live', enabled: true })
+    await io.writeScheduledTask('gamma-starter-daily-summary', { status: 'live', enabled: true })
   }
 
   it('two candidates and the current agent still serves: left alone, not demoted', async () => {
     await gammaApproved()
     const r = await pack.reconcileStarterPack(human(), 'gamma')
     expect(r.state).toBe('ok')
-    expect(row('gamma-starter-daily-summary')).toMatchObject({ agent: 'g-two', status: 'live', enabled: 1 })
+    expect(await row('gamma-starter-daily-summary')).toMatchObject({ agent: 'g-two', status: 'live', enabled: 1 })
   })
 
   it('the current agent no longer serves and none can be chosen: parked as draft + disabled, agent unchanged, needs_agent', async () => {
@@ -143,36 +143,36 @@ describe('no definite agent', () => {
     const r = await pack.reconcileStarterPack(human(), 'gamma')
     expect(r.state).toBe('needs_agent')
     expect(r.reason).toBe('ambiguous')
-    expect(row('gamma-starter-daily-summary')).toMatchObject({ agent: 'g-two', status: 'draft', enabled: 0 })
+    expect(await row('gamma-starter-daily-summary')).toMatchObject({ agent: 'g-two', status: 'draft', enabled: 0 })
     expect((await pack.describeStarterPack('gamma')).state).toBe('needs_agent')
-    const stamp = row('gamma-starter-daily-summary')!.updated_at
+    const stamp = (await row('gamma-starter-daily-summary'))!.updated_at
     await pack.reconcileStarterPack(human(), 'gamma')
-    expect(row('gamma-starter-daily-summary')!.updated_at).toBe(stamp)
+    expect((await row('gamma-starter-daily-summary'))!.updated_at).toBe(stamp)
   })
 })
 
 describe('only the tenant\'s own starter task is touched', () => {
   it('a user task with a starter-like name and another tenant\'s row are left alone', async () => {
     await approvedStarter()
-    io.writeScheduledTask('acme-starter-extra', { prompt: 'p', agent: 'acme-lead', tenantId: 'acme', status: 'live', enabled: true })
+    await io.writeScheduledTask('acme-starter-extra', { prompt: 'p', agent: 'acme-lead', tenantId: 'acme', status: 'live', enabled: true })
     await pack.createStarterPack(human(), 'gamma', { agentId: 'g-one' })
     dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(human(), 'acme')
-    expect(row('acme-starter-extra')).toMatchObject({ agent: 'acme-lead', status: 'live', enabled: 1 })
-    expect(row('gamma-starter-daily-summary')).toMatchObject({ agent: 'g-one', status: 'draft', enabled: 0 })
+    expect(await row('acme-starter-extra')).toMatchObject({ agent: 'acme-lead', status: 'live', enabled: 1 })
+    expect(await row('gamma-starter-daily-summary')).toMatchObject({ agent: 'g-one', status: 'draft', enabled: 0 })
   })
 
   it('a row with the starter name that belongs to another tenant is not ours: absent, untouched', async () => {
-    io.writeScheduledTask(NAME, { prompt: 'p', agent: 'g-one', tenantId: 'gamma', status: 'live', enabled: true })
+    await io.writeScheduledTask(NAME, { prompt: 'p', agent: 'g-one', tenantId: 'gamma', status: 'live', enabled: true })
     const r = await pack.reconcileStarterPack(human(), 'acme')
     expect(r.state).toBe('absent')
-    expect(row()).toMatchObject({ tenant_id: 'gamma', agent: 'g-one', status: 'live', enabled: 1 })
+    expect(await row()).toMatchObject({ tenant_id: 'gamma', agent: 'g-one', status: 'live', enabled: 1 })
   })
 
   it('with no starter task nothing is created', async () => {
     const r = await pack.reconcileStarterPack(human(), 'acme')
     expect(r.state).toBe('absent')
-    expect(row()).toBeUndefined()
+    expect(await row()).toBeUndefined()
   })
 })
 
@@ -183,7 +183,7 @@ describe('who is told', () => {
     await pack.reconcileStarterPack(human(), 'acme')
     expect(reviewMessages()).toEqual([])
 
-    io.writeScheduledTask(NAME, { status: 'live', enabled: true })
+    await io.writeScheduledTask(NAME, { status: 'live', enabled: true })
     dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
     await pack.reconcileStarterPack(agentToken(), 'acme')
     const msgs = reviewMessages()
@@ -213,7 +213,7 @@ describe('the create button repairs', () => {
       expect(out.result.state).toBe('retargeted')
       expect(out.result.skipped).toEqual([{ name: NAME, reason: 'exists' }])
     }
-    expect(row()).toMatchObject({ agent: 'acme-aux', status: 'draft', enabled: 0 })
+    expect(await row()).toMatchObject({ agent: 'acme-aux', status: 'draft', enabled: 0 })
   })
 })
 
@@ -235,14 +235,14 @@ describe('hook on PUT /api/admin/agent-availability', () => {
     dbMod.createTenant('solo', 'Solo')
     dbMod.setTenantAgentAvailability('solo', 'beta-one', true)
     await pack.createStarterPack(human(), 'solo')
-    io.writeScheduledTask('solo-starter-daily-summary', { status: 'live', enabled: true })
+    await io.writeScheduledTask('solo-starter-daily-summary', { status: 'live', enabled: true })
     const r = await putAvailability('solo', 'beta-one', false)
     expect(r.status).toBe(200)
-    expect(row('solo-starter-daily-summary')).toMatchObject({ agent: 'beta-one', status: 'draft', enabled: 0 })
+    expect(await row('solo-starter-daily-summary')).toMatchObject({ agent: 'beta-one', status: 'draft', enabled: 0 })
   })
 
   it('enabling another agent for a tenant that has no starter task creates nothing', async () => {
     await putAvailability('gamma', 'acme-lead', true)
-    expect(dbMod.listSchedulesFromDb().filter(r => r.id.endsWith('starter-daily-summary'))).toHaveLength(0)
+    expect((await dbMod.listSchedulesFromDb()).filter(r => r.id.endsWith('starter-daily-summary'))).toHaveLength(0)
   })
 })

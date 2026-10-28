@@ -207,7 +207,7 @@ function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
 }
 
-export function startWebServer(port = 3420): http.Server {
+export async function startWebServer(port = 3420): Promise<http.Server> {
   // SECURITY: Server binds to 127.0.0.1 (see server.listen below). The allowed
   // browser origins mirror that -- anything else is rejected to prevent CSRF
   // from malicious websites the user may visit while the dashboard is running.
@@ -320,7 +320,7 @@ export function startWebServer(port = 3420): http.Server {
     // (in BOTH modes), so the observation window is measurable from the database.
     // Runs only for gated, authenticated requests (kind !== 'none').
     if (requiresAuth(path, method) && auth.kind !== 'none') {
-      if (!runRbacGate(auth, method, path, res, RBAC_MODE)) return
+      if (!await runRbacGate(auth, method, path, res, RBAC_MODE)) return
     }
 
     const role = auth.kind !== 'none' ? resolveRole(auth) : undefined
@@ -757,38 +757,38 @@ export function startWebServer(port = 3420): http.Server {
       logger.warn({ err }, 'Scheduled tasks seed skipped')
     }
     try {
-      const seeded = seedSchedulesFromFilesIfEmpty()
+      const seeded = await seedSchedulesFromFilesIfEmpty()
       if (seeded > 0) logger.info({ seeded }, 'Schedules table seeded from files')
     } catch (err) {
       logger.warn({ err }, 'Schedule DB seed skipped')
     }
     try {
       // The nightly memory maintenance moved from an inline curl chain to a script; an install that still has the stock chain follows.
-      if (ensureMemoryMaintenanceCommand()) logger.info('memory-maintenance task moved to scripts/memory-maintenance.sh')
+      if (await ensureMemoryMaintenanceCommand()) logger.info('memory-maintenance task moved to scripts/memory-maintenance.sh')
     } catch (err) {
       logger.warn({ err }, 'memory-maintenance command migration skipped')
     }
     try {
       // After the file seed above: an empty table must still get the shipped file seeds first.
-      if (ensureClaudeUpdateTask()) logger.info('Weekly claude-update task seeded')
+      if (await ensureClaudeUpdateTask()) logger.info('Weekly claude-update task seeded')
     } catch (err) {
       logger.warn({ err }, 'claude-update task seed skipped')
     }
     try {
-      if (ensureDailyLogSummaryTask()) logger.info('Evening daily-log-summary task seeded')
+      if (await ensureDailyLogSummaryTask()) logger.info('Evening daily-log-summary task seeded')
     } catch (err) {
       logger.warn({ err }, 'daily-log-summary task seed skipped')
     }
     try {
       // update.sh refreshed shipped skill files: bring their DB rows along before the regen writes rows back over files.
-      const refreshed = applySeedSkillRefreshMarker()
+      const refreshed = await applySeedSkillRefreshMarker()
       if (refreshed.applied > 0 || refreshed.errors > 0) logger.info(refreshed, 'Refreshed seed skills applied to the DB')
     } catch (err) {
       logger.warn({ err }, 'Seed skill refresh apply skipped')
     }
     try {
       // Companion files (scripts/, references/) that only exist on disk go into the DB first.
-      const companions = importSkillCompanionFilesFromDisk()
+      const companions = await importSkillCompanionFilesFromDisk()
       if (companions.seeded > 0) logger.info({ seeded: companions.seeded }, 'Skill companion files imported into the DB')
     } catch (err) {
       logger.warn({ err }, 'Skill companion file import skipped')
@@ -796,7 +796,7 @@ export function startWebServer(port = 3420): http.Server {
     // Tenant skill files belong to running agents only: the startup regen writes them for those and prunes the rest.
     setTenantSkillAgentProbe(isAgentSessionRunning)
     try {
-      const regen = regenSkillFilesFromSQL()
+      const regen = await regenSkillFilesFromSQL()
       if (regen.enabled) {
         logger.info({ written: regen.written, skipped: regen.skipped, errors: regen.errors }, 'Skill files regenerated from SQL')
       }
@@ -805,7 +805,7 @@ export function startWebServer(port = 3420): http.Server {
     }
     try {
       // Skills that are in the DB but not on disk (fresh restore, regen switched off, a failed write): say so once.
-      const gaps = findSkillFileGaps()
+      const gaps = await findSkillFileGaps()
       const missing = gaps.skillFiles.length + gaps.companionFiles.length + gaps.tenantCopies.length
       if (missing > 0) {
         logger.warn(

@@ -245,10 +245,10 @@ export async function rolloutStep(deps: RolloutDeps, p: ClaudeUpdatePaths = defa
  * who deleted the row on purpose does not get it back at the next boot. Returns
  * true when a row was inserted.
  */
-export function ensureClaudeUpdateTask(storeDir: string = STORE_DIR, projectRoot: string = PROJECT_ROOT, agent: string = MAIN_AGENT_ID): boolean {
+export async function ensureClaudeUpdateTask(storeDir: string = STORE_DIR, projectRoot: string = PROJECT_ROOT, agent: string = MAIN_AGENT_ID): Promise<boolean> {
   const marker = join(storeDir, SEEDED_MARKER)
   if (existsSync(marker)) return false
-  const inserted = seedScheduleIfAbsent(CLAUDE_UPDATE_TASK, {
+  const inserted = await seedScheduleIfAbsent(CLAUDE_UPDATE_TASK, {
     prompt: '',
     description: 'Claude Code frissítés hetente egyszer (LLM nélkül): a scripts/claude-update.sh egyetlen, zárolt futással frissít, ellenőrzi a binárist és rögzíti az eredményt. A futó sessionök idle-only, lépcsőzve, a fő-agens utoljára újraindulnak. Hiba esetén (nem 0 exit kód) Telegram-riasztás, újraindítás nem történik.',
     schedule: CLAUDE_UPDATE_CRON,

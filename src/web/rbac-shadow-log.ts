@@ -15,7 +15,7 @@
 
 import { logger } from '../logger.js'
 import type http from 'node:http'
-import { applyRbacGate, resolveRole, resolveTenantId } from './authz.js'
+import { applyRbacGate, checkPermission, resolveRole, resolveTenantId } from './authz.js'
 import type { RbacMode } from './authz.js'
 import { resolveRequiredPermission } from './rbac.js'
 import type { AuthResult } from './auth-gate.js'
@@ -70,18 +70,18 @@ export function principalOf(auth: AuthResult): { kind: string; name: string } {
  * Insert one decision row. Returns true when a row was written. Never throws.
  * `nowSec` is injectable for tests.
  */
-export function recordRbacDecision(
+export async function recordRbacDecision(
   auth: AuthResult,
   method: string,
   path: string,
   decision: ShadowDecision,
   reason = '',
   nowSec: number = Math.floor(Date.now() / 1000),
-): boolean {
+): Promise<boolean> {
   if (auth.kind === 'none') return false // unauthenticated requests never reach the gate
   try {
     const { kind, name } = principalOf(auth)
-    insertRbacShadowRow({
+    await insertRbacShadowRow({
       ts: nowSec,
       tenantId: resolveTenantId(auth),
       principalKind: kind,
@@ -97,7 +97,7 @@ export function recordRbacDecision(
     logger.warn({ err, path, method, decision }, 'rbac:shadow-log insert failed')
     return false
   }
-  pruneShadowLogThrottled(nowSec)
+  await pruneShadowLogThrottled(nowSec)
   return true
 }
 
@@ -114,47 +114,46 @@ export function recordRbacDecision(
  *
  * would-deny and permitted are mutually exclusive for one request.
  */
-export function runRbacGate(
+export async function runRbacGate(
   auth: AuthResult,
   method: string,
   path: string,
   res: http.ServerResponse,
   mode: RbacMode,
-): boolean {
+): Promise<boolean> {
   let wouldDeny = false
-  const passed = applyRbacGate(
-    auth, method, path, res, mode,
-    (reason) => {
-      wouldDeny = true
-      logger.warn({ path, method, authKind: auth.kind, reason, outcome: 'would-deny' }, 'rbac:shadow')
-      recordRbacDecision(auth, method, path, 'would-deny', reason)
-    },
-    (reason) => {
-      logger.warn({ path, method, authKind: auth.kind, reason, outcome: 'denied' }, 'rbac:enforce')
-      recordRbacDecision(auth, method, path, 'denied', reason)
-    },
-  )
+  // The decision is taken first and its row is written BEFORE a refusal goes out (a refusal is recorded
+  // durably; applyRbacGate's hooks are synchronous, so they cannot await a write). recordRbacDecision
+  // never throws, so a failed write cannot change the decision applyRbacGate takes below.
+  const decision = checkPermission(auth, method, path)
+  if (!decision.allowed) {
+    const outcome = mode === 'enforce' ? 'denied' : 'would-deny'
+    wouldDeny = outcome === 'would-deny'
+    logger.warn({ path, method, authKind: auth.kind, reason: decision.reason, outcome }, wouldDeny ? 'rbac:shadow' : 'rbac:enforce')
+    await recordRbacDecision(auth, method, path, outcome, decision.reason)
+  }
+  const passed = applyRbacGate(auth, method, path, res, mode)
   if (!passed) return false
   if (resolveRole(auth) !== 'admin' && !wouldDeny) {
     if (mode === 'shadow') {
       logger.info({ path, method, authKind: auth.kind, role: resolveRole(auth), outcome: 'permitted' }, 'rbac:shadow')
     }
-    recordRbacDecision(auth, method, path, 'permitted')
+    await recordRbacDecision(auth, method, path, 'permitted')
   }
   return true
 }
 
 /** Delete rows older than RETENTION_DAYS. Returns the number removed. */
-export function pruneShadowLog(nowSec: number = Math.floor(Date.now() / 1000)): number {
+export async function pruneShadowLog(nowSec: number = Math.floor(Date.now() / 1000)): Promise<number> {
   const cutoff = nowSec - RETENTION_DAYS * SECONDS_PER_DAY
   return deleteRbacShadowRowsBefore(cutoff)
 }
 
-function pruneShadowLogThrottled(nowSec: number): void {
+async function pruneShadowLogThrottled(nowSec: number): Promise<void> {
   if (nowSec - lastPruneAt < PRUNE_INTERVAL_SEC) return
   lastPruneAt = nowSec
   try {
-    pruneShadowLog(nowSec)
+    await pruneShadowLog(nowSec)
   } catch (err) {
     logger.warn({ err }, 'rbac:shadow-log prune failed')
   }
@@ -163,11 +162,11 @@ function pruneShadowLogThrottled(nowSec: number): void {
 export const MAX_LIMIT = SHADOW_MAX_LIMIT
 export const DEFAULT_LIMIT = SHADOW_DEFAULT_LIMIT
 
-export function queryShadowLog(f: ShadowLogFilter): ReturnType<typeof queryRbacShadowRows> {
+export async function queryShadowLog(f: ShadowLogFilter): ReturnType<typeof queryRbacShadowRows> {
   return queryRbacShadowRows(f)
 }
 
 /** Aggregate view used by the daily monitor and the dashboard. */
-export function summarizeShadowLog(f: Pick<ShadowLogFilter, 'from' | 'to' | 'tenantId'> = {}): ShadowSummary {
+export async function summarizeShadowLog(f: Pick<ShadowLogFilter, 'from' | 'to' | 'tenantId'> = {}): Promise<ShadowSummary> {
   return summarizeRbacShadowRows(f)
 }

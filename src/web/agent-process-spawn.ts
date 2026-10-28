@@ -118,7 +118,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
 
   // Tenant skill files exist only while the agent runs: generate them before the session launches so
   // its loader sees them. Best effort: without them the agent merely lacks the tenant's skills.
-  try { generateTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be generated at agent start (non-fatal)') }
+  try { await generateTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be generated at agent start (non-fatal)') }
 
   // #886: restore the agent_active_plans binding a preceding stop dropped, if
   // the just-restarted agent's HANDOFF.md carries a plan marker (context-guard
@@ -566,7 +566,7 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
     // The generated tenant skill copies leave with the session (the DB stays the source; the next
     // start regenerates them). A local cleanup: a remote agent's files live on the laptop.
     if (!host) {
-      try { removeGeneratedTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be removed at agent stop (non-fatal)') }
+      try { await removeGeneratedTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be removed at agent stop (non-fatal)') }
     }
     logger.info({ name, session, host }, 'Agent tmux session stopped')
     return { ok: true }

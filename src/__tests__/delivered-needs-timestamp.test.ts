@@ -22,7 +22,7 @@ describe('delivered rows always carry a timestamp', () => {
     const m = await createAgentMessage('a', to(), 'valódi kézbesítés')
     expect(markMessageDelivered(m.id)).toBe(true)
 
-    const row = getAgentMessage(m.id)
+    const row = await getAgentMessage(m.id)
     expect(row?.status).toBe('delivered')
     expect(row?.delivered_at).toBeTruthy()
     // a genuine delivery says nothing about itself in `result` -- that field
@@ -38,7 +38,7 @@ describe('delivered rows always carry a timestamp', () => {
     expect(closeMessagesWithoutDelivery([m1.id, m2.id], 'stale backlog after restart')).toBe(2)
 
     for (const id of [m1.id, m2.id]) {
-      const row = getAgentMessage(id)
+      const row = await getAgentMessage(id)
       expect(row?.status).toBe('delivered')
       expect(row?.delivered_at).toBeTruthy()
       // the reason is what separates "we sent it" from "we gave up on it"
@@ -50,11 +50,11 @@ describe('delivered rows always carry a timestamp', () => {
   it('does not reopen or re-close a row that is no longer pending', async () => {
     const m = await createAgentMessage('a', to(), 'már kézbesítve')
     markMessageDelivered(m.id)
-    const before = getAgentMessage(m.id)
+    const before = await getAgentMessage(m.id)
 
     expect(closeMessagesWithoutDelivery([m.id], 'késői takarítás')).toBe(0)
 
-    const after = getAgentMessage(m.id)
+    const after = await getAgentMessage(m.id)
     expect(after?.delivered_at).toBe(before?.delivered_at)
     expect(after?.result ?? null).toBeNull()   // the close must not overwrite a real delivery
   })
@@ -68,7 +68,7 @@ describe('delivered rows always carry a timestamp', () => {
 
     getDb().exec(`UPDATE agent_messages SET status = 'delivered' WHERE id = ${m.id}`)
 
-    const row = getAgentMessage(m.id)
+    const row = await getAgentMessage(m.id)
     expect(row?.status).toBe('delivered')
     expect(row?.delivered_at).toBeTruthy()               // trigger filled it in
     expect(row?.result).toBe('closed-without-delivery')  // and said why
@@ -80,12 +80,12 @@ describe('delivered rows always carry a timestamp', () => {
     // distinction it exists to preserve.
     const real = await createAgentMessage('a', to(), 'valódi')
     markMessageDelivered(real.id)
-    const stamp = getAgentMessage(real.id)?.delivered_at
+    const stamp = (await getAgentMessage(real.id))?.delivered_at
 
     const flipped = await createAgentMessage('a', to(), 'nyersen lezárva')
     getDb().exec(`UPDATE agent_messages SET status = 'delivered' WHERE id = ${flipped.id}`)
 
-    const after = getAgentMessage(real.id)
+    const after = await getAgentMessage(real.id)
     expect(after?.delivered_at).toBe(stamp)
     expect(after?.result ?? null).toBeNull()
   })

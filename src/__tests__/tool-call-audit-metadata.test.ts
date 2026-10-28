@@ -38,7 +38,7 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
   it('stores agent_id, trace_id, and duration_ms and returns them via getRecentToolCalls', async () => {
     await logToolCall('sess-1', 'Bash', 'ls -la', true, 'agent-a', 'toolu_abc123', 42)
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows).toHaveLength(1)
     expect(rows[0].agent_id).toBe('agent-a')
     expect(rows[0].trace_id).toBe('toolu_abc123')
@@ -48,7 +48,7 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
   it('stores core fields alongside the audit fields', async () => {
     await logToolCall('sess-2', 'Read', '/etc/hosts', false, 'agent-b', 'toolu_xyz999', 7)
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows[0].session_id).toBe('sess-2')
     expect(rows[0].tool_name).toBe('Read')
     expect(rows[0].input_summary).toBe('/etc/hosts')
@@ -61,21 +61,21 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
   it('BREAKING: drops the call (no row) when trace_id and agent_id are both missing', async () => {
     await logToolCall('sess-old', 'WebFetch', 'https://example.invalid', true)
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows).toHaveLength(0)
   })
 
   it('BREAKING: drops the call when only agent_id is missing', async () => {
     await logToolCall('sess-old2', 'WebFetch', 'https://example.invalid', true, null, 'toolu_no_agent')
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows).toHaveLength(0)
   })
 
   it('BREAKING: drops the call when only trace_id is missing', async () => {
     await logToolCall('sess-old3', 'WebFetch', 'https://example.invalid', true, 'agent-a')
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows).toHaveLength(0)
   })
 
@@ -84,7 +84,7 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
     await logToolCall('sess-3', 'Bash', 'pwd',  true, 'agent-a', 'toolu_call1', 10)
     await logToolCall('sess-3', 'Bash', 'date', true, 'agent-a', 'toolu_call2', 20)
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows).toHaveLength(2)
     expect(rows[0].trace_id).toBe('toolu_call1')
     expect(rows[1].trace_id).toBe('toolu_call2')
@@ -94,7 +94,7 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
   it('duration_ms is stored as an integer (not rounded or cast to string)', async () => {
     await logToolCall('sess-4', 'Edit', 'x.ts', true, 'agent-a', 'toolu_dur', 1337)
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(typeof rows[0].duration_ms).toBe('number')
     expect(rows[0].duration_ms).toBe(1337)
   })
@@ -103,7 +103,7 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
     await logToolCall('sess-5', 'Read',  'a.ts', true, 'agent-a', 'toolu_a1', 5)
     await logToolCall('sess-6', 'Write', 'b.ts', true, 'agent-b', 'toolu_b1', 8)
 
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     const byAgent = Object.fromEntries(rows.map(r => [r.agent_id, r]))
     expect(byAgent['agent-a'].trace_id).toBe('toolu_a1')
     expect(byAgent['agent-b'].trace_id).toBe('toolu_b1')
@@ -120,21 +120,21 @@ describe('tool call audit metadata: agent_id, trace_id, duration_ms storage', ()
 describe('fix-revert guard: all three audit fields are load-bearing', () => {
   it('agent_id is non-null when explicitly provided', async () => {
     await logToolCall('sess-g1', 'Bash', 'echo hi', true, 'agent-sentinel', 'toolu_sentinel', 1)
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows[0].agent_id).not.toBeNull()
     expect(rows[0].agent_id).toBe('agent-sentinel')
   })
 
   it('trace_id is non-null when explicitly provided', async () => {
     await logToolCall('sess-g2', 'Edit', 'x.ts', true, 'agent-sentinel', 'toolu_sentinel2', 2)
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows[0].trace_id).not.toBeNull()
     expect(rows[0].trace_id).toBe('toolu_sentinel2')
   })
 
   it('duration_ms is non-null when explicitly provided', async () => {
     await logToolCall('sess-g3', 'Read', 'y.ts', true, 'agent-sentinel', 'toolu_sentinel3', 999)
-    const rows = getRecentToolCalls(3600)
+    const rows = await getRecentToolCalls(3600)
     expect(rows[0].duration_ms).not.toBeNull()
     expect(rows[0].duration_ms).toBe(999)
   })

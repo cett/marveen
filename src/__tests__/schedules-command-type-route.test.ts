@@ -36,7 +36,7 @@ beforeEach(async () => {
   io = await import('../web/scheduled-tasks-io.js')
   route = await import('../web/routes/schedules.js')
   // A live nightly backup, shaped like the real row: type command, 120 s timeout, alert on the 1st failure.
-  dbMod.upsertSchedule('nightly-backup', {
+  await dbMod.upsertSchedule('nightly-backup', {
     prompt: 'Legacy LLM prompt that the command task ignores',
     description: 'Nightly data backup at 03:00',
     schedule: '0 3 * * *',
@@ -81,16 +81,16 @@ async function call(method: string, path: string, body?: object, auth: 'session'
   return out
 }
 
-const row = (name: string) => {
-  const r = dbMod.getScheduleFromDb(name)
+const row = async (name: string) => {
+  const r = await dbMod.getScheduleFromDb(name)
   if (!r) return undefined
   const { updated_at: _u, ...rest } = r as unknown as Record<string, unknown>
   return rest
 }
 
 /** What openEditSchedule puts into the modal for a stored task, saved untouched. */
-function dialogPayloadFor(name: string) {
-  const task = io.rowToTask(dbMod.getScheduleFromDb(name)!)
+async function dialogPayloadFor(name: string) {
+  const task = io.rowToTask((await dbMod.getScheduleFromDb(name))!)
   const built = buildSchedulePayload({
     name: task.name, description: task.description, prompt: task.prompt, schedule: task.schedule,
     agent: task.agent, type: task.type === 'heartbeat' || task.type === 'command' ? task.type : 'task',
@@ -104,39 +104,39 @@ function dialogPayloadFor(name: string) {
 
 describe('PUT from the Edit dialog leaves a command task exactly as it was', () => {
   it('saving the untouched nightly-backup changes no field of the stored row', async () => {
-    const before = row('nightly-backup')
-    const out = await call('PUT', '/api/schedules/nightly-backup', dialogPayloadFor('nightly-backup'))
+    const before = await row('nightly-backup')
+    const out = await call('PUT', '/api/schedules/nightly-backup', await dialogPayloadFor('nightly-backup'))
     expect(out.status).toBe(200)
-    expect(row('nightly-backup')).toEqual(before)
+    expect(await row('nightly-backup')).toEqual(before)
     expect(before).toMatchObject({ type: 'command', timeout_ms: 120000, fail_threshold: 1, command: 'bash /opt/app/scripts/backup.sh' })
   })
 
   it('an edited timeout / threshold lands, everything else stays', async () => {
-    const before = row('nightly-backup')
-    const payload = { ...dialogPayloadFor('nightly-backup'), timeoutMs: 300000, failThreshold: 3 }
+    const before = await row('nightly-backup')
+    const payload = { ...await dialogPayloadFor('nightly-backup'), timeoutMs: 300000, failThreshold: 3 }
     expect((await call('PUT', '/api/schedules/nightly-backup', payload)).status).toBe(200)
-    expect(row('nightly-backup')).toEqual({ ...before, timeout_ms: 300000, fail_threshold: 3 })
+    expect(await row('nightly-backup')).toEqual({ ...before, timeout_ms: 300000, fail_threshold: 3 })
   })
 })
 
 describe('PUT refuses an implicit type change away from command', () => {
   it.each(['task', 'heartbeat'])('type %s without allowTypeChange -> 400 and the row is untouched', async type => {
-    const before = row('nightly-backup')
+    const before = await row('nightly-backup')
     const out = await call('PUT', '/api/schedules/nightly-backup', { type, prompt: 'p' })
     expect(out.status).toBe(400)
     expect(out.body).toMatchObject({ error: 'invalid_value', field: 'type' })
-    expect(row('nightly-backup')).toEqual(before)
+    expect(await row('nightly-backup')).toEqual(before)
   })
 
   it('an explicit allowTypeChange:true goes through', async () => {
     const out = await call('PUT', '/api/schedules/nightly-backup', { type: 'task', prompt: 'now a prompt', allowTypeChange: true })
     expect(out.status).toBe(200)
-    expect(row('nightly-backup')).toMatchObject({ type: 'task', prompt: 'now a prompt' })
+    expect(await row('nightly-backup')).toMatchObject({ type: 'task', prompt: 'now a prompt' })
   })
 
   it('sending type:command again is not a change', async () => {
     expect((await call('PUT', '/api/schedules/nightly-backup', { type: 'command', description: 'renamed' })).status).toBe(200)
-    expect(row('nightly-backup')).toMatchObject({ type: 'command', description: 'renamed' })
+    expect(await row('nightly-backup')).toMatchObject({ type: 'command', description: 'renamed' })
   })
 
   it('a PUT that clears the command of a command task -> 400', async () => {
@@ -152,13 +152,13 @@ describe('PUT refuses an implicit type change away from command', () => {
   })
 
   it('converting a prompt task to a command task needs a command', async () => {
-    dbMod.upsertSchedule('plain', {
+    await dbMod.upsertSchedule('plain', {
       prompt: 'p', description: '', schedule: '0 9 * * *', agent: 'main-agent', type: 'task',
       enabled: true, skip_if_busy: false, force_send: false, status: 'live', tenant_id: 'default',
     })
     expect((await call('PUT', '/api/schedules/plain', { type: 'command' })).status).toBe(400)
     expect((await call('PUT', '/api/schedules/plain', { type: 'command', command: 'echo hi' })).status).toBe(200)
-    expect(row('plain')).toMatchObject({ type: 'command', command: 'echo hi' })
+    expect(await row('plain')).toMatchObject({ type: 'command', command: 'echo hi' })
   })
 })
 
@@ -169,14 +169,14 @@ describe('POST /api/schedules with type=command', () => {
     const out = await call('POST', '/api/schedules', body)
     expect(out.status).toBe(200) // the route has always answered 200 on create
     expect(out.body).toMatchObject({ ok: true, name: 'cmd-job', status: 'live' })
-    expect(row('cmd-job')).toMatchObject({ type: 'command', command: 'echo ok', timeout_ms: 60000, fail_threshold: 2, prompt: '' })
+    expect(await row('cmd-job')).toMatchObject({ type: 'command', command: 'echo ok', timeout_ms: 60000, fail_threshold: 2, prompt: '' })
   })
 
   it('without a command -> 400 (required, field command)', async () => {
     const out = await call('POST', '/api/schedules', { ...body, command: undefined })
     expect(out.status).toBe(400)
     expect(out.body).toMatchObject({ error: 'required', field: 'command' })
-    expect(row('cmd-job')).toBeUndefined()
+    expect(await row('cmd-job')).toBeUndefined()
   })
 
   it('a blank command -> 400', async () => {

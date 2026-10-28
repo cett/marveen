@@ -337,58 +337,58 @@ describe('background task functions', () => {
 describe('scheduled task functions', () => {
   const taskId = 'db2-sched-1'
 
-  it('createTask + getTask roundtrip', () => {
+  it('createTask + getTask roundtrip', async () => {
     const nextRun = Math.floor(Date.now() / 1000) + 3600
-    createTask(taskId, 'db2-test-chat', 'daily check', '0 9 * * *', nextRun)
-    const t = getTask(taskId)
+    await createTask(taskId, 'db2-test-chat', 'daily check', '0 9 * * *', nextRun)
+    const t = await getTask(taskId)
     expect(t?.id).toBe(taskId)
     expect(t?.status).toBe('active')
   })
 
-  it('listTasks returns the created task', () => {
-    const tasks = listTasks()
+  it('listTasks returns the created task', async () => {
+    const tasks = await listTasks()
     expect(tasks.some(t => t.id === taskId)).toBe(true)
   })
 
-  it('getDueTasks returns tasks with next_run in the past', () => {
+  it('getDueTasks returns tasks with next_run in the past', async () => {
     const pastRun = Math.floor(Date.now() / 1000) - 60
-    createTask('db2-sched-due', 'db2-test-chat', 'overdue', '* * * * *', pastRun)
-    const due = getDueTasks()
+    await createTask('db2-sched-due', 'db2-test-chat', 'overdue', '* * * * *', pastRun)
+    const due = await getDueTasks()
     expect(due.some(t => t.id === 'db2-sched-due')).toBe(true)
   })
 
-  it('updateTaskAfterRun updates last_run and next_run', () => {
+  it('updateTaskAfterRun updates last_run and next_run', async () => {
     const newNext = Math.floor(Date.now() / 1000) + 7200
-    updateTaskAfterRun(taskId, newNext, 'success')
-    const t = getTask(taskId)
+    await updateTaskAfterRun(taskId, newNext, 'success')
+    const t = await getTask(taskId)
     expect(t?.next_run).toBe(newNext)
     expect(t?.last_result).toBe('success')
   })
 
-  it('pauseTask pauses and resumeTask resumes', () => {
-    const paused = pauseTask(taskId)
+  it('pauseTask pauses and resumeTask resumes', async () => {
+    const paused = await pauseTask(taskId)
     expect(paused).toBe(true)
-    expect(getTask(taskId)?.status).toBe('paused')
-    const resumed = resumeTask(taskId)
+    expect((await getTask(taskId))?.status).toBe('paused')
+    const resumed = await resumeTask(taskId)
     expect(resumed).toBe(true)
-    expect(getTask(taskId)?.status).toBe('active')
+    expect((await getTask(taskId))?.status).toBe('active')
   })
 
-  it('updateTask changes prompt and schedule', () => {
+  it('updateTask changes prompt and schedule', async () => {
     const newNext = Math.floor(Date.now() / 1000) + 3600
-    const ok = updateTask(taskId, 'new prompt', '0 10 * * *', newNext)
+    const ok = await updateTask(taskId, 'new prompt', '0 10 * * *', newNext)
     expect(ok).toBe(true)
-    expect(getTask(taskId)?.prompt).toBe('new prompt')
+    expect((await getTask(taskId))?.prompt).toBe('new prompt')
   })
 
-  it('deleteTask removes the task', () => {
-    const ok = deleteTask('db2-sched-due')
+  it('deleteTask removes the task', async () => {
+    const ok = await deleteTask('db2-sched-due')
     expect(ok).toBe(true)
-    expect(getTask('db2-sched-due')).toBeUndefined()
+    expect(await getTask('db2-sched-due')).toBeUndefined()
   })
 
-  it('getActiveScheduledTaskCount returns count and nextRun', () => {
-    const result = getActiveScheduledTaskCount()
+  it('getActiveScheduledTaskCount returns count and nextRun', async () => {
+    const result = await getActiveScheduledTaskCount()
     expect(typeof result.count).toBe('number')
     // nextRun is null if no active tasks, or a number
     expect(result.nextRun === null || typeof result.nextRun === 'number').toBe(true)
@@ -400,42 +400,42 @@ describe('scheduled task functions', () => {
 describe('kanban extended functions', () => {
   it('listKanbanCardsSummary returns cards with required fields', async () => {
     await createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal' })
-    const summary = listKanbanCardsSummary()
+    const summary = await listKanbanCardsSummary()
     expect(Array.isArray(summary)).toBe(true)
     const card = summary.find(c => c.id === 'db2-card-1')
     expect(card?.title).toBe('Test card')
   })
 
-  it('markKanbanCardDispatched marks a card as dispatched', () => {
-    const ok = markKanbanCardDispatched('db2-card-1')
+  it('markKanbanCardDispatched marks a card as dispatched', async () => {
+    const ok = await markKanbanCardDispatched('db2-card-1')
     expect(ok).toBe(true)
     const db = getDb()
     const row = db.prepare("SELECT dispatched_at FROM kanban_cards WHERE id = 'db2-card-1'").get() as any
     expect(row?.dispatched_at).not.toBeNull()
   })
 
-  it('archiveKanbanCard archives a card', () => {
-    const ok = archiveKanbanCard('db2-card-1')
+  it('archiveKanbanCard archives a card', async () => {
+    const ok = await archiveKanbanCard('db2-card-1')
     expect(ok).toBe(true)
   })
 
-  it('unarchiveKanbanCard restores an archived card', () => {
-    const ok = unarchiveKanbanCard('db2-card-1')
+  it('unarchiveKanbanCard restores an archived card', async () => {
+    const ok = await unarchiveKanbanCard('db2-card-1')
     expect(ok).toBe(true)
     const db = getDb()
     const row = db.prepare("SELECT archived_at FROM kanban_cards WHERE id = 'db2-card-1'").get() as any
     expect(row?.archived_at).toBeNull()
   })
 
-  it('listArchivedKanbanCards returns archived cards', () => {
-    archiveKanbanCard('db2-card-1')
-    const archived = listArchivedKanbanCards({ limit: 100 })
+  it('listArchivedKanbanCards returns archived cards', async () => {
+    await archiveKanbanCard('db2-card-1')
+    const archived = await listArchivedKanbanCards({ limit: 100 })
     expect(archived.some(c => c.id === 'db2-card-1')).toBe(true)
   })
 
   it('listKanbanProjects returns project list', async () => {
     await createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', project: 'my-project' })
-    const projects = listKanbanProjects()
+    const projects = await listKanbanProjects()
     expect(projects).toContain('my-project')
   })
 })
@@ -445,13 +445,13 @@ describe('kanban extended functions', () => {
 describe('task run functions', () => {
   it('appendTaskRun inserts a run entry', async () => {
     await appendTaskRun('db2-task-heartbeat', 'agent-a', 'fired')
-    const history = listTaskRunHistory('db2-task-heartbeat', 10)
+    const history = await listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history.length).toBeGreaterThanOrEqual(1)
     expect(history[0].status).toBe('fired')
   })
 
-  it('listTaskRunHistory returns tokens_est as null or number', () => {
-    const history = listTaskRunHistory('db2-task-heartbeat', 10)
+  it('listTaskRunHistory returns tokens_est as null or number', async () => {
+    const history = await listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history[0].tokens_est === null || typeof history[0].tokens_est === 'number').toBe(true)
   })
 })

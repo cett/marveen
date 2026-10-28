@@ -73,7 +73,7 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'trigger_source', hint: 'trigger_source must be one of watchdog, compact-monitor' }, 400)
       return true
     }
-    const entries = listHookAuditLog({
+    const entries = await listHookAuditLog({
       sinceSecs: since ? parseInt(since, 10) : undefined,
       verdict,
       agent_id: agent,
@@ -88,7 +88,7 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/hook-audit/prune' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString() || '{}') as { older_than_secs?: number }
-    pruneHookAuditLog(data.older_than_secs ?? 30 * 86400)
+    await pruneHookAuditLog(data.older_than_secs ?? 30 * 86400)
     json(res, { ok: true })
     return true
   }

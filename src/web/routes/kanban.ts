@@ -4,8 +4,8 @@ import {
   listKanbanCards, countKanbanCards, createKanbanCard, updateKanbanCard, parseKanbanDueDate,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
-  getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus, getDb,
-  createAgentMessage, markKanbanCardDispatched,
+  getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus,
+  createAgentMessage, markKanbanCardDispatched, releaseKanbanCardDispatch,
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
@@ -15,8 +15,7 @@ import {
   getHeartbeatKanbanSummary,
   countNewHotMemories,
   countPlannedKanbanCards,
-  writeAgentAuditLog, insertKanbanCardRows, writeKanbanCreateAudit,
-  type KanbanCreateAudit,
+  writeAgentAuditLog, createKanbanSubtasks,
   type KanbanCard,
   type KanbanAuditActor,
 } from '../../db.js'
@@ -137,7 +136,7 @@ export function buildKanbanDispatchContent(card: { id: string; priority?: string
 // to in_progress must not be woken with an assignment for work it just started.
 async function fireKanbanDispatch(id: string, actor?: string | null): Promise<void> {
   try {
-    const card = getKanbanCard(id)
+    const card = await getKanbanCard(id)
     if (!card || card.dispatched_at) return
     const target = resolveKanbanDispatchTarget(card.assignee, {
       ownerName: OWNER_NAME,
@@ -152,8 +151,15 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
       logger.warn({ id }, 'Kanban dispatch skipped: the card id is not a plain token')
       return
     }
-    await createAgentMessage(MAIN_AGENT_ID, target, buildKanbanDispatchContent(card, target))
-    markKanbanCardDispatched(id)
+    // Claim the guard first: of two dispatchers that read the card together only the one whose conditional
+    // UPDATE wins sends the wake-up. A send that fails gives the claim back.
+    if (!await markKanbanCardDispatched(id)) return
+    try {
+      await createAgentMessage(MAIN_AGENT_ID, target, buildKanbanDispatchContent(card, target))
+    } catch (err) {
+      await releaseKanbanCardDispatch(id)
+      throw err
+    }
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
     logger.warn({ err, id }, 'Kanban dispatch failed (card move still succeeded)')
@@ -246,7 +252,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
-    const labelsByCard = getLabelsForAllCards()
+    const labelsByCard = await getLabelsForAllCards()
     const embedLabels = (card: { id: string }) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] })
 
     // ?status= switches into the paginated, per-column contract used by the
@@ -272,8 +278,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         items = (await scoped.list(status, limit, offset)).map(embedLabels)
         total = await scoped.count(status)
       } else {
-        items = listKanbanCards({ status, limit, offset }).map(embedLabels)
-        total = countKanbanCards(status)
+        items = (await listKanbanCards({ status, limit, offset })).map(embedLabels)
+        total = await countKanbanCards(status)
       }
       json(res, { items, total, offset, limit })
       return true
@@ -283,7 +289,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (effectiveTenantId !== null) {
       cards = (await scopeToTenant(effectiveTenantId).kanban.list()).map(embedLabels)
     } else {
-      cards = listKanbanCards().map(embedLabels)
+      cards = (await listKanbanCards()).map(embedLabels)
     }
     jsonMaybeGzip(req, res, cards)
     return true
@@ -313,13 +319,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   // Labels belong to a tenant. A scoped caller sees and changes only its own tenant's labels (a
   // foreign id is a 404, as if it did not exist); an admin sees all, or one tenant with ?tenant=.
-  const ownLabel = (id: string) => {
-    const label = getLabel(id)
+  const ownLabel = async (id: string) => {
+    const label = await getLabel(id)
     return label && (effectiveTenantId === null || label.tenant_id === effectiveTenantId) ? label : undefined
   }
 
   if (path === '/api/kanban/labels' && method === 'GET') {
-    json(res, listLabels(effectiveTenantId))
+    json(res, await listLabels(effectiveTenantId))
     return true
   }
 
@@ -332,7 +338,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // to the single configurable source instead of an arbitrary per-request value.
     const resolvedColor = color && KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
     const id = randomUUID().slice(0, 8)
-    const label = createLabel({ id, name: name.trim(), color: resolvedColor, tenant_id: effectiveTenantId ?? 'default' })
+    const label = await createLabel({ id, name: name.trim(), color: resolvedColor, tenant_id: effectiveTenantId ?? 'default' })
     json(res, label)
     return true
   }
@@ -350,13 +356,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (color !== undefined) {
       fields.color = KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
     }
-    if (ownLabel(id) && updateLabel(id, fields)) { json(res, { ok: true }); return true }
+    if (await ownLabel(id) && await updateLabel(id, fields)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
     return true
   }
   if (labelMatch && method === 'DELETE') {
     const id = decodeURIComponent(labelMatch[1])
-    if (ownLabel(id) && deleteLabel(id)) { json(res, { ok: true }); return true }
+    if (await ownLabel(id) && await deleteLabel(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
     return true
   }
@@ -364,24 +370,24 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const cardLabelsMatch = path.match(/^\/api\/kanban\/([^/]+)\/labels$/)
   if (cardLabelsMatch && method === 'GET') {
     const cardId = decodeURIComponent(cardLabelsMatch[1])
-    json(res, getLabelsForCard(cardId))
+    json(res, await getLabelsForCard(cardId))
     return true
   }
   if (cardLabelsMatch && method === 'POST') {
     const cardId = decodeURIComponent(cardLabelsMatch[1])
-    if (!getKanbanCard(cardId)) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
+    if (!await getKanbanCard(cardId)) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     const body = await readBody(req)
     // Accept `id` as an alias for `labelId` -- API callers reasonably send either,
     // since GET /api/kanban/labels returns objects keyed by `id`, not `labelId`.
     const parsed = JSON.parse(body.toString()) as { labelId?: string; id?: string }
     const labelId = parsed.labelId ?? parsed.id
     if (!labelId) { json(res, { error: 'required', field: 'labelId', hint: 'labelId mező kötelező' }, 400); return true }
-    const label = ownLabel(labelId)
+    const label = await ownLabel(labelId)
     if (!label) {
       // Common mistake: sending the label's `name` where an `id` is expected -- GET
       // /api/kanban/labels lists both, so this is an easy mix-up. Point at the real id
       // instead of a bare "not found" that reads as if the label doesn't exist at all.
-      const byName = listLabels(effectiveTenantId).find((l) => l.name === labelId)
+      const byName = (await listLabels(effectiveTenantId)).find((l) => l.name === labelId)
       if (byName) {
         json(res, { error: 'not_found', field: 'labelId', hint: `Címke nem található id alapján -- a "${labelId}" egy név, nem id. Használd az id-t: ${byName.id}` }, 404)
         return true
@@ -390,11 +396,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     // A card carries only labels of its own tenant, whoever attaches them.
-    if (label.tenant_id !== (getKanbanCard(cardId)?.tenant_id ?? 'default')) {
+    if (label.tenant_id !== ((await getKanbanCard(cardId))?.tenant_id ?? 'default')) {
       json(res, { error: 'invalid_value', field: 'labelId', hint: 'A címke másik tenanthoz tartozik, mint a kártya' }, 400)
       return true
     }
-    addLabelToCard(cardId, labelId)
+    await addLabelToCard(cardId, labelId)
     json(res, { ok: true })
     return true
   }
@@ -403,13 +409,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (cardLabelDeleteMatch && method === 'DELETE') {
     const cardId = decodeURIComponent(cardLabelDeleteMatch[1])
     const labelId = decodeURIComponent(cardLabelDeleteMatch[2])
-    if (removeLabelFromCard(cardId, labelId)) { json(res, { ok: true }); return true }
+    if (await removeLabelFromCard(cardId, labelId)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'A kártyán nincs ilyen címke' }, 404)
     return true
   }
 
   if (path === '/api/kanban-projects' && method === 'GET') {
-    json(res, listKanbanProjects(effectiveTenantId))
+    json(res, await listKanbanProjects(effectiveTenantId))
     return true
   }
 
@@ -543,11 +549,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       for (const cardId of ordered) if (typeof cardId === 'string' && await own.get(cardId)) owned.push(cardId)
       ordered = owned
     }
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor, ordered, { expectedStatus })) {
+    if (await moveKanbanCard(id, status, sort_order ?? 0, actor, ordered, { expectedStatus })) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       if (status === 'in_progress') await fireKanbanDispatch(id, actor)
-      propagateStatus(id)
+      await propagateStatus(id)
       json(res, { ok: true })
       return true
     }
@@ -555,7 +561,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // written, so no dispatch and no parent update. The path-id tenant gate above already ran, so
     // current_status is only ever shown to a caller that may read the card.
     if (expectedStatus !== undefined) {
-      const current = getKanbanCard(id)
+      const current = await getKanbanCard(id)
       if (current) {
         json(res, {
           error: 'status_conflict',
@@ -574,7 +580,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanArchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
     await revertIdeaFromKanban(id)
-    if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    if (await archiveKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
   }
@@ -586,8 +592,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const from    = sp.get('from')  ? Number(sp.get('from'))  : undefined
     const to      = sp.get('to')    ? Number(sp.get('to'))    : undefined
     const limit   = Math.min(Number(sp.get('limit') ?? 0) || Number(getEffectiveSettingValue('KANBAN_ARCHIVED_MAX_ROWS')), 5000)
-    const labelsByCard = getLabelsForAllCards()
-    const cards = listArchivedKanbanCards({ project, label, from, to, limit, tenantId: effectiveTenantId })
+    const labelsByCard = await getLabelsForAllCards()
+    const cards = (await listArchivedKanbanCards({ project, label, from, to, limit, tenantId: effectiveTenantId }))
       .map(card => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
     json(res, { cards, total: cards.length, limit })
     return true
@@ -604,7 +610,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { cards: [], total: 0, active_count: 0, archived_count: 0, q })
       return true
     }
-    const cards = searchKanbanCards({ q, limit, tenantId: effectiveTenantId })
+    const cards = await searchKanbanCards({ q, limit, tenantId: effectiveTenantId })
     const activeCount = cards.filter((c) => !c.archived).length
     json(res, {
       cards,
@@ -619,7 +625,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanUnarchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/unarchive$/)
   if (kanbanUnarchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanUnarchiveMatch[1])
-    if (unarchiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    if (await unarchiveKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Kártya nem található vagy nincs archiválva' }, 404)
     return true
   }
@@ -629,15 +635,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // answers like a missing one (404).
   if (kanbanCardMatch && method === 'GET') {
     const id = decodeURIComponent(kanbanCardMatch[1])
-    const card = !isAdmin && effectiveTenantId !== null ? await scopeToTenant(effectiveTenantId).kanban.get(id) : getKanbanCard(id)
+    const card = !isAdmin && effectiveTenantId !== null ? await scopeToTenant(effectiveTenantId).kanban.get(id) : await getKanbanCard(id)
     if (!card) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
-    json(res, { ...card, labels: getLabelsForCard(card.id) })
+    json(res, { ...card, labels: await getLabelsForCard(card.id) })
     return true
   }
   const kanbanCommentsMatch = path.match(/^\/api\/kanban\/([^/]+)\/comments$/)
   if (kanbanCommentsMatch && method === 'GET') {
     const cardId = decodeURIComponent(kanbanCommentsMatch[1])
-    json(res, getKanbanComments(cardId))
+    json(res, await getKanbanComments(cardId))
     return true
   }
   if (kanbanCommentsMatch && method === 'POST') {
@@ -648,15 +654,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
-    const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, author, normalizedContent))
+    const normalizedContent = await normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
+    json(res, await addKanbanComment(cardId, author, normalizedContent))
     return true
   }
 
   const kanbanEventsMatch = path.match(/^\/api\/kanban\/([^/]+)\/events$/)
   if (kanbanEventsMatch && method === 'GET') {
     const cardId = decodeURIComponent(kanbanEventsMatch[1])
-    json(res, getKanbanCardEvents(cardId))
+    json(res, await getKanbanCardEvents(cardId))
     return true
   }
 
@@ -667,7 +673,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const cardTokensMatch = path.match(/^\/api\/kanban\/([^/]+)\/tokens$/)
   if (cardTokensMatch && method === 'GET') {
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Token usage is visible to an admin only' }, 403); return true }
-    const usage = getCardTokenUsage(decodeURIComponent(cardTokensMatch[1]), { botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID })
+    const usage = await getCardTokenUsage(decodeURIComponent(cardTokensMatch[1]), { botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID })
     if (!usage) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     json(res, usage)
     return true
@@ -676,9 +682,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const breakdownMatch = path.match(/^\/api\/kanban\/([^/]+)\/breakdown$/)
   if (breakdownMatch && method === 'POST') {
     const cardId = decodeURIComponent(breakdownMatch[1])
-    const card = getKanbanCard(cardId)
+    const card = await getKanbanCard(cardId)
     if (!card) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
-    const existing = getChildCards(cardId)
+    const existing = await getChildCards(cardId)
     if (existing.length > 0) { json(res, { error: 'conflict', hint: 'A kártya már rendelkezik subtask-okkal' }, 409); return true }
     try {
       const result = await generateBreakdown(card.title, card.description)
@@ -693,7 +699,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const acceptMatch = path.match(/^\/api\/kanban\/([^/]+)\/breakdown\/accept$/)
   if (acceptMatch && method === 'POST') {
     const parentId = decodeURIComponent(acceptMatch[1])
-    const parent = getKanbanCard(parentId)
+    const parent = await getKanbanCard(parentId)
     if (!parent) { json(res, { error: 'not_found', hint: 'Szülő kártya nem található' }, 404); return true }
     // A non-admin caller may only break down a card of its own tenant; a foreign one answers like a missing one.
     if (!isAdmin && effectiveTenantId !== null && !await scopeToTenant(effectiveTenantId).kanban.get(parentId)) {
@@ -709,31 +715,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'required', field: 'subtasks', hint: 'Subtask lista kötelező' }, 400)
       return true
     }
-    const db = getDb()
-    // The rows are written in one synchronous transaction; the audit entries are written after the commit (an
-    // `await` inside a synchronous transaction would end it early).
-    const audits: KanbanCreateAudit[] = []
-    const created = db.transaction(() => {
-      const ids: string[] = []
-      for (const st of subtasks) {
-        const id = randomUUID().slice(0, 8).toUpperCase()
-        audits.push(insertKanbanCardRows({
-          id,
-          title: st.title,
-          description: st.description,
-          assignee: st.assignee ?? undefined,
-          priority: (st.priority as any) ?? 'normal',
-          project: parent.project ?? undefined,
-          parent_id: parentId,
-          // the subtasks belong to the tenant of the card they hang under
-          tenant_id: parent.tenant_id,
-        }))
-        ids.push(id)
-      }
-      addKanbanComment(parentId, BOT_NAME, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
-      return ids
-    })()
-    for (const entry of audits) await writeKanbanCreateAudit(entry)
+    const created = await createKanbanSubtasks(parentId, subtasks, BOT_NAME)
     json(res, { ok: true, created })
     return true
   }
@@ -741,7 +723,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const childrenMatch = path.match(/^\/api\/kanban\/([^/]+)\/children$/)
   if (childrenMatch && method === 'GET') {
     const parentId = decodeURIComponent(childrenMatch[1])
-    json(res, getChildCards(parentId))
+    json(res, await getChildCards(parentId))
     return true
   }
 
@@ -751,8 +733,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const subtreeMatch = path.match(/^\/api\/kanban\/([^/]+)\/subtree$/)
   if (subtreeMatch && method === 'GET') {
     const cardId = decodeURIComponent(subtreeMatch[1])
-    if (!getKanbanCard(cardId)) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
-    json(res, getSubtree(cardId))
+    if (!await getKanbanCard(cardId)) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
+    json(res, await getSubtree(cardId))
     return true
   }
 
@@ -773,7 +755,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    const result = reparentKanbanCard(id, parent_id ?? null)
+    const result = await reparentKanbanCard(id, parent_id ?? null)
     if (!result.ok) {
       const status = result.code === 'not_found' ? 404 : 400
       json(res, { error: result.code, hint: result.hint }, status)

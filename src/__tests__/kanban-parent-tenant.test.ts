@@ -133,9 +133,12 @@ describe('PATCH /api/kanban/:id/parent holds the tenant line', () => {
 
 describe('POST /api/kanban/:id/breakdown/accept holds the tenant line', () => {
   it('creates the subtasks under an own card, in that card\'s tenant (200)', async () => {
-    expect((await callAs(session('agent', 'acme'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)).status).toBe(200)
+    const accepted = await callAs(session('agent', 'acme'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)
+    expect(accepted.status).toBe(200)
     const kids = childrenOf(cardAcme)
     expect(kids).toHaveLength(1)
+    // the body carries the created ids themselves (a createKanbanSubtasks that lost its await would serialize `{}`)
+    expect(accepted.body).toEqual({ ok: true, created: kids.map((k) => k.id) })
     expect(kids[0].tenant_id).toBe('acme')
     expect((await callAs(await tokenAuth('tok-alpha'), 'POST', `/api/kanban/${cardDefault}/breakdown/accept`, SUBTASKS)).status).toBe(200)
     expect(childrenOf(cardDefault)[0].tenant_id).toBe('default')

@@ -137,9 +137,9 @@ describe('GET /api/skill-usage', () => {
     expect(bySkill).toEqual({ 'old-tool': 'skill_tool', 'old-read': 'read_tool', 'new-bash': 'bash_script' })
   })
 
-  it('getSkillUsageRows reports the derived legacy value too', () => {
+  it('getSkillUsageRows reports the derived legacy value too', async () => {
     insertRaw('src-g', 'legacy', 'tool_call', null, now(), null)
-    expect(getSkillUsageRows({ agentId: 'src-g' })[0].source).toBe('skill_tool')
+    expect((await getSkillUsageRows({ agentId: 'src-g' }))[0].source).toBe('skill_tool')
   })
 })
 
@@ -206,16 +206,16 @@ describe('60 second dedup', () => {
 })
 
 describe('counters are untouched for existing rows', () => {
-  it('summary and stats count NULL-source rows exactly as before', () => {
+  it('summary and stats count NULL-source rows exactly as before', async () => {
     const t = now()
     insertRaw('src-s', 'counted', 'tool_call', null, t - 100, null)
     insertRaw('src-s', 'counted', 'skill_read', null, t - 50, null)
     insertRaw('src-s', 'counted', 'skill_read', 's', t - 10, 'bash_script')
-    const summary = getSkillUsageSummary().find((r) => r.skill_name === 'counted')!
+    const summary = (await getSkillUsageSummary()).find((r) => r.skill_name === 'counted')!
     expect(summary.total_count).toBe(3)
     expect(summary.count_30d).toBe(3)
     expect(summary.last_used_at).toBe(t - 10)
-    const stat = getSkillUsageStats().find((r) => r.skill_name === 'counted')!
+    const stat = (await getSkillUsageStats()).find((r) => r.skill_name === 'counted')!
     expect(stat.call_count).toBe(1)
     expect(stat.read_count).toBe(2)
     expect(stat.total_count).toBe(3)

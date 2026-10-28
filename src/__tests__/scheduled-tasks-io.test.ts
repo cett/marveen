@@ -37,10 +37,10 @@ vi.mock('../web/atomic-write.js', () => ({
 }))
 // DB layer mock: countSchedules=0 forces file-based path (tests test the file IO)
 vi.mock('../db.js', () => ({
-  countSchedules:    vi.fn().mockReturnValue(0),
-  getScheduleFromDb: vi.fn().mockReturnValue(undefined),
+  countSchedules:    vi.fn().mockResolvedValue(0),
+  getScheduleFromDb: vi.fn().mockResolvedValue(undefined),
   upsertSchedule:    vi.fn(),
-  listSchedulesFromDb: vi.fn().mockReturnValue([]),
+  listSchedulesFromDb: vi.fn().mockResolvedValue([]),
   deleteSchedule:    vi.fn(),
   setScheduleEnabled: vi.fn(),
   patchSchedule:     vi.fn(),
@@ -120,16 +120,16 @@ describe('scheduled-tasks-io', () => {
   })
 
   describe('listScheduledTasks', () => {
-    it('lists tasks from the scheduled-tasks directory', () => {
-      const tasks = listScheduledTasks()
+    it('lists tasks from the scheduled-tasks directory', async () => {
+      const tasks = await listScheduledTasks()
       expect(Array.isArray(tasks)).toBe(true)
       expect(tasks.some(t => t.name === 'test-task')).toBe(true)
     })
   })
 
   describe('writeScheduledTask', () => {
-    it('creates a new task with provided data', () => {
-      writeScheduledTask('new-test-task', {
+    it('creates a new task with provided data', async () => {
+      await writeScheduledTask('new-test-task', {
         description: 'New task',
         prompt: 'Do new things',
         schedule: '0 8 * * 1',
@@ -153,8 +153,8 @@ describe('scheduled-tasks-io', () => {
   describe('writeScheduledTask -- DB-mode tenant_id preservation', () => {
     it('preserves the existing DB row tenant_id when the caller omits tenantId', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.countSchedules).mockReturnValue(1)
-      vi.mocked(db.getScheduleFromDb).mockReturnValue({
+      vi.mocked(db.countSchedules).mockResolvedValue(1)
+      vi.mocked(db.getScheduleFromDb).mockResolvedValue({
         id: 'tenant-task', prompt: 'p', description: 'd', schedule: '0 9 * * *',
         agent: 'marveen', type: 'task', enabled: 1, tenant_id: 'tenant-a',
         skip_if_busy: 0, force_send: 0, target_session: null, command: null,
@@ -163,21 +163,21 @@ describe('scheduled-tasks-io', () => {
         created_at: 1700000000, updated_at: 1700000000,
       } as any)
 
-      writeScheduledTask('tenant-task', { enabled: false })
+      await writeScheduledTask('tenant-task', { enabled: false })
 
       expect(vi.mocked(db.upsertSchedule)).toHaveBeenCalledWith(
         'tenant-task',
         expect.objectContaining({ tenant_id: 'tenant-a' }),
       )
 
-      vi.mocked(db.countSchedules).mockReturnValue(0)
-      vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+      vi.mocked(db.countSchedules).mockResolvedValue(0)
+      vi.mocked(db.getScheduleFromDb).mockResolvedValue(undefined)
     })
 
     it('honors an explicit tenantId, and an explicit null never un-tenants a task', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.countSchedules).mockReturnValue(1)
-      vi.mocked(db.getScheduleFromDb).mockReturnValue({
+      vi.mocked(db.countSchedules).mockResolvedValue(1)
+      vi.mocked(db.getScheduleFromDb).mockResolvedValue({
         id: 'tenant-task-2', prompt: 'p', description: 'd', schedule: '0 9 * * *',
         agent: 'marveen', type: 'task', enabled: 1, tenant_id: 'tenant-a',
         skip_if_busy: 0, force_send: 0, target_session: null, command: null,
@@ -187,18 +187,18 @@ describe('scheduled-tasks-io', () => {
       } as any)
 
       try {
-        writeScheduledTask('tenant-task-2', { tenantId: 'tenant-b' })
+        await writeScheduledTask('tenant-task-2', { tenantId: 'tenant-b' })
         expect(vi.mocked(db.upsertSchedule)).toHaveBeenLastCalledWith(
           'tenant-task-2', expect.objectContaining({ tenant_id: 'tenant-b' }),
         )
         // No tenant is not a state a task can be written into: null keeps the stored tenant.
-        writeScheduledTask('tenant-task-2', { tenantId: null })
+        await writeScheduledTask('tenant-task-2', { tenantId: null })
         expect(vi.mocked(db.upsertSchedule)).toHaveBeenLastCalledWith(
           'tenant-task-2', expect.objectContaining({ tenant_id: 'tenant-a' }),
         )
       } finally {
-        vi.mocked(db.countSchedules).mockReturnValue(0)
-        vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+        vi.mocked(db.countSchedules).mockResolvedValue(0)
+        vi.mocked(db.getScheduleFromDb).mockResolvedValue(undefined)
       }
     })
   })
@@ -262,8 +262,8 @@ describe('scheduled-tasks-io', () => {
   })
 
   describe('writeScheduledTask -- status round-trip (file-mode)', () => {
-    it('writes and reads back a draft status', () => {
-      writeScheduledTask('roundtrip-draft', {
+    it('writes and reads back a draft status', async () => {
+      await writeScheduledTask('roundtrip-draft', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
         enabled: true, type: 'task', status: 'draft',
       })
@@ -272,8 +272,8 @@ describe('scheduled-tasks-io', () => {
       expect(isTaskLive(task!)).toBe(false)
     })
 
-    it('writes and reads back a pending_review status', () => {
-      writeScheduledTask('roundtrip-pending', {
+    it('writes and reads back a pending_review status', async () => {
+      await writeScheduledTask('roundtrip-pending', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
         enabled: true, type: 'task', status: 'pending_review',
       })
@@ -282,8 +282,8 @@ describe('scheduled-tasks-io', () => {
       expect(isTaskLive(task!)).toBe(false)
     })
 
-    it('omitting status on create defaults to live', () => {
-      writeScheduledTask('roundtrip-default', {
+    it('omitting status on create defaults to live', async () => {
+      await writeScheduledTask('roundtrip-default', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen', enabled: true, type: 'task',
       })
       const task = readScheduledTask('roundtrip-default')
@@ -291,13 +291,13 @@ describe('scheduled-tasks-io', () => {
       expect(isTaskLive(task!)).toBe(true)
     })
 
-    it('an edit that omits status preserves the existing draft status (does not silently activate)', () => {
-      writeScheduledTask('roundtrip-preserve', {
+    it('an edit that omits status preserves the existing draft status (does not silently activate)', async () => {
+      await writeScheduledTask('roundtrip-preserve', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
         enabled: true, type: 'task', status: 'draft',
       })
       // Simulate an unrelated edit (e.g. the toggle route) that never mentions status.
-      writeScheduledTask('roundtrip-preserve', { enabled: false })
+      await writeScheduledTask('roundtrip-preserve', { enabled: false })
       const task = readScheduledTask('roundtrip-preserve')
       expect(task!.status).toBe('draft')
       expect(isTaskLive(task!)).toBe(false)

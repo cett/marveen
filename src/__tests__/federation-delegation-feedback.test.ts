@@ -89,9 +89,9 @@ describe('delegation failure feedback (L5)', () => {
     // fires with NO network attempt.
     const old = await createAgentMessage('localboss', 'teodor/kutato', 'please research X')
     const now = old.created_at * 1000 + 2 * 60 * 60 * 1000 // +2h
-    await deliverFederatedBatch([getAgentMessage(old.id)!], now)
+    await deliverFederatedBatch([(await getAgentMessage(old.id))!], now)
 
-    expect(getAgentMessage(old.id)?.status).toBe('failed')
+    expect((await getAgentMessage(old.id))?.status).toBe('failed')
     // A single local 'system' notice now waits for the sender.
     const inbox = getPendingMessages('localboss')
     expect(inbox).toHaveLength(1)
@@ -106,11 +106,11 @@ describe('delegation failure feedback (L5)', () => {
     const old = await createAgentMessage('boss2', 'teodor/kutato', 'research Y')
     const now = old.created_at * 1000 + 2 * 60 * 60 * 1000
     // First pass: abandons + one notice.
-    await deliverFederatedBatch([getAgentMessage(old.id)!], now)
+    await deliverFederatedBatch([(await getAgentMessage(old.id))!], now)
     expect(getPendingMessages('boss2')).toHaveLength(1)
     // Second pass over the SAME (now failed) row: markPendingFederatedFailed
     // must not re-fire, so no duplicate notice piles up.
-    await deliverFederatedBatch([getAgentMessage(old.id)!], now + 1000)
+    await deliverFederatedBatch([(await getAgentMessage(old.id))!], now + 1000)
     expect(getPendingMessages('boss2')).toHaveLength(1) // still exactly one notice
   })
 })

@@ -3,7 +3,7 @@
 
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
 
@@ -108,24 +108,22 @@ function toolCallRowFromSpan(span: OtelSpanRow, id: number): ToolCallLogRow {
   }
 }
 
-export function getRecentToolCalls(sinceSecs: number): ToolCallLogRow[] {
+export async function getRecentToolCalls(sinceSecs: number): Promise<ToolCallLogRow[]> {
   const cutoffMs = Date.now() - sinceSecs * 1000
   // Ordered by rowid (= logging/insertion order), not the derived start_ms:
   // start_ms is computed as end_ms - duration_ms, so two calls logged a
   // millisecond apart with very different durations can invert on start_ms
   // alone. rowid matches the old tool_call_log's autoincrement-id ordering,
   // which is what callers actually rely on (calls in the order they happened).
-  const rows = db.prepare(
-    `SELECT trace_id, span_id, agent_id, operation, start_ms, end_ms, status, attributes
+  const rows = await dbx.all<OtelSpanRow>(`SELECT trace_id, span_id, agent_id, operation, start_ms, end_ms, status, attributes
        FROM otel_spans
       WHERE operation LIKE 'tool.%' AND start_ms >= ?
-      ORDER BY rowid ASC`,
-  ).all(cutoffMs) as OtelSpanRow[]
+      ORDER BY rowid ASC`, cutoffMs)
   return rows.map((row, i) => toolCallRowFromSpan(row, i))
 }
 
-export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, gapSecs = 300): WorkflowCandidate[] {
-  const calls = getRecentToolCalls(sinceSecs)
+export async function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, gapSecs = 300): Promise<WorkflowCandidate[]> {
+  const calls = await getRecentToolCalls(sinceSecs)
   if (calls.length === 0) return []
 
   // Group by session_id, then split by time gaps > gapSecs
@@ -217,25 +215,27 @@ export async function logSkillUsage(
 ): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const effectiveSource = source ?? (triggerType === 'tool_call' ? 'skill_tool' : 'read_tool')
-  const dup = db.prepare(
-    `SELECT 1 FROM skill_usage
-     WHERE agent_id = ? AND skill_name = ? AND session_id IS ? AND created_at >= ?
-       AND COALESCE(source, ${LEGACY_SOURCE_SQL}) = ?
-     LIMIT 1`,
-  ).get(agentId, skillName, sessionId ?? null, now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
-  if (dup) return false
-  db.prepare(
-    'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, await resolveWriteTenant(agentId))
-  return true
+  // The tenant is resolved first: the dedup check and the insert are ONE statement. As a SELECT followed by an
+  // INSERT with an await between them, two concurrent calls for the same invocation both saw no row and both
+  // wrote one (the sync driver made that sequence atomic before the facade).
+  const tenantId = await resolveWriteTenant(agentId)
+  const res = await dbx.run(`INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id)
+     SELECT ?, ?, ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM skill_usage
+         WHERE agent_id = ? AND skill_name = ? AND session_id IS ? AND created_at >= ?
+           AND COALESCE(source, ${LEGACY_SOURCE_SQL}) = ?)`,
+    agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, tenantId,
+    agentId, skillName, sessionId ?? null, now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
+  return res.changes > 0
 }
 
-export function getSkillUsageRows(opts: {
+export async function getSkillUsageRows(opts: {
   since?: number
   agentId?: string
   skillName?: string
   limit?: number
-}): SkillUsageRow[] {
+}): Promise<SkillUsageRow[]> {
   const { since, agentId, skillName, limit = 500 } = opts
   const cutoff = since ? Math.floor(Date.now() / 1000) - since : 0
   const conditions: string[] = ['created_at >= ?']
@@ -243,16 +243,14 @@ export function getSkillUsageRows(opts: {
   if (agentId) { conditions.push('agent_id = ?'); params.push(agentId) }
   if (skillName) { conditions.push('skill_name = ?'); params.push(skillName) }
   params.push(limit)
-  return db.prepare(
-    `SELECT id, agent_id, skill_name, trigger_type, session_id, created_at,
+  return dbx.all<SkillUsageRow>(`SELECT id, agent_id, skill_name, trigger_type, session_id, created_at,
             COALESCE(source, ${LEGACY_SOURCE_SQL}) AS source
-     FROM skill_usage WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
-  ).all(...params) as SkillUsageRow[]
+     FROM skill_usage WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`, ...params)
 }
 
-export function getSkillUsageStats(sinceSecs?: number): SkillUsageStatRow[] {
+export async function getSkillUsageStats(sinceSecs?: number): Promise<SkillUsageStatRow[]> {
   const cutoff = sinceSecs ? Math.floor(Date.now() / 1000) - sinceSecs : 0
-  return db.prepare(`
+  return dbx.all<SkillUsageStatRow>(`
     SELECT
       skill_name,
       SUM(CASE WHEN trigger_type = 'tool_call' THEN 1 ELSE 0 END) AS call_count,
@@ -264,7 +262,7 @@ export function getSkillUsageStats(sinceSecs?: number): SkillUsageStatRow[] {
     WHERE created_at >= ?
     GROUP BY skill_name
     ORDER BY total_count DESC
-  `).all(cutoff) as SkillUsageStatRow[]
+  `, cutoff)
 }
 
 export interface SkillUsageSummaryRow {
@@ -275,11 +273,11 @@ export interface SkillUsageSummaryRow {
   count_90d: number
 }
 
-export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
+export async function getSkillUsageSummary(): Promise<SkillUsageSummaryRow[]> {
   const now = Math.floor(Date.now() / 1000)
   const cutoff30 = now - 30 * 86400
   const cutoff90 = now - 90 * 86400
-  return db.prepare(`
+  return dbx.all<SkillUsageSummaryRow>(`
     SELECT
       skill_name,
       MAX(created_at) AS last_used_at,
@@ -289,7 +287,7 @@ export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
     FROM skill_usage
     GROUP BY skill_name
     ORDER BY last_used_at DESC
-  `).all(cutoff30, cutoff90) as SkillUsageSummaryRow[]
+  `, cutoff30, cutoff90)
 }
 
 // Migration 0037 describes this table as deny-only. It never was, in practice,
@@ -330,10 +328,7 @@ export async function insertHookAuditLog(entry: {
   trigger_source?: string | null
 }): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(
-    now,
+  await dbx.run('INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', now,
     entry.agent_id ?? null,
     entry.hook_type,
     entry.verdict,
@@ -346,13 +341,13 @@ export async function insertHookAuditLog(entry: {
   )
 }
 
-export function listHookAuditLog(opts: {
+export async function listHookAuditLog(opts: {
   sinceSecs?: number
   verdict?: string
   agent_id?: string
   trigger_source?: string
   limit?: number
-} = {}): HookAuditLogEntry[] {
+} = {}): Promise<HookAuditLogEntry[]> {
   const clauses: string[] = []
   const params: unknown[] = []
 
@@ -367,37 +362,33 @@ export function listHookAuditLog(opts: {
 
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000)
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-  return db.prepare(
-    `SELECT * FROM hook_audit_log ${where} ORDER BY ts DESC LIMIT ?`,
-  ).all(...params, limit) as HookAuditLogEntry[]
+  return dbx.all<HookAuditLogEntry>(`SELECT * FROM hook_audit_log ${where} ORDER BY ts DESC LIMIT ?`, ...params, limit)
 }
 
-export function pruneHookAuditLog(olderThanSecs = 30 * 86400): void {
+export async function pruneHookAuditLog(olderThanSecs = 30 * 86400): Promise<void> {
   const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
-  db.prepare('DELETE FROM hook_audit_log WHERE ts < ?').run(cutoff)
+  await dbx.run('DELETE FROM hook_audit_log WHERE ts < ?', cutoff)
 }
 
 // otel_spans.start_ms is milliseconds (unlike every other audit table's
 // second-resolution created_at/ts), so the cutoff and default window are
 // both computed in ms here to avoid an off-by-1000x prune.
-export function pruneOtelSpans(olderThanMs = 30 * 86400000): void {
+export async function pruneOtelSpans(olderThanMs = 30 * 86400000): Promise<void> {
   const cutoff = Date.now() - olderThanMs
-  db.prepare('DELETE FROM otel_spans WHERE start_ms < ?').run(cutoff)
+  await dbx.run('DELETE FROM otel_spans WHERE start_ms < ?', cutoff)
 }
 
 // Pass null for oldValue/newValue when the registry entry is secret:true --
 // this keeps secret values out of the audit trail entirely rather than
 // relying on a UI to not display them.
-export function logConfigChange(
+export async function logConfigChange(
   key: string,
   oldValue: string | number | null,
   newValue: string | number | null,
   actor: string,
-): void {
+): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    'INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now)
+  await dbx.run('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)', key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now)
 }
 
 export interface ConfigChangeLogRow {
@@ -409,10 +400,10 @@ export interface ConfigChangeLogRow {
   created_at: number
 }
 
-export function getRecentConfigChanges(limit = 200): ConfigChangeLogRow[] {
+export async function getRecentConfigChanges(limit = 200): Promise<ConfigChangeLogRow[]> {
   // id DESC as a tiebreaker: created_at has 1-second resolution, so two
   // saves in the same second would otherwise sort arbitrarily.
-  return db.prepare('SELECT * FROM config_change_log ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as ConfigChangeLogRow[]
+  return dbx.all<ConfigChangeLogRow>('SELECT * FROM config_change_log ORDER BY created_at DESC, id DESC LIMIT ?', limit)
 }
 
 export interface StoreFileAuditRow {
@@ -444,13 +435,11 @@ export async function logStoreFileEvent(
   const tenant = tenantId !== undefined
     ? tenantId
     : agent === null || agent === STORE_DASHBOARD_ACTOR ? null : await resolveWriteTenant(agent)
-  db.prepare(
-    'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(relPath, eventType, isSensitive, fileSize, agent, now, tenant)
+  await dbx.run('INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', relPath, eventType, isSensitive, fileSize, agent, now, tenant)
 }
 
-export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
-  return db.prepare('SELECT * FROM store_file_audit ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as StoreFileAuditRow[]
+export async function getRecentStoreFileEvents(limit = 200): Promise<StoreFileAuditRow[]> {
+  return dbx.all<StoreFileAuditRow>('SELECT * FROM store_file_audit ORDER BY created_at DESC, id DESC LIMIT ?', limit)
 }
 
 export type AuditSource = 'config' | 'idea' | 'store' | 'diary' | 'agent' | 'hook'
@@ -511,10 +500,7 @@ export async function writeAgentAuditLog(opts: {
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
 }): Promise<void> {
-  db.prepare(
-    'INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(
-    opts.agent_id,
+  await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)', opts.agent_id,
     opts.entity,
     opts.action,
     opts.entity_id != null ? String(opts.entity_id) : null,
@@ -531,11 +517,11 @@ export interface AuditLogQueryResult {
   total: number
 }
 
-function countRows(table: string, whereSql: string, params: unknown[]): number {
-  return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} ${whereSql}`).get(...params) as { n: number }).n
+async function countRows(table: string, whereSql: string, params: unknown[]): Promise<number> {
+  return ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table} ${whereSql}`, ...params)) as { n: number }).n
 }
 
-export function queryAuditLog(opts: {
+export async function queryAuditLog(opts: {
   sources: AuditSource[]
   from?: number
   to?: number
@@ -544,7 +530,7 @@ export function queryAuditLog(opts: {
   limit: number
   /** Rows to skip in the final, merged+sorted result (default 0). */
   offset?: number
-}): AuditLogQueryResult {
+}): Promise<AuditLogQueryResult> {
   const { sources, from, to, q, agent, limit, offset = 0 } = opts
   const all: AuditSource[] = ['config', 'idea', 'store', 'diary', 'agent', 'hook']
   const active = sources.length > 0 ? sources : all
@@ -569,11 +555,9 @@ export function queryAuditLog(opts: {
     if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
     if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (q)    { whereSql += ' AND (key LIKE ? OR old_value LIKE ? OR new_value LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
-    const rows = db.prepare(
-      `SELECT id, key, old_value, new_value, actor, created_at FROM config_change_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(...params, fetchLimit) as ConfigChangeLogRow[]
+    const rows = await dbx.all<ConfigChangeLogRow>(`SELECT id, key, old_value, new_value, actor, created_at FROM config_change_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({ ...r, source: 'config' })
-    total += countRows('config_change_log', whereSql, params)
+    total += await countRows('config_change_log', whereSql, params)
   }
 
   if (active.includes('idea')) {
@@ -582,11 +566,9 @@ export function queryAuditLog(opts: {
     if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
     if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (q)    { whereSql += ' AND (idea_id LIKE ? OR to_status LIKE ? OR note LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
-    const rows = db.prepare(
-      `SELECT id, idea_id, from_status, to_status, actor, note, created_at FROM idea_status_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(...params, fetchLimit) as Array<{ id: number; idea_id: string; from_status: string | null; to_status: string; actor: string; note: string | null; created_at: number }>
+    const rows = (await dbx.all(`SELECT id, idea_id, from_status, to_status, actor, note, created_at FROM idea_status_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)) as Array<{ id: number; idea_id: string; from_status: string | null; to_status: string; actor: string; note: string | null; created_at: number }>
     for (const r of rows) parts.push({ ...r, source: 'idea' })
-    total += countRows('idea_status_log', whereSql, params)
+    total += await countRows('idea_status_log', whereSql, params)
   }
 
   if (active.includes('store')) {
@@ -596,11 +578,9 @@ export function queryAuditLog(opts: {
     if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent = ?'; params.push(agent) }
     if (q)    { whereSql += ' AND (rel_path LIKE ? OR agent LIKE ?)'; const p = `%${q}%`; params.push(p, p) }
-    const rows = db.prepare(
-      `SELECT id, rel_path, event_type, is_sensitive, file_size, agent, created_at FROM store_file_audit ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(...params, fetchLimit) as StoreFileAuditRow[]
+    const rows = await dbx.all<StoreFileAuditRow>(`SELECT id, rel_path, event_type, is_sensitive, file_size, agent, created_at FROM store_file_audit ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({ ...r, source: 'store' })
-    total += countRows('store_file_audit', whereSql, params)
+    total += await countRows('store_file_audit', whereSql, params)
   }
 
   if (active.includes('diary')) {
@@ -611,11 +591,9 @@ export function queryAuditLog(opts: {
     if (to)    { logWhereSql += ' AND created_at <= ?'; logParams.push(to) }
     if (agent) { logWhereSql += ' AND agent_id = ?'; logParams.push(agent) }
     if (q)     { logWhereSql += ' AND content LIKE ?'; logParams.push(`%${q}%`) }
-    const logRows = db.prepare(
-      `SELECT id, agent_id, content, created_at FROM daily_logs ${logWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(...logParams, fetchLimit) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
+    const logRows = (await dbx.all(`SELECT id, agent_id, content, created_at FROM daily_logs ${logWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...logParams, fetchLimit)) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
     for (const r of logRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, entry_type: 'log' })
-    total += countRows('daily_logs', logWhereSql, logParams)
+    total += await countRows('daily_logs', logWhereSql, logParams)
 
     // memories
     let memWhereSql = 'WHERE 1=1'
@@ -624,11 +602,9 @@ export function queryAuditLog(opts: {
     if (to)    { memWhereSql += ' AND created_at <= ?'; memParams.push(to) }
     if (agent) { memWhereSql += ' AND agent_id = ?'; memParams.push(agent) }
     if (q)     { memWhereSql += ' AND (content LIKE ? OR keywords LIKE ?)'; memParams.push(`%${q}%`, `%${q}%`) }
-    const memRows = db.prepare(
-      `SELECT id, agent_id, content, category, keywords, created_at FROM memories ${memWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(...memParams, fetchLimit) as Array<{ id: number; agent_id: string; content: string; category: string; keywords: string | null; created_at: number }>
+    const memRows = (await dbx.all(`SELECT id, agent_id, content, category, keywords, created_at FROM memories ${memWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...memParams, fetchLimit)) as Array<{ id: number; agent_id: string; content: string; category: string; keywords: string | null; created_at: number }>
     for (const r of memRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, category: r.category, keywords: r.keywords ?? undefined, entry_type: 'memory' })
-    total += countRows('memories', memWhereSql, memParams)
+    total += await countRows('memories', memWhereSql, memParams)
   }
 
   if (active.includes('agent')) {
@@ -638,15 +614,13 @@ export function queryAuditLog(opts: {
     if (to)    { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
     if (q)     { whereSql += ' AND (agent_id LIKE ? OR entity LIKE ? OR action LIKE ? OR detail LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
-    const rows = db.prepare(
-      `SELECT id, agent_id, entity, action, entity_id, detail, created_at FROM agent_audit_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(...params, fetchLimit) as AgentAuditLogRow[]
+    const rows = await dbx.all<AgentAuditLogRow>(`SELECT id, agent_id, entity, action, entity_id, detail, created_at FROM agent_audit_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({
       id: r.id, source: 'agent', created_at: r.created_at,
       agent_id: r.agent_id, entity: r.entity, action: r.action,
       entity_id: r.entity_id ?? undefined, detail: r.detail ?? undefined,
     })
-    total += countRows('agent_audit_log', whereSql, params)
+    total += await countRows('agent_audit_log', whereSql, params)
   }
 
   // hook_audit_log uses its own `ts` column name (not created_at) -- aliased
@@ -659,9 +633,7 @@ export function queryAuditLog(opts: {
     if (to)    { whereSql += ' AND ts <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
     if (q)     { whereSql += ' AND (agent_id LIKE ? OR hook_type LIKE ? OR verdict LIKE ? OR tool_name LIKE ? OR reason LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p, p) }
-    const rows = db.prepare(
-      `SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, ts AS created_at FROM hook_audit_log ${whereSql} ORDER BY ts DESC, id DESC LIMIT ?`,
-    ).all(...params, fetchLimit) as Array<{
+    const rows = (await dbx.all(`SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, ts AS created_at FROM hook_audit_log ${whereSql} ORDER BY ts DESC, id DESC LIMIT ?`, ...params, fetchLimit)) as Array<{
       id: number; agent_id: string | null; hook_type: string; verdict: string
       tool_name: string | null; content_hash: string | null; reason: string | null
       session_id: string | null; created_at: number
@@ -671,7 +643,7 @@ export function queryAuditLog(opts: {
       agent_id: r.agent_id ?? undefined, hook_type: r.hook_type, verdict: r.verdict,
       tool_name: r.tool_name, content_hash: r.content_hash, reason: r.reason, session_id: r.session_id,
     })
-    total += countRows('hook_audit_log', whereSql, params)
+    total += await countRows('hook_audit_log', whereSql, params)
   }
 
   // Merge and sort by created_at DESC, then id DESC as tiebreaker, then slice
@@ -682,24 +654,24 @@ export function queryAuditLog(opts: {
 
 // Prune all three audit tables to AUDIT_LOG_RETENTION_DAYS. Called from the
 // daily decay sweep so old entries do not accumulate indefinitely.
-export function pruneAuditLogs(): void {
+export async function pruneAuditLogs(): Promise<void> {
   const retentionDays = Number(getEffectiveSettingValue('AUDIT_LOG_RETENTION_DAYS'))
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
-  db.prepare('DELETE FROM config_change_log WHERE created_at < ?').run(cutoff)
-  db.prepare('DELETE FROM idea_status_log WHERE created_at < ?').run(cutoff)
-  db.prepare('DELETE FROM store_file_audit WHERE created_at < ?').run(cutoff)
-  db.prepare('DELETE FROM agent_audit_log WHERE created_at < ?').run(cutoff)
+  await dbx.run('DELETE FROM config_change_log WHERE created_at < ?', cutoff)
+  await dbx.run('DELETE FROM idea_status_log WHERE created_at < ?', cutoff)
+  await dbx.run('DELETE FROM store_file_audit WHERE created_at < ?', cutoff)
+  await dbx.run('DELETE FROM agent_audit_log WHERE created_at < ?', cutoff)
   // hook_audit_log had no automatic sweep at all -- pruneHookAuditLog() only
   // ever ran when POST /api/hook-audit/prune was called by hand. At ~1074
   // rows/day (one row per PreToolUse/PostToolUse/PreCompact/Stop verdict)
   // that leaked unbounded. Reuses the same AUDIT_LOG_RETENTION_DAYS setting
   // (already 90 days by default) rather than adding a second retention knob.
-  pruneHookAuditLog(retentionDays * 86400)
+  await pruneHookAuditLog(retentionDays * 86400)
   // otel_spans has its own retention knob (OTEL_SPAN_RETENTION_DAYS, default
   // 30) rather than reusing AUDIT_LOG_RETENTION_DAYS -- spans are a much
   // higher-volume, shorter-lived trace record than the audit tables above.
   const otelRetentionDays = Number(getEffectiveSettingValue('OTEL_SPAN_RETENTION_DAYS'))
-  pruneOtelSpans(otelRetentionDays * 86400000)
+  await pruneOtelSpans(otelRetentionDays * 86400000)
 }
 
 export interface TokenUsagePruneResult {
@@ -718,7 +690,7 @@ export interface TokenUsagePruneResult {
 // to their own retention windows (daily: 1 year, monthly: 3 years).
 //
 // `timestamp` is unix SECONDS.
-export function pruneTokenUsage(): TokenUsagePruneResult {
+export async function pruneTokenUsage(): Promise<TokenUsagePruneResult> {
   const rawRetentionDays    = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
   const dailyRetentionDays  = Number(getEffectiveSettingValue('TOKEN_USAGE_DAILY_RETENTION_DAYS'))
   const monthlyRetentionDays = Number(getEffectiveSettingValue('TOKEN_USAGE_MONTHLY_RETENTION_DAYS'))
@@ -727,7 +699,7 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
 
   // 1. Daily rollup upsert (idempotent: ON CONFLICT overwrites with fresh aggregate).
   //    Runs only over rows that fall outside the raw retention window.
-  const dailyResult = db.prepare(`
+  const dailyResult = await dbx.run(`
     INSERT INTO token_usage_daily
       (day, agent, model, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, thinking_tokens, row_count, tenant_id)
@@ -752,10 +724,10 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
       cache_creation_tokens = excluded.cache_creation_tokens,
       thinking_tokens       = excluded.thinking_tokens,
       row_count             = excluded.row_count
-  `).run(rawCutoff)
+  `, rawCutoff)
 
   // 2. Monthly rollup upsert (idempotent).
-  const monthlyResult = db.prepare(`
+  const monthlyResult = await dbx.run(`
     INSERT INTO token_usage_monthly
       (month, agent, model, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, thinking_tokens, session_count, row_count, tenant_id)
@@ -782,19 +754,15 @@ export function pruneTokenUsage(): TokenUsagePruneResult {
       thinking_tokens       = excluded.thinking_tokens,
       session_count         = excluded.session_count,
       row_count             = excluded.row_count
-  `).run(rawCutoff)
+  `, rawCutoff)
 
   // 3. Delete raw rows only after both rollups are committed.
-  const deleteResult = db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(rawCutoff)
+  const deleteResult = await dbx.run('DELETE FROM token_usage WHERE timestamp < ?', rawCutoff)
 
   // 4. Prune the aggregator tables to their own retention windows.
-  db.prepare(
-    "DELETE FROM token_usage_daily WHERE day < date(?, 'unixepoch', 'localtime')"
-  ).run(Math.floor(Date.now() / 1000) - dailyRetentionDays * 86400)
+  await dbx.run("DELETE FROM token_usage_daily WHERE day < date(?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - dailyRetentionDays * 86400)
 
-  db.prepare(
-    "DELETE FROM token_usage_monthly WHERE month < strftime('%Y-%m', ?, 'unixepoch', 'localtime')"
-  ).run(Math.floor(Date.now() / 1000) - monthlyRetentionDays * 86400)
+  await dbx.run("DELETE FROM token_usage_monthly WHERE month < strftime('%Y-%m', ?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - monthlyRetentionDays * 86400)
 
   return {
     rawDeleted:      deleteResult.changes,
@@ -860,7 +828,7 @@ export const SHADOW_DEFAULT_LIMIT = 100
 
 const SHADOW_TOP_N = 20
 
-export function insertRbacShadowRow(row: {
+export async function insertRbacShadowRow(row: {
   ts: number
   tenantId: string | null
   principalKind: string
@@ -871,17 +839,15 @@ export function insertRbacShadowRow(row: {
   permission: string
   decision: ShadowDecision
   reason: string
-}): void {
-  db.prepare(
-    `INSERT INTO rbac_shadow_log
+}): Promise<void> {
+  await dbx.run(`INSERT INTO rbac_shadow_log
        (ts, tenant_id, principal_kind, principal, role, method, route, permission, decision, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.ts, row.tenantId, row.principalKind, row.principal, row.role, row.method, row.route, row.permission, row.decision, row.reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ts, row.tenantId, row.principalKind, row.principal, row.role, row.method, row.route, row.permission, row.decision, row.reason)
 }
 
 /** Deletes rows older than the cutoff (unix seconds). Returns the number removed. */
-export function deleteRbacShadowRowsBefore(cutoff: number): number {
-  return db.prepare('DELETE FROM rbac_shadow_log WHERE ts < ?').run(cutoff).changes
+export async function deleteRbacShadowRowsBefore(cutoff: number): Promise<number> {
+  return (await dbx.run('DELETE FROM rbac_shadow_log WHERE ts < ?', cutoff)).changes
 }
 
 function buildShadowWhere(f: ShadowLogFilter): { sql: string; params: unknown[] } {
@@ -902,57 +868,44 @@ function buildShadowWhere(f: ShadowLogFilter): { sql: string; params: unknown[] 
   return { sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params }
 }
 
-export function queryRbacShadowRows(
+export async function queryRbacShadowRows(
   f: ShadowLogFilter,
-): { entries: ShadowLogRow[]; total: number; limit: number; offset: number } {
+): Promise<{ entries: ShadowLogRow[]; total: number; limit: number; offset: number }> {
   const limit = Math.min(Math.max(f.limit ?? SHADOW_DEFAULT_LIMIT, 1), SHADOW_MAX_LIMIT)
   const offset = Math.max(f.offset ?? 0, 0)
   const { sql, params } = buildShadowWhere(f)
-  const total = (db.prepare(`SELECT COUNT(*) AS n FROM rbac_shadow_log ${sql}`).get(...params) as { n: number }).n
+  const total = ((await dbx.get(`SELECT COUNT(*) AS n FROM rbac_shadow_log ${sql}`, ...params)) as { n: number }).n
   // Newest first; id breaks ties between rows written in the same second.
-  const entries = db
-    .prepare(`SELECT * FROM rbac_shadow_log ${sql} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset) as ShadowLogRow[]
+  const entries = await dbx.all<ShadowLogRow>(`SELECT * FROM rbac_shadow_log ${sql} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`, ...params, limit, offset)
   return { entries, total, limit, offset }
 }
 
 /** Aggregate view used by the daily monitor and the dashboard. */
-export function summarizeRbacShadowRows(f: Pick<ShadowLogFilter, 'from' | 'to' | 'tenantId'> = {}): ShadowSummary {
+export async function summarizeRbacShadowRows(f: Pick<ShadowLogFilter, 'from' | 'to' | 'tenantId'> = {}): Promise<ShadowSummary> {
   const { sql, params } = buildShadowWhere(f)
 
   const by_decision: Record<ShadowDecision, number> = { 'would-deny': 0, denied: 0, permitted: 0 }
-  const rows = db
-    .prepare(`SELECT decision, COUNT(*) AS n FROM rbac_shadow_log ${sql} GROUP BY decision`)
-    .all(...params) as Array<{ decision: ShadowDecision; n: number }>
+  const rows = (await dbx.all(`SELECT decision, COUNT(*) AS n FROM rbac_shadow_log ${sql} GROUP BY decision`, ...params)) as Array<{ decision: ShadowDecision; n: number }>
   for (const r of rows) by_decision[r.decision] = r.n
   const total = by_decision['would-deny'] + by_decision.denied + by_decision.permitted
 
   // Denial shapes: would-deny and denied only (permitted rows are not a false-positive signal).
   const denialWhere = sql ? `${sql} AND decision IN ('would-deny','denied')` : `WHERE decision IN ('would-deny','denied')`
-  const top_denials = db
-    .prepare(
-      `SELECT method, route, permission, role, decision, COUNT(*) AS count
+  const top_denials = (await dbx.all(`SELECT method, route, permission, role, decision, COUNT(*) AS count
          FROM rbac_shadow_log ${denialWhere}
         GROUP BY method, route, permission, role, decision
         ORDER BY count DESC, route ASC
-        LIMIT ${SHADOW_TOP_N}`,
-    )
-    .all(...params) as ShadowSummary['top_denials']
-  const denied_principals = db
-    .prepare(
-      `SELECT principal_kind, principal, role, COUNT(*) AS count
+        LIMIT ${SHADOW_TOP_N}`, ...params)) as ShadowSummary['top_denials']
+  const denied_principals = (await dbx.all(`SELECT principal_kind, principal, role, COUNT(*) AS count
          FROM rbac_shadow_log ${denialWhere}
         GROUP BY principal_kind, principal, role
         ORDER BY count DESC, principal ASC
-        LIMIT ${SHADOW_TOP_N}`,
-    )
-    .all(...params) as ShadowSummary['denied_principals']
+        LIMIT ${SHADOW_TOP_N}`, ...params)) as ShadowSummary['denied_principals']
 
   return { from: f.from ?? null, to: f.to ?? null, total, by_decision, top_denials, denied_principals }
 }
 
 /** Admin-console audit row; `entity` is fixed to 'admin' and the actor is a dashboard user name. */
 export async function writeAdminAuditLog(actor: string, action: string, targetId: string | number, detail: Record<string, unknown>): Promise<void> {
-  db.prepare('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(actor, 'admin', action, String(targetId), JSON.stringify(detail), await dashboardUserTenant(actor))
+  await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)', actor, 'admin', action, String(targetId), JSON.stringify(detail), await dashboardUserTenant(actor))
 }

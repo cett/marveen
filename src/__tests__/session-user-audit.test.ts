@@ -63,7 +63,8 @@ vi.mock('../db.js', () => ({
   propagateStatus: vi.fn(),
   createAgentMessage: vi.fn().mockReturnValue({ id: 1, from_agent: 'jane.doe', to_agent: 'marveen', origin_note: null }),
   COMPLETION_REPORT_PREFIX: '[Eredmény]',
-  markKanbanCardDispatched: vi.fn(),
+  markKanbanCardDispatched: vi.fn().mockResolvedValue(true),
+  releaseKanbanCardDispatch: vi.fn().mockResolvedValue(undefined),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   listLabels: vi.fn().mockReturnValue([]),
   getLabel: vi.fn().mockReturnValue(null),
@@ -86,7 +87,7 @@ vi.mock('../db.js', () => ({
   getAgentConversation: vi.fn().mockReturnValue([]),
   getAgentConversationThreads: vi.fn().mockReturnValue([]),
   closeOpenMessage: vi.fn().mockReturnValue(true),
-  getAgentMessage: vi.fn().mockReturnValue(null),
+  getAgentMessage: vi.fn().mockResolvedValue(null),
   closeOtelSpan: vi.fn(),
   getPendingBacklogByAgent: vi.fn().mockReturnValue([]),
   isAuthorizedPartnerSender: vi.fn().mockReturnValue(true),
@@ -115,7 +116,7 @@ vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }))
 vi.mock('../web/kanban-ref-normalize.js', () => ({
-  normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => s),
+  normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => Promise.resolve(s)),
 }))
 vi.mock('../web/agent-config.js', () => ({
   listAgentNames: vi.fn().mockReturnValue([]),

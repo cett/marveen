@@ -127,8 +127,8 @@ const PRIORITY_HU: Record<string, string> = {
   low: '🔵',
 }
 
-export function buildKanbanContext(): string {
-  const cards = listKanbanCardsSummary()
+export async function buildKanbanContext(): Promise<string> {
+  const cards = await listKanbanCardsSummary()
   if (cards.length === 0) return ''
 
   const grouped: Record<string, string[]> = {}
@@ -164,8 +164,8 @@ export async function saveConversationTurn(
 
 export async function runDecaySweep(): Promise<void> {
   await dbDecay()
-  pruneAuditLogs()
-  const tokenPruneResult = pruneTokenUsage()
+  await pruneAuditLogs()
+  const tokenPruneResult = await pruneTokenUsage()
   const blackboardHistoryPruned = pruneBlackboardHistory()
   const conversationLogPruned = pruneConversationLog()
   const agentMessagesPruned = pruneAgentMessages()

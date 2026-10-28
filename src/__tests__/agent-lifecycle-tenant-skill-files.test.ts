@@ -7,8 +7,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { order, running } = vi.hoisted(() => ({ order: [] as string[], running: { value: false } }))
 
 vi.mock('../web/skill-regen.js', () => ({
-  generateTenantSkillFilesForAgent: vi.fn((n: string) => { order.push(`generate:${n}`); return { written: 0, skipped: 0, errors: 0 } }),
-  removeGeneratedTenantSkillFilesForAgent: vi.fn((n: string) => { order.push(`remove:${n}`); return { removed: 0, kept: 0, errors: 0 } }),
+  generateTenantSkillFilesForAgent: vi.fn((n: string) => { order.push(`generate:${n}`); return Promise.resolve({ written: 0, skipped: 0, errors: 0 }) }),
+  removeGeneratedTenantSkillFilesForAgent: vi.fn((n: string) => { order.push(`remove:${n}`); return Promise.resolve({ removed: 0, kept: 0, errors: 0 }) }),
 }))
 vi.mock('../web/agent-process-session.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/agent-process-session.js')>()
@@ -75,7 +75,7 @@ describe('agent lifecycle and tenant skill files', () => {
   })
 
   it('a failing generation does not block the start', async () => {
-    vi.mocked(regen.generateTenantSkillFilesForAgent).mockImplementationOnce(() => { throw new Error('disk full') })
+    vi.mocked(regen.generateTenantSkillFilesForAgent).mockRejectedValueOnce(new Error('disk full'))
     await expect(startAgentProcess('agent-a')).rejects.toThrow('stop here')   // got past the generation
   })
 
@@ -98,7 +98,7 @@ describe('agent lifecycle and tenant skill files', () => {
 
   it('a failing removal does not fail the stop, and a stop that did nothing removes nothing', async () => {
     running.value = true
-    vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockImplementationOnce(() => { throw new Error('busy') })
+    vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockRejectedValueOnce(new Error('busy'))
     expect((await stopAgentProcess('agent-a')).ok).toBe(true)
     running.value = false
     vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockClear()

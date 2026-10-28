@@ -259,7 +259,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     )
 
     // Kanban: open and urgent/high card counts per assignee
-    const kanbanRows = getOpenKanbanCountsByAssignee()
+    const kanbanRows = await getOpenKanbanCountsByAssignee()
     const kanbanMap = new Map<string, { open: number; urgent: number }>()
     for (const row of kanbanRows) {
       if (!row.assignee) continue
@@ -287,7 +287,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
     const schedFreqMap = new Map<string, number>()
     try {
-      for (const task of listScheduledTasks()) {
+      for (const task of await listScheduledTasks()) {
         if (!task.enabled) continue
         const freq = cronFreqPerDay(task.schedule)
         schedFreqMap.set(task.agent, (schedFreqMap.get(task.agent) ?? 0) + freq)

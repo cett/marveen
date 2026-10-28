@@ -469,8 +469,8 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
   })
   it('schedules: the owner of the task a name addresses, and the agent of a new one', async () => {
     const task = { prompt: 'p', description: 'd', schedule: '* * * * *', type: 'task' as const, enabled: true, tenant_id: null, skip_if_busy: false, force_send: false }
-    upsertSchedule('task-own', { ...task, agent: 'agent-a' })
-    upsertSchedule('task-foreign', { ...task, agent: 'agent-b' })
+    await upsertSchedule('task-own', { ...task, agent: 'agent-a' })
+    await upsertSchedule('task-foreign', { ...task, agent: 'agent-b' })
     await observe(fleetAuth('agent-a'), 'PUT', '/api/schedules/task-own')
     await observe(fleetAuth('agent-a'), 'DELETE', '/api/schedules/task-foreign')
     await observe(fleetAuth('agent-a'), 'GET', '/api/schedules/tick-status')

@@ -301,7 +301,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       // trail, never credential material. Fire-and-forget: the reset must
       // succeed with or without a wired channel (notifySecurityEvent is
       // silent when none is configured).
-      logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
+      await logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
       logger.warn({ username: user.username }, 'break-glass password reset via bearer token')
       void notifySecurityEvent(`🔑 Break-glass jelszó-reset a dashboardon: "${user.username}" jelszavát a hozzáférési tokennel állították át. Ha nem te voltál, futtasd: npm run dashboard-user -- security:reset`)
     }
@@ -431,7 +431,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         logger.error({ err, id, installId: key.installId }, 'device key revoked but authorized_keys removal failed')
         sshRemoved = false
       }
-      logConfigChange('security.bridge_revoke', null, `${key.name} (${key.installId}) ssh_removed=${sshRemoved}${sshDirOverride() ? ' sshdir_override=1' : ''}`, auth!.kind)
+      await logConfigChange('security.bridge_revoke', null, `${key.name} (${key.installId}) ssh_removed=${sshRemoved}${sshDirOverride() ? ' sshdir_override=1' : ''}`, auth!.kind)
     }
     logger.info({ id, name: key.name, installId: key.installId ?? undefined, sshRemoved }, 'device key revoked')
     json(res, { ok: true, ...(key.installId ? { ssh_removed: sshRemoved } : {}) })

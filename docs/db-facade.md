@@ -61,10 +61,10 @@ use the synchronous twins of a migrated module, kept on the raw connection. The 
 | `migrateVaultBindingsFromFile` | `db/vault-bindings.ts` |
 | `importAgentSettingsFromFile` (takes a synchronous `resolveAgentOwningTenantId` callback) | `db/agent-settings.ts` |
 | `enrollDashboardApiTokenSync` (the file token is enrolled before `startWebServer` listens; it cannot await) | `db/api-tokens.ts`, called from `web/token-bootstrap.ts` |
+| `migrateScheduleLastRunFromFile` (the one-time import of the last-run file; it stays on the raw handle when the module goes async) | `db/tasks.ts` |
 
-The table lists the twins only, not every boot-time migrator: `migrateFederationConfigFromFile` and
-`migrateScheduleLastRunFromFile` belong to modules that are still entirely synchronous, so they are not twins of
-anything yet.
+The table lists the twins only, not every boot-time migrator: `migrateFederationConfigFromFile` belongs to a module
+that is still entirely synchronous, so it is not a twin of anything yet.
 
 The rule: **a twin is called from the boot chain (`src/db/index.ts`, or the bootstrap helper that `startWebServer` calls) and from nowhere else.** A caller anywhere else would run on
 the raw connection beside the facade's transaction lock, which is what the facade exists to prevent, and which
@@ -168,6 +168,24 @@ were replaced: `consumeApproval` and `claimApproval` run in the default (deferre
 journal and the `created_deduplicated` event are best-effort and run AFTER the transaction, with the write awaited
 INSIDE the `try`: a started-but-not-awaited write rejects outside the `catch` as an unhandled rejection.
 
+**Schedules and the skill files (sequences that span `await`s).** A schedule is read, merged, written to the database
+and mirrored into `SKILL.md` and `task-config.json` as one step, and the old synchronous db made that step
+uninterruptible. With the async facade every `await` lets a second caller start, so two edits of one schedule would
+both read the old row (the later write drops the earlier change) and the mirror files could hold the older content.
+`src/web/keyed-serializer.ts` restores the guarantee inside the process: a per-key FIFO on the `AsyncLock` of the
+transaction layer, re-entrant through an `AsyncLocalStorage` (code that already holds a key takes it again without
+waiting for itself), and a failing caller rejects for itself only. It is used in four places:
+`writeScheduledTask` (key = schedule name, through `src/web/schedule-lock.ts`); the activate, edit (PUT), toggle and
+delete routes of `src/web/routes/schedules.ts`, which hold the same key for their whole decision (read, hash and
+review check, write, mirror), so an edit that arrives between the hash check of an activation and the activation
+itself waits; the create and reconcile of the tenant starter task (key = starter task name, so a double click ends in
+one create and one reconcile); and the five writers and the two removers of `src/web/skill-regen.ts`, which share one queue
+(`serialized`), so a bulk regen that read its rows before a dashboard edit cannot write them after the single regen of
+that edit, and a single regen that read a row cannot write the file back after the delete removed it. `activateSchedule` and `patchSchedule` write only the columns they own and take "the row exists" from the
+match count of their own `UPDATE`: two overlapping patches of different columns both survive, a delete in between gives
+`null` (the routes answer 404) and nothing is re-created. The edit and toggle routes re-read the row under the lock and
+never create one: before, a schedule deleted between the check and the write came back as a fresh row.
+
 ## What holds an `await`
 
 Three kinds of guard exist, and a statement about an `await` must say which one holds it:
@@ -218,13 +236,19 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   (it should be 409). Only the first user becomes the global admin (one statement), so this is a status code issue.
 - **The PUT import route** answers 500 when a concurrent request deletes a row between the import's read and its
   write (an old window that was kept, not widened by the facade).
-- **The kanban create, update and delete audit entries are written after the commit.** `createKanbanCard`,
-  `updateKanbanCard` and `deleteKanbanCard` commit the card rows first and write the `agent_audit_log` entry
-  afterwards, delayed at most by the facade lock wait (an `await` inside the synchronous better-sqlite3 transaction
-  would end it early). The entry is best effort: a crash between the commit and the write, or a failing audit insert,
-  loses the entry and never undoes the card change. A delete writes an entry only when a row was deleted, and two
-  overlapping deletes of one card produce one entry (the second finds no card). When kanban moves onto the facade,
-  the rows and the entry join one `dbx.tx`.
+- **The audit entries of a single kanban card create and update are written after the commit.** `createKanbanCard`
+  and `updateKanbanCard` commit the card rows first and write the `agent_audit_log` entry afterwards, delayed at most
+  by the facade lock wait. The entry is best effort: a crash between the commit and the write, or a failing audit
+  insert, loses the entry and never undoes the card change. The multi-row writes do not have this window: a card
+  delete, the auto-breakdown subtasks and an idea promotion write their entries inside the transaction, each in its
+  own savepoint, so a failing audit is logged and rolls back only itself and the card change stays. A delete writes an
+  entry only when a row was deleted, and two overlapping deletes of one card produce one entry (the second finds no
+  card).
+- **The scheduler's "waiting" mark applies to any non-archived kanban card, not only to `in_progress`.**
+  `markScheduledTaskKanbanWaiting` moves the first non-archived card whose title matches a timed-out task to `waiting`,
+  as it did before the facade, whatever its status (a `done` card included). The move is a compare-and-set on the
+  status it read, so a card that left that status meanwhile is left alone. Restricting the mark to `in_progress` is a
+  behaviour change, kept out of the facade wave on purpose (candidate for PostgreSQL phase 2).
 - **The token shadow counter's daily row count is decided on a fresh read of `dayState.known` after each key lookup.**
   `recordTokenShadow` awaits the key lookup, so k overlapping first records of the same new shape all arrive with
   `known` empty; counting after the `await` without a second look made every one of them count a row while the table got
@@ -243,6 +267,32 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   `length`) but no test. The `await`s of the channel-bindings routes (`src/web/routes/admin-b2b.ts`) are pinned by
   `admin-channel-bindings.test.ts`, which asserts the response bodies.
 - **A `sweepExpiredSessions` or other timer body without its `catch`** is not noticed by a test (see above).
+- **The schedule lock and the skill-file queue are per process.** They keep the callers of ONE dashboard process
+  apart; another process writing the same schedule (a second dashboard, a PostgreSQL pool with several workers) is
+  covered by the database statements only (the single `UPDATE` of `activateSchedule` and `patchSchedule`), not by
+  the mirror files, whose last writer wins. PostgreSQL phase 2 with several processes needs a database-level lock
+  (an advisory lock keyed by the schedule name) in `withScheduleLock`.
+- **The tick timers of the schedule runner are callback boundaries, held by the lint alone.** The tick
+  (`setInterval(() => { void runCheck() })`), the retry timers (`void resubmit(...)`) and the command-task starts
+  (`void runCommandTask(...)`) are fire-and-forget by design: the lint allows `void`, and no test notices a different
+  shape. `runCheck` resets its re-entrancy flag in a `finally`; an error that nothing inside a tick catches ends as an
+  unhandled rejection, as a synchronous throw in the (already asynchronous) tick did before. The skip ledger row
+  (`appendTaskRun(...).catch(log)`) and every statement whose result is not used are held by `no-floating-promises`,
+  not by a test.
+- **The skill-usage dedup is one `INSERT ... WHERE NOT EXISTS`, which holds on SQLite only.** `logSkillUsage`
+  (`src/db/audit.ts`) skips a repeat of the same (agent, skill, session, source) inside 60 s. As a SELECT followed by
+  an INSERT two concurrent calls both wrote a row; as one statement the SQLite connection runs it as a unit, so
+  exactly one wins (`audit-async-writers.test.ts`, five concurrent calls). The dedup is a time window, not a unique
+  key: on PostgreSQL under READ COMMITTED two such statements can still both insert, so phase 2 needs an advisory lock
+  keyed by (agent, skill, session) or a bucketed unique key.
+- **The RBAC decision row is written before a refusal goes out, and the write is best effort.** `runRbacGate`
+  (`src/web/rbac-shadow-log.ts`) takes the decision (`checkPermission`), awaits the `rbac_shadow_log` row and only
+  then lets `applyRbacGate` write the 401/403, so a refusal is recorded before the client sees it (the old hook order;
+  `applyRbacGate`'s hooks are synchronous and cannot await a write). A failed insert or prune is logged and never
+  changes the decision. The cost is that every refused or observed request waits for one insert.
+- **`logToolCall` is held by the types and the lint only.** It writes through `upsertOtelSpan`
+  (`src/db/observability.ts`), which still uses the raw connection inside an `async` function, so a driver-level test
+  (slow or failing `dbx.run`) cannot reach it until that module moves onto `dbx`.
 
 ## Tests
 

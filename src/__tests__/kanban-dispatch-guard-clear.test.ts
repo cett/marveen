@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import type http from 'node:http'
 import {
-  initDatabase, getDb, createTenant, insertApiToken, createKanbanCard, moveKanbanCard, updateKanbanCard,
+  initDatabase, getDb, dbx, createTenant, insertApiToken, createKanbanCard, moveKanbanCard, updateKanbanCard,
   propagateStatus, markScheduledTaskKanbanWaiting, markKanbanCardDispatched, kanbanWriteClearsDispatch,
 } from '../db.js'
 import { updateTenantKanbanCard, insertTenantKanbanCard } from '../db/tenant-scoped.js'
@@ -96,9 +96,9 @@ afterEach(() => {
 })
 
 /** A card that is in_progress and carries the stamp, as after a normal dispatch. */
-function inProgressStamped(id = CARD): void {
-  moveKanbanCard(id, 'in_progress', 0)
-  expect(markKanbanCardDispatched(id)).toBe(true)
+async function inProgressStamped(id = CARD): Promise<void> {
+  await moveKanbanCard(id, 'in_progress', 0)
+  expect(await markKanbanCardDispatched(id)).toBe(true)
   expect(stamp(id)).not.toBeNull()
 }
 
@@ -110,71 +110,71 @@ describe('the rule', () => {
 })
 
 describe('moveKanbanCard clears the stamp when the card leaves in_progress', () => {
-  it.each(['done', 'waiting', 'planned'] as const)('legacy path: in_progress -> %s', (target) => {
-    inProgressStamped()
-    expect(moveKanbanCard(CARD, target, 0)).toBe(true)
+  it.each(['done', 'waiting', 'planned'] as const)('legacy path: in_progress -> %s', async (target) => {
+    await inProgressStamped()
+    expect(await moveKanbanCard(CARD, target, 0)).toBe(true)
     expect(stamp(CARD)).toBeNull()
   })
 
-  it.each(['done', 'waiting', 'planned'] as const)('orderedIds path: in_progress -> %s', (target) => {
-    inProgressStamped()
-    expect(moveKanbanCard(CARD, target, 0, undefined, [OTHER, CARD])).toBe(true)
+  it.each(['done', 'waiting', 'planned'] as const)('orderedIds path: in_progress -> %s', async (target) => {
+    await inProgressStamped()
+    expect(await moveKanbanCard(CARD, target, 0, undefined, [OTHER, CARD])).toBe(true)
     expect(stamp(CARD)).toBeNull()
   })
 
-  it('a card that is already stuck with a stamp outside in_progress heals on its next write', () => {
+  it('a card that is already stuck with a stamp outside in_progress heals on its next write', async () => {
     getDb().prepare("UPDATE kanban_cards SET status = 'waiting', dispatched_at = 1700000000 WHERE id = ?").run(CARD)
-    expect(moveKanbanCard(CARD, 'waiting', 3)).toBe(true) // a pure reorder, same column
+    expect(await moveKanbanCard(CARD, 'waiting', 3)).toBe(true) // a pure reorder, same column
     expect(stamp(CARD)).toBeNull()
   })
 
-  it('the guard works through a compare-and-set move as well', () => {
-    inProgressStamped()
-    expect(moveKanbanCard(CARD, 'done', 0, undefined, undefined, { expectedStatus: 'in_progress' })).toBe(true)
+  it('the guard works through a compare-and-set move as well', async () => {
+    await inProgressStamped()
+    expect(await moveKanbanCard(CARD, 'done', 0, undefined, undefined, { expectedStatus: 'in_progress' })).toBe(true)
     expect(stamp(CARD)).toBeNull()
   })
 
-  it('a REFUSED compare-and-set move writes nothing, so the stamp stays', () => {
-    inProgressStamped()
-    expect(moveKanbanCard(CARD, 'done', 0, undefined, undefined, { expectedStatus: 'waiting' })).toBe(false)
+  it('a REFUSED compare-and-set move writes nothing, so the stamp stays', async () => {
+    await inProgressStamped()
+    expect(await moveKanbanCard(CARD, 'done', 0, undefined, undefined, { expectedStatus: 'waiting' })).toBe(false)
     expect(status(CARD)).toBe('in_progress')
     expect(stamp(CARD)).not.toBeNull()
   })
 
-  it('markScheduledTaskKanbanWaiting (the scheduler parks the card) clears it too', () => {
-    inProgressStamped()
-    expect(markScheduledTaskKanbanWaiting('Card one')).toBe(CARD)
+  it('markScheduledTaskKanbanWaiting (the scheduler parks the card) clears it too', async () => {
+    await inProgressStamped()
+    expect(await markScheduledTaskKanbanWaiting('Card one')).toBe(CARD)
     expect(status(CARD)).toBe('waiting')
     expect(stamp(CARD)).toBeNull()
   })
 })
 
 describe('a write that stays in in_progress keeps the stamp (the once-only guard per stay)', () => {
-  it('a reorder inside in_progress, legacy and orderedIds', () => {
-    inProgressStamped()
+  it('a reorder inside in_progress, legacy and orderedIds', async () => {
+    await inProgressStamped()
     const before = stamp(CARD)
-    expect(moveKanbanCard(CARD, 'in_progress', 7)).toBe(true)
-    expect(moveKanbanCard(CARD, 'in_progress', 1, undefined, [OTHER, CARD])).toBe(true)
+    expect(await moveKanbanCard(CARD, 'in_progress', 7)).toBe(true)
+    expect(await moveKanbanCard(CARD, 'in_progress', 1, undefined, [OTHER, CARD])).toBe(true)
     expect(stamp(CARD)).toBe(before)
   })
 
   it('editing other fields of an in_progress card through the full-card update', async () => {
-    inProgressStamped()
+    await inProgressStamped()
     const before = stamp(CARD)
     expect(await updateKanbanCard(CARD, { title: 'Renamed', priority: 'high' })).toBe(true)
     expect(stamp(CARD)).toBe(before)
   })
 
-  it('a refused move out does not clear it', () => {
-    inProgressStamped()
-    expect(moveKanbanCard('missing-card', 'done', 0)).toBe(false)
+  it('a refused move out does not clear it', async () => {
+    await inProgressStamped()
+    expect(await moveKanbanCard('missing-card', 'done', 0)).toBe(false)
     expect(stamp(CARD)).not.toBeNull()
   })
 })
 
 describe('updateKanbanCard (the full-card PUT) clears it when the final status is not in_progress', () => {
   it.each(['done', 'waiting', 'planned'] as const)('PUT status %s', async (target) => {
-    inProgressStamped()
+    await inProgressStamped()
     expect(await updateKanbanCard(CARD, { status: target })).toBe(true)
     expect(stamp(CARD)).toBeNull()
   })
@@ -193,40 +193,40 @@ describe('propagateStatusForParent (auto status) clears the parent when it becom
     await createKanbanCard({ id: CHILD_2, title: 'Child two', parent_id: PARENT, tenant_id: 'default' })
   })
 
-  it('every child done -> the parent turns done and loses its stamp', () => {
-    inProgressStamped(PARENT)
-    moveKanbanCard(CHILD_1, 'done', 0)
-    moveKanbanCard(CHILD_2, 'done', 0)
-    propagateStatus(CHILD_2)
+  it('every child done -> the parent turns done and loses its stamp', async () => {
+    await inProgressStamped(PARENT)
+    await moveKanbanCard(CHILD_1, 'done', 0)
+    await moveKanbanCard(CHILD_2, 'done', 0)
+    await propagateStatus(CHILD_2)
     expect(status(PARENT)).toBe('done')
     expect(stamp(PARENT)).toBeNull()
   })
 
-  it('a parent that stays in_progress while a child is open keeps its stamp', () => {
-    inProgressStamped(PARENT)
-    moveKanbanCard(CHILD_1, 'done', 0)
-    propagateStatus(CHILD_1)
+  it('a parent that stays in_progress while a child is open keeps its stamp', async () => {
+    await inProgressStamped(PARENT)
+    await moveKanbanCard(CHILD_1, 'done', 0)
+    await propagateStatus(CHILD_1)
     expect(status(PARENT)).toBe('in_progress')
     expect(stamp(PARENT)).not.toBeNull()
   })
 
-  it('a done parent with an old stamp whose child reopens reverts to in_progress with the stamp cleared', () => {
+  it('a done parent with an old stamp whose child reopens reverts to in_progress with the stamp cleared', async () => {
     // Legacy shape: the parent is done but still carries a stamp (written before the clear rule existed).
     getDb().prepare("UPDATE kanban_cards SET status = 'done', dispatched_at = 1700000000 WHERE id = ?").run(PARENT)
-    moveKanbanCard(CHILD_1, 'done', 0)
-    moveKanbanCard(CHILD_2, 'done', 0)
+    await moveKanbanCard(CHILD_1, 'done', 0)
+    await moveKanbanCard(CHILD_2, 'done', 0)
     // Re-open one child; the stale stamp on the parent must not survive the auto-revert.
-    moveKanbanCard(CHILD_2, 'in_progress', 0)
-    propagateStatus(CHILD_2)
+    await moveKanbanCard(CHILD_2, 'in_progress', 0)
+    await propagateStatus(CHILD_2)
     expect(status(PARENT)).toBe('in_progress')
     expect(stamp(PARENT)).toBeNull()
   })
 
-  it('the revert is recorded as an auto event (the stamp change does not swallow the audit row)', () => {
+  it('the revert is recorded as an auto event (the stamp change does not swallow the audit row)', async () => {
     getDb().prepare("UPDATE kanban_cards SET status = 'done', dispatched_at = 1700000000 WHERE id = ?").run(PARENT)
-    moveKanbanCard(CHILD_1, 'done', 0)
-    moveKanbanCard(CHILD_2, 'in_progress', 0)
-    propagateStatus(CHILD_2)
+    await moveKanbanCard(CHILD_1, 'done', 0)
+    await moveKanbanCard(CHILD_2, 'in_progress', 0)
+    await propagateStatus(CHILD_2)
     const ev = getDb().prepare("SELECT from_status, to_status, actor FROM kanban_card_events WHERE card_id = ? AND actor = 'auto'").all(PARENT)
     expect(ev).toEqual([{ from_status: 'done', to_status: 'in_progress', actor: 'auto' }])
   })
@@ -235,14 +235,14 @@ describe('propagateStatusForParent (auto status) clears the parent when it becom
 describe('updateTenantKanbanCard clears it as well', () => {
   it('a tenant-scoped status write out of in_progress', async () => {
     await insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
-    markKanbanCardDispatched('tenant-card')
+    await markKanbanCardDispatched('tenant-card')
     expect(await updateTenantKanbanCard('tenant-x', 'tenant-card', { status: 'done' })).toBe(true)
     expect(stamp('tenant-card')).toBeNull()
   })
 
   it('a title-only patch or a write that stays in_progress keeps it', async () => {
     await insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
-    markKanbanCardDispatched('tenant-card')
+    await markKanbanCardDispatched('tenant-card')
     const before = stamp('tenant-card')
     await updateTenantKanbanCard('tenant-x', 'tenant-card', { title: 'Renamed' })
     await updateTenantKanbanCard('tenant-x', 'tenant-card', { status: 'in_progress' })
@@ -251,7 +251,7 @@ describe('updateTenantKanbanCard clears it as well', () => {
 
   it("a write for another tenant's id changes nothing", async () => {
     await insertTenantKanbanCard('tenant-x', 'tenant-card', 'Tenant card', 'in_progress')
-    markKanbanCardDispatched('tenant-card')
+    await markKanbanCardDispatched('tenant-card')
     expect(await updateTenantKanbanCard('default', 'tenant-card', { status: 'done' })).toBe(false)
     expect(stamp('tenant-card')).not.toBeNull()
   })
@@ -277,6 +277,30 @@ describe('the route: leave and come back wakes the assignee again, once per stay
     expect(sentMessages()).toBe(2)
   })
 
+  it('a dispatcher whose read of the card is stale (the other one claimed meanwhile) sends nothing: the claim is the guard', async () => {
+    // The state after the winning dispatcher: in_progress and stamped. This dispatcher read the card BEFORE that
+    // stamp, which the stale read below reproduces deterministically (a real overlap only hits the window by timing).
+    await inProgressStamped()
+    const realGet = dbx.get.bind(dbx) as (sql: string, ...a: unknown[]) => Promise<unknown>
+    vi.spyOn(dbx, 'get').mockImplementation((async (sql: string, ...a: unknown[]) => {
+      const row = await realGet(sql, ...a)
+      return row && /FROM kanban_cards WHERE id = \?/.test(sql) ? { ...(row as object), dispatched_at: null } : row
+    }) as never)
+    expect((await move(CARD, { status: 'in_progress', actor: 'agent-a' })).status).toBe(200)
+    expect(sentMessages()).toBe(0)
+  })
+
+  it('two overlapping moves into in_progress send exactly one assignment', async () => {
+    const auth = await admin()
+    const results = await Promise.all([
+      callAs(auth, 'POST', `/api/kanban/${CARD}/move`, { status: 'in_progress', actor: 'agent-a' }),
+      callAs(auth, 'POST', `/api/kanban/${CARD}/move`, { status: 'in_progress', actor: 'agent-a' }),
+    ])
+    expect(results.map((r) => r.status)).toEqual([200, 200])
+    expect(sentMessages()).toBe(1)
+    expect(stamp(CARD)).not.toBeNull()
+  })
+
   it('staying in in_progress (a reorder) wakes nobody a second time', async () => {
     await move(CARD, { status: 'in_progress', actor: 'agent-a' })
     await move(CARD, { status: 'in_progress', actor: 'agent-a', sort_order: 5 })
@@ -294,7 +318,7 @@ describe('the route: leave and come back wakes the assignee again, once per stay
 
   it('a card the scheduler parked in waiting is dispatched again when it returns', async () => {
     await move(CARD, { status: 'in_progress', actor: 'agent-a' })
-    markScheduledTaskKanbanWaiting('Card one')
+    await markScheduledTaskKanbanWaiting('Card one')
     await move(CARD, { status: 'in_progress', actor: 'agent-a' })
     expect(sentMessages()).toBe(2)
   })

@@ -92,8 +92,8 @@ beforeEach(async () => {
   await createKanbanCard({ id: CARD, title: HOSTILE_TITLE, description: HOSTILE_DESC, assignee: 'alpha', priority: 'urgent', tenant_id: 'default' })
   await createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', description: 'default text', assignee: 'beta', tenant_id: 'default' })
   await createKanbanCard({ id: ACME_CARD, title: 'Acme card', description: 'secret acme text', assignee: 'beta', tenant_id: 'acme' })
-  createLabel({ id: 'lbl-default', name: 'default-label', color: '#10b981', tenant_id: 'default' })
-  addLabelToCard(DEFAULT_CARD, 'lbl-default')
+  await createLabel({ id: 'lbl-default', name: 'default-label', color: '#10b981', tenant_id: 'default' })
+  await addLabelToCard(DEFAULT_CARD, 'lbl-default')
 })
 
 describe('the dispatch message does not carry the card text', () => {

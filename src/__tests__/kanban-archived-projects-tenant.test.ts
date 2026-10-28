@@ -74,12 +74,12 @@ beforeEach(async () => {
   await createKanbanCard({ id: 'acme-arch', title: 'Acme archived', project: 'proj-acme', tenant_id: 'acme' })
   await createKanbanCard({ id: 'def-live', title: 'Default live', project: 'proj-default-live', tenant_id: 'default' })
   await createKanbanCard({ id: 'acme-live', title: 'Acme live', project: 'proj-acme-live', tenant_id: 'acme' })
-  archiveKanbanCard('def-arch')
-  archiveKanbanCard('acme-arch')
-  createLabel({ id: 'lbl-shared-name-acme', name: 'urgent', color: '#3b82f6', tenant_id: 'acme' })
-  createLabel({ id: 'lbl-shared-name-def', name: 'urgent', color: '#3b82f6', tenant_id: 'default' })
-  addLabelToCard('acme-arch', 'lbl-shared-name-acme')
-  addLabelToCard('def-arch', 'lbl-shared-name-def')
+  await archiveKanbanCard('def-arch')
+  await archiveKanbanCard('acme-arch')
+  await createLabel({ id: 'lbl-shared-name-acme', name: 'urgent', color: '#3b82f6', tenant_id: 'acme' })
+  await createLabel({ id: 'lbl-shared-name-def', name: 'urgent', color: '#3b82f6', tenant_id: 'default' })
+  await addLabelToCard('acme-arch', 'lbl-shared-name-acme')
+  await addLabelToCard('def-arch', 'lbl-shared-name-def')
 })
 
 describe('GET /api/kanban/archived', () => {

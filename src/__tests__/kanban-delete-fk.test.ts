@@ -30,7 +30,7 @@ describe('deleteKanbanCard transactional FK safety', () => {
     await createKanbanCard({ id: 'card-a', title: 'Solo card' })
     const deleted = await deleteKanbanCard('card-a')
     expect(deleted).toBe(true)
-    expect(getKanbanCard('card-a')).toBeUndefined()
+    expect(await getKanbanCard('card-a')).toBeUndefined()
   })
 
   it('returns false when the card does not exist', async () => {
@@ -40,14 +40,14 @@ describe('deleteKanbanCard transactional FK safety', () => {
 
   it('deletes comments together with the card', async () => {
     await createKanbanCard({ id: 'card-b', title: 'Card with comments' })
-    addKanbanComment('card-b', 'author', 'first comment')
-    addKanbanComment('card-b', 'author', 'second comment')
+    await addKanbanComment('card-b', 'author', 'first comment')
+    await addKanbanComment('card-b', 'author', 'second comment')
 
     const deleted = await deleteKanbanCard('card-b')
     expect(deleted).toBe(true)
-    expect(getKanbanCard('card-b')).toBeUndefined()
+    expect(await getKanbanCard('card-b')).toBeUndefined()
     // Comments must be gone too, not left as orphans.
-    expect(getKanbanComments('card-b')).toHaveLength(0)
+    expect(await getKanbanComments('card-b')).toHaveLength(0)
   })
 
   it('nullifies parent_id on children instead of leaving dangling references', async () => {
@@ -58,11 +58,11 @@ describe('deleteKanbanCard transactional FK safety', () => {
 
     const deleted = await deleteKanbanCard('parent-1')
     expect(deleted).toBe(true)
-    expect(getKanbanCard('parent-1')).toBeUndefined()
+    expect(await getKanbanCard('parent-1')).toBeUndefined()
 
     // Children must still exist as root-level cards (parent_id = NULL).
-    const childA = getKanbanCard('child-1')
-    const childB = getKanbanCard('child-2')
+    const childA = await getKanbanCard('child-1')
+    const childB = await getKanbanCard('child-2')
     expect(childA).toBeDefined()
     expect(childA!.parent_id).toBeNull()
     expect(childB).toBeDefined()

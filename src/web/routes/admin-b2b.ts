@@ -574,7 +574,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const row = setTenantAgentAvailability(tenantId, sanitizedAgentId, enabled)
     await auditAdmin(ctx, 'admin.agent_availability.set', `${tenantId}/${agentId}`, { enabled })
     // Tenant skills are generated under the single-tenant agents only: follow the matrix, for every tenant the agent serves.
-    try { regenTenantSkillFilesForAgentChange(sanitizedAgentId, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant skill files could not be reconciled after an availability change') }
+    try { await regenTenantSkillFilesForAgentChange(sanitizedAgentId, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant skill files could not be reconciled after an availability change') }
     // The tenant's starter task follows the agent behind it; a failure here never fails the PUT.
     try { await reconcileStarterPack(ctx, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant starter task could not be reconciled after an availability change') }
     // A tenant created without an agent is owed its starter task: this is the moment an agent may have become available.

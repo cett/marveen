@@ -34,12 +34,12 @@ vi.mock('../config.js', async (importOriginal) => {
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: join(FAKE_PROJECT, 'agents'), listAgentNames: () => ['ann'] }))
 vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } }))
 vi.mock('../db.js', () => ({
-  getSkill: vi.fn((id: string) => store.get(id)),
-  listAllSkills: vi.fn(() => [...store.values()]),
-  listSkillAccess: vi.fn((id: string) => (grants.get(id) ?? []).map(t => ({ skill_id: id, tenant_id: t }))),
+  getSkill: vi.fn((id: string) => Promise.resolve(store.get(id))),
+  listAllSkills: vi.fn(() => Promise.resolve([...store.values()])),
+  listSkillAccess: vi.fn((id: string) => Promise.resolve((grants.get(id) ?? []).map(t => ({ skill_id: id, tenant_id: t })))),
   getEnabledAgentsForTenant: vi.fn((t: string) => avail.get(t) ?? []),
   getTenantsForAgent: vi.fn((a: string) => [...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t)),
-  listSkillFiles: vi.fn((id: string) => files.get(id) ?? []),
+  listSkillFiles: vi.fn((id: string) => Promise.resolve(files.get(id) ?? [])),
   seedSkillFileIfAbsent: vi.fn(),
 }))
 
@@ -57,53 +57,53 @@ beforeEach(() => {
 })
 
 describe('findSkillFileGaps', () => {
-  it('is empty for an empty DB', () => {
-    expect(findSkillFileGaps()).toEqual({ skillFiles: [], companionFiles: [], tenantCopies: [] })
+  it('is empty for an empty DB', async () => {
+    expect(await findSkillFileGaps()).toEqual({ skillFiles: [], companionFiles: [], tenantCopies: [] })
   })
 
-  it('reports a fleet skill, its companion file and a tenant copy that are all missing (fresh restore)', () => {
+  it('reports a fleet skill, its companion file and a tenant copy that are all missing (fresh restore)', async () => {
     row('global/demo')
     files.set('global/demo', [{ rel_path: 'scripts/run.sh', content: Buffer.from('x'), mode: 0o755 }])
     row('acme-t', 'acme'); avail.set('acme', ['ann'])
-    expect(findSkillFileGaps()).toEqual({
+    expect(await findSkillFileGaps()).toEqual({
       skillFiles: ['global/demo'],
       companionFiles: ['global/demo:scripts/run.sh'],
       tenantCopies: ['acme-t@ann'],
     })
   })
 
-  it('reports only the companion file when SKILL.md is there but the companion is not', () => {
+  it('reports only the companion file when SKILL.md is there but the companion is not', async () => {
     row('global/demo')
     files.set('global/demo', [{ rel_path: 'references/a.md', content: Buffer.from('x'), mode: 0o644 }])
     mkdirSync(globalDir('demo'), { recursive: true })
     writeFileSync(join(globalDir('demo'), 'SKILL.md'), 'anything')
-    expect(findSkillFileGaps()).toEqual({ skillFiles: [], companionFiles: ['global/demo:references/a.md'], tenantCopies: [] })
+    expect(await findSkillFileGaps()).toEqual({ skillFiles: [], companionFiles: ['global/demo:references/a.md'], tenantCopies: [] })
   })
 
-  it('reports an unsafe companion path as missing instead of probing outside the skill dir', () => {
+  it('reports an unsafe companion path as missing instead of probing outside the skill dir', async () => {
     row('global/demo')
     files.set('global/demo', [{ rel_path: '../escape', content: Buffer.from('x'), mode: 0o644 }])
     mkdirSync(globalDir('demo'), { recursive: true })
     writeFileSync(join(globalDir('demo'), 'SKILL.md'), 'anything')
-    expect(findSkillFileGaps().companionFiles).toEqual(['global/demo:../escape'])
+    expect((await findSkillFileGaps()).companionFiles).toEqual(['global/demo:../escape'])
   })
 
-  it('is empty again after the regen has written everything', () => {
+  it('is empty again after the regen has written everything', async () => {
     row('global/demo')
     files.set('global/demo', [{ rel_path: 'scripts/run.sh', content: Buffer.from('x'), mode: 0o755 }])
     row('acme-t', 'acme'); avail.set('acme', ['ann'])
-    expect(regenSkillFilesFromSQL().errors).toBe(0)
-    expect(findSkillFileGaps()).toEqual({ skillFiles: [], companionFiles: [], tenantCopies: [] })
+    expect((await regenSkillFilesFromSQL()).errors).toBe(0)
+    expect(await findSkillFileGaps()).toEqual({ skillFiles: [], companionFiles: [], tenantCopies: [] })
   })
 
-  it('does not count a tenant with no agent (DB-only by design)', () => {
+  it('does not count a tenant with no agent (DB-only by design)', async () => {
     row('acme-t', 'acme')
-    expect(findSkillFileGaps().tenantCopies).toEqual([])
+    expect((await findSkillFileGaps()).tenantCopies).toEqual([])
   })
 
-  it('does not write anything', () => {
+  it('does not write anything', async () => {
     row('global/demo')
-    findSkillFileGaps()
+    await findSkillFileGaps()
     expect(existsSync(globalDir('demo'))).toBe(false)
   })
 })

@@ -67,9 +67,9 @@ beforeEach(async () => {
     await insertApiToken({ tokenHash: sha(`tok-${agent}`), name: `fleet:${agent}`, role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: agent })
   }
   await insertApiToken({ tokenHash: sha('tok-admin'), name: 'operator', role: 'admin', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: null })
-  createSkill({ id: 'agent/alpha/mine', name: 'mine', content: 'old', tenant_id: 'fleet' })
-  createSkill({ id: 'agent/beta/theirs', name: 'theirs', content: 'old', tenant_id: 'fleet' })
-  createSkill({ id: 'global/shared', name: 'shared', content: 'old', tenant_id: 'fleet', is_global: true })
+  await createSkill({ id: 'agent/alpha/mine', name: 'mine', content: 'old', tenant_id: 'fleet' })
+  await createSkill({ id: 'agent/beta/theirs', name: 'theirs', content: 'old', tenant_id: 'fleet' })
+  await createSkill({ id: 'global/shared', name: 'shared', content: 'old', tenant_id: 'fleet', is_global: true })
 })
 
 describe('the endpoint table', () => {
@@ -83,7 +83,7 @@ describe('the endpoint table', () => {
       const r = await callAs(session(role, 'default'), { kind: 'skill', skill_id: 'agent/alpha/mine', content: 'x' })
       expect([role, r.status]).toEqual([role, 403])
     }
-    expect(getSkill('agent/alpha/mine')!.content).toBe('old')
+    expect((await getSkill('agent/alpha/mine'))!.content).toBe('old')
   })
 })
 
@@ -92,20 +92,20 @@ describe('a fleet_agent token writes back the skills of its own agent', () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'skill', skill_id: 'agent/alpha/mine', content: 'edited' })
     expect(r.status).toBe(200)
     expect(r.body).toEqual({ ok: true, message: 'upserted agent/alpha/mine' })
-    expect(getSkill('agent/alpha/mine')!.content).toBe('edited')
+    expect((await getSkill('agent/alpha/mine'))!.content).toBe('edited')
     expect(shadowRows()).toEqual([])
   })
 
   it('a new skill of its own agent is created as a fleet row', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'skill', skill_id: 'agent/alpha/fresh', content: 'new' })
     expect(r.status).toBe(200)
-    expect(getSkill('agent/alpha/fresh')).toMatchObject({ tenant_id: 'fleet', is_global: 0, content: 'new' })
+    expect(await getSkill('agent/alpha/fresh')).toMatchObject({ tenant_id: 'fleet', is_global: 0, content: 'new' })
   })
 
   it('a companion file of its own skill: stored', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'companion', skill_id: 'agent/alpha/mine', rel_path: 'scripts/run.sh', content_base64: b64('#!/bin/sh\n'), mode: 0o755 })
     expect(r.status).toBe(200)
-    expect(getSkillFile('agent/alpha/mine', 'scripts/run.sh')).toMatchObject({ mode: 0o755 })
+    expect(await getSkillFile('agent/alpha/mine', 'scripts/run.sh')).toMatchObject({ mode: 0o755 })
   })
 })
 
@@ -113,20 +113,20 @@ describe('and nothing else: another agent\'s skill, a global one, a tenant one s
   it('SKILL.md of another agent', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'skill', skill_id: 'agent/beta/theirs', content: 'evil' })
     expect(r.status).toBe(403)
-    expect(getSkill('agent/beta/theirs')!.content).toBe('old')
+    expect((await getSkill('agent/beta/theirs'))!.content).toBe('old')
     expect(shadowRows()).toEqual([{ category: 'fleet_skill_write_denied', caller: 'alpha', target: 'beta' }])
   })
 
   it('a new skill under another agent\'s name is not created either', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'skill', skill_id: 'agent/beta/planted', content: 'evil' })
     expect(r.status).toBe(403)
-    expect(getSkill('agent/beta/planted')).toBeUndefined()
+    expect(await getSkill('agent/beta/planted')).toBeUndefined()
   })
 
   it('a global skill', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'skill', skill_id: 'global/shared', content: 'evil' })
     expect(r.status).toBe(403)
-    expect(getSkill('global/shared')!.content).toBe('old')
+    expect((await getSkill('global/shared'))!.content).toBe('old')
     expect(shadowRows()).toEqual([{ category: 'fleet_skill_write_denied', caller: 'alpha', target: 'global' }])
   })
 
@@ -135,30 +135,30 @@ describe('and nothing else: another agent\'s skill, a global one, a tenant one s
       const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'skill', skill_id, content: 'evil' })
       expect([skill_id, r.status]).toEqual([skill_id, 403])
     }
-    expect(getSkill('agent/beta/theirs')!.content).toBe('old')
+    expect((await getSkill('agent/beta/theirs'))!.content).toBe('old')
   })
 
   it('a companion file of another agent\'s or a global skill', async () => {
     for (const skill_id of ['agent/beta/theirs', 'global/shared']) {
       const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'companion', skill_id, rel_path: 'scripts/x.sh', content_base64: b64('evil') })
       expect([skill_id, r.status]).toEqual([skill_id, 403])
-      expect(getSkillFile(skill_id, 'scripts/x.sh')).toBeUndefined()
+      expect(await getSkillFile(skill_id, 'scripts/x.sh')).toBeUndefined()
     }
   })
 
   it('a generated tenant copy: the tenant row stays as it was, even for an agent that qualifies for the tenant', async () => {
     createTenant('co-x', 'Co X')
-    createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' })
+    await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' })
     setTenantAgentAvailability('co-x', 'alpha', true)
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'tenant', header_id: 'co-x-helper', agent_id: 'alpha', dir_name: 'co-x-helper', content: 'evil' })
     expect(r.status).toBe(403)
-    expect(getSkill('co-x-helper')!.content).toBe('old')
+    expect((await getSkill('co-x-helper'))!.content).toBe('old')
   })
 
   it('a tenant companion of its own skill id (tenant_agent set) is refused as a tenant-level write', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'companion', skill_id: 'agent/alpha/mine', rel_path: 'a.txt', content_base64: b64('x'), tenant_agent: 'alpha' })
     expect(r.status).toBe(403)
-    expect(getSkillFile('agent/alpha/mine', 'a.txt')).toBeUndefined()
+    expect(await getSkillFile('agent/alpha/mine', 'a.txt')).toBeUndefined()
   })
 })
 
@@ -166,8 +166,8 @@ describe('the admin keeps the whole endpoint', () => {
   it('the operator token writes any skill and a tenant copy as before', async () => {
     expect((await callAs(await tokenAuth('tok-admin'), { kind: 'skill', skill_id: 'agent/beta/theirs', content: 'by admin' })).status).toBe(200)
     expect((await callAs(await tokenAuth('tok-admin'), { kind: 'skill', skill_id: 'global/shared', content: 'by admin' })).status).toBe(200)
-    expect(getSkill('agent/beta/theirs')!.content).toBe('by admin')
-    expect(getSkill('global/shared')!.content).toBe('by admin')
+    expect((await getSkill('agent/beta/theirs'))!.content).toBe('by admin')
+    expect((await getSkill('global/shared'))!.content).toBe('by admin')
     expect(shadowRows()).toEqual([])
   })
   it('an admin session too', async () => {

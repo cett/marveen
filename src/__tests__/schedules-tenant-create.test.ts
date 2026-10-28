@@ -89,7 +89,7 @@ async function call(method: string, path: string, body?: object, caller: Caller 
 
 const base = { description: 'd', prompt: 'p', schedule: '0 9 * * *', enabled: true, skip_if_busy: false, force_send: false }
 const create = (name: string, extra: object = {}) => ({ name, prompt: 'p', schedule: '0 9 * * *', ...extra })
-const tenantOf = (name: string) => dbMod.getScheduleFromDb(name)?.tenant_id
+const tenantOf = async (name: string) => (await dbMod.getScheduleFromDb(name))?.tenant_id
 const setContext = (agent: string, tenant: string, status: string, ageSeconds = 0) =>
   dbMod.getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)')
     .run(agent, tenant, status, Math.floor(Date.now() / 1000) - ageSeconds)
@@ -98,11 +98,11 @@ describe('migration 0066', () => {
   const sql = readFileSync(join(ROOT, 'src', 'migrations', '0066_schedules_tenant_default.sql'), 'utf-8')
   const rows = () => dbMod.getDb().prepare('SELECT id, tenant_id FROM schedules ORDER BY id').all()
 
-  it('gives every tenant-less schedule the default tenant, leaves the others, and is idempotent', () => {
-    dbMod.upsertSchedule('a-null', { ...base, agent: 'main-agent', type: 'task', tenant_id: null })
-    dbMod.upsertSchedule('b-null', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: null })
-    dbMod.upsertSchedule('c-tenant', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b' })
-    dbMod.upsertSchedule('d-default', { ...base, agent: 'main-agent', type: 'task', tenant_id: 'default' })
+  it('gives every tenant-less schedule the default tenant, leaves the others, and is idempotent', async () => {
+    await dbMod.upsertSchedule('a-null', { ...base, agent: 'main-agent', type: 'task', tenant_id: null })
+    await dbMod.upsertSchedule('b-null', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: null })
+    await dbMod.upsertSchedule('c-tenant', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b' })
+    await dbMod.upsertSchedule('d-default', { ...base, agent: 'main-agent', type: 'task', tenant_id: 'default' })
 
     dbMod.getDb().exec(sql)
     const once = rows()
@@ -117,27 +117,27 @@ describe('migration 0066', () => {
 
 describe('a stored NULL tenant (before the migration) reads as the default tenant', () => {
   it('rowToTask, the default tenant list and the item routes all agree', async () => {
-    dbMod.upsertSchedule('legacy', { ...base, agent: 'main-agent', type: 'task', tenant_id: null, status: 'live' })
-    expect(io.rowToTask(dbMod.getScheduleFromDb('legacy')!).tenantId).toBe('default')
-    expect(dbMod.listSchedulesFromDb({ tenantId: 'default' }).map(r => r.id)).toEqual(['legacy'])
-    expect(dbMod.listSchedulesFromDb({ tenantId: 'tenant-b' })).toEqual([])
+    await dbMod.upsertSchedule('legacy', { ...base, agent: 'main-agent', type: 'task', tenant_id: null, status: 'live' })
+    expect(io.rowToTask((await dbMod.getScheduleFromDb('legacy'))!).tenantId).toBe('default')
+    expect((await dbMod.listSchedulesFromDb({ tenantId: 'default' })).map(r => r.id)).toEqual(['legacy'])
+    expect(await dbMod.listSchedulesFromDb({ tenantId: 'tenant-b' })).toEqual([])
     // The default tenant's tasks are written by admins only; a tenant caller sees them as not found.
     expect((await call('PUT', '/api/schedules/legacy', { description: 'x' }, 'human')).status).toBe(200)
     expect((await call('PUT', '/api/schedules/legacy', { description: 'x' }, { tenant: 'default' })).status).toBe(403)
     expect((await call('PUT', '/api/schedules/legacy', { description: 'y' }, { tenant: 'tenant-b' })).status).toBe(404)
   })
 
-  it('any write, even a toggle, stores the tenant as default instead of NULL', () => {
-    dbMod.upsertSchedule('legacy', { ...base, agent: 'main-agent', type: 'task', tenant_id: null, status: 'live' })
-    io.writeScheduledTask('legacy', { enabled: false })
-    expect(tenantOf('legacy')).toBe('default')
+  it('any write, even a toggle, stores the tenant as default instead of NULL', async () => {
+    await dbMod.upsertSchedule('legacy', { ...base, agent: 'main-agent', type: 'task', tenant_id: null, status: 'live' })
+    await io.writeScheduledTask('legacy', { enabled: false })
+    expect(await tenantOf('legacy')).toBe('default')
     // and an explicit null cannot un-tenant a task either
-    io.writeScheduledTask('legacy', { tenantId: null })
-    expect(tenantOf('legacy')).toBe('default')
+    await io.writeScheduledTask('legacy', { tenantId: null })
+    expect(await tenantOf('legacy')).toBe('default')
   })
 
   it('the list endpoint exposes each task\'s tenant', async () => {
-    dbMod.upsertSchedule('t1', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b' })
+    await dbMod.upsertSchedule('t1', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b' })
     const out = await call('GET', '/api/schedules')
     expect((out.body as unknown as { name: string; tenantId: string }[]).find(r => r.name === 't1')?.tenantId).toBe('tenant-b')
   })
@@ -146,20 +146,20 @@ describe('a stored NULL tenant (before the migration) reads as the default tenan
 describe('POST: which tenant owns the task', () => {
   it('1. an admin names the tenant (human or token)', async () => {
     expect((await call('POST', '/api/schedules', create('p1', { tenant_id: 'tenant-b', agent: 'tenant-agent' }), 'human')).status).toBe(200)
-    expect(tenantOf('p1')).toBe('tenant-b')
+    expect(await tenantOf('p1')).toBe('tenant-b')
     expect((await call('POST', '/api/schedules', create('p2', { tenant_id: 'tenant-b', agent: 'shared-agent' }), 'agent-token')).status).toBe(200)
-    expect(tenantOf('p2')).toBe('tenant-b')
+    expect(await tenantOf('p2')).toBe('tenant-b')
   })
 
   it('2. a non-admin caller always gets its own tenant, whatever it sends', async () => {
     const out = await call('POST', '/api/schedules', create('p3', { tenant_id: 'default', agent: 'tenant-agent' }), { tenant: 'tenant-b' })
     expect(out.status).toBe(200)
-    expect(tenantOf('p3')).toBe('tenant-b')
+    expect(await tenantOf('p3')).toBe('tenant-b')
   })
 
   it('4. a human who names none gets the default tenant, never NULL', async () => {
     expect((await call('POST', '/api/schedules', create('p4'), 'human')).status).toBe(200)
-    expect(tenantOf('p4')).toBe('default')
+    expect(await tenantOf('p4')).toBe('default')
   })
 
   describe('3. an agent on the shared token (X-Agent-Id) gets the tenant of the request it is serving', () => {
@@ -171,13 +171,13 @@ describe('POST: which tenant owns the task', () => {
       const out = await post('s1', 'shared-agent', { agent: 'shared-agent' })
       expect(out.status).toBe(200)
       expect(out.body).toMatchObject({ status: 'draft' })
-      expect(tenantOf('s1')).toBe('tenant-b')
+      expect(await tenantOf('s1')).toBe('tenant-b')
     })
 
     it('a default context (a request from the local operator): the default tenant', async () => {
       setContext('shared-agent', 'default', 'default')
       expect((await post('s2', 'shared-agent', { agent: 'shared-agent' })).status).toBe(200)
-      expect(tenantOf('s2')).toBe('default')
+      expect(await tenantOf('s2')).toBe('default')
     })
 
     it.each([
@@ -196,28 +196,28 @@ describe('POST: which tenant owns the task', () => {
       const out = await post('s3', 'shared-agent', { agent: 'shared-agent' })
       expect(out.status).toBe(400)
       expect(out.body).toMatchObject({ error: 'tenant_required', field: 'tenant_id' })
-      expect(dbMod.getScheduleFromDb('s3')).toBeUndefined()
+      expect(await dbMod.getScheduleFromDb('s3')).toBeUndefined()
     })
 
     it('a single-tenant agent without context falls back to its own tenant', async () => {
       const out = await post('s4', 'tenant-agent', { agent: 'tenant-agent' })
       expect(out.status).toBe(200)
-      expect(tenantOf('s4')).toBe('tenant-b')
+      expect(await tenantOf('s4')).toBe('tenant-b')
       expect((await post('s5', 'fleet-agent', { agent: 'fleet-agent' })).status).toBe(200)
-      expect(tenantOf('s5')).toBe('default')
+      expect(await tenantOf('s5')).toBe('default')
     })
 
     it('an explicit tenant_id wins over the claimed agent\'s context', async () => {
       setContext('shared-agent', 'tenant-b', 'bound')
       expect((await post('s6', 'shared-agent', { agent: 'shared-agent', tenant_id: 'default' })).status).toBe(200)
-      expect(tenantOf('s6')).toBe('default')
+      expect(await tenantOf('s6')).toBe('default')
     })
 
     it('the token with no X-Agent-Id and no tenant_id is refused, not filed under a guess', async () => {
       const out = await post('s7', null)
       expect(out.status).toBe(400)
       expect(out.body).toMatchObject({ error: 'tenant_required' })
-      expect(dbMod.getScheduleFromDb('s7')).toBeUndefined()
+      expect(await dbMod.getScheduleFromDb('s7')).toBeUndefined()
     })
   })
 })
@@ -227,7 +227,7 @@ describe('POST: the (tenant, agent) pair', () => {
     const out = await call('POST', '/api/schedules', create('x1', extra), 'human')
     expect(out.status).toBe(400)
     expect(out.body).toMatchObject({ field })
-    expect(dbMod.getScheduleFromDb('x1')).toBeUndefined()
+    expect(await dbMod.getScheduleFromDb('x1')).toBeUndefined()
     return out
   }
 
@@ -265,26 +265,26 @@ describe('POST: the (tenant, agent) pair', () => {
     ] as const) {
       expect((await call('POST', '/api/schedules', create(name, extra), 'human')).status).toBe(200)
     }
-    expect(dbMod.getScheduleFromDb('ok4')).toMatchObject({ agent: 'main-agent', tenant_id: 'default' })
+    expect(await dbMod.getScheduleFromDb('ok4')).toMatchObject({ agent: 'main-agent', tenant_id: 'default' })
   })
 
   describe('a fleet_agent token that names no agent acts as itself, not the fleet main agent', () => {
     it('is still refused on the default tenant (only an admin may write it, regardless of agent)', async () => {
       const out = await call('POST', '/api/schedules', create('fa1'), { fleetAgent: 'shared-agent' })
       expect(out.status).toBe(403)
-      expect(dbMod.getScheduleFromDb('fa1')).toBeUndefined()
+      expect(await dbMod.getScheduleFromDb('fa1')).toBeUndefined()
     })
 
     it('on a non-default tenant it serves (previously 400 required, since the route fell back to "")', async () => {
       const out = await call('POST', '/api/schedules', create('fa2'), { fleetAgent: 'tenant-agent', tenantId: 'tenant-b' })
       expect(out.status).toBe(200)
-      expect(dbMod.getScheduleFromDb('fa2')).toMatchObject({ agent: 'tenant-agent', tenant_id: 'tenant-b' })
+      expect(await dbMod.getScheduleFromDb('fa2')).toMatchObject({ agent: 'tenant-agent', tenant_id: 'tenant-b' })
     })
 
     it('an explicit agent still wins over the token identity', async () => {
       const out = await call('POST', '/api/schedules', create('fa3', { agent: 'shared-agent' }), { fleetAgent: 'shared-agent', tenantId: 'tenant-b' })
       expect(out.status).toBe(200)
-      expect(dbMod.getScheduleFromDb('fa3')).toMatchObject({ agent: 'shared-agent', tenant_id: 'tenant-b' })
+      expect(await dbMod.getScheduleFromDb('fa3')).toMatchObject({ agent: 'shared-agent', tenant_id: 'tenant-b' })
     })
 
     it('a fleet agent defaulting to itself is still rejected on a tenant it does not serve', async () => {
@@ -296,7 +296,7 @@ describe('POST: the (tenant, agent) pair', () => {
       const out = await call('POST', '/api/schedules', create('fa4'), { fleetAgent: 'tenant-agent', tenantId: 'tenant-c' })
       expect(out.status).toBe(400)
       expect(out.body).toMatchObject({ field: 'agent' })
-      expect(dbMod.getScheduleFromDb('fa4')).toBeUndefined()
+      expect(await dbMod.getScheduleFromDb('fa4')).toBeUndefined()
     })
   })
 })
@@ -312,7 +312,7 @@ describe('file mirror and reseed never produce a tenant-less task', () => {
     expect(JSON.parse(readFileSync(cfgPath('m2'), 'utf-8'))).toMatchObject({ tenantId: 'default' })
   })
 
-  it('an empty table reseeded from the files keeps each task\'s tenant and defaults the rest', () => {
+  it('an empty table reseeded from the files keeps each task\'s tenant and defaults the rest', async () => {
     const put = (name: string, cfg: object) => {
       mkdirSync(join(tmp, '.claude', 'scheduled-tasks', name), { recursive: true })
       writeFileSync(cfgPath(name), JSON.stringify({ schedule: '0 9 * * *', agent: 'main-agent', enabled: true, type: 'command', command: 'true', ...cfg }))
@@ -320,9 +320,9 @@ describe('file mirror and reseed never produce a tenant-less task', () => {
     put('f-named', { tenantId: 'tenant-b', agent: 'tenant-agent' })
     put('f-plain', {})      // a seed task-config without tenantId
     put('f-blank', { tenantId: '  ' })
-    expect(io.seedSchedulesFromFilesIfEmpty()).toBe(3)
-    expect(tenantOf('f-named')).toBe('tenant-b')
-    expect(tenantOf('f-plain')).toBe('default')
-    expect(tenantOf('f-blank')).toBe('default')
+    expect(await io.seedSchedulesFromFilesIfEmpty()).toBe(3)
+    expect(await tenantOf('f-named')).toBe('tenant-b')
+    expect(await tenantOf('f-plain')).toBe('default')
+    expect(await tenantOf('f-blank')).toBe('default')
   })
 })
