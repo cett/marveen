@@ -29,15 +29,16 @@ vi.mock('../web/agent-config.js', () => ({
   listAgentNames: () => [],
 }))
 
-const { getSkillMock, listAllSkillsMock } = vi.hoisted(() => ({
+const { getSkillMock, listAllSkillsMock, listSkillFilesMock } = vi.hoisted(() => ({
   getSkillMock: vi.fn(),
   listAllSkillsMock: vi.fn(),
+  listSkillFilesMock: vi.fn(),
 }))
 vi.mock('../db.js', () => ({
   getSkill: getSkillMock,
   listAllSkills: listAllSkillsMock,
   listSkillAccess: vi.fn().mockResolvedValue([]),
-  listSkillFiles: vi.fn().mockResolvedValue([]),
+  listSkillFiles: listSkillFilesMock,
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
 }))
 vi.mock('../logger.js', () => ({
@@ -68,6 +69,7 @@ describe('skill file writers run one at a time', () => {
   beforeEach(() => {
     getSkillMock.mockReset()
     listAllSkillsMock.mockReset()
+    listSkillFilesMock.mockReset().mockResolvedValue([])
   })
 
   it('a bulk regen that read its rows before an edit cannot overwrite the single regen of that edit', async () => {
@@ -147,5 +149,13 @@ describe('skill file writers run one at a time', () => {
     await Promise.all([a, b])
     expect(reads).toEqual(['first', 'second'])
     expect(onDisk()).toBe(addGeneratedHeader('# second', ID))
+  })
+
+  it('a failing companion file read does not stop the skill file from being written', async () => {
+    getSkillMock.mockResolvedValue(row('# with unreadable companions'))
+    listSkillFilesMock.mockRejectedValue(new Error('db read failed'))
+
+    await expect(regenSingleSkillFile(ID, true)).resolves.toMatchObject({ written: true })
+    expect(onDisk()).toBe(addGeneratedHeader('# with unreadable companions', ID))
   })
 })

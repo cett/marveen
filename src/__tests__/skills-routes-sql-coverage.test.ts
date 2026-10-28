@@ -170,6 +170,8 @@ describe('tryHandleSkills SQL endpoints', () => {
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
       expect(out.body.ok).toBe(true)
+      // The body carries the created row itself (a Promise left in it would serialize as `{}`).
+      expect(out.body.skill).toMatchObject({ id: 'fleet-new', name: 'New', tenant_id: 'fleet' })
       expect(createSkill).toHaveBeenCalled()
     })
 
@@ -179,6 +181,7 @@ describe('tryHandleSkills SQL endpoints', () => {
       const { ctx, out } = makeCtx('POST', '/api/skills/sql', { name: 'TenantSkill', content: '# X', description: 'Desc' }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
+      expect(out.body.skill).toMatchObject({ id: 'acme-skill', name: 'TenantSkill', tenant_id: 'acme' })
       expect(createSkill).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'acme' }))
     })
 
@@ -266,6 +269,7 @@ describe('tryHandleSkills SQL endpoints', () => {
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
       expect(out.body.ok).toBe(true)
+      expect(out.body.skill).toMatchObject({ id: 'fleet-skill', name: 'Updated' })
     })
 
     it('tenant user updates own skill', async () => {

@@ -228,6 +228,12 @@ describe('ensureClaudeUpdateTask', () => {
     expect(await dbMod.getScheduleFromDb('claude-update')).toBeUndefined()
   })
 
+  it('a failing insert is reported and does not settle the marker, so the next start tries again', async () => {
+    dbMod.getDb().exec('DROP TABLE schedules')
+    await expect(mod.ensureClaudeUpdateTask(join(tmp, 'store'), '/opt/marveen', 'main-agent')).rejects.toThrow()
+    expect(existsSync(join(tmp, 'store', 'claude-update.seeded'))).toBe(false)
+  })
+
   it('never overwrites a row the operator already has', async () => {
     await dbMod.upsertSchedule('claude-update', {
       prompt: '', description: 'mine', schedule: '30 5 * * 2', agent: 'someone', type: 'command', enabled: false,

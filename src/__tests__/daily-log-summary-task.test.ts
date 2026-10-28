@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { deleteSchedule, getScheduleFromDb, initDatabase, patchSchedule } from '../db.js'
+import { deleteSchedule, getDb, getScheduleFromDb, initDatabase, patchSchedule } from '../db.js'
 import { DAILY_LOG_SUMMARY_CRON, DAILY_LOG_SUMMARY_TASK, dailyLogSummaryCommand, ensureDailyLogSummaryTask } from '../web/daily-log-summary-task.js'
 
 let store: string
@@ -32,6 +32,12 @@ describe('ensureDailyLogSummaryTask', () => {
     })
     expect(DAILY_LOG_SUMMARY_CRON).toBe('30 22 * * *')
     expect(existsSync(join(store, 'daily-log-summary.seeded'))).toBe(true)
+  })
+
+  it('a failing insert is reported and does not settle the marker, so the next start tries again', async () => {
+    getDb().exec('DROP TABLE schedules')
+    await expect(seed()).rejects.toThrow()
+    expect(existsSync(join(store, 'daily-log-summary.seeded'))).toBe(false)
   })
 
   it('renders the command from the install dir, the port and the agent', () => {
