@@ -44,6 +44,7 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   // for the GET /api/schedules assertions below to see the shape the
   // frontend actually depends on.
   rowToTask:                   (row: { id: string }) => ({ name: row.id, ...row }),
+  isTaskLive:                  (task: { status?: string }) => task.status === undefined || task.status === 'live',
 }))
 
 const mockLoadLastTickMs = vi.fn<() => number | null>().mockReturnValue(null)
@@ -286,5 +287,76 @@ describe('POST /api/schedules/:name/toggle', () => {
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(mockSetScheduleEnabled).toHaveBeenCalledWith('my-report', false) // enabled=1 -> toggles to false
+  })
+
+  // The flip is decided on the row read under the schedule lock, not on the one read before it (two quick clicks
+  // flip it twice), and a row that is gone or moved tenant in between is not written.
+  it('flips the value it re-reads under the lock, not the one read before', async () => {
+    mockGetScheduleDb
+      .mockResolvedValueOnce(tenantRow)                          // the checks before the lock: enabled
+      .mockResolvedValueOnce({ ...tenantRow, enabled: 0 })       // under the lock: a click in between disabled it
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, enabled: true })
+    expect(mockSetScheduleEnabled).toHaveBeenCalledWith('my-report', true)
+  })
+
+  it('answers 404 and writes nothing when the row was deleted after the checks', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce(undefined)
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(mockSetScheduleEnabled).not.toHaveBeenCalled()
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+
+  it('answers 404 and writes nothing when the row moved to another tenant after the checks', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce({ ...tenantRow, tenant_id: 'tenant-b' })
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(mockSetScheduleEnabled).not.toHaveBeenCalled()
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+})
+
+// ── Edit (PUT) under the schedule lock ────────────────────────────────────────
+
+describe('PUT /api/schedules/:name', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('answers 404 and creates nothing when the row was deleted between the checks and the write', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce(undefined)
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-report', { description: 'new' }, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+
+  it('answers 404 and writes nothing when the row moved to another tenant between the checks and the write', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce({ ...tenantRow, tenant_id: 'tenant-b' })
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-report', { description: 'new' }, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+
+  it('writes the edit when the row is unchanged under the lock', async () => {
+    mockGetScheduleDb.mockResolvedValue(tenantRow)
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-report', { description: 'new' }, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(writeScheduledTask)).toHaveBeenCalledWith('my-report', expect.objectContaining({ description: 'new' }))
   })
 })
