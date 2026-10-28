@@ -27,10 +27,6 @@
     "src/intel-store.ts": {
       "prepare": 10,
       "transaction": 1
-    },
-    "src/web/routes/kanban.ts": {
-      "getDb": 1,
-      "transaction": 1
     }
   },
   "notes": {
@@ -41,7 +37,6 @@
     "src/channel-coordinator/ingest.ts": "runs in a separate process (the channel coordinator), not behind the dashboard facade",
     "src/config.ts": "its own short-lived readonly connection: db/connection.ts imports STORE_DIR from config.ts, so importing the db layer would cycle",
     "src/db-migrations.ts": "the migration runner; it opens the schema before the db layer exists",
-    "src/intel-store.ts": "separate connection (intel.db); goes into the db layer in the Phase 1 closure step (plan/1017-phase1-async-facade, 5/4)",
-    "src/web/routes/kanban.ts": "one route-level transaction; move into src/db/kanban.ts in a follow-up"
+    "src/intel-store.ts": "separate connection (intel.db); goes into the db layer in the Phase 1 closure step (plan/1017-phase1-async-facade, 5/4)"
   }
 }

@@ -218,13 +218,14 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   (it should be 409). Only the first user becomes the global admin (one statement), so this is a status code issue.
 - **The PUT import route** answers 500 when a concurrent request deletes a row between the import's read and its
   write (an old window that was kept, not widened by the facade).
-- **The kanban create, update and delete audit entries are written after the commit.** `createKanbanCard`,
-  `updateKanbanCard` and `deleteKanbanCard` commit the card rows first and write the `agent_audit_log` entry
-  afterwards, delayed at most by the facade lock wait (an `await` inside the synchronous better-sqlite3 transaction
-  would end it early). The entry is best effort: a crash between the commit and the write, or a failing audit insert,
-  loses the entry and never undoes the card change. A delete writes an entry only when a row was deleted, and two
-  overlapping deletes of one card produce one entry (the second finds no card). When kanban moves onto the facade,
-  the rows and the entry join one `dbx.tx`.
+- **The audit entries of a single kanban card create and update are written after the commit.** `createKanbanCard`
+  and `updateKanbanCard` commit the card rows first and write the `agent_audit_log` entry afterwards, delayed at most
+  by the facade lock wait. The entry is best effort: a crash between the commit and the write, or a failing audit
+  insert, loses the entry and never undoes the card change. The multi-row writes do not have this window: a card
+  delete, the auto-breakdown subtasks and an idea promotion write their entries inside the transaction, each in its
+  own savepoint, so a failing audit is logged and rolls back only itself and the card change stays. A delete writes an
+  entry only when a row was deleted, and two overlapping deletes of one card produce one entry (the second finds no
+  card).
 - **The token shadow counter's daily row count is decided on a fresh read of `dayState.known` after each key lookup.**
   `recordTokenShadow` awaits the key lookup, so k overlapping first records of the same new shape all arrive with
   `known` empty; counting after the `await` without a second look made every one of them count a row while the table got
