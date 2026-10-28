@@ -40,7 +40,7 @@ describe('RETURNING id replaces lastInsertRowid', () => {
 
   it('addKanbanComment returns the id of the comment it wrote', async () => {
     await createKanbanCard({ id: 'rw-card', title: 'rw card' })
-    const c = addKanbanComment('rw-card', 'someone', 'hello')
+    const c = await addKanbanComment('rw-card', 'someone', 'hello')
     const row = getDb().prepare('SELECT content FROM kanban_comments WHERE id = ?').get(c.id) as { content: string }
     expect(row.content).toBe('hello')
   })
@@ -64,8 +64,8 @@ describe('ON CONFLICT DO NOTHING keeps the insert-if-absent behaviour', () => {
     const db = getDb()
     await createKanbanCard({ id: 'rw-label-card', title: 'label card' })
     db.prepare("INSERT INTO labels (id, name, color, created_at) VALUES ('rw-l', 'rw-l', '#fff', 1)").run()
-    addLabelToCard('rw-label-card', 'rw-l')
-    addLabelToCard('rw-label-card', 'rw-l')
+    await addLabelToCard('rw-label-card', 'rw-l')
+    await addLabelToCard('rw-label-card', 'rw-l')
     const n = db.prepare('SELECT COUNT(*) AS n FROM kanban_card_labels WHERE card_id = ?').get('rw-label-card') as { n: number }
     expect(n.n).toBe(1)
   })

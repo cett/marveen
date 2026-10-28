@@ -280,11 +280,11 @@ describe('labels belong to a tenant', () => {
     createTenant('acme', 'Acme')
   })
 
-  it('a new label is default unless a tenant is named, and the list narrows to a tenant', () => {
-    const a = createLabel({ id: 'a', name: 'bug', color: '#fff' })
-    const b = createLabel({ id: 'b', name: 'bug', color: '#fff', tenant_id: 'acme' })
+  it('a new label is default unless a tenant is named, and the list narrows to a tenant', async () => {
+    const a = await createLabel({ id: 'a', name: 'bug', color: '#fff' })
+    const b = await createLabel({ id: 'b', name: 'bug', color: '#fff', tenant_id: 'acme' })
     expect([a.tenant_id, b.tenant_id]).toEqual(['default', 'acme'])
-    expect(listLabels('acme').map(l => l.id)).toEqual(['b'])
-    expect(listLabels(null).map(l => l.id).sort()).toEqual(['a', 'b'])
+    expect((await listLabels('acme')).map(l => l.id)).toEqual(['b'])
+    expect((await listLabels(null)).map(l => l.id).sort()).toEqual(['a', 'b'])
   })
 })

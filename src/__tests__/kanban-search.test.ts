@@ -14,7 +14,7 @@ describe('searchKanbanCards', () => {
     await createKanbanCard({ id: 'aaaa1111', title: 'first card' })
     await createKanbanCard({ id: 'bbbb2222', title: 'second card' })
 
-    const results = searchKanbanCards({ q: '#2' })
+    const results = await searchKanbanCards({ q: '#2' })
 
     expect(results).toHaveLength(1)
     expect(results[0].id).toBe('bbbb2222')
@@ -24,14 +24,14 @@ describe('searchKanbanCards', () => {
   it('does not treat a bare number (no #) as a rowid match', async () => {
     await createKanbanCard({ id: 'aaaa1111', title: 'card one' })
 
-    expect(searchKanbanCards({ q: '1' })).toHaveLength(0)
+    expect(await searchKanbanCards({ q: '1' })).toHaveLength(0)
   })
 
   it('matches a 4+ char hex prefix against the id', async () => {
     await createKanbanCard({ id: 'cafe1234', title: 'hex prefix target' })
     await createKanbanCard({ id: 'deadbeef', title: 'other card' })
 
-    const results = searchKanbanCards({ q: 'cafe' })
+    const results = await searchKanbanCards({ q: 'cafe' })
 
     expect(results).toHaveLength(1)
     expect(results[0].id).toBe('cafe1234')
@@ -41,7 +41,7 @@ describe('searchKanbanCards', () => {
     await createKanbanCard({ id: 'aaaa1111', title: 'Telepítő javítás' })
     await createKanbanCard({ id: 'bbbb2222', title: 'Unrelated card' })
 
-    const results = searchKanbanCards({ q: 'telepítő' })
+    const results = await searchKanbanCards({ q: 'telepítő' })
 
     expect(results).toHaveLength(1)
     expect(results[0].id).toBe('aaaa1111')
@@ -52,8 +52,8 @@ describe('searchKanbanCards', () => {
     await createKanbanCard({ id: 'bbbb2222', title: 'y', assignee: 'agent-a' })
     await createKanbanCard({ id: 'cccc3333', title: 'z' })
 
-    expect(searchKanbanCards({ q: 'Marveen' }).map((c) => c.id)).toEqual(['aaaa1111'])
-    expect(searchKanbanCards({ q: 'agent-a' }).map((c) => c.id)).toEqual(['bbbb2222'])
+    expect((await searchKanbanCards({ q: 'Marveen' })).map((c) => c.id)).toEqual(['aaaa1111'])
+    expect((await searchKanbanCards({ q: 'agent-a' })).map((c) => c.id)).toEqual(['bbbb2222'])
   })
 
   it('ranks active cards before archived ones for the same match, most recent first within each group', async () => {
@@ -67,9 +67,9 @@ describe('searchKanbanCards', () => {
     db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(100, 'aaaa1111')
     db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(200, 'bbbb2222')
     db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(300, 'cccc3333')
-    archiveKanbanCard('aaaa1111')
+    await archiveKanbanCard('aaaa1111')
 
-    const results = searchKanbanCards({ q: 'shared term' })
+    const results = await searchKanbanCards({ q: 'shared term' })
 
     expect(results.map((c) => c.id)).toEqual(['cccc3333', 'bbbb2222', 'aaaa1111'])
     expect(results.map((c) => c.archived)).toEqual([false, false, true])
@@ -77,9 +77,9 @@ describe('searchKanbanCards', () => {
 
   it('includes archived cards in the results (unlike the plain active-board list)', async () => {
     await createKanbanCard({ id: 'aaaa1111', title: 'archived target' })
-    archiveKanbanCard('aaaa1111')
+    await archiveKanbanCard('aaaa1111')
 
-    const results = searchKanbanCards({ q: 'archived target' })
+    const results = await searchKanbanCards({ q: 'archived target' })
 
     expect(results).toHaveLength(1)
     expect(results[0].archived).toBe(true)
@@ -90,17 +90,17 @@ describe('searchKanbanCards', () => {
       await createKanbanCard({ id: `card${i}000`, title: 'bulk match' })
     }
 
-    expect(searchKanbanCards({ q: 'bulk match', limit: 2 })).toHaveLength(2)
+    expect(await searchKanbanCards({ q: 'bulk match', limit: 2 })).toHaveLength(2)
   })
 
   it('scopes results to the given tenant when tenantId is set', async () => {
     await createKanbanCard({ id: 'aaaa1111', title: 'tenant scoped card', tenant_id: 'eszter' })
     await createKanbanCard({ id: 'bbbb2222', title: 'tenant scoped card', tenant_id: 'default' })
 
-    const scoped = searchKanbanCards({ q: 'tenant scoped', tenantId: 'eszter' })
+    const scoped = await searchKanbanCards({ q: 'tenant scoped', tenantId: 'eszter' })
     expect(scoped.map((c) => c.id)).toEqual(['aaaa1111'])
 
-    const unscoped = searchKanbanCards({ q: 'tenant scoped', tenantId: null })
+    const unscoped = await searchKanbanCards({ q: 'tenant scoped', tenantId: null })
     expect(unscoped).toHaveLength(2)
   })
 })

@@ -400,42 +400,42 @@ describe('scheduled task functions', () => {
 describe('kanban extended functions', () => {
   it('listKanbanCardsSummary returns cards with required fields', async () => {
     await createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal' })
-    const summary = listKanbanCardsSummary()
+    const summary = await listKanbanCardsSummary()
     expect(Array.isArray(summary)).toBe(true)
     const card = summary.find(c => c.id === 'db2-card-1')
     expect(card?.title).toBe('Test card')
   })
 
-  it('markKanbanCardDispatched marks a card as dispatched', () => {
-    const ok = markKanbanCardDispatched('db2-card-1')
+  it('markKanbanCardDispatched marks a card as dispatched', async () => {
+    const ok = await markKanbanCardDispatched('db2-card-1')
     expect(ok).toBe(true)
     const db = getDb()
     const row = db.prepare("SELECT dispatched_at FROM kanban_cards WHERE id = 'db2-card-1'").get() as any
     expect(row?.dispatched_at).not.toBeNull()
   })
 
-  it('archiveKanbanCard archives a card', () => {
-    const ok = archiveKanbanCard('db2-card-1')
+  it('archiveKanbanCard archives a card', async () => {
+    const ok = await archiveKanbanCard('db2-card-1')
     expect(ok).toBe(true)
   })
 
-  it('unarchiveKanbanCard restores an archived card', () => {
-    const ok = unarchiveKanbanCard('db2-card-1')
+  it('unarchiveKanbanCard restores an archived card', async () => {
+    const ok = await unarchiveKanbanCard('db2-card-1')
     expect(ok).toBe(true)
     const db = getDb()
     const row = db.prepare("SELECT archived_at FROM kanban_cards WHERE id = 'db2-card-1'").get() as any
     expect(row?.archived_at).toBeNull()
   })
 
-  it('listArchivedKanbanCards returns archived cards', () => {
-    archiveKanbanCard('db2-card-1')
-    const archived = listArchivedKanbanCards({ limit: 100 })
+  it('listArchivedKanbanCards returns archived cards', async () => {
+    await archiveKanbanCard('db2-card-1')
+    const archived = await listArchivedKanbanCards({ limit: 100 })
     expect(archived.some(c => c.id === 'db2-card-1')).toBe(true)
   })
 
   it('listKanbanProjects returns project list', async () => {
     await createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', project: 'my-project' })
-    const projects = listKanbanProjects()
+    const projects = await listKanbanProjects()
     expect(projects).toContain('my-project')
   })
 })

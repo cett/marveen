@@ -194,7 +194,7 @@ describe('expected_status does not match -> 409 status_conflict, nothing written
 })
 
 describe('the audit event names the status the compare-and-set proved', () => {
-  it('a status that changes between the previous-status read and the write does not leak into from_status', () => {
+  it('a status that changes between the previous-status read and the write does not leak into from_status', async () => {
     // The card is 'planned' when moveKanbanCard reads its status, and another writer parks it in
     // 'waiting' right after; the guard (expected 'waiting') then matches. The event must say
     // waiting -> done, not planned -> done.
@@ -217,7 +217,7 @@ describe('the audit event names the status the compare-and-set proved', () => {
       })
     }) as any)
 
-    expect(moveKanbanCard(CARD, 'done', 0, 'agent-b', undefined, { expectedStatus: 'waiting' })).toBe(true)
+    expect(await moveKanbanCard(CARD, 'done', 0, 'agent-b', undefined, { expectedStatus: 'waiting' })).toBe(true)
     vi.restoreAllMocks()
     expect(events(CARD)).toEqual([{ from_status: 'waiting', to_status: 'done', actor: 'agent-b' }])
   })

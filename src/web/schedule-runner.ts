@@ -1129,7 +1129,7 @@ async function attemptFireTask(
     // Mark this agent as active on the shared fleet blackboard before injecting
     // the prompt, so other agents can see the task is in flight. Snapshot the
     // written values so the done write later can verify nothing changed.
-    const _bbTaskRef = findActiveKanbanCardByTitle(task.name)?.id ?? null
+    const _bbTaskRef = (await findActiveKanbanCardByTitle(task.name))?.id ?? null
     const _bbActiveRow = await upsertBlackboard(agentName, {
       status: 'active',
       summary: task.name,
@@ -1408,12 +1408,12 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
 // One-shot dashboard log when a fired task/heartbeat has been continuously
 // busy past TASK_FIRE_TIMEOUT_MS. Dashboard-only, same policy as
 // sendPendingRetryAlert/sendCatchUpSummary above.
-function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
+async function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): Promise<void> {
   const ageMinutes = Math.floor(elapsedMs / 60000)
   // If there is an active kanban card whose title matches the task name, move it
   // to 'waiting' so the board reflects the stuck state. No-op when no matching
   // card exists (the task was never on the board, or has already been archived).
-  const movedCardId = markScheduledTaskKanbanWaiting(entry.taskName)
+  const movedCardId = await markScheduledTaskKanbanWaiting(entry.taskName)
   if (movedCardId) {
     logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
   }
@@ -1548,7 +1548,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         await applyBlackboardDone(entry)
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
-        sendTaskTimeoutAlert(entry, now - entry.injectedAt)
+        await sendTaskTimeoutAlert(entry, now - entry.injectedAt)
         entry.alerted = true
       } else if (decision === 'lost') {
         // The prompt was typed into a session that never acted on it. Undo the

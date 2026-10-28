@@ -127,8 +127,8 @@ const PRIORITY_HU: Record<string, string> = {
   low: '🔵',
 }
 
-export function buildKanbanContext(): string {
-  const cards = listKanbanCardsSummary()
+export async function buildKanbanContext(): Promise<string> {
+  const cards = await listKanbanCardsSummary()
   if (cards.length === 0) return ''
 
   const grouped: Record<string, string[]> = {}

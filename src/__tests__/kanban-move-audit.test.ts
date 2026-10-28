@@ -21,10 +21,10 @@ describe('kanban move audit trail', () => {
   it('records exactly one event with correct from/to status and actor on a status change', async () => {
     await createKanbanCard({ id: 'card-a', title: 'Audited card' })
 
-    const moved = moveKanbanCard('card-a', 'in_progress', 1, 'marveen')
+    const moved = await moveKanbanCard('card-a', 'in_progress', 1, 'marveen')
     expect(moved).toBe(true)
 
-    const events = getKanbanCardEvents('card-a')
+    const events = await getKanbanCardEvents('card-a')
     expect(events).toHaveLength(1)
     expect(events[0].card_id).toBe('card-a')
     expect(events[0].from_status).toBe('planned')
@@ -37,24 +37,24 @@ describe('kanban move audit trail', () => {
     await createKanbanCard({ id: 'card-b', title: 'Reordered card' })
 
     // Same status (planned), only sort_order differs -> not a transition.
-    const moved = moveKanbanCard('card-b', 'planned', 5, 'marveen')
+    const moved = await moveKanbanCard('card-b', 'planned', 5, 'marveen')
     expect(moved).toBe(true)
-    expect(getKanbanCardEvents('card-b')).toHaveLength(0)
+    expect(await getKanbanCardEvents('card-b')).toHaveLength(0)
   })
 
-  it('records no event when no row matches', () => {
-    const moved = moveKanbanCard('nonexistent-card', 'done', 0, 'marveen')
+  it('records no event when no row matches', async () => {
+    const moved = await moveKanbanCard('nonexistent-card', 'done', 0, 'marveen')
     expect(moved).toBe(false)
-    expect(getKanbanCardEvents('nonexistent-card')).toHaveLength(0)
+    expect(await getKanbanCardEvents('nonexistent-card')).toHaveLength(0)
   })
 
   it('leaves actor null when none is supplied (backward-compatible callers)', async () => {
     await createKanbanCard({ id: 'card-c', title: 'No actor' })
 
-    const moved = moveKanbanCard('card-c', 'waiting', 0)
+    const moved = await moveKanbanCard('card-c', 'waiting', 0)
     expect(moved).toBe(true)
 
-    const events = getKanbanCardEvents('card-c')
+    const events = await getKanbanCardEvents('card-c')
     expect(events).toHaveLength(1)
     expect(events[0].actor).toBeNull()
   })
@@ -62,11 +62,11 @@ describe('kanban move audit trail', () => {
   it('returns events in chronological order across multiple moves', async () => {
     await createKanbanCard({ id: 'card-d', title: 'Multi-move card' })
 
-    moveKanbanCard('card-d', 'in_progress', 0, 'marveen')
-    moveKanbanCard('card-d', 'waiting', 0, 'samu')
-    moveKanbanCard('card-d', 'done', 0, 'marveen')
+    await moveKanbanCard('card-d', 'in_progress', 0, 'marveen')
+    await moveKanbanCard('card-d', 'waiting', 0, 'samu')
+    await moveKanbanCard('card-d', 'done', 0, 'marveen')
 
-    const events = getKanbanCardEvents('card-d')
+    const events = await getKanbanCardEvents('card-d')
     expect(events.map((e) => e.to_status)).toEqual(['in_progress', 'waiting', 'done'])
     expect(events.map((e) => e.from_status)).toEqual(['planned', 'in_progress', 'waiting'])
     // created_at is monotonically non-decreasing and the id ordering breaks ties.

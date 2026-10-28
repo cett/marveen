@@ -28,10 +28,10 @@ describe('kanban column reorder via orderedIds', () => {
     // Move card-d from position 3 to position 1 (between card-a and card-b).
     // The frontend sends the full target-column order after the DOM reposition.
     const orderedIds = ['card-a', 'card-d', 'card-b', 'card-c']
-    const moved = moveKanbanCard('card-d', 'planned', 1, undefined, orderedIds)
+    const moved = await moveKanbanCard('card-d', 'planned', 1, undefined, orderedIds)
     expect(moved).toBe(true)
 
-    const cards = listKanbanCards().filter(c => c.status === 'planned')
+    const cards = (await listKanbanCards()).filter(c => c.status === 'planned')
     cards.sort((a, b) => a.sort_order - b.sort_order)
     expect(cards.map(c => c.id)).toEqual(['card-a', 'card-d', 'card-b', 'card-c'])
     // sort_orders must be 0..N -- no gaps, no conflicts
@@ -45,14 +45,14 @@ describe('kanban column reorder via orderedIds', () => {
     await createKanbanCard({ id: 'card-x', title: 'X' })
     await createKanbanCard({ id: 'card-y', title: 'Y' })
     // Force negative sort_orders to replicate the bug environment
-    moveKanbanCard('card-x', 'planned', -2)
-    moveKanbanCard('card-y', 'planned', -1)
+    await moveKanbanCard('card-x', 'planned', -2)
+    await moveKanbanCard('card-y', 'planned', -1)
 
     // Move card-y to the top (before card-x)
     const orderedIds = ['card-y', 'card-x']
-    moveKanbanCard('card-y', 'planned', 0, undefined, orderedIds)
+    await moveKanbanCard('card-y', 'planned', 0, undefined, orderedIds)
 
-    const cards = listKanbanCards().filter(c => c.status === 'planned')
+    const cards = (await listKanbanCards()).filter(c => c.status === 'planned')
     cards.sort((a, b) => a.sort_order - b.sort_order)
     expect(cards.map(c => c.id)).toEqual(['card-y', 'card-x'])
     expect(cards.map(c => c.sort_order)).toEqual([0, 1])
@@ -65,10 +65,10 @@ describe('kanban column reorder via orderedIds', () => {
 
     // Move card-1 to in_progress, between card-3 (existing) and nothing
     const orderedIds = ['card-3', 'card-1']
-    const moved = moveKanbanCard('card-1', 'in_progress', 1, 'tester', orderedIds)
+    const moved = await moveKanbanCard('card-1', 'in_progress', 1, 'tester', orderedIds)
     expect(moved).toBe(true)
 
-    const ipCards = listKanbanCards().filter(c => c.status === 'in_progress')
+    const ipCards = (await listKanbanCards()).filter(c => c.status === 'in_progress')
     ipCards.sort((a, b) => a.sort_order - b.sort_order)
     expect(ipCards.map(c => c.id)).toEqual(['card-3', 'card-1'])
     expect(ipCards.map(c => c.sort_order)).toEqual([0, 1])
@@ -79,12 +79,12 @@ describe('kanban column reorder via orderedIds', () => {
     await createKanbanCard({ id: 'card-peer',  title: 'Peer',    status: 'planned' })
 
     // Same-column reorder: no audit event
-    moveKanbanCard('card-audit', 'planned', 1, 'tester', ['card-peer', 'card-audit'])
-    expect(getKanbanCardEvents('card-audit')).toHaveLength(0)
+    await moveKanbanCard('card-audit', 'planned', 1, 'tester', ['card-peer', 'card-audit'])
+    expect(await getKanbanCardEvents('card-audit')).toHaveLength(0)
 
     // Cross-column move: one audit event
-    moveKanbanCard('card-audit', 'in_progress', 0, 'tester', ['card-audit'])
-    const events = getKanbanCardEvents('card-audit')
+    await moveKanbanCard('card-audit', 'in_progress', 0, 'tester', ['card-audit'])
+    const events = await getKanbanCardEvents('card-audit')
     expect(events).toHaveLength(1)
     expect(events[0].from_status).toBe('planned')
     expect(events[0].to_status).toBe('in_progress')
@@ -92,9 +92,9 @@ describe('kanban column reorder via orderedIds', () => {
 
   it('legacy path (no orderedIds) still works for backward-compatible callers', async () => {
     await createKanbanCard({ id: 'card-legacy', title: 'Legacy', status: 'planned' })
-    const moved = moveKanbanCard('card-legacy', 'waiting', 0, 'scheduler')
+    const moved = await moveKanbanCard('card-legacy', 'waiting', 0, 'scheduler')
     expect(moved).toBe(true)
-    const cards = listKanbanCards().filter(c => c.id === 'card-legacy')
+    const cards = (await listKanbanCards()).filter(c => c.id === 'card-legacy')
     expect(cards[0].status).toBe('waiting')
     expect(cards[0].sort_order).toBe(0)
   })

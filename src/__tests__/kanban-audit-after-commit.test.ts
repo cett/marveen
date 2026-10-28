@@ -17,7 +17,7 @@ const blockAuditWrites = () =>
 describe('createKanbanCard', () => {
   it('writes the card and exactly one create audit entry with the title, status and priority', async () => {
     await createKanbanCard({ id: 'c1', title: 'Root', assignee: 'agent-a', priority: 'high' })
-    expect(getKanbanCard('c1')?.title).toBe('Root')
+    expect((await getKanbanCard('c1'))?.title).toBe('Root')
     const rows = auditRows('create')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ agent_id: 'agent-a', entity_id: 'c1' })
@@ -27,13 +27,13 @@ describe('createKanbanCard', () => {
   it('a failing audit write leaves the card in place and does not reject', async () => {
     blockAuditWrites()
     await expect(createKanbanCard({ id: 'c1', title: 'Root' })).resolves.toBeUndefined()
-    expect(getKanbanCard('c1')?.title).toBe('Root')
+    expect((await getKanbanCard('c1'))?.title).toBe('Root')
     expect(auditRows('create')).toEqual([])
   })
 
   it('the synchronous half writes the rows and no audit entry; the entry it returns is written by the caller afterwards', async () => {
-    const entry = insertKanbanCardRows({ id: 'c1', title: 'Root', assignee: 'agent-a' })
-    expect(getKanbanCard('c1')?.title).toBe('Root')
+    const entry = await insertKanbanCardRows({ id: 'c1', title: 'Root', assignee: 'agent-a' })
+    expect((await getKanbanCard('c1'))?.title).toBe('Root')
     expect(auditRows('create')).toEqual([])
     await writeKanbanCreateAudit(entry)
     expect(auditRows('create').map((r) => r.entity_id)).toEqual(['c1'])
@@ -44,7 +44,7 @@ describe('deleteKanbanCard', () => {
   it('deletes the card and writes one delete audit entry for the assignee, after the commit', async () => {
     await createKanbanCard({ id: 'c1', title: 'Root', assignee: 'agent-a' })
     expect(await deleteKanbanCard('c1')).toBe(true)
-    expect(getKanbanCard('c1')).toBeUndefined()
+    expect(await getKanbanCard('c1')).toBeUndefined()
     const rows = auditRows('delete')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ agent_id: 'agent-a', entity_id: 'c1' })
@@ -60,7 +60,7 @@ describe('deleteKanbanCard', () => {
     await createKanbanCard({ id: 'c1', title: 'Root' })
     blockAuditWrites()
     await expect(deleteKanbanCard('c1')).resolves.toBe(true)
-    expect(getKanbanCard('c1')).toBeUndefined()
+    expect(await getKanbanCard('c1')).toBeUndefined()
   })
 
   it('two overlapping deletes of the same card: one true, one false, exactly one audit entry', async () => {
@@ -74,7 +74,7 @@ describe('deleteKanbanCard', () => {
     await createKanbanCard({ id: 'c1', title: 'Root' })
     db.exec("CREATE TRIGGER keep_card BEFORE DELETE ON kanban_cards BEGIN SELECT RAISE(IGNORE); END")
     expect(await deleteKanbanCard('c1')).toBe(false)
-    expect(getKanbanCard('c1')?.title).toBe('Root')
+    expect((await getKanbanCard('c1'))?.title).toBe('Root')
     expect(auditRows('delete')).toEqual([])
   })
 

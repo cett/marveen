@@ -74,18 +74,18 @@ beforeEach(() => {
 })
 
 describe('buildKanbanContext', () => {
-  it('returns an empty string when there are no cards', () => {
+  it('returns an empty string when there are no cards', async () => {
     mockListKanbanCardsSummary.mockReturnValue([])
-    expect(buildKanbanContext()).toBe('')
+    expect(await buildKanbanContext()).toBe('')
   })
 
-  it('groups cards by their Hungarian status label, with priority emoji and assignee', () => {
+  it('groups cards by their Hungarian status label, with priority emoji and assignee', async () => {
     mockListKanbanCardsSummary.mockReturnValue([
       { id: 'c1', title: 'Fix the thing', status: 'in_progress', priority: 'urgent', assignee: 'agent-a' },
       { id: 'c2', title: 'Write docs', status: 'planned', priority: 'low', assignee: null },
     ] as unknown as ReturnType<typeof db.listKanbanCardsSummary>)
 
-    const out = buildKanbanContext()
+    const out = await buildKanbanContext()
 
     expect(out).toContain('[Kanban tabla]')
     expect(out).toContain('Folyamatban:')
@@ -94,12 +94,12 @@ describe('buildKanbanContext', () => {
     expect(out).toContain('🔵 Write docs [c2]')
   })
 
-  it('falls back to the raw status string and a neutral priority dot for unknown values', () => {
+  it('falls back to the raw status string and a neutral priority dot for unknown values', async () => {
     mockListKanbanCardsSummary.mockReturnValue([
       { id: 'c3', title: 'Mystery card', status: 'archived', priority: 'weird', assignee: null },
     ] as unknown as ReturnType<typeof db.listKanbanCardsSummary>)
 
-    const out = buildKanbanContext()
+    const out = await buildKanbanContext()
 
     expect(out).toContain('archived:')
     expect(out).toContain('⚪ Mystery card [c3]')

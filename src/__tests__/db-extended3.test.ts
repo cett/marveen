@@ -151,17 +151,17 @@ describe('listArchivedKanbanCards with filters', () => {
 
   beforeAll(async () => {
     await createKanbanCard({ id: archivedCardId, title: 'Test Archived Card Filter', status: 'done', priority: 'high', project: 'proj-alpha', assignee: 'test-user' })
-    archiveKanbanCard(archivedCardId)
+    await archiveKanbanCard(archivedCardId)
   })
 
-  it('filters by project', () => {
-    const result = listArchivedKanbanCards({ limit: 50, project: 'proj-alpha' })
+  it('filters by project', async () => {
+    const result = await listArchivedKanbanCards({ limit: 50, project: 'proj-alpha' })
     expect(result.some(c => c.id === archivedCardId)).toBe(true)
   })
 
-  it('filters by from/to timestamps', () => {
+  it('filters by from/to timestamps', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const result = listArchivedKanbanCards({ limit: 50, from: now - 10, to: now + 10 })
+    const result = await listArchivedKanbanCards({ limit: 50, from: now - 10, to: now + 10 })
     expect(Array.isArray(result)).toBe(true)
   })
 
@@ -174,14 +174,14 @@ describe('listArchivedKanbanCards with filters', () => {
 // ---------------------------------------------------------------------------
 
 describe('getKanbanSeqByIdPrefix', () => {
-  it('returns null for nonexistent id', () => {
-    expect(getKanbanSeqByIdPrefix('zzzzzzzz')).toBeNull()
+  it('returns null for nonexistent id', async () => {
+    expect(await getKanbanSeqByIdPrefix('zzzzzzzz')).toBeNull()
   })
 
   it('returns seq for known card id', async () => {
     const seqId = 'seq-tst-' + Date.now().toString(16)
     await createKanbanCard({ id: seqId, title: 'Seq Test Card', status: 'planned' })
-    const seq = getKanbanSeqByIdPrefix(seqId)
+    const seq = await getKanbanSeqByIdPrefix(seqId)
     expect(typeof seq).toBe('number')
     expect(seq).toBeGreaterThan(0)
   })
@@ -231,7 +231,7 @@ describe('updateKanbanCard branches', () => {
       status: 'waiting', blocked_by: 'agent-a', blocked_reason: 'stuck on deploy', waiting_for: 'PR review',
     })
     expect(ok).toBe(true)
-    const card = getKanbanCard(cid)!
+    const card = (await getKanbanCard(cid))!
     expect(card.status).toBe('waiting')
     expect(card.blocked_by).toBe('agent-a')
     expect(card.blocked_reason).toBe('stuck on deploy')
@@ -240,7 +240,7 @@ describe('updateKanbanCard branches', () => {
 
     const closed = await updateKanbanCard(cid, { status: 'done', resolved_by: 'agent-b' })
     expect(closed).toBe(true)
-    const closedCard = getKanbanCard(cid)!
+    const closedCard = (await getKanbanCard(cid))!
     expect(closedCard.status).toBe('done')
     expect(closedCard.resolved_by).toBe('agent-b')
   })
@@ -251,8 +251,8 @@ describe('updateKanbanCard branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('reparentKanbanCard branches', () => {
-  it('returns error for nonexistent card', () => {
-    const result = reparentKanbanCard('nonexistent-card', null)
+  it('returns error for nonexistent card', async () => {
+    const result = await reparentKanbanCard('nonexistent-card', null)
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.code).toBe('not_found')
@@ -263,14 +263,14 @@ describe('reparentKanbanCard branches', () => {
   it('returns ok:true for top-level reparent', async () => {
     const rid = 'rep-top-' + Date.now().toString(16)
     await createKanbanCard({ id: rid, title: 'Top-level reparent card', status: 'planned' })
-    const result = reparentKanbanCard(rid, null)
+    const result = await reparentKanbanCard(rid, null)
     expect(result.ok).toBe(true)
   })
 
   it('returns error for self-parenting', async () => {
     const selfId = 'rep-self-' + Date.now().toString(16)
     await createKanbanCard({ id: selfId, title: 'Self-parent test', status: 'planned' })
-    const result = reparentKanbanCard(selfId, selfId)
+    const result = await reparentKanbanCard(selfId, selfId)
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.code).toBe('invalid_value')

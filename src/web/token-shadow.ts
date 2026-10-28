@@ -362,7 +362,7 @@ const WATCHED: readonly WatchSpec[] = [
   {
     prefix: '/api/kanban', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     paramLiterals: new Set(['labels', 'heartbeat-summary', 'assignees', 'archived', 'search']),
-    owner: (p) => getKanbanCard(p)?.assignee,
+    owner: async (p) => (await getKanbanCard(p))?.assignee,
     queryKeys: ['assignee'], bodyKeys: ['assignee'], enforce: 'none',
   },
   {
