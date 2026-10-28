@@ -78,7 +78,7 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     // exported as idle-running ...
     await seedRunning()
     expect(await pending(now)).toContain('late-1')
-    markOtelSpansExported([{ trace_id: 'trace-push-test-late', span_id: 'late-1' }], now)
+    await markOtelSpansExported([{ trace_id: 'trace-push-test-late', span_id: 'late-1' }], now)
     expect(await pending(now)).not.toContain('late-1')
 
     // ... the same write again changes nothing, so nothing is re-sent
@@ -96,7 +96,7 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     expect((await getUnexportedOtelSpans(100, now)).find(r => r.span_id === 'late-1')).toMatchObject({ end_ms: now, status: 'ok' })
 
     // exported again in its final state: closing it once more with the same values does not queue it again
-    markOtelSpansExported([{ trace_id: 'trace-push-test-late', span_id: 'late-1' }], now)
+    await markOtelSpansExported([{ trace_id: 'trace-push-test-late', span_id: 'late-1' }], now)
     await closeOtelSpan('trace-push-test-late', 'late-1', now, 'ok')
     expect(await pending(now)).not.toContain('late-1')
   })
@@ -104,7 +104,7 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
   it('a close without an earlier export is exported once, and the re-export rule does not touch other spans', async () => {
     await seedSpan('trace-push-test-plain', 'plain-1', true)
     await seedSpan('trace-push-test-other', 'other-1', true)
-    markOtelSpansExported([{ trace_id: 'trace-push-test-other', span_id: 'other-1' }], Date.now())
+    await markOtelSpansExported([{ trace_id: 'trace-push-test-other', span_id: 'other-1' }], Date.now())
     await closeOtelSpan('trace-push-test-plain', 'plain-1', 2000, 'ok') // unchanged values
     const ids = (await getUnexportedOtelSpans(100)).map(r => r.span_id)
     expect(ids).toContain('plain-1')
@@ -116,7 +116,7 @@ describe('getUnexportedOtelSpans / markOtelSpansExported', () => {
     const before = (await getUnexportedOtelSpans(1000)).map(r => r.trace_id)
     expect(before).toContain('trace-push-test-3')
 
-    markOtelSpansExported([{ trace_id: 'trace-push-test-3', span_id: 'span-3' }], Date.now())
+    await markOtelSpansExported([{ trace_id: 'trace-push-test-3', span_id: 'span-3' }], Date.now())
 
     const after = (await getUnexportedOtelSpans(1000)).map(r => r.trace_id)
     expect(after).not.toContain('trace-push-test-3')

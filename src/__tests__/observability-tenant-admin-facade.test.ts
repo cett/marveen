@@ -107,7 +107,7 @@ describe('adminPatchDashboardUser: the last active admin', () => {
   it('a disabled admin is not counted: it can be demoted while one active admin remains, and the active one stays protected', async () => {
     const active = await provisionDashboardUser('admin-on', 'h', 'admin', null)
     const off = await provisionDashboardUser('admin-off', 'h', 'admin', null)
-    await getDb().prepare('UPDATE dashboard_users SET disabled = 1 WHERE id = ?').run(off.id)
+    getDb().prepare('UPDATE dashboard_users SET disabled = 1 WHERE id = ?').run(off.id)
     expect((await adminPatchDashboardUser(off.id, { role: 'viewer' })).status).toBe('updated')
     expect(await adminPatchDashboardUser(active.id, { role: 'viewer' })).toEqual({ status: 'last_admin' })
   })
