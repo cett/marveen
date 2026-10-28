@@ -575,8 +575,12 @@ export function deleteVecMemoryOnRawHandle(id: number): void {
 export async function syncVecMemoryEmbeddingUpdate(id: number, embeddingBlob: Buffer): Promise<void> {
   if (!vecExtensionLoaded) return
   try {
-    await dbx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id))
-    await dbx.run('INSERT OR IGNORE INTO vec_memories(memory_id, embedding) VALUES(?, ?)', BigInt(id), embeddingBlob)
+    // One transaction: two overlapping updates of the same memory cannot interleave their delete and insert, and a
+    // failing insert keeps the previous vec entry instead of leaving none.
+    await dbx.tx(async (tx) => {
+      await tx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id))
+      await tx.run('INSERT OR IGNORE INTO vec_memories(memory_id, embedding) VALUES(?, ?)', BigInt(id), embeddingBlob)
+    })
   } catch { /* vec0 unavailable at runtime -- no-op */ }
 }
 
