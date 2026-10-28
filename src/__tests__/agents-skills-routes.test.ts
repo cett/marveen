@@ -113,7 +113,7 @@ describe('GET /api/agents/:name/skills', () => {
 
   it('lists the main agent\'s skills from SQL as source=global, deletable=true', async () => {
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'global/skill-a', name: 'skill-a', description: 'does A', content: '---\nname: skill-a\ndescription: "does A"\n---\nbody', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/skill-a', name: 'skill-a', description: 'does A', content: '---\nname: skill-a\ndescription: "does A"\n---\nbody', tenant_id: 'fleet', is_global: true })
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/marveen/skills' })
     await tryHandleAgentsSkills(ctx)
     const skills = body() as any[]
@@ -131,10 +131,10 @@ describe('GET /api/agents/:name/skills', () => {
 
   it('lists a sub-agent\'s local skills plus non-shadowed inherited global skills', async () => {
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'agent/agent-b/local-only', name: 'local-only', description: 'local', content: 'x', tenant_id: 'fleet', is_global: false })
-    createSkill({ id: 'agent/agent-b/shared-name', name: 'shared-name', description: 'local version', content: 'x', tenant_id: 'fleet', is_global: false })
-    createSkill({ id: 'global/shared-name', name: 'shared-name', description: 'global version', content: 'x', tenant_id: 'fleet', is_global: true })
-    createSkill({ id: 'global/inherited-only', name: 'inherited-only', description: 'from global', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'agent/agent-b/local-only', name: 'local-only', description: 'local', content: 'x', tenant_id: 'fleet', is_global: false })
+    await createSkill({ id: 'agent/agent-b/shared-name', name: 'shared-name', description: 'local version', content: 'x', tenant_id: 'fleet', is_global: false })
+    await createSkill({ id: 'global/shared-name', name: 'shared-name', description: 'global version', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/inherited-only', name: 'inherited-only', description: 'from global', content: 'x', tenant_id: 'fleet', is_global: true })
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/agent-b/skills' })
     await tryHandleAgentsSkills(ctx)
     const skills = body() as any[]
@@ -164,7 +164,7 @@ describe('DELETE /api/agents/:name/skills/:skillName', () => {
   it('deletes a global (main agent) skill dir and its DB row', async () => {
     writeSkillDir(GLOBAL_SKILLS_DIR, 'doomed', { skillMd: '---\ndescription: x\n---\n' })
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'global/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: true })
     const { ctx, status } = makeCtx({ method: 'DELETE', path: '/api/agents/marveen/skills/doomed' })
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
@@ -175,7 +175,7 @@ describe('DELETE /api/agents/:name/skills/:skillName', () => {
   it('deletes a sub-agent skill dir using the agent/<name>/<skill> DB id', async () => {
     writeSkillDir(agentSkillsDir('agent-b'), 'doomed', { skillMd: '---\ndescription: x\n---\n' })
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'agent/agent-b/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: false })
+    await createSkill({ id: 'agent/agent-b/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: false })
     const { ctx, status } = makeCtx({ method: 'DELETE', path: '/api/agents/agent-b/skills/doomed' })
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
@@ -220,7 +220,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
 
   it('returns 409 when the DB already has a row for this id (dir absent, id pre-seeded)', async () => {
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'global/dup', name: 'dup', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/dup', name: 'dup', content: 'x', tenant_id: 'fleet', is_global: true })
     vi.mocked(generateSkillMd).mockResolvedValueOnce('# generated')
     const { ctx, status } = makeCtx({ method: 'POST', path: '/api/agents/marveen/skills', body: jsonBody({ name: 'dup', description: 'y' }) })
     await tryHandleAgentsSkills(ctx)
