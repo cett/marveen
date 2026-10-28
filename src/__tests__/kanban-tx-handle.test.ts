@@ -51,8 +51,10 @@ describe('the statements of a kanban transaction body go through the tx handle, 
     await createKanbanCard({ id: 'c1', title: 'One' })
     await createKanbanCard({ id: 'c2', title: 'Two' })
     const seen = spyFacade()
-    await moveKanbanCard('c1', 'done', 0, 'owner')
-    expect(seen.filter((s) => /UPDATE kanban_cards SET sort_order/.test(s))).toEqual([])
+    await moveKanbanCard('c1', 'done', 1, 'owner', ['c2', 'c1'])
+    // the status read before the transaction is allowed on the facade; the update, the event row and the renumber are not
+    expect(seen.filter((s) => s !== 'SELECT status FROM kanban_cards WHERE id=?')).toEqual([])
+    expect((db.prepare('SELECT sort_order FROM kanban_cards WHERE id = ?').get('c2') as { sort_order: number }).sort_order).toBe(0)
   })
 
   it('deleteLabel: the links and the label', async () => {
