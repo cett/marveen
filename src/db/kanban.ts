@@ -7,7 +7,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { writeAgentAuditLog } from './audit.js'
 import { updateIdeaWithStatusLog } from './misc.js'
 import { logger } from '../logger.js'
-import { dbx } from './facade.js'
+import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 
 /** The card's running number (#N): the insertion-order id of the row. One definition, shared with the tenant-scoped list. */
 export const KANBAN_SEQ_COLUMN = 'rowid AS seq'
@@ -97,8 +97,8 @@ export async function listKanbanCardsSummary(): Promise<{ status: string; title:
   return dbx.all<any>("SELECT id, title, status, assignee, priority FROM kanban_cards WHERE archived_at IS NULL ORDER BY status, sort_order ASC")
 }
 
-export async function getKanbanCard(id: string): Promise<KanbanCard | undefined> {
-  return dbx.get<KanbanCard>(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE id = ?`, id)
+export async function getKanbanCard(id: string, ops: SqlOps = dbx): Promise<KanbanCard | undefined> {
+  return ops.get<KanbanCard>(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE id = ?`, id)
 }
 
 export interface NewKanbanCard {
@@ -126,7 +126,7 @@ export interface KanbanCreateAudit {
  * inside a synchronous (better-sqlite3) transaction, where an `await` would end the transaction early; the caller
  * writes the entry with writeKanbanCreateAudit after the commit.
  */
-export async function insertKanbanCardRows(card: NewKanbanCard): Promise<KanbanCreateAudit> {
+export async function insertKanbanCardRows(card: NewKanbanCard, ops: Dbx | Tx = dbx): Promise<KanbanCreateAudit> {
   const now = Math.floor(Date.now() / 1000)
   const status = card.status ?? 'planned'
   const dueDate = card.due_date === undefined ? null : parseKanbanDueDate(card.due_date)
@@ -135,16 +135,16 @@ export async function insertKanbanCardRows(card: NewKanbanCard): Promise<KanbanC
   // Compute depth from parent; enforce max 2 (3 levels: 0, 1, 2).
   let depth = 0
   if (card.parent_id) {
-    const parent = await getKanbanCard(card.parent_id)
+    const parent = await getKanbanCard(card.parent_id, ops)
     if (!parent) throw new Error(`Parent card not found: ${card.parent_id}`)
     depth = parent.depth + 1
     if (depth > 2) throw new Error('Cannot create card: exceeds max depth of 3 levels')
   }
 
-  const maxRow = (await dbx.get('SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = ? AND archived_at IS NULL', status)) as { m: number | null }
+  const maxRow = (await ops.get('SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = ? AND archived_at IS NULL', status)) as { m: number | null }
   const sortOrder = (maxRow?.m ?? -1) + 1
 
-  await dbx.tx(async (tx) => {
+  await ops.tx(async (tx) => {
     await tx.run(`INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, depth, due_date, sort_order, created_at, updated_at, tenant_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, card.id, card.title, card.description ?? null, status,
       card.assignee ?? null, card.priority ?? 'normal',
@@ -185,8 +185,8 @@ export async function createKanbanSubtasks(
   subtasks: Array<{ title: string; description?: string | null; assignee?: string | null; priority?: string | null }>,
   actor: string,
 ): Promise<string[]> {
-  return dbx.tx(async () => {
-    const parent = await getKanbanCard(parentId)
+  return dbx.tx(async (tx) => {
+    const parent = await getKanbanCard(parentId, tx)
     if (!parent) throw new Error(`Parent card not found: ${parentId}`)
     const ids: string[] = []
     const audits: KanbanCreateAudit[] = []
@@ -202,11 +202,11 @@ export async function createKanbanSubtasks(
         parent_id: parentId,
         // the subtasks belong to the tenant of the card they hang under
         tenant_id: parent.tenant_id,
-      }))
+      }, tx))
       ids.push(id)
     }
-    await addKanbanComment(parentId, actor, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
-    for (const entry of audits) await auditInSavepoint(() => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
+    await addKanbanComment(parentId, actor, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`, tx)
+    for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
     return ids
   })
 }
@@ -227,13 +227,13 @@ export async function promoteIdeaToKanban(
 ): Promise<boolean> {
   if (cards.length === 0) throw new Error('promoteIdeaToKanban needs at least one card')
   try {
-    await dbx.tx(async () => {
+    await dbx.tx(async (tx) => {
       const audits: KanbanCreateAudit[] = []
-      for (const card of cards) audits.push(await insertKanbanCardRows(card))
+      for (const card of cards) audits.push(await insertKanbanCardRows(card, tx))
       // TODO(phase2): the idea write joins this transaction through the ambient connection; pass the tx handle.
       const changed = await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cards[0].id }, { from: idea.from, to: 'kanban', actor: idea.actor, note: idea.note })
       if (!changed) throw new IdeaGoneError()
-      for (const entry of audits) await auditInSavepoint(() => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
+      for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
     })
     return true
   } catch (err) {
@@ -243,9 +243,9 @@ export async function promoteIdeaToKanban(
 }
 
 /** Runs one audit write in its own savepoint: a failure is logged, rolls back only itself and is never rethrown. */
-async function auditInSavepoint(write: () => Promise<void>, what: string, entityId: string): Promise<void> {
+async function auditInSavepoint(tx: Tx, write: () => Promise<void>, what: string, entityId: string): Promise<void> {
   try {
-    await dbx.tx(write)
+    await tx.tx(write)
   } catch (err) {
     logger.warn({ err, what, entityId }, 'kanban: audit write failed, the card change stays')
   }
@@ -318,17 +318,21 @@ export async function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCa
   }
 
   const f = { ...card, ...fields, depth: newDepth, updated_at: now }
-  const ok = (await dbx.run(`UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?,
+  // The row update and the depth cascade over its subtree are one transaction (they ran without a yield before).
+  const ok = await dbx.tx(async (tx) => {
+    const updated = (await tx.run(`UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?,
      dispatched_at=CASE WHEN ? THEN NULL ELSE dispatched_at END
      WHERE id=?`, f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
     f.blocked_by, f.blocked_reason, f.waiting_for, f.resolved_by,
     // In SQL and not as a value read earlier: a stamp set between the read and the write must not be overwritten.
     kanbanWriteClearsDispatch(f.status) ? 1 : 0,
     id,
-  )).changes > 0
+    )).changes > 0
+    if (updated && parentChanging) await cascadeDepth(id, newDepth, tx)
+    return updated
+  })
 
   if (ok) {
-    if (parentChanging) await cascadeDepth(id, newDepth)
     try {
       // The audit row names whoever made the edit; the assignee is only the fallback for a caller nobody can name
       // (a script on the shared token), because an agent that edits another agent's card is not the assignee.
@@ -350,11 +354,11 @@ export async function getChildCards(parentId: string): Promise<KanbanCard[]> {
 
 // Recursively update the depth of all descendants of parentId.
 // Called after any parent_id change so the denormalized depth stays consistent.
-async function cascadeDepth(parentId: string, parentDepth: number): Promise<void> {
-  const children = (await dbx.all('SELECT id FROM kanban_cards WHERE parent_id = ?', parentId)) as { id: string }[]
+async function cascadeDepth(parentId: string, parentDepth: number, ops: SqlOps = dbx): Promise<void> {
+  const children = (await ops.all('SELECT id FROM kanban_cards WHERE parent_id = ?', parentId)) as { id: string }[]
   for (const child of children) {
-    await dbx.run('UPDATE kanban_cards SET depth = ? WHERE id = ?', parentDepth + 1, child.id)
-    await cascadeDepth(child.id, parentDepth + 1)
+    await ops.run('UPDATE kanban_cards SET depth = ? WHERE id = ?', parentDepth + 1, child.id)
+    await cascadeDepth(child.id, parentDepth + 1, ops)
   }
 }
 
@@ -409,7 +413,7 @@ export async function reparentKanbanCard(
   const now = Math.floor(Date.now() / 1000)
   await dbx.tx(async (tx) => {
     await tx.run('UPDATE kanban_cards SET parent_id=?, depth=?, updated_at=? WHERE id=?', newParentId, newDepth, now, id)
-    await cascadeDepth(id, newDepth)
+    await cascadeDepth(id, newDepth, tx)
   })
 
   if (oldParentId) await propagateStatusForParent(oldParentId)
@@ -651,13 +655,14 @@ export async function deleteKanbanCard(id: string): Promise<boolean> {
       const newChildDepth = grandparentDepth + 1  // -1+1=0 when grandparent is null
       await tx.run('UPDATE kanban_cards SET parent_id=?, depth=?, updated_at=? WHERE id=?', grandparentId, newChildDepth, now, child.id
       )
-      await cascadeDepth(child.id, newChildDepth)
+      await cascadeDepth(child.id, newChildDepth, tx)
     }
     const removed = (await tx.run('DELETE FROM kanban_cards WHERE id = ?', id)).changes > 0
     // The delete and its audit commit together; the audit runs in its own savepoint, so a failing audit is logged
     // and rolls back only itself, the delete stays.
     if (removed) {
       await auditInSavepoint(
+        tx,
         () => writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title } }),
         'kanban delete', id,
       )
@@ -730,10 +735,10 @@ export async function markScheduledTaskKanbanWaiting(taskName: string): Promise<
   return moved ? card.id : null
 }
 
-export async function addKanbanComment(cardId: string, author: string, content: string): Promise<KanbanComment> {
+export async function addKanbanComment(cardId: string, author: string, content: string, ops: SqlOps = dbx): Promise<KanbanComment> {
   const now = Math.floor(Date.now() / 1000)
-  const { id } = (await dbx.get('INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id', cardId, author, content, now)) as { id: number }
-  await dbx.run('UPDATE kanban_cards SET updated_at = ? WHERE id = ?', now, cardId)
+  const { id } = (await ops.get('INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?) RETURNING id', cardId, author, content, now)) as { id: number }
+  await ops.run('UPDATE kanban_cards SET updated_at = ? WHERE id = ?', now, cardId)
   return { id, card_id: cardId, author, content, created_at: now }
 }
 
