@@ -48,7 +48,7 @@ beforeEach(() => {
   vi.mocked(isKnownAgent).mockReturnValue(true)
   vi.mocked(db.getTenant).mockReturnValue(TENANT as any)
   vi.mocked(db.agentBelongsToTenant).mockReturnValue(true)
-  vi.mocked(db.setChannelBinding).mockReturnValue(REC as any)
+  vi.mocked(db.setChannelBinding).mockResolvedValue(REC as any)
 })
 
 describe('PUT /api/admin/channel-bindings', () => {
@@ -57,7 +57,8 @@ describe('PUT /api/admin/channel-bindings', () => {
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
     expect(db.setChannelBinding).toHaveBeenCalledWith('agent-a', 'telegram', '111', 'tenant-x', 'admin-user')
-    expect(out.body.tenant_id).toBe('tenant-x')
+    expect(out.body).toEqual(REC)
+    expect(out.body).toMatchObject({ agent_id: 'agent-a', channel: 'telegram', external_id: '111', tenant_id: 'tenant-x' })
   })
 
   it('unknown agent -> 404, nothing written', async () => {
@@ -119,7 +120,7 @@ describe('PUT /api/admin/channel-bindings', () => {
 
 describe('GET /api/admin/channel-bindings', () => {
   it('passes the tenant and agent filters through', async () => {
-    vi.mocked(db.listChannelBindings).mockReturnValue([REC] as any)
+    vi.mocked(db.listChannelBindings).mockResolvedValue([REC] as any)
     const { ctx, out } = makeCtx('GET', '/api/v1/admin/channel-bindings?tenant_id=tenant-x&agent_id=agent-a')
     await tryHandleAdminB2b(ctx)
     expect(db.listChannelBindings).toHaveBeenCalledWith({ tenantId: 'tenant-x', agentId: 'agent-a' })

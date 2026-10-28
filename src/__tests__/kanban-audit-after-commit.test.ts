@@ -63,6 +63,21 @@ describe('deleteKanbanCard', () => {
     expect(getKanbanCard('c1')).toBeUndefined()
   })
 
+  it('two overlapping deletes of the same card: one true, one false, exactly one audit entry', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Root', assignee: 'agent-a' })
+    const results = await Promise.all([deleteKanbanCard('c1'), deleteKanbanCard('c1')])
+    expect(results.slice().sort()).toEqual([false, true])
+    expect(auditRows('delete').map((r) => r.entity_id)).toEqual(['c1'])
+  })
+
+  it('a delete that removes 0 rows returns false and writes no audit entry', async () => {
+    await createKanbanCard({ id: 'c1', title: 'Root' })
+    db.exec("CREATE TRIGGER keep_card BEFORE DELETE ON kanban_cards BEGIN SELECT RAISE(IGNORE); END")
+    expect(await deleteKanbanCard('c1')).toBe(false)
+    expect(getKanbanCard('c1')?.title).toBe('Root')
+    expect(auditRows('delete')).toEqual([])
+  })
+
   it('a card without an assignee is audited as system', async () => {
     await createKanbanCard({ id: 'c1', title: 'Root' })
     await deleteKanbanCard('c1')

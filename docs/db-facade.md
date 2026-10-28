@@ -218,6 +218,17 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   (it should be 409). Only the first user becomes the global admin (one statement), so this is a status code issue.
 - **The PUT import route** answers 500 when a concurrent request deletes a row between the import's read and its
   write (an old window that was kept, not widened by the facade).
+- **The kanban create, update and delete audit entries are written after the commit.** `createKanbanCard`,
+  `updateKanbanCard` and `deleteKanbanCard` commit the card rows first and write the `agent_audit_log` entry
+  afterwards, delayed at most by the facade lock wait (an `await` inside the synchronous better-sqlite3 transaction
+  would end it early). The entry is best effort: a crash between the commit and the write, or a failing audit insert,
+  loses the entry and never undoes the card change. A delete writes an entry only when a row was deleted, and two
+  overlapping deletes of one card produce one entry (the second finds no card). When kanban moves onto the facade,
+  the rows and the entry join one `dbx.tx`.
+- **One facade `await` is held by the type checker alone.** `resolveTenantDeliveryChats`
+  (`src/web/schedule-runner.ts`) awaits `listChannelBindings`; dropping that `await` fails `tsc` (a Promise has no
+  `length`) but no test. The `await`s of the channel-bindings routes (`src/web/routes/admin-b2b.ts`) are pinned by
+  `admin-channel-bindings.test.ts`, which asserts the response bodies.
 - **A `sweepExpiredSessions` or other timer body without its `catch`** is not noticed by a test (see above).
 
 ## Tests
