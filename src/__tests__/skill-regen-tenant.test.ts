@@ -185,13 +185,13 @@ describe('delete and bulk regen', () => {
     const content = store.get(ID).content
     writeFileSync(agentSkill('bob', ID), addGeneratedHeader('hand edited\n', ID, { tenant: true }))
     store.delete(ID)
-    expect(removeGeneratedSkillFile(ID, content, 'acme')).toEqual({ removed: true, reason: null })
+    expect(await removeGeneratedSkillFile(ID, content, 'acme')).toEqual({ removed: true, reason: null })
     expect(existsSync(agentSkill('ann', ID))).toBe(false)
     expect(existsSync(agentSkill('bob', ID))).toBe(true)
   })
 
-  it('delete of a DB-only tenant skill reports absent', () => {
-    expect(removeGeneratedSkillFile(ID, 'x', 'acme')).toEqual({ removed: false, reason: 'absent' })
+  it('delete of a DB-only tenant skill reports absent', async () => {
+    expect(await removeGeneratedSkillFile(ID, 'x', 'acme')).toEqual({ removed: false, reason: 'absent' })
   })
 
   it('bulk regen generates tenant files and sweeps generated copies whose row is gone', async () => {

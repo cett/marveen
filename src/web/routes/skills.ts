@@ -791,7 +791,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     await deleteSkill(id)
     // The file is only a generated cache of the row: drop it too, or the loader
     // keeps serving a skill the DB no longer has (a hand-edited file is kept).
-    removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)
+    await removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)
     json(res, { ok: true })
     return true
   }
@@ -838,7 +838,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         if (!f) { json(res, { error: 'not_found' }, 404); return true }
         await deleteSkillFile(id, rel)
         // Drop the generated copy too (only while it still equals the deleted row).
-        removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
+        await removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
         json(res, { ok: true })
         return true
       }

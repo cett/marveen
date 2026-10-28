@@ -275,7 +275,7 @@ export interface RemoveGeneratedResult {
  * @param tenantId The deleted row's tenant_id; non-fleet skills are removed from every agent that holds a generated copy.
  * @param files    The deleted skill's companion file rows (read BEFORE the DB delete); the ones still byte-equal on disk are removed too.
  */
-export function removeGeneratedSkillFile(id: string, content: string, tenantId: string, files: SkillFileRow[] = []): RemoveGeneratedResult {
+function removeGeneratedSkillFileLocked(id: string, content: string, tenantId: string, files: SkillFileRow[] = []): RemoveGeneratedResult {
   if (!SKILL_SQL_REGEN) return { removed: false, reason: 'disabled' }
   if (tenantId !== 'fleet') return removeTenantSkillFiles(id, content, files)
   const targetPath = resolveSkillPath(id)
@@ -395,7 +395,7 @@ function removeCompanionFiles(skillDir: string, files: SkillFileRow[]): void {
  * on-disk locations (the fleet dir, or every tenant copy). Only byte-equal
  * files go; returns how many were removed.
  */
-export function removeGeneratedCompanionFile(id: string, relPath: string, content: Buffer, tenantId: string): number {
+function removeGeneratedCompanionFileLocked(id: string, relPath: string, content: Buffer, tenantId: string): number {
   if (!SKILL_SQL_REGEN) return 0
   let removed = 0
   if (tenantId === 'fleet') {
@@ -852,3 +852,7 @@ export const regenSingleSkillFile = serialized(regenSingleSkillFileLocked)
 export const generateTenantSkillFilesForAgent = serialized(generateTenantSkillFilesForAgentLocked)
 export const removeGeneratedTenantSkillFilesForAgent = serialized(removeGeneratedTenantSkillFilesForAgentLocked)
 export const regenTenantSkillFiles = serialized(regenTenantSkillFilesLocked)
+// The two removers are in the queue as well: a single regen that already read the row would otherwise write the
+// file back after the delete route removed it, and the file of a deleted skill would stay on disk.
+export const removeGeneratedSkillFile = serialized(async (id: string, content: string, tenantId: string, files: SkillFileRow[] = []) => removeGeneratedSkillFileLocked(id, content, tenantId, files))
+export const removeGeneratedCompanionFile = serialized(async (id: string, relPath: string, content: Buffer, tenantId: string) => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId))

@@ -561,13 +561,23 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
     // Row and files go under the schedule lock: a write of this schedule that is still running would
-    // otherwise recreate the files (or the row) after the delete.
-    await withScheduleLock(name, async () => {
-      if (useDb) await deleteSchedule(name)
+    // otherwise recreate the files (or the row) after the delete. Like the edit and the toggle, the tenant is
+    // judged again under the lock: a row that moved to another tenant (or is gone) since the checks above
+    // is not deleted, and the audit entry names the tenant the row had when it was deleted.
+    const deleted = await withScheduleLock(name, async () => {
+      let fresh: typeof dbRow = null
+      if (useDb) {
+        fresh = await getScheduleFromDb(name)
+        if (!fresh || crossTenantBlocked(ctx, fresh.tenant_id ?? null)) return null
+        await deleteSchedule(name)
+      }
       // Always remove files too (keeps FS in sync with DB; noop if files missing)
       if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+      return { fresh }
     })
-    await auditScheduleWrite(ctx, 'delete', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: dbRow?.status ?? null })
+    if (!deleted) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    const gone = deleted.fresh ?? dbRow
+    await auditScheduleWrite(ctx, 'delete', name, gone?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: gone?.status ?? null })
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
     return true

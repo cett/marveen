@@ -108,7 +108,7 @@ describe('removal', () => {
     writeFileSync(join(dir(), 'scripts/b.sh'), 'edited\n')
     writeFileSync(join(dir(), 'notes.txt'), 'mine')
     const rows = [...files.values()]
-    const r = removeGeneratedSkillFile(SID, 'body', 'fleet', rows)
+    const r = await removeGeneratedSkillFile(SID, 'body', 'fleet', rows)
     expect(r.removed).toBe(true)
     expect(existsSync(join(dir(), 'scripts/a.sh'))).toBe(false)
     expect(readFileSync(join(dir(), 'scripts/b.sh'), 'utf-8')).toBe('edited\n')

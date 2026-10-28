@@ -179,9 +179,9 @@ waiting for itself), and a failing caller rejects for itself only. It is used in
 delete routes of `src/web/routes/schedules.ts`, which hold the same key for their whole decision (read, hash and
 review check, write, mirror), so an edit that arrives between the hash check of an activation and the activation
 itself waits; the create and reconcile of the tenant starter task (key = starter task name, so a double click ends in
-one create and one reconcile); and the five writers of `src/web/skill-regen.ts`, which share one queue
+one create and one reconcile); and the five writers and the two removers of `src/web/skill-regen.ts`, which share one queue
 (`serialized`), so a bulk regen that read its rows before a dashboard edit cannot write them after the single regen of
-that edit. `activateSchedule` and `patchSchedule` write only the columns they own and take "the row exists" from the
+that edit, and a single regen that read a row cannot write the file back after the delete removed it. `activateSchedule` and `patchSchedule` write only the columns they own and take "the row exists" from the
 match count of their own `UPDATE`: two overlapping patches of different columns both survive, a delete in between gives
 `null` (the routes answer 404) and nothing is re-created. The edit and toggle routes re-read the row under the lock and
 never create one: before, a schedule deleted between the check and the write came back as a fresh row.
