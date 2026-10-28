@@ -5,7 +5,7 @@ import {
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus,
-  createAgentMessage, markKanbanCardDispatched,
+  createAgentMessage, markKanbanCardDispatched, releaseKanbanCardDispatch,
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
@@ -151,8 +151,15 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
       logger.warn({ id }, 'Kanban dispatch skipped: the card id is not a plain token')
       return
     }
-    await createAgentMessage(MAIN_AGENT_ID, target, buildKanbanDispatchContent(card, target))
-    await markKanbanCardDispatched(id)
+    // Claim the guard first: of two dispatchers that read the card together only the one whose conditional
+    // UPDATE wins sends the wake-up. A send that fails gives the claim back.
+    if (!await markKanbanCardDispatched(id)) return
+    try {
+      await createAgentMessage(MAIN_AGENT_ID, target, buildKanbanDispatchContent(card, target))
+    } catch (err) {
+      await releaseKanbanCardDispatch(id)
+      throw err
+    }
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
     logger.warn({ err, id }, 'Kanban dispatch failed (card move still succeeded)')

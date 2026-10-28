@@ -482,11 +482,18 @@ export async function moveKanbanCard(
   return changed
 }
 
-// Stamp the once-only kanban -> agent dispatch guard. Returns false if the
-// card id does not exist.
+// Claim the once-only kanban -> agent dispatch guard in ONE conditional UPDATE: true for the caller whose
+// UPDATE found the stamp unset, false for a card that does not exist or one another dispatcher claimed first.
+// Two dispatchers (the move route and the schedule runner) that read the card at the same moment therefore
+// cannot both wake the assignee.
 export async function markKanbanCardDispatched(id: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return (await dbx.run('UPDATE kanban_cards SET dispatched_at=? WHERE id=?', now, id)).changes > 0
+  return (await dbx.run('UPDATE kanban_cards SET dispatched_at=? WHERE id=? AND dispatched_at IS NULL', now, id)).changes > 0
+}
+
+// Gives the guard back when the wake-up could not be sent, so the next move to in_progress tries again.
+export async function releaseKanbanCardDispatch(id: string): Promise<void> {
+  await dbx.run('UPDATE kanban_cards SET dispatched_at=NULL WHERE id=?', id)
 }
 
 export async function archiveKanbanCard(id: string): Promise<boolean> {
