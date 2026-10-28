@@ -15,7 +15,7 @@ vi.mock('../db.js', () => ({
     await new Promise((r) => setTimeout(r, 5))
     return { id: 'bb', agent_id: 'agent-a', task_ref: null, status: 'active', summary: 'run', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null }
   }),
-  upsertBlackboard: vi.fn(async () => { order.push('done'); return { status: 'done', summary: 'run', task_ref: null } }),
+  upsertBlackboard: vi.fn(() => { order.push('done'); return Promise.resolve({ status: 'done', summary: 'run', task_ref: null }) }),
 }))
 
 const entry = (agent: string): TaskInflightEntry => ({
@@ -28,14 +28,14 @@ beforeEach(() => { order.length = 0 })
 describe('applyBlackboardDone holds the agent lock from the read to the write', () => {
   it('a post that arrives between the read and the done write runs after it, not inside it', async () => {
     const done = applyBlackboardDone(entry('agent-a'))
-    const post = withBlackboardLock('agent-a', async () => { order.push('post') })
+    const post = withBlackboardLock('agent-a', () => { order.push('post'); return Promise.resolve() })
     await Promise.all([done, post])
     expect(order).toEqual(['find', 'done', 'post'])
   })
 
   it('the lock is per agent: another agent is not held up', async () => {
     const done = applyBlackboardDone(entry('agent-a'))
-    const other = withBlackboardLock('agent-b', async () => { order.push('other') })
+    const other = withBlackboardLock('agent-b', () => { order.push('other'); return Promise.resolve() })
     await Promise.all([done, other])
     expect(order[0]).toBe('find')
     expect(order.indexOf('other')).toBeLessThan(order.indexOf('done'))
@@ -46,8 +46,8 @@ describe('withBlackboardLock', () => {
   it('runs the callers of one agent in call order and survives a failure', async () => {
     const seen: number[] = []
     const a = withBlackboardLock('agent-q', async () => { await new Promise((r) => setTimeout(r, 10)); seen.push(1); throw new Error('first fails') })
-    const b = withBlackboardLock('agent-q', async () => { seen.push(2) })
-    const c = withBlackboardLock('agent-q', async () => { seen.push(3) })
+    const b = withBlackboardLock('agent-q', () => { seen.push(2); return Promise.resolve() })
+    const c = withBlackboardLock('agent-q', () => { seen.push(3); return Promise.resolve() })
     await expect(a).rejects.toThrow('first fails')
     await Promise.all([b, c])
     expect(seen).toEqual([1, 2, 3])
