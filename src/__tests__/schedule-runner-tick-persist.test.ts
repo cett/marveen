@@ -18,11 +18,11 @@ vi.mock('../web/atomic-write.js', () => ({
 
 vi.mock('../db.js', () => ({
   appendTaskRun: vi.fn(),
-  listPendingTaskRetries: () => [],
+  listPendingTaskRetries: () => Promise.resolve([]),
   deletePendingTaskRetry: vi.fn(),
-  updatePendingTaskRetry: vi.fn(() => true),
+  updatePendingTaskRetry: vi.fn(() => Promise.resolve(true)),
   insertPendingTaskRetryIfNew: vi.fn(),
-  markPendingTaskRetryAlert: vi.fn(() => false),
+  markPendingTaskRetryAlert: vi.fn(() => Promise.resolve(false)),
   clearPendingTaskRetryAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
   upsertBlackboard: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),

@@ -42,20 +42,20 @@ vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: 
 
 const fk = (id: string, rel: string) => `${id}\u0000${rel}`
 vi.mock('../db.js', () => ({
-  getSkill: vi.fn((id: string) => store.get(id)),
-  deleteSkill: vi.fn((id: string) => { for (const k of [...files.keys()]) if (k.startsWith(`${id}\u0000`)) files.delete(k); return store.delete(id) }),
-  listAllSkills: vi.fn(() => [...store.values()]),
+  getSkill: vi.fn((id: string) => Promise.resolve(store.get(id))),
+  deleteSkill: vi.fn((id: string) => { for (const k of [...files.keys()]) if (k.startsWith(`${id}\u0000`)) files.delete(k); return Promise.resolve(store.delete(id)) }),
+  listAllSkills: vi.fn(() => Promise.resolve([...store.values()])),
   listSkillAccess: vi.fn().mockResolvedValue([]),
   getEnabledAgentsForTenant: vi.fn((t: string) => avail.get(t) ?? []),
   getTenantsForAgent: vi.fn((a: string) => [...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t)),
-  listSkillFiles: vi.fn((id: string) => [...files.values()].filter(f => f.skill_id === id).sort((a, b) => a.rel_path.localeCompare(b.rel_path))),
-  getSkillFile: vi.fn((id: string, rel: string) => files.get(fk(id, rel))),
+  listSkillFiles: vi.fn((id: string) => Promise.resolve([...files.values()].filter(f => f.skill_id === id).sort((a, b) => a.rel_path.localeCompare(b.rel_path)))),
+  getSkillFile: vi.fn((id: string, rel: string) => Promise.resolve(files.get(fk(id, rel)))),
   putSkillFile: vi.fn((id: string, rel: string, content: Buffer, mode?: number) => {
     const r = { skill_id: id, rel_path: rel, content, mode: (mode ?? 0) & 0o111 ? 0o755 : 0o644, created_at: 0, updated_at: 1 }
-    files.set(fk(id, rel), r); return r
+    files.set(fk(id, rel), r); return Promise.resolve(r)
   }),
-  deleteSkillFile: vi.fn((id: string, rel: string) => files.delete(fk(id, rel))),
-  countSkillFiles: vi.fn((id: string) => [...files.values()].filter(f => f.skill_id === id).length),
+  deleteSkillFile: vi.fn((id: string, rel: string) => Promise.resolve(files.delete(fk(id, rel)))),
+  countSkillFiles: vi.fn((id: string) => Promise.resolve([...files.values()].filter(f => f.skill_id === id).length)),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'

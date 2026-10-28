@@ -37,9 +37,9 @@ const seedSkillIfAbsent = vi.fn((o: { id: string; content: string; description: 
   return true
 })
 vi.mock('../db.js', () => ({
-  getSkill: (id: string) => rows.get(id),
-  updateSkill: (id: string, patch: { content?: string; description?: string }) => updateSkill(id, patch),
-  seedSkillIfAbsent: (o: { id: string; content: string; description: string }) => seedSkillIfAbsent(o),
+  getSkill: (id: string) => Promise.resolve(rows.get(id)),
+  updateSkill: (id: string, patch: { content?: string; description?: string }) => Promise.resolve(updateSkill(id, patch)),
+  seedSkillIfAbsent: (o: { id: string; content: string; description: string }) => Promise.resolve(seedSkillIfAbsent(o)),
   listAllSkills: vi.fn().mockResolvedValue([]),
   listSkillAccess: vi.fn().mockResolvedValue([]),
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),

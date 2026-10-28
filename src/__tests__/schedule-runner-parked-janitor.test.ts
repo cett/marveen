@@ -50,7 +50,7 @@ vi.mock('../db.js', () => ({
   deletePendingTaskRetry: (...a: unknown[]) => mockDeletePendingRetry(...a),
   updatePendingTaskRetry: (...a: unknown[]) => mockUpdatePendingRetry(...(a as [unknown, unknown, unknown, unknown])),
   insertPendingTaskRetryIfNew: vi.fn(),
-  markPendingTaskRetryAlert: vi.fn(() => false),
+  markPendingTaskRetryAlert: vi.fn(() => Promise.resolve(false)),
   clearPendingTaskRetryAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
   upsertBlackboard: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),
