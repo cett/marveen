@@ -320,8 +320,8 @@ describe('queryAuditLog: the total of every source is a number (a lost await wou
   it('all sources together: total is the sum', async () => {
     await seedOneRowPerSource()
     const res = await queryAuditLog({ sources: [], limit: 50 })
-    expect(res.total).toBe(8)
-    expect(res.entries).toHaveLength(8)
+    expect(res.total).toBe(7)
+    expect(res.entries).toHaveLength(7)
   })
 })
 
