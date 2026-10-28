@@ -71,7 +71,7 @@ vi.mock('../config.js', async (importOriginal) => {
 })
 
 vi.mock('../web/kanban-ref-normalize.js', () => ({
-  normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => s),
+  normalizeKanbanRefs: vi.fn().mockImplementation(async (s: string) => s),
 }))
 
 vi.mock('../web/federation/address.js', () => ({

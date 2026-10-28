@@ -30,7 +30,7 @@ vi.mock('../web/agent-config.js', () => ({
   isKnownAgent: vi.fn().mockReturnValue(true),
 }))
 vi.mock('../web/kanban-ref-normalize.js', () => ({
-  normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => s),
+  normalizeKanbanRefs: vi.fn().mockImplementation(async (s: string) => s),
 }))
 vi.mock('../web/federation/address.js', () => ({
   parseQualifiedId: vi.fn().mockReturnValue(null),

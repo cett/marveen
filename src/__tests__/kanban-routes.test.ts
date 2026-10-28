@@ -41,7 +41,7 @@ vi.mock('../db.js', () => ({
   revertIdeaFromKanban: vi.fn(),
 }))
 vi.mock('../web/kanban-ref-normalize.js', () => ({
-  normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => s),
+  normalizeKanbanRefs: vi.fn().mockImplementation(async (s: string) => s),
 }))
 vi.mock('../config.js', () => ({
   OWNER_NAME: 'Jonas',

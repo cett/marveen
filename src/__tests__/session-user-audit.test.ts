@@ -115,7 +115,7 @@ vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }))
 vi.mock('../web/kanban-ref-normalize.js', () => ({
-  normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => s),
+  normalizeKanbanRefs: vi.fn().mockImplementation(async (s: string) => s),
 }))
 vi.mock('../web/agent-config.js', () => ({
   listAgentNames: vi.fn().mockReturnValue([]),

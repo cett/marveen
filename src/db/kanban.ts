@@ -1,10 +1,12 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { writeAgentAuditLog } from './audit.js'
 import { db } from './connection.js'
+import { logger } from '../logger.js'
 import { dbx } from './facade.js'
 
 /** The card's running number (#N): the insertion-order id of the row. One definition, shared with the tenant-scoped list. */
@@ -174,6 +176,51 @@ export async function createKanbanCard(card: NewKanbanCard): Promise<void> {
 }
 
 /**
+ * Auto-breakdown: the subtasks of one parent and the parent's summary comment are ONE transaction (a failing
+ * subtask leaves no child and no comment). The creation audits are written inside it, each in its own savepoint:
+ * a failing audit is logged and rolls back only itself, it never takes a subtask with it.
+ */
+export async function createKanbanSubtasks(
+  parentId: string,
+  subtasks: Array<{ title: string; description?: string | null; assignee?: string | null; priority?: string | null }>,
+  actor: string,
+): Promise<string[]> {
+  return dbx.tx(async () => {
+    const parent = await getKanbanCard(parentId)
+    if (!parent) throw new Error(`Parent card not found: ${parentId}`)
+    const ids: string[] = []
+    const audits: KanbanCreateAudit[] = []
+    for (const st of subtasks) {
+      const id = randomUUID().slice(0, 8).toUpperCase()
+      audits.push(await insertKanbanCardRows({
+        id,
+        title: st.title,
+        description: st.description ?? undefined,
+        assignee: st.assignee ?? undefined,
+        priority: (st.priority as NewKanbanCard['priority']) ?? 'normal',
+        project: parent.project ?? undefined,
+        parent_id: parentId,
+        // the subtasks belong to the tenant of the card they hang under
+        tenant_id: parent.tenant_id,
+      }))
+      ids.push(id)
+    }
+    await addKanbanComment(parentId, actor, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
+    for (const entry of audits) await auditInSavepoint(() => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
+    return ids
+  })
+}
+
+/** Runs one audit write in its own savepoint: a failure is logged, rolls back only itself and is never rethrown. */
+async function auditInSavepoint(write: () => Promise<void>, what: string, entityId: string): Promise<void> {
+  try {
+    await dbx.tx(write)
+  } catch (err) {
+    logger.warn({ err, what, entityId }, 'kanban: audit write failed, the card change stays')
+  }
+}
+
+/**
  * due_date is an integer epoch in seconds, or null. A calendar date ('2026-07-15') is accepted and
  * stored as its UTC midnight, the way the other rows hold dates. Anything else is invalid: the
  * function returns undefined for it, and the routes answer 400 (a text date once reached the column
@@ -301,7 +348,7 @@ export async function getSubtree(cardId: string): Promise<KanbanCard[]> {
 export async function getSubtreeHeight(cardId: string): Promise<number> {
   const children = (await dbx.all('SELECT id FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL', cardId)) as { id: string }[]
   if (children.length === 0) return 0
-  return 1 + Math.max(...children.map(c => getSubtreeHeight(c.id)))
+  return 1 + Math.max(...(await Promise.all(children.map(c => getSubtreeHeight(c.id)))))
 }
 
 // Reparent a card to a new parent (or to top-level when newParentId is null).
@@ -568,14 +615,17 @@ export async function deleteKanbanCard(id: string): Promise<boolean> {
       )
       await cascadeDepth(child.id, newChildDepth)
     }
-    return (await tx.run('DELETE FROM kanban_cards WHERE id = ?', id)).changes > 0
+    const removed = (await tx.run('DELETE FROM kanban_cards WHERE id = ?', id)).changes > 0
+    // The delete and its audit commit together; the audit runs in its own savepoint, so a failing audit is logged
+    // and rolls back only itself, the delete stays.
+    if (removed) {
+      await auditInSavepoint(
+        () => writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title } }),
+        'kanban delete', id,
+      )
+    }
+    return removed
   })
-  // After the commit, not inside the synchronous transaction (an await there would end it early).
-  if (deleted) {
-    try {
-      await writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title } })
-    } catch { /* audit failure must not abort card deletion */ }
-  }
   return deleted
 }
 

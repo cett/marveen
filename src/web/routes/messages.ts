@@ -320,7 +320,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // human-facing `#<seq>` form before persistence, so the dashboard and
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
-    let normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    let normalizedContent = await normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
     // PII scrub-before-persist: health/calendar/email
     // data moves between agents through this table with no redaction today.
     // Skipped for completion reports (COMPLETION_REPORT_PREFIX) and, since

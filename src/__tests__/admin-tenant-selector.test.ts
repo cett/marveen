@@ -78,7 +78,7 @@ vi.mock('../web/agent-config.js', () => ({
 }))
 
 vi.mock('../web/kanban-ref-normalize.js', () => ({
-  normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => s),
+  normalizeKanbanRefs: vi.fn().mockImplementation(async (s: string) => s),
 }))
 
 vi.mock('../settings-store.js', () => ({

@@ -4,7 +4,7 @@ import {
   listKanbanCards, countKanbanCards, createKanbanCard, updateKanbanCard, parseKanbanDueDate,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
-  getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus, getDb,
+  getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
@@ -15,8 +15,7 @@ import {
   getHeartbeatKanbanSummary,
   countNewHotMemories,
   countPlannedKanbanCards,
-  writeAgentAuditLog, insertKanbanCardRows, writeKanbanCreateAudit,
-  type KanbanCreateAudit,
+  writeAgentAuditLog, createKanbanSubtasks,
   type KanbanCard,
   type KanbanAuditActor,
 } from '../../db.js'
@@ -648,7 +647,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
-    const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
+    const normalizedContent = await normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     json(res, await addKanbanComment(cardId, author, normalizedContent))
     return true
   }
@@ -709,31 +708,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'required', field: 'subtasks', hint: 'Subtask lista kötelező' }, 400)
       return true
     }
-    const db = getDb()
-    // The rows are written in one synchronous transaction; the audit entries are written after the commit (an
-    // `await` inside a synchronous transaction would end it early).
-    const audits: KanbanCreateAudit[] = []
-    const created = db.transaction(async () => {
-      const ids: string[] = []
-      for (const st of subtasks) {
-        const id = randomUUID().slice(0, 8).toUpperCase()
-        audits.push(await insertKanbanCardRows({
-          id,
-          title: st.title,
-          description: st.description,
-          assignee: st.assignee ?? undefined,
-          priority: (st.priority as any) ?? 'normal',
-          project: parent.project ?? undefined,
-          parent_id: parentId,
-          // the subtasks belong to the tenant of the card they hang under
-          tenant_id: parent.tenant_id,
-        }))
-        ids.push(id)
-      }
-      await addKanbanComment(parentId, BOT_NAME, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
-      return ids
-    })()
-    for (const entry of audits) await writeKanbanCreateAudit(entry)
+    const created = await createKanbanSubtasks(parentId, subtasks, BOT_NAME)
     json(res, { ok: true, created })
     return true
   }
