@@ -247,8 +247,8 @@ describe('GET /api/otel-export', () => {
 // agent belonging to a different tenant.
 describe('spans route: tenant-IDOR guard', () => {
   beforeEach(async () => {
-    createTenant('tenant-spans-a', 'Tenant Spans A')
-    createTenant('tenant-spans-b', 'Tenant Spans B')
+    await createTenant('tenant-spans-a', 'Tenant Spans A')
+    await createTenant('tenant-spans-b', 'Tenant Spans B')
     await setTenantAgentAvailability('tenant-spans-a', 'tenant-a-agent', true)
     await setTenantAgentAvailability('tenant-spans-b', 'tenant-b-agent', true)
   })

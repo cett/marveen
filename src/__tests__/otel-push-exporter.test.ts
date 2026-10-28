@@ -46,7 +46,7 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   settings.OTEL_EXPORT_ENABLED = '0'
   settings.OTEL_EXPORTER_OTLP_ENDPOINT = ''
   settings.OTEL_EXPORTER_OTLP_HEADERS = ''
@@ -54,7 +54,7 @@ beforeEach(() => {
   for (const k of Object.keys(envFile)) delete envFile[k]
   resetOtelExporterStatus()
   resetMetricValues()
-  setOtelMetricsExportWatermark(0)
+  await setOtelMetricsExportWatermark(0)
   getDb().exec("DELETE FROM otel_spans WHERE trace_id LIKE 'trace-tick-test-%'")
   getDb().exec("DELETE FROM token_usage WHERE agent LIKE 'agent-tick-test-%'")
   vi.restoreAllMocks()
@@ -66,7 +66,7 @@ async function seedClosedSpan(traceId: string, spanId: string) {
     agent_id: 'agent-tick-test', operation: 'test.op', start_ms: 1000,
     attributes: null,
   })
-  closeOtelSpan(traceId, spanId, 2000, 'ok')
+  await closeOtelSpan(traceId, spanId, 2000, 'ok')
 }
 
 describe('tick', () => {
@@ -106,7 +106,7 @@ describe('tick', () => {
     const body = JSON.parse(String((tracesCall![1] as RequestInit).body))
     expect(body.resourceSpans.length).toBeGreaterThan(0)
 
-    const remaining = getUnexportedOtelSpans(1000).map(s => s.trace_id)
+    const remaining = (await getUnexportedOtelSpans(1000)).map(s => s.trace_id)
     expect(remaining).not.toContain('trace-tick-test-3')
   })
 
@@ -118,7 +118,7 @@ describe('tick', () => {
 
     await tick()
 
-    const remaining = getUnexportedOtelSpans(1000).map(s => s.trace_id)
+    const remaining = (await getUnexportedOtelSpans(1000)).map(s => s.trace_id)
     expect(remaining).toContain('trace-tick-test-4')
   })
 
@@ -130,7 +130,7 @@ describe('tick', () => {
 
     await expect(tick()).resolves.toBeUndefined()
 
-    const remaining = getUnexportedOtelSpans(1000).map(s => s.trace_id)
+    const remaining = (await getUnexportedOtelSpans(1000)).map(s => s.trace_id)
     expect(remaining).toContain('trace-tick-test-5')
   })
 
@@ -138,11 +138,11 @@ describe('tick', () => {
     settings.OTEL_EXPORT_ENABLED = '1'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.local:4318'
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
-    const before = getOtelMetricsExportState().last_export_ms
+    const before = (await getOtelMetricsExportState()).last_export_ms
 
     await tick()
 
-    expect(getOtelMetricsExportState().last_export_ms).toBeGreaterThan(before)
+    expect((await getOtelMetricsExportState()).last_export_ms).toBeGreaterThan(before)
   })
 
   it('posts token-usage metrics to <endpoint>/v1/metrics when usage exists in the window', async () => {
@@ -227,7 +227,7 @@ describe('transport behaviour', () => {
     await tick()
 
     expect(fetchSpy).not.toHaveBeenCalled()
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).toContain('trace-tick-test-h2')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).toContain('trace-tick-test-h2')
   })
 
   it('binds the headers to the .env endpoint: an endpoint written to the settings table cannot receive them', async () => {
@@ -283,7 +283,7 @@ describe('transport behaviour', () => {
 
     await tick()
 
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).not.toContain('trace-tick-test-p1')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).not.toContain('trace-tick-test-p1')
     expect(getOtelExporterStatus().traces.rejected).toBe(1)
   })
 
@@ -294,7 +294,7 @@ describe('transport behaviour', () => {
 
     await tick()
 
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).not.toContain('trace-tick-test-d1')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).not.toContain('trace-tick-test-d1')
     const t = getOtelExporterStatus().traces
     expect(t.rejected).toBe(1)
     expect(t.failures).toBe(1)
@@ -308,7 +308,7 @@ describe('transport behaviour', () => {
 
     await tick()
     expect(callsTo(fetchSpy, '/v1/traces')).toHaveLength(1)
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).toContain('trace-tick-test-b1')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).toContain('trace-tick-test-b1')
     const t = getOtelExporterStatus().traces
     expect(t.consecutiveFailures).toBe(1)
     expect(t.lastError).toContain('401')
@@ -334,7 +334,7 @@ describe('transport behaviour', () => {
     }
     expect(callsTo(fetchSpy, '/v1/traces')).toHaveLength(2)
     expect(getOtelExporterStatus().traces.consecutiveFailures).toBe(0)
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).not.toContain('trace-tick-test-b2')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).not.toContain('trace-tick-test-b2')
   })
 
   it('honors Retry-After when it is longer than the backoff', async () => {

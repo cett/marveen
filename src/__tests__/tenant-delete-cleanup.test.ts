@@ -70,10 +70,10 @@ function seedSimple(): void {
 }
 
 describe('deleteTenant: tenant-keyed leftovers', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant(TARGET, 'Gone')
-    createTenant(SIBLING, 'Sibling')
+    await createTenant(TARGET, 'Gone')
+    await createTenant(SIBLING, 'Sibling')
   })
 
   it('removes the target tenant\'s rows in every simple table and import table, and only those', () => {
@@ -114,10 +114,10 @@ describe('deleteTenant: agent-keyed rows', () => {
   const tenantOf = (table: string, agent: string) =>
     (db().prepare(`SELECT tenant_id FROM ${table} WHERE agent_id = ?`).all(agent) as { tenant_id: string }[]).map((r) => r.tenant_id)
 
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant(TARGET, 'Gone')
-    createTenant(SIBLING, 'Sibling')
+    await createTenant(TARGET, 'Gone')
+    await createTenant(SIBLING, 'Sibling')
     // solo: only serves TARGET. shared: serves TARGET and default. other: only SIBLING. fleet: no availability row at all.
     avail(TARGET, 'solo'); avail(TARGET, 'shared'); avail('default', 'shared'); avail(SIBLING, 'other')
     for (const agent of ['solo', 'shared', 'other', 'fleet']) {
@@ -194,9 +194,9 @@ describe('deleteTenant: the approval journal', () => {
     initDatabase(':memory:')
   })
 
-  it("removes the deleted tenant's approval events and leaves every other tenant's", () => {
-    createTenant(TARGET, 'Gone')
-    createTenant(SIBLING, 'Sibling')
+  it("removes the deleted tenant's approval events and leaves every other tenant's", async () => {
+    await createTenant(TARGET, 'Gone')
+    await createTenant(SIBLING, 'Sibling')
     for (const t of [TARGET, SIBLING, 'default']) {
       db().prepare("INSERT INTO approval_events (approval_id, tenant_id, event, created_at) VALUES (?, ?, 'consumed', 0)").run(`ap-${t}`, t)
     }
@@ -235,9 +235,9 @@ describe('deleteTenant: drift guard', () => {
 })
 
 describe('deleteTenant: tombstones and untouched rollups', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant(TARGET, 'Gone')
+    await createTenant(TARGET, 'Gone')
   })
 
   it('keeps the api_tokens row as a revoked tombstone', () => {

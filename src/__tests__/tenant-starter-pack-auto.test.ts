@@ -43,7 +43,7 @@ beforeEach(async () => {
   admin = await import('../web/routes/admin-b2b.js')
   pack = await import('../web/tenant-starter-pack.js')
   // A tenant that existed before this feature: it has an agent and no marker.
-  dbMod.createTenant('old', 'Old')
+  await dbMod.createTenant('old', 'Old')
   await dbMod.setTenantAgentAvailability('old', 'old-one', true)
 })
 

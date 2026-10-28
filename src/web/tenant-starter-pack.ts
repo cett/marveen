@@ -85,7 +85,7 @@ export interface StarterAgentResolution {
 /** True when the agent is tied to a tenant other than `tenantId` (an enabled availability row, or being its main agent). */
 export async function agentIsShared(agent: string, tenantId: string): Promise<boolean> {
   if ((await getTenantsForAgent(agent)).some(t => t !== tenantId)) return true
-  const mainOf = getTenantForMainAgent(agent)
+  const mainOf = await getTenantForMainAgent(agent)
   return mainOf !== undefined && mainOf.id !== tenantId
 }
 
@@ -94,7 +94,7 @@ export async function agentIsShared(agent: string, tenantId: string): Promise<bo
  * else the only agent enabled for it. A null agent carries the reason it could not be chosen.
  */
 export async function resolveStarterAgent(tenantId: string, explicit?: string): Promise<StarterAgentResolution> {
-  const tenant = getTenant(tenantId)
+  const tenant = await getTenant(tenantId)
   if (!tenant || tenant.disabled_at !== null || tenantId === 'default') return { agent: null, reason: 'tenant_unavailable' }
   const known = new Set(knownScheduleAgents())
 

@@ -509,10 +509,10 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
     db.exec(readFileSync(MIGRATION_0032_PATH, 'utf-8'))
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('tenant-a', 'Tenant A')
-    createTenant('tenant-b', 'Tenant B')
+    await createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-b', 'Tenant B')
   })
 
   it('a fleet agent later also granted to a tenant: stale single-tenant row becomes "_multi_"', async () => {
@@ -622,10 +622,10 @@ describe('Migration 0033 -- backfills token_usage.tenant_id from tenant_agent_av
     ).run(agent, sessionId, timestamp)
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('tenant-a', 'Tenant A')
-    createTenant('tenant-b', 'Tenant B')
+    await createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-b', 'Tenant B')
   })
 
   it('a fleet agent (0 enabled rows) defaults to "default"', () => {

@@ -70,7 +70,7 @@ describe('kind: skill', () => {
 
 describe('kind: tenant', () => {
   beforeEach(async () => {
-    createTenant('co-x', 'Co X')
+    await createTenant('co-x', 'Co X')
     await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' })
   })
 
@@ -82,7 +82,7 @@ describe('kind: tenant', () => {
   })
 
   it('also accepts an agent available only to a tenant the skill is granted to', async () => {
-    createTenant('co-y', 'Co Y')
+    await createTenant('co-y', 'Co Y')
     await grantSkillAccess('co-x-helper', 'co-y')
     await setTenantAgentAvailability('co-y', 'agent-b', true)
     const res = await post({ kind: 'tenant', header_id: 'co-x-helper', agent_id: 'agent-b', dir_name: 'co-x-helper', content: 'edited by grantee' })
@@ -144,7 +144,7 @@ describe('kind: companion', () => {
   })
 
   it('applies the tenant qualification check to a generated tenant copy', async () => {
-    createTenant('co-x', 'Co X')
+    await createTenant('co-x', 'Co X')
     await createSkill({ id: 'co-x-helper', name: 'helper', content: 'c', tenant_id: 'co-x' })
     const denied = await post({ kind: 'companion', skill_id: 'co-x-helper', rel_path: 'a.txt', content_base64: b64('x'), tenant_agent: 'agent-a' })
     expect(denied.body.ignored).toBe(true)

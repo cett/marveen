@@ -44,8 +44,8 @@ beforeEach(async () => {
   dbMod.initDatabase(':memory:')
   pack = await import('../web/tenant-starter-pack.js')
 
-  dbMod.createTenant('acme', 'Acme')
-  dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
+  await dbMod.createTenant('acme', 'Acme')
+  await dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
   await dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
   await dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
 })
@@ -89,7 +89,7 @@ describe('two concurrent createStarterPack calls', () => {
 
   it('a create racing a reconcile after a main agent change ends on the new agent, with one row', async () => {
     await pack.createStarterPack(human(), 'acme')
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
 
     const [create, reconcile] = await Promise.all([pack.createStarterPack(human(), 'acme'), pack.reconcileStarterPack(human(), 'acme')])
 

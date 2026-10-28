@@ -314,7 +314,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       }, 400)
       return true
     }
-    const tenant = getTenant(tenantId)
+    const tenant = await getTenant(tenantId)
     if (!tenant || tenant.disabled_at) {
       json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'Unknown or disabled tenant' }, 400)
       return true
@@ -446,7 +446,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Only an authenticated admin can move a schedule to another tenant' }, 403)
         return true
       }
-      const target = typeof data.tenant_id === 'string' ? getTenant(data.tenant_id) : undefined
+      const target = typeof data.tenant_id === 'string' ? await getTenant(data.tenant_id) : undefined
       if (!target || target.disabled_at) {
         json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'Unknown or disabled tenant' }, 400)
         return true

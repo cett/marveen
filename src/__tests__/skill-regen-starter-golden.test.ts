@@ -89,8 +89,8 @@ describe('skill-regen and tenant-starter-pack output', () => {
     const regen = await import('../web/skill-regen.js')
     const pack = await import('../web/tenant-starter-pack.js')
 
-    db.createTenant('acme', 'Acme')
-    db.updateTenant('acme', { main_agent_id: 'acme-lead' })
+    await db.createTenant('acme', 'Acme')
+    await db.updateTenant('acme', { main_agent_id: 'acme-lead' })
     await db.setTenantAgentAvailability('acme', 'acme-lead', true)
     await db.setTenantAgentAvailability('acme', 'acme-aux', true)
 

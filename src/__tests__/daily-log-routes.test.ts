@@ -167,8 +167,8 @@ describe('tryHandleDailyLog', () => {
 // agent's journal.
 describe('tryHandleDailyLog: tenant-IDOR guard', () => {
   beforeAll(async () => {
-    createTenant('tenant-daily-a', 'Tenant Daily A')
-    createTenant('tenant-daily-b', 'Tenant Daily B')
+    await createTenant('tenant-daily-a', 'Tenant Daily A')
+    await createTenant('tenant-daily-b', 'Tenant Daily B')
     await setTenantAgentAvailability('tenant-daily-a', 'tenant-a-agent', true)
     await setTenantAgentAvailability('tenant-daily-b', 'tenant-b-agent', true)
   })

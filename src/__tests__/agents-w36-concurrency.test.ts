@@ -192,7 +192,7 @@ describe('closeMessagesWithoutDelivery: one transaction', () => {
 
 describe('getAgentConversationThreads: tenant scope', () => {
   it('a tenant sees only its own peers and counts only its own messages', async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     await createAgentMessage('peer-1', 'marveen', 'default one')
     await createAgentMessage('peer-2', 'marveen', 'acme one', null, null, 'acme')
     await createAgentMessage('marveen', 'peer-2', 'acme two', null, null, 'acme')
@@ -211,7 +211,7 @@ describe('setTenantAgentAvailability: availability and context in one step', () 
   const context = (): number => (db.prepare("SELECT COUNT(*) AS n FROM agent_tenant_context WHERE agent_id = 'agent-t' AND tenant_id = 'acme'").get() as { n: number }).n
 
   it('disabling the agent deletes its context for that tenant', async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     await setTenantAgentAvailability('acme', 'agent-t', true)
     db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-t', 'acme', 'bound')").run()
     const row = await setTenantAgentAvailability('acme', 'agent-t', false)
@@ -220,7 +220,7 @@ describe('setTenantAgentAvailability: availability and context in one step', () 
   })
 
   it('a failing context delete keeps the agent enabled', async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     await setTenantAgentAvailability('acme', 'agent-t', true)
     db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-t', 'acme', 'bound')").run()
     db.exec("CREATE TRIGGER w36_fail_ctx BEFORE DELETE ON agent_tenant_context BEGIN SELECT RAISE(ABORT, 'context refused'); END")
@@ -233,7 +233,7 @@ describe('setTenantAgentAvailability: availability and context in one step', () 
   })
 
   it('runs on the tx handle', async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     const seen = spyFacade()
     await setTenantAgentAvailability('acme', 'agent-t', false)
     expect(seen.filter((s) => /tenant_agent_availability|agent_tenant_context/.test(s))).toEqual([])
@@ -242,8 +242,8 @@ describe('setTenantAgentAvailability: availability and context in one step', () 
 
 describe('resolveAgentOwningTenantIdSync: the boot twin agrees with the asynchronous resolver', () => {
   it('main agent of a tenant, agent enabled for a tenant, enabled for two, disabled, unknown', async () => {
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
     db.prepare("UPDATE tenants SET main_agent_id = 'coordinator' WHERE id = 'beta'").run()
     await setTenantAgentAvailability('acme', 'worker', true)
     await setTenantAgentAvailability('acme', 'shared', true)

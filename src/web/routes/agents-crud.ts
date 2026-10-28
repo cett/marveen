@@ -253,7 +253,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
     // Token usage: per-agent average input tokens/call over the last 30 days
     const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 3600
-    const tokenSummaries = getTokenSummary(thirtyDaysAgo)
+    const tokenSummaries = await getTokenSummary(thirtyDaysAgo)
     const tokenMap = new Map(
       tokenSummaries.map(s => [s.agent, s.totalCalls > 0 ? s.totalInput / s.totalCalls : 0])
     )

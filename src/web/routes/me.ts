@@ -41,7 +41,7 @@ export async function tryHandleMe(ctx: RouteContext): Promise<boolean> {
   }
 
   if (method === 'GET') {
-    const tenant = user.tenant_id ? getTenant(user.tenant_id) : undefined
+    const tenant = user.tenant_id ? await getTenant(user.tenant_id) : undefined
     const sessions = await listUserSessions(user.id)
     json(res, {
       username: user.username,
@@ -98,7 +98,7 @@ export async function tryHandleMe(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const updated = adminPatchDashboardUser(user.id, patch)
+    const updated = await adminPatchDashboardUser(user.id, patch)
     if (!updated) {
       json(res, { error: 'not_found', field: 'user' }, 404)
       return true

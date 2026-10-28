@@ -74,7 +74,7 @@ describe('memory scoping the prompt depends on', () => {
     dbMod = await import('../db.js')
     dbMod.initDatabase(':memory:')
     memories = await import('../web/routes/memories.js')
-    dbMod.createTenant('acme', 'Acme')
+    await dbMod.createTenant('acme', 'Acme')
   })
   afterEach(() => {
     if (prevHome === undefined) delete process.env['HOME']; else process.env['HOME'] = prevHome

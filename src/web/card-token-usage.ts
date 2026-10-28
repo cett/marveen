@@ -102,12 +102,12 @@ export async function getCardTokenUsage(
     dataExpired, retentionDays,
   }
   if (!agent) return empty
-  empty.dataUntil = getLastTokenUsageTimestamp(agent)
+  empty.dataUntil = await getLastTokenUsageTimestamp(agent)
   if (windows.length === 0) return empty
 
   const byModel = new Map<string, CardTokenModelRow>()
   for (const w of windows) {
-    for (const r of sumTokenUsageByModel(agent, w.from, w.to)) {
+    for (const r of await sumTokenUsageByModel(agent, w.from, w.to)) {
       const key = r.model ?? ''
       const acc = byModel.get(key)
       if (!acc) { byModel.set(key, { ...r }); continue }

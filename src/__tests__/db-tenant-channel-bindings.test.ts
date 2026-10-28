@@ -14,8 +14,8 @@ beforeEach(async () => {
   vi.resetModules()
   dbMod = await import('../db.js')
   dbMod.initDatabase(':memory:')
-  dbMod.createTenant('acme', 'Acme')
-  dbMod.createTenant('beta', 'Beta')
+  await dbMod.createTenant('acme', 'Acme')
+  await dbMod.createTenant('beta', 'Beta')
 })
 
 afterEach(() => {
@@ -182,14 +182,14 @@ describe('tenant channel bindings', () => {
       expect(agents()).toEqual(['agent-b', 'agent-c'])
     })
 
-    it('disabling a tenant or changing its main agent drops every context of that tenant', () => {
+    it('disabling a tenant or changing its main agent drops every context of that tenant', async () => {
       ctx().run('agent-a', 'acme'); ctx().run('agent-b', 'acme'); ctx().run('agent-c', 'beta')
-      dbMod.updateTenant('acme', { display_name: 'Acme 2' })
+      await dbMod.updateTenant('acme', { display_name: 'Acme 2' })
       expect(agents()).toEqual(['agent-a', 'agent-b', 'agent-c'])       // unrelated edit
-      dbMod.updateTenant('acme', { main_agent_id: 'agent-a' })
+      await dbMod.updateTenant('acme', { main_agent_id: 'agent-a' })
       expect(agents()).toEqual(['agent-c'])
       ctx().run('agent-b', 'beta')
-      dbMod.updateTenant('beta', { disabled: true })
+      await dbMod.updateTenant('beta', { disabled: true })
       expect(agents()).toEqual([])
     })
   })

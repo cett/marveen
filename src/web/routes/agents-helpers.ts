@@ -299,13 +299,13 @@ export async function getAgentSummary(name: string): Promise<AgentSummary> {
  *  fields on org-chart nodes without recomputing the primary-tenant lookup
  *  or duplicating the tenantNames-merge logic. */
 export async function tenantSummaryFields(name: string): Promise<Pick<AgentSummary, 'primaryTenantId' | 'tenantIds' | 'tenantNames'>> {
-  const primaryTenant = getTenantForMainAgent(name)
+  const primaryTenant = await getTenantForMainAgent(name)
   const tenantIds = await getTenantsForAgent(name)
   const tenantNames: Record<string, string> = {}
   if (primaryTenant) tenantNames[primaryTenant.id] = primaryTenant.display_name
   for (const id of tenantIds) {
     if (id in tenantNames) continue
-    const t = getTenant(id)
+    const t = await getTenant(id)
     if (t) tenantNames[id] = t.display_name
   }
   return { primaryTenantId: primaryTenant?.id ?? null, tenantIds, tenantNames }

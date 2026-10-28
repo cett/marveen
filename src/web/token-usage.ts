@@ -219,7 +219,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
       let fileSize: number
       try { fileSize = statSync(file).size } catch { continue }
 
-      const cursor = getTokenUsageCursor(file)
+      const cursor = await getTokenUsageCursor(file)
       if (cursor && cursor.last_size === fileSize) continue
 
       const fromLine = (cursor && cursor.last_size <= fileSize) ? cursor.last_line : 0
@@ -231,7 +231,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
           recordTokenUsageCalls(calls, tenantId, file, linesRead, fileSize)
           totalInserted += calls.length
         } else {
-          setTokenUsageCursor(file, linesRead, fileSize)
+          await setTokenUsageCursor(file, linesRead, fileSize)
         }
         totalFiles++
       } catch (err) {

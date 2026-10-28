@@ -66,7 +66,7 @@ beforeEach(async () => {
   initDatabase(':memory:')
   _clearSessionCacheForTest()
   _resetEnrollCodesForTest()
-  createTenant('tenant-b', 'Tenant B')
+  await createTenant('tenant-b', 'Tenant B')
   cookies = {}
   ids = {}
   await makeUser('owner', 'admin', null) // the first user: global admin

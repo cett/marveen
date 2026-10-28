@@ -248,7 +248,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const isPartnerTenant = ctx.role !== 'fleet_agent' && ctx.tenantId != null && ctx.tenantId !== 'default'
     if (isPartnerTenant) {
       const cleanFrom = sanitizeAgentIdent(from)
-      const allowed = isAuthorizedPartnerSender(cleanFrom, ctx.tenantId!)
+      const allowed = await isAuthorizedPartnerSender(cleanFrom, ctx.tenantId!)
       if (!allowed) {
         await writeAgentAuditLog({ agent_id: cleanFrom, entity: 'message', action: 'create',
           detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist', principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) } })
@@ -569,7 +569,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       const done = existing
       // Close the OTel span now that the message has a terminal status.
       if (done?.trace_id && done?.span_id) {
-        closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
+        await closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
       }
       // Notify the delegator: create a reverse message from executor → delegator so
       // they learn the result without polling. Use a sentinel prefix to break

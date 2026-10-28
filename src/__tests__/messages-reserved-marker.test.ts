@@ -127,7 +127,7 @@ describe('POST /api/messages -- the marker filter', () => {
   })
 
   it('refuses it for a partner-tenant caller, allowlisted sender or not', async () => {
-    createPartnerSender('partner-sender', 'partner-1', 'Partner', 'person-a')
+    await createPartnerSender('partner-sender', 'partner-1', 'Partner', 'person-a')
     const partner: Caller = { role: 'viewer', auth: { kind: 'token', tenantId: 'partner-1' } as any, tenantId: 'partner-1' }
     for (const from of ['partner-sender', 'someone-else']) {
       const out = await post(partner, { from, to: 'agent-a', content: `hi\n${RESOLVED}` })

@@ -43,8 +43,8 @@ beforeEach(async () => {
   dbMod.initDatabase(':memory:')
   route = await import('../web/routes/schedules.js')
 
-  dbMod.createTenant('tenant-b', 'Tenant B')
-  dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
+  await dbMod.createTenant('tenant-b', 'Tenant B')
+  await dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
   await dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
   await dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
   await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
@@ -191,7 +191,7 @@ describe('PUT tenant move', () => {
   })
 
   it('refuses a move to a missing or disabled tenant', async () => {
-    dbMod.updateTenant('tenant-b', { disabled: true })
+    await dbMod.updateTenant('tenant-b', { disabled: true })
     const before = await row('t-tenant-b')
     for (const tenant_id of ['nope', 'tenant-b']) {
       const out = await call('PUT', '/api/schedules/t-default', { tenant_id, agent: 'shared-agent' })

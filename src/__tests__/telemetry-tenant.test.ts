@@ -126,8 +126,8 @@ describe('migration 0077 backfill (Q3b)', () => {
 describe('resolveWriteTenant', () => {
   beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
     await setTenantAgentAvailability('acme', 'solo', true)
     await setTenantAgentAvailability('acme', 'shared', true)
     await setTenantAgentAvailability('beta', 'shared', true)
@@ -148,7 +148,7 @@ describe('resolveWriteTenant', () => {
   })
 
   it('counts the tenant an agent coordinates', async () => {
-    updateTenant('beta', { main_agent_id: 'boss' })
+    await updateTenant('beta', { main_agent_id: 'boss' })
     expect(await resolveWriteTenant('boss')).toBe('beta')
     await setTenantAgentAvailability('acme', 'boss', true)
     expect(await resolveWriteTenant('boss')).toBeNull()
@@ -178,8 +178,8 @@ describe('resolveWriteTenant', () => {
 describe('the writers stamp the tenant', () => {
   beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
     await setTenantAgentAvailability('acme', 'solo', true)
     await setTenantAgentAvailability('acme', 'shared', true)
     await setTenantAgentAvailability('beta', 'shared', true)
@@ -242,10 +242,10 @@ describe('the writers stamp the tenant', () => {
 })
 
 describe('token rollups keep the tenants of a shared agent apart', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
   })
 
   const raw = (tenant: string, ts: number, tokens: number) =>
@@ -275,9 +275,9 @@ describe('token rollups keep the tenants of a shared agent apart', () => {
 })
 
 describe('labels belong to a tenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
   })
 
   it('a new label is default unless a tenant is named, and the list narrows to a tenant', async () => {

@@ -2,6 +2,7 @@
 // re-export surface and boot orchestration).
 
 import { db, vecExtensionLoaded } from './connection.js'
+import { dbx } from './facade.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { deleteVecMemoryOnRawHandle } from './vector.js'
@@ -10,15 +11,13 @@ import { reloadAgentSettingsCache } from './agent-settings-cache.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
 import { GENAI_TOKEN_BUCKET_BOUNDS } from '../otel-genai.js'
 
-export function recordMemoryRead(
+export async function recordMemoryRead(
   agentId: string,
   memoryId: number,
   context: 'heartbeat' | 'search' | 'direct',
-): void {
+): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
-  ).run(agentId, memoryId, now, context)
+  await dbx.run('INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)', agentId, memoryId, now, context)
 }
 
 // Record reads for a batch of memory ids in a single transaction.
@@ -40,10 +39,10 @@ export function recordMemoryReadBatch(
 
 // Returns memories that are stale for the given agent:
 // updated_at > agent's last span_read.read_at (or never read at all).
-export function getStaleMemories(agentId: string, tenantId?: string): Memory[] {
+export async function getStaleMemories(agentId: string, tenantId?: string): Promise<Memory[]> {
   const tc = tenantId ? '\n      AND m.tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
-  return db.prepare(`
+  return dbx.all<Memory>(`
     SELECT m.* FROM memories m
     LEFT JOIN (
       SELECT memory_id, MAX(read_at) AS last_read
@@ -54,13 +53,11 @@ export function getStaleMemories(agentId: string, tenantId?: string): Memory[] {
     WHERE (m.agent_id = ? OR m.category = 'shared')
       AND m.updated_at > COALESCE(sr.last_read, 0)${tc}
     ORDER BY m.updated_at DESC
-  `).all(agentId, agentId, ...tp) as Memory[]
+  `, agentId, agentId, ...tp)
 }
 
-export function getMemoryVersions(memoryId: number): MemoryVersion[] {
-  return db.prepare(
-    'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC, id DESC'
-  ).all(memoryId) as MemoryVersion[]
+export async function getMemoryVersions(memoryId: number): Promise<MemoryVersion[]> {
+  return dbx.all<MemoryVersion>('SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC, id DESC', memoryId)
 }
 
 // Auto tier-resorting based on span_reads activity. All three steps run in
@@ -75,19 +72,19 @@ export function getMemoryVersions(memoryId: number): MemoryVersion[] {
 // version prune: delete memory_versions older than 180 days.
 //
 // Returns affected row counts for observability.
-export function runMemoryMaintenance(opts: {
+export async function runMemoryMaintenance(opts: {
   warmToColdDays?: number
   coldToWarmDays?: number
   minAgents?: number
   versionTtlDays?: number
-} = {}): { warmToCold: number; coldToWarm: number; prunedVersions: number } {
+} = {}): Promise<{ warmToCold: number; coldToWarm: number; prunedVersions: number }> {
   const warmToColdSecs = (opts.warmToColdDays ?? 30) * 86400
   const coldToWarmSecs = (opts.coldToWarmDays ?? 30) * 86400
   const minAgents = opts.minAgents ?? 2
   const versionCutoff = Math.floor(Date.now() / 1000) - (opts.versionTtlDays ?? 180) * 86400
   const now = Math.floor(Date.now() / 1000)
 
-  return db.transaction(() => {
+  return dbx.tx(async (tx) => {
     // Only warm -> cold: hot is manually managed; shared belongs to all agents.
     // created_at check: memory must be at least warmToColdSecs old before it
     // can be auto-archived (a brand-new unread memory is not the same as a stale one).
@@ -165,15 +162,13 @@ export function runMemoryMaintenance(opts: {
     ).run(versionCutoff).changes
 
     return { warmToCold, coldToWarm, prunedVersions }
-  })()
+  })
 }
 
 // Delete memory_versions entries older than ttlDays (default 180).
-export function pruneMemoryVersions(ttlDays = 180): number {
+export async function pruneMemoryVersions(ttlDays = 180): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
-  return db.prepare(
-    'DELETE FROM memory_versions WHERE changed_at < ?'
-  ).run(cutoff).changes
+  return (await dbx.run('DELETE FROM memory_versions WHERE changed_at < ?', cutoff)).changes
 }
 
 export interface OtelSpan {
@@ -203,7 +198,7 @@ export interface InterAgentSpanAttributes {
 }
 
 export async function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): Promise<void> {
-  db.prepare(`
+  await dbx.run(`
     INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (trace_id, span_id) DO UPDATE SET
@@ -214,26 +209,24 @@ export async function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> &
       end_ms = excluded.end_ms,
       status = excluded.status,
       attributes = COALESCE(excluded.attributes, otel_spans.attributes)
-  `).run(
-    span.trace_id, span.span_id, span.parent_span_id ?? null,
+  `, span.trace_id, span.span_id, span.parent_span_id ?? null,
     span.agent_id, span.operation, span.start_ms,
     span.end_ms ?? null, span.status ?? 'running', span.attributes ?? null,
     await resolveWriteTenant(span.agent_id),
   )
 }
 
-export function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
-  return db.prepare(`
+export async function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): Promise<boolean> {
+  return (await dbx.run(`
     UPDATE otel_spans SET
       exported_at = CASE WHEN exported_at IS NOT NULL AND (end_ms IS NOT ? OR status IS NOT ?) THEN NULL ELSE exported_at END,
       end_ms = ?, status = ?
     WHERE trace_id = ? AND span_id = ?
-  `).run(endMs, status, endMs, status, traceId, spanId).changes > 0
+  `, endMs, status, endMs, status, traceId, spanId)).changes > 0
 }
 
-export function getOtelTrace(traceId: string): OtelSpan[] {
-  return db.prepare('SELECT * FROM otel_spans WHERE trace_id = ? ORDER BY start_ms ASC')
-    .all(traceId) as OtelSpan[]
+export async function getOtelTrace(traceId: string): Promise<OtelSpan[]> {
+  return dbx.all<OtelSpan>('SELECT * FROM otel_spans WHERE trace_id = ? ORDER BY start_ms ASC', traceId)
 }
 
 export interface OtelTraceSummary {
@@ -247,12 +240,12 @@ export interface OtelTraceSummary {
 }
 
 // Query spans for OTEL JSON export. All params are optional.
-export function queryOtelSpans(opts: {
+export async function queryOtelSpans(opts: {
   agent?: string
   fromMs?: number
   toMs?: number
   limit?: number
-}): OtelSpan[] {
+}): Promise<OtelSpan[]> {
   const { agent, fromMs, toMs, limit = 1000 } = opts
   const clauses: string[] = []
   const params: (string | number)[] = []
@@ -261,13 +254,11 @@ export function queryOtelSpans(opts: {
   if (toMs !== undefined) { clauses.push('start_ms <= ?'); params.push(toMs) }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   params.push(Math.min(limit, 5000))
-  return db.prepare(
-    `SELECT * FROM otel_spans ${where} ORDER BY start_ms ASC LIMIT ?`,
-  ).all(...params) as OtelSpan[]
+  return dbx.all<OtelSpan>(`SELECT * FROM otel_spans ${where} ORDER BY start_ms ASC LIMIT ?`, ...params)
 }
 
-export function listOtelTraces(limit = 50): OtelTraceSummary[] {
-  return db.prepare(`
+export async function listOtelTraces(limit = 50): Promise<OtelTraceSummary[]> {
+  return dbx.all<OtelTraceSummary>(`
     SELECT
       s.trace_id,
       s.operation  AS root_operation,
@@ -285,7 +276,7 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
     WHERE s.parent_span_id IS NULL
     ORDER BY s.start_ms DESC
     LIMIT ?
-  `).all(limit) as OtelTraceSummary[]
+  `, limit)
 }
 
 // ── OTLP push exporter (#800/#802) ────────────────────────────────────────────
@@ -299,14 +290,14 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
 // the hook's own writes, so its final state goes out once more under the same span id.
 export const OTEL_RUNNING_SPAN_IDLE_MS = 15 * 60 * 1000
 
-export function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): OtelSpan[] {
-  return db.prepare(`
+export async function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): Promise<OtelSpan[]> {
+  return dbx.all<OtelSpan>(`
     SELECT * FROM otel_spans
     WHERE end_ms IS NOT NULL AND exported_at IS NULL
       AND (status != 'running' OR end_ms <= ?)
     ORDER BY end_ms ASC
     LIMIT ?
-  `).all(nowMs - OTEL_RUNNING_SPAN_IDLE_MS, limit) as OtelSpan[]
+  `, nowMs - OTEL_RUNNING_SPAN_IDLE_MS, limit)
 }
 
 // Marks a batch of spans as pushed. Runs as one transaction so a crash
@@ -324,14 +315,13 @@ export interface OtelMetricsExportState {
   last_export_ms: number
 }
 
-export function getOtelMetricsExportState(): OtelMetricsExportState {
-  const row = db.prepare('SELECT last_export_ms FROM otel_metrics_export_state WHERE id = 1')
-    .get() as OtelMetricsExportState | undefined
+export async function getOtelMetricsExportState(): Promise<OtelMetricsExportState> {
+  const row = await dbx.get<OtelMetricsExportState>('SELECT last_export_ms FROM otel_metrics_export_state WHERE id = 1')
   return row ?? { last_export_ms: 0 }
 }
 
-export function setOtelMetricsExportWatermark(lastExportMs: number): void {
-  db.prepare('UPDATE otel_metrics_export_state SET last_export_ms = ? WHERE id = 1').run(lastExportMs)
+export async function setOtelMetricsExportWatermark(lastExportMs: number): Promise<void> {
+  await dbx.run('UPDATE otel_metrics_export_state SET last_export_ms = ? WHERE id = 1', lastExportMs)
 }
 
 export interface TokenUsageMetricRow {
@@ -350,8 +340,8 @@ export interface TokenUsageMetricRow {
 // gen_ai.client.token.usage delta metric export. Bounded window (not just
 // ">= sinceMs") so a slow tick can't double-count rows a later tick would
 // also pick up.
-export function sumTokenUsageWindow(sinceSec: number, untilSec: number): TokenUsageMetricRow[] {
-  return db.prepare(`
+export async function sumTokenUsageWindow(sinceSec: number, untilSec: number): Promise<TokenUsageMetricRow[]> {
+  return dbx.all<TokenUsageMetricRow>(`
     SELECT
       agent,
       model,
@@ -364,7 +354,7 @@ export function sumTokenUsageWindow(sinceSec: number, untilSec: number): TokenUs
     FROM token_usage
     WHERE timestamp > ? AND timestamp <= ?
     GROUP BY agent, model, tenant_id
-  `).all(sinceSec, untilSec) as TokenUsageMetricRow[]
+  `, sinceSec, untilSec)
 }
 
 // One token_usage row is one model response, so the per-response token count of the input and output
@@ -388,15 +378,14 @@ function bucketCaseSql(column: string): string {
   return `CASE ${whens} ELSE ${GENAI_TOKEN_BUCKET_BOUNDS.length} END`
 }
 
-export function tokenUsageHistogramWindow(sinceSec: number, untilSec: number): TokenHistogramRow[] {
+export async function tokenUsageHistogramWindow(sinceSec: number, untilSec: number): Promise<TokenHistogramRow[]> {
   const side = (column: 'input_tokens' | 'output_tokens', type: 'input' | 'output') => `
     SELECT agent, model, tenant_id, '${type}' AS token_type, ${bucketCaseSql(column)} AS bucket,
            COUNT(*) AS n, SUM(${column}) AS total, MIN(${column}) AS min_value, MAX(${column}) AS max_value
     FROM token_usage
     WHERE timestamp > @since AND timestamp <= @until AND ${column} > 0
     GROUP BY agent, model, tenant_id, bucket`
-  return db.prepare(`${side('input_tokens', 'input')} UNION ALL ${side('output_tokens', 'output')}`)
-    .all({ since: sinceSec, until: untilSec }) as TokenHistogramRow[]
+  return dbx.all<TokenHistogramRow>(`${side('input_tokens', 'input')} UNION ALL ${side('output_tokens', 'output')}`, { since: sinceSec, until: untilSec })
 }
 
 // ── B2B Tenant registry ───────────────────────────────────────────────────────
@@ -409,32 +398,31 @@ export interface Tenant {
   main_agent_id: string | null
 }
 
-export function createTenant(id: string, displayName: string): Tenant {
+export async function createTenant(id: string, displayName: string): Promise<Tenant> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)')
-    .run(id, displayName, now)
+  await dbx.run('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)', id, displayName, now)
   return { id, display_name: displayName, created_at: now, disabled_at: null, main_agent_id: null }
 }
 
-export function getTenant(id: string): Tenant | undefined {
-  return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant | undefined
+export async function getTenant(id: string): Promise<Tenant | undefined> {
+  return dbx.get<Tenant>('SELECT * FROM tenants WHERE id = ?', id)
 }
 
-export function listTenants(includeDisabled = false): Tenant[] {
+export async function listTenants(includeDisabled = false): Promise<Tenant[]> {
   if (includeDisabled) {
-    return db.prepare('SELECT * FROM tenants ORDER BY created_at ASC').all() as Tenant[]
+    return dbx.all<Tenant>('SELECT * FROM tenants ORDER BY created_at ASC')
   }
-  return db.prepare('SELECT * FROM tenants WHERE disabled_at IS NULL ORDER BY created_at ASC').all() as Tenant[]
+  return dbx.all<Tenant>('SELECT * FROM tenants WHERE disabled_at IS NULL ORDER BY created_at ASC')
 }
 
 /** The tenant, if any, whose main_agent_id is this agent -- drives the
  *  Agents screen's tenant-main-agent badge. */
-export function getTenantForMainAgent(agentId: string): Tenant | undefined {
-  return db.prepare('SELECT * FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL').get(agentId) as Tenant | undefined
+export async function getTenantForMainAgent(agentId: string): Promise<Tenant | undefined> {
+  return dbx.get<Tenant>('SELECT * FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL', agentId)
 }
 
-export function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean; main_agent_id?: string }): Tenant | null {
-  const existing = getTenant(id)
+export async function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean; main_agent_id?: string }): Promise<Tenant | null> {
+  const existing = await getTenant(id)
   if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
   const fields: string[] = []
@@ -455,13 +443,13 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
   }
   if (fields.length === 0) return existing
   params.push(id)
-  db.prepare(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`).run(...params)
+  await dbx.run(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`, ...params)
   // Disabling the tenant or changing its main agent ends the use-time tenant context of every agent that was
   // serving it (the skill gate fails closed until each agent's next prompt re-resolves the source).
   if (patch.disabled === true || (patch.main_agent_id !== undefined && patch.main_agent_id !== existing.main_agent_id)) {
-    db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(id)
+    await dbx.run('DELETE FROM agent_tenant_context WHERE tenant_id = ?', id)
   }
-  return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant
+  return (await dbx.get('SELECT * FROM tenants WHERE id = ?', id)) as Tenant
 }
 
 // Tables whose rows belong to a tenant by a plain `tenant_id` column and are purged with one
@@ -687,23 +675,21 @@ export function deleteTenant(tenantId: string): TenantDeleteResult {
 // ── B2B Dashboard user provisioning ──────────────────────────────────────────
 
 /** Admin-controlled user provisioning: explicit role + tenant_id, no first-user-wins. */
-export function provisionDashboardUser(
+export async function provisionDashboardUser(
   username: string,
   passwordHash: string,
   role: string,
   tenantId: string | null,
   email?: string | null,
   displayName?: string | null,
-): DashboardUser {
+): Promise<DashboardUser> {
   const now = Math.floor(Date.now() / 1000)
-  const { id } = db
-    .prepare('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id')
-    .get(username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now) as { id: number }
+  const { id } = (await dbx.get('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id', username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now)) as { id: number }
   return { id, username, password_hash: passwordHash, role, tenant_id: tenantId, email: email ?? null, display_name: displayName ?? null, created_at: now, updated_at: now, disabled: 0 }
 }
 
-export function getDashboardUserById(id: number): DashboardUser | undefined {
-  return db.prepare('SELECT * FROM dashboard_users WHERE id = ?').get(id) as DashboardUser | undefined
+export async function getDashboardUserById(id: number): Promise<DashboardUser | undefined> {
+  return dbx.get<DashboardUser>('SELECT * FROM dashboard_users WHERE id = ?', id)
 }
 
 export interface ListUsersOpts {
@@ -711,7 +697,7 @@ export interface ListUsersOpts {
   includeDisabled?: boolean
 }
 
-export function listDashboardUsersFiltered(opts: ListUsersOpts = {}): DashboardUserPublic[] {
+export async function listDashboardUsersFiltered(opts: ListUsersOpts = {}): Promise<DashboardUserPublic[]> {
   const conditions: string[] = []
   const params: unknown[] = []
   if (!opts.includeDisabled) {
@@ -724,9 +710,7 @@ export function listDashboardUsersFiltered(opts: ListUsersOpts = {}): DashboardU
     params.push(opts.tenantId)
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  return db
-    .prepare(`SELECT id, username, role, tenant_id, email, display_name, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`)
-    .all(...params) as DashboardUserPublic[]
+  return dbx.all<DashboardUserPublic>(`SELECT id, username, role, tenant_id, email, display_name, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`, ...params)
 }
 
 export interface AdminUserPatch {
@@ -738,8 +722,8 @@ export interface AdminUserPatch {
   display_name?: string | null
 }
 
-export function adminPatchDashboardUser(id: number, patch: AdminUserPatch): DashboardUser | null {
-  const existing = getDashboardUserById(id)
+export async function adminPatchDashboardUser(id: number, patch: AdminUserPatch): Promise<DashboardUser | null> {
+  const existing = await getDashboardUserById(id)
   if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
   const fields: string[] = ['updated_at = ?']
@@ -751,12 +735,12 @@ export function adminPatchDashboardUser(id: number, patch: AdminUserPatch): Dash
   if ('email' in patch) { fields.push('email = ?'); params.push(patch.email ?? null) }
   if ('display_name' in patch) { fields.push('display_name = ?'); params.push(patch.display_name ?? null) }
   params.push(id)
-  db.prepare(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?`).run(...params)
-  return getDashboardUserById(id) ?? null
+  await dbx.run(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?`, ...params)
+  return await getDashboardUserById(id) ?? null
 }
 
-export function countActiveAdmins(): number {
-  return (db.prepare("SELECT COUNT(*) AS c FROM dashboard_users WHERE role = 'admin' AND disabled = 0").get() as { c: number }).c
+export async function countActiveAdmins(): Promise<number> {
+  return ((await dbx.get("SELECT COUNT(*) AS c FROM dashboard_users WHERE role = 'admin' AND disabled = 0")) as { c: number }).c
 }
 
 // Prefix that marks a message as a completion report / acknowledgement.
@@ -774,37 +758,25 @@ export interface PartnerSender {
   disabled_at: number | null
 }
 
-export function isAuthorizedPartnerSender(senderId: string, tenantId: string): boolean {
-  const row = db.prepare(
-    'SELECT 1 FROM partner_senders WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL'
-  ).get(senderId, tenantId)
+export async function isAuthorizedPartnerSender(senderId: string, tenantId: string): Promise<boolean> {
+  const row = await dbx.get('SELECT 1 FROM partner_senders WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL', senderId, tenantId)
   return row != null
 }
 
-export function listPartnerSenders(tenantId?: string): PartnerSender[] {
+export async function listPartnerSenders(tenantId?: string): Promise<PartnerSender[]> {
   if (tenantId != null) {
-    return db.prepare(
-      'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE tenant_id = ? ORDER BY created_at ASC'
-    ).all(tenantId) as PartnerSender[]
+    return dbx.all<PartnerSender>('SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE tenant_id = ? ORDER BY created_at ASC', tenantId)
   }
-  return db.prepare(
-    'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders ORDER BY tenant_id, created_at ASC'
-  ).all() as PartnerSender[]
+  return dbx.all<PartnerSender>('SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders ORDER BY tenant_id, created_at ASC')
 }
 
-export function createPartnerSender(senderId: string, tenantId: string, displayName: string, createdBy: string): PartnerSender {
-  db.prepare(
-    'INSERT INTO partner_senders (sender_id, tenant_id, display_name, created_by) VALUES (?, ?, ?, ?)'
-  ).run(senderId, tenantId, displayName, createdBy)
-  return db.prepare(
-    'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE sender_id = ? AND tenant_id = ?'
-  ).get(senderId, tenantId) as PartnerSender
+export async function createPartnerSender(senderId: string, tenantId: string, displayName: string, createdBy: string): Promise<PartnerSender> {
+  await dbx.run('INSERT INTO partner_senders (sender_id, tenant_id, display_name, created_by) VALUES (?, ?, ?, ?)', senderId, tenantId, displayName, createdBy)
+  return (await dbx.get('SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE sender_id = ? AND tenant_id = ?', senderId, tenantId)) as PartnerSender
 }
 
-export function disablePartnerSender(senderId: string, tenantId: string): boolean {
-  const result = db.prepare(
-    'UPDATE partner_senders SET disabled_at = unixepoch() WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL'
-  ).run(senderId, tenantId)
+export async function disablePartnerSender(senderId: string, tenantId: string): Promise<boolean> {
+  const result = await dbx.run('UPDATE partner_senders SET disabled_at = unixepoch() WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL', senderId, tenantId)
   return result.changes > 0
 }
 
@@ -826,17 +798,13 @@ export interface TokenUsageCall {
   toolName: string | null
 }
 
-export function getTokenUsageCursor(filePath: string): { last_line: number; last_size: number } | undefined {
-  return db
-    .prepare('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?')
-    .get(filePath) as { last_line: number; last_size: number } | undefined
+export async function getTokenUsageCursor(filePath: string): Promise<{ last_line: number; last_size: number } | undefined> {
+  return dbx.get<{ last_line: number; last_size: number }>('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?', filePath)
 }
 
-export function setTokenUsageCursor(filePath: string, lastLine: number, lastSize: number): void {
-  db.prepare(
-    `INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
-     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`,
-  ).run(filePath, lastLine, lastSize)
+export async function setTokenUsageCursor(filePath: string, lastLine: number, lastSize: number): Promise<void> {
+  await dbx.run(`INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
+     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`, filePath, lastLine, lastSize)
 }
 
 /** Upserts a file's parsed calls and advances its cursor in one transaction. */
@@ -896,14 +864,14 @@ export interface TokenSummary {
   perModel: TokenSummaryModelRow[]
 }
 
-export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
+export async function getTokenSummary(from?: number, to?: number): Promise<TokenSummary[]> {
   const conditions: string[] = []
   const params: any[] = []
   if (from) { conditions.push('timestamp >= ?'); params.push(from) }
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
   const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''
 
-  const rows = db.prepare(`
+  const rows = (await dbx.all(`
     SELECT agent,
       COUNT(*) as totalCalls,
       SUM(input_tokens) as totalInput,
@@ -917,9 +885,9 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
     FROM token_usage
     ${where}
     GROUP BY agent ORDER BY totalInput DESC
-  `).all(...params) as Omit<TokenSummary, 'perModel'>[]
+  `, ...params)) as Omit<TokenSummary, 'perModel'>[]
 
-  const modelRows = db.prepare(`
+  const modelRows = (await dbx.all(`
     SELECT agent, model,
       SUM(input_tokens) as totalInput,
       SUM(output_tokens) as totalOutput,
@@ -929,7 +897,7 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
     FROM token_usage
     ${where}
     GROUP BY agent, model
-  `).all(...params) as (TokenSummaryModelRow & { agent: string })[]
+  `, ...params)) as (TokenSummaryModelRow & { agent: string })[]
 
   const byAgent = new Map<string, TokenSummaryModelRow[]>()
   for (const mr of modelRows) {
@@ -951,8 +919,8 @@ export interface TokenUsageWindowModelRow {
 }
 
 /** One agent's token rows with `from <= timestamp < to`, summed per model. */
-export function sumTokenUsageByModel(agent: string, from: number, to: number): TokenUsageWindowModelRow[] {
-  return db.prepare(`
+export async function sumTokenUsageByModel(agent: string, from: number, to: number): Promise<TokenUsageWindowModelRow[]> {
+  return dbx.all<TokenUsageWindowModelRow>(`
     SELECT model, COUNT(*) AS calls,
       COALESCE(SUM(input_tokens), 0) AS inputTokens,
       COALESCE(SUM(output_tokens), 0) AS outputTokens,
@@ -961,12 +929,12 @@ export function sumTokenUsageByModel(agent: string, from: number, to: number): T
     FROM token_usage
     WHERE agent = ? AND timestamp >= ? AND timestamp < ?
     GROUP BY model
-  `).all(agent, from, to) as TokenUsageWindowModelRow[]
+  `, agent, from, to)
 }
 
 /** Timestamp of the newest token row of one agent, or null when it has none. */
-export function getLastTokenUsageTimestamp(agent: string): number | null {
-  const row = db.prepare('SELECT MAX(timestamp) AS ts FROM token_usage WHERE agent = ?').get(agent) as { ts: number | null }
+export async function getLastTokenUsageTimestamp(agent: string): Promise<number | null> {
+  const row = (await dbx.get('SELECT MAX(timestamp) AS ts FROM token_usage WHERE agent = ?', agent)) as { ts: number | null }
   return row.ts ?? null
 }
 
@@ -980,8 +948,8 @@ export interface ModelDistEntry {
   totalThinking: number
 }
 
-export function getModelDistribution(from?: number, to?: number, agent?: string): ModelDistEntry[] {
-  const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
+export async function getModelDistribution(from?: number, to?: number, agent?: string): Promise<ModelDistEntry[]> {
+  const hasModelCol = (await dbx.get("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'")) as { n: number }
   if (!hasModelCol.n) return []
 
   let sql = `
@@ -1006,7 +974,7 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
   sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY model ORDER BY count DESC'
 
-  return db.prepare(sql).all(...params) as ModelDistEntry[]
+  return dbx.all<ModelDistEntry>(sql, ...params)
 }
 
 export interface ToolStatEntry {
@@ -1021,7 +989,7 @@ export interface ToolStatEntry {
   totalThinking: number
 }
 
-export function getToolStats(from?: number, to?: number, agent?: string): ToolStatEntry[] {
+export async function getToolStats(from?: number, to?: number, agent?: string): Promise<ToolStatEntry[]> {
   let sql = `
     SELECT tool_name,
       model,
@@ -1043,7 +1011,7 @@ export function getToolStats(from?: number, to?: number, agent?: string): ToolSt
   if (conditions.length) sql += ' AND ' + conditions.join(' AND ')
   sql += ' GROUP BY tool_name, model ORDER BY count DESC'
 
-  return db.prepare(sql).all(...params) as ToolStatEntry[]
+  return dbx.all<ToolStatEntry>(sql, ...params)
 }
 
 export interface TimelineBucket {
@@ -1054,12 +1022,12 @@ export interface TimelineBucket {
   outputTokens: number
 }
 
-export function getTokenTimeline(
+export async function getTokenTimeline(
   bucketMinutes: number = 60,
   from?: number,
   to?: number,
   agent?: string,
-): TimelineBucket[] {
+): Promise<TimelineBucket[]> {
   const bucketSeconds = bucketMinutes * 60
   let sql = `
     SELECT
@@ -1078,7 +1046,7 @@ export function getTokenTimeline(
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY bucket, agent ORDER BY bucket ASC'
 
-  return db.prepare(sql).all(...params) as TimelineBucket[]
+  return dbx.all<TimelineBucket>(sql, ...params)
 }
 
 export interface TokenDetail {
@@ -1098,9 +1066,9 @@ export interface TokenDetail {
   project: string | null
 }
 
-export function getTokenDetails(
+export async function getTokenDetails(
   opts: { agent?: string; from?: number; to?: number; limit?: number; offset?: number; minTokens?: number; q?: string },
-): TokenDetail[] {
+): Promise<TokenDetail[]> {
   let sql = `SELECT * FROM token_usage`
   const conditions: string[] = []
   const params: any[] = []
@@ -1121,35 +1089,35 @@ export function getTokenDetails(
   sql += ' LIMIT ? OFFSET ?'
   params.push(opts.limit || 100, opts.offset || 0)
 
-  return db.prepare(sql).all(...params) as TokenDetail[]
+  return dbx.all<TokenDetail>(sql, ...params)
 }
 
-export function correlateWithKanban(): void {
-  const uncorrelated = db.prepare(`
+export async function correlateWithKanban(): Promise<void> {
+  const uncorrelated = (await dbx.all(`
     SELECT DISTINCT agent, MIN(timestamp) as minTs, MAX(timestamp) as maxTs
     FROM token_usage
     WHERE task_title IS NULL
     GROUP BY agent
-  `).all() as { agent: string; minTs: number; maxTs: number }[]
+  `)) as { agent: string; minTs: number; maxTs: number }[]
 
   for (const row of uncorrelated) {
-    const cards = db.prepare(`
+    const cards = await dbx.all<any>(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
       ORDER BY updated_at ASC
-    `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
+    `, row.agent, row.agent, row.minTs, row.maxTs)
 
     for (const card of cards) {
       const nextCard = cards.find((c: any) => c.updated_at > card.updated_at)
       const endTs = nextCard ? nextCard.updated_at : row.maxTs
 
-      db.prepare(`
+      await dbx.run(`
         UPDATE token_usage
         SET task_title = ?, project = ?
         WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
-      `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
+      `, card.title, card.project || null, row.agent, card.updated_at, endTs)
     }
   }
 }

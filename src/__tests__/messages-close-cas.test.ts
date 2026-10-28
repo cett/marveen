@@ -218,7 +218,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
   })
 
   it('a foreign-tenant closed message looks like a missing one (404), never a 409', async () => {
-    createTenant('tenant-x', 'Tenant X')
+    await createTenant('tenant-x', 'Tenant X')
     const id = await task('tenant-x')
     await put(ADMIN, id, { status: 'done', result: 'ok' })
     const out = await put({ role: 'viewer', auth: { kind: 'token' }, tenantId: 'default' }, id, { status: 'done', result: 'probe' })
@@ -228,7 +228,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
   })
 
   it('an own-tenant caller gets the 409 on its own closed message', async () => {
-    createTenant('tenant-x', 'Tenant X')
+    await createTenant('tenant-x', 'Tenant X')
     const id = await task('tenant-x')
     const caller: Caller = { role: 'viewer', auth: { kind: 'token' }, tenantId: 'tenant-x' }
     expect((await put(caller, id, { status: 'done', result: 'ok' })).status).toBe(200)

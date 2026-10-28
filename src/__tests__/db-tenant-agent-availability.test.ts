@@ -5,10 +5,10 @@ import { initDatabase, createTenant, setTenantAgentAvailability, getEnabledAgent
 // in-memory SQLite database, so a broken query (wrong column, wrong enabled
 // filter) is caught even when route-level tests mock db.js entirely.
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
-  createTenant('other-co', 'Other Co')
+  await createTenant('acme', 'Acme')
+  await createTenant('other-co', 'Other Co')
 })
 
 describe('getEnabledAgentsForTenant', () => {

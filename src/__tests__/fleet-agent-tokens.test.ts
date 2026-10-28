@@ -264,7 +264,7 @@ describe('what a fleet_agent token cannot reach at all', () => {
 
 describe('a shared agent has no tenant on the token: the serving context decides, and none means no', () => {
   beforeEach(async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     await setTenantAgentAvailability('default', 'shared', true)
     await setTenantAgentAvailability('acme', 'shared', true)
     await mint('tok-shared', 'shared')

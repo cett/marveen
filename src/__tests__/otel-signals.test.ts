@@ -60,15 +60,15 @@ describe('inter-agent messages', () => {
       trace_id: 'trace-sig-1', span_id: 'span-sig-1', parent_span_id: null, agent_id: 'a',
       operation: 'a->b', start_ms: 1000, attributes: null,
     })
-    recordMessageFailure({ trace_id: 'trace-sig-1', span_id: 'span-sig-1' }, 'abandoned')
-    const span = getOtelTrace('trace-sig-1')[0]
+    await recordMessageFailure({ trace_id: 'trace-sig-1', span_id: 'span-sig-1' }, 'abandoned')
+    const span = (await getOtelTrace('trace-sig-1'))[0]
     expect(span.status).toBe('error')
     expect(span.end_ms).not.toBeNull()
     expect(attrMap((await points('marveen.agent_messages.failed'))[0]).reason).toBe('abandoned')
   })
 
   it('a failed message without span ids is still counted', async () => {
-    recordMessageFailure({ trace_id: null, span_id: null }, 'error')
+    await recordMessageFailure({ trace_id: null, span_id: null }, 'error')
     expect(await points('marveen.agent_messages.failed')).toHaveLength(1)
   })
 })

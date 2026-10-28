@@ -809,7 +809,7 @@ export async function getTenantsForAgent(agentId: string): Promise<string[]> {
  *  below, so an imported row's tenant_id always matches what the write-check
  *  itself would compute for that agent. */
 export async function resolveAgentOwningTenantId(agentId: string): Promise<string> {
-  const primary = getTenantForMainAgent(agentId)
+  const primary = await getTenantForMainAgent(agentId)
   if (primary) return primary.id
   return (await getTenantsForAgent(agentId))[0] ?? 'default'
 }
@@ -841,7 +841,7 @@ export async function agentBelongsToTenant(agentId: string, tenantId: string): P
  *  two or more tenants), so a coordinator that is also enabled for a second tenant counts as
  *  shared everywhere. */
 export async function getServedTenantIds(agentId: string): Promise<string[]> {
-  const primary = getTenantForMainAgent(agentId)
+  const primary = await getTenantForMainAgent(agentId)
   const ids = await getTenantsForAgent(agentId)
   return primary && !ids.includes(primary.id) ? [primary.id, ...ids] : ids
 }

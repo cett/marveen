@@ -87,7 +87,7 @@ const dispatchedAt = (id: string) => (getDb().prepare('SELECT dispatched_at FROM
 
 beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
   await createKanbanCard({ id: CARD, title: HOSTILE_TITLE, description: HOSTILE_DESC, assignee: 'alpha', priority: 'urgent', tenant_id: 'default' })
   await createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', description: 'default text', assignee: 'beta', tenant_id: 'default' })

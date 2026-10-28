@@ -24,7 +24,7 @@ async function insertMem(content: string, category: string, agentId: string): Pr
 describe('recordMemoryRead', () => {
   it('inserts a row into span_reads', async () => {
     const id = await insertMem('read-test content', 'warm', 'agent-a')
-    recordMemoryRead('agent-a', id, 'direct')
+    await recordMemoryRead('agent-a', id, 'direct')
     const row = getDb()
       .prepare('SELECT * FROM span_reads WHERE agent_id = ? AND memory_id = ?')
       .get('agent-a', id) as { context: string; read_at: number } | undefined
@@ -35,8 +35,8 @@ describe('recordMemoryRead', () => {
 
   it('inserts multiple rows for different contexts', async () => {
     const id = await insertMem('multi-context content', 'warm', 'agent-a')
-    recordMemoryRead('agent-a', id, 'search')
-    recordMemoryRead('agent-a', id, 'heartbeat')
+    await recordMemoryRead('agent-a', id, 'search')
+    await recordMemoryRead('agent-a', id, 'heartbeat')
     const rows = getDb()
       .prepare('SELECT context FROM span_reads WHERE memory_id = ? ORDER BY id DESC LIMIT 2')
       .all(id) as { context: string }[]
@@ -74,7 +74,7 @@ describe('getStaleMemories', () => {
     const id = await insertMem('never-read content', 'warm', 'agent-c')
     // Ensure updated_at is set (migration backfill covers created rows)
     getDb().prepare('UPDATE memories SET updated_at = unixepoch() + 1 WHERE id = ?').run(id)
-    const stale = getStaleMemories('agent-c')
+    const stale = await getStaleMemories('agent-c')
     expect(stale.some(m => m.id === id)).toBe(true)
   })
 
@@ -82,25 +82,25 @@ describe('getStaleMemories', () => {
     const id = await insertMem('fresh-read content', 'warm', 'agent-d')
     getDb().prepare('UPDATE memories SET updated_at = unixepoch() - 100 WHERE id = ?').run(id)
     // Read it AFTER the update
-    recordMemoryRead('agent-d', id, 'direct')
-    const stale = getStaleMemories('agent-d')
+    await recordMemoryRead('agent-d', id, 'direct')
+    const stale = await getStaleMemories('agent-d')
     expect(stale.some(m => m.id === id)).toBe(false)
   })
 
   it('returns memory updated after the agent last read it', async () => {
     const id = await insertMem('stale-after-update', 'warm', 'agent-e')
     // Record a read first, then update the memory
-    recordMemoryRead('agent-e', id, 'direct')
+    await recordMemoryRead('agent-e', id, 'direct')
     getDb().prepare('UPDATE memories SET updated_at = unixepoch() + 9999, content = ? WHERE id = ?')
       .run('updated stale content', id)
-    const stale = getStaleMemories('agent-e')
+    const stale = await getStaleMemories('agent-e')
     expect(stale.some(m => m.id === id)).toBe(true)
   })
 
   it('includes shared memories for any agent', async () => {
     const id = await insertMem('shared-memory', 'shared', 'agent-f')
     getDb().prepare('UPDATE memories SET updated_at = unixepoch() + 1 WHERE id = ?').run(id)
-    const stale = getStaleMemories('agent-g') // different agent
+    const stale = await getStaleMemories('agent-g') // different agent
     expect(stale.some(m => m.id === id)).toBe(true)
   })
 })
@@ -110,14 +110,14 @@ describe('getStaleMemories', () => {
 describe('getMemoryVersions', () => {
   it('returns empty array when memory has never been updated', async () => {
     const id = await insertMem('virgin content', 'warm', 'agent-h')
-    const versions = getMemoryVersions(id)
+    const versions = await getMemoryVersions(id)
     expect(versions).toHaveLength(0)
   })
 
   it('captures a version when content changes via updateMemory', async () => {
     const id = await insertMem('original content', 'warm', 'agent-h')
     await updateMemory(id, 'updated content', 'warm', 'agent-h', 'keywords')
-    const versions = getMemoryVersions(id)
+    const versions = await getMemoryVersions(id)
     expect(versions).toHaveLength(1)
     expect(versions[0].content).toBe('original content')
     expect(versions[0].change_type).toBe('update')
@@ -127,7 +127,7 @@ describe('getMemoryVersions', () => {
   it('captures a version when category changes via updateMemory', async () => {
     const id = await insertMem('category-change content', 'warm', 'agent-h')
     await updateMemory(id, 'category-change content', 'cold', 'agent-h', undefined)
-    const versions = getMemoryVersions(id)
+    const versions = await getMemoryVersions(id)
     expect(versions).toHaveLength(1)
     expect(versions[0].category).toBe('warm')
     expect(versions[0].change_type).toBe('category_change')
@@ -137,7 +137,7 @@ describe('getMemoryVersions', () => {
     const id = await insertMem('v1', 'warm', 'agent-h')
     await updateMemory(id, 'v2', 'warm', 'agent-h', undefined)
     await updateMemory(id, 'v3', 'cold', 'agent-h', undefined)
-    const versions = getMemoryVersions(id)
+    const versions = await getMemoryVersions(id)
     expect(versions.length).toBeGreaterThanOrEqual(2)
     // Most recent change first
     expect(versions[0].content).toBe('v2')
@@ -147,7 +147,7 @@ describe('getMemoryVersions', () => {
   it('does not create a version when only accessed_at changes', async () => {
     const id = await insertMem('access-only', 'warm', 'agent-h')
     getDb().prepare('UPDATE memories SET accessed_at = unixepoch() + 1 WHERE id = ?').run(id)
-    const versions = getMemoryVersions(id)
+    const versions = await getMemoryVersions(id)
     expect(versions).toHaveLength(0)
   })
 
@@ -163,7 +163,7 @@ describe('getMemoryVersions', () => {
     expect(row.agent_id).toBe('agent-x')
 
     // Version record must attribute the change to agent-y
-    const versions = getMemoryVersions(id)
+    const versions = await getMemoryVersions(id)
     expect(versions).toHaveLength(1)
     expect(versions[0].changed_by).toBe('agent-y')
   })
@@ -175,7 +175,7 @@ describe('runMemoryMaintenance', () => {
   it('does NOT move a fresh warm memory to cold even with no reads (brand-new)', async () => {
     // created_at = now by default; threshold is 30 days -> must stay warm
     const id = await insertMem('brand-new warm content', 'warm', 'agent-i')
-    runMemoryMaintenance({ warmToColdDays: 30 })
+    await runMemoryMaintenance({ warmToColdDays: 30 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('warm')
   })
@@ -185,7 +185,7 @@ describe('runMemoryMaintenance', () => {
     // Backdate creation to 40 days ago so the age guard passes
     getDb().prepare('UPDATE memories SET created_at = ? WHERE id = ?')
       .run(Math.floor(Date.now() / 1000) - 40 * 86400, id)
-    const result = runMemoryMaintenance({ warmToColdDays: 30 })
+    const result = await runMemoryMaintenance({ warmToColdDays: 30 })
     expect(result.warmToCold).toBeGreaterThanOrEqual(1)
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('cold')
@@ -199,7 +199,7 @@ describe('runMemoryMaintenance', () => {
     const recentRead = Math.floor(Date.now() / 1000) - 5 * 86400
     getDb().prepare('INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)')
       .run('agent-i', id, recentRead, 'direct')
-    runMemoryMaintenance({ warmToColdDays: 30 })
+    await runMemoryMaintenance({ warmToColdDays: 30 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('warm')
   })
@@ -208,7 +208,7 @@ describe('runMemoryMaintenance', () => {
     const id = await insertMem('idle hot content', 'hot', 'agent-i2')
     // Even with 0-day threshold and old creation date, hot is never in scope
     getDb().prepare('UPDATE memories SET created_at = 0 WHERE id = ?').run(id)
-    runMemoryMaintenance({ warmToColdDays: 0 })
+    await runMemoryMaintenance({ warmToColdDays: 0 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('hot')
   })
@@ -216,24 +216,24 @@ describe('runMemoryMaintenance', () => {
   it('does NOT move shared memory to cold even if unread', async () => {
     const id = await insertMem('shared unread', 'shared', 'agent-i3')
     getDb().prepare('UPDATE memories SET created_at = 0 WHERE id = ?').run(id)
-    runMemoryMaintenance({ warmToColdDays: 0 })
+    await runMemoryMaintenance({ warmToColdDays: 0 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('shared')
   })
 
   it('does NOT move warm memory to cold when recently read (fresh memory)', async () => {
     const id = await insertMem('active warm content', 'warm', 'agent-j')
-    recordMemoryRead('agent-j', id, 'direct')
-    runMemoryMaintenance({ warmToColdDays: 30 })
+    await recordMemoryRead('agent-j', id, 'direct')
+    await runMemoryMaintenance({ warmToColdDays: 30 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('warm')
   })
 
   it('promotes cold memory to warm when read by 2+ distinct agents recently', async () => {
     const id = await insertMem('resurface cold content', 'cold', 'agent-k')
-    recordMemoryRead('agent-k', id, 'direct')
-    recordMemoryRead('agent-l', id, 'search')
-    const result = runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
+    await recordMemoryRead('agent-k', id, 'direct')
+    await recordMemoryRead('agent-l', id, 'search')
+    const result = await runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
     expect(result.coldToWarm).toBeGreaterThanOrEqual(1)
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('warm')
@@ -241,8 +241,8 @@ describe('runMemoryMaintenance', () => {
 
   it('does NOT promote cold memory with only 1 reader', async () => {
     const id = await insertMem('single-reader cold', 'cold', 'agent-m')
-    recordMemoryRead('agent-m', id, 'direct')
-    runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
+    await recordMemoryRead('agent-m', id, 'direct')
+    await runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('cold')
   })
@@ -251,7 +251,7 @@ describe('runMemoryMaintenance', () => {
     const id = await insertMem('versioned for maintenance', 'warm', 'agent-n2')
     await updateMemory(id, 'updated content', 'warm', 'agent-n2', undefined)
     getDb().prepare('UPDATE memory_versions SET changed_at = 0 WHERE memory_id = ?').run(id)
-    const result = runMemoryMaintenance({ versionTtlDays: 180 })
+    const result = await runMemoryMaintenance({ versionTtlDays: 180 })
     expect(result.prunedVersions).toBeGreaterThanOrEqual(1)
   })
 
@@ -272,7 +272,7 @@ describe('runMemoryMaintenance', () => {
       'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, NULL)'
     ).run('agent-seed', id2, now)
     // First maintenance run: seed read_at is within 30-day window -> must not demote
-    runMemoryMaintenance({ warmToColdDays: 30 })
+    await runMemoryMaintenance({ warmToColdDays: 30 })
     const r1 = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id1) as { category: string }
     const r2 = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id2) as { category: string }
     expect(r1.category).toBe('warm')
@@ -283,7 +283,7 @@ describe('runMemoryMaintenance', () => {
     const id = await insertMem('loggable warm content', 'warm', 'agent-log1')
     getDb().prepare('UPDATE memories SET created_at = ? WHERE id = ?')
       .run(Math.floor(Date.now() / 1000) - 40 * 86400, id)
-    runMemoryMaintenance({ warmToColdDays: 30 })
+    await runMemoryMaintenance({ warmToColdDays: 30 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('cold')
     const versions = getDb()
@@ -296,9 +296,9 @@ describe('runMemoryMaintenance', () => {
 
   it('logs cold->warm transition in memory_versions with change_type=category_change', async () => {
     const id = await insertMem('resurface for logging', 'cold', 'agent-log2')
-    recordMemoryRead('agent-log2', id, 'direct')
-    recordMemoryRead('agent-log3', id, 'search')
-    runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
+    await recordMemoryRead('agent-log2', id, 'direct')
+    await recordMemoryRead('agent-log3', id, 'search')
+    await runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('warm')
     const versions = getDb()
@@ -312,7 +312,7 @@ describe('runMemoryMaintenance', () => {
   it('does not log a version entry when no tier change occurs', async () => {
     // Fresh memory won't be demoted, so no category_change version
     const id = await insertMem('no change warm content', 'warm', 'agent-log4')
-    runMemoryMaintenance({ warmToColdDays: 30 })
+    await runMemoryMaintenance({ warmToColdDays: 30 })
     const versions = getDb()
       .prepare("SELECT * FROM memory_versions WHERE memory_id = ? AND change_type = 'category_change'")
       .all(id) as unknown[]
@@ -328,16 +328,16 @@ describe('pruneMemoryVersions', () => {
     await updateMemory(id, 'updated', 'warm', 'agent-n', undefined)
     // Backdate the version to simulate age
     getDb().prepare('UPDATE memory_versions SET changed_at = 0 WHERE memory_id = ?').run(id)
-    const pruned = pruneMemoryVersions(180)
+    const pruned = await pruneMemoryVersions(180)
     expect(pruned).toBeGreaterThanOrEqual(1)
-    expect(getMemoryVersions(id)).toHaveLength(0)
+    expect(await getMemoryVersions(id)).toHaveLength(0)
   })
 
   it('keeps versions within the TTL', async () => {
     const id = await insertMem('fresh versioned', 'warm', 'agent-o')
     await updateMemory(id, 'fresh update', 'warm', 'agent-o', undefined)
-    const pruned = pruneMemoryVersions(180)
+    const pruned = await pruneMemoryVersions(180)
     expect(pruned).toBe(0)
-    expect(getMemoryVersions(id)).toHaveLength(1)
+    expect(await getMemoryVersions(id)).toHaveLength(1)
   })
 })

@@ -52,8 +52,8 @@ import { setStoreWriteActor } from '../store-watcher.js'
 
 beforeAll(async () => {
   initDatabase(':memory:')
-  createTenant('rbac-tenant-owner', 'Owner Tenant')
-  createTenant('rbac-tenant-other', 'Other Tenant')
+  await createTenant('rbac-tenant-owner', 'Owner Tenant')
+  await createTenant('rbac-tenant-other', 'Other Tenant')
   await setTenantAgentAvailability('rbac-tenant-owner', 'rbac-agent', true)
 })
 

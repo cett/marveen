@@ -25,7 +25,7 @@ const httpSpans = () => getDb().prepare("SELECT * FROM otel_spans WHERE operatio
 async function upsertSessionSpan() {
   getDb().exec("DELETE FROM otel_spans WHERE trace_id = 'session-a'")
   await upsertOtelSpan({ trace_id: 'session-a', span_id: 'span-1', parent_span_id: null, agent_id: 'agent-a', operation: 'tool.Bash', start_ms: 1, attributes: null })
-  closeOtelSpan('session-a', 'span-1', 2, 'ok')
+  await closeOtelSpan('session-a', 'span-1', 2, 'ok')
 }
 
 describe('httpRouteTemplate', () => {
@@ -166,7 +166,7 @@ describe('recordHttpRequest', () => {
     expect(ids).toContain(tid)
     const other = ids.find((i: string) => i !== tid)!
     expect(other).toMatch(/^[0-9a-f]{32}$/)
-    expect(getOtelTrace(`w3c-${tid}`).length).toBe(1)
+    expect((await getOtelTrace(`w3c-${tid}`)).length).toBe(1)
   })
 
   it('contract with the hooks: the trace id of a session is sha256(session id)[:32], which is what they send as traceparent', async () => {

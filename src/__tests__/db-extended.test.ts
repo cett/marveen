@@ -344,7 +344,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       start_ms: Date.now(),
       attributes: null,
     })
-    const trace = getOtelTrace(traceId)
+    const trace = await getOtelTrace(traceId)
     expect(trace.length).toBe(1)
     expect(trace[0].operation).toBe('test-op')
     expect(trace[0].status).toBe('running')
@@ -362,7 +362,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       status: 'ok',
       attributes: null,
     })
-    const trace = getOtelTrace(traceId)
+    const trace = await getOtelTrace(traceId)
     expect(trace[0].status).toBe('ok')
     expect(trace[0].end_ms).not.toBeNull()
   })
@@ -377,19 +377,19 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       start_ms: Date.now(),
       attributes: null,
     })
-    const ok = closeOtelSpan(traceId, 'span-b', Date.now() + 50, 'ok')
+    const ok = await closeOtelSpan(traceId, 'span-b', Date.now() + 50, 'ok')
     expect(ok).toBe(true)
-    const trace = getOtelTrace(traceId)
+    const trace = await getOtelTrace(traceId)
     const spanB = trace.find(s => s.span_id === 'span-b')
     expect(spanB?.status).toBe('ok')
   })
 
-  it('closeOtelSpan returns false for non-existent span', () => {
-    expect(closeOtelSpan('no-trace', 'no-span', 0, 'ok')).toBe(false)
+  it('closeOtelSpan returns false for non-existent span', async () => {
+    expect(await closeOtelSpan('no-trace', 'no-span', 0, 'ok')).toBe(false)
   })
 
-  it('listOtelTraces returns summaries of root spans', () => {
-    const traces = listOtelTraces(50)
+  it('listOtelTraces returns summaries of root spans', async () => {
+    const traces = await listOtelTraces(50)
     expect(Array.isArray(traces)).toBe(true)
     const mine = traces.find(t => t.trace_id === traceId)
     expect(mine).toBeDefined()

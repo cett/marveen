@@ -41,7 +41,7 @@ describe('availability PUT with a failing reconcile', () => {
     vi.resetModules()
     const dbMod = await import('../db.js')
     dbMod.initDatabase(':memory:')
-    dbMod.createTenant('solo', 'Solo')
+    await dbMod.createTenant('solo', 'Solo')
     const admin = await import('../web/routes/admin-b2b.js')
 
     const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string>; destroy: () => void }

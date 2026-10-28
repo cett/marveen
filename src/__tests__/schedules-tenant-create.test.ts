@@ -47,8 +47,8 @@ beforeEach(async () => {
   io = await import('../web/scheduled-tasks-io.js')
   route = await import('../web/routes/schedules.js')
 
-  dbMod.createTenant('tenant-b', 'Tenant B')
-  dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
+  await dbMod.createTenant('tenant-b', 'Tenant B')
+  await dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
   await dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
   await dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
   await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
@@ -186,7 +186,7 @@ describe('POST: which tenant owns the task', () => {
       ['a conflicting context', () => setContext('shared-agent', '', 'conflict')],
       ['a stale context', () => setContext('shared-agent', 'tenant-b', 'bound', 13 * 3600)],
       ['a bound tenant the agent no longer serves (and it still serves two others)', async () => {
-        dbMod.createTenant('tenant-c', 'Tenant C')
+        await dbMod.createTenant('tenant-c', 'Tenant C')
         await dbMod.setTenantAgentAvailability('tenant-c', 'shared-agent', true)
         await dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', false)
         setContext('shared-agent', 'tenant-b', 'bound')
@@ -252,7 +252,7 @@ describe('POST: the (tenant, agent) pair', () => {
 
   it('refuses an unknown or disabled tenant', async () => {
     await rejected({ tenant_id: 'nope', agent: 'shared-agent' }, 'tenant_id')
-    dbMod.updateTenant('tenant-b', { disabled: true })
+    await dbMod.updateTenant('tenant-b', { disabled: true })
     await rejected({ tenant_id: 'tenant-b', agent: 'tenant-agent' }, 'tenant_id')
   })
 
@@ -288,7 +288,7 @@ describe('POST: the (tenant, agent) pair', () => {
     })
 
     it('a fleet agent defaulting to itself is still rejected on a tenant it does not serve', async () => {
-      dbMod.createTenant('tenant-c', 'Tenant C')
+      await dbMod.createTenant('tenant-c', 'Tenant C')
       await dbMod.setTenantAgentAvailability('tenant-c', 'shared-agent', true)
       // tenant-agent serves only tenant-b; bound here to tenant-c, where it defaults to itself
       // but scheduleAgentServesTenant still rejects it -- the fix only changes the DEFAULT, not

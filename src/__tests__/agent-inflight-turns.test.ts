@@ -214,8 +214,8 @@ describe('orphan sweep', () => {
 
 describe('tenants', () => {
   beforeEach(async () => {
-    createTenant('tenant-x', 'Tenant X')
-    createTenant('tenant-y', 'Tenant Y')
+    await createTenant('tenant-x', 'Tenant X')
+    await createTenant('tenant-y', 'Tenant Y')
     await setTenantAgentAvailability('tenant-x', 'agent-a', true)
     await setTenantAgentAvailability('tenant-x', 'agent-shared', true)
     await setTenantAgentAvailability('tenant-y', 'agent-shared', true)

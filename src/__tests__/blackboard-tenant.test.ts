@@ -15,13 +15,13 @@ import {
 // db-upsert-blackboard.test.ts).
 // fixtures (privacy: no real agent names)
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   // tenant_agent_availability.tenant_id references tenants(id) -- create the
   // fixtures used across this file up front.
-  createTenant('tenant-a', 'Tenant A')
-  createTenant('tenant-b', 'Tenant B')
-  createTenant('tenant-c', 'Tenant C')
+  await createTenant('tenant-a', 'Tenant A')
+  await createTenant('tenant-b', 'Tenant B')
+  await createTenant('tenant-c', 'Tenant C')
 })
 
 describe('resolveAgentTenant', () => {

@@ -43,10 +43,10 @@ import { oneLine } from './approval-owner-notice.js'
 // window so a long turn that ate one also eats the other.
 
 // A message that ends as failed must not leave its inter-agent span open, and the failure is counted by reason.
-export function recordMessageFailure(msg: { trace_id?: string | null; span_id?: string | null }, reason: Parameters<typeof countMessageFailed>[0]): void {
+export async function recordMessageFailure(msg: { trace_id?: string | null; span_id?: string | null }, reason: Parameters<typeof countMessageFailed>[0]): Promise<void> {
   countMessageFailed(reason)
   try {
-    if (msg.trace_id && msg.span_id) closeOtelSpan(msg.trace_id, msg.span_id, Date.now(), 'error')
+    if (msg.trace_id && msg.span_id) await closeOtelSpan(msg.trace_id, msg.span_id, Date.now(), 'error')
   } catch { /* telemetry is never fatal to delivery */ }
 }
 
@@ -589,7 +589,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!await markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'abandoned')
+        await recordMessageFailure(msg, 'abandoned')
         await notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -690,7 +690,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!await markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'invalid_sender')
+        await recordMessageFailure(msg, 'invalid_sender')
         routerLoggedMisses.delete(msg.id)
         continue
       }
@@ -777,7 +777,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!await markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'inject_failed')
+        await recordMessageFailure(msg, 'inject_failed')
         await notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -787,7 +787,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!await markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'error')
+        await recordMessageFailure(msg, 'error')
         routerLoggedMisses.delete(msg.id)
       }
     }

@@ -52,13 +52,13 @@ beforeEach(async () => {
   schedules = await import('../web/routes/schedules.js')
   ledger = await import('../web/schedule-skip-ledger.js')
 
-  dbMod.createTenant('acme', 'Acme')
-  dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
+  await dbMod.createTenant('acme', 'Acme')
+  await dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
   await dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
   await dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
-  dbMod.createTenant('beta', 'Beta')
+  await dbMod.createTenant('beta', 'Beta')
   await dbMod.setTenantAgentAvailability('beta', 'beta-one', true)
-  dbMod.createTenant('gamma', 'Gamma')
+  await dbMod.createTenant('gamma', 'Gamma')
   await dbMod.setTenantAgentAvailability('gamma', 'g-one', true)
   await dbMod.setTenantAgentAvailability('gamma', 'g-two', true)
   await dbMod.setTenantAgentAvailability('acme', 'shared-agent', true)
@@ -190,7 +190,7 @@ describe('agent resolution', () => {
   it('refuses the default tenant, a missing tenant and a disabled tenant', async () => {
     expect((await post('default')).status).toBe(400)
     expect((await post('nope')).status).toBe(404)
-    dbMod.updateTenant('beta', { disabled: true })
+    await dbMod.updateTenant('beta', { disabled: true })
     expect((await post('beta')).status).toBe(404)
     expect((await dbMod.listSchedulesFromDb()).filter(r => r.id.endsWith('starter-daily-summary'))).toHaveLength(0)
   })
@@ -219,8 +219,8 @@ describe('draft cap and the skip ledger', () => {
 
 describe('name collisions and tenant deletion', () => {
   it('two tenant ids that sanitize to the same name: the second is refused, the first row stays', async () => {
-    dbMod.createTenant('co-x', 'Co X')
-    dbMod.createTenant('co--x', 'Co XX')
+    await dbMod.createTenant('co-x', 'Co X')
+    await dbMod.createTenant('co--x', 'Co XX')
     await dbMod.setTenantAgentAvailability('co-x', 'co-a', true)
     await dbMod.setTenantAgentAvailability('co--x', 'co-b', true)
     const first = await post('co-x')

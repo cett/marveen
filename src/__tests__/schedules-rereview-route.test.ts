@@ -47,8 +47,8 @@ beforeEach(async () => {
   route = await import('../web/routes/schedules.js')
   io = await import('../web/scheduled-tasks-io.js')
 
-  dbMod.createTenant('tenant-b', 'Tenant B')
-  dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
+  await dbMod.createTenant('tenant-b', 'Tenant B')
+  await dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
   await dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
   await dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
   await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)

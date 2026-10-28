@@ -10,9 +10,9 @@ import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
-beforeEach(() => {
-  createTenant('acme', 'Acme')
-  createTenant('beta', 'Beta')
+beforeEach(async () => {
+  await createTenant('acme', 'Acme')
+  await createTenant('beta', 'Beta')
 })
 
 function call(method: string, path: string): Promise<{ handled: boolean; status: number; body: any }> {

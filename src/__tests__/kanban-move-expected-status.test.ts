@@ -87,7 +87,7 @@ const sentMessages = () => (getDb().prepare('SELECT COUNT(*) AS n FROM agent_mes
 
 beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('tenant-x', 'Tenant X')
+  await createTenant('tenant-x', 'Tenant X')
   await insertApiToken({ tokenHash: sha('tok-agent-a'), name: 'fleet:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'agent-a' })
   await createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
   await createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
