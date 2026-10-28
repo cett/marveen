@@ -3,41 +3,42 @@ import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../db.js', () => ({
-  listKanbanCards: vi.fn().mockReturnValue([]),
-  countKanbanCards: vi.fn().mockReturnValue(0),
-  createKanbanCard: vi.fn().mockReturnValue({ id: 'card1' }),
-  updateKanbanCard: vi.fn().mockReturnValue(true),
-  deleteKanbanCard: vi.fn().mockReturnValue(true),
-  moveKanbanCard: vi.fn().mockReturnValue(true),
-  archiveKanbanCard: vi.fn().mockReturnValue(true),
-  unarchiveKanbanCard: vi.fn().mockReturnValue(true),
-  getKanbanComments: vi.fn().mockReturnValue([]),
-  addKanbanComment: vi.fn().mockReturnValue({ id: 1 }),
-  getKanbanCardEvents: vi.fn().mockReturnValue([]),
-  listKanbanProjects: vi.fn().mockReturnValue([]),
-  getKanbanCard: vi.fn().mockReturnValue({ id: 'card1', title: 'Test', description: '', depth: 0, dispatched_at: null, assignee: null, project: null }),
-  getChildCards: vi.fn().mockReturnValue([]),
-  getSubtree: vi.fn().mockReturnValue([]),
-  reparentKanbanCard: vi.fn().mockReturnValue({ ok: true }),
+  listKanbanCards: vi.fn().mockResolvedValue([]),
+  countKanbanCards: vi.fn().mockResolvedValue(0),
+  createKanbanCard: vi.fn().mockResolvedValue({ id: 'card1' }),
+  updateKanbanCard: vi.fn().mockResolvedValue(true),
+  deleteKanbanCard: vi.fn().mockResolvedValue(true),
+  moveKanbanCard: vi.fn().mockResolvedValue(true),
+  archiveKanbanCard: vi.fn().mockResolvedValue(true),
+  unarchiveKanbanCard: vi.fn().mockResolvedValue(true),
+  getKanbanComments: vi.fn().mockResolvedValue([]),
+  addKanbanComment: vi.fn().mockResolvedValue({ id: 1 }),
+  getKanbanCardEvents: vi.fn().mockResolvedValue([]),
+  listKanbanProjects: vi.fn().mockResolvedValue([]),
+  getKanbanCard: vi.fn().mockResolvedValue({ id: 'card1', title: 'Test', description: '', depth: 0, dispatched_at: null, assignee: null, project: null }),
+  getChildCards: vi.fn().mockResolvedValue([]),
+  getSubtree: vi.fn().mockResolvedValue([]),
+  reparentKanbanCard: vi.fn().mockResolvedValue({ ok: true }),
   propagateStatus: vi.fn(),
+  createKanbanSubtasks: vi.fn().mockResolvedValue(['SUB1', 'SUB2']),
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]), get: vi.fn().mockReturnValue(null) }),
     transaction: vi.fn().mockImplementation((fn: () => any) => fn),
   }),
   createAgentMessage: vi.fn(),
   markKanbanCardDispatched: vi.fn(),
-  getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
-  listLabels: vi.fn().mockReturnValue([{ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }]),
-  getLabel: vi.fn().mockReturnValue({ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }),
-  createLabel: vi.fn().mockReturnValue({ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }),
-  updateLabel: vi.fn().mockReturnValue(true),
-  deleteLabel: vi.fn().mockReturnValue(true),
+  getKanbanSeqByIdPrefix: vi.fn().mockResolvedValue(null),
+  listLabels: vi.fn().mockResolvedValue([{ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }]),
+  getLabel: vi.fn().mockResolvedValue({ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }),
+  createLabel: vi.fn().mockResolvedValue({ id: 'lbl1', name: 'bug', color: '#e74c3c', tenant_id: 'default' }),
+  updateLabel: vi.fn().mockResolvedValue(true),
+  deleteLabel: vi.fn().mockResolvedValue(true),
   addLabelToCard: vi.fn(),
-  removeLabelFromCard: vi.fn().mockReturnValue(true),
-  getLabelsForAllCards: vi.fn().mockReturnValue(new Map()),
-  getLabelsForCard: vi.fn().mockReturnValue([]),
-  listArchivedKanbanCards: vi.fn().mockReturnValue([]),
-  searchKanbanCards: vi.fn().mockReturnValue([]),
+  removeLabelFromCard: vi.fn().mockResolvedValue(true),
+  getLabelsForAllCards: vi.fn().mockResolvedValue(new Map()),
+  getLabelsForCard: vi.fn().mockResolvedValue([]),
+  listArchivedKanbanCards: vi.fn().mockResolvedValue([]),
+  searchKanbanCards: vi.fn().mockResolvedValue([]),
   revertIdeaFromKanban: vi.fn(),
 }))
 vi.mock('../web/kanban-ref-normalize.js', () => ({
@@ -102,10 +103,10 @@ describe('tryHandleKanban', () => {
   })
 
   it('GET /api/kanban?status= returns the paginated per-column contract', async () => {
-    vi.mocked(db.listKanbanCards).mockReturnValueOnce([
+    vi.mocked(db.listKanbanCards).mockResolvedValueOnce([
       { id: 'card1', status: 'done' } as any,
     ])
-    vi.mocked(db.countKanbanCards).mockReturnValueOnce(47)
+    vi.mocked(db.countKanbanCards).mockResolvedValueOnce(47)
     const { ctx, out } = makeCtx('GET', '/api/kanban?status=done&limit=20&offset=20')
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
@@ -191,7 +192,7 @@ describe('tryHandleKanban', () => {
 
   it('POST /api/kanban/:id/move returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.moveKanbanCard).mockReturnValueOnce(false)
+    vi.mocked(db.moveKanbanCard).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('POST', '/api/kanban/ghost/move', { status: 'done' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)
@@ -205,7 +206,7 @@ describe('tryHandleKanban', () => {
 
   it('POST /api/kanban/:id/archive returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.archiveKanbanCard).mockReturnValueOnce(false)
+    vi.mocked(db.archiveKanbanCard).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('POST', '/api/kanban/ghost/archive')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)
@@ -225,7 +226,7 @@ describe('tryHandleKanban', () => {
 
   it('GET /api/kanban/search delegates to searchKanbanCards and shapes the counts', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.searchKanbanCards).mockReturnValueOnce([
+    vi.mocked(db.searchKanbanCards).mockResolvedValueOnce([
       { id: 'card1', seq: 1, archived: false } as any,
       { id: 'card2', seq: 2, archived: true } as any,
     ])
@@ -251,7 +252,7 @@ describe('tryHandleKanban', () => {
 
   it('POST /api/kanban/:id/unarchive returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.unarchiveKanbanCard).mockReturnValueOnce(false)
+    vi.mocked(db.unarchiveKanbanCard).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('POST', '/api/kanban/ghost/unarchive')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)
@@ -319,7 +320,7 @@ describe('tryHandleKanban', () => {
 
   it('PUT /api/kanban/labels/:id returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.updateLabel).mockReturnValueOnce(false)
+    vi.mocked(db.updateLabel).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('PUT', '/api/kanban/labels/ghost', { name: 'x' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)
@@ -333,7 +334,7 @@ describe('tryHandleKanban', () => {
 
   it('DELETE /api/kanban/labels/:id returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.deleteLabel).mockReturnValueOnce(false)
+    vi.mocked(db.deleteLabel).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('DELETE', '/api/kanban/labels/ghost')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)
@@ -429,7 +430,7 @@ describe('tryHandleKanban', () => {
 
   it('DELETE /api/kanban/:id/labels/:labelId returns 404 when not found', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.removeLabelFromCard).mockReturnValueOnce(false)
+    vi.mocked(db.removeLabelFromCard).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('DELETE', '/api/kanban/card1/labels/ghost')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(404)
@@ -463,7 +464,7 @@ describe('tryHandleKanban', () => {
 
   it('PATCH /api/kanban/:id/parent returns 400 on error', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({ ok: false, code: 'limit_exceeded', hint: 'Reparenting would exceed max depth of 3 levels' })
+    vi.mocked(db.reparentKanbanCard).mockResolvedValueOnce({ ok: false, code: 'limit_exceeded', hint: 'Reparenting would exceed max depth of 3 levels' })
     const { ctx, out } = makeCtx('PATCH', '/api/kanban/card1/parent', { parent_id: 'other' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(400)
@@ -486,7 +487,7 @@ describe('tryHandleKanban', () => {
 
   it('POST /api/kanban/:id/breakdown returns 409 when children exist', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.getChildCards).mockReturnValueOnce([{ id: 'sub1' } as any])
+    vi.mocked(db.getChildCards).mockResolvedValueOnce([{ id: 'sub1' } as any])
     const { ctx, out } = makeCtx('POST', '/api/kanban/card1/breakdown')
     await tryHandleKanban(ctx)
     expect(out.status).toBe(409)

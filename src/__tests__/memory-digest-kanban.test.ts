@@ -75,7 +75,7 @@ beforeEach(() => {
 
 describe('buildKanbanContext', () => {
   it('returns an empty string when there are no cards', async () => {
-    mockListKanbanCardsSummary.mockReturnValue([])
+    mockListKanbanCardsSummary.mockResolvedValue([])
     expect(await buildKanbanContext()).toBe('')
   })
 

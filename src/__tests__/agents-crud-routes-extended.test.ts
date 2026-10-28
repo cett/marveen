@@ -648,7 +648,7 @@ describe('agents-crud routes (extended)', () => {
     vi.mocked(tokenUsage.getTokenSummary).mockReturnValueOnce([
       { agent: 'test-agent', totalCalls: 10, totalInput: 50000, totalOutput: 5000, totalCacheRead: 0, totalCacheWrite: 0 },
     ] as any)
-    vi.mocked(db.getOpenKanbanCountsByAssignee).mockReturnValueOnce([
+    vi.mocked(db.getOpenKanbanCountsByAssignee).mockResolvedValueOnce([
       { assignee: 'test-agent', priority: 'urgent', cnt: 2 },
       { assignee: 'test-agent', priority: 'low', cnt: 1 },
     ])
