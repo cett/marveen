@@ -59,6 +59,7 @@ import {
 } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
 import { denyUnlessHumanSession, denyAgentCredentialIssue } from '../session-only-guard.js'
+import { isUniqueViolationOn } from '../unique-violation.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -348,7 +349,17 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const hash = await hashPassword(password)
-    const created = createDashboardUser(username, hash)
+    let created: ReturnType<typeof createDashboardUser>
+    try {
+      created = createDashboardUser(username, hash)
+    } catch (err) {
+      // A second request with the same name passed the check above while this one hashed the password.
+      if (isUniqueViolationOn(err, 'dashboard_users.username')) {
+        json(res, { error: 'conflict' }, 409)
+        return true
+      }
+      throw err
+    }
     logger.info({ username: created.username }, 'dashboard user created')
     json(res, { ok: true, user: { id: created.id, username: created.username } }, 201)
     return true
