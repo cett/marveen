@@ -50,7 +50,7 @@ describe('recordMemoryReadBatch', () => {
   it('inserts rows for every id in the batch', async () => {
     const idA = await insertMem('batch-a', 'warm', 'agent-b')
     const idB = await insertMem('batch-b', 'cold', 'agent-b')
-    recordMemoryReadBatch('agent-b', [idA, idB], 'search')
+    await recordMemoryReadBatch('agent-b', [idA, idB], 'search')
     const rows = getDb()
       .prepare('SELECT memory_id FROM span_reads WHERE agent_id = ? AND context = ?')
       .all('agent-b', 'search') as { memory_id: number }[]
@@ -59,9 +59,9 @@ describe('recordMemoryReadBatch', () => {
     expect(ids).toContain(idB)
   })
 
-  it('is a no-op for an empty array', () => {
+  it('is a no-op for an empty array', async () => {
     const before = (getDb().prepare('SELECT COUNT(*) as c FROM span_reads').get() as { c: number }).c
-    recordMemoryReadBatch('agent-b', [], 'search')
+    await recordMemoryReadBatch('agent-b', [], 'search')
     const after = (getDb().prepare('SELECT COUNT(*) as c FROM span_reads').get() as { c: number }).c
     expect(after).toBe(before)
   })

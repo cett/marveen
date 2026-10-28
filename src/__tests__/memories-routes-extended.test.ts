@@ -48,7 +48,7 @@ vi.mock('../db.js', () => ({
   recordMemoryReadBatch: vi.fn(),
   getStaleMemories: vi.fn().mockReturnValue([]),
   getMemoryVersions: vi.fn().mockReturnValue([]),
-  runMemoryMaintenance: vi.fn().mockReturnValue({ warmToCold: 0, coldToWarm: 0, prunedVersions: 0 }),
+  runMemoryMaintenance: vi.fn().mockResolvedValue({ warmToCold: 0, coldToWarm: 0, prunedVersions: 0 }),
   runLinkMaintenance: vi.fn().mockResolvedValue({ reembedded: 0, linksCreated: 0, linksPruned: 0, orphans: 0 }),
   getLinksForMemories: vi.fn().mockReturnValue([]),
 }))
