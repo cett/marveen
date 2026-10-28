@@ -226,6 +226,11 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   own savepoint, so a failing audit is logged and rolls back only itself and the card change stays. A delete writes an
   entry only when a row was deleted, and two overlapping deletes of one card produce one entry (the second finds no
   card).
+- **The scheduler's "waiting" mark applies to any non-archived kanban card, not only to `in_progress`.**
+  `markScheduledTaskKanbanWaiting` moves the first non-archived card whose title matches a timed-out task to `waiting`,
+  as it did before the facade, whatever its status (a `done` card included). The move is a compare-and-set on the
+  status it read, so a card that left that status meanwhile is left alone. Restricting the mark to `in_progress` is a
+  behaviour change, kept out of the facade wave on purpose (candidate for PostgreSQL phase 2).
 - **The token shadow counter's daily row count is decided on a fresh read of `dayState.known` after each key lookup.**
   `recordTokenShadow` awaits the key lookup, so k overlapping first records of the same new shape all arrive with
   `known` empty; counting after the `await` without a second look made every one of them count a row while the table got
