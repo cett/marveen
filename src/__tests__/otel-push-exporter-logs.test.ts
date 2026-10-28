@@ -67,14 +67,14 @@ function bodyOf(call: unknown[]): string {
 }
 
 // Starts the cursors at the current end of every table (what the first tick does), then lets the test seed.
-function primeCursors() {
-  for (const s of ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log', 'fleet_blackboard_history', 'kanban_card_events'] as const) getOtelLogCursor(s)
+async function primeCursors() {
+  for (const s of ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log', 'fleet_blackboard_history', 'kanban_card_events'] as const) await getOtelLogCursor(s)
 }
 
 describe('log export through tick', () => {
   it('sends nothing to /v1/logs while OTEL_EXPORT_LOGS is off, however many audit rows exist', async () => {
     cfg.OTEL_EXPORT_LOGS = '0'
-    primeCursors()
+    await primeCursors()
     seedConfigChange()
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     await tick()
@@ -83,7 +83,7 @@ describe('log export through tick', () => {
 
   it('sends nothing when the whole export is off even though OTEL_EXPORT_LOGS is on', async () => {
     cfg.OTEL_EXPORT_ENABLED = '0'
-    primeCursors()
+    await primeCursors()
     seedConfigChange()
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     await tick()
@@ -91,7 +91,7 @@ describe('log export through tick', () => {
   })
 
   it('posts new audit rows to /v1/logs, and the payload carries no content and no actor name', async () => {
-    primeCursors()
+    await primeCursors()
     seedConfigChange()
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     await tick()
@@ -119,7 +119,7 @@ describe('log export through tick', () => {
   })
 
   it('does not send a row twice once the collector accepted it', async () => {
-    primeCursors()
+    await primeCursors()
     seedConfigChange()
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     await tick()
@@ -128,7 +128,7 @@ describe('log export through tick', () => {
   })
 
   it('keeps the rows on a 401 (fixable), backs off, and sends them again once it works', async () => {
-    primeCursors()
+    await primeCursors()
     seedConfigChange('KEPT_ROW')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('no', { status: 401 }))
     await tick()
@@ -150,7 +150,7 @@ describe('log export through tick', () => {
   })
 
   it('discards a batch the collector refuses for good (400) so it cannot block the rows behind it', async () => {
-    primeCursors()
+    await primeCursors()
     seedConfigChange('BAD_ROW')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('bad', { status: 400 }))
     await tick()
@@ -166,7 +166,7 @@ describe('log export through tick', () => {
   })
 
   it('counts a rejectedLogRecords partialSuccess and does not resend', async () => {
-    primeCursors()
+    await primeCursors()
     seedConfigChange()
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response('{"partialSuccess":{"rejectedLogRecords":"1","errorMessage":"bad"}}', { status: 200 }))
@@ -177,7 +177,7 @@ describe('log export through tick', () => {
   })
 
   it('never throws when fetch rejects, and leaves the rows for the next attempt', async () => {
-    primeCursors()
+    await primeCursors()
     seedConfigChange()
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('connection refused'))
     await expect(tick()).resolves.toBeUndefined()
@@ -185,7 +185,7 @@ describe('log export through tick', () => {
   })
 
   it('sends a gate refusal and moves the hook_audit_log cursor only after the collector answered', async () => {
-    primeCursors()
+    await primeCursors()
     getDb().prepare(
       `INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source)
        VALUES (1700000003, 'agent-a', 'PreToolUse', 'deny', 'TOOL-CONTENT', 'HASH-CONTENT', 'denied', 'SESSION-CONTENT', 'destructive-gate')`,
@@ -205,7 +205,7 @@ describe('log export through tick', () => {
   })
 
   it('sends a blackboard post and a card move without their text, and the cursors move only after an answer', async () => {
-    primeCursors()
+    await primeCursors()
     getDb().prepare("INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, created_at) VALUES ('agent-a', 'REF-CONTENT', 'blocked', 'TEXT-CONTENT', 1700000006)").run()
     getDb().prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-CONTENT', 'planned', 'done', 'user-a', 1700000007)").run()
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('no', { status: 503 }))
@@ -224,7 +224,7 @@ describe('log export through tick', () => {
   })
 
   it('does not write to any audit table (read-only)', async () => {
-    primeCursors()
+    await primeCursors()
     seedConfigChange()
     const before = getDb().prepare('SELECT COUNT(*) AS n FROM config_change_log').get() as { n: number }
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))

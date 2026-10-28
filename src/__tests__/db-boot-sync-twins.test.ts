@@ -27,6 +27,8 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   // startWebServer enrolls the file token before it listens and cannot await: the bootstrap helper it calls is
   // the one caller, outside db/index.ts.
   enrollDashboardApiTokenSync: ['db/api-tokens.ts', 'web/token-bootstrap.ts'],
+  replaceClaudePlanRowsSync: ['db/claude-plans.ts', 'db/index.ts'],
+  activatePlanForAgentSync: ['db/claude-plans.ts', 'db/index.ts'],
 }
 
 // Several files cross-reference a twin by name in a doc comment, which is not a call.

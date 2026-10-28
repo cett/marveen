@@ -157,13 +157,13 @@ describe('conversation ledger: the identity comes from the token', () => {
   it("agent A's token cannot write a turn under B's name, and nothing is stored", async () => {
     const r = await request('tok-alpha', 'POST', '/api/conversation-ledger', turn('beta', 'forged'))
     expect(r.status).toBe(403)
-    expect(recentLedgerTurns('beta', 50).map(t => t.text)).toEqual(['t-b1'])
+    expect((await recentLedgerTurns('beta', 50)).map(t => t.text)).toEqual(['t-b1'])
   })
 
   it('one foreign entry refuses the whole batch', async () => {
     const r = await request('tok-alpha', 'POST', '/api/conversation-ledger', { entries: [turn('alpha', 'r2'), turn('beta', 'forged')] })
     expect(r.status).toBe(403)
-    expect(recentLedgerTurns('alpha', 50).map(t => t.text)).toEqual(['t-r1'])
+    expect((await recentLedgerTurns('alpha', 50)).map(t => t.text)).toEqual(['t-r1'])
   })
 
   it('the token reads and writes its own ledger', async () => {

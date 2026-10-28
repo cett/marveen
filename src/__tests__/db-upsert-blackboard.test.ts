@@ -11,9 +11,9 @@ beforeEach(() => {
 })
 
 describe('upsertBlackboard: no-op guard', () => {
-  it('does not write a history row when the same values are posted twice', () => {
-    upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
-    upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
+  it('does not write a history row when the same values are posted twice', async () => {
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
 
     const history = listBlackboardHistory({ agent_id: 'agent-a' })
     // Only the first insert should create a history entry; the second is a no-op.
@@ -21,9 +21,9 @@ describe('upsertBlackboard: no-op guard', () => {
     expect((history[0] as { status: string }).status).toBe('active')
   })
 
-  it('writes a history row when status changes from active to done', () => {
-    upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
-    upsertBlackboard('agent-a', { status: 'done',   summary: 'task-x', task_ref: null })
+  it('writes a history row when status changes from active to done', async () => {
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
+    await upsertBlackboard('agent-a', { status: 'done',   summary: 'task-x', task_ref: null })
 
     const history = listBlackboardHistory({ agent_id: 'agent-a' })
     expect(history).toHaveLength(2)
@@ -31,9 +31,9 @@ describe('upsertBlackboard: no-op guard', () => {
     expect(statuses).toEqual(['active', 'done'])
   })
 
-  it('writes a history row when summary changes', () => {
-    upsertBlackboard('agent-a', { status: 'active', summary: 'old summary', task_ref: null })
-    upsertBlackboard('agent-a', { status: 'active', summary: 'new summary', task_ref: null })
+  it('writes a history row when summary changes', async () => {
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'old summary', task_ref: null })
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'new summary', task_ref: null })
 
     const history = listBlackboardHistory({ agent_id: 'agent-a' })
     expect(history).toHaveLength(2)
@@ -41,17 +41,17 @@ describe('upsertBlackboard: no-op guard', () => {
     expect(summaries).toEqual(['new summary', 'old summary'])
   })
 
-  it('writes a history row when task_ref changes', () => {
-    upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
-    upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: 'card-001' })
+  it('writes a history row when task_ref changes', async () => {
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: 'card-001' })
 
     const history = listBlackboardHistory({ agent_id: 'agent-a' })
     expect(history).toHaveLength(2)
   })
 
-  it('keeps current row status after a no-op upsert', () => {
-    upsertBlackboard('agent-a', { status: 'blocked', summary: 'stuck on X', task_ref: null })
-    upsertBlackboard('agent-a', { status: 'blocked', summary: 'stuck on X', task_ref: null })
+  it('keeps current row status after a no-op upsert', async () => {
+    await upsertBlackboard('agent-a', { status: 'blocked', summary: 'stuck on X', task_ref: null })
+    await upsertBlackboard('agent-a', { status: 'blocked', summary: 'stuck on X', task_ref: null })
 
     const row = findBlackboardRowByAgent('agent-a')
     expect(row?.status).toBe('blocked')
@@ -60,8 +60,8 @@ describe('upsertBlackboard: no-op guard', () => {
 })
 
 describe('upsertBlackboard: snapshot guard (schedule-runner done-write protection)', () => {
-  it('done is written when current row matches the active snapshot', () => {
-    const row = upsertBlackboard('agent-b', { status: 'active', summary: 'heartbeat-daily', task_ref: null })
+  it('done is written when current row matches the active snapshot', async () => {
+    const row = await upsertBlackboard('agent-b', { status: 'active', summary: 'heartbeat-daily', task_ref: null })
     const snapshot = { status: row.status, summary: row.summary, task_ref: row.task_ref ?? null }
 
     const cur = findBlackboardRowByAgent('agent-b')!
@@ -73,21 +73,21 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
     expect(unchanged).toBe(true)
 
     // Runner would write done here -- verify it lands and creates a history entry.
-    upsertBlackboard('agent-b', { status: 'done', summary: 'heartbeat-daily', task_ref: null })
+    await upsertBlackboard('agent-b', { status: 'done', summary: 'heartbeat-daily', task_ref: null })
     const history = listBlackboardHistory({ agent_id: 'agent-b' }) as { status: string }[]
     expect(history).toHaveLength(2)
     expect(history.map(r => r.status).sort()).toEqual(['active', 'done'])
   })
 
-  it('done write preserves a non-null task_ref from the active snapshot', () => {
+  it('done write preserves a non-null task_ref from the active snapshot', async () => {
     // Active row starts with a real kanban card ref. The runner snapshots it, then
     // writes done passing task_ref from the snapshot. Without the fix the done call
     // had no task_ref argument and the column silently became null.
-    const row = upsertBlackboard('agent-b', { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' })
+    const row = await upsertBlackboard('agent-b', { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' })
     expect(row.task_ref).toBe('card-abc')
 
     // Simulate runner done write with task_ref preserved from snapshot.
-    const doneRow = upsertBlackboard('agent-b', { status: 'done', summary: 'kanban-task', task_ref: row.task_ref ?? null })
+    const doneRow = await upsertBlackboard('agent-b', { status: 'done', summary: 'kanban-task', task_ref: row.task_ref ?? null })
     expect(doneRow.task_ref).toBe('card-abc')
 
     // Verify the live row also carries the value (not just the return value).
@@ -96,12 +96,12 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
     expect(cur.status).toBe('done')
   })
 
-  it('done is NOT written when agent changed status to blocked mid-run', () => {
-    const row = upsertBlackboard('agent-b', { status: 'active', summary: 'heartbeat-daily', task_ref: null })
+  it('done is NOT written when agent changed status to blocked mid-run', async () => {
+    const row = await upsertBlackboard('agent-b', { status: 'active', summary: 'heartbeat-daily', task_ref: null })
     const snapshot = { status: row.status, summary: row.summary, task_ref: row.task_ref ?? null }
 
     // Agent switches to blocked while task is running.
-    upsertBlackboard('agent-b', { status: 'blocked', summary: 'waiting for external API', task_ref: null })
+    await upsertBlackboard('agent-b', { status: 'blocked', summary: 'waiting for external API', task_ref: null })
 
     const cur = findBlackboardRowByAgent('agent-b')!
     const unchanged =
@@ -120,8 +120,8 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
 })
 
 describe('upsertBlackboard blocked_by/blocked_reason/resolved_by', () => {
-  it('persists blocked_by/blocked_reason on the live row while status=blocked', () => {
-    const row = upsertBlackboard('agent-c', {
+  it('persists blocked_by/blocked_reason on the live row while status=blocked', async () => {
+    const row = await upsertBlackboard('agent-c', {
       status: 'blocked', summary: 'stuck', task_ref: null, blocked_by: 'agent-d', blocked_reason: 'waiting on PR review',
     })
     expect(row.blocked_by).toBe('agent-d')
@@ -131,17 +131,17 @@ describe('upsertBlackboard blocked_by/blocked_reason/resolved_by', () => {
     expect(cur.blocked_reason).toBe('waiting on PR review')
   })
 
-  it('ignores blocked_by/blocked_reason when status is not blocked', () => {
-    const row = upsertBlackboard('agent-c', {
+  it('ignores blocked_by/blocked_reason when status is not blocked', async () => {
+    const row = await upsertBlackboard('agent-c', {
       status: 'active', summary: 'working', task_ref: null, blocked_by: 'agent-d', blocked_reason: 'should not stick',
     })
     expect(row.blocked_by).toBeNull()
     expect(row.blocked_reason).toBeNull()
   })
 
-  it('clears blocked_by/blocked_reason on the live row when moving out of blocked, and stamps resolved_by in history', () => {
-    upsertBlackboard('agent-c', { status: 'blocked', summary: 'stuck', task_ref: null, blocked_by: 'agent-d', blocked_reason: 'waiting on review' })
-    const resolved = upsertBlackboard('agent-c', { status: 'active', summary: 'unstuck', task_ref: null, resolved_by: 'agent-e' })
+  it('clears blocked_by/blocked_reason on the live row when moving out of blocked, and stamps resolved_by in history', async () => {
+    await upsertBlackboard('agent-c', { status: 'blocked', summary: 'stuck', task_ref: null, blocked_by: 'agent-d', blocked_reason: 'waiting on review' })
+    const resolved = await upsertBlackboard('agent-c', { status: 'active', summary: 'unstuck', task_ref: null, resolved_by: 'agent-e' })
 
     expect(resolved.blocked_by).toBeNull()
     expect(resolved.blocked_reason).toBeNull()
@@ -154,9 +154,9 @@ describe('upsertBlackboard blocked_by/blocked_reason/resolved_by', () => {
     expect(activeEntry.resolved_by).toBe('agent-e')
   })
 
-  it('does not stamp resolved_by when the row was never blocked to begin with', () => {
-    upsertBlackboard('agent-c', { status: 'active', summary: 'task-x', task_ref: null })
-    upsertBlackboard('agent-c', { status: 'done', summary: 'task-x', task_ref: null, resolved_by: 'agent-e' })
+  it('does not stamp resolved_by when the row was never blocked to begin with', async () => {
+    await upsertBlackboard('agent-c', { status: 'active', summary: 'task-x', task_ref: null })
+    await upsertBlackboard('agent-c', { status: 'done', summary: 'task-x', task_ref: null, resolved_by: 'agent-e' })
 
     const history = listBlackboardHistory({ agent_id: 'agent-c' }) as { status: string; resolved_by: string | null }[]
     expect(history.every(h => h.resolved_by === null)).toBe(true)

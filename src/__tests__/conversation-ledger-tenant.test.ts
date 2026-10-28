@@ -125,8 +125,8 @@ describe('a coordinator enabled for a second tenant is shared (main agent + avai
     expect(isSharedLedgerAgent('solo')).toBe(false)
   })
 
-  it('replay is empty: the acme coordinator never replays beta turns (and vice versa)', () => {
-    expect(recentLedgerTurns('coord')).toEqual([])
+  it('replay is empty: the acme coordinator never replays beta turns (and vice versa)', async () => {
+    expect(await recentLedgerTurns('coord')).toEqual([])
   })
 
   it('open question comes only from the serving tenant, null without a context', async () => {
@@ -156,13 +156,13 @@ describe('read rules', () => {
 
   it('replay of a shared agent is EMPTY: the tenant B session never gets tenant A turns', async () => {
     await seedBothTenants()
-    expect(recentLedgerTurns('shared')).toEqual([])
+    expect(await recentLedgerTurns('shared')).toEqual([])
   })
 
   it('replay of a not-shared agent is unchanged', async () => {
     await logLedgerTurn(turn({ agent_id: 'solo', message_id: 's1', text: 'one', created_at: 1000 }))
     await logLedgerTurn(turn({ agent_id: 'solo', message_id: 's2', text: 'two', created_at: 1001 }))
-    expect(recentLedgerTurns('solo').map(t => t.text)).toEqual(['one', 'two'])
+    expect((await recentLedgerTurns('solo')).map(t => t.text)).toEqual(['one', 'two'])
   })
 
   it('open question of a shared agent comes only from the tenant it is serving now', async () => {

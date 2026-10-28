@@ -515,9 +515,9 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
     createTenant('tenant-b', 'Tenant B')
   })
 
-  it('a fleet agent later also granted to a tenant: stale single-tenant row becomes "_multi_"', () => {
+  it('a fleet agent later also granted to a tenant: stale single-tenant row becomes "_multi_"', async () => {
     // Agent starts as a pure fleet agent (0 rows) and writes -- tenant_id="default".
-    upsertBlackboard('agent-a', { status: 'active', summary: 'fleet work' })
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'fleet work' })
     // Now granted to tenant-a WITHOUT an explicit "default" row yet (the bug's
     // starting state) -- the row is still stale at this point.
     setTenantAgentAvailability('tenant-a', 'agent-a', true)
@@ -539,9 +539,9 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
     expect(after.tenant_id).toBe('_multi_')
   })
 
-  it('a single-tenant agent stays correctly single-tenant after re-resolve (no false positive)', () => {
+  it('a single-tenant agent stays correctly single-tenant after re-resolve (no false positive)', async () => {
     setTenantAgentAvailability('tenant-a', 'agent-b', true)
-    upsertBlackboard('agent-b', { status: 'active', summary: 'tenant work' })
+    await upsertBlackboard('agent-b', { status: 'active', summary: 'tenant work' })
 
     const db = getDb()
     reapplyMigration0032(db)
@@ -550,9 +550,9 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
     expect(row.tenant_id).toBe('tenant-a')
   })
 
-  it('a revoked (fully disabled) agent reverts to "default" on re-resolve', () => {
+  it('a revoked (fully disabled) agent reverts to "default" on re-resolve', async () => {
     setTenantAgentAvailability('tenant-a', 'agent-c', true)
-    upsertBlackboard('agent-c', { status: 'active', summary: 'tenant work' })
+    await upsertBlackboard('agent-c', { status: 'active', summary: 'tenant work' })
     setTenantAgentAvailability('tenant-a', 'agent-c', false) // revoked
 
     const db = getDb()
@@ -565,8 +565,8 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
     expect(after.tenant_id).toBe('default')
   })
 
-  it('re-resolves fleet_blackboard_history rows the same way', () => {
-    upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
+  it('re-resolves fleet_blackboard_history rows the same way', async () => {
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
     setTenantAgentAvailability('tenant-a', 'agent-a', true)
     setTenantAgentAvailability('default', 'agent-a', true)
 
@@ -578,8 +578,8 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
     for (const r of rows) expect(r.tenant_id).toBe('_multi_')
   })
 
-  it('is idempotent -- running it twice in a row does not change the result', () => {
-    upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
+  it('is idempotent -- running it twice in a row does not change the result', async () => {
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
     setTenantAgentAvailability('tenant-a', 'agent-a', true)
     setTenantAgentAvailability('default', 'agent-a', true)
 

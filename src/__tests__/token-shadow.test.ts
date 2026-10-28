@@ -278,6 +278,9 @@ describe('shared_token_use on /api/messages: the sender the body names', () => {
     expect(total('shared_token_use')).toBe(0)
     req.emit('close')
     req.emit('close')
+    // The close handler starts the flush and does not wait for it: wait for the one row, then for anything late.
+    await vi.waitFor(() => expect(total('shared_token_use')).toBe(1))
+    await new Promise((resolve) => setImmediate(resolve))
     expect(uses()).toEqual([['', 'none', '', 1]])
   })
   it('a body read after the close is not counted a second time', async () => {
@@ -349,8 +352,8 @@ describe('agent_id_mismatch (own-scoped endpoints, first the ledger)', () => {
 
 describe('foreign_row_access (endpoints reachable by permission only)', () => {
   it('blackboard: the body names another agent row, and the id of another agent row', async () => {
-    const own = upsertBlackboard('agent-a', { summary: 's' })
-    const foreign = upsertBlackboard('agent-b', { summary: 's' })
+    const own = await upsertBlackboard('agent-a', { summary: 's' })
+    const foreign = await upsertBlackboard('agent-b', { summary: 's' })
     await drain(await observe(fleetAuth('agent-a'), 'POST', '/api/blackboard', {}, { agent_id: 'agent-b', summary: 'x' }))
     await drain(await observe(fleetAuth('agent-a'), 'PATCH', `/api/blackboard/${foreign.id}`, {}, { status: 'done' }))
     await observe(fleetAuth('agent-a'), 'PATCH', `/api/blackboard/${own.id}`)
@@ -552,11 +555,11 @@ describe('tenant context', () => {
 })
 
 describe('fleet_skill_write_denied', () => {
-  it('counts a refused skill write by the owner of the skill, empty for its own', () => {
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/agent%2Fagent-b%2Fx', 'agent/agent-b/x')
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/global%2Fy', 'global/y')
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'POST', '/api/skills/sql', '')
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'DELETE', '/api/skills/sql/agent%2Fagent-a%2Fz', 'agent/agent-a/z')
+  it('counts a refused skill write by the owner of the skill, empty for its own', async () => {
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/agent%2Fagent-b%2Fx', 'agent/agent-b/x')
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/global%2Fy', 'global/y')
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'POST', '/api/skills/sql', '')
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'DELETE', '/api/skills/sql/agent%2Fagent-a%2Fz', 'agent/agent-a/z')
     expect(rows('fleet_skill_write_denied').map((r) => [r.method, r.route, r.caller, r.caller_source, r.target])).toEqual([
       ['POST', '/api/skills/sql', 'agent-a', 'token', ''],
       ['DELETE', '/api/skills/sql/:id', 'agent-a', 'token', ''],
@@ -564,8 +567,8 @@ describe('fleet_skill_write_denied', () => {
       ['PUT', '/api/skills/sql/:id', 'agent-a', 'token', 'global'],
     ])
   })
-  it('a call without a token agent counts nothing', () => {
-    recordFleetSkillWriteDenied(fakeReq(), undefined, 'PUT', '/api/skills/sql/x', 'x')
+  it('a call without a token agent counts nothing', async () => {
+    await recordFleetSkillWriteDenied(fakeReq(), undefined, 'PUT', '/api/skills/sql/x', 'x')
     expect(rows()).toEqual([])
   })
 })
@@ -574,52 +577,52 @@ describe('the writer', () => {
   const base = { method: 'GET', route: '/api/kanban', client: 'curl', caller: 'agent-a', callerSource: 'self_declared' as const }
   const T0 = Date.UTC(2026, 9, 9, 12, 0, 0) / 1000
 
-  it('upserts one row per shape with a counter and the last timestamp', () => {
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0)
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0 + 5)
+  it('upserts one row per shape with a counter and the last timestamp', async () => {
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0 + 5)
     expect(rows()).toHaveLength(1)
     expect(rows()[0]).toMatchObject({ day: '2026-10-09', count: 2 })
     expect((getDb().prepare('SELECT last_ts FROM token_usage_shadow').get() as { last_ts: number }).last_ts).toBe(T0 + 5)
   })
 
-  it('splits on the UTC day boundary', () => {
+  it('splits on the UTC day boundary', async () => {
     const midnight = Date.UTC(2026, 9, 10, 0, 0, 0) / 1000
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight - 1)
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight - 1)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight)
     expect(rows().map((r) => [r.day, r.count])).toEqual([['2026-10-09', 1], ['2026-10-10', 1]])
   })
 
-  it('folds shapes beyond the daily cap into one overflow row and loses no hit', () => {
+  it('folds shapes beyond the daily cap into one overflow row and loses no hit', async () => {
     for (let i = 0; i < MAX_ROWS_PER_DAY + 50; i++) {
-      recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
+      await recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
     }
     const all = rows()
     expect(all.length).toBe(MAX_ROWS_PER_DAY + 1) // the cap, plus the one overflow row
     expect(all.find((r) => r.route === '_overflow')).toMatchObject({ category: 'shared_token_use', caller: '_overflow', count: 50 })
     expect(all.reduce((n, r) => n + r.count, 0)).toBe(MAX_ROWS_PER_DAY + 50)
     // A shape already in the table keeps counting under its own key after the cap is reached.
-    recordTokenShadow({ ...base, caller: 'agent-0' }, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow({ ...base, caller: 'agent-0' }, { category: 'shared_token_use', target: '' }, T0)
     expect(all.length).toBe(rows().length)
     expect(rows().find((r) => r.caller === 'agent-0')?.count).toBe(2)
   })
 
-  it('the cap survives a process restart (the day state is rebuilt from the table)', () => {
-    for (let i = 0; i < MAX_ROWS_PER_DAY; i++) recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
+  it('the cap survives a process restart (the day state is rebuilt from the table)', async () => {
+    for (let i = 0; i < MAX_ROWS_PER_DAY; i++) await recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
     resetTokenShadowForTests()
-    recordTokenShadow({ ...base, caller: 'agent-new' }, { category: 'shared_token_use', target: '' }, T0)
-    recordTokenShadow({ ...base, caller: 'agent-1' }, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow({ ...base, caller: 'agent-new' }, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow({ ...base, caller: 'agent-1' }, { category: 'shared_token_use', target: '' }, T0)
     expect(rows().find((r) => r.caller === 'agent-new')).toBeUndefined()
     expect(rows().find((r) => r.route === '_overflow')?.count).toBe(1)
     expect(rows().find((r) => r.caller === 'agent-1')?.count).toBe(2)
   })
 
-  it('prunes days beyond the retention window, at most once an hour', () => {
+  it('prunes days beyond the retention window, at most once an hour', async () => {
     const old = Date.UTC(2026, 9, 9, 12, 0, 0) / 1000 - (RETENTION_DAYS + 1) * 86400
     const keep = Date.UTC(2026, 9, 9, 12, 0, 0) / 1000 - (RETENTION_DAYS - 1) * 86400
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, old) // sets the throttle at `old`
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, keep)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, old) // sets the throttle at `old`
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, keep)
     expect(rows().map((r) => r.day)).toEqual([new Date(old * 1000).toISOString().slice(0, 10), new Date(keep * 1000).toISOString().slice(0, 10)].sort())
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0) // an hour+ later: prune runs
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0) // an hour+ later: prune runs
     expect(rows().map((r) => r.day).sort()).toEqual([new Date(keep * 1000).toISOString().slice(0, 10), '2026-10-09'].sort())
   })
 
@@ -634,7 +637,7 @@ describe('fail-safe: the counter never reaches a request', () => {
   it('a missing table makes the recorder return false, not throw, and the observer neither', async () => {
     getDb().exec('DROP TABLE token_usage_shadow')
     resetTokenShadowForTests()
-    expect(recordTokenShadow({ method: 'GET', route: '/r', client: 'none', caller: 'agent-a', callerSource: 'token' }, { category: 'shared_token_use', target: '' })).toBe(false)
+    expect(await recordTokenShadow({ method: 'GET', route: '/r', client: 'none', caller: 'agent-a', callerSource: 'token' }, { category: 'shared_token_use', target: '' })).toBe(false)
     const req = await observe(sharedAuth, 'POST', '/api/daily-log?agent=agent-b', { 'x-agent-id': 'agent-a' }, { agent_id: 'agent-c' })
     expect(await drain(req)).toEqual(Buffer.from(JSON.stringify({ agent_id: 'agent-c' }))) // the handler still gets its body, untouched
   })
@@ -648,7 +651,7 @@ describe('fail-safe: the counter never reaches a request', () => {
     } finally {
       spy.mockRestore()
       const mod = await import('../web/token-shadow.js')
-      ;(await import('../web/http-helpers.js')).setRequestBodyObserver((r, b) => mod.observeRequestBody(r, b))
+      ;(await import('../web/http-helpers.js')).setRequestBodyObserver(async (r, b) => mod.observeRequestBody(r, b))
     }
   })
 
@@ -688,11 +691,11 @@ describe('GET /api/token-shadow', () => {
     return out
   }
 
-  beforeEach(() => {
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
-    recordTokenShadow({ ...base, route: '/api/conversation-ledger/:agent/recent', callerSource: 'token' }, { category: 'agent_id_mismatch', target: 'agent-b' }, T)
-    recordTokenShadow({ ...base, caller: 'agent-c', route: '/api/odd_route' }, { category: 'shared_token_use', target: '' }, T - 3 * 86400)
+  beforeEach(async () => {
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
+    await recordTokenShadow({ ...base, route: '/api/conversation-ledger/:agent/recent', callerSource: 'token' }, { category: 'agent_id_mismatch', target: 'agent-b' }, T)
+    await recordTokenShadow({ ...base, caller: 'agent-c', route: '/api/odd_route' }, { category: 'shared_token_use', target: '' }, T - 3 * 86400)
   })
 
   it('is admin-only: every other role is a 403 and sees nothing', async () => {

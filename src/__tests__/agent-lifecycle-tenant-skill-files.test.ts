@@ -62,47 +62,47 @@ import { readAgentRemoteHost } from '../web/agent-config.js'
 beforeEach(() => { order.length = 0; running.value = false; vi.clearAllMocks() })
 
 describe('agent lifecycle and tenant skill files', () => {
-  it('start generates the tenant skill files before anything else launches', () => {
-    expect(() => startAgentProcess('agent-a')).toThrow('stop here')
+  it('start generates the tenant skill files before anything else launches', async () => {
+    await expect(startAgentProcess('agent-a')).rejects.toThrow('stop here')
     expect(order[0]).toBe('generate:agent-a')
     expect(order).toEqual(['generate:agent-a', 'after-generate-marker'])
   })
 
-  it('start of an already running agent generates nothing', () => {
+  it('start of an already running agent generates nothing', async () => {
     running.value = true
-    expect(startAgentProcess('agent-a')).toMatchObject({ ok: false, error: 'conflict' })
+    expect(await startAgentProcess('agent-a')).toMatchObject({ ok: false, error: 'conflict' })
     expect(regen.generateTenantSkillFilesForAgent).not.toHaveBeenCalled()
   })
 
-  it('a failing generation does not block the start', () => {
+  it('a failing generation does not block the start', async () => {
     vi.mocked(regen.generateTenantSkillFilesForAgent).mockImplementationOnce(() => { throw new Error('disk full') })
-    expect(() => startAgentProcess('agent-a')).toThrow('stop here')   // got past the generation
+    await expect(startAgentProcess('agent-a')).rejects.toThrow('stop here')   // got past the generation
   })
 
-  it('stop removes the generated tenant skill files after the session is killed', () => {
+  it('stop removes the generated tenant skill files after the session is killed', async () => {
     running.value = true
-    expect(stopAgentProcess('agent-a')).toEqual({ ok: true })
+    expect(await stopAgentProcess('agent-a')).toEqual({ ok: true })
     expect(order).toEqual(['tmux', 'remove:agent-a'])
   })
 
-  it('stop of a remote agent leaves the local skills directory alone (its files live on the laptop)', () => {
+  it('stop of a remote agent leaves the local skills directory alone (its files live on the laptop)', async () => {
     running.value = true
     vi.mocked(readAgentRemoteHost).mockReturnValue('laptop')
     try {
-      expect(stopAgentProcess('agent-a')).toEqual({ ok: true })
+      expect(await stopAgentProcess('agent-a')).toEqual({ ok: true })
       expect(regen.removeGeneratedTenantSkillFilesForAgent).not.toHaveBeenCalled()
     } finally {
       vi.mocked(readAgentRemoteHost).mockReturnValue(null)
     }
   })
 
-  it('a failing removal does not fail the stop, and a stop that did nothing removes nothing', () => {
+  it('a failing removal does not fail the stop, and a stop that did nothing removes nothing', async () => {
     running.value = true
     vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockImplementationOnce(() => { throw new Error('busy') })
-    expect(stopAgentProcess('agent-a').ok).toBe(true)
+    expect((await stopAgentProcess('agent-a')).ok).toBe(true)
     running.value = false
     vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockClear()
-    expect(stopAgentProcess('agent-a')).toMatchObject({ ok: false, error: 'conflict' })
+    expect(await stopAgentProcess('agent-a')).toMatchObject({ ok: false, error: 'conflict' })
     expect(regen.removeGeneratedTenantSkillFilesForAgent).not.toHaveBeenCalled()
   })
 })

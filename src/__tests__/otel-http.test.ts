@@ -18,7 +18,7 @@ beforeEach(() => {
   getDb().exec("DELETE FROM otel_spans WHERE operation = 'http.server'")
 })
 
-const metric = () => collectRegistryMetrics().find((m) => m.name === 'http.server.request.duration')
+const metric = async () => (await collectRegistryMetrics()).find((m) => m.name === 'http.server.request.duration')
 const attrMap = (p: any) => Object.fromEntries(p.attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.intValue]))
 const httpSpans = () => getDb().prepare("SELECT * FROM otel_spans WHERE operation = 'http.server'").all() as any[]
 
@@ -118,7 +118,7 @@ describe('traceIdFromTraceparent', () => {
 describe('recordHttpRequest', () => {
   it('records every request in the histogram with the method, the TEMPLATE and the status, and no span for a fast success', async () => {
     await recordHttpRequest({ method: 'get', path: '/api/kanban/card-123', status: 200, seconds: 0.03 })
-    const p = (metric()!.histogram!.dataPoints as any[])[0]
+    const p = ((await metric())!.histogram!.dataPoints as any[])[0]
     expect(attrMap(p)).toEqual({ 'http.request.method': 'GET', 'http.route': '/api/kanban/{id}', 'http.response.status_code': '200' })
     expect(p.count).toBe('1')
     expect(httpSpans()).toHaveLength(0)
@@ -126,7 +126,7 @@ describe('recordHttpRequest', () => {
 
   it('uses the conventional bounds in seconds', async () => {
     await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 200, seconds: 0.2 })
-    const p = (metric()!.histogram!.dataPoints as any[])[0]
+    const p = ((await metric())!.histogram!.dataPoints as any[])[0]
     expect(p.explicitBounds).toEqual([0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10])
     expect(p.bucketCounts[6]).toBe('1') // 0.2 s: the <= 0.25 bucket
   })
@@ -190,7 +190,7 @@ describe('recordHttpRequest', () => {
     for (let i = 0; i < MAX_DISTINCT_ROUTES + 100; i++) {
       await recordHttpRequest({ method: 'GET', path: `/api/kanban/${'status/'.repeat(i % 3)}x${i}/${i}`, status: i % 2 ? 401 : 404, seconds: 0.001 })
     }
-    const routes = new Set(((metric()!.histogram!.dataPoints as any[]).map(attrMap)).map((a) => a['http.route']))
+    const routes = new Set((((await metric())!.histogram!.dataPoints as any[]).map(attrMap)).map((a) => a['http.route']))
     expect([...routes]).toEqual(['/api/kanban'])
     // the cap is untouched: a real route still gets its full template
     expect(httpRouteTemplate('/api/kanban/card-1/comments')).toBe('/api/kanban/{id}/comments')
@@ -212,13 +212,13 @@ describe('recordHttpRequest', () => {
   it('does not report which paths exist: a 404 under a known resource looks like a 401', async () => {
     await recordHttpRequest({ method: 'GET', path: '/api/kanban/nonexistent/deep/path', status: 404, seconds: 0.001 })
     await recordHttpRequest({ method: 'GET', path: '/api/kanban/some-card', status: 401, seconds: 0.001 })
-    const routes = (metric()!.histogram!.dataPoints as any[]).map(attrMap).map((a) => a['http.route'])
+    const routes = ((await metric())!.histogram!.dataPoints as any[]).map(attrMap).map((a) => a['http.route'])
     expect(new Set(routes)).toEqual(new Set(['/api/kanban']))
   })
 
   it('counts a status outside 100-599 as 0 and a hostile method as _OTHER, and never throws', async () => {
     await expect(recordHttpRequest({ method: 'PROPFIND', path: '/api/x', status: 9999, seconds: 0.1 })).resolves.toBeUndefined()
-    const p = (metric()!.histogram!.dataPoints as any[])[0]
+    const p = ((await metric())!.histogram!.dataPoints as any[])[0]
     expect(attrMap(p)['http.request.method']).toBe('_OTHER')
     expect(attrMap(p)['http.response.status_code']).toBe('0')
     await expect(recordHttpRequest({ method: 'GET', path: undefined as unknown as string, status: 200, seconds: NaN })).resolves.toBeUndefined()
@@ -234,16 +234,16 @@ describe('instrumentHttpRequest on a real HTTP server', () => {
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     return { server, port: (server.address() as net.AddressInfo).port }
   }
-  const points = () => ((metric()?.histogram?.dataPoints ?? []) as any[]).map((p) => ({ a: attrMap(p), count: p.count }))
+  const points = async () => (((await metric())?.histogram?.dataPoints ?? []) as any[]).map((p) => ({ a: attrMap(p), count: p.count }))
 
   it('measures an answered request with the template of the route and the status, never the path or the query', async () => {
     const { server, port } = await serve((_req, res) => { res.writeHead(401); res.end('no') })
     try {
       await (await fetch(`http://127.0.0.1:${port}/api/kanban/some-card-name?q=secret-search-term`)).text()
       await new Promise((r) => setTimeout(r, 30))
-      const hit = points().find((p) => p.a['http.route'] === '/api/kanban')
+      const hit = (await points()).find((p) => p.a['http.route'] === '/api/kanban')
       expect(hit?.a).toEqual({ 'http.request.method': 'GET', 'http.route': '/api/kanban', 'http.response.status_code': '401' })
-      expect(JSON.stringify(collectRegistryMetrics())).not.toMatch(/some-card-name|secret-search-term/)
+      expect(JSON.stringify(await collectRegistryMetrics())).not.toMatch(/some-card-name|secret-search-term/)
     } finally {
       await new Promise((r) => server.close(r))
     }
@@ -280,7 +280,7 @@ describe('instrumentHttpRequest on a real HTTP server', () => {
       ctl.abort()
       await pending
       await new Promise((r) => setTimeout(r, 50))
-      expect(points()).toEqual([])
+      expect((await points())).toEqual([])
     } finally {
       server.closeAllConnections()
       await new Promise((r) => server.close(r))

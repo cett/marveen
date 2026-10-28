@@ -243,7 +243,7 @@ describe('wiring in the production request pipeline (source level; booting the s
   })
 
   it('readBody reports the finished body to the observer and survives a throwing one', () => {
-    expect(HELPERS).toMatch(/requestBodyObserver\(req, body\)/)
-    expect(HELPERS).toMatch(/try \{ requestBodyObserver\(req, body\) \} catch/)
+    expect(HELPERS).toMatch(/requestBodyObserver\?\.\(req, body\)/)
+    expect(HELPERS).toMatch(/try \{ observed = requestBodyObserver\?\.\(req, body\) \} catch/)
   })
 })

@@ -24,9 +24,9 @@ vi.mock('../web/channel-monitor.js', () => ({
   hardRestartMarveenChannels: vi.fn().mockReturnValue({ ok: true }),
 }))
 vi.mock('../web/agent-process.js', () => ({
-  startAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  stopAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  restartAgentProcess: vi.fn().mockReturnValue({ ok: true }),
+  startAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  stopAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  restartAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
   getAgentProcessInfo: vi.fn().mockReturnValue(null),
 }))
 vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
