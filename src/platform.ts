@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
+import { readEnvFile } from './env.js'
 
 export type PlatformType = 'macos' | 'linux-server' | 'linux-gui'
 
@@ -81,5 +82,11 @@ export function makeLazyBinResolver(name: string, opts: { recorded?: () => strin
   }
 }
 
-/** The tmux binary: the location recorded at install time (TMUX_BIN), else the lazy search. */
-export const tmuxBin = makeLazyBinResolver('tmux', { recorded: () => process.env['TMUX_BIN'] || undefined })
+/**
+ * The tmux binary: the location recorded at install time (TMUX_BIN), else the lazy search.
+ * The installer writes the value to .env, which readEnvFile reads but never copies into process.env (the dashboard
+ * process starts with a bare launchd environment), so the process environment is asked first and .env second.
+ */
+export const tmuxBin = makeLazyBinResolver('tmux', {
+  recorded: () => process.env['TMUX_BIN'] || readEnvFile(['TMUX_BIN'])['TMUX_BIN'] || undefined,
+})
