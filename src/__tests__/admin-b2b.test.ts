@@ -380,7 +380,7 @@ describe('PATCH /api/v1/admin/users/:id', () => {
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(403)
-    expect(out.body.error).toBe('forbidden')
+    expect(out.body).toEqual({ error: 'forbidden', hint: 'Cannot remove the last administrator' })
   })
 
   it('returns 404 for unknown user', async () => {
@@ -491,7 +491,7 @@ describe('DELETE /api/v1/admin/users/:id', () => {
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(403)
-    expect(out.body.error).toBe('forbidden')
+    expect(out.body).toEqual({ error: 'forbidden', hint: 'Cannot remove the last administrator' })
   })
 
   it('returns 404 when the user vanished between the lookup and the delete', async () => {
@@ -509,7 +509,7 @@ describe('DELETE /api/v1/admin/users/:id', () => {
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(403)
-    expect(out.body.error).toBe('forbidden')
+    expect(out.body).toEqual({ error: 'forbidden', hint: 'Cannot remove the last administrator' })
   })
 })
 

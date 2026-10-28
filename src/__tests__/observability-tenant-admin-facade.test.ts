@@ -7,6 +7,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const purge = vi.hoisted(() => ({ fn: vi.fn<(tenantId: string) => number>() }))
+const log = vi.hoisted(() => ({ error: vi.fn() }))
+vi.mock('../logger.js', async (orig) => {
+  const real = await orig<typeof import('../logger.js')>()
+  return { ...real, logger: Object.assign(Object.create(real.logger), { error: log.error }) }
+})
 vi.mock('../web/vault.js', () => ({ purgeSecretsForTenant: (t: string) => purge.fn(t) }))
 
 import {
@@ -233,6 +238,7 @@ describe('deleteTenant: the vault file step', () => {
     seedTenantRows('gone')
     purge.fn.mockImplementationOnce(() => { throw new Error('vault write failed') })
     await expect(deleteTenant('gone')).rejects.toThrow('vault write failed')
+    expect(log.error).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'gone' }), expect.stringContaining('repeat the delete'))
     expect(await getTenant('gone')).toBeUndefined()
     expect(rows('dashboard_users', 'tenant_id', 'gone')).toBe(0)
 

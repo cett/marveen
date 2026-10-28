@@ -8,6 +8,7 @@ import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { reloadAgentSettingsCache } from './agent-settings-cache.js'
+import { logger } from '../logger.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
 import { GENAI_TOKEN_BUCKET_BOUNDS } from '../otel-genai.js'
 
@@ -680,7 +681,13 @@ export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult
   reloadAgentSettingsCache()
 
   // The one non-SQL step, after the commit (see the header): the vault.json entries of the tenant.
-  const secretsDeleted = purgeSecretsForTenant(tenantId)
+  let secretsDeleted: number
+  try {
+    secretsDeleted = purgeSecretsForTenant(tenantId)
+  } catch (err) {
+    logger.error({ err, tenantId }, 'tenant deleted but its vault.json entries could not be purged: repeat the delete to remove them')
+    throw err
+  }
 
   return { ...sqlResult, secretsDeleted }
 }
