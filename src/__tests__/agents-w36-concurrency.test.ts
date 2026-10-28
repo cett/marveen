@@ -128,6 +128,25 @@ describe('markBlackboardStale: compare-and-set on the row it read', () => {
   })
 })
 
+describe('markBlackboardStale: the status condition', () => {
+  it('a row whose status changed without a newer timestamp is not marked stale', async () => {
+    await upsertBlackboard('agent-s', { status: 'active', summary: 'old task' })
+    db.prepare('UPDATE fleet_blackboard SET updated_at = 1000 WHERE agent_id = ?').run('agent-s')
+    const real = dbx.all.bind(dbx) as (...a: unknown[]) => Promise<unknown>
+    vi.spyOn(dbx, 'all').mockImplementation((async (sql: string, ...a: unknown[]) => {
+      const rows = await real(sql, ...a)
+      if (/FROM fleet_blackboard WHERE status IN/.test(sql)) {
+        vi.mocked(dbx.all).mockRestore()
+        // a writer in the same second as the row's last write: the timestamp is unchanged, the status is not
+        db.prepare("UPDATE fleet_blackboard SET status = 'done' WHERE agent_id = ?").run('agent-s')
+      }
+      return rows
+    }) as never)
+    expect(await markBlackboardStale({}, 60, 60)).toBe(0)
+    expect((await findBlackboardRowByAgent('agent-s'))?.status).toBe('done')
+  })
+})
+
 describe('claimPendingForAgent: two claimers', () => {
   it('every pending message is claimed by exactly one of two overlapped claimers', async () => {
     for (let i = 0; i < 6; i++) await createAgentMessage('agent-a', 'agent-x', `m${i}`)
