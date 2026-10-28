@@ -3,7 +3,7 @@
 // to open the database file themselves; they now go through
 // /api/conversation-ledger, which calls these helpers.
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { getServedTenantIds } from './agents.js'
 import { getChannelBindingTenant, getServingTenant } from './tenant-channel-bindings.js'
 
@@ -59,24 +59,20 @@ export async function logLedgerTurn(turn: LedgerTurnInput): Promise<boolean> {
   // UserPromptSubmit in no guaranteed order, so the context row may still hold the PREVIOUS prompt's
   // tenant. An unbound chat is NULL (unknown), not 'default'.
   const tenantId = await getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
-  const info = db.prepare(
-    `INSERT INTO conversation_log
+  const info = await dbx.run(`INSERT INTO conversation_log
        (agent_id, chat_id, direction, message_id, text, ts, created_at, tenant_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT DO NOTHING`,
-  ).run(turn.agent_id, turn.chat_id, turn.direction, turn.message_id ?? null, turn.text ?? null, ts, createdAt, tenantId)
+     ON CONFLICT DO NOTHING`, turn.agent_id, turn.chat_id, turn.direction, turn.message_id ?? null, turn.text ?? null, ts, createdAt, tenantId)
   return info.changes > 0
 }
 
 /** The last `limit` turns for the agent, oldest-first. */
-export function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT): LedgerTurn[] {
+export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT): Promise<LedgerTurn[]> {
   // Replay runs at SessionStart, when no prompt has set a tenant context yet. A shared agent would
   // hand one tenant's turns to a session that may serve the other, so it gets nothing.
   if (isSharedLedgerAgent(agentId)) return []
-  const rows = db.prepare(
-    `SELECT direction, chat_id, text, ts FROM conversation_log
-       WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
-  ).all(agentId, limit) as LedgerTurn[]
+  const rows = await dbx.all<LedgerTurn>(`SELECT direction, chat_id, text, ts FROM conversation_log
+       WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, agentId, limit)
   return rows.reverse()
 }
 
@@ -96,18 +92,14 @@ export async function openLedgerQuestion(agentId: string): Promise<LedgerOpenQue
     tenantFilter = ' AND tenant_id = ?'
     params.push(tenant)
   }
-  const row = db.prepare(
-    `SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log
+  const row = await dbx.get<(LedgerOpenQuestion & { id: number })>(`SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log
        WHERE agent_id = ? AND direction = 'in'${tenantFilter}
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).get(...params) as (LedgerOpenQuestion & { id: number }) | undefined
+       ORDER BY created_at DESC, id DESC LIMIT 1`, ...params)
   if (!row) return null
-  const laterOut = db.prepare(
-    `SELECT 1 FROM conversation_log
+  const laterOut = await dbx.get(`SELECT 1 FROM conversation_log
        WHERE agent_id = ? AND direction = 'out'${tenantFilter}
          AND (created_at > ? OR (created_at = ? AND id > ?))
-       LIMIT 1`,
-  ).get(...params, row.created_at, row.created_at, row.id)
+       LIMIT 1`, ...params, row.created_at, row.created_at, row.id)
   if (laterOut) return null
   const { id: _id, ...question } = row
   return question

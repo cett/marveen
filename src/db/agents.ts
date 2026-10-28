@@ -634,13 +634,13 @@ export function pruneAgentMessages(): number {
 // (their scheduled run is still in flight and the runner closes the row).
 // Returns how many rows were marked. Called by the blackboard-stale-sweeper on
 // a background interval.
-export function markBlackboardStale(
+export async function markBlackboardStale(
   thresholdsByAgent: Record<string, number>,
   defaultThresholdSec: number,
   assignedThresholdSec: number,
   nowSec = Math.floor(Date.now() / 1000),
   skipActiveAgentIds: ReadonlySet<string> = new Set(),
-): number {
+): Promise<number> {
   const rows = db.prepare(
     `SELECT id, agent_id, task_ref, summary, updated_at, status FROM fleet_blackboard WHERE status IN ('active', 'assigned')`,
   ).all() as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number; status: string }[]
@@ -658,7 +658,7 @@ export function markBlackboardStale(
       // #886: a blackboard row going stale means the agent behind it is
       // presumed dead -- drop any plan binding with it (design section 3A),
       // rather than let it look "active" forever.
-      try { deactivatePlanForAgent(row.agent_id) } catch { /* best-effort, never blocks the sweep */ }
+      try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort, never blocks the sweep */ }
       marked++
     }
   }
@@ -722,7 +722,7 @@ export function resolveAgentTenant(agent_id: string): string {
 // 'blocked' -- a done/active row has no live block to describe. resolved_by
 // is never stored on the live row; it is only carried into the history
 // entry, and only on the actual blocked -> non-blocked transition.
-export function upsertBlackboard(
+export async function upsertBlackboard(
   agent_id: string,
   data: {
     task_ref?: string | null
@@ -732,7 +732,7 @@ export function upsertBlackboard(
     blocked_reason?: string | null
     resolved_by?: string | null
   },
-): BlackboardRow {
+): Promise<BlackboardRow> {
   const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
   const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
   const tenant_id = resolveAgentTenant(agent_id)
@@ -771,7 +771,7 @@ export function upsertBlackboard(
   // same as the history write above -- a repeated no-op 'done' upsert must
   // not matter here.
   if (changed && row.status === 'done') {
-    try { deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
+    try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
   }
   return row
 }

@@ -405,7 +405,7 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   return tokens / limit
 }
 
-function performRestart(name: string): void {
+async function performRestart(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // Platform-correct main-session restart. This was a hardcoded
     // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
@@ -424,7 +424,7 @@ function performRestart(name: string): void {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    restartAgentProcess(name, { fresh: true })
+    await restartAgentProcess(name, { fresh: true })
   }
 }
 
@@ -605,9 +605,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         // ride in the just-written HANDOFF.md to be recovered on the next
         // launch (see claude-plan-handoff-marker.ts). Must run before
         // performRestart, while the DB row this reads still exists.
-        appendActivePlanMarkerToHandoff(name)
+        await appendActivePlanMarkerToHandoff(name)
         try {
-          performRestart(name)
+          await performRestart(name)
         } catch (err) {
           // guardStates was advanced to the post-restart phase BEFORE this
           // switch, so a failed restart would otherwise be filed as a completed

@@ -463,24 +463,24 @@ function warnThrottled(err: unknown, msg: string): void {
 interface Base { method: string; route: string; client: string; caller: string; callerSource: TokenShadowCallerSource }
 
 /** Adds one to the counter of this shape. Never throws. `nowSec` is injectable for tests. */
-export function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = Math.floor(Date.now() / 1000)): boolean {
+export async function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = Math.floor(Date.now() / 1000)): Promise<boolean> {
   try {
     const day = utcDay(nowSec)
-    if (dayState.day !== day) dayState = { day, known: new Set(), rows: countTokenShadowRowsForDay(day) }
+    if (dayState.day !== day) dayState = { day, known: new Set(), rows: await countTokenShadowRowsForDay(day) }
     let key: TokenShadowKey = {
       day, category: hit.category, method: base.method, route: base.route,
       caller: base.caller, callerSource: base.callerSource, client: base.client, target: hit.target,
     }
     let ks = keyString(key)
     if (!dayState.known.has(ks)) {
-      if (tokenShadowKeyExists(key)) {
+      if (await tokenShadowKeyExists(key)) {
         dayState.known.add(ks)
       } else if (dayState.rows >= MAX_ROWS_PER_DAY) {
         // Over the cap: fold into one overflow row per (day, category, method) instead of growing.
         key = { day, category: hit.category, method: base.method, route: OVERFLOW, caller: OVERFLOW, callerSource: 'none', client: 'other', target: '' }
         ks = keyString(key)
         if (!dayState.known.has(ks)) {
-          if (!tokenShadowKeyExists(key)) dayState.rows += 1
+          if (!await tokenShadowKeyExists(key)) dayState.rows += 1
           dayState.known.add(ks)
         }
       } else {
@@ -488,8 +488,8 @@ export function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = M
         dayState.known.add(ks)
       }
     }
-    bumpTokenShadow(key, nowSec)
-    pruneThrottled(nowSec)
+    await bumpTokenShadow(key, nowSec)
+    await pruneThrottled(nowSec)
     return true
   } catch (err) {
     warnThrottled(err, 'token-shadow: counter write failed')
@@ -497,11 +497,11 @@ export function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = M
   }
 }
 
-function pruneThrottled(nowSec: number): void {
+async function pruneThrottled(nowSec: number): Promise<void> {
   if (nowSec - lastPruneAt < PRUNE_INTERVAL_SEC) return
   lastPruneAt = nowSec
   try {
-    deleteTokenShadowRowsBefore(utcDay(nowSec - RETENTION_DAYS * SECONDS_PER_DAY))
+    await deleteTokenShadowRowsBefore(utcDay(nowSec - RETENTION_DAYS * SECONDS_PER_DAY))
   } catch (err) {
     warnThrottled(err, 'token-shadow: prune failed')
   }
@@ -540,7 +540,7 @@ export async function observeRefusedSharedToken(req: http.IncomingMessage, metho
     const row = await getApiTokenRowByHash(createHash('sha256').update(bearer).digest('hex'))
     if (!row || row.name !== DASHBOARD_TOKEN_NAME || row.revoked_at === null) return
     const declared = cleanAgentId(resolveAgentIdHeader(req))
-    recordTokenShadow(
+    await recordTokenShadow(
       {
         method, route: normalizeRoute(path), client: classifyClient(req.headers['user-agent']),
         caller: declared, callerSource: declared ? 'self_declared' : 'none',
@@ -568,11 +568,11 @@ function messageSenderTarget(body: Buffer): string {
   }
 }
 
-function flushSharedUse(req: http.IncomingMessage, target: string): void {
+async function flushSharedUse(req: http.IncomingMessage, target: string): Promise<void> {
   const base = sharedUseDeferred.get(req)
   if (!base) return
   sharedUseDeferred.delete(req)
-  recordTokenShadow(base, { category: 'shared_token_use', target })
+  await recordTokenShadow(base, { category: 'shared_token_use', target })
 }
 
 interface Pending { base: Base; spec: WatchSpec; recorded: Set<string>; caller: string; refusable: boolean; omittedMain: boolean }
@@ -690,7 +690,7 @@ export async function answerIdentityRefusal(req: http.IncomingMessage, res: http
   try {
     const refusal = await identityRefusal(req)
     if (!refusal) return false
-    if (base) recordTokenShadow(base, { category: 'identity_refused', target: refusal.target })
+    if (base) await recordTokenShadow(base, { category: 'identity_refused', target: refusal.target })
     if (refusal.undecided) {
       logger.error(
         { path: req.url?.split('?')[0], method: req.method, caller: refusal.caller },
@@ -739,9 +739,9 @@ export async function observeTokenUsage(
     if (who.shared) {
       if (spec?.prefix === '/api/messages' && isWriteMethod(method) && typeof req.once === 'function') {
         sharedUseDeferred.set(req, base)
-        req.once('close', () => flushSharedUse(req, ''))
+        req.once('close', () => { void flushSharedUse(req, '') })  // recordTokenShadow catches its own failures
       } else {
-        recordTokenShadow(base, { category: 'shared_token_use', target: '' })
+        await recordTokenShadow(base, { category: 'shared_token_use', target: '' })
       }
     }
     const hasTenantParam = !!url.searchParams.get('tenant')
@@ -750,13 +750,13 @@ export async function observeTokenUsage(
     try {
       // A shared-token request that declares a shared agent and names no tenant.
       if (who.shared && who.source === 'self_declared' && !hasTenantParam && await agentHasNoTenant(who.caller)) {
-        recordTokenShadow(base, { category: 'missing_tenant_context', target: await explainServingTenantMiss(who.caller) })
+        await recordTokenShadow(base, { category: 'missing_tenant_context', target: await explainServingTenantMiss(who.caller) })
       }
       // The memory read of a shared agent from a caller that has no tenant of its own to scope it by.
       if (spec?.prefix === '/api/memories' && method === 'GET' && !hasTenantParam && (who.shared || who.fleetAgent)) {
         const named = cleanAgentId(url.searchParams.get('agent') ?? url.searchParams.get('agent_id'))
         if (named && named !== INVALID && await agentHasNoTenant(named)) {
-          recordTokenShadow(base, { category: 'shared_agent_memories_no_tenant', target: named })
+          await recordTokenShadow(base, { category: 'shared_agent_memories_no_tenant', target: named })
         }
       }
     } catch (err) {
@@ -830,7 +830,7 @@ async function observeIdentity(
     pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: mainAgentId.trim().toLowerCase() }, base })
   }
   for (const hit of identityHits({ kind: spec.kind, caller: who.caller, mainAgentId, targets, refusable })) {
-    recordTokenShadow(base, hit)
+    await recordTokenShadow(base, hit)
     recorded.add(hit.target)
     if (refusable && !pathVerdicts.has(req)) pathVerdicts.set(req, { caller: who.caller, hit, base })
   }
@@ -839,7 +839,7 @@ async function observeIdentity(
     pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: UNDECIDED }, base, undecided: true })
   }
   if (spec.listsAcrossAgents && method === 'GET' && param === undefined && !queryNamed) {
-    recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
+    await recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
   }
 
   if (spec.bodyKeys.length > 0 && isWriteMethod(method)) {
@@ -848,9 +848,9 @@ async function observeIdentity(
 }
 
 /** Called by readBody once the body is complete; counts the agent ids a body names. Never throws. */
-export function observeRequestBody(req: http.IncomingMessage, body: Buffer, mainAgentId: string = MAIN_AGENT_ID): void {
+export async function observeRequestBody(req: http.IncomingMessage, body: Buffer, mainAgentId: string = MAIN_AGENT_ID): Promise<void> {
   try {
-    if (sharedUseDeferred.has(req)) flushSharedUse(req, messageSenderTarget(body))
+    if (sharedUseDeferred.has(req)) await flushSharedUse(req, messageSenderTarget(body))
   } catch (err) {
     warnThrottled(err, 'token-shadow: shared-use record failed')
   }
@@ -864,7 +864,7 @@ export function observeRequestBody(req: http.IncomingMessage, body: Buffer, main
     for (const hit of identityHits({ kind: pending.spec.kind, caller: pending.base.caller, mainAgentId, targets: named, refusable: pending.refusable })) {
       if (pending.recorded.has(hit.target)) continue
       pending.recorded.add(hit.target)
-      recordTokenShadow(pending.base, hit)
+      await recordTokenShadow(pending.base, hit)
     }
   } catch {
     // A body that is not JSON is the handler's 400 to give; the counter has nothing to count.
@@ -878,7 +878,7 @@ export async function recordTenantContextRefusal(req: http.IncomingMessage, auth
   try {
     const who = resolveShadowCaller(auth, undefined)
     if (!who || who.source !== 'token') return
-    recordTokenShadow(
+    await recordTokenShadow(
       { method, route: normalizeRoute(rawPath), client: classifyClient(req.headers['user-agent']), caller: who.caller, callerSource: 'token' },
       // target = why there was no tenant (no_row | unknown | conflict | stale | not_serving | error):
       // the counter says what to fix, not only that something failed.
@@ -897,18 +897,18 @@ export function skillOwnerTarget(skillId: string): string {
 }
 
 /** A fleet_agent token tried a skill write T1 refuses (skills.ts, at the 403). */
-export function recordFleetSkillWriteDenied(
+export async function recordFleetSkillWriteDenied(
   req: http.IncomingMessage,
   tokenAgentId: string | undefined,
   method: string,
   rawPath: string,
   skillId: string,
-): void {
+): Promise<void> {
   try {
     const caller = cleanAgentId(tokenAgentId)
     if (!caller) return
     const owner = skillOwnerTarget(skillId)
-    recordTokenShadow(
+    await recordTokenShadow(
       { method, route: normalizeRoute(rawPath), client: classifyClient(req.headers['user-agent']), caller, callerSource: 'token' },
       { category: 'fleet_skill_write_denied', target: owner === caller ? '' : owner },
     )

@@ -146,7 +146,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
     try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = startAgentProcess(name, { fresh: startFresh })
+    const result = await startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'conflict') await addDesiredAgent(name)
@@ -162,7 +162,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: 'not_supported', hint: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
-    const result = stopAgentProcess(name)
+    const result = await stopAgentProcess(name)
     // Explicit stop clears intent so the monitor will not resurrect it.
     await removeDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
@@ -242,7 +242,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     let restartFresh = false
     try { restartFresh = JSON.parse(body.toString() || '{}').fresh === true } catch {}
-    const result = restartAgentProcess(name, { fresh: restartFresh })
+    const result = await restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true

@@ -46,7 +46,7 @@ export class RequestBodyTooLargeError extends Error {
 // Optional observer of every request body that readBody finishes reading (the Phase T2 shadow
 // counter registers one to see which agent ids a body names). It is told AFTER the body is complete,
 // cannot change it, and a throwing observer is ignored: it must never fail or delay a request.
-type RequestBodyObserver = (req: http.IncomingMessage, body: Buffer) => void
+type RequestBodyObserver = (req: http.IncomingMessage, body: Buffer) => void | Promise<void>
 let requestBodyObserver: RequestBodyObserver | null = null
 
 export function setRequestBodyObserver(fn: RequestBodyObserver | null): void {
@@ -103,10 +103,11 @@ export function readBody(
       if (overflowed) return
       const body = Buffer.concat(chunks)
       readBodies.set(req, body)
-      if (requestBodyObserver) {
-        try { requestBodyObserver(req, body) } catch { /* an observer fault never fails the request */ }
-      }
-      resolve(body)
+      // The observer (the identity counter) writes before the body is handed on, as it did when it was synchronous.
+      // A fault, thrown or rejected, never fails the request.
+      let observed: void | Promise<void>
+      try { observed = requestBodyObserver?.(req, body) } catch { observed = undefined }
+      void Promise.resolve(observed).catch(() => { /* counter only */ }).then(() => resolve(body))
     })
     req.on('close', clearDrainTimer)
     req.on('error', reject)

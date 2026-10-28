@@ -169,14 +169,14 @@ export function writeClaudePlans(plans: ClaudePlan[]): void {
   // Best-effort DB mirror (#886) for the dashboard/blackboard badge. The file
   // above stays authoritative for launch-time resolution (see db/claude-plans.ts
   // header) -- a mirror-write failure must never block the real write.
-  try {
-    replaceClaudePlanRows(plans.map((p) => ({
-      id: p.id, label: p.label, configDir: p.configDir, planType: p.planType,
-      channelsAllowed: p.channelsAllowed, expectedOrgType: p.expectedOrgType, expectedEmail: p.expectedEmail,
-    })))
-  } catch (err) {
+  // writeClaudePlans stays synchronous (launch-time callers cannot await), so the mirror write is started and its
+  // failure logged here: nothing waits for it, and the lint (no-floating-promises) is what holds this catch.
+  replaceClaudePlanRows(plans.map((p) => ({
+    id: p.id, label: p.label, configDir: p.configDir, planType: p.planType,
+    channelsAllowed: p.channelsAllowed, expectedOrgType: p.expectedOrgType, expectedEmail: p.expectedEmail,
+  }))).catch((err: unknown) => {
     logger.warn({ err }, 'claude-plans-registry mirror write failed (file write already succeeded)')
-  }
+  })
 }
 
 // Resolve a single plan id to its plan, or null when the id is blank/unknown.

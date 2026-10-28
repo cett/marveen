@@ -258,7 +258,7 @@ export function agentsWithRunnerRow(entries: Iterable<TaskInflightEntry>): Set<s
 // this a task that outlived its tier threshold could never end as done.
 // Exported so the done-write path (including task_ref passthrough) can be tested
 // in isolation against a mocked db layer.
-export function applyBlackboardDone(entry: TaskInflightEntry): void {
+export async function applyBlackboardDone(entry: TaskInflightEntry): Promise<void> {
   if (!entry.sawTurn || !entry.blackboardSnapshot) return
   const cur = findBlackboardRowByAgent(entry.agentName)
   const snap = entry.blackboardSnapshot
@@ -267,7 +267,7 @@ export function applyBlackboardDone(entry: TaskInflightEntry): void {
     cur.summary === snap.summary &&
     (cur.task_ref ?? null) === snap.task_ref
   if (unchanged) {
-    upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
+    await upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
   }
 }
 
@@ -969,7 +969,7 @@ async function attemptFireTask(
     // sends once Claude has booted (isSessionReadyForPrompt). host-aware:
     // startAgentProcess is itself remote-aware and launches over ssh when the
     // target agent is remote, so a missing remote session is auto-started too.
-    const start = startAgentProcess(agentName)
+    const start = await startAgentProcess(agentName)
     if (!start.ok) {
       // "already running" means it raced up between the check and here -- treat
       // as busy so the normal retry path delivers. Any other failure (config
@@ -1130,7 +1130,7 @@ async function attemptFireTask(
     // the prompt, so other agents can see the task is in flight. Snapshot the
     // written values so the done write later can verify nothing changed.
     const _bbTaskRef = findActiveKanbanCardByTitle(task.name)?.id ?? null
-    const _bbActiveRow = upsertBlackboard(agentName, {
+    const _bbActiveRow = await upsertBlackboard(agentName, {
       status: 'active',
       summary: task.name,
       task_ref: _bbTaskRef,
@@ -1545,7 +1545,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
       })
       if (decision === 'clear') {
-        applyBlackboardDone(entry)
+        await applyBlackboardDone(entry)
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
         sendTaskTimeoutAlert(entry, now - entry.injectedAt)

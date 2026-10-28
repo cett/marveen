@@ -26,7 +26,7 @@ function resolveThresholdSec(agentId: string): number {
 export function startBlackboardStaleSweeper(
   getInFlightAgents: () => ReadonlySet<string> = () => new Set(),
 ): NodeJS.Timeout {
-  const sweep = () => {
+  const sweep = async () => {
     try {
       const activeIds = getActiveBlackboardAgentIds()
       const thresholdsByAgent: Record<string, number> = {}
@@ -41,7 +41,7 @@ export function startBlackboardStaleSweeper(
       } catch (err) {
         logger.warn({ err }, 'blackboard-stale-sweeper: in-flight lookup failed, sweeping without the exemption')
       }
-      const marked = markBlackboardStale(thresholdsByAgent, defaultSec, assignedSec, undefined, inFlight)
+      const marked = await markBlackboardStale(thresholdsByAgent, defaultSec, assignedSec, undefined, inFlight)
       if (marked > 0) {
         logger.info({ marked }, 'blackboard-stale-sweeper: marked stale rows')
       }
@@ -50,7 +50,7 @@ export function startBlackboardStaleSweeper(
       // quiet for longer than PLAN_STALE_MIN, independent of blackboard
       // per-tier thresholds above.
       const planStaleMin = getEffectiveSettingValue('PLAN_STALE_MIN') as number
-      const plansSwept = sweepStaleActivePlans(planStaleMin)
+      const plansSwept = await sweepStaleActivePlans(planStaleMin)
       if (plansSwept > 0) {
         logger.info({ plansSwept }, 'blackboard-stale-sweeper: swept stale active-plan bindings')
       }
@@ -58,5 +58,6 @@ export function startBlackboardStaleSweeper(
       logger.error({ err }, 'blackboard-stale-sweeper: sweep failed')
     }
   }
-  return setInterval(sweep, SWEEP_INTERVAL_MS)
+  // sweep wraps its whole body in try/catch, so the timer only starts it.
+  return setInterval(() => { void sweep() }, SWEEP_INTERVAL_MS)
 }

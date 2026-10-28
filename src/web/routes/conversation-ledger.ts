@@ -111,7 +111,7 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
     if (!Number.isInteger(limit) || limit < 1 || limit > LEDGER_RECENT_MAX) {
       return bad(ctx, 'limit', `limit must be an integer between 1 and ${LEDGER_RECENT_MAX}`)
     }
-    json(res, { turns: recentLedgerTurns(agentId, limit) })
+    json(res, { turns: await recentLedgerTurns(agentId, limit) })
     return true
   }
 

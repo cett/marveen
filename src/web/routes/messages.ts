@@ -381,7 +381,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (assign === true && !storedTo.includes('/')) {
       const existing = findBlackboardRowByAgent(storedTo)
       if (!existing || (existing.status !== 'active' && existing.status !== 'blocked')) {
-        upsertBlackboard(storedTo, {
+        await upsertBlackboard(storedTo, {
           status: 'assigned',
           summary: normalizedContent.slice(0, 100),
           task_ref: null,
@@ -397,7 +397,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (complete === true) {
       const senderRow = findBlackboardRowByAgent(from.trim())
       if (senderRow && (senderRow.status === 'assigned' || senderRow.status === 'active' || senderRow.status === 'blocked')) {
-        upsertBlackboard(senderRow.agent_id, {
+        await upsertBlackboard(senderRow.agent_id, {
           status: 'done',
           summary: senderRow.summary,
           task_ref: senderRow.task_ref,

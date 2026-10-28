@@ -47,12 +47,12 @@ export async function tryHandleAgentInflightTurn(ctx: RouteContext): Promise<boo
   if (!isRegisteredLedgerAgent(agentId)) return bad(ctx, 'agent', 'agent is not a registered agent')
 
   if (action === 'replay') {
-    json(res, inflightReplay(agentId, url.searchParams.get('source') ?? ''))
+    json(res, await inflightReplay(agentId, url.searchParams.get('source') ?? ''))
     return true
   }
 
   if (action === 'end') {
-    json(res, { ok: true, removed: endInflightTurn(agentId) })
+    json(res, { ok: true, removed: await endInflightTurn(agentId) })
     return true
   }
 
@@ -69,7 +69,7 @@ export async function tryHandleAgentInflightTurn(ctx: RouteContext): Promise<boo
   if (action === 'consume') {
     const turnId = data['turn_id']
     if (typeof turnId !== 'string' || !TURN_ID_RE.test(turnId)) return bad(ctx, 'turn_id', 'turn_id must be the 16 hex characters replay returned')
-    json(res, { ok: true, consumed: consumeInflightTurn(agentId, turnId) })
+    json(res, { ok: true, consumed: await consumeInflightTurn(agentId, turnId) })
     return true
   }
 

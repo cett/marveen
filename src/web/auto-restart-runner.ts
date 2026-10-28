@@ -95,15 +95,15 @@ export function restartMainChannelsSession(): void {
   respawnMainSessionFresh()
 }
 
-function performRestart(name: string, cfg: AutoRestartConfig): void {
+async function performRestart(name: string, cfg: AutoRestartConfig): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     restartMainChannelsSession()
   } else {
-    restartAgentProcess(name, { fresh: cfg.mode === 'fresh' })
+    await restartAgentProcess(name, { fresh: cfg.mode === 'fresh' })
   }
 }
 
-function checkAgent(name: string, nowMs: number): void {
+async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readAutoRestartConfig(name)
   if (!cfg.enabled) {
     lastRestart.delete(name) // re-seed cleanly if re-enabled later
@@ -138,7 +138,7 @@ function checkAgent(name: string, nowMs: number): void {
   }
 
   try {
-    performRestart(name, cfg)
+    await performRestart(name, cfg)
     lastRestart.set(name, nowMs)
     logger.info({ name, mode: name === MAIN_AGENT_ID ? 'fresh(main)' : cfg.mode }, 'auto-restart: restarted session')
   } catch (err) {
@@ -147,13 +147,15 @@ function checkAgent(name: string, nowMs: number): void {
 }
 
 export function startAutoRestartRunner(): NodeJS.Timeout {
-  function sweep() {
+  async function sweep() {
     const now = Date.now()
-    try { checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'auto-restart: main check error') }
+    try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'auto-restart: main check error') }
     for (const name of listAgentNames()) {
-      try { checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'auto-restart: agent check error') }
+      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'auto-restart: agent check error') }
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  // A timer callback cannot be awaited: start the sweep and log a rejection (listAgentNames is outside the per-agent try).
+  const run = () => { sweep().catch((err: unknown) => logger.warn({ err }, 'auto-restart: sweep failed')) }
+  setTimeout(run, INITIAL_DELAY_MS)
+  return setInterval(run, INTERVAL_MS)
 }

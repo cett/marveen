@@ -21,6 +21,7 @@
 // create/update/delete a plan (src/web/routes/claude-plans.ts) write the
 // file first (unchanged) and best-effort mirror the same write here.
 import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 export type ClaudePlanType = 'personal' | 'team'
 export type ActivePlanSource = 'manual' | 'rotation' | 'handoff-recovery'
@@ -56,7 +57,7 @@ export interface ActivePlanForAgent {
 
 // ── claude_plans_registry: DB mirror, upsert-on-write from claude-plans.ts ──
 
-export function upsertClaudePlanRow(plan: {
+type ClaudePlanInput = {
   id: string
   label: string
   configDir: string
@@ -64,8 +65,9 @@ export function upsertClaudePlanRow(plan: {
   channelsAllowed: boolean
   expectedOrgType?: string
   expectedEmail?: string
-}): void {
-  db.prepare(`
+}
+
+const UPSERT_PLAN_SQL = `
     INSERT INTO claude_plans_registry
       (id, label, config_dir, plan_type, channels_allowed, expected_org_type, expected_email, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
@@ -77,10 +79,12 @@ export function upsertClaudePlanRow(plan: {
       expected_org_type = excluded.expected_org_type,
       expected_email    = excluded.expected_email,
       updated_at        = unixepoch()
-  `).run(
-    plan.id, plan.label, plan.configDir, plan.planType, plan.channelsAllowed ? 1 : 0,
-    plan.expectedOrgType ?? null, plan.expectedEmail ?? null,
-  )
+  `
+const upsertPlanArgs = (plan: ClaudePlanInput): (string | number | null)[] =>
+  [plan.id, plan.label, plan.configDir, plan.planType, plan.channelsAllowed ? 1 : 0, plan.expectedOrgType ?? null, plan.expectedEmail ?? null]
+
+export async function upsertClaudePlanRow(plan: ClaudePlanInput): Promise<void> {
+  await dbx.run(UPSERT_PLAN_SQL, ...upsertPlanArgs(plan))
 }
 
 // Replace the whole registry mirror in one transaction -- mirrors the file
@@ -97,22 +101,34 @@ export function upsertClaudePlanRow(plan: {
 // table's cascade has to run in FK-safe order for real, not just for
 // documentation. Whatever a replace leaves out of claude_plans_registry,
 // agent_active_plans cannot keep pointing at either.
-export function replaceClaudePlanRows(plans: {
-  id: string
-  label: string
-  configDir: string
-  planType: ClaudePlanType
-  channelsAllowed: boolean
-  expectedOrgType?: string
-  expectedEmail?: string
-}[]): void {
-  const tx = db.transaction((rows: typeof plans) => {
+export async function replaceClaudePlanRows(plans: ClaudePlanInput[]): Promise<void> {
+  await dbx.tx(async (tx) => {
     // Upsert-in-place for rows that persist (never a delete+reinsert of the
     // SAME id -- a persisting parent's transient absence within this
     // transaction would itself violate FK for a still-valid child, since
     // SQLite checks foreign keys per-statement, not deferred to COMMIT).
     // Only rows genuinely dropped from the incoming list get deleted.
-    const incomingIds = new Set(rows.map((p) => p.id))
+    // Every statement runs on the transaction handle, none on dbx.
+    const incomingIds = new Set(plans.map((p) => p.id))
+    const existingIds = (await tx.all<{ id: string }>('SELECT id FROM claude_plans_registry')).map((r) => r.id)
+    const removedIds = existingIds.filter((id) => !incomingIds.has(id))
+    if (removedIds.length > 0) {
+      const placeholders = removedIds.map(() => '?').join(',')
+      await tx.run(`DELETE FROM agent_active_plans WHERE plan_id IN (${placeholders})`, ...removedIds)
+      await tx.run(`DELETE FROM claude_plans_registry WHERE id IN (${placeholders})`, ...removedIds)
+    }
+    for (const plan of plans) await tx.run(UPSERT_PLAN_SQL, ...upsertPlanArgs(plan))
+  })
+}
+
+/**
+ * Boot-synchronous twin of replaceClaudePlanRows: the registry seed of initDatabase() cannot await. Same
+ * statements, run in a synchronous transaction on the raw connection; only db/index.ts calls it.
+ */
+// @boot-sync-twin
+export function replaceClaudePlanRowsSync(plans: ClaudePlanInput[]): void {
+  db.transaction(() => {
+    const incomingIds = new Set(plans.map((p) => p.id))
     const existingIds = (db.prepare('SELECT id FROM claude_plans_registry').all() as { id: string }[]).map((r) => r.id)
     const removedIds = existingIds.filter((id) => !incomingIds.has(id))
     if (removedIds.length > 0) {
@@ -120,21 +136,19 @@ export function replaceClaudePlanRows(plans: {
       db.prepare(`DELETE FROM agent_active_plans WHERE plan_id IN (${placeholders})`).run(...removedIds)
       db.prepare(`DELETE FROM claude_plans_registry WHERE id IN (${placeholders})`).run(...removedIds)
     }
-    for (const plan of rows) upsertClaudePlanRow(plan)
-  })
-  tx(plans)
+    for (const plan of plans) db.prepare(UPSERT_PLAN_SQL).run(...upsertPlanArgs(plan))
+  })()
 }
 
-export function deleteClaudePlanRow(id: string): void {
-  const tx = db.transaction((planId: string) => {
-    db.prepare('DELETE FROM agent_active_plans WHERE plan_id = ?').run(planId)
-    db.prepare('DELETE FROM claude_plans_registry WHERE id = ?').run(planId)
+export async function deleteClaudePlanRow(id: string): Promise<void> {
+  await dbx.tx(async (tx) => {
+    await tx.run('DELETE FROM agent_active_plans WHERE plan_id = ?', id)
+    await tx.run('DELETE FROM claude_plans_registry WHERE id = ?', id)
   })
-  tx(id)
 }
 
-export function listClaudePlanRows(): ClaudePlanRegistryRow[] {
-  return db.prepare('SELECT * FROM claude_plans_registry ORDER BY id').all() as ClaudePlanRegistryRow[]
+export async function listClaudePlanRows(): Promise<ClaudePlanRegistryRow[]> {
+  return dbx.all<ClaudePlanRegistryRow>('SELECT * FROM claude_plans_registry ORDER BY id')
 }
 
 // ── agent_active_plans: per-agent binding lifecycle ──────────────────────────
@@ -147,8 +161,7 @@ export function listClaudePlanRows(): ClaudePlanRegistryRow[] {
 // every call site in this codebase wraps this best-effort (try/catch), since
 // a mirror-write failure must never break the real operation it rides along
 // with (rotation, blackboard write, handoff recovery).
-export function activatePlanForAgent(agentId: string, planId: string, source: ActivePlanSource): void {
-  db.prepare(`
+const ACTIVATE_PLAN_SQL = `
     INSERT INTO agent_active_plans (agent_id, plan_id, activated_at, last_heartbeat, source)
     VALUES (?, ?, unixepoch(), unixepoch(), ?)
     ON CONFLICT(agent_id) DO UPDATE SET
@@ -156,7 +169,16 @@ export function activatePlanForAgent(agentId: string, planId: string, source: Ac
       activated_at   = unixepoch(),
       last_heartbeat = unixepoch(),
       source         = excluded.source
-  `).run(agentId, planId, source)
+  `
+
+export async function activatePlanForAgent(agentId: string, planId: string, source: ActivePlanSource): Promise<void> {
+  await dbx.run(ACTIVATE_PLAN_SQL, agentId, planId, source)
+}
+
+/** Boot-synchronous twin of activatePlanForAgent (the mirror seed of initDatabase() cannot await); only db/index.ts calls it. */
+// @boot-sync-twin
+export function activatePlanForAgentSync(agentId: string, planId: string, source: ActivePlanSource): void {
+  db.prepare(ACTIVATE_PLAN_SQL).run(agentId, planId, source)
 }
 
 // Called by every write path that means "this agent no longer has a plan
@@ -164,16 +186,16 @@ export function activatePlanForAgent(agentId: string, planId: string, source: Ac
 // timeout, and a clean agent-process stop. Explicit call rather than a
 // trigger, so each caller stays independently unit-testable (design section
 // 3A). Safe no-op when the agent has no active binding.
-export function deactivatePlanForAgent(agentId: string): void {
-  db.prepare('DELETE FROM agent_active_plans WHERE agent_id = ?').run(agentId)
+export async function deactivatePlanForAgent(agentId: string): Promise<void> {
+  await dbx.run('DELETE FROM agent_active_plans WHERE agent_id = ?', agentId)
 }
 
 // Refresh last_heartbeat without touching source/activated_at -- called by a
 // still-alive agent's regular plan-state poll, so the plan-sweeper's
 // PLAN_STALE_MIN timeout measures actual liveness, not just the original
 // activation time.
-export function touchActivePlanHeartbeat(agentId: string): void {
-  db.prepare('UPDATE agent_active_plans SET last_heartbeat = unixepoch() WHERE agent_id = ?').run(agentId)
+export async function touchActivePlanHeartbeat(agentId: string): Promise<void> {
+  await dbx.run('UPDATE agent_active_plans SET last_heartbeat = unixepoch() WHERE agent_id = ?', agentId)
 }
 
 function toActivePlan(row: {
@@ -192,30 +214,30 @@ function toActivePlan(row: {
   }
 }
 
-export function getActivePlanForAgent(agentId: string): ActivePlanForAgent | null {
-  const row = db.prepare(`
+export async function getActivePlanForAgent(agentId: string): Promise<ActivePlanForAgent | null> {
+  const row = await dbx.get<Parameters<typeof toActivePlan>[0]>(`
     SELECT aap.plan_id, aap.activated_at, aap.last_heartbeat, aap.source,
            r.label AS reg_label, r.plan_type AS reg_plan_type, r.channels_allowed AS reg_channels_allowed
       FROM agent_active_plans aap
       LEFT JOIN claude_plans_registry r ON r.id = aap.plan_id
      WHERE aap.agent_id = ?
-  `).get(agentId) as Parameters<typeof toActivePlan>[0] | undefined
+  `, agentId)
   return row ? toActivePlan(row) : null
 }
 
 // Bulk lookup for GET /api/blackboard -- one query for every row on the
 // page instead of one per row.
-export function listActivePlansForAgents(agentIds: string[]): Map<string, ActivePlanForAgent> {
+export async function listActivePlansForAgents(agentIds: string[]): Promise<Map<string, ActivePlanForAgent>> {
   const map = new Map<string, ActivePlanForAgent>()
   if (agentIds.length === 0) return map
   const placeholders = agentIds.map(() => '?').join(',')
-  const rows = db.prepare(`
+  const rows = (await dbx.all(`
     SELECT aap.agent_id, aap.plan_id, aap.activated_at, aap.last_heartbeat, aap.source,
            r.label AS reg_label, r.plan_type AS reg_plan_type, r.channels_allowed AS reg_channels_allowed
       FROM agent_active_plans aap
       LEFT JOIN claude_plans_registry r ON r.id = aap.plan_id
      WHERE aap.agent_id IN (${placeholders})
-  `).all(...agentIds) as ({ agent_id: string } & Parameters<typeof toActivePlan>[0])[]
+  `, ...agentIds)) as ({ agent_id: string } & Parameters<typeof toActivePlan>[0])[]
   for (const row of rows) map.set(row.agent_id, toActivePlan(row))
   return map
 }
@@ -224,7 +246,7 @@ export function listActivePlansForAgents(agentIds: string[]): Map<string, Active
 // whose last_heartbeat is older than ttlMin minutes. Runs alongside (not
 // instead of) the blackboard stale sweeper -- see blackboard-stale-sweeper.ts.
 // Returns how many rows were removed.
-export function sweepStaleActivePlans(ttlMin: number, nowSec = Math.floor(Date.now() / 1000)): number {
+export async function sweepStaleActivePlans(ttlMin: number, nowSec = Math.floor(Date.now() / 1000)): Promise<number> {
   const cutoff = nowSec - ttlMin * 60
-  return db.prepare('DELETE FROM agent_active_plans WHERE last_heartbeat < ?').run(cutoff).changes
+  return (await dbx.run('DELETE FROM agent_active_plans WHERE last_heartbeat < ?', cutoff)).changes
 }

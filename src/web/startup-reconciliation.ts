@@ -80,7 +80,7 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
         // Restart preserves the session name convention but starts a fresh CC process.
         logger.warn({ agent: name, session }, 'startup-reconciliation: session stale (CC not responsive) -- restarting')
         try {
-          const result = restartAgentProcess(name)
+          const result = await restartAgentProcess(name)
           if (!result.ok) {
             logger.warn({ agent: name, error: result.error }, 'startup-reconciliation: stale restart failed')
           } else {
@@ -100,7 +100,7 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
 
       logger.info({ agent: name, session }, 'startup-reconciliation: session absent -- launching')
       try {
-        const result = startAgentProcess(name)
+        const result = await startAgentProcess(name)
         if (result.ok) {
           logger.info({ agent: name }, 'startup-reconciliation: launched successfully')
         } else if (result.error === 'conflict') {

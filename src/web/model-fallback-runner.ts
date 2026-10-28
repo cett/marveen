@@ -82,7 +82,7 @@ function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
 }
 
-function restartFor(name: string): void {
+async function restartFor(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // A fresh main relaunch re-resolves the model in channels.sh: the fallback
     // overlay (model-fallback-state.json) first, then .env, then settings.json.
@@ -99,7 +99,7 @@ function restartFor(name: string): void {
   } else {
     // 'continue' (fresh: false) re-spawns with --continue so the conversation
     // survives the model swap.
-    restartAgentProcess(name, { fresh: false })
+    await restartAgentProcess(name, { fresh: false })
   }
 }
 
@@ -108,13 +108,13 @@ function restartFor(name: string): void {
 // operator's model by the very same revert path (same window, same clear-then-
 // restart order). Otherwise switching the feature off while an agent is
 // downgraded would pin it to the fallback model for good.
-function checkAgent(
+async function checkAgent(
   name: string,
   nowMs: number,
   revertAfterMs: number,
   chain: string[],
   allowDowngrade: boolean,
-): void {
+): Promise<void> {
   // Sub-agents must be up; the main session is launchd-managed (always present).
   if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') {
     // A stopped agent has nothing to restart: once its overlay is due, just
@@ -185,7 +185,7 @@ function checkAgent(
     } else {
       clearFallbackOverride(name)
     }
-    restartFor(name)
+    await restartFor(name)
     lastSwitchAt.set(name, nowMs)
     modelUnavailableStreak.delete(name)
     logger.info(
@@ -206,7 +206,7 @@ function checkAgent(
 }
 
 export function startModelFallbackRunner(): NodeJS.Timeout {
-  function sweep() {
+  async function sweep() {
     const cfg = readModelFallbackConfig()
     if (!cfg.enabled) {
       if (lastSwitchAt.size > 0) lastSwitchAt.clear() // re-seed cleanly if re-enabled
@@ -219,15 +219,16 @@ export function startModelFallbackRunner(): NodeJS.Timeout {
     const pinned = cfg.enabled ? null : new Set(Object.keys(listFallbackOverrides()))
     const wanted = (name: string) => pinned === null || pinned.has(name)
     if (wanted(MAIN_AGENT_ID)) {
-      try { checkAgent(MAIN_AGENT_ID, now, revertAfterMs, cfg.chain, cfg.enabled) }
+      try { await checkAgent(MAIN_AGENT_ID, now, revertAfterMs, cfg.chain, cfg.enabled) }
       catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
     }
     for (const name of listAgentNames()) {
       if (!wanted(name)) continue
-      try { checkAgent(name, now, revertAfterMs, cfg.chain, cfg.enabled) }
+      try { await checkAgent(name, now, revertAfterMs, cfg.chain, cfg.enabled) }
       catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  const run = () => { sweep().catch((err: unknown) => logger.warn({ err }, 'model-fallback: sweep failed')) }
+  setTimeout(run, INITIAL_DELAY_MS)
+  return setInterval(run, INTERVAL_MS)
 }

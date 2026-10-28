@@ -959,7 +959,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // agent dir, and the agent "returns" as an empty draft that still reports
     // running=true. stopAgentProcess() reads config from the dir for its orphan
     // reap, so it must run while the dir still exists.
-    if (isAgentRunning(name)) stopAgentProcess(name)
+    if (isAgentRunning(name)) await stopAgentProcess(name)
     // Clear the desired run-state so the reconciler stops trying to start a
     // non-existent agent (#857). A stale entry also starts a same-named new
     // agent immediately on next create -- unasked.

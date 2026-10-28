@@ -280,10 +280,10 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
         setAgentEnabledPlugins(name, provider)
         gcWasRunning = isAgentRunning(name)
         if (gcWasRunning) {
-          const stopRes = stopAgentProcess(name)
+          const stopRes = await stopAgentProcess(name)
           if (stopRes.ok) {
             try { execSync('sleep 2', { timeout: 4000 }) } catch {}
-            gcRestarted = startAgentProcess(name).ok
+            gcRestarted = (await startAgentProcess(name)).ok
           }
         }
       }
@@ -386,10 +386,10 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
       if (wasRunning) {
-        const stopRes = stopAgentProcess(name)
+        const stopRes = await stopAgentProcess(name)
         if (stopRes.ok) {
           try { execSync('sleep 2', { timeout: 4000 }) } catch {}
-          const startRes = startAgentProcess(name)
+          const startRes = await startAgentProcess(name)
           restarted = startRes.ok
         }
       }

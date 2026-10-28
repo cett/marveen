@@ -2,7 +2,7 @@
 // 0079). An aggregate: one row per shape of request, a counter on it. The policy (what counts, the
 // per-day row cap, the retention) lives in web/token-shadow.ts; this file is only the SQL.
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 export type TokenShadowCallerSource = 'self_declared' | 'token' | 'none'
 
@@ -31,31 +31,27 @@ export interface TokenShadowRow {
 }
 
 /** Adds one to the counter of this shape, creating the row on first sight. */
-export function bumpTokenShadow(key: TokenShadowKey, nowSec: number): void {
-  db.prepare(
-    `INSERT INTO token_usage_shadow
+export async function bumpTokenShadow(key: TokenShadowKey, nowSec: number): Promise<void> {
+  await dbx.run(`INSERT INTO token_usage_shadow
        (day, category, method, route, caller, caller_source, client, target, count, last_ts)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
      ON CONFLICT (day, category, method, route, caller, caller_source, client, target)
-     DO UPDATE SET count = count + 1, last_ts = excluded.last_ts`,
-  ).run(key.day, key.category, key.method, key.route, key.caller, key.callerSource, key.client, key.target, nowSec)
+     DO UPDATE SET count = count + 1, last_ts = excluded.last_ts`, key.day, key.category, key.method, key.route, key.caller, key.callerSource, key.client, key.target, nowSec)
 }
 
-export function tokenShadowKeyExists(key: TokenShadowKey): boolean {
-  return db.prepare(
-    `SELECT 1 FROM token_usage_shadow
+export async function tokenShadowKeyExists(key: TokenShadowKey): Promise<boolean> {
+  return await dbx.get(`SELECT 1 FROM token_usage_shadow
       WHERE day = ? AND category = ? AND method = ? AND route = ? AND caller = ?
-        AND caller_source = ? AND client = ? AND target = ?`,
-  ).get(key.day, key.category, key.method, key.route, key.caller, key.callerSource, key.client, key.target) !== undefined
+        AND caller_source = ? AND client = ? AND target = ?`, key.day, key.category, key.method, key.route, key.caller, key.callerSource, key.client, key.target) !== undefined
 }
 
-export function countTokenShadowRowsForDay(day: string): number {
-  return (db.prepare('SELECT COUNT(*) AS n FROM token_usage_shadow WHERE day = ?').get(day) as { n: number }).n
+export async function countTokenShadowRowsForDay(day: string): Promise<number> {
+  return ((await dbx.get('SELECT COUNT(*) AS n FROM token_usage_shadow WHERE day = ?', day)) as { n: number }).n
 }
 
 /** Deletes the rows of days before `day` (YYYY-MM-DD, compared as text). Returns the number removed. */
-export function deleteTokenShadowRowsBefore(day: string): number {
-  return db.prepare('DELETE FROM token_usage_shadow WHERE day < ?').run(day).changes
+export async function deleteTokenShadowRowsBefore(day: string): Promise<number> {
+  return (await dbx.run('DELETE FROM token_usage_shadow WHERE day < ?', day)).changes
 }
 
 export interface TokenShadowFilter {
@@ -77,17 +73,13 @@ function whereOf(f: Pick<TokenShadowFilter, 'fromDay' | 'category' | 'caller' | 
 }
 
 /** The counter rows, newest day first and busiest first within a day. */
-export function queryTokenShadow(f: TokenShadowFilter): TokenShadowRow[] {
+export async function queryTokenShadow(f: TokenShadowFilter): Promise<TokenShadowRow[]> {
   const { sql, params } = whereOf(f)
-  return db
-    .prepare(`SELECT * FROM token_usage_shadow ${sql} ORDER BY day DESC, count DESC, route ASC LIMIT ?`)
-    .all(...params, f.limit) as TokenShadowRow[]
+  return dbx.all<TokenShadowRow>(`SELECT * FROM token_usage_shadow ${sql} ORDER BY day DESC, count DESC, route ASC LIMIT ?`, ...params, f.limit)
 }
 
 /** Total hits per category over the same window. */
-export function totalsByTokenShadowCategory(f: Pick<TokenShadowFilter, 'fromDay' | 'category' | 'caller' | 'route'>): Array<{ category: string; count: number }> {
+export async function totalsByTokenShadowCategory(f: Pick<TokenShadowFilter, 'fromDay' | 'category' | 'caller' | 'route'>): Promise<Array<{ category: string; count: number }>> {
   const { sql, params } = whereOf(f)
-  return db
-    .prepare(`SELECT category, SUM(count) AS count FROM token_usage_shadow ${sql} GROUP BY category ORDER BY count DESC, category ASC`)
-    .all(...params) as Array<{ category: string; count: number }>
+  return (await dbx.all(`SELECT category, SUM(count) AS count FROM token_usage_shadow ${sql} GROUP BY category ORDER BY count DESC, category ASC`, ...params)) as Array<{ category: string; count: number }>
 }
