@@ -115,6 +115,14 @@ describe('a tenant move that lands while the call waits for the lock', () => {
     expect({ status: out.status, rowSurvives: !!row, tenant: row?.tenant_id }).toEqual({ status: 404, rowSurvives: true, tenant: 'default' })
   })
 
+  it('DELETE by an admin of a row that moved tenant meanwhile deletes it and the audit entry names the tenant at that moment', async () => {
+    const out = await raceWithTenantMove(() => call('DELETE', '/api/schedules/t-tenant-b', undefined, true))
+    expect(out.status).toBe(200)
+    expect(await dbMod.getScheduleFromDb('t-tenant-b')).toBeFalsy()
+    const audit = dbMod.getDb().prepare("SELECT detail FROM agent_audit_log WHERE entity = 'schedule' AND action = 'delete'").get() as { detail: string }
+    expect(JSON.parse(audit.detail).tenant).toBe('default')
+  })
+
   it('DELETE of a row that is gone by the time the lock is free answers 404 and writes no audit entry', async () => {
     let release!: () => void
     const held = new Promise<void>(r => { release = r })

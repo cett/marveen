@@ -45,7 +45,8 @@ vi.mock('../logger.js', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
 
-import { regenSingleSkillFile, removeGeneratedSkillFile } from '../web/skill-regen.js'
+import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile } from '../web/skill-regen.js'
+import { existsSync } from 'node:fs'
 import { addGeneratedHeader } from '../skill-header.js'
 
 const ID = 'global/queued-skill'
@@ -86,5 +87,27 @@ describe('remove vs in-flight regen', () => {
     let exists = true
     try { onDisk() } catch { exists = false }
     expect(exists).toBe(false)
+  })
+})
+
+describe('companion file remove vs in-flight regen', () => {
+  it('a deleted companion file must not come back', async () => {
+    const companion = join(FAKE_HOME, '.claude', 'skills', 'queued-skill', 'scripts', 'a.sh')
+    const fileRow = { skill_id: ID, rel_path: 'scripts/a.sh', content: Buffer.from('a\n'), mode: 0o644 }
+    getSkillMock.mockReset().mockResolvedValue(row('# v1'))
+    listSkillFilesMock.mockReset().mockResolvedValue([fileRow])
+    await regenSingleSkillFile(ID, true)
+    expect(existsSync(companion)).toBe(true)
+
+    // regen #2 has listed the file (slow delivery), then the companion delete route removes the generated copy
+    const slow = gate()
+    listSkillFilesMock.mockImplementationOnce(async () => { const snap = [fileRow]; await slow.promise; return snap })
+    const inFlight = regenSingleSkillFile(ID, true)
+    await settle()
+    const removing = removeGeneratedCompanionFile(ID, 'scripts/a.sh', Buffer.from('a\n'), 'fleet')
+    slow.open()
+    await inFlight
+    expect(await removing).toBe(1)
+    expect(existsSync(companion)).toBe(false)
   })
 })
