@@ -277,6 +277,17 @@ describe('the route: leave and come back wakes the assignee again, once per stay
     expect(sentMessages()).toBe(2)
   })
 
+  it('two overlapping moves into in_progress send exactly one assignment (the claim is one conditional UPDATE)', async () => {
+    const auth = await admin()
+    const results = await Promise.all([
+      callAs(auth, 'POST', `/api/kanban/${CARD}/move`, { status: 'in_progress', actor: 'agent-a' }),
+      callAs(auth, 'POST', `/api/kanban/${CARD}/move`, { status: 'in_progress', actor: 'agent-a' }),
+    ])
+    expect(results.map((r) => r.status)).toEqual([200, 200])
+    expect(sentMessages()).toBe(1)
+    expect(stamp(CARD)).not.toBeNull()
+  })
+
   it('staying in in_progress (a reorder) wakes nobody a second time', async () => {
     await move(CARD, { status: 'in_progress', actor: 'agent-a' })
     await move(CARD, { status: 'in_progress', actor: 'agent-a', sort_order: 5 })
