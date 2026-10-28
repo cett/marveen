@@ -255,6 +255,36 @@ describe('runRbacGate: the decision row is written before a refusal goes out, an
     }
   })
 
+  it('the opportunistic prune is awaited: the old row is gone when the record resolves (slow driver)', async () => {
+    db.prepare(
+      "INSERT INTO rbac_shadow_log (ts, tenant_id, principal_kind, principal, role, method, route, permission, decision, reason) VALUES (?, 'tenant-a', 'session', 'user-a', 'viewer', 'GET', '/old', 'p', 'permitted', '')",
+    ).run(OLD)
+    slowDriver()
+    expect(await recordRbacDecision(viewer, 'GET', '/api/memories', 'permitted')).toBe(true)
+    expect(count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE route = '/old'")).toBe(0)
+    expect(count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE route = '/api/memories'")).toBe(1)
+  })
+
+  it('a failing prune does not fail the record and raises no unhandled rejection', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const real = dbx.run.bind(dbx)
+      vi.spyOn(dbx, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
+        if (sql.startsWith('DELETE FROM rbac_shadow_log')) throw new Error('prune down')
+        return real(sql, ...params)
+      })
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+      expect(await recordRbacDecision(viewer, 'GET', '/api/memories', 'permitted')).toBe(true)
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ err: expect.any(Error) }), expect.stringContaining('prune failed'))
+      await sleep(30)
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
   it('recordRbacDecision answers false (never rejects) when the insert fails, true when the row is written', async () => {
     failingDriver()
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
