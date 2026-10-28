@@ -11,6 +11,7 @@ import {
   initDatabase, getDb, upsertBlackboard, createKanbanCard, saveAgentMemory, upsertSchedule,
 } from '../db.js'
 import { saveWorkspaceDoc } from '../db/workspace.js'
+import { bumpTokenShadow, deleteTokenShadowRowsBefore } from '../db/token-shadow.js'
 import type { AuthResult } from '../web/auth-gate.js'
 import { checkPermission } from '../web/authz.js'
 import { readBody } from '../web/http-helpers.js'
@@ -624,6 +625,17 @@ describe('the writer', () => {
     expect(rows().map((r) => r.day)).toEqual([new Date(old * 1000).toISOString().slice(0, 10), new Date(keep * 1000).toISOString().slice(0, 10)].sort())
     await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0) // an hour+ later: prune runs
     expect(rows().map((r) => r.day).sort()).toEqual([new Date(keep * 1000).toISOString().slice(0, 10), '2026-10-09'].sort())
+  })
+
+  it('deleteTokenShadowRowsBefore returns how many rows it removed and keeps the day it names', async () => {
+    const key = (day: string, caller: string) => ({ day, category: 'shared_token_use', method: 'GET', route: '/api/kanban', caller, callerSource: 'self_declared' as const, client: 'curl', target: '' })
+    await bumpTokenShadow(key('2026-10-07', 'agent-a'), T0)
+    await bumpTokenShadow(key('2026-10-08', 'agent-a'), T0)
+    await bumpTokenShadow(key('2026-10-08', 'agent-b'), T0)
+    await bumpTokenShadow(key('2026-10-09', 'agent-a'), T0)
+    expect(await deleteTokenShadowRowsBefore('2026-10-09')).toBe(3)
+    expect(rows().map((r) => r.day)).toEqual(['2026-10-09'])
+    expect(await deleteTokenShadowRowsBefore('2026-10-09')).toBe(0)
   })
 
   it('the table rejects an unknown caller source', () => {

@@ -225,6 +225,11 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   loses the entry and never undoes the card change. A delete writes an entry only when a row was deleted, and two
   overlapping deletes of one card produce one entry (the second finds no card). When kanban moves onto the facade,
   the rows and the entry join one `dbx.tx`.
+- **The token shadow counter's daily row count can run one too high.** `recordTokenShadow` reads
+  `dayState.known` before the `await` of the key lookup and adds to `dayState.rows` after it, so two overlapping first
+  records of the same new shape both count a row while the table gets one. The count only feeds the daily row cap
+  (`MAX_ROWS_PER_DAY`), so the error moves the cap earlier by the number of such overlaps and never later, and the
+  count is rebuilt from the table when the day changes or the process restarts. It is not covered by a test.
 - **One facade `await` is held by the type checker alone.** `resolveTenantDeliveryChats`
   (`src/web/schedule-runner.ts`) awaits `listChannelBindings`; dropping that `await` fails `tsc` (a Promise has no
   `length`) but no test. The `await`s of the channel-bindings routes (`src/web/routes/admin-b2b.ts`) are pinned by

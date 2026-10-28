@@ -7,6 +7,8 @@ defineCounter('test.counter', '{x}', ['kind'])
 defineHistogram('test.hist', 's', ['kind'], [1, 5])
 defineGauge('test.gauge', '{x}', () => [{ attrs: { kind: 'a', secret: 'leak' }, value: 3 }], ['kind'])
 defineGauge('test.broken', '{x}', () => { throw new Error('db gone') })
+defineGauge('test.gauge.async', '{x}', () => Promise.resolve([{ attrs: { kind: 'b', secret: 'leak' }, value: 7 }]), ['kind'])
+defineGauge('test.broken.async', '{x}', () => Promise.reject(new Error('db gone')))
 
 const find = async (name: string) => (await collectRegistryMetrics()).find((m) => m.name === name)
 
@@ -57,5 +59,14 @@ describe('otel-metrics registry', () => {
     expect(point.asDouble).toBe(3)
     expect(point.attributes.map((a: any) => a.key)).toEqual(['kind'])
     expect(await find('test.broken')).toBeUndefined()
+  })
+
+  it('awaits an asynchronous gauge: its points are read, and one that rejects is skipped', async () => {
+    const g = (await find('test.gauge.async'))!.gauge!
+    const point = (g.dataPoints as any[])[0]
+    expect(g.dataPoints).toHaveLength(1)
+    expect(point.asDouble).toBe(7)
+    expect(point.attributes.map((a: any) => a.key)).toEqual(['kind'])
+    expect(await find('test.broken.async')).toBeUndefined()
   })
 })

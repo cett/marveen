@@ -83,6 +83,20 @@ describe('cursors', () => {
     expect((await getOtelLogBatch(100)).approval_events.map((r) => r.event)).toEqual(['consume_refused'])
   })
 
+  it.each([
+    ['rbac_shadow_log', () => { seedRbac('denied'); seedRbac('denied') }, 'SELECT MAX(id) AS m FROM rbac_shadow_log'],
+    ['agent_audit_log', () => {
+      const ins = getDb().prepare("INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, created_at) VALUES ('agent-a', 'memory', 'create', ?, '{}', 1)")
+      ins.run('1'); ins.run('2')
+    }, 'SELECT MAX(id) AS m FROM agent_audit_log'],
+  ] as const)('start at the highest existing id of %s, so its history is not replayed', async (source, seed, maxSql) => {
+    seed()
+    const max = (getDb().prepare(maxSql).get() as { m: number }).m
+    expect(max).toBeGreaterThan(0)
+    expect(await getOtelLogCursor(source)).toBe(max)
+    expect((await getOtelLogBatch(100))[source]).toEqual([])
+  })
+
   it('start at 0 on an empty table, so the first row is exported', async () => {
     expect(await getOtelLogCursor('config_change_log')).toBe(0)
     getDb().prepare("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('K', 'a', 'b', 'user-a', 1)").run()
