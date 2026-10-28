@@ -59,7 +59,8 @@ use the synchronous twins of a migrated module, kept on the raw connection. The 
 | `getAgentStateSync`, `setAgentStateSync`, `importAgentStateFromFile` | `db/agent-state.ts` |
 | `migrateCostBudgetsFromFile` | `db/cost-budgets.ts` |
 | `migrateVaultBindingsFromFile` | `db/vault-bindings.ts` |
-| `importAgentSettingsFromFile` (takes a synchronous `resolveAgentOwningTenantId` callback) | `db/agent-settings.ts` |
+| `importAgentSettingsFromFile` (takes the synchronous `resolveAgentOwningTenantIdSync` callback) | `db/agent-settings.ts` |
+| `resolveAgentOwningTenantIdSync` (the same two lookups as `resolveAgentOwningTenantId` on the raw handle, in the same order: keep the two in step) | `db/agents.ts`, called from `db/index.ts` |
 | `enrollDashboardApiTokenSync` (the file token is enrolled before `startWebServer` listens; it cannot await) | `db/api-tokens.ts`, called from `web/token-bootstrap.ts` |
 | `migrateScheduleLastRunFromFile` (the one-time import of the last-run file; it stays on the raw handle when the module goes async) | `db/tasks.ts` |
 
@@ -290,6 +291,23 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   then lets `applyRbacGate` write the 401/403, so a refusal is recorded before the client sees it (the old hook order;
   `applyRbacGate`'s hooks are synchronous and cannot await a write). A failed insert or prune is logged and never
   changes the decision. The cost is that every refused or observed request waits for one insert.
+- **The blackboard lock is in-process.** The read-judge-write sequences on one agent's blackboard row (the message
+  assignment `assign: true`, the `complete: true` hook, the scheduled run's active post and its done write, the
+  `POST /api/blackboard` route) run under `withBlackboardLock(agentId, ...)` (`src/web/blackboard-lock.ts`), one after
+  the other per agent. `upsertBlackboard` itself is one immediate transaction (read, upsert by `agent_id`, history
+  entry), so two overlapped posts of one agent end in one row, the later call wins, and both are in the history; the
+  sweep `markBlackboardStale` updates only the row it read (`status` and `updated_at` unchanged), so a post made
+  between its read and its write is kept, with a one-second resolution of `updated_at` backed by the status
+  condition. PostgreSQL phase 2 with several processes needs the judgement inside the statement or a row lock: the
+  lock does not see another process. `PATCH` of a row by id (`routes/blackboard.ts`, `updateBlackboardRowById`) is
+  still read, merge, write without either guard (last write wins); it was not on the W3-6 list.
+- **`getAgentConversationThreads` reads its peers one query at a time.** The peer list, the counts and the last
+  message of each peer are separate reads, so a message created while it runs can show in the count of one peer and
+  not in the last-message field of that peer. The synchronous version could not be interleaved. It is a dashboard
+  sidebar; a snapshot read (one transaction, or one statement per peer with a window function) waits for phase 2.
+- **`BEGIN IMMEDIATE` in `upsertBlackboard` is not observable on one connection.** The mode takes the write lock
+  at the start so that a second connection (another process) cannot make the read stale; with the single dashboard
+  connection the transaction lock already orders the callers, so no test can tell the modes apart.
 - **`logToolCall` is held by the types and the lint only.** It writes through `upsertOtelSpan`
   (`src/db/observability.ts`), which still uses the raw connection inside an `async` function, so a driver-level test
   (slow or failing `dbx.run`) cannot reach it until that module moves onto `dbx`.
