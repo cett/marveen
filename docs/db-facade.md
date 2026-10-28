@@ -1,7 +1,8 @@
 # The async db facade (`dbx`)
 
-The PostgreSQL preparation turns the db layer asynchronous one module at a time. This page says
-how to write a database operation while that is going on. The facade lives in `src/db/facade.ts`, its lock in
+The PostgreSQL preparation turned the db layer asynchronous one module at a time; every module under `src/db/` is on
+the facade now, except the exceptions listed under "What the facade does not cover" (the boot twins, the synchronous
+configuration caches, the `vec0` helpers, the OTel gauge reads). This page says how to write a database operation on it. The facade lives in `src/db/facade.ts`, its lock in
 `src/db/tx-lock.ts`, the caller context in `src/db/context.ts`, the config cache in `src/db/config-cache.ts`.
 
 ## The rules
@@ -151,6 +152,22 @@ orders of the overlap for all three revoke paths. A session revoked by ANOTHER p
 debounced `last_seen` write (`touchAuthSessionLastSeen` returns the changed-row count, so it must be awaited).
 
 ## Transactions with a rule of their own
+
+**One transaction across two modules (ambient, today; explicit `tx` handle, phase 2).** When a unit of work needs
+functions of two modules to commit or roll back together (the idea promotion, `promoteIdeaToKanban` in `db/kanban.ts`:
+the card rows go through the `tx` handle, `updateIdeaWithStatusLog` of `db/misc.ts` is called inside the same body), ONE
+`dbx.tx(async (tx) => { ... })` is opened and the other module's function is called inside it. On SQLite this works because the transaction scope travels with the call chain (an `AsyncLocalStorage`): a
+`dbx.get/all/run/exec` issued by those functions while the body runs goes straight through on the open connection (it
+does not queue behind the lock it is already inside), and a `dbx.tx` inside them is a SAVEPOINT of the open transaction,
+so an error in the inner part undoes only the inner part. The rule for the functions that take part: they use `dbx` as
+usual and neither know nor check whether they run inside a transaction, and they do no file, HTTP or model work (the
+transaction lock is held for as long as the body runs). The limit: this is ambient, not explicit. On PostgreSQL a
+transaction is a pooled client, and a function that does not receive that client would run on another connection,
+outside the transaction. So the participating functions will have to take an explicit `tx` parameter in phase 2;
+every such place carries a `TODO(phase2): tx handle` comment (today the idea write in `promoteIdeaToKanban`), and a
+new cross-module transaction adds one. Until then a function that must take part in a cross-module transaction is
+written with `dbx` calls only: a raw `db.prepare(...)` in it would sit beside the lock, not inside the transaction's
+rules (see "What the facade does not cover").
 
 **The system-config document (read-modify-write).** A change to one stored document (the federation config is the
 example, `mutateFederationConfig`) reads the cached document, changes it and writes it back inside ONE `dbx.tx`:
@@ -308,9 +325,10 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
 - **`BEGIN IMMEDIATE` in `upsertBlackboard` is not observable on one connection.** The mode takes the write lock
   at the start so that a second connection (another process) cannot make the read stale; with the single dashboard
   connection the transaction lock already orders the callers, so no test can tell the modes apart.
-- **`logToolCall` is held by the types and the lint only.** It writes through `upsertOtelSpan`
-  (`src/db/observability.ts`), which still uses the raw connection inside an `async` function, so a driver-level test
-  (slow or failing `dbx.run`) cannot reach it until that module moves onto `dbx`.
+- **`logToolCall` is held by the types, the lint and a driver-level test.** It writes through `upsertOtelSpan`
+  (`src/db/observability.ts`, on `dbx` since the observability steps of the third wave), so a slow or failing
+  `dbx.run` reaches it: `observability-memory-otel-facade.test.ts` pins that the call resolves only after the span is
+  written and that a failing driver is a rejection with nothing stored.
 
 ## Tests
 
@@ -336,10 +354,15 @@ lock. The channel coordinator is a separate process. Neither is serialized by `d
 A write on the RAW connection (`db.prepare(...).run()`, `db.transaction(...)()`) is not serialized by the lock
 either. On the one SQLite connection it does not wait: while a `dbx.tx` is open (between its awaits) such a write
 runs INSIDE that transaction, a raw transaction becomes a savepoint of it, and both are rolled back with it.
-`src/__tests__/approval-vault-statements.test.ts` pins this. Until the tenant delete (`deleteTenant` in
-`db/observability.ts`, which still writes `approvals` on the raw connection) moves onto `dbx`, treat the approval
-transactions (`consumeApproval`, `claimApproval`, `createApprovalOnce`) as exposed to it; on PostgreSQL (several
-connections) the raw writer would no longer be inside the transaction at all.
+`src/__tests__/approval-vault-statements.test.ts` pins this. The tenant delete (`deleteTenant` in
+`db/observability.ts`) was the last writer of `approvals` on the raw connection and is one `dbx.tx` now. What is left
+on the raw connection is the boot twins (`BOOT_SYNC_TWINS` in `src/__tests__/db-boot-sync-twins.test.ts`, each limited
+to its own module and its boot caller), the config and model-profile caches, the vector helpers that need `vec0`, the
+synchronous gauge reads of `db/otel-gauges.ts` (counts and ages for the metric export, through `getDb()`), and
+the files of the db-outside-sql baseline (`scripts/db-outside-sql-baseline.json`, each with the reason it stays).
+`db-boot-sync-twins.test.ts` also pins that the modules which moved completely (`RAW_FREE_MODULES`) hold no
+`db.prepare/exec/transaction/pragma`, and that `agents`, `tasks`, `cost-budgets` and `vault-bindings` hold raw
+statements only inside their twin; a module joins the list in the commit that moves it.
 
 The approval transactions keep the modes of the synchronous transactions they replaced: `consumeApproval` and
 `claimApproval` the default (deferred) one, `createApprovalOnce` `immediate`. Their guarded `UPDATE ... WHERE` is

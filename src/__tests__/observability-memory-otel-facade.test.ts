@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   dbx, getDb, initDatabase, saveAgentMemory, runMemoryMaintenance, recordMemoryReadBatch,
-  upsertOtelSpan, markOtelSpansExported, recordTokenUsageCalls, getTokenUsageCursor,
+  upsertOtelSpan, markOtelSpansExported, recordTokenUsageCalls, getTokenUsageCursor, logToolCall,
 } from '../db.js'
 import type { TokenUsageCall } from '../db.js'
 
@@ -223,5 +223,41 @@ describe('runMemoryMaintenance', () => {
     expect(cat(warm)).toBe('cold')
     expect(cat(cold)).toBe('warm')
     expect(versions()).toHaveLength(2)
+  })
+})
+
+// logToolCall writes through upsertOtelSpan: with the module on dbx a driver-level test reaches it.
+describe('logToolCall through the facade', () => {
+  const spans = () => (getDb().prepare('SELECT COUNT(*) c FROM otel_spans').get() as { c: number }).c
+
+  function slowOrFailingRun(mode: 'slow' | 'fail'): { release: () => void } {
+    const real = dbx.run.bind(dbx)
+    let release = () => {}
+    const gate = new Promise<void>((r) => { release = r })
+    vi.spyOn(dbx, 'run').mockImplementation((async (sql: string, ...a: unknown[]) => {
+      if (!sql.includes('INTO otel_spans')) return real(sql, ...a)
+      if (mode === 'fail') throw new Error('driver down')
+      await gate
+      return real(sql, ...a)
+    }) as never)
+    return { release }
+  }
+
+  it('resolves only after a slow driver wrote the span', async () => {
+    const { release } = slowOrFailingRun('slow')
+    let done = false
+    const p = logToolCall('sess', 'Bash', 'ls', true, 'ag', 'toolu_1', 5).then(() => { done = true })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(done).toBe(false)
+    expect(spans()).toBe(0)
+    release()
+    await p
+    expect(spans()).toBe(1)
+  })
+
+  it('a failing driver surfaces as a rejection, nothing is stored', async () => {
+    slowOrFailingRun('fail')
+    await expect(logToolCall('sess', 'Bash', 'ls', true, 'ag', 'toolu_2', 5)).rejects.toThrow('driver down')
+    expect(spans()).toBe(0)
   })
 })
