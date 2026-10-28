@@ -473,15 +473,23 @@ export async function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: numb
     }
     let ks = keyString(key)
     if (!dayState.known.has(ks)) {
-      if (await tokenShadowKeyExists(key)) {
+      const exists = await tokenShadowKeyExists(key)
+      // The lookup is awaited: overlapping first records of the same new shape all got here with `known` empty.
+      // Deciding on a fresh read of `known` (no await between it and the add) lets exactly one of them count the row.
+      if (dayState.known.has(ks)) {
+        // another record of this shape counted it meanwhile
+      } else if (exists) {
         dayState.known.add(ks)
       } else if (dayState.rows >= MAX_ROWS_PER_DAY) {
         // Over the cap: fold into one overflow row per (day, category, method) instead of growing.
         key = { day, category: hit.category, method: base.method, route: OVERFLOW, caller: OVERFLOW, callerSource: 'none', client: 'other', target: '' }
         ks = keyString(key)
         if (!dayState.known.has(ks)) {
-          if (!await tokenShadowKeyExists(key)) dayState.rows += 1
-          dayState.known.add(ks)
+          const overflowExists = await tokenShadowKeyExists(key)
+          if (!dayState.known.has(ks)) {
+            if (!overflowExists) dayState.rows += 1
+            dayState.known.add(ks)
+          }
         }
       } else {
         dayState.rows += 1

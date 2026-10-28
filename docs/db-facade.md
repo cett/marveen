@@ -225,11 +225,19 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   loses the entry and never undoes the card change. A delete writes an entry only when a row was deleted, and two
   overlapping deletes of one card produce one entry (the second finds no card). When kanban moves onto the facade,
   the rows and the entry join one `dbx.tx`.
-- **The token shadow counter's daily row count can run one too high.** `recordTokenShadow` reads
-  `dayState.known` before the `await` of the key lookup and adds to `dayState.rows` after it, so two overlapping first
-  records of the same new shape both count a row while the table gets one. The count only feeds the daily row cap
-  (`MAX_ROWS_PER_DAY`), so the error moves the cap earlier by the number of such overlaps and never later, and the
-  count is rebuilt from the table when the day changes or the process restarts. It is not covered by a test.
+- **The token shadow counter's daily row count is decided on a fresh read of `dayState.known` after each key lookup.**
+  `recordTokenShadow` awaits the key lookup, so k overlapping first records of the same new shape all arrive with
+  `known` empty; counting after the `await` without a second look made every one of them count a row while the table got
+  one, and the daily row cap (`MAX_ROWS_PER_DAY`) moved earlier by k - 1 (measured: 40 overlaps, 3961 real rows instead
+  of 4000). The second look removes that, and `token-shadow.test.ts` pins it with 40 same-tick records. What remains: two
+  overlapping first records of a new UTC day each rebuild the state from the table, and the later one discards what the
+  first added, so the count can lag by the rows in flight until the next rebuild (the cap then moves later, by the
+  number of such rows). Under SQLite the `await`s are microtasks and separate HTTP handlers run in separate macrotasks,
+  so this is not reachable through HTTP today; on PostgreSQL it is.
+- **`startAgentProcess` checks `isAgentRunning` before an `await`.** The check in `agent-process-spawn.ts` comes before
+  `await recoverActivePlanFromHandoff` and the `kill-session` plus spawn after it, so two overlapping starts of one agent
+  both pass the check and the second `kill-session` kills the first one's new session. Under SQLite the `await` is only a
+  microtask (not measured, read from the source); on PostgreSQL it is a real window. Not covered by a test.
 - **One facade `await` is held by the type checker alone.** `resolveTenantDeliveryChats`
   (`src/web/schedule-runner.ts`) awaits `listChannelBindings`; dropping that `await` fails `tsc` (a Promise has no
   `length`) but no test. The `await`s of the channel-bindings routes (`src/web/routes/admin-b2b.ts`) are pinned by

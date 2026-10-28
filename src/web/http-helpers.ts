@@ -45,7 +45,9 @@ export class RequestBodyTooLargeError extends Error {
 
 // Optional observer of every request body that readBody finishes reading (the Phase T2 shadow
 // counter registers one to see which agent ids a body names). It is told AFTER the body is complete,
-// cannot change it, and a throwing observer is ignored: it must never fail or delay a request.
+// cannot change it, and a throwing observer is ignored: it must never fail a request. It does delay the
+// request: readBody waits for the observer (the counter write) before it hands the body on, and there is
+// no timeout on that wait.
 type RequestBodyObserver = (req: http.IncomingMessage, body: Buffer) => void | Promise<void>
 let requestBodyObserver: RequestBodyObserver | null = null
 

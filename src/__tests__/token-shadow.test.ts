@@ -607,6 +607,19 @@ describe('the writer', () => {
     expect(rows().find((r) => r.caller === 'agent-0')?.count).toBe(2)
   })
 
+  it('overlapping first records of one new shape count one row toward the cap, not one each', async () => {
+    const shape = (i: number) => ({ ...base, caller: `agent-${i}` })
+    const hit = { category: 'shared_token_use' as const, target: '' }
+    // MAX - 41 rows in the table, then 40 records of ONE new shape in the same tick: one row, so MAX - 40 in all
+    for (let i = 0; i < MAX_ROWS_PER_DAY - 41; i++) await recordTokenShadow(shape(i), hit, T0)
+    await Promise.all(Array.from({ length: 40 }, () => recordTokenShadow(shape(9000), hit, T0)))
+    expect(rows().find((r) => r.caller === 'agent-9000')?.count).toBe(40)
+    // 40 more distinct shapes: the cap (MAX rows) is reached exactly at the 40th, nothing is folded earlier
+    for (let i = 0; i < 40; i++) await recordTokenShadow(shape(9001 + i), hit, T0)
+    expect(rows().filter((r) => r.route !== '_overflow')).toHaveLength(MAX_ROWS_PER_DAY)
+    expect(rows().find((r) => r.route === '_overflow')).toBeUndefined()
+  })
+
   it('the cap survives a process restart (the day state is rebuilt from the table)', async () => {
     for (let i = 0; i < MAX_ROWS_PER_DAY; i++) await recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
     resetTokenShadowForTests()
