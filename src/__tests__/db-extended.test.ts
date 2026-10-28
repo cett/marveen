@@ -196,8 +196,8 @@ describe('queryAuditLog pagination (offset + total)', () => {
 // --- Audit Log Prune ---
 
 describe('pruneAuditLogs', () => {
-  it('runs without throwing', () => {
-    expect(() => pruneAuditLogs()).not.toThrow()
+  it('runs without throwing', async () => {
+    await expect(pruneAuditLogs()).resolves.toBeUndefined()
   })
 
   // hook_audit_log previously had no automatic sweep at all: pruneHookAuditLog()
