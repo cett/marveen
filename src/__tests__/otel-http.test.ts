@@ -216,12 +216,12 @@ describe('recordHttpRequest', () => {
     expect(new Set(routes)).toEqual(new Set(['/api/kanban']))
   })
 
-  it('counts a status outside 100-599 as 0 and a hostile method as _OTHER, and never throws', () => {
-    expect(() => recordHttpRequest({ method: 'PROPFIND', path: '/api/x', status: 9999, seconds: 0.1 })).not.toThrow()
+  it('counts a status outside 100-599 as 0 and a hostile method as _OTHER, and never throws', async () => {
+    await expect(recordHttpRequest({ method: 'PROPFIND', path: '/api/x', status: 9999, seconds: 0.1 })).resolves.toBeUndefined()
     const p = (metric()!.histogram!.dataPoints as any[])[0]
     expect(attrMap(p)['http.request.method']).toBe('_OTHER')
     expect(attrMap(p)['http.response.status_code']).toBe('0')
-    expect(() => recordHttpRequest({ method: 'GET', path: undefined as unknown as string, status: 200, seconds: NaN })).not.toThrow()
+    await expect(recordHttpRequest({ method: 'GET', path: undefined as unknown as string, status: 200, seconds: NaN })).resolves.toBeUndefined()
   })
 })
 

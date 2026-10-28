@@ -37,10 +37,9 @@ describe('memories: vec0-free write path', () => {
     ).not.toThrow()
   })
 
-  it('saveAgentMemory does not throw without vec0', () => {
-    expect(() =>
-      saveAgentMemory('test-agent', 'content for embedding-free save', 'warm', 'keyword1')
-    ).not.toThrow()
+  it('saveAgentMemory does not reject without vec0 and stores the row', async () => {
+    const { id } = await saveAgentMemory('test-agent', 'content for embedding-free save', 'warm', 'keyword1')
+    expect(getDb().prepare('SELECT content FROM memories WHERE id = ?').get(id)).toEqual({ content: 'content for embedding-free save' })
   })
 
   it('syncVecMemoryDelete is a no-op (does not throw) without vec0', () => {

@@ -129,9 +129,9 @@ describe('notifyOrchestratorOfStuckSession', () => {
     expect(mockLoggerInfo).not.toHaveBeenCalled()
   })
 
-  it('swallows a createAgentMessage failure and logs a warning instead of throwing', () => {
-    mockCreateAgentMessage.mockImplementation(() => { throw new Error('db locked') })
-    expect(() => notifyOrchestratorOfStuckSession('prisma', 'agent-prisma', 60_000, 1, null)).not.toThrow()
+  it('swallows a createAgentMessage failure and logs a warning instead of throwing', async () => {
+    mockCreateAgentMessage.mockRejectedValue(new Error('db locked'))
+    await expect(notifyOrchestratorOfStuckSession('prisma', 'agent-prisma', 60_000, 1, null)).resolves.toBeUndefined()
     expect(mockLoggerWarn).toHaveBeenCalledTimes(1)
   })
 })
@@ -165,10 +165,10 @@ describe('notifyOrchestratorOfFailedHandoff', () => {
     expect(mockCreateAgentMessage).not.toHaveBeenCalled()
   })
 
-  it('swallows a createAgentMessage failure and logs a warning instead of throwing', () => {
-    mockCreateAgentMessage.mockImplementation(() => { throw new Error('db locked') })
+  it('swallows a createAgentMessage failure and logs a warning instead of throwing', async () => {
+    mockCreateAgentMessage.mockRejectedValue(new Error('db locked'))
     const msg = makeMsg()
-    expect(() => notifyOrchestratorOfFailedHandoff(msg, 'unreachable')).not.toThrow()
+    await expect(notifyOrchestratorOfFailedHandoff(msg, 'unreachable')).resolves.toBeUndefined()
     expect(mockLoggerWarn).toHaveBeenCalledTimes(1)
   })
 })
@@ -205,10 +205,10 @@ describe('notifyDelegationFailed', () => {
     expect(content).not.toContain('x'.repeat(201))
   })
 
-  it('swallows a createAgentMessage failure and logs a warning instead of throwing', () => {
-    mockCreateAgentMessage.mockImplementation(() => { throw new Error('db locked') })
+  it('swallows a createAgentMessage failure and logs a warning instead of throwing', async () => {
+    mockCreateAgentMessage.mockRejectedValue(new Error('db locked'))
     const msg = makeMsg()
-    expect(() => notifyDelegationFailed(msg, 'unreachable')).not.toThrow()
+    await expect(notifyDelegationFailed(msg, 'unreachable')).resolves.toBeUndefined()
     expect(mockLoggerWarn).toHaveBeenCalledTimes(1)
   })
 })
