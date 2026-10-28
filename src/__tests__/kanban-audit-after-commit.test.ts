@@ -1,6 +1,7 @@
-// The kanban audit entries are written after the card rows are committed (an await inside a synchronous
-// better-sqlite3 transaction would end it early), best effort: a failing audit write never undoes the card.
-// Real in-memory database, no mocks. Each test names the line it protects in src/db/kanban.ts.
+// The kanban audit entries are best effort: a failing audit write never undoes the card. The card delete and its
+// audit entry are ONE facade transaction (the audit in its own savepoint); a card create writes its rows first and its
+// entry second. Real in-memory database, no mocks. Each test names the line it protects in src/db/kanban.ts.
+// (Kept under its old file name; the delete/breakdown/promote atomicity is pinned in kanban-facade-overlap.test.ts.)
 import { describe, it, expect } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
 import { db, createKanbanCard, deleteKanbanCard, getKanbanCard } from '../db.js'
@@ -41,7 +42,7 @@ describe('createKanbanCard', () => {
 })
 
 describe('deleteKanbanCard', () => {
-  it('deletes the card and writes one delete audit entry for the assignee, after the commit', async () => {
+  it('deletes the card and writes one delete audit entry for the assignee, in the same transaction', async () => {
     await createKanbanCard({ id: 'c1', title: 'Root', assignee: 'agent-a' })
     expect(await deleteKanbanCard('c1')).toBe(true)
     expect(await getKanbanCard('c1')).toBeUndefined()
@@ -56,11 +57,12 @@ describe('deleteKanbanCard', () => {
     expect(auditRows('delete')).toEqual([])
   })
 
-  it('a failing audit write does not undo the delete or reject', async () => {
+  it('a failing audit write does not undo the delete or reject, and leaves no audit row behind', async () => {
     await createKanbanCard({ id: 'c1', title: 'Root' })
     blockAuditWrites()
     await expect(deleteKanbanCard('c1')).resolves.toBe(true)
     expect(await getKanbanCard('c1')).toBeUndefined()
+    expect(auditRows('delete')).toEqual([])
   })
 
   it('two overlapping deletes of the same card: one true, one false, exactly one audit entry', async () => {
